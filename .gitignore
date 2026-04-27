@@ -1,0 +1,13 @@
+# Inference engine and model weights (large binaries)
+llama.cpp/
+weights/
+
+# Agent logs
+agents/logs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Caches
+.cache/
