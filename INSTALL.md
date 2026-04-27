@@ -94,9 +94,9 @@ You don't need all three -- download whichever models you plan to use.
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-OpenCode is configured via `opencode.json` in the repo root. It will automatically
-detect the local llama.cpp server when you run `opencode` in any project directory
-while the server is running.
+OpenCode is configured via `opencode.json` in the repo root. MCP tools (bash,
+file I/O, grep) are wired via stdio transport — OpenCode launches the MCP server
+automatically. Run `opencode` in any project directory while the server is running.
 
 ### Open WebUI (browser chat interface)
 
@@ -109,17 +109,25 @@ docker pull ghcr.io/open-webui/open-webui:main
 Open WebUI is configured via `docker-compose.yml` and will be available at
 http://localhost:3000 when the stack is running.
 
+### Agent dependencies
+
+```bash
+pip install --user --break-system-packages -r agents/requirements.txt
+```
+
+This installs the OpenAI SDK and MCP SDK needed by the agent runner and MCP server.
+
 ## 4. Start the stack
 
 The easiest way to run everything:
 
 ```bash
-./start.sh                          # starts 27B Q5 server + Open WebUI
+./start.sh                          # starts model server + MCP tools + Open WebUI
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
 ```
 
-This launches the llama.cpp server and Open WebUI. Then use OpenCode separately
-in any project:
+This launches the llama.cpp server, MCP tool server (port 3001), and Open WebUI.
+Then use OpenCode separately in any project:
 
 ```bash
 cd ~/my-project
@@ -132,9 +140,21 @@ To stop everything:
 ./stop.sh
 ```
 
-## 5. Verify
+## 5. Configure Open WebUI MCP
+
+After the first launch, connect Open WebUI to the MCP tool server:
+
+1. Open http://localhost:3000
+2. Go to Admin Settings > MCP
+3. Add endpoint: `http://localhost:3001/mcp`
+
+This gives Open WebUI access to the local tools (bash, file read/write, grep).
+This only needs to be done once — the setting persists in the Docker volume.
+
+## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health`
+- **MCP tools:** `curl http://localhost:3001/mcp` (should respond)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **OpenCode:** run `opencode` in a project directory, select the local model
 
@@ -157,7 +177,7 @@ Note: `huggingface-cli` is deprecated, use `hf` instead.
 
 **Open WebUI can't connect to model** -- make sure the llama.cpp server is running
 first (`./start.sh` handles this automatically). The Docker container reaches the
-host via `host.docker.internal`.
+host via `localhost`.
 
 **OpenCode shows no local models** -- make sure you're running `opencode` from a
 directory that can find the `opencode.json` config (the repo root), or copy

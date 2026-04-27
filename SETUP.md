@@ -23,9 +23,10 @@ models/
 ├── run-qwen-35b-a3b.sh     # Qwen 35B-A3B (MoE) — chat
 ├── serve-qwen-35b-a3b.sh   # Qwen 35B-A3B (MoE) — API
 ├── agent.sh                # run a local agent against a task
-├── agents/                 # agent framework
-│   ├── runner.py           # main agent loop (LLM + tool use)
-│   ├── tools.py            # built-in tools (bash, read, write, grep, etc.)
+├── agents/                 # agent framework + MCP tool server
+│   ├── runner.py           # standalone agent loop (LLM + tool use)
+│   ├── tools.py            # tool definitions for standalone agent
+│   ├── mcp_server.py       # MCP server (exposes tools to OpenCode + Open WebUI)
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
 ├── start.sh                # launch full stack (server + Open WebUI)
@@ -166,27 +167,40 @@ hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-
 ### OpenCode (terminal coding agent)
 
 Configured via `opencode.json`. Connects to the llama.cpp server on port 8080.
-Run `opencode` in any project directory while the server is running.
+MCP tools (bash, read/write files, grep) are available via stdio transport —
+OpenCode launches the MCP server automatically.
 
-Default model: Qwen3.6-27B Q5_K_XL. All three models are available for selection.
+Run `opencode` in any project directory while the server is running.
 
 ### Open WebUI (browser chat interface)
 
 Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
-Connects to the llama.cpp server on port 8080 via `host.docker.internal`.
+Connects to the llama.cpp server on port 8080 via `localhost`.
+
+MCP tools are available via the HTTP MCP server on port 3001 — configure the
+MCP endpoint in Open WebUI's admin settings: `http://localhost:3001/mcp`
 
 - Persistent conversation history
 - File upload and RAG
 - Web search (configurable)
+- MCP tool use (bash, file I/O, grep)
+
+### MCP tool server
+
+Exposes local tools (bash, read_file, write_file, list_files, grep) to any
+MCP-compatible client. Two transport modes:
+
+- **stdio** — used by OpenCode (launched automatically via `opencode.json`)
+- **HTTP** — used by Open WebUI (`http://localhost:3001/mcp`, started by `./start.sh`)
 
 ## 5. Run
 
 ### Full stack
 
 ```bash
-./start.sh                          # 27B Uncensored Q5 server + Open WebUI
+./start.sh                          # 27B Uncensored Q5 + MCP tools + Open WebUI
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
-./stop.sh                           # stop everything
+./stop.sh                           # stop everything (server, MCP, Open WebUI)
 ```
 
 ### Interactive chat (standalone)

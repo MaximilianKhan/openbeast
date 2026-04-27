@@ -2,14 +2,12 @@ services:
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
-    ports:
-      - "3000:8080"
+    network_mode: host
     environment:
-      - OPENAI_API_BASE_URL=http://host.docker.internal:8080/v1
+      - OPENAI_API_BASE_URL=http://localhost:8080/v1
       - OPENAI_API_KEY=not-needed
       - WEBUI_AUTH=false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - PORT=3000
     volumes:
       - open-webui-data:/app/backend/data
     restart: unless-stopped
