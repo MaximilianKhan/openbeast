@@ -161,8 +161,8 @@ hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-
 - **Hybrid architecture:** 30 DeltaNet layers + 10 gated attention layers (40 total)
 - **MoE:** 256 experts, 9 active per token (8 routed + 1 shared). 35B total, 3B active — fast inference.
 - Native max: 262K, extended via YaRN to ~1M
-- Estimated KV cost: **~11 KB/token** (extrapolated from 27B, needs real-world validation)
-- Default **512K** context, ~27.6GB total
+- Real-world KV cost: **~6.3 KB/token** (measured 2026-04-27, much lower than the 27B)
+- Default **512K** context, ~23.1GB total — could safely run at 1M context
 
 ## 4. Frontends
 
@@ -218,7 +218,7 @@ MCP-compatible client.
 ./run-qwen-27b-q4.sh       # Qwen 27B Q4_K_M  (512K ctx, ~25GB VRAM)
 ./run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
 ./run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
-./run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.6GB VRAM)
+./run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~23.1GB VRAM)
 ```
 
 ### OpenAI-compatible API server

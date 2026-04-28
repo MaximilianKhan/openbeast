@@ -6,5 +6,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$SCRIPT_DIR/serve.sh" \
   -m "$SCRIPT_DIR/weights/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" \
+  -a "Qwen 35B MoE" \
   -c 524288 \
   "$@"

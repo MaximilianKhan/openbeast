@@ -78,6 +78,9 @@ else
 fi
 
 # --- 2. Set native function calling for all models ---
+# Wait briefly for Open WebUI to detect models from llama.cpp
+sleep 3
+
 MODELS=$(curl -s -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
   | python3 -c "
 import sys, json
@@ -91,12 +94,15 @@ for m in data.get('data', []):
         print(f'{mid}|{fc}')
 " 2>/dev/null)
 
-while IFS='|' read -r model_id fc_mode; do
-  [[ -z "$model_id" ]] && continue
-  if [[ "$fc_mode" != "native" ]]; then
-    echo "  Setting native function calling for $model_id..."
-    # Update via direct DB since the API model update requires the full model payload
-    docker exec open-webui python3 -c "
+if [[ -z "$MODELS" ]]; then
+  echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
+else
+  while IFS='|' read -r model_id fc_mode; do
+    [[ -z "$model_id" ]] && continue
+    if [[ "$fc_mode" != "native" ]]; then
+      echo "  Setting native function calling for $model_id..."
+      # Update via direct DB since the API model update requires the full model payload
+      docker exec open-webui python3 -c "
 import sqlite3, json
 db = sqlite3.connect('/app/backend/data/webui.db')
 row = db.execute('SELECT params FROM model WHERE id=?', ('$model_id',)).fetchone()
@@ -107,11 +113,22 @@ if row:
     db.commit()
     print('    Done.')
 else:
-    print('    Model not in DB yet (will be configured on next run).')
+    # Model detected by API but not yet in DB — insert it
+    import time
+    params = json.dumps({'function_calling': 'native'})
+    meta = json.dumps({'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}})
+    now = int(time.time())
+    db.execute(
+        'INSERT INTO model (id, user_id, name, meta, params, created_at, updated_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ('$model_id', 'system', '$model_id', meta, params, now, now, 1)
+    )
+    db.commit()
+    print('    Created model entry with native FC.')
 " 2>/dev/null
-  else
-    echo "  $model_id: native function calling already set."
-  fi
-done <<< "$MODELS"
+    else
+      echo "  $model_id: native function calling already set."
+    fi
+  done <<< "$MODELS"
+fi
 
 echo "Open WebUI configured."

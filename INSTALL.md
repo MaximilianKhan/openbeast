@@ -2,7 +2,7 @@
 
 This repo contains scripts for running local LLMs via llama.cpp on NVIDIA GPUs,
 with OpenCode (terminal coding agent) and Open WebUI (browser chat interface) as
-frontends.
+frontends, plus an autonomous agent runner and MCP tool server for tool use.
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up.
@@ -14,6 +14,7 @@ follow the steps below to set them up.
 - `cuda` and `cmake` installed
 - `gcc`/`g++` installed
 - Docker installed (for Open WebUI)
+- Python 3.10+ with `pip`
 
 On Arch Linux:
 
@@ -78,15 +79,24 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir wei
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 ```
 
-### Qwen3.6-35B-A3B -- Q4_K_M (~22GB)
+### Qwen3.6-35B-A3B -- Q4_K_M (~20GB)
 
 ```bash
 hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-dir weights/
 ```
 
-You don't need all three -- download whichever models you plan to use.
+You don't need all of these -- download whichever models you plan to use.
 
-## 3. Install frontends
+## 3. Install Python dependencies
+
+```bash
+pip install --user --break-system-packages -r agents/requirements.txt
+```
+
+This installs the OpenAI SDK, MCP SDK, and MCPO (MCP-to-OpenAPI proxy) needed
+by the agent runner, MCP server, and Open WebUI tool integration.
+
+## 4. Install frontends
 
 ### OpenCode (terminal coding agent)
 
@@ -109,24 +119,23 @@ docker pull ghcr.io/open-webui/open-webui:main
 Open WebUI is configured via `docker-compose.yml` and will be available at
 http://localhost:3000 when the stack is running.
 
-### Agent dependencies
+## 5. Start the stack
 
 ```bash
-pip install --user --break-system-packages -r agents/requirements.txt
-```
-
-This installs the OpenAI SDK and MCP SDK needed by the agent runner and MCP server.
-
-## 4. Start the stack
-
-The easiest way to run everything:
-
-```bash
-./start.sh                          # starts model server + MCP tools + Open WebUI
+./start.sh                          # starts model server + MCPO tools + Open WebUI
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
 ```
 
-This launches the llama.cpp server, MCP tool server (port 3001), and Open WebUI.
+This launches:
+1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
+2. **MCPO proxy** on port 3001 (wraps MCP tools as OpenAPI for Open WebUI)
+3. **Open WebUI** on port 3000 (Docker container)
+4. **configure-webui.sh** (auto-configures tool server + native function calling)
+
+On a fresh install, `configure-webui.sh` runs automatically and sets up:
+- The MCPO tool server as an OpenAPI endpoint in Open WebUI
+- Native function calling mode for all detected models (required for Qwen tool use)
+
 Then use OpenCode separately in any project:
 
 ```bash
@@ -140,23 +149,43 @@ To stop everything:
 ./stop.sh
 ```
 
-## 5. Configure Open WebUI MCP
-
-After the first launch, connect Open WebUI to the MCP tool server:
-
-1. Open http://localhost:3000
-2. Go to Admin Settings > MCP
-3. Add endpoint: `http://localhost:3001/mcp`
-
-This gives Open WebUI access to the local tools (bash, file read/write, grep).
-This only needs to be done once — the setting persists in the Docker volume.
-
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health`
-- **MCP tools:** `curl http://localhost:3001/mcp` (should respond)
+- **MCPO tools:** `curl http://localhost:3001/docs` (should show OpenAPI docs)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **OpenCode:** run `opencode` in a project directory, select the local model
+- **Tool use:** in Open WebUI, enable the "Local Tools (MCPO)" tool in the chat
+  input area (wrench icon), then ask the model to run a command
+
+## Architecture notes
+
+### Why MCPO instead of direct MCP?
+
+Open WebUI (as of v0.9.x) has native MCP Streamable HTTP support, but it has a
+known bug — it sends incorrect HTTP requests to MCP endpoints. MCPO is the
+officially recommended workaround from the Open WebUI team. It wraps our MCP
+server (launched via stdio) as standard OpenAPI endpoints, which Open WebUI
+consumes natively as "External Tools."
+
+### Why native function calling?
+
+Open WebUI has two function calling modes:
+- **Default (prompt-based):** Injects tool descriptions as XML in the prompt and
+  asks the model to output JSON. Breaks with Qwen's thinking mode (`<think>` tags
+  interfere with JSON parsing), causing the UI to hang after tool execution.
+- **Native:** Sends the standard `tools` array in the API request. llama.cpp
+  returns proper `tool_calls` in the response, and tool results go back as
+  `role: tool` messages. This is the correct flow for Qwen on llama.cpp.
+
+`configure-webui.sh` sets native mode automatically for all models.
+
+### Why OpenCode uses stdio, not MCPO
+
+OpenCode runs locally and launches the MCP server as a child process via stdio
+(configured in `opencode.json`). This is simpler and faster than HTTP — no proxy
+needed. MCPO only exists to bridge the gap for Open WebUI's HTTP-based tool
+server integration.
 
 ## Troubleshooting
 
@@ -170,14 +199,27 @@ using the GPU, or the context length is too high. Override with a smaller contex
 ./run-qwen-27b-q4.sh -c 262144
 ```
 
-See `SETUP.md` for VRAM estimates at different context lengths.
+See `SETUP.md` for VRAM estimates at different context lengths. The OS/desktop
+compositor uses ~2GB of GPU VRAM — always leave at least 2GB headroom.
 
 **`hf: command not found`** -- install the Hugging Face CLI (step 2 above).
 Note: `huggingface-cli` is deprecated, use `hf` instead.
 
 **Open WebUI can't connect to model** -- make sure the llama.cpp server is running
-first (`./start.sh` handles this automatically). The Docker container reaches the
-host via `localhost`.
+first (`./start.sh` handles this automatically). The Docker container uses host
+network mode, so it reaches llama.cpp via `localhost:8080`.
+
+**Tools don't work in Open WebUI** -- check these in order:
+1. Is MCPO running? `curl http://localhost:3001/docs` should show the Swagger UI.
+2. Is the tool server configured? Admin Settings > External Tools should show
+   "Local Tools (MCPO)" with URL `http://localhost:3001`.
+3. Is native function calling enabled? Admin Settings > Models > [your model] >
+   Advanced > Function Calling should be set to "Native."
+4. Did you enable tools in the chat? Click the wrench icon in the chat input
+   area and toggle on the Local Tools.
+
+If all else fails, re-run `./configure-webui.sh` and restart Open WebUI
+(`docker restart open-webui`).
 
 **OpenCode shows no local models** -- make sure you're running `opencode` from a
 directory that can find the `opencode.json` config (the repo root), or copy

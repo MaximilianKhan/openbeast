@@ -17,6 +17,7 @@ fi
 
 # Defaults (overridable by model scripts or CLI flags)
 MODEL=""
+ALIAS=""
 CONTEXT=65536
 KV_QUANT="q4_0"
 GPU_LAYERS=99
@@ -28,6 +29,7 @@ EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m)          MODEL="$2";    shift 2 ;;
+    -a|--alias)  ALIAS="$2";    shift 2 ;;
     -c)          CONTEXT="$2";  shift 2 ;;
     -ctk|-ctv)   KV_QUANT="$2"; shift 2 ;;
     -ngl)        GPU_LAYERS="$2"; shift 2 ;;
@@ -42,8 +44,14 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
+ALIAS_ARGS=()
+if [[ -n "$ALIAS" ]]; then
+  ALIAS_ARGS=(-a "$ALIAS")
+fi
+
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
+  "${ALIAS_ARGS[@]}" \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -ctk "$KV_QUANT" \
