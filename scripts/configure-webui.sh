@@ -14,11 +14,12 @@ set -euo pipefail
 WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
 MCPO_URL="${MCPO_URL:-http://localhost:3001}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Load system prompt from system-prompt.md
 SYSTEM_PROMPT=""
-if [[ -f "$SCRIPT_DIR/system-prompt.md" ]]; then
-  SYSTEM_PROMPT=$(cat "$SCRIPT_DIR/system-prompt.md")
+if [[ -f "$REPO_DIR/system-prompt.md" ]]; then
+  SYSTEM_PROMPT=$(cat "$REPO_DIR/system-prompt.md")
 fi
 
 echo "Configuring Open WebUI..."
@@ -76,7 +77,7 @@ if [[ "$HAS_MCPO" != "yes" ]]; then
         "info": {
           "id": "local-tools",
           "name": "Local Tools (MCPO)",
-          "description": "bash, read_file, write_file, list_files, grep"
+          "description": "bash, read/write/edit files, grep, fetch, agent management"
         }
       }]
     }' > /dev/null

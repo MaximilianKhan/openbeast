@@ -197,10 +197,10 @@ propagates to each frontend differently:
   database entry (`meta.system`). Every new chat inherits it automatically.
 - **agent.sh:** `runner.py` reads the file at startup and prepends it to the
   agent's task-specific instructions.
-- **Interactive chat:** Not injected automatically by `run.sh` — pass it
+- **Interactive chat:** Not injected automatically by `scripts/run.sh` — pass it
   manually with `--system-prompt-file system-prompt.md` if needed.
 
-To change the prompt, edit `system-prompt.md` and re-run `./configure-webui.sh`
+To change the prompt, edit `system-prompt.md` and re-run `./scripts/configure-webui.sh`
 (or restart the stack). Changes take effect on the next new chat.
 
 ### Why OpenCode uses stdio, not MCPO
@@ -219,7 +219,7 @@ changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.
 using the GPU, or the context length is too high. Override with a smaller context:
 
 ```bash
-./run-qwen-27b-q4.sh -c 262144
+./scripts/run-qwen-27b-q4.sh -c 262144
 ```
 
 See `SETUP.md` for VRAM estimates at different context lengths. The OS/desktop
@@ -241,7 +241,7 @@ network mode, so it reaches llama.cpp via `localhost:8080`.
 4. Did you enable tools in the chat? Click the wrench icon in the chat input
    area and toggle on the Local Tools.
 
-If all else fails, re-run `./configure-webui.sh` and restart Open WebUI
+If all else fails, re-run `./scripts/configure-webui.sh` and restart Open WebUI
 (`docker restart open-webui`).
 
 **OpenCode shows no local models** -- make sure you're running `opencode` from a

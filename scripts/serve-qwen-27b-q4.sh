@@ -4,8 +4,9 @@
 # 7 parallel slots (unified KV — no extra VRAM, ~74K context per slot).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 exec "$SCRIPT_DIR/serve.sh" \
-  -m "$SCRIPT_DIR/weights/Qwen3.6-27B-Q4_K_M.gguf" \
+  -m "$REPO_DIR/weights/Qwen3.6-27B-Q4_K_M.gguf" \
   -a "Qwen 27B Q4" \
   -c 524288 \
   "$@"

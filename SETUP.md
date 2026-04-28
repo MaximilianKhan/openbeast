@@ -12,26 +12,30 @@ models/
 │   ├── Qwen3.6-27B-UD-Q5_K_XL.gguf
 │   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
 │   └── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
-├── run.sh                  # generic interactive chat launcher
-├── serve.sh                # generic OpenAI-compatible API server
-├── run-qwen-27b-q4.sh      # Qwen 27B Q4_K_M — chat
-├── serve-qwen-27b-q4.sh    # Qwen 27B Q4_K_M — API
-├── run-qwen-27b-q5.sh      # Qwen 27B Q5_K_XL — chat
-├── serve-qwen-27b-q5.sh    # Qwen 27B Q5_K_XL — API
-├── run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P — chat
-├── serve-qwen-27b-uncensored-q5.sh # Qwen 27B Uncensored Q5_K_P — API
-├── run-qwen-35b-a3b.sh     # Qwen 35B-A3B (MoE) — chat
-├── serve-qwen-35b-a3b.sh   # Qwen 35B-A3B (MoE) — API
+├── start.sh                # launch full stack (server + MCPO + Open WebUI)
+├── stop.sh                 # stop full stack
 ├── agent.sh                # run a local agent against a task
+├── scripts/                # server, chat, and config scripts
+│   ├── serve.sh            # generic OpenAI-compatible API server
+│   ├── run.sh              # generic interactive chat launcher
+│   ├── configure-webui.sh  # auto-configure Open WebUI
+│   ├── serve-qwen-27b-q4.sh
+│   ├── serve-qwen-27b-q5.sh
+│   ├── serve-qwen-27b-uncensored-q5.sh
+│   ├── serve-qwen-35b-a3b.sh
+│   ├── run-qwen-27b-q4.sh
+│   ├── run-qwen-27b-q5.sh
+│   ├── run-qwen-27b-uncensored-q5.sh
+│   └── run-qwen-35b-a3b.sh
 ├── agents/                 # agent framework + MCP tool server
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
 │   ├── tools.py            # tool definitions for standalone agent
 │   ├── mcp_server.py       # MCP server (tools + long-running agent management)
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
-├── start.sh                # launch full stack (server + MCPO + Open WebUI)
-├── stop.sh                 # stop full stack
-├── configure-webui.sh      # auto-configure Open WebUI (tool server + native FC + system prompt)
+├── tests/                  # test suite
+│   ├── run_tests.sh        # run all tests
+│   └── test_tools.py       # tool unit tests
 ├── system-prompt.md        # system prompt ("soul file") applied to all models
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
@@ -257,19 +261,19 @@ on disk (no live process control, but full history is available).
 ### Interactive chat (standalone)
 
 ```bash
-./run-qwen-27b-q4.sh       # Qwen 27B Q4_K_M  (512K ctx, ~25GB VRAM)
-./run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
-./run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
-./run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~23.1GB VRAM)
+./scripts/run-qwen-27b-q4.sh       # Qwen 27B Q4_K_M  (512K ctx, ~25GB VRAM)
+./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
+./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
+./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~23.1GB VRAM)
 ```
 
 ### OpenAI-compatible API server
 
 ```bash
-./serve-qwen-27b-q4.sh     # http://localhost:8080/v1/chat/completions
-./serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
-./serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
-./serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwen-27b-q4.sh     # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
 ```
 
 ### Agent (autonomous long-running tasks)
@@ -293,10 +297,10 @@ agent and checks on it with `check_agent`.
 All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to llama.cpp:
 
 ```bash
-./run-qwen-27b-q5.sh -c 524288       # override context length
-./serve-qwen-35b-a3b.sh -p 9090      # override port
-./serve-qwen-27b-q4.sh -np 14        # override parallel slots (default 7)
-./run.sh -m weights/some-model.gguf   # use generic script directly
+./scripts/run-qwen-27b-q5.sh -c 524288       # override context length
+./scripts/serve-qwen-35b-a3b.sh -p 9090      # override port
+./scripts/serve-qwen-27b-q4.sh -np 14        # override parallel slots (default 7)
+./scripts/run.sh -m weights/some-model.gguf   # use generic script directly
 ```
 
 ### Parallel request handling
@@ -314,8 +318,8 @@ The server runs **7 parallel slots** by default with **unified KV cache** and
 Override with `-np` for more or fewer slots:
 
 ```bash
-./serve-qwen-35b-a3b.sh -np 14   # 14 slots (~36K context per slot)
-./serve-qwen-27b-q4.sh -np 3     # 3 slots (~170K context per slot)
+./scripts/serve-qwen-35b-a3b.sh -np 14   # 14 slots (~36K context per slot)
+./scripts/serve-qwen-27b-q4.sh -np 3     # 3 slots (~170K context per slot)
 ```
 
 Monitor active slots at `http://localhost:8080/slots` and KV cache usage at

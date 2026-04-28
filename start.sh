@@ -16,8 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SERVE_SCRIPT="${1:-serve-qwen-27b-uncensored-q5.sh}"
 
-if [[ ! -x "$SCRIPT_DIR/$SERVE_SCRIPT" ]]; then
-  echo "Error: $SERVE_SCRIPT not found or not executable" >&2
+if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
+  echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
   exit 1
 fi
 
@@ -35,7 +35,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
-"$SCRIPT_DIR/$SERVE_SCRIPT" &
+"$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
 LLAMA_PID=$!
 
 echo "Waiting for llama.cpp server to be ready..."
@@ -54,7 +54,7 @@ echo "Starting Open WebUI..."
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
 
 # Configure Open WebUI (tool server + native function calling) in background
-"$SCRIPT_DIR/configure-webui.sh" &
+"$SCRIPT_DIR/scripts/configure-webui.sh" &
 
 echo ""
 echo "Stack is running:"

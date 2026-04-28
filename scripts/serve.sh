@@ -7,7 +7,8 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LLAMA_SERVER="$SCRIPT_DIR/llama.cpp/build/bin/llama-server"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LLAMA_SERVER="$REPO_DIR/llama.cpp/build/bin/llama-server"
 
 if [[ ! -x "$LLAMA_SERVER" ]]; then
   echo "Error: llama-server not found at $LLAMA_SERVER" >&2

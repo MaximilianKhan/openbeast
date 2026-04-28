@@ -10,12 +10,12 @@
 # The llama.cpp server must be running (./start.sh or any serve-*.sh script).
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Install deps if needed
 if ! python3 -c "import openai" 2>/dev/null; then
   echo "Installing agent dependencies..."
-  pip install --user --break-system-packages -q -r "$SCRIPT_DIR/agents/requirements.txt"
+  pip install --user --break-system-packages -q -r "$REPO_DIR/agents/requirements.txt"
 fi
 
-exec python3 "$SCRIPT_DIR/agents/runner.py" "$@"
+exec python3 "$REPO_DIR/agents/runner.py" "$@"
