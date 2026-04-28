@@ -43,8 +43,9 @@ if os.path.exists(_SOUL_FILE):
     with open(_SOUL_FILE) as f:
         _SOUL_PROMPT = f.read().strip() + "\n\n"
 
-SYSTEM_PROMPT = _SOUL_PROMPT + """You are a capable autonomous agent running on a local machine.
-You have tools to run shell commands, read/write files, search code, and list directories.
+_AGENT_INSTRUCTIONS = """You are a capable autonomous agent running on a local machine.
+You have tools to run shell commands, read/write/edit files, search code, list directories,
+and fetch content from URLs.
 
 Your job is to complete the task given to you. Work step by step:
 1. Understand the task — read relevant files, explore the codebase if needed.
@@ -56,14 +57,78 @@ Your job is to complete the task given to you. Work step by step:
 Guidelines:
 - Be thorough but efficient. Don't repeat failed approaches without changing something.
 - If a command fails, read the error and adapt.
+- Prefer edit_file over write_file when modifying existing code — it's safer and more precise.
 - If you're unsure about the codebase structure, explore it with list_files and grep.
+- Use fetch to look up documentation or API references when needed.
 - Test your changes when possible (run tests, build, etc).
 - When the task is complete, call the task_done tool. Do not just say you're done — call the tool.
 """
 
+
+def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
+    """Assemble the full system prompt with optional context and budget info."""
+    parts = []
+    if _SOUL_PROMPT:
+        parts.append(_SOUL_PROMPT)
+    parts.append(_AGENT_INSTRUCTIONS)
+    if context_budget > 0:
+        parts.append(
+            f"Context budget: you have approximately {context_budget:,} tokens of context. "
+            f"Be mindful of this limit — avoid reading very large files in full when "
+            f"offset/limit or grep can target what you need.\n"
+        )
+    if context:
+        parts.append(
+            f"Background context from the caller:\n"
+            f"---\n{context}\n---\n"
+        )
+    return "\n".join(parts)
+
+
+SYSTEM_PROMPT = build_system_prompt()
+
 # ---------------------------------------------------------------------------
 # Agent loop
 # ---------------------------------------------------------------------------
+
+def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
+    """Reconstruct the conversation from a JSONL log for resumption."""
+    messages = [{"role": "system", "content": system_prompt}]
+    with open(log_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            etype = event.get("type")
+            if etype == "start":
+                messages.append({"role": "user", "content": event.get("task", "")})
+            elif etype == "assistant":
+                # Only add standalone assistant messages (no tool calls)
+                # Tool-calling assistant messages are logged as part of tool_call events
+                content = event.get("content", "")
+                if content and not any(
+                    m.get("role") == "assistant" and m.get("content") == content
+                    for m in messages[-3:]
+                ):
+                    messages.append({"role": "assistant", "content": content})
+            elif etype == "tool_call":
+                # We can't fully reconstruct tool_call_id-linked messages without
+                # more log detail, but we can add the tool result as context
+                name = event.get("name", "")
+                result = event.get("result", "")
+                if name and result:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Previous tool call: {name}] Result:\n{result[:2000]}",
+                    })
+
+    return messages
+
 
 def run_agent(
     task: str,
@@ -73,7 +138,10 @@ def run_agent(
     workdir: str | None = None,
     log_dir: str = DEFAULT_LOG_DIR,
     log_file: str | None = None,
-    system_prompt: str = SYSTEM_PROMPT,
+    system_prompt: str | None = None,
+    context: str = "",
+    context_budget: int = 0,
+    resume_from: str | None = None,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
 
@@ -81,12 +149,27 @@ def run_agent(
         workdir = os.path.expanduser(workdir)
         os.environ["AGENT_WORKDIR"] = workdir
 
+    # Build system prompt: explicit override > dynamic build > default
+    if system_prompt is None:
+        system_prompt = build_system_prompt(context=context, context_budget=context_budget)
+
     client = OpenAI(base_url=base_url, api_key="not-needed")
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": task},
-    ]
+    # Resume from existing log or start fresh
+    if resume_from and os.path.isfile(resume_from):
+        messages = _rebuild_messages_from_log(resume_from, system_prompt)
+        messages.append({
+            "role": "user",
+            "content": "You are resuming a previous run that was interrupted. "
+                       "Review the context above and continue working on the task. "
+                       "If the task is already complete, call task_done.",
+        })
+        print(f"Resuming from {resume_from} ({len(messages)} messages reconstructed)")
+    else:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
 
     # Set up logging
     if log_file:
@@ -181,10 +264,14 @@ def run_agent(
                     print(f"  > read: {fn_args.get('path', '')}")
                 elif fn_name == "write_file":
                     print(f"  > write: {fn_args.get('path', '')}")
+                elif fn_name == "edit_file":
+                    print(f"  > edit: {fn_args.get('path', '')}")
                 elif fn_name == "grep":
                     print(f"  > grep: {fn_args.get('pattern', '')} in {fn_args.get('path', '.')}")
                 elif fn_name == "list_files":
                     print(f"  > ls: {fn_args.get('directory', '.')} {fn_args.get('pattern', '')}")
+                elif fn_name == "fetch":
+                    print(f"  > fetch: {fn_args.get('url', '')[:80]}")
                 elif fn_name == "task_done":
                     print(f"  > task_done")
 
@@ -237,8 +324,12 @@ def main():
     parser.add_argument("--workdir", "-w", help="Working directory for file/shell operations")
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR, help=f"Log directory (default: {DEFAULT_LOG_DIR})")
     parser.add_argument("--log-file", help="Specific log file path (overrides auto-generated name)")
-    parser.add_argument("--system-prompt", help="Override the system prompt")
-    parser.add_argument("--system-prompt-file", help="Read system prompt from a file")
+    parser.add_argument("--context", help="Background context to include in the system prompt")
+    parser.add_argument("--context-file", help="Read background context from a file")
+    parser.add_argument("--context-budget", type=int, default=0, help="Approximate context token budget (informs the agent to be mindful of context)")
+    parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
+    parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
+    parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")
 
     args = parser.parse_args()
 
@@ -251,11 +342,16 @@ def main():
         parser.error("Provide a task as arguments or via --task-file")
 
     # Resolve system prompt
-    system_prompt = SYSTEM_PROMPT
+    system_prompt = None  # None = use dynamic build_system_prompt()
     if args.system_prompt:
         system_prompt = args.system_prompt
     elif args.system_prompt_file:
         system_prompt = Path(args.system_prompt_file).read_text()
+
+    # Resolve context
+    context = args.context or ""
+    if args.context_file:
+        context = Path(args.context_file).read_text()
 
     run_agent(
         task=task,
@@ -266,6 +362,9 @@ def main():
         log_dir=args.log_dir,
         log_file=args.log_file,
         system_prompt=system_prompt,
+        context=context,
+        context_budget=args.context_budget,
+        resume_from=args.resume,
     )
 
 

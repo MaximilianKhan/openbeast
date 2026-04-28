@@ -220,8 +220,8 @@ restart the stack with `./start.sh`). The new prompt takes effect on the next ch
 ### MCP tool server + MCPO proxy
 
 Exposes local tools (bash, read_file, write_file, edit_file, list_files, grep,
-fetch) and long-running agent management (start_agent, check_agent, list_agents,
-stop_agent) to any MCP-compatible client.
+fetch, web_search) and long-running agent management (start_agent, check_agent,
+tail_agent, list_agents, stop_agent) to any MCP-compatible client.
 
 - **stdio** — used by OpenCode (launched automatically via `opencode.json`)
 - **MCPO** — used by Open WebUI (`http://localhost:3001`, started by `./start.sh`).
@@ -234,12 +234,17 @@ The MCP server can spawn autonomous background agents that iterate independently
 using `runner.py`. The model in a chat session can dispatch complex tasks to an
 agent, continue the conversation, and check back for results later.
 
-- **`start_agent(task, workdir, max_iter)`** — spawn a background agent, returns
-  an agent ID immediately (non-blocking)
+- **`start_agent(task, workdir, max_iter, context)`** — spawn a background agent
+  with optional context briefing, returns an agent ID immediately (non-blocking)
 - **`check_agent(agent_id)`** — returns status, iteration count, recent tool calls,
   last model reasoning, and the final summary if complete
+- **`tail_agent(agent_id, lines)`** — raw JSONL log tail for detailed debugging
 - **`list_agents()`** — tabular overview of all tracked agents
 - **`stop_agent(agent_id)`** — graceful SIGTERM, escalates to SIGKILL after 10s
+
+Agents are context-aware: they receive an approximate token budget (~73K per slot)
+and briefing context from the spawning model. Failed agents can be resumed from
+their JSONL log with `./agent.sh --resume agents/logs/agent-{id}.jsonl "continue"`.
 
 Agents run as detached processes in their own process group. The MCP server
 cleans up any running agents on shutdown via `atexit`. Agent logs are written to
@@ -253,10 +258,19 @@ on disk (no live process control, but full history is available).
 ### Full stack
 
 ```bash
-./start.sh                          # 27B Uncensored Q5 + MCP tools + Open WebUI
+./start.sh                          # 27B Uncensored Q5 + MCP tools + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
-./stop.sh                           # stop everything (server, MCP, Open WebUI)
+./stop.sh                           # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
+
+### Web search (SearXNG)
+
+Local web search is provided by SearXNG, running as a Docker container on port 8888.
+It's included in `docker-compose.yml` and starts automatically with `./start.sh`.
+No API keys needed — SearXNG aggregates results from public search engines.
+
+The `web_search` MCP tool uses SearXNG to search the web and return titles, URLs,
+and snippets. Models can also use `fetch` to read full page content from search results.
 
 ### Interactive chat (standalone)
 

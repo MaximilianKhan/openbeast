@@ -7,12 +7,15 @@ Each tool is defined as:
 """
 
 import html as html_module
+import json
 import os
 import re
+import shlex
 import subprocess
 import glob as glob_module
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -89,9 +92,9 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
 def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
     """Search file contents for a regex pattern."""
     try:
-        cmd = f"grep -rn --include='*' -E {repr(pattern)} {repr(path)}"
+        cmd = f"grep -rn --include='*' -E {shlex.quote(pattern)} {shlex.quote(path)}"
         if file_glob:
-            cmd = f"grep -rn --include={repr(file_glob)} -E {repr(pattern)} {repr(path)}"
+            cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
         result = subprocess.run(
             cmd,
             shell=True,
@@ -209,6 +212,48 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         return f"URL error: {e.reason}"
     except Exception as e:
         return f"Error: {e}"
+
+
+def web_search(query: str, max_results: int = 10) -> str:
+    """Search the web using the local SearXNG instance."""
+    searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
+    try:
+        params = urllib.parse.urlencode({
+            "q": query,
+            "format": "json",
+            "categories": "general",
+        })
+        url = f"{searxng_url}/search?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "local-agent/1.0", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError:
+        return (
+            "Error: SearXNG is not running. Start it with:\n"
+            "  docker run -d -p 8888:8080 -e SEARXNG_BASE_URL=http://localhost:8888/ searxng/searxng\n"
+            "Or set SEARXNG_URL env var if running on a different port."
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
+    results = data.get("results", [])[:max_results]
+    if not results:
+        return f"No results for: {query}"
+
+    lines = [f"Web search: {query}\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "(no title)")
+        url = r.get("url", "")
+        snippet = r.get("content", "")[:200]
+        lines.append(f"{i}. {title}")
+        lines.append(f"   {url}")
+        if snippet:
+            lines.append(f"   {snippet}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def task_done(summary: str) -> str:
@@ -332,6 +377,21 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "web_search",
+            "description": "Search the web using the local SearXNG instance. Returns titles, URLs, and snippets. Requires SearXNG running on port 8888.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query string"},
+                    "max_results": {"type": "integer", "description": "Maximum results to return (default 10)", "default": 10},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "task_done",
             "description": "Call this when the task is fully complete. Provide a summary of what was accomplished.",
             "parameters": {
@@ -353,5 +413,6 @@ TOOL_HANDLERS = {
     "list_files": lambda args: list_files(args.get("directory", "."), args.get("pattern", "**/*")),
     "grep": lambda args: grep(args["pattern"], args.get("path", "."), args.get("file_glob", "")),
     "fetch": lambda args: fetch(args["url"], args.get("max_length", 50_000)),
+    "web_search": lambda args: web_search(args["query"], args.get("max_results", 10)),
     "task_done": lambda args: task_done(args["summary"]),
 }

@@ -11,10 +11,12 @@ Tools:
   - list_files: glob-based file discovery
   - grep: regex search across files
   - fetch: retrieve content from URLs (HTML → text, JSON, plain text)
+  - web_search: search the web via local SearXNG instance
 
 Agent management (long-running autonomous agents):
-  - start_agent: spawn a background agent that works independently on a task
+  - start_agent: spawn a background agent with optional context briefing
   - check_agent: monitor progress, view recent activity and results
+  - tail_agent: raw log tail for detailed debugging
   - list_agents: see all tracked agents and their status
   - stop_agent: terminate a running agent
 
@@ -33,12 +35,14 @@ import html as html_module
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import glob as glob_module
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -136,9 +140,9 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
     """Search file contents for a regex pattern. Returns matching lines with
     file paths and line numbers."""
     try:
-        cmd = f"grep -rn --include='*' -E {repr(pattern)} {repr(path)}"
+        cmd = f"grep -rn --include='*' -E {shlex.quote(pattern)} {shlex.quote(path)}"
         if file_glob:
-            cmd = f"grep -rn --include={repr(file_glob)} -E {repr(pattern)} {repr(path)}"
+            cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
         result = subprocess.run(
             cmd,
             shell=True,
@@ -481,7 +485,7 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
 
 
 @mcp.tool()
-def start_agent(task: str, workdir: str = ".", max_iter: int = 200) -> str:
+def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "") -> str:
     """Start a long-running autonomous agent that works on a task in the background.
 
     The agent loops independently — reading files, running commands, writing code,
@@ -492,6 +496,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200) -> str:
         task: What the agent should accomplish. Be specific and detailed.
         workdir: Working directory for file and shell operations.
         max_iter: Maximum iterations before the agent stops (default 200).
+        context: Background context to brief the agent (what you know, what you've
+                 tried, relevant files). Helps the agent work more effectively.
 
     Returns:
         Agent ID for use with check_agent, list_agents, and stop_agent.
@@ -507,13 +513,19 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200) -> str:
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
     os.makedirs(_LOG_DIR, exist_ok=True)
 
+    # Estimate per-slot context budget (~73K tokens at 512K/7 slots, rough)
+    context_budget = 73_000
+
     cmd = [
         sys.executable, _RUNNER_PATH,
         "--log-file", log_path,
         "--max-iter", str(max_iter),
         "--workdir", workdir,
-        task,
+        "--context-budget", str(context_budget),
     ]
+    if context:
+        cmd.extend(["--context", context])
+    cmd.append(task)
 
     try:
         process = subprocess.Popen(
@@ -643,6 +655,95 @@ def stop_agent(agent_id: str) -> str:
             return f"Agent {agent_id} force-killed after timeout (PID {record.pid})."
         except Exception as e:
             return f"Agent {agent_id}: escalated to SIGKILL but cleanup failed: {e}"
+
+
+@mcp.tool()
+def tail_agent(agent_id: str, lines: int = 30) -> str:
+    """Stream the raw tail of an agent's log — recent events in JSONL format.
+
+    More detailed than check_agent: returns full tool call results, complete model
+    output, and raw event data. Useful for debugging or understanding exactly what
+    an agent is doing.
+
+    Args:
+        agent_id: The ID returned by start_agent.
+        lines: Number of recent log events to return (default 30).
+    """
+    record = _agents.get(agent_id)
+    log_path = record.log_path if record else os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
+
+    if not os.path.exists(log_path):
+        return f"Error: no log file for agent '{agent_id}'"
+
+    try:
+        with open(log_path, "r") as f:
+            all_lines = f.readlines()
+    except Exception as e:
+        return f"Error reading log: {e}"
+
+    tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+    output = "".join(tail)
+
+    # Cap output to avoid flooding context
+    if len(output) > 50_000:
+        output = output[-50_000:]
+        output = "[...truncated...]\n" + output[output.index("\n") + 1:]
+
+    header = f"Agent {agent_id} — last {len(tail)} of {len(all_lines)} events:\n\n"
+    return header + output
+
+
+@mcp.tool()
+def web_search(query: str, max_results: int = 10) -> str:
+    """Search the web using the local SearXNG instance.
+
+    Returns titles, URLs, and snippets for the top results. Requires SearXNG
+    to be running (docker compose service or standalone on port 8888).
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return (default 10).
+    """
+    searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
+
+    try:
+        params = urllib.parse.urlencode({
+            "q": query,
+            "format": "json",
+            "categories": "general",
+        })
+        url = f"{searxng_url}/search?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "local-agent/1.0", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError:
+        return (
+            "Error: SearXNG is not running. Start it with:\n"
+            "  docker run -d -p 8888:8080 -e SEARXNG_BASE_URL=http://localhost:8888/ searxng/searxng\n"
+            "Or set SEARXNG_URL env var if running on a different port."
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
+    results = data.get("results", [])[:max_results]
+    if not results:
+        return f"No results for: {query}"
+
+    lines = [f"Web search: {query}\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "(no title)")
+        url = r.get("url", "")
+        snippet = r.get("content", "")[:200]
+        lines.append(f"{i}. {title}")
+        lines.append(f"   {url}")
+        if snippet:
+            lines.append(f"   {snippet}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -12,5 +12,14 @@ services:
       - open-webui-data:/app/backend/data
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng
+    container_name: searxng
+    network_mode: host
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+      - BIND_ADDRESS=0.0.0.0:8888
+    restart: unless-stopped
+
 volumes:
   open-webui-data:

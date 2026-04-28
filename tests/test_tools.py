@@ -30,6 +30,7 @@ from tools import (
     list_files,
     grep,
     fetch,
+    web_search,
     task_done,
 )
 
@@ -263,7 +264,7 @@ class TestGrep(unittest.TestCase):
         self.assertIn("hello", result)
 
     def test_regex_pattern(self):
-        result = grep("def [a-z]+", self.tmpdir)
+        result = grep(r"def \w+", self.tmpdir)
         self.assertIn("def hello", result)
         self.assertIn("def goodbye", result)
 
@@ -305,6 +306,14 @@ class TestFetch(unittest.TestCase):
         self.assertIn("error", result.lower())
 
 
+class TestWebSearch(unittest.TestCase):
+    def test_searxng_not_running(self):
+        # SearXNG is not running in test env — should get a helpful error
+        result = web_search("test query")
+        self.assertIn("SearXNG", result)
+        self.assertIn("not running", result.lower())
+
+
 class TestTaskDone(unittest.TestCase):
     def test_returns_summary(self):
         result = task_done("completed the refactoring")
@@ -334,8 +343,9 @@ class TestMCPServerTools(unittest.TestCase):
 
         expected = {
             "bash", "read_file", "write_file", "edit_file",
-            "list_files", "grep", "fetch",
-            "start_agent", "check_agent", "list_agents", "stop_agent",
+            "list_files", "grep", "fetch", "web_search",
+            "start_agent", "check_agent", "tail_agent",
+            "list_agents", "stop_agent",
         }
         # Only check if we could inspect the internals
         if registered:
