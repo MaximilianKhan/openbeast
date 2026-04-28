@@ -161,6 +161,9 @@ To stop everything:
   input area (wrench icon), then ask the model to run a command
 - **Long-running agents:** ask the model to use `start_agent` to spawn a
   background agent, then `check_agent` to monitor it
+- **Health check:** `./scripts/healthcheck.sh` (checks all services + GPU VRAM)
+- **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
+- **Eval harness:** `python3 evals/run_eval.py` (benchmark model on 10 coding tasks)
 
 ## Architecture notes
 
