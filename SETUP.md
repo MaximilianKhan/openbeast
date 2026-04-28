@@ -29,8 +29,9 @@ models/
 │   ├── mcp_server.py       # MCP server (exposes tools to OpenCode + Open WebUI)
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
-├── start.sh                # launch full stack (server + Open WebUI)
+├── start.sh                # launch full stack (server + MCPO + Open WebUI)
 ├── stop.sh                 # stop full stack
+├── configure-webui.sh      # auto-configure Open WebUI (tool server + native FC)
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
 ├── SETUP.md
@@ -76,18 +77,19 @@ measurements.
 | **416K** (default) | 21 GB | 7.3 GB | **28.3 GB** | ~2 GB (after OS) |
 | 512K    | 21 GB | 9.0 GB   | **30.0 GB** | OOM (OS VRAM) |
 
-### Qwen3.6-35B-A3B — 40 layers, estimated KV cost: ~11 KB/token (needs validation)
+### Qwen3.6-35B-A3B — 40 layers, real-world KV cost: ~6.3 KB/token
 
 | Context | Model | KV Cache | **Total** | Headroom |
 |---------|-------|----------|-----------|----------|
-| 64K     | 22 GB | 0.7 GB   | **22.7 GB** | 9.3 GB  |
-| 262K    | 22 GB | 2.8 GB   | **24.8 GB** | 7.2 GB  |
-| **512K** (default) | 22 GB | 5.6 GB | **27.6 GB** | 4.4 GB |
-| 768K    | 22 GB | 8.4 GB   | **30.4 GB** | 1.6 GB  |
+| 64K     | 20 GB | 0.4 GB   | **20.4 GB** | 11.6 GB |
+| 262K    | 20 GB | 1.6 GB   | **21.6 GB** | 10.4 GB |
+| **512K** (default) | 20 GB | 3.1 GB | **23.1 GB** | 8.9 GB |
+| 768K    | 20 GB | 4.7 GB   | **24.7 GB** | 7.3 GB  |
+| 1M      | 20 GB | 6.3 GB   | **26.3 GB** | 5.7 GB  |
 
-> **Note:** The 35B-A3B KV estimate (~11 KB/token) is extrapolated from the 27B's
-> measured 18 KB/token, scaled by layer count (40/64). This needs real-world
-> validation — actual allocation may differ.
+> **Note:** Real-world measurement (2026-04-27): model=20,583 MiB, KV at 512K=3,131 MiB,
+> compute=1,580 MiB. The MoE 35B-A3B is significantly more KV-efficient than the
+> dense 27B (~6.3 vs ~18 KB/token). Could safely run at 1M context.
 
 ## 1. System packages
 
@@ -177,21 +179,28 @@ Run `opencode` in any project directory while the server is running.
 Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
 Connects to the llama.cpp server on port 8080 via `localhost`.
 
-MCP tools are available via the HTTP MCP server on port 3001 — configure the
-MCP endpoint in Open WebUI's admin settings: `http://localhost:3001/mcp`
+Tools are exposed via **MCPO** (MCP-to-OpenAPI proxy) on port 3001. Open WebUI's
+native MCP (Streamable HTTP) support has a known bug, so we use MCPO to wrap
+our MCP server as OpenAPI endpoints that Open WebUI consumes natively.
 
-- Persistent conversation history
+**Setup:** Automatic — `./start.sh` runs `configure-webui.sh` which registers the
+MCPO tool server and sets native function calling for all detected models.
+On a fresh install, the first `./start.sh` handles everything.
+
+- Persistent conversation history (Docker named volume, survives stop/start)
 - File upload and RAG
 - Web search (configurable)
-- MCP tool use (bash, file I/O, grep)
+- Tool use via MCPO (bash, file I/O, grep)
 
-### MCP tool server
+### MCP tool server + MCPO proxy
 
 Exposes local tools (bash, read_file, write_file, list_files, grep) to any
-MCP-compatible client. Two transport modes:
+MCP-compatible client.
 
 - **stdio** — used by OpenCode (launched automatically via `opencode.json`)
-- **HTTP** — used by Open WebUI (`http://localhost:3001/mcp`, started by `./start.sh`)
+- **MCPO** — used by Open WebUI (`http://localhost:3001`, started by `./start.sh`).
+  MCPO wraps the MCP server (via stdio) as OpenAPI endpoints. This works around
+  Open WebUI's broken native MCP Streamable HTTP support.
 
 ## 5. Run
 
