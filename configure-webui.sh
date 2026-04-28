@@ -140,8 +140,8 @@ if row:
         params['function_calling'] = 'native'
         changed = True
 
-    if system_prompt and meta.get('system') != system_prompt:
-        meta['system'] = system_prompt
+    if system_prompt and params.get('system') != system_prompt:
+        params['system'] = system_prompt
         changed = True
 
     if changed:
@@ -155,7 +155,9 @@ else:
     params = json.dumps({'function_calling': 'native'})
     meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}}
     if system_prompt:
-        meta_dict['system'] = system_prompt
+        params_dict = json.loads(params)
+        params_dict['system'] = system_prompt
+        params = json.dumps(params_dict)
     meta = json.dumps(meta_dict)
     now = int(time.time())
     db.execute(
