@@ -122,8 +122,10 @@ http://localhost:3000 when the stack is running.
 
 ## 5. Start the stack
 
+The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
+
 ```bash
-./start.sh                          # starts model server + MCPO tools + Open WebUI
+./start.sh                          # default model + MCPO tools + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
 ```
 

@@ -272,8 +272,10 @@ on disk (no live process control, but full history is available).
 
 ### Full stack
 
+The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
+
 ```bash
-./start.sh                          # 27B Uncensored Q5 + MCP tools + Open WebUI + SearXNG
+./start.sh                          # default model + MCP tools + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q4.sh     # use a different model
 ./stop.sh                           # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
