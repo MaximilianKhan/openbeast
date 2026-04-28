@@ -136,7 +136,7 @@ This launches:
 On a fresh install, `configure-webui.sh` runs automatically and sets up:
 - The MCPO tool server as an OpenAPI endpoint in Open WebUI
 - Native function calling mode for all detected models (required for Qwen tool use)
-- The system prompt from `system-prompt.md` (applied to all models)
+- The system prompt from `system-prompt.md` + `system-prompt-tools.md` (applied to all models)
 
 Then use OpenCode separately in any project:
 
@@ -189,22 +189,32 @@ Open WebUI has two function calling modes:
 
 ### System prompt (soul file)
 
-`system-prompt.md` is the shared system prompt applied to all models across
-all frontends. It defines the model's persona, communication style, and
-operating principles — the local equivalent of Claude's CLAUDE.md.
+The system prompt is split into two files to support different frontends cleanly:
 
-The file lives in the repo root so it's version-controlled and portable. It
-propagates to each frontend differently:
+- **`system-prompt.md`** — Persona and operating principles (the "soul"). Applied
+  to all frontends. Contains no tool references.
+- **`system-prompt-tools.md`** — Tool-use guidance for our MCP tools. Only used
+  by Open WebUI, where the model needs to know about `edit_file`, `web_search`,
+  `start_agent`, etc. by name.
 
-- **Open WebUI:** `configure-webui.sh` writes the contents into each model's
-  database entry (`meta.system`). Every new chat inherits it automatically.
-- **agent.sh:** `runner.py` reads the file at startup and prepends it to the
-  agent's task-specific instructions.
-- **Interactive chat:** Not injected automatically by `scripts/run.sh` — pass it
-  manually with `--system-prompt-file system-prompt.md` if needed.
+OpenCode has its own built-in tool system with different names (`edit` vs
+`edit_file`, `view` vs `read_file`), so it only gets the soul file — no
+conflicting tool descriptions.
 
-To change the prompt, edit `system-prompt.md` and re-run `./scripts/configure-webui.sh`
-(or restart the stack). Changes take effect on the next new chat.
+How each frontend uses them:
+
+- **Open WebUI:** `configure-webui.sh` concatenates both files and writes the
+  result into each model's database entry. Every new chat inherits it.
+- **OpenCode:** Reads `system-prompt.md` only (via global config). OpenCode
+  injects its own tool schemas separately.
+- **agent.sh / runner.py:** Reads `system-prompt.md` and appends its own
+  inline agent instructions with tool guidance.
+- **Interactive chat:** Not injected automatically — pass it manually with
+  `--system-prompt-file system-prompt.md` if desired.
+
+To change the prompt, edit `system-prompt.md` and/or `system-prompt-tools.md`
+and re-run `./scripts/configure-webui.sh` (or restart the stack). Changes take
+effect on the next new chat.
 
 ### Why OpenCode uses stdio, not MCPO
 

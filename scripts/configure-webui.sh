@@ -16,10 +16,13 @@ MCPO_URL="${MCPO_URL:-http://localhost:3001}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Load system prompt from system-prompt.md
+# Load system prompt: soul file + tool guidance (Open WebUI needs both)
 SYSTEM_PROMPT=""
 if [[ -f "$REPO_DIR/system-prompt.md" ]]; then
   SYSTEM_PROMPT=$(cat "$REPO_DIR/system-prompt.md")
+fi
+if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
+  SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
 fi
 
 echo "Configuring Open WebUI..."

@@ -42,7 +42,8 @@ models/
 │   ├── run_eval.py         # eval runner
 │   ├── tasks/              # task definitions (JSON)
 │   └── results/            # eval results (JSON, gitignored)
-├── system-prompt.md        # system prompt ("soul file") applied to all models
+├── system-prompt.md        # soul file — persona and principles (all frontends)
+├── system-prompt-tools.md  # tool-use guidance (Open WebUI only)
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
 ├── SETUP.md
@@ -205,23 +206,31 @@ On a fresh install, the first `./start.sh` handles everything.
 
 ### System prompt (soul file)
 
-All models share a system prompt defined in `system-prompt.md` at the repo root.
-This is the local equivalent of Claude's CLAUDE.md — it sets the model's persona,
-communication style, and operating principles.
+The system prompt is split into two files:
 
-**How it propagates:**
+- **`system-prompt.md`** — The "soul file." Persona, communication style, and
+  operating principles. Shared across all frontends. Contains no tool references
+  so it works cleanly with any frontend's own tool system.
+- **`system-prompt-tools.md`** — Tool-use guidance for our MCP tools (`edit_file`,
+  `web_search`, `start_agent`, etc.). Only appended for frontends that use our
+  MCP tools directly.
 
-- **Open WebUI:** `configure-webui.sh` reads `system-prompt.md` and writes it to
-  each model's `meta.system` field in the database. This is applied automatically
-  to every new chat with that model. Runs on every `./start.sh`.
-- **agent.sh / runner.py:** The agent runner loads `system-prompt.md` at startup
-  and prepends it to the agent's task-specific system prompt.
-- **Interactive chat (run scripts):** llama.cpp `run.sh` does not inject a system
-  prompt — the chat template handles it. You can pass one manually with
-  `--system-prompt-file system-prompt.md` if desired.
+**How it propagates to each frontend:**
 
-**To edit:** Change `system-prompt.md` and re-run `./configure-webui.sh` (or
-restart the stack with `./start.sh`). The new prompt takes effect on the next chat.
+| Frontend | Soul | Tool Guidance | Mechanism |
+|----------|------|---------------|-----------|
+| **Open WebUI** | `system-prompt.md` | `system-prompt-tools.md` | `configure-webui.sh` concatenates both into the model's DB entry |
+| **OpenCode** | `system-prompt.md` | OpenCode's own built-in schemas | OpenCode injects its own tool descriptions — no overlap |
+| **agent.sh / runner.py** | `system-prompt.md` | Inline `_AGENT_INSTRUCTIONS` | Runner builds its own prompt with soul + agent-specific guidance |
+| **Interactive chat** | (not injected) | — | Pass manually with `--system-prompt-file system-prompt.md` |
+
+The split exists because OpenCode has its own tool names (`edit` vs `edit_file`,
+`view` vs `read_file`) and injects its own tool schemas. Mixing our tool
+descriptions into OpenCode's prompt would create confusion and redundancy.
+
+**To edit:** Change `system-prompt.md` (persona) or `system-prompt-tools.md`
+(tool guidance) and re-run `./scripts/configure-webui.sh` (or restart the stack
+with `./start.sh`). Changes take effect on the next new chat.
 
 ### MCP tool server + MCPO proxy
 
