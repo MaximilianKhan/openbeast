@@ -26,7 +26,7 @@ models/
 ├── agents/                 # agent framework + MCP tool server
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
 │   ├── tools.py            # tool definitions for standalone agent
-│   ├── mcp_server.py       # MCP server (exposes tools to OpenCode + Open WebUI)
+│   ├── mcp_server.py       # MCP server (tools + long-running agent management)
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
 ├── start.sh                # launch full stack (server + MCPO + Open WebUI)
@@ -191,7 +191,7 @@ On a fresh install, the first `./start.sh` handles everything.
 - Persistent conversation history (Docker named volume, survives stop/start)
 - File upload and RAG
 - Web search (configurable)
-- Tool use via MCPO (bash, file I/O, grep)
+- Tool use via MCPO (bash, file I/O, edit, grep, fetch, agent management)
 
 ### System prompt (soul file)
 
@@ -215,13 +215,34 @@ restart the stack with `./start.sh`). The new prompt takes effect on the next ch
 
 ### MCP tool server + MCPO proxy
 
-Exposes local tools (bash, read_file, write_file, list_files, grep) to any
-MCP-compatible client.
+Exposes local tools (bash, read_file, write_file, edit_file, list_files, grep,
+fetch) and long-running agent management (start_agent, check_agent, list_agents,
+stop_agent) to any MCP-compatible client.
 
 - **stdio** — used by OpenCode (launched automatically via `opencode.json`)
 - **MCPO** — used by Open WebUI (`http://localhost:3001`, started by `./start.sh`).
   MCPO wraps the MCP server (via stdio) as OpenAPI endpoints. This works around
   Open WebUI's broken native MCP Streamable HTTP support.
+
+#### Long-running agents via MCP
+
+The MCP server can spawn autonomous background agents that iterate independently
+using `runner.py`. The model in a chat session can dispatch complex tasks to an
+agent, continue the conversation, and check back for results later.
+
+- **`start_agent(task, workdir, max_iter)`** — spawn a background agent, returns
+  an agent ID immediately (non-blocking)
+- **`check_agent(agent_id)`** — returns status, iteration count, recent tool calls,
+  last model reasoning, and the final summary if complete
+- **`list_agents()`** — tabular overview of all tracked agents
+- **`stop_agent(agent_id)`** — graceful SIGTERM, escalates to SIGKILL after 10s
+
+Agents run as detached processes in their own process group. The MCP server
+cleans up any running agents on shutdown via `atexit`. Agent logs are written to
+`agents/logs/agent-{id}.jsonl` — the same JSONL format used by `agent.sh`.
+
+If the MCP server restarts, `check_agent` can still read status from log files
+on disk (no live process control, but full history is available).
 
 ## 5. Run
 
@@ -263,6 +284,10 @@ MCP-compatible client.
 The agent loops the model with tool use (bash, file I/O, grep) until the task is
 done or max iterations are reached. Logs are written to `agents/logs/`.
 
+Agents can also be spawned from within a chat session (Open WebUI or OpenCode)
+using the `start_agent` MCP tool — the model dispatches work to a background
+agent and checks on it with `check_agent`.
+
 ### Custom flags
 
 All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to llama.cpp:
@@ -270,8 +295,31 @@ All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to ll
 ```bash
 ./run-qwen-27b-q5.sh -c 524288       # override context length
 ./serve-qwen-35b-a3b.sh -p 9090      # override port
+./serve-qwen-27b-q4.sh -np 14        # override parallel slots (default 7)
 ./run.sh -m weights/some-model.gguf   # use generic script directly
 ```
+
+### Parallel request handling
+
+The server runs **7 parallel slots** by default with **unified KV cache** and
+**continuous batching**. This means:
+
+- Up to 7 concurrent requests are processed simultaneously (chat + background agents)
+- Unified KV cache shares the context budget across all slots — **no extra VRAM**
+  compared to a single-slot configuration
+- Idle slots are freed automatically, so a single deep conversation can use more
+  context while other slots are inactive
+- Per-slot context: total context / slots (e.g. 512K / 7 = ~73K per slot)
+
+Override with `-np` for more or fewer slots:
+
+```bash
+./serve-qwen-35b-a3b.sh -np 14   # 14 slots (~36K context per slot)
+./serve-qwen-27b-q4.sh -np 3     # 3 slots (~170K context per slot)
+```
+
+Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
+`http://localhost:8080/metrics`.
 
 ## Adding a new model
 

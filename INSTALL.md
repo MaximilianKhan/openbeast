@@ -94,7 +94,8 @@ pip install --user --break-system-packages -r agents/requirements.txt
 ```
 
 This installs the OpenAI SDK, MCP SDK, and MCPO (MCP-to-OpenAPI proxy) needed
-by the agent runner, MCP server, and Open WebUI tool integration.
+by the agent runner, MCP server (including long-running agent management), and
+Open WebUI tool integration.
 
 ## 4. Install frontends
 
@@ -158,6 +159,8 @@ To stop everything:
 - **OpenCode:** run `opencode` in a project directory, select the local model
 - **Tool use:** in Open WebUI, enable the "Local Tools (MCPO)" tool in the chat
   input area (wrench icon), then ask the model to run a command
+- **Long-running agents:** ask the model to use `start_agent` to spawn a
+  background agent, then `check_agent` to monitor it
 
 ## Architecture notes
 

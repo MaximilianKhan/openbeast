@@ -6,9 +6,13 @@ Each tool is defined as:
   - A handler function that executes the tool and returns a string result
 """
 
+import html as html_module
 import os
+import re
 import subprocess
 import glob as glob_module
+import urllib.request
+import urllib.error
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -104,6 +108,109 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
         return f"Error: {e}"
 
 
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """Replace an exact string in a file with new content."""
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            return f"Error: file not found: {path}"
+
+        with open(path, "r") as f:
+            content = f.read()
+
+        if not old_string:
+            return "Error: old_string must not be empty"
+
+        if old_string == new_string:
+            return "Error: old_string and new_string are identical — nothing to change"
+
+        count = content.count(old_string)
+        if count == 0:
+            lines = old_string.split("\n")
+            if len(lines) > 1 and content.find(lines[0]) != -1:
+                return (
+                    f"Error: exact match not found in {path}. "
+                    f"The first line was found but the full multi-line string didn't match. "
+                    f"Check whitespace and indentation."
+                )
+            return f"Error: old_string not found in {path}"
+
+        if count > 1 and not replace_all:
+            return (
+                f"Error: old_string appears {count} times in {path}. "
+                f"Include more surrounding context to make it unique, "
+                f"or set replace_all=true to replace all occurrences."
+            )
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+
+        with open(path, "w") as f:
+            f.write(new_content)
+
+        change_line = content[:content.index(old_string)].count("\n") + 1
+        old_lines = old_string.count("\n") + 1
+        new_lines = new_string.count("\n") + 1
+
+        if replace_all and count > 1:
+            return f"Replaced {count} occurrences in {path} ({len(old_string)} → {len(new_string)} chars each)"
+        else:
+            return (
+                f"Edited {path} at line {change_line}: "
+                f"replaced {old_lines} line{'s' if old_lines != 1 else ''} "
+                f"with {new_lines} line{'s' if new_lines != 1 else ''}"
+            )
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def fetch(url: str, max_length: int = 50_000) -> str:
+    """Fetch content from a URL and return as text."""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; local-agent/1.0)",
+                "Accept": "text/html,application/json,text/plain,*/*",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            charset = "utf-8"
+            if "charset=" in content_type:
+                charset = content_type.split("charset=")[-1].split(";")[0].strip()
+            raw_bytes = resp.read(max_length * 4)
+            text = raw_bytes.decode(charset, errors="replace")
+
+        if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
+            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = html_module.unescape(text)
+            text = re.sub(r"[^\S\n]+", " ", text)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            text = text.strip()
+
+        if len(text) > max_length:
+            text = text[:max_length] + f"\n\n[truncated at {max_length} chars — {len(raw_bytes)} bytes fetched]"
+
+        return text if text else "(empty response)"
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read(2000).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
+    except urllib.error.URLError as e:
+        return f"URL error: {e.reason}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 def task_done(summary: str) -> str:
     """Signal that the task is complete."""
     return f"TASK_DONE: {summary}"
@@ -193,6 +300,38 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "Replace an exact string in a file with new content. Use this instead of write_file when modifying existing files — it's safer and more precise. The old_string must appear exactly once unless replace_all is true. To insert text, include surrounding context in old_string and add new text within that context in new_string.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file to edit"},
+                    "old_string": {"type": "string", "description": "The exact text to find (must be unique in the file)"},
+                    "new_string": {"type": "string", "description": "The replacement text"},
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring uniqueness", "default": False},
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch",
+            "description": "Fetch content from a URL and return it as text. HTML pages are cleaned (scripts/styles removed, tags stripped) to return readable text. JSON and plain text are returned as-is.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch (http or https)"},
+                    "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000)", "default": 50000},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "task_done",
             "description": "Call this when the task is fully complete. Provide a summary of what was accomplished.",
             "parameters": {
@@ -210,7 +349,9 @@ TOOL_HANDLERS = {
     "bash": lambda args: bash(args["command"], args.get("timeout", 120)),
     "read_file": lambda args: read_file(args["path"], args.get("offset", 0), args.get("limit", 500)),
     "write_file": lambda args: write_file(args["path"], args["content"]),
+    "edit_file": lambda args: edit_file(args["path"], args["old_string"], args["new_string"], args.get("replace_all", False)),
     "list_files": lambda args: list_files(args.get("directory", "."), args.get("pattern", "**/*")),
     "grep": lambda args: grep(args["pattern"], args.get("path", "."), args.get("file_glob", "")),
+    "fetch": lambda args: fetch(args["url"], args.get("max_length", 50_000)),
     "task_done": lambda args: task_done(args["summary"]),
 }

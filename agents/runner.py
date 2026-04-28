@@ -72,6 +72,7 @@ def run_agent(
     max_iter: int = DEFAULT_MAX_ITER,
     workdir: str | None = None,
     log_dir: str = DEFAULT_LOG_DIR,
+    log_file: str | None = None,
     system_prompt: str = SYSTEM_PROMPT,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
@@ -88,9 +89,13 @@ def run_agent(
     ]
 
     # Set up logging
-    os.makedirs(log_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_path = os.path.join(log_dir, f"agent-{timestamp}.jsonl")
+    if log_file:
+        log_path = log_file
+        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    else:
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = os.path.join(log_dir, f"agent-{timestamp}.jsonl")
 
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
@@ -231,6 +236,7 @@ def main():
     parser.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITER, help=f"Max iterations (default: {DEFAULT_MAX_ITER})")
     parser.add_argument("--workdir", "-w", help="Working directory for file/shell operations")
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR, help=f"Log directory (default: {DEFAULT_LOG_DIR})")
+    parser.add_argument("--log-file", help="Specific log file path (overrides auto-generated name)")
     parser.add_argument("--system-prompt", help="Override the system prompt")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file")
 
@@ -258,6 +264,7 @@ def main():
         max_iter=args.max_iter,
         workdir=args.workdir,
         log_dir=args.log_dir,
+        log_file=args.log_file,
         system_prompt=system_prompt,
     )
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generic OpenAI-compatible API server for llama.cpp models
-# Usage: ./serve.sh -m <model_path> [-c context] [-ctk quant] [-ctv quant] [-p port] [extra args...]
+# Usage: ./serve.sh -m <model_path> [-c context] [-np parallel] [-ctk quant] [-p port] [extra args...]
 #
 # Model-specific scripts (e.g. serve-qwen-27b.sh) call this with preset defaults.
 # Endpoint: http://localhost:<port>/v1/chat/completions
@@ -21,6 +21,7 @@ ALIAS=""
 CONTEXT=65536
 KV_QUANT="q4_0"
 GPU_LAYERS=99
+PARALLEL=7
 HOST="0.0.0.0"
 PORT=8080
 
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     -m)          MODEL="$2";    shift 2 ;;
     -a|--alias)  ALIAS="$2";    shift 2 ;;
     -c)          CONTEXT="$2";  shift 2 ;;
+    -np|--parallel) PARALLEL="$2"; shift 2 ;;
     -ctk|-ctv)   KV_QUANT="$2"; shift 2 ;;
     -ngl)        GPU_LAYERS="$2"; shift 2 ;;
     --host)      HOST="$2";     shift 2 ;;
@@ -49,11 +51,15 @@ if [[ -n "$ALIAS" ]]; then
   ALIAS_ARGS=(-a "$ALIAS")
 fi
 
+echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
+
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
   "${ALIAS_ARGS[@]}" \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
+  -np "$PARALLEL" \
+  --kv-unified \
   -ctk "$KV_QUANT" \
   -ctv "$KV_QUANT" \
   --host "$HOST" \
