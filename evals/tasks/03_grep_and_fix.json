@@ -1,0 +1,13 @@
+{
+  "id": "03_grep_and_fix",
+  "name": "Find and fix a bug across files",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_proj/src && echo 'import utils\\n\\ndef main():\\n    print(utils.format_name(\"john\", \"doe\"))' > /tmp/eval_proj/src/main.py && echo 'def format_name(first, last):\\n    return f\"{first} {last}\"' > /tmp/eval_proj/src/utils.py",
+  "task": "The project at /tmp/eval_proj has a formatting issue: format_name should capitalize the first letter of each name (e.g., 'John Doe' not 'john doe'). Find and fix the bug.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, sys; sys.path.insert(0, '/tmp/eval_proj/src'); spec = importlib.util.spec_from_file_location('u', '/tmp/eval_proj/src/utils.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); result = m.format_name('john', 'doe'); assert result == 'John Doe', f'Expected John Doe got {result}'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_proj",
+  "max_iter": 15
+}

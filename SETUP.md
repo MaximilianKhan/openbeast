@@ -34,8 +34,14 @@ models/
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
 ├── tests/                  # test suite
-│   ├── run_tests.sh        # run all tests
-│   └── test_tools.py       # tool unit tests
+│   ├── run_tests.sh        # run all tests (unit + structure)
+│   ├── test_tools.py       # tool unit tests
+│   ├── test_scripts.sh     # script structure validation
+│   └── test_smoke.sh       # end-to-end stack smoke test (requires running stack)
+├── evals/                  # eval harness for model benchmarking
+│   ├── run_eval.py         # eval runner
+│   ├── tasks/              # task definitions (JSON)
+│   └── results/            # eval results (JSON, gitignored)
 ├── system-prompt.md        # system prompt ("soul file") applied to all models
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
@@ -338,6 +344,43 @@ Override with `-np` for more or fewer slots:
 
 Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
 `http://localhost:8080/metrics`.
+
+### Health monitoring
+
+```bash
+./scripts/healthcheck.sh              # check all services + GPU VRAM + slot usage
+./scripts/healthcheck.sh --restart    # check and auto-restart failed services
+```
+
+Reports status of llama.cpp, MCPO, Open WebUI, SearXNG, GPU VRAM utilization, and
+active slot count. With `--restart`, automatically restarts any service that's down.
+
+### Eval harness
+
+Benchmark model performance on standardized coding tasks:
+
+```bash
+python3 evals/run_eval.py --list                     # list available tasks
+python3 evals/run_eval.py                             # run all 10 tasks
+python3 evals/run_eval.py --tasks 01,02,03            # run specific tasks
+python3 evals/run_eval.py --max-iter 5                # limit iterations
+```
+
+Tasks range from easy (create a file) to hard (build a REST API endpoint).
+Each task has automated validation — the harness checks the agent's work
+against expected output. Results are saved to `evals/results/` as JSON for
+comparison across models, quantizations, and prompt changes.
+
+### Smoke test (end-to-end)
+
+Requires the full stack running (`./start.sh`):
+
+```bash
+./tests/test_smoke.sh
+```
+
+Validates: llama.cpp health, parallel slots, MCPO tool exposure, Open WebUI,
+SearXNG, chat completion, native function calling, and direct tool invocation.
 
 ## Adding a new model
 

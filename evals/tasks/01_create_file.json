@@ -1,0 +1,12 @@
+{
+  "id": "01_create_file",
+  "name": "Create a Python file",
+  "difficulty": "easy",
+  "task": "Create a file called /tmp/eval_hello.py that contains a function called greet(name) which returns the string 'Hello, {name}!'",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, sys; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_hello.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); assert m.greet('World') == 'Hello, World!', f'Expected Hello, World! got {m.greet(\"World\")}'; print('OK')"
+  },
+  "cleanup": "rm -f /tmp/eval_hello.py",
+  "max_iter": 10
+}

@@ -1,0 +1,12 @@
+{
+  "id": "09_bash_script",
+  "name": "Write a bash script with error handling",
+  "difficulty": "medium",
+  "task": "Create /tmp/eval_backup.sh that takes a source directory and backup directory as arguments, creates a timestamped tar.gz backup of the source into the backup dir (e.g., backup-20260427-141500.tar.gz), and prints the path of the created archive. It should exit 1 with an error message if the source doesn't exist or no arguments are given.",
+  "validation": {
+    "type": "bash",
+    "script": "mkdir -p /tmp/eval_src /tmp/eval_bak && echo 'test' > /tmp/eval_src/file.txt && chmod +x /tmp/eval_backup.sh && OUTPUT=$(bash /tmp/eval_backup.sh /tmp/eval_src /tmp/eval_bak) && ls /tmp/eval_bak/backup-*.tar.gz >/dev/null 2>&1 && bash /tmp/eval_backup.sh /nonexistent /tmp/eval_bak 2>&1; test $? -eq 1 && echo 'OK'"
+  },
+  "cleanup": "rm -rf /tmp/eval_src /tmp/eval_bak /tmp/eval_backup.sh",
+  "max_iter": 15
+}

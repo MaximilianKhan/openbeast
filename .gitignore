@@ -9,5 +9,8 @@ agents/logs/
 __pycache__/
 *.pyc
 
+# Eval results (generated, not checked in)
+evals/results/
+
 # Caches
 .cache/

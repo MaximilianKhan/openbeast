@@ -1,0 +1,13 @@
+{
+  "id": "10_data_transform",
+  "name": "Transform data between formats",
+  "difficulty": "hard",
+  "setup": "echo 'name,email,department\\nAlice,alice@co.com,Engineering\\nBob,bob@co.com,Marketing\\nCharlie,charlie@co.com,Engineering\\nDiana,diana@co.com,Marketing' > /tmp/eval_data.csv",
+  "task": "Create /tmp/eval_transform.py that reads /tmp/eval_data.csv and writes /tmp/eval_data.json with the data grouped by department. Output format: {\"Engineering\": [{\"name\": \"Alice\", \"email\": \"alice@co.com\"}, ...], \"Marketing\": [...]}. Run the script after creating it.",
+  "validation": {
+    "type": "python",
+    "script": "import json; data = json.load(open('/tmp/eval_data.json')); assert 'Engineering' in data; assert 'Marketing' in data; assert len(data['Engineering']) == 2; assert len(data['Marketing']) == 2; assert data['Engineering'][0]['name'] == 'Alice'; print('OK')"
+  },
+  "cleanup": "rm -f /tmp/eval_data.csv /tmp/eval_data.json /tmp/eval_transform.py",
+  "max_iter": 15
+}

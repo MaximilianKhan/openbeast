@@ -1,0 +1,13 @@
+{
+  "id": "04_write_tests",
+  "name": "Write unit tests for existing code",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_calc && echo 'class Calculator:\\n    def add(self, a, b): return a + b\\n    def subtract(self, a, b): return a - b\\n    def multiply(self, a, b): return a * b\\n    def divide(self, a, b):\\n        if b == 0: raise ValueError(\"Cannot divide by zero\")\\n        return a / b' > /tmp/eval_calc/calc.py",
+  "task": "Write unit tests for the Calculator class in /tmp/eval_calc/calc.py. Create /tmp/eval_calc/test_calc.py with tests that cover all four operations including the divide-by-zero case. The tests must pass when run with python -m pytest.",
+  "validation": {
+    "type": "bash",
+    "script": "cd /tmp/eval_calc && python3 -m pytest test_calc.py -v 2>&1 | tail -1 | grep -q 'passed'"
+  },
+  "cleanup": "rm -rf /tmp/eval_calc",
+  "max_iter": 15
+}

@@ -1,0 +1,12 @@
+{
+  "id": "07_cli_tool",
+  "name": "Build a CLI tool from scratch",
+  "difficulty": "hard",
+  "task": "Create a Python CLI tool at /tmp/eval_wc.py that counts lines, words, and characters in a file (like wc). It should accept a filename as argument and print: '{lines} {words} {chars} {filename}'. Handle the case where the file doesn't exist with a clear error message and exit code 1.",
+  "validation": {
+    "type": "bash",
+    "script": "echo -e 'hello world\\nfoo bar baz' > /tmp/eval_wc_test.txt && OUTPUT=$(python3 /tmp/eval_wc.py /tmp/eval_wc_test.txt) && echo \"$OUTPUT\" | grep -q '2' && echo \"$OUTPUT\" | grep -q '5' && python3 /tmp/eval_wc.py /nonexistent 2>&1; test $? -eq 1 && rm -f /tmp/eval_wc_test.txt && echo 'OK'"
+  },
+  "cleanup": "rm -f /tmp/eval_wc.py /tmp/eval_wc_test.txt",
+  "max_iter": 15
+}
