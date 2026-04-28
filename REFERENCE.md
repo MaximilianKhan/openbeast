@@ -1,6 +1,4 @@
-# Local LLM Setup (RTX 5090, Arch Linux)
-
-Setup completed 2026-04-22. Restructured 2026-04-26.
+# Technical Reference
 
 ## Directory layout
 
@@ -46,8 +44,10 @@ models/
 ├── system-prompt-tools.md  # tool-use guidance (Open WebUI only)
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
-├── SETUP.md
-└── INSTALL.md
+├── README.md               # project overview (start here)
+├── INSTALL.md              # step-by-step installation guide
+├── REFERENCE.md            # this file — technical reference
+└── TODO.md                 # roadmap and completed work
 ```
 
 ## VRAM estimates (RTX 5090 — 32GB)

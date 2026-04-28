@@ -237,7 +237,7 @@ using the GPU, or the context length is too high. Override with a smaller contex
 ./scripts/run-qwen-27b-q4.sh -c 262144
 ```
 
-See `SETUP.md` for VRAM estimates at different context lengths. The OS/desktop
+See `REFERENCE.md` for VRAM estimates at different context lengths. The OS/desktop
 compositor uses ~2GB of GPU VRAM — always leave at least 2GB headroom.
 
 **`hf: command not found`** -- install the Hugging Face CLI (step 2 above).
