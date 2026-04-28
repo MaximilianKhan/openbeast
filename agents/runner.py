@@ -36,7 +36,14 @@ DEFAULT_MODEL = "qwen-27b-q5"  # llama.cpp ignores this, but it's required by th
 DEFAULT_MAX_ITER = 200
 DEFAULT_LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
-SYSTEM_PROMPT = """You are a capable autonomous agent running on a local machine.
+# Load soul file (system-prompt.md) from repo root, fall back to inline default
+_SOUL_FILE = os.path.join(os.path.dirname(__file__), "..", "system-prompt.md")
+_SOUL_PROMPT = ""
+if os.path.exists(_SOUL_FILE):
+    with open(_SOUL_FILE) as f:
+        _SOUL_PROMPT = f.read().strip() + "\n\n"
+
+SYSTEM_PROMPT = _SOUL_PROMPT + """You are a capable autonomous agent running on a local machine.
 You have tools to run shell commands, read/write files, search code, and list directories.
 
 Your job is to complete the task given to you. Work step by step:

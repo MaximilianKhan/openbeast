@@ -5,6 +5,7 @@
 # Sets up:
 #   1. MCPO tool server connection (OpenAPI on localhost:3001)
 #   2. Native function calling for all detected models
+#   3. System prompt from system-prompt.md
 #
 # Called automatically by start.sh after Open WebUI is ready.
 
@@ -12,6 +13,13 @@ set -euo pipefail
 
 WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
 MCPO_URL="${MCPO_URL:-http://localhost:3001}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Load system prompt from system-prompt.md
+SYSTEM_PROMPT=""
+if [[ -f "$SCRIPT_DIR/system-prompt.md" ]]; then
+  SYSTEM_PROMPT=$(cat "$SCRIPT_DIR/system-prompt.md")
+fi
 
 echo "Configuring Open WebUI..."
 
@@ -97,37 +105,66 @@ for m in data.get('data', []):
 if [[ -z "$MODELS" ]]; then
   echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
 else
+  # Write system prompt to a temp file for the DB update script to read
+  PROMPT_FILE=""
+  if [[ -n "$SYSTEM_PROMPT" ]]; then
+    PROMPT_FILE=$(mktemp)
+    echo "$SYSTEM_PROMPT" > "$PROMPT_FILE"
+    docker cp "$PROMPT_FILE" open-webui:/tmp/system-prompt.txt > /dev/null 2>&1
+    rm -f "$PROMPT_FILE"
+  fi
+
   while IFS='|' read -r model_id fc_mode; do
     [[ -z "$model_id" ]] && continue
-    if [[ "$fc_mode" != "native" ]]; then
-      echo "  Setting native function calling for $model_id..."
-      # Update via direct DB since the API model update requires the full model payload
-      docker exec open-webui python3 -c "
-import sqlite3, json
+    echo "  Configuring $model_id..."
+    docker exec open-webui python3 -c "
+import sqlite3, json, os, time
+
 db = sqlite3.connect('/app/backend/data/webui.db')
-row = db.execute('SELECT params FROM model WHERE id=?', ('$model_id',)).fetchone()
+model_id = '$model_id'
+
+# Load system prompt
+system_prompt = ''
+prompt_path = '/tmp/system-prompt.txt'
+if os.path.exists(prompt_path):
+    with open(prompt_path) as f:
+        system_prompt = f.read().strip()
+
+row = db.execute('SELECT params, meta FROM model WHERE id=?', (model_id,)).fetchone()
 if row:
     params = json.loads(row[0]) if row[0] else {}
-    params['function_calling'] = 'native'
-    db.execute('UPDATE model SET params=? WHERE id=?', (json.dumps(params), '$model_id'))
-    db.commit()
-    print('    Done.')
+    meta = json.loads(row[1]) if row[1] else {}
+    changed = False
+
+    if params.get('function_calling') != 'native':
+        params['function_calling'] = 'native'
+        changed = True
+
+    if system_prompt and meta.get('system') != system_prompt:
+        meta['system'] = system_prompt
+        changed = True
+
+    if changed:
+        db.execute('UPDATE model SET params=?, meta=? WHERE id=?', (json.dumps(params), json.dumps(meta), model_id))
+        db.commit()
+        print('    Updated (native FC + system prompt).')
+    else:
+        print('    Already configured.')
 else:
     # Model detected by API but not yet in DB — insert it
-    import time
     params = json.dumps({'function_calling': 'native'})
-    meta = json.dumps({'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}})
+    meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}}
+    if system_prompt:
+        meta_dict['system'] = system_prompt
+    meta = json.dumps(meta_dict)
     now = int(time.time())
     db.execute(
         'INSERT INTO model (id, user_id, name, meta, params, created_at, updated_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        ('$model_id', 'system', '$model_id', meta, params, now, now, 1)
+        (model_id, 'system', model_id, meta, params, now, now, 1)
     )
     db.commit()
-    print('    Created model entry with native FC.')
+    print('    Created model entry (native FC + system prompt).')
 " 2>/dev/null
-    else
-      echo "  $model_id: native function calling already set."
-    fi
   done <<< "$MODELS"
 fi
 

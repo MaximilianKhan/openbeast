@@ -31,7 +31,8 @@ models/
 │   └── logs/               # agent run logs (JSONL) [gitignored]
 ├── start.sh                # launch full stack (server + MCPO + Open WebUI)
 ├── stop.sh                 # stop full stack
-├── configure-webui.sh      # auto-configure Open WebUI (tool server + native FC)
+├── configure-webui.sh      # auto-configure Open WebUI (tool server + native FC + system prompt)
+├── system-prompt.md        # system prompt ("soul file") applied to all models
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
 ├── SETUP.md
@@ -191,6 +192,26 @@ On a fresh install, the first `./start.sh` handles everything.
 - File upload and RAG
 - Web search (configurable)
 - Tool use via MCPO (bash, file I/O, grep)
+
+### System prompt (soul file)
+
+All models share a system prompt defined in `system-prompt.md` at the repo root.
+This is the local equivalent of Claude's CLAUDE.md — it sets the model's persona,
+communication style, and operating principles.
+
+**How it propagates:**
+
+- **Open WebUI:** `configure-webui.sh` reads `system-prompt.md` and writes it to
+  each model's `meta.system` field in the database. This is applied automatically
+  to every new chat with that model. Runs on every `./start.sh`.
+- **agent.sh / runner.py:** The agent runner loads `system-prompt.md` at startup
+  and prepends it to the agent's task-specific system prompt.
+- **Interactive chat (run scripts):** llama.cpp `run.sh` does not inject a system
+  prompt — the chat template handles it. You can pass one manually with
+  `--system-prompt-file system-prompt.md` if desired.
+
+**To edit:** Change `system-prompt.md` and re-run `./configure-webui.sh` (or
+restart the stack with `./start.sh`). The new prompt takes effect on the next chat.
 
 ### MCP tool server + MCPO proxy
 

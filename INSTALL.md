@@ -135,6 +135,7 @@ This launches:
 On a fresh install, `configure-webui.sh` runs automatically and sets up:
 - The MCPO tool server as an OpenAPI endpoint in Open WebUI
 - Native function calling mode for all detected models (required for Qwen tool use)
+- The system prompt from `system-prompt.md` (applied to all models)
 
 Then use OpenCode separately in any project:
 
@@ -179,6 +180,25 @@ Open WebUI has two function calling modes:
   `role: tool` messages. This is the correct flow for Qwen on llama.cpp.
 
 `configure-webui.sh` sets native mode automatically for all models.
+
+### System prompt (soul file)
+
+`system-prompt.md` is the shared system prompt applied to all models across
+all frontends. It defines the model's persona, communication style, and
+operating principles — the local equivalent of Claude's CLAUDE.md.
+
+The file lives in the repo root so it's version-controlled and portable. It
+propagates to each frontend differently:
+
+- **Open WebUI:** `configure-webui.sh` writes the contents into each model's
+  database entry (`meta.system`). Every new chat inherits it automatically.
+- **agent.sh:** `runner.py` reads the file at startup and prepends it to the
+  agent's task-specific instructions.
+- **Interactive chat:** Not injected automatically by `run.sh` — pass it
+  manually with `--system-prompt-file system-prompt.md` if needed.
+
+To change the prompt, edit `system-prompt.md` and re-run `./configure-webui.sh`
+(or restart the stack). Changes take effect on the next new chat.
 
 ### Why OpenCode uses stdio, not MCPO
 
