@@ -1,64 +1,77 @@
 # TODO
 
-## Completed (2026-04-27)
+## Up Next
 
-- [x] Debug Open WebUI MCP connection failure — replaced direct MCP HTTP with MCPO (MCP→OpenAPI proxy). Open WebUI's native MCP Streamable HTTP support has a known bug; MCPO wraps our MCP server as OpenAPI endpoints that Open WebUI consumes natively. Also set model function_calling to `native` (prompt-based default mode broke with Qwen's thinking). Both configs are now automated via `scripts/configure-webui.sh`, called by `start.sh`.
-- [x] Verify OpenCode MCP stdio transport — works correctly, confirmed via initialize handshake.
-- [x] Test `./agent.sh` end-to-end — completed a real task in 3 iterations with tool use.
-- [x] Validate 35B-A3B actual KV cache allocation — measured ~6.3 KB/token (model=20GB, KV at 512K=3.1GB). Much better than the 11 KB/token estimate. Could safely run at 1M context.
-- [x] Confirm Open WebUI persistence survives stop/start — Docker named volume persists across `docker compose down` (only `-v` flag removes it).
-- [x] `git init` and first commit — done.
-- [x] Long-running agent management via MCP — start_agent, check_agent, list_agents, stop_agent.
-- [x] Claude Code-caliber tool suite — edit_file (targeted string replacement), fetch (URL content with HTML→text).
-- [x] 7-slot parallel serving with unified KV cache and continuous batching.
-- [x] Script refactor — moved 11 scripts to `scripts/`, root has 3 entry points.
-- [x] Test suite — 78 tests across script structure and Python tool unit tests.
-- [x] Fixed grep `repr()` bug — replaced with `shlex.quote()` for correct regex escaping.
-- [x] Context-aware agent spawning — `start_agent` accepts `context` param, agents get context budget info.
-- [x] Local web search via SearXNG — `web_search` tool + Docker container on port 8888.
-- [x] Agent tail tool — `tail_agent` returns raw JSONL log events for detailed debugging.
-- [x] Model-aware context budgeting — agents informed of ~73K token budget per slot.
-- [x] Agent resumption — `--resume` flag reconstructs conversation from JSONL log and continues.
+### Tailscale remote access
+Set up Tailscale so the local AI stack can be accessed from the work laptop (or
+any device) over a private encrypted mesh — no port forwarding or static IP needed.
 
-## Tier 3 — Future Horizon
+**Steps:**
+1. Install Tailscale on the home machine (Arch): `sudo pacman -S tailscale`
+2. Enable and start: `sudo systemctl enable --now tailscaled && sudo tailscale up`
+3. Install Tailscale on the work laptop
+4. Note the home machine's Tailscale IP (e.g., `100.64.x.x`) from `tailscale status`
+5. On the work laptop, create `~/.config/opencode/opencode.json` with the provider
+   pointing to `http://<tailscale-ip>:8080/v1`
+6. Verify: `curl http://<tailscale-ip>:8080/health` from the work laptop
+7. Open WebUI is also accessible at `http://<tailscale-ip>:3000`
+
+**Why Tailscale:** Zero config networking. WireGuard-encrypted, NAT-traversing,
+works from any network. Free for personal use (up to 100 devices). No router
+config, no dynamic DNS, no exposed ports.
+
+### Speculative decoding
+Pair the 27B model with a small ~0.5B Qwen draft model for 1.5-3x inference
+speedup. llama.cpp supports this natively via `--model-draft`. Biggest gains
+on structured output (code, JSON) where draft tokens are predictable.
+
+**Steps:**
+1. Download a small Qwen 3.6 draft model (0.6B or similar) to `weights/`
+2. Add `--model-draft` flag to `scripts/serve.sh`
+3. Benchmark before/after with the eval harness
+4. Update serve scripts and docs
+
+### Expand eval harness
+Current: 10 tasks (easy→hard). Expand to 25-30 with harder multi-step tasks,
+agentic tasks (tasks that require web search or agent delegation), and tasks
+that test tool selection (does the model pick `edit_file` over `write_file`?).
+
+## Future Horizon
 
 ### Multi-model routing
-Run two models simultaneously on different ports (e.g., 35B-A3B on :8080 for fast agent
-work, 27B Q5 on :8081 for deep reasoning). Build a lightweight router that picks the
-right model based on task type, context requirements, or explicit user preference.
-
-**Why:** The MoE 35B-A3B is fast but the dense 27B Q5 has higher weight fidelity. Different
-tasks have different quality/speed tradeoffs. A router lets agents use the fast model for
-file exploration and the quality model for complex code generation, without manual switching.
-
-**Implementation sketch:**
-- Second serve script on a different port (VRAM permitting — would need smaller contexts)
-- Router service (Python, ~100 lines) that accepts OpenAI API requests and forwards to
-  the appropriate backend based on a `model` field or heuristic
-- Update `runner.py` to support model selection per-call or per-tool-phase
+Run two models simultaneously on different ports (e.g., 35B-A3B on :8080 for fast
+agent work, 27B Q5 on :8081 for deep reasoning). Build a lightweight router that
+picks the right model based on task type or explicit preference.
 
 ### RAG pipeline for local codebases
-Embed local codebases into a vector store and give agents semantic search beyond grep.
-When grep can find exact strings but the agent needs to ask "where is authentication
-handled?" or "what modules touch the database?", semantic search fills the gap.
+Embed local codebases into a vector store and give agents semantic search beyond
+grep. Use llama.cpp's embedding endpoint with ChromaDB/LanceDB for local vector
+storage. New MCP tool: `semantic_search(query, codebase_path)`.
 
-**Implementation sketch:**
-- Use llama.cpp's embedding endpoint (`/v1/embeddings`) with a small embedding model
-- ChromaDB or LanceDB for local vector storage (no external dependencies)
-- New MCP tool: `semantic_search(query, codebase_path)` that returns ranked file
-  chunks with relevance scores
-- Indexing script that walks a codebase, chunks files, and embeds them
-- Re-index on git hooks or manual trigger
+---
 
-### Eval harness for model comparison
-Benchmark different quantizations (Q4 vs Q5), models (27B vs 35B-A3B), and context
-lengths against standardized coding tasks. Know when to upgrade — and whether a new
-model is actually better for your workloads before swapping it in.
+## Completed
 
-**Implementation sketch:**
-- Curated set of 20-30 coding tasks (bug fixes, refactors, feature adds) with known
-  correct outputs or test suites that validate correctness
-- Runner that executes each task against a specified model/config and records:
-  success/fail, iterations to completion, time, token usage
-- Results stored as structured JSON, diffable across runs
-- Could reuse `runner.py` with `task_done` output validation
+- [x] Debug Open WebUI MCP connection — MCPO proxy, native function calling
+- [x] Verify OpenCode MCP stdio transport
+- [x] Test agent.sh end-to-end (3 iterations)
+- [x] Validate 35B-A3B KV cache (~6.3 KB/token measured)
+- [x] Open WebUI persistence confirmed
+- [x] Git init + version control
+- [x] Long-running agent management via MCP (start/check/tail/list/stop)
+- [x] Claude Code-caliber tool suite (edit_file, fetch, web_search)
+- [x] 6-slot parallel serving with unified KV cache
+- [x] Script refactor (scripts/ directory, 3 root entry points)
+- [x] Test suite (79 tests — structure + tools + MCP)
+- [x] Fixed grep repr() quoting bug (shlex.quote)
+- [x] Context-aware agent spawning with context briefing
+- [x] Local web search via SearXNG
+- [x] Agent log tailing (tail_agent)
+- [x] Model-aware context budgeting (~85K per slot)
+- [x] Agent resumption from JSONL logs
+- [x] System prompt split (soul file + tools addendum)
+- [x] OpenCode global config for models from any directory
+- [x] Eval harness — 10 tasks, 10/10 pass rate
+- [x] Smoke test (end-to-end stack validation)
+- [x] Health monitor with auto-restart
+- [x] Default model documented (27B Uncensored Q5_K_P)

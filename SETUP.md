@@ -257,7 +257,7 @@ agent, continue the conversation, and check back for results later.
 - **`list_agents()`** — tabular overview of all tracked agents
 - **`stop_agent(agent_id)`** — graceful SIGTERM, escalates to SIGKILL after 10s
 
-Agents are context-aware: they receive an approximate token budget (~73K per slot)
+Agents are context-aware: they receive an approximate token budget (~85K per slot)
 and briefing context from the spawning model. Failed agents can be resumed from
 their JSONL log with `./agent.sh --resume agents/logs/agent-{id}.jsonl "continue"`.
 
@@ -330,27 +330,27 @@ All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to ll
 ```bash
 ./scripts/run-qwen-27b-q5.sh -c 524288       # override context length
 ./scripts/serve-qwen-35b-a3b.sh -p 9090      # override port
-./scripts/serve-qwen-27b-q4.sh -np 14        # override parallel slots (default 7)
+./scripts/serve-qwen-27b-q4.sh -np 10        # override parallel slots (default 6)
 ./scripts/run.sh -m weights/some-model.gguf   # use generic script directly
 ```
 
 ### Parallel request handling
 
-The server runs **7 parallel slots** by default with **unified KV cache** and
+The server runs **6 parallel slots** by default with **unified KV cache** and
 **continuous batching**. This means:
 
-- Up to 7 concurrent requests are processed simultaneously (chat + background agents)
+- Up to 6 concurrent requests are processed simultaneously (chat + background agents)
 - Unified KV cache shares the context budget across all slots — **no extra VRAM**
   compared to a single-slot configuration
 - Idle slots are freed automatically, so a single deep conversation can use more
   context while other slots are inactive
-- Per-slot context: total context / slots (e.g. 512K / 7 = ~73K per slot)
+- Per-slot context: total context / slots (e.g. 512K / 6 = ~85K per slot)
 
 Override with `-np` for more or fewer slots:
 
 ```bash
-./scripts/serve-qwen-35b-a3b.sh -np 14   # 14 slots (~36K context per slot)
-./scripts/serve-qwen-27b-q4.sh -np 3     # 3 slots (~170K context per slot)
+./scripts/serve-qwen-35b-a3b.sh -np 12   # 12 slots (~42K context per slot)
+./scripts/serve-qwen-27b-q4.sh -np 3    # 3 slots (~170K context per slot)
 ```
 
 Monitor active slots at `http://localhost:8080/slots` and KV cache usage at

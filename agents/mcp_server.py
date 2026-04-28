@@ -513,8 +513,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
     os.makedirs(_LOG_DIR, exist_ok=True)
 
-    # Estimate per-slot context budget (~73K tokens at 512K/7 slots, rough)
-    context_budget = 73_000
+    # Estimate per-slot context budget (~85K tokens at 512K/6 slots, rough)
+    context_budget = 85_000
 
     cmd = [
         sys.executable, _RUNNER_PATH,
