@@ -406,19 +406,66 @@ active slot count. With `--restart`, automatically restarts any service that's d
 
 ### Eval harness
 
-Benchmark model performance on standardized coding tasks:
+30 tasks across three difficulty tiers (2 easy / 15 medium / 13 hard). Each
+task has deterministic validation (Python or bash returning exit 0/1). Results
+are tagged with the model name (auto-detected via `/v1/models`) and a snapshot
+of the GPU config (`nvidia-smi`).
+
+#### Single-model eval
 
 ```bash
-python3 evals/run_eval.py --list                     # list available tasks
-python3 evals/run_eval.py                             # run all 10 tasks
-python3 evals/run_eval.py --tasks 01,02,03            # run specific tasks
-python3 evals/run_eval.py --max-iter 5                # limit iterations
+python3 evals/run_eval.py --list                     # list all 30 tasks
+python3 evals/run_eval.py                             # run everything
+python3 evals/run_eval.py --tasks 21,22,23            # subset
+python3 evals/run_eval.py --max-iter 5                # cap iterations
+python3 evals/run_eval.py --model-name custom        # override auto-detected name
 ```
 
-Tasks range from easy (create a file) to hard (build a REST API endpoint).
-Each task has automated validation — the harness checks the agent's work
-against expected output. Results are saved to `evals/results/` as JSON for
-comparison across models, quantizations, and prompt changes.
+Results land in `evals/results/eval-{model_slug}-{timestamp}.json` (all kept).
+
+#### Multi-model benchmark
+
+`evals/benchmark_all.py` runs the full suite against every configured model in
+turn. For each: stops llama-server, starts the model's serve script, waits for
+`/health`, runs the eval, kills the server, scores the run, updates the
+leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
+flagged in the sweep summary.
+
+```bash
+python3 evals/benchmark_all.py                       # all 5 models, full suite
+python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
+python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
+python3 evals/benchmark_all.py --list                # show configured models
+```
+
+Total runtime estimate: ~30 tasks × ~90s avg × 5 models ≈ **3-4 hours**. Plan
+to run overnight. Sweep summaries are saved to `evals/results/sweep-{ts}.json`.
+
+#### Scoring + leaderboard
+
+The composite score formula (see `evals/scoring.py`):
+
+```
+correctness = 100 × Σ(weight × passed) / Σ(weight)
+              where weights: easy=1, medium=3, hard=5
+
+speed       = 100 × mean(max(0, 1 - elapsed/budget)) over passed tasks
+              where budgets: easy=30s, medium=90s, hard=300s
+
+composite   = 0.75 × correctness + 0.25 × speed
+```
+
+Tie-breakers (in order): raw pass count → hard-task pass count → total elapsed.
+
+```bash
+python3 evals/scoring.py --show                      # current leaderboard
+python3 evals/scoring.py --rebuild                   # rescore from results/
+python3 evals/scoring.py --score evals/results/eval-foo.json
+```
+
+`evals/leaderboard.json` is auto-maintained — one entry per `model_slug`,
+latest run wins. Result files in `evals/results/` are never deleted, so full
+history is available for trend analysis.
 
 ### Smoke test (end-to-end)
 

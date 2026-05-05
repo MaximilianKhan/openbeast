@@ -31,10 +31,11 @@ on structured output (code, JSON) where draft tokens are predictable.
 3. Benchmark before/after with the eval harness
 4. Update serve scripts and docs
 
-### Expand eval harness
-Current: 10 tasks (easy→hard). Expand to 25-30 with harder multi-step tasks,
-agentic tasks (tasks that require web search or agent delegation), and tasks
-that test tool selection (does the model pick `edit_file` over `write_file`?).
+### Eval harness — agentic + tool-selection tasks
+Current: 30 tasks (2 easy / 15 medium / 13 hard) with multi-model benchmark
+runner and ranked leaderboard (composite = 0.75×correctness + 0.25×speed).
+Next axis to cover: agentic tasks (require `web_search` / `start_agent`) and
+tool-selection tasks (does the model prefer `edit_file` over `write_file`?).
 
 ## Future Horizon
 
@@ -75,3 +76,10 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] Smoke test (end-to-end stack validation)
 - [x] Health monitor with auto-restart
 - [x] Default model documented (27B Uncensored Q5_K_P)
+- [x] Gemma 4 31B-it integrated as 5th model (220K context, validated)
+- [x] Context lengths re-tuned to measured VRAM ceilings (Qwen + Gemma)
+- [x] SearXNG fixed: granian port collision + JSON format gate
+- [x] Eval harness expanded: 10 → 30 tasks (+10 medium +10 hard)
+- [x] Model-tagged eval results with GPU snapshot via nvidia-smi
+- [x] Multi-model benchmark runner (`evals/benchmark_all.py`)
+- [x] Composite scoring + leaderboard (0.75×correctness + 0.25×speed)

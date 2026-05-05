@@ -115,13 +115,55 @@ done
 # --- 6. Python files compile ---
 echo ""
 echo "Python compilation:"
-for pyfile in agents/runner.py agents/tools.py agents/mcp_server.py; do
+for pyfile in agents/runner.py agents/tools.py agents/mcp_server.py \
+              evals/run_eval.py evals/scoring.py evals/benchmark_all.py; do
   if python3 -c "import py_compile; py_compile.compile('$REPO_DIR/$pyfile', doraise=True)" 2>/dev/null; then
     pass "$pyfile compiles"
   else
     fail "$pyfile has syntax errors"
   fi
 done
+
+# --- 6b. Eval task JSONs valid + validation scripts compile ---
+echo ""
+echo "Eval task validation:"
+TASK_CHECK=$(python3 - <<'PY'
+import json, ast, os, subprocess, sys
+tasks_dir = os.path.join(os.environ.get('REPO_DIR', '.'), 'evals', 'tasks')
+errors = []
+files = sorted(f for f in os.listdir(tasks_dir) if f.endswith('.json'))
+for fn in files:
+    path = os.path.join(tasks_dir, fn)
+    try:
+        data = json.load(open(path))
+    except Exception as e:
+        errors.append(f'{fn}: JSON {e}'); continue
+    for k in ('id', 'name', 'difficulty', 'task', 'validation'):
+        if k not in data: errors.append(f'{fn}: missing {k}')
+    setup = data.get('setup', '')
+    if setup:
+        r = subprocess.run(['bash', '-n', '-c', setup], capture_output=True, text=True)
+        if r.returncode != 0: errors.append(f'{fn}: setup bash {r.stderr.strip()[:80]}')
+    script = data.get('validation', {}).get('script', '')
+    vtype = data.get('validation', {}).get('type', 'bash')
+    if vtype == 'python':
+        try: ast.parse(script)
+        except SyntaxError as e: errors.append(f'{fn}: validation py {e}')
+    elif vtype == 'bash':
+        r = subprocess.run(['bash', '-n', '-c', script], capture_output=True, text=True)
+        if r.returncode != 0: errors.append(f'{fn}: validation bash {r.stderr.strip()[:80]}')
+print(f'COUNT={len(files)}')
+print('ERROR:' + e for e in errors) if False else None
+for e in errors: print('ERROR:' + e)
+PY
+)
+TASK_COUNT=$(echo "$TASK_CHECK" | grep '^COUNT=' | cut -d= -f2)
+TASK_ERRORS=$(echo "$TASK_CHECK" | grep '^ERROR:' || true)
+if [[ -z "$TASK_ERRORS" && "${TASK_COUNT:-0}" -ge 30 ]]; then
+  pass "all $TASK_COUNT eval task JSONs valid (≥30 expected)"
+else
+  fail "eval tasks have problems: ${TASK_ERRORS:-none} (count=${TASK_COUNT:-0})"
+fi
 
 # --- 7. Config files exist ---
 echo ""

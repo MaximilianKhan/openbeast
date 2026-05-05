@@ -1,0 +1,13 @@
+{
+  "id": "15_trie_autocomplete",
+  "name": "Trie with autocomplete",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_trie",
+  "task": "Create /tmp/eval_trie/trie.py with a Trie class. Methods: insert(word), search(word) returns True if exact word is in the trie, starts_with(prefix) returns True if any word starts with prefix, autocomplete(prefix) returns a sorted list of all complete words that start with prefix.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_trie/trie.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); t = mod.Trie(); [t.insert(w) for w in ['apple','app','apricot','banana','application']]; assert t.search('apple') is True; assert t.search('appl') is False; assert t.starts_with('app') is True; assert t.starts_with('cat') is False; ac = t.autocomplete('app'); assert ac == sorted(['app','apple','application']), f'autocomplete got {ac}'; assert t.autocomplete('xyz') == []; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_trie",
+  "max_iter": 20
+}

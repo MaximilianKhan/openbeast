@@ -28,9 +28,11 @@ Requires: llama.cpp server running on port 8080.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +40,52 @@ EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(EVALS_DIR, "tasks")
 RESULTS_DIR = os.path.join(EVALS_DIR, "results")
 RUNNER_PATH = os.path.join(EVALS_DIR, "..", "agents", "runner.py")
+
+
+def detect_model(base_url: str) -> str:
+    """Query /v1/models on the llama.cpp server. Returns the alias the model
+    was launched with (set via the -a flag in our serve scripts)."""
+    try:
+        url = base_url.rstrip("/") + "/models"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = data.get("data", [])
+        if models:
+            return models[0].get("id", "unknown")
+    except Exception:
+        pass
+    return "unknown"
+
+
+def slugify(name: str) -> str:
+    """Convert a model name to a filesystem-safe slug."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "unknown"
+
+
+def capture_gpu_info() -> dict:
+    """Snapshot the GPU configuration via nvidia-smi. Returns empty dict if
+    nvidia-smi isn't available (e.g. running on a non-NVIDIA box)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,driver_version,memory.total,compute_cap",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return {}
+        line = result.stdout.strip().split("\n")[0]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 4:
+            return {
+                "name": parts[0],
+                "driver_version": parts[1],
+                "memory_total_mib": int(parts[2]),
+                "compute_capability": parts[3],
+            }
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return {}
 
 
 def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
@@ -141,6 +189,7 @@ def run_eval(
     task_filter: list[str] | None = None,
     base_url: str = "http://localhost:8080/v1",
     max_iter_override: int | None = None,
+    model_name: str | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict."""
     tasks = load_tasks(task_filter)
@@ -148,18 +197,29 @@ def run_eval(
         print("No tasks found.")
         return {}
 
+    if not model_name:
+        model_name = detect_model(base_url)
+    model_slug = slugify(model_name)
+    gpu_info = capture_gpu_info()
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    results_path = os.path.join(RESULTS_DIR, f"eval-{timestamp}.json")
+    results_path = os.path.join(RESULTS_DIR, f"eval-{model_slug}-{timestamp}.json")
 
     print(f"Eval started — {len(tasks)} tasks")
+    print(f"Model:  {model_name}")
     print(f"Server: {base_url}")
+    if gpu_info:
+        print(f"GPU:    {gpu_info.get('name', '?')} ({gpu_info.get('memory_total_mib', '?')} MiB, driver {gpu_info.get('driver_version', '?')})")
     print(f"Results: {results_path}")
     print("=" * 60)
 
     results = {
         "timestamp": datetime.now().isoformat(),
+        "model": model_name,
+        "model_slug": model_slug,
         "base_url": base_url,
+        "gpu": gpu_info,
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -197,6 +257,7 @@ def run_eval(
             "id": task_id,
             "name": task_name,
             "difficulty": difficulty,
+            "model": model_name,
             "passed": passed,
             "elapsed_seconds": agent_result["elapsed_seconds"],
             "agent_exit_code": agent_result["exit_code"],
@@ -233,6 +294,7 @@ def main():
     parser.add_argument("--tasks", help="Comma-separated task IDs to run (default: all)")
     parser.add_argument("--base-url", default="http://localhost:8080/v1", help="API base URL")
     parser.add_argument("--max-iter", type=int, help="Override max iterations for all tasks")
+    parser.add_argument("--model-name", help="Override model name (default: auto-detect from /v1/models)")
     parser.add_argument("--list", action="store_true", help="List available tasks and exit")
     args = parser.parse_args()
 
@@ -248,6 +310,7 @@ def main():
         task_filter=task_filter,
         base_url=args.base_url,
         max_iter_override=args.max_iter,
+        model_name=args.model_name,
     )
 
     # Exit with failure if any task failed

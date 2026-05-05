@@ -1,0 +1,13 @@
+{
+  "id": "18_flatten_json",
+  "name": "Recursively flatten nested JSON",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_flatten",
+  "task": "Create /tmp/eval_flatten/flatten.py with a function flatten(d) that takes a possibly-nested dictionary and returns a flat dictionary with dotted-path keys. Lists are kept as-is (not flattened). Empty nested dicts disappear. Example: flatten({'a': {'b': {'c': 1}}, 'd': [1,2], 'e': {}}) returns {'a.b.c': 1, 'd': [1,2]}.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_flatten/flatten.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = mod.flatten; assert f({}) == {}, f\"empty {f({})}\"; assert f({'a': 1}) == {'a': 1}; assert f({'a': {'b': 1}}) == {'a.b': 1}; r = f({'a': {'b': {'c': 1}}, 'd': [1,2], 'e': {}}); assert r == {'a.b.c': 1, 'd': [1,2]}, f'nested {r}'; assert f({'x': {'y': 1, 'z': {'w': 2}}}) == {'x.y': 1, 'x.z.w': 2}; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_flatten",
+  "max_iter": 15
+}

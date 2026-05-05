@@ -1,0 +1,13 @@
+{
+  "id": "26_ipv4_regex",
+  "name": "Strict IPv4 address regex",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_regex",
+  "task": "Create /tmp/eval_regex/ipv4.py exposing two things: (1) a module-level constant IPV4_REGEX which is a compiled Python regex (re.compile(...)) that matches strict, valid IPv4 addresses; (2) a function is_valid_ipv4(s) returning True/False using that regex with fullmatch. RULES: exactly four dot-separated octets; each octet is 0-255 with NO leading zeros (so '0' is valid, '01' is NOT, '00' is NOT); no leading/trailing whitespace allowed; reject octets above 255; reject more or fewer than 4 octets.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_regex/ipv4.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); valid = ['0.0.0.0', '255.255.255.255', '1.2.3.4', '192.168.1.1', '10.0.0.1', '127.0.0.1', '8.8.8.8', '100.200.50.25', '249.249.249.249']; invalid = ['256.1.1.1', '1.1.1.256', '01.1.1.1', '1.01.1.1', '1.1.1.01', '00.0.0.0', '1.1.1', '1.1.1.1.1', '', '1.2.3.4.', '.1.2.3.4', '1.2.3.', 'a.b.c.d', '1234.1.1.1', '1.1.1.1 ', ' 1.1.1.1', '999.999.999.999', '1..1.1', '300.1.1.1', '-1.1.1.1']; [(_ for _ in ()).throw(AssertionError(f'expected VALID: {ip}')) for ip in valid if not mod.is_valid_ipv4(ip)]; [(_ for _ in ()).throw(AssertionError(f'expected INVALID: {ip}')) for ip in invalid if mod.is_valid_ipv4(ip)]; import re; assert isinstance(mod.IPV4_REGEX, re.Pattern), 'IPV4_REGEX must be a compiled re.Pattern'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_regex",
+  "max_iter": 25
+}

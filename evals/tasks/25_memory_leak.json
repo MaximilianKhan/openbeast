@@ -1,0 +1,13 @@
+{
+  "id": "25_memory_leak",
+  "name": "Find and fix a memory leak in an event system",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_leak && printf 'class EventBus:\\n    \"\"\"Pub/sub event bus. BUG: subscribers are never removed when handlers exit.\"\"\"\\n    def __init__(self):\\n        self._handlers = {}\\n\\n    def subscribe(self, event, handler):\\n        self._handlers.setdefault(event, []).append(handler)\\n        return handler\\n\\n    def unsubscribe(self, event, handler):\\n        # Currently a no-op stub — left intentionally broken.\\n        pass\\n\\n    def publish(self, event, data):\\n        for h in self._handlers.get(event, []):\\n            h(data)\\n\\n\\ndef do_work(bus, n):\\n    \"\"\"Each call should leave the bus state unchanged after returning.\\n    Currently leaks because the temp handler is never unsubscribed.\"\"\"\\n    received = []\\n    handler = bus.subscribe(\"tick\", lambda d: received.append(d))\\n    bus.publish(\"tick\", n)\\n    bus.unsubscribe(\"tick\", handler)\\n    return received\\n' > /tmp/eval_leak/bus.py",
+  "task": "/tmp/eval_leak/bus.py has a memory leak: do_work() subscribes a handler each call but unsubscribe() is a no-op stub, so the _handlers list grows unbounded across many calls. Fix EventBus.unsubscribe so it actually removes the handler from the per-event list. After your fix: calling do_work(bus, i) 10000 times must leave bus._handlers['tick'] with length 0 (or the key absent). Do not change the public API or the do_work function.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_leak/bus.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); bus = mod.EventBus(); [mod.do_work(bus, i) for i in range(10000)]; remaining = len(bus._handlers.get('tick', [])); assert remaining == 0, f'leak not fixed: {remaining} handlers still attached after 10000 calls'; bus2 = mod.EventBus(); marks = []; h = bus2.subscribe('x', lambda d: marks.append(d)); bus2.publish('x', 1); assert marks == [1]; bus2.unsubscribe('x', h); bus2.publish('x', 2); assert marks == [1], 'unsubscribe should stop delivery'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_leak",
+  "max_iter": 25
+}

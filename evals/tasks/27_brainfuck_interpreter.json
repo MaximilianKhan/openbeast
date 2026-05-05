@@ -1,0 +1,13 @@
+{
+  "id": "27_brainfuck_interpreter",
+  "name": "Brainfuck interpreter",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_bf",
+  "task": "Create /tmp/eval_bf/bf.py with a function bf(code, input_str='') that runs a Brainfuck program and returns the output as a string. Support all 8 commands: > < + - . , [ ]. The tape is unbounded to the right (initialize cells lazily), starts at position 0, and cells are unsigned 8-bit (wrap mod 256). Bracket matching must be O(n) preprocessed (don't re-scan on every loop iteration).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_bf/bf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assert mod.bf('+++>++<[->+<].') == '\\x05', 'simple add: 3+2=5'; assert mod.bf('+'*65 + '.') == 'A', 'output A via 65 increments'; hello = '++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.'; out = mod.bf(hello); assert out == 'Hello World!\\n', f'hello world got {out!r}'; assert mod.bf(',+.', 'A') == 'B', 'echo input + 1'; assert mod.bf('+'*256 + '.') == '\\x00', 'wrap-around'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bf",
+  "max_iter": 30
+}

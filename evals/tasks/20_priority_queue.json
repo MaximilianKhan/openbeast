@@ -1,0 +1,13 @@
+{
+  "id": "20_priority_queue",
+  "name": "Priority queue with custom comparator",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_pq",
+  "task": "Create /tmp/eval_pq/pq.py with a PriorityQueue class. Constructor takes an optional key function (default None = min-heap on the items themselves). Methods: push(item), pop() returns and removes the highest-priority item (lowest key), peek() returns it without removing, __len__. Internally use heapq if you like, but the API must match.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_pq/pq.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); pq = mod.PriorityQueue(); [pq.push(v) for v in [5,1,3,2,4]]; assert len(pq) == 5; assert pq.peek() == 1; out = [pq.pop() for _ in range(5)]; assert out == [1,2,3,4,5], f'min-heap got {out}'; pq2 = mod.PriorityQueue(key=len); [pq2.push(s) for s in ['hello', 'hi', 'world', 'a']]; out2 = [pq2.pop() for _ in range(4)]; assert out2[0] == 'a' and len(out2[-1]) == 5, f'by length got {out2}'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pq",
+  "max_iter": 20
+}

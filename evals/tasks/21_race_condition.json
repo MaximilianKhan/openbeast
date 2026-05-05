@@ -1,0 +1,13 @@
+{
+  "id": "21_race_condition",
+  "name": "Find and fix a race condition in concurrent counter",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_race && printf 'import threading\\n\\nclass Counter:\\n    def __init__(self):\\n        self.value = 0\\n\\n    def increment(self):\\n        # BUG: this is not atomic\\n        self.value = self.value + 1\\n\\n\\ndef run(counter, n):\\n    for _ in range(n):\\n        counter.increment()\\n' > /tmp/eval_race/counter.py",
+  "task": "The file /tmp/eval_race/counter.py contains a Counter class with a race condition: when multiple threads call increment() concurrently, the final value is less than expected because the read-modify-write isn't atomic. Fix the Counter class so that 10 threads each calling increment() 10000 times produces a final value of EXACTLY 100000. Do not change the public API (value attribute, increment method, run function). You may add internal synchronization.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, threading; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_race/counter.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.Counter(); threads = [threading.Thread(target=mod.run, args=(c, 10000)) for _ in range(10)]; [t.start() for t in threads]; [t.join() for t in threads]; assert c.value == 100000, f'race not fixed: got {c.value}, expected 100000'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_race",
+  "max_iter": 25
+}

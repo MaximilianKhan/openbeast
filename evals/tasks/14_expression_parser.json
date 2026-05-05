@@ -1,0 +1,13 @@
+{
+  "id": "14_expression_parser",
+  "name": "Recursive-descent expression parser",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_parser",
+  "task": "Create /tmp/eval_parser/parser.py with a function parse(expr) that parses arithmetic expressions and returns an AST as nested lists. Supported tokens: integers, +, -, *, /, parentheses. The AST format: leaves are integers; binary operations are ['op', left, right] using standard precedence (* and / bind tighter than + and -). Example: parse('2 + 3 * 4') returns ['+', 2, ['*', 3, 4]].",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_parser/parser.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); p = mod.parse; assert p('1') == 1, f\"'1' got {p('1')}\"; assert p('2 + 3') == ['+', 2, 3]; assert p('2 + 3 * 4') == ['+', 2, ['*', 3, 4]], f\"got {p('2 + 3 * 4')}\"; assert p('(2 + 3) * 4') == ['*', ['+', 2, 3], 4]; assert p('10 - 2 - 3') == ['-', ['-', 10, 2], 3], f\"left-assoc got {p('10 - 2 - 3')}\"; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_parser",
+  "max_iter": 25
+}

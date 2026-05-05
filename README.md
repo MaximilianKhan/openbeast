@@ -70,8 +70,10 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- 10-task eval harness with automated validation (`evals/run_eval.py`)
-- Test suite covering scripts, tools, and MCP server (`tests/run_tests.sh`)
+- **30-task eval harness** (2 easy / 15 medium / 13 hard) with automated validation (`evals/run_eval.py`)
+- **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces a ranked leaderboard
+- Composite scoring with separate correctness + speed columns (`evals/scoring.py`)
+- Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
 ## Quick Start (fresh Linux box)
 
@@ -160,7 +162,13 @@ tests/                       # Test suite
   test_scripts.sh            # Script structure validation
   test_smoke.sh              # End-to-end stack smoke test (requires running stack)
 
-evals/                       # Eval harness (10 coding tasks with automated validation)
+evals/                       # Eval harness — 30 tasks + multi-model benchmark
+  run_eval.py                # Single-model eval runner (model-tagged results)
+  scoring.py                 # Correctness/speed/composite scoring + leaderboard
+  benchmark_all.py           # Multi-model sweep orchestration
+  tasks/                     # Per-task JSON definitions (01–30)
+  results/                   # Per-run results (kept all, model-tagged) [gitignored]
+  leaderboard.json           # Latest score per model (auto-updated)
 
 system-prompt.md             # Soul file (persona, applied to all frontends)
 system-prompt-tools.md       # Tool guidance (Open WebUI only)
@@ -176,25 +184,37 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[REFERENCE.md](REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
 - **[TODO.md](TODO.md)** — Roadmap and completed work
 
-## Eval Results
+## Evals & Benchmarking
 
+The 30-task eval harness exercises everything from "create a file" to
+"patch SQL injection vulnerabilities" and "find and fix a race condition."
+
+**Score = 0.75 × correctness + 0.25 × speed** (separate columns also reported):
+- **Correctness**: difficulty-weighted pass rate (easy=1, medium=3, hard=5; max 112 pts)
+- **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
+- **Composite**: weighted blend, used for leaderboard ranking
+
+```bash
+# Single-model eval (server must already be running)
+python3 evals/run_eval.py                          # all 30 tasks
+python3 evals/run_eval.py --tasks 21,22,23         # subset
+python3 evals/run_eval.py --model-name custom-name # override auto-detected name
+
+# Multi-model sweep — stops/starts each serve script in turn, ~3-4 hours for all 5
+python3 evals/benchmark_all.py                     # full sweep
+python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
+python3 evals/benchmark_all.py --list              # show configured models
+
+# Scoring + leaderboard
+python3 evals/scoring.py --show                    # current leaderboard
+python3 evals/scoring.py --rebuild                 # regenerate from results/
+python3 evals/scoring.py --score evals/results/eval-*.json  # score one file
 ```
-Task                              Difficulty   Time     Result
-Create a Python file              easy          6.6s    PASS
-Edit an existing file             easy         10.1s    PASS
-Find and fix a bug across files   medium       17.9s    PASS
-Write unit tests                  medium       25.5s    PASS
-Multi-file refactor               medium       12.3s    PASS
-Debug a runtime error             medium       26.7s    PASS
-Build a CLI tool from scratch     hard         13.0s    PASS
-Add REST API endpoints            hard         31.4s    PASS
-Write bash script w/ errors       medium       14.9s    PASS
-Transform data between formats    hard         11.0s    PASS
 
-Total: 10/10 passed              Avg: 17.0s
-```
-
-Run evals yourself: `python3 evals/run_eval.py`
+Results land in `evals/results/eval-{model_slug}-{timestamp}.json` (one per run,
+all kept). Each result file embeds the model name and a snapshot of the GPU
+config (`nvidia-smi` — name, driver, total VRAM, compute capability). The
+leaderboard at `evals/leaderboard.json` keeps the latest score per model.
 
 ## Requirements
 

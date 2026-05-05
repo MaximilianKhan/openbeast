@@ -1,0 +1,13 @@
+{
+  "id": "19_three_way_quicksort",
+  "name": "Three-way quicksort for arrays with duplicates",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_qsort",
+  "task": "Create /tmp/eval_qsort/qsort.py with a function quicksort_3way(arr) that sorts the input list IN PLACE using three-way partitioning (split into <pivot, ==pivot, >pivot regions). Must handle duplicates efficiently and return None (mutates the input). Do NOT use sorted() or list.sort().",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, random; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_qsort/qsort.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_qsort/qsort.py').read(); assert 'sorted(' not in src and '.sort(' not in src, 'must not call sorted() or list.sort()'; q = mod.quicksort_3way; a = []; q(a); assert a == []; a = [3,1,2]; q(a); assert a == [1,2,3], f'small {a}'; a = [5,5,5,5]; q(a); assert a == [5,5,5,5]; a = [3,1,4,1,5,9,2,6,5,3,5]; q(a); assert a == sorted([3,1,4,1,5,9,2,6,5,3,5]), f'mixed {a}'; random.seed(42); big = [random.randint(0, 50) for _ in range(500)]; expected = sorted(big); q(big); assert big == expected; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_qsort",
+  "max_iter": 20
+}

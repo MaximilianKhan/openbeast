@@ -1,0 +1,13 @@
+{
+  "id": "16_csv_to_sqlite",
+  "name": "CSV to SQLite importer with type inference",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_csv && printf 'id,name,score,active\\n1,Alice,95.5,true\\n2,Bob,72.0,false\\n3,Carol,88.25,true\\n' > /tmp/eval_csv/data.csv",
+  "task": "Create /tmp/eval_csv/importer.py with a function import_csv(csv_path, db_path, table_name) that reads the CSV, infers each column's SQLite type (INTEGER if all integer-looking, REAL if all numeric and any has a decimal, TEXT otherwise), creates the table, and inserts all rows. The CSV at /tmp/eval_csv/data.csv has columns id,name,score,active — expected types are INTEGER, TEXT, REAL, TEXT. Use the standard csv and sqlite3 modules.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, sqlite3; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_csv/importer.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.import_csv('/tmp/eval_csv/data.csv', '/tmp/eval_csv/out.db', 'data'); conn = sqlite3.connect('/tmp/eval_csv/out.db'); cur = conn.cursor(); cols = {r[1]: r[2].upper() for r in cur.execute('PRAGMA table_info(data)').fetchall()}; assert cols.get('id') == 'INTEGER', f\"id type {cols.get('id')}\"; assert cols.get('score') == 'REAL', f\"score type {cols.get('score')}\"; assert cols.get('name') == 'TEXT'; rows = cur.execute('SELECT id, name, score FROM data ORDER BY id').fetchall(); assert rows[0] == (1, 'Alice', 95.5), f'row0 {rows[0]}'; assert rows[2] == (3, 'Carol', 88.25); assert len(rows) == 3; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_csv",
+  "max_iter": 25
+}
