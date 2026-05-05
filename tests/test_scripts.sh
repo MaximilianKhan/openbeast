@@ -33,8 +33,10 @@ EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh
   serve-qwen-27b-q4.sh serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
+  serve-gemma-4-31b-q5.sh
   run-qwen-27b-q4.sh run-qwen-27b-q5.sh
   run-qwen-27b-uncensored-q5.sh run-qwen-35b-a3b.sh
+  run-gemma-4-31b-q5.sh
 )
 for script in "${EXPECTED_SCRIPTS[@]}"; do
   if [[ -x "$REPO_DIR/scripts/$script" ]]; then
@@ -74,8 +76,10 @@ else
 fi
 
 # Model scripts should reference REPO_DIR for weights
-for script in "$REPO_DIR"/scripts/serve-qwen-*.sh "$REPO_DIR"/scripts/run-qwen-*.sh; do
+for script in "$REPO_DIR"/scripts/serve-*.sh "$REPO_DIR"/scripts/run-*.sh; do
   name=$(basename "$script")
+  # Skip the generic launchers — they take -m from the caller.
+  [[ "$name" == "serve.sh" || "$name" == "run.sh" ]] && continue
   if grep -q 'REPO_DIR.*weights/' "$script"; then
     pass "$name uses REPO_DIR for weights path"
   else

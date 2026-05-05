@@ -42,6 +42,13 @@
             "context": 425984,
             "output": 32768
           }
+        },
+        "gemma-4-31b-q5": {
+          "name": "Gemma 4 31B Q5_K_XL",
+          "limit": {
+            "context": 204800,
+            "output": 32768
+          }
         }
       }
     }

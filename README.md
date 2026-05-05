@@ -97,6 +97,7 @@ opencode                           # Terminal agent (from any directory)
 | Qwen3.6-27B | Q5_K_XL | 19 GB | 416K | 26 GB | Higher fidelity |
 | **Qwen3.6-27B Uncensored** | **Q5_K_P** | **21 GB** | **416K** | **28 GB** | **Default model** |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 23 GB | Fast, KV-efficient, 1M capable |
+| Gemma 4 31B-it | Q5_K_XL | 20 GB | 128K | TBD | Different family; KV cost not yet measured |
 
 ## Project Structure
 

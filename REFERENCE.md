@@ -9,7 +9,8 @@ models/
 │   ├── Qwen3.6-27B-Q4_K_M.gguf
 │   ├── Qwen3.6-27B-UD-Q5_K_XL.gguf
 │   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
-│   └── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+│   ├── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+│   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
 ├── start.sh                # launch full stack (server + MCPO + Open WebUI)
 ├── stop.sh                 # stop full stack
 ├── agent.sh                # run a local agent against a task
@@ -21,10 +22,12 @@ models/
 │   ├── serve-qwen-27b-q5.sh
 │   ├── serve-qwen-27b-uncensored-q5.sh
 │   ├── serve-qwen-35b-a3b.sh
+│   ├── serve-gemma-4-31b-q5.sh
 │   ├── run-qwen-27b-q4.sh
 │   ├── run-qwen-27b-q5.sh
 │   ├── run-qwen-27b-uncensored-q5.sh
-│   └── run-qwen-35b-a3b.sh
+│   ├── run-qwen-35b-a3b.sh
+│   └── run-gemma-4-31b-q5.sh
 ├── agents/                 # agent framework + MCP tool server
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
 │   ├── tools.py            # tool definitions for standalone agent
@@ -88,6 +91,24 @@ measurements.
 | 262K    | 21 GB | 4.5 GB   | **25.5 GB** | 6.5 GB  |
 | **416K** (default) | 21 GB | 7.3 GB | **28.3 GB** | ~2 GB (after OS) |
 | 512K    | 21 GB | 9.0 GB   | **30.0 GB** | OOM (OS VRAM) |
+
+### Gemma 4 31B-it — KV cost not yet measured
+
+Different model family (Gemma, not Qwen). Uses sliding-window attention which
+*should* be more KV-efficient than dense attention, but llama.cpp's actual
+allocation has not been measured for this model. Treat numbers below as
+placeholders until validated with a real launch.
+
+**Q5_K_XL (~20.4GB weights)**
+
+| Context | Model | KV Cache | **Total** | Headroom |
+|---------|-------|----------|-----------|----------|
+| **128K** (default) | 20.4 GB | TBD     | **TBD** | TBD     |
+
+**How to validate:** Launch with `./scripts/serve-gemma-4-31b-q5.sh`, then
+check `nvidia-smi` and `curl http://localhost:8080/metrics`. Once measured,
+update this table and consider raising `-c` in `serve-gemma-4-31b-q5.sh`
+and `run-gemma-4-31b-q5.sh` if there's headroom (always keep ≥2GB free).
 
 ### Qwen3.6-35B-A3B — 40 layers, real-world KV cost: ~6.3 KB/token
 
@@ -162,6 +183,17 @@ hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Unce
 - Same base architecture as Qwen3.6-27B (64 layers, ~18 KB/token KV cost)
 - Fine-tuned with safety filters removed
 - **Q5_K_P** (~21GB): default **416K** context, ~28.3GB total
+
+### Gemma 4 31B-it (Q5_K_XL — 20.4GB)
+
+```bash
+hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-dir weights/
+```
+
+- Source: https://huggingface.co/unsloth/gemma-4-31B-it-GGUF
+- Different family from Qwen — uses sliding-window attention
+- KV cost not yet measured; default **128K** context (conservative)
+- Raise `-c` after validating actual VRAM usage with a real launch
 
 ### Qwen3.6-35B-A3B (MoE + hybrid DeltaNet, Q4_K_M — 22GB)
 
@@ -296,6 +328,7 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
 ./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
 ./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~23.1GB VRAM)
+./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
 ```
 
 ### OpenAI-compatible API server
@@ -305,6 +338,7 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
+./scripts/serve-gemma-4-31b-q5.sh  # http://localhost:8080/v1/chat/completions
 ```
 
 ### Agent (autonomous long-running tasks)

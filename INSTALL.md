@@ -85,6 +85,12 @@ hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Unce
 hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-dir weights/
 ```
 
+### Gemma 4 31B-it -- Q5_K_XL (~20.4GB)
+
+```bash
+hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-dir weights/
+```
+
 You don't need all of these -- download whichever models you plan to use.
 
 ## 3. Install Python dependencies
