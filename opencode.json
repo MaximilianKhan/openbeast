@@ -39,14 +39,14 @@
         "qwen-27b-uncensored-q5": {
           "name": "Qwen3.6-27B Uncensored Q5_K_P",
           "limit": {
-            "context": 425984,
+            "context": 389120,
             "output": 32768
           }
         },
         "gemma-4-31b-q5": {
           "name": "Gemma 4 31B Q5_K_XL",
           "limit": {
-            "context": 204800,
+            "context": 225280,
             "output": 32768
           }
         }

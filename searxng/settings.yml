@@ -1,0 +1,14 @@
+use_default_settings: true
+
+server:
+  # Localhost-only deployment — this key signs sessions, not user data.
+  secret_key: "921cde7a1b38229ecae4f6857b55395473b6bc3daa2b84d801ebe9ea2449035b"
+  # Disable rate limiter so the local MCP server can hit the JSON endpoint freely.
+  limiter: false
+  image_proxy: true
+
+search:
+  # Default image only emits 'html' — we need 'json' so the web_search MCP tool works.
+  formats:
+    - html
+    - json

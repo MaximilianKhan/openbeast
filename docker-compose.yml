@@ -18,7 +18,15 @@ services:
     network_mode: host
     environment:
       - SEARXNG_BASE_URL=http://localhost:8888/
-      - BIND_ADDRESS=0.0.0.0:8888
+      # Newer SearXNG image runs granian, which reads GRANIAN_PORT (default 8080).
+      # BIND_ADDRESS from older uwsgi-based images is ignored. Without this override,
+      # granian tries to bind 8080 and clashes with llama-server.
+      - GRANIAN_PORT=8888
+      - GRANIAN_HOST=0.0.0.0
+    volumes:
+      # Override default settings.yml to enable JSON format (required by web_search
+      # MCP tool) and disable the rate limiter for local use.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:rw
     restart: unless-stopped
 
 volumes:

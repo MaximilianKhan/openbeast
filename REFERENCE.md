@@ -75,40 +75,44 @@ measurements.
 
 **Q5_K_XL (~19GB weights) — higher fidelity, tighter fit**
 
-| Context | Model | KV Cache | **Total** | Headroom |
-|---------|-------|----------|-----------|----------|
-| 64K     | 19 GB | 1.1 GB   | **20.1 GB** | 11.9 GB |
-| 262K    | 19 GB | 4.5 GB   | **23.5 GB** | 8.5 GB  |
-| **416K** (default) | 19 GB | 7.3 GB | **26.3 GB** | ~2 GB (after OS) |
-| 512K    | 19 GB | 9.0 GB   | **28.0 GB** | OOM (OS VRAM) |
-| 768K    | 19 GB | 13.5 GB  | **32.5 GB** | OOM     |
+Re-measured 2026-05-05: actual KV cost runs denser than the original 18 KB/token
+estimate. The 416K default still works but lands tight against the 2GB rule.
+
+| Context | **Total Used** | Headroom (32GB card) | Status |
+|---------|----------------|----------------------|--------|
+| **416K** (default) | **30,711 MiB** | **2,057 MiB** | **measured — 9 MiB above 2GB rule (tight)** |
+| 408K (suggested if OOMs) | ~30,560 MiB | ~2,200 MiB | safer alternative — comparable to other models' margin |
 
 **Uncensored (HauhauCS Aggressive) Q5_K_P (~21GB weights)**
 
-| Context | Model | KV Cache | **Total** | Headroom |
-|---------|-------|----------|-----------|----------|
-| 64K     | 21 GB | 1.1 GB   | **22.1 GB** | 9.9 GB  |
-| 262K    | 21 GB | 4.5 GB   | **25.5 GB** | 6.5 GB  |
-| **416K** (default) | 21 GB | 7.3 GB | **28.3 GB** | ~2 GB (after OS) |
-| 512K    | 21 GB | 9.0 GB   | **30.0 GB** | OOM (OS VRAM) |
+Re-measured 2026-05-05: actual KV cost runs denser than the original 18 KB/token
+estimate (closer to ~20 KB at high context). The original 416K default was too
+tight. New default: **380K**, validated at 2,120 MiB headroom.
 
-### Gemma 4 31B-it — KV cost not yet measured
+| Context | **Total Used** | Headroom (32GB card) | Status |
+|---------|----------------|----------------------|--------|
+| **380K** (default) | **30,648 MiB** | **2,120 MiB** | **measured — meets 2GB rule** |
+| 416K    | **31,405 MiB** | 1,363 MiB            | below 2GB rule — OOM risk on OS spikes |
 
-Different model family (Gemma, not Qwen). Uses sliding-window attention which
-*should* be more KV-efficient than dense attention, but llama.cpp's actual
-allocation has not been measured for this model. Treat numbers below as
-placeholders until validated with a real launch.
+### Gemma 4 31B-it — measured KV cost (non-linear, grows with context)
+
+Different model family from Qwen (no DeltaNet, uses sliding-window attention).
+Per-token KV starts close to Qwen 27B but rises with context length —
+20 KB/token from 128K→200K, then 25 KB/token from 200K→250K. Measured 2026-05-05.
 
 **Q5_K_XL (~20.4GB weights)**
 
-| Context | Model | KV Cache | **Total** | Headroom |
-|---------|-------|----------|-----------|----------|
-| **128K** (default) | 20.4 GB | TBD     | **TBD** | TBD     |
+| Context | **Total Used** | Headroom (32GB card) | Status |
+|---------|----------------|----------------------|--------|
+| 128K    | **28,680 MiB** | 4,088 MiB            | safe   |
+| 200K    | **30,155 MiB** | 2,613 MiB            | safe   |
+| **220K** (default) | **30,688 MiB** | **2,080 MiB** | **measured ceiling — exactly meets 2GB rule** |
+| 250K    | **31,439 MiB** | 1,329 MiB            | below 2GB rule — OOM risk on OS spikes |
 
-**How to validate:** Launch with `./scripts/serve-gemma-4-31b-q5.sh`, then
-check `nvidia-smi` and `curl http://localhost:8080/metrics`. Once measured,
-update this table and consider raising `-c` in `serve-gemma-4-31b-q5.sh`
-and `run-gemma-4-31b-q5.sh` if there's headroom (always keep ≥2GB free).
+**Why default is 220K:** Each step beyond 200K costs more per token (KV growth
+appears non-linear, possibly due to compute buffer scaling). 220K is the highest
+context that respects the 2GB headroom rule. 250K worked but left no margin
+for browser/video GPU spikes — same cliff that caused Qwen Q5_K_XL OOMs at 512K.
 
 ### Qwen3.6-35B-A3B — 40 layers, real-world KV cost: ~6.3 KB/token
 
