@@ -2,7 +2,7 @@
 
 A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
 
-Built on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Uncensored** (Q5_K_P) — scores within 4 points of Claude Opus on SWE-bench. 10/10 on our internal eval harness.
+Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Uncensored** (Q5_K_P) — scores within 4 points of Claude Opus on SWE-bench. 10/10 on our internal eval harness.
 
 ## Architecture
 
@@ -45,92 +45,135 @@ Built on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Unc
 
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
-- 6 parallel request slots with unified KV cache
-- 4 pre-configured Qwen 3.6 models (27B dense, 35B MoE, uncensored variants)
-- Up to 512K context (1M on the MoE model)
+- 6 parallel request slots with unified KV cache and continuous batching
+- 5 pre-configured models (Qwen 27B dense, Qwen 35B MoE, Qwen 27B uncensored, Gemma 4 31B-it)
+- Context lengths tuned to measured VRAM ceilings (380K–512K) on a 32GB card
 
-**Tool Suite (15 MCP tools)**
+**Tool Suite (13 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
 - Code search: `grep` (regex), `list_files` (glob)
 - Shell: `bash` with timeout and output capture
-- Web: `fetch` (URL content), `web_search` (SearXNG)
+- Web: `fetch` (URL → readable text), `web_search` (via local SearXNG)
 - Agent management: `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
 
 **Autonomous Agents**
 - Fire-and-forget background agents that code independently
 - Context briefing from spawning model
-- JSONL logging with full replay/resumption
+- JSONL logging with full replay/resumption (`agents/logs/`)
 - Token budget awareness (~85K per slot)
 
 **Frontends**
 - [Open WebUI](https://github.com/open-webui/open-webui) — browser chat with persistent history, file upload, tool use
 - [OpenCode](https://opencode.ai) — terminal coding agent with built-in tools
-- `agent.sh` — headless autonomous agent for scripted tasks
+- `agent.sh` — headless autonomous agent for scripted/scheduled tasks
 
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
 - 10-task eval harness with automated validation (`evals/run_eval.py`)
-- 79-test suite covering scripts, tools, and MCP server
+- Test suite covering scripts, tools, and MCP server (`tests/run_tests.sh`)
 
-## Quick Start
+## Quick Start (fresh Linux box)
+
+Assuming NVIDIA driver, CUDA, Docker, and Python 3.10+ are installed:
 
 ```bash
-# 1. Install (see INSTALL.md for full steps)
-git clone <repo> && cd models
-# Build llama.cpp, download models, install deps...
+# 1. Clone and enter the repo
+git clone <repo-url> models && cd models
 
-# 2. Start the full stack
+# 2. Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
+git clone https://github.com/ggml-org/llama.cpp.git
+(cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 \
+                 && cmake --build build --config Release -j$(nproc))
+
+# 3. Install Python deps + Hugging Face CLI
+pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
+
+# 4. Download the default model (or pick another from INSTALL.md)
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+
+# 5. Install OpenCode (terminal frontend)
+curl -fsSL https://opencode.ai/install | bash
+
+# 6. Pull Open WebUI image (browser frontend)
+docker pull ghcr.io/open-webui/open-webui:main
+
+# 7. Launch the full stack
+chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
 ./start.sh
-
-# 3. Use it
-open http://localhost:3000          # Open WebUI
-opencode                           # Terminal agent (from any directory)
-./agent.sh "add tests for auth.py" # Autonomous agent
 ```
+
+Then:
+```bash
+# Browser chat
+xdg-open http://localhost:3000
+
+# Terminal agent (from any project directory)
+opencode
+
+# Autonomous background agent
+./agent.sh "add tests for auth.py"
+```
+
+See **[INSTALL.md](INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
 
 ## Models
 
-| Model | Quant | Size | Context | VRAM | Notes |
-|-------|-------|------|---------|------|-------|
-| Qwen3.6-27B | Q4_K_M | 16 GB | 512K | 25 GB | Fast, good quality |
+| Model | Quant | Weights | Context | VRAM (measured) | Notes |
+|-------|-------|---------|---------|-----------------|-------|
+| Qwen3.6-27B | Q4_K_M | 16 GB | 512K | ~25 GB | Fast, good quality |
 | Qwen3.6-27B | Q5_K_XL | 19 GB | 416K | 30.7 GB | Higher fidelity (margin only 9 MiB above 2GB rule) |
 | **Qwen3.6-27B Uncensored** | **Q5_K_P** | **21 GB** | **380K** | **30.7 GB** | **Default model** |
-| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 23 GB | Fast, KV-efficient, 1M capable |
+| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | ~23 GB | Fast, KV-efficient, 1M capable |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
+
+All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See `REFERENCE.md` for the full measurement curve.
 
 ## Project Structure
 
 ```
-start.sh                    # Launch full stack
-stop.sh                     # Stop everything
-agent.sh                    # Run autonomous agent
+start.sh                     # Launch full stack (llama.cpp + MCPO + Open WebUI + SearXNG)
+stop.sh                      # Stop everything
+agent.sh                     # Run an autonomous agent
 
-scripts/                    # Server, chat, and config scripts
-  serve.sh / run.sh         # Generic launchers
-  serve-qwen-*.sh           # Model-specific API servers
-  run-qwen-*.sh             # Model-specific chat
-  configure-webui.sh        # Auto-configure Open WebUI
-  healthcheck.sh            # Service health monitor
+scripts/                     # Server, chat, and ops scripts
+  serve.sh / run.sh          # Generic launchers (pick model with -m)
+  serve-<model>.sh           # Model-specific API servers
+  run-<model>.sh             # Model-specific interactive chat
+  configure-webui.sh         # Auto-configure Open WebUI (tools + system prompt)
+  healthcheck.sh             # Service health monitor (--restart to auto-recover)
 
-agents/                     # Agent framework + MCP tools
-  mcp_server.py             # MCP tool server (15 tools)
-  runner.py                 # Autonomous agent loop
-  tools.py                  # Tool schemas and handlers
+agents/                      # Agent framework + MCP tool server
+  mcp_server.py              # MCP tool server (13 tools, stdio + HTTP transports)
+  runner.py                  # Autonomous agent loop (LLM + tool use)
+  tools.py                   # Tool schemas/handlers for the standalone runner
+  requirements.txt           # openai, mcp, mcpo
+  logs/                      # Agent run logs (JSONL) [gitignored]
 
-tests/                      # Test suite (79 tests)
-evals/                      # Eval harness (10 coding tasks)
+searxng/
+  settings.yml               # Custom config: enables JSON format + disables limiter
 
-system-prompt.md            # Soul file (persona, all frontends)
-system-prompt-tools.md      # Tool guidance (Open WebUI only)
-docker-compose.yml          # Open WebUI + SearXNG containers
-opencode.json               # OpenCode project config
+tests/                       # Test suite
+  run_tests.sh               # Run all tests
+  test_tools.py              # MCP tool unit tests
+  test_scripts.sh            # Script structure validation
+  test_smoke.sh              # End-to-end stack smoke test (requires running stack)
+
+evals/                       # Eval harness (10 coding tasks with automated validation)
+
+system-prompt.md             # Soul file (persona, applied to all frontends)
+system-prompt-tools.md       # Tool guidance (Open WebUI only)
+docker-compose.yml           # Open WebUI + SearXNG containers
+opencode.json                # OpenCode project config (MCP wiring + model list)
+weights/                     # GGUF model files [gitignored]
+llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 ```
 
 ## Documentation
 
 - **[INSTALL.md](INSTALL.md)** — Step-by-step installation, prerequisites, troubleshooting
-- **[REFERENCE.md](REFERENCE.md)** — VRAM tables, architecture details, all configuration options
+- **[REFERENCE.md](REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
 - **[TODO.md](TODO.md)** — Roadmap and completed work
 
 ## Eval Results
@@ -155,6 +198,7 @@ Run evals yourself: `python3 evals/run_eval.py`
 
 ## Requirements
 
-- NVIDIA GPU with CUDA (tested on RTX 5090, works on 3090/4090)
-- Arch Linux (or any Linux with CUDA + Docker)
-- Python 3.10+, Docker, cmake, gcc
+- NVIDIA GPU with CUDA (tested on RTX 5090; works on 3090/4090 — set `CMAKE_CUDA_ARCHITECTURES` accordingly)
+- Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
+- Disk: ~25 GB for llama.cpp + one model. Each model adds 16–21 GB.
+- VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults

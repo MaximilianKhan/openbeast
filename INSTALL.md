@@ -1,11 +1,52 @@
 # Installation
 
-This repo contains scripts for running local LLMs via llama.cpp on NVIDIA GPUs,
-with OpenCode (terminal coding agent) and Open WebUI (browser chat interface) as
-frontends, plus an autonomous agent runner and MCP tool server for tool use.
+This repo runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
+agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
+server providing 13 tools for file I/O, shell, web search, and agent management.
 
 The inference engine, model weights, and Docker volumes are not checked in —
-follow the steps below to set them up.
+follow the steps below to set them up. Everything else (configs, scripts,
+SearXNG settings) lives in the repo and is portable across Linux boxes.
+
+## TL;DR — Fresh box bootstrap
+
+For a working stack on a fresh Linux machine with NVIDIA + Docker:
+
+```bash
+# System packages (Arch shown; adjust for your distro)
+sudo pacman -S cuda cmake docker git python python-pip
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER" && newgrp docker
+
+# Clone the repo
+git clone <repo-url> models && cd models
+
+# Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
+git clone https://github.com/ggml-org/llama.cpp.git
+export PATH=/opt/cuda/bin:$PATH
+(cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 \
+                 && cmake --build build --config Release -j$(nproc))
+
+# Python deps + Hugging Face CLI
+pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
+
+# Default model
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+
+# Frontends
+curl -fsSL https://opencode.ai/install | bash
+docker pull ghcr.io/open-webui/open-webui:main
+docker pull searxng/searxng
+
+# Make scripts executable (in case clone didn't preserve the bit)
+chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
+
+# Launch
+./start.sh
+```
+
+The detailed walkthrough below explains each step and lists alternate models.
 
 ## Prerequisites
 
@@ -13,7 +54,7 @@ follow the steps below to set them up.
 - NVIDIA driver installed (`nvidia-smi` should work)
 - `cuda` and `cmake` installed
 - `gcc`/`g++` installed
-- Docker installed (for Open WebUI)
+- Docker installed (for Open WebUI + SearXNG); user in `docker` group
 - Python 3.10+ with `pip`
 
 On Arch Linux:
@@ -21,6 +62,7 @@ On Arch Linux:
 ```bash
 sudo pacman -S cuda cmake docker
 sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"   # log out/in or run `newgrp docker`
 ```
 
 ## 1. Build llama.cpp
@@ -55,7 +97,10 @@ Install the Hugging Face CLI if you don't have it:
 pip install --user --break-system-packages huggingface-hub[cli]
 ```
 
-Create the weights directory and download models:
+(The `--break-system-packages` flag is Arch-specific; on Debian/Ubuntu use a
+venv or `pipx` instead.)
+
+Create the weights directory and download whichever models you plan to use:
 
 ```bash
 mkdir -p weights
@@ -73,10 +118,11 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-Q4_K_M.gguf --local-dir weights
 hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB)
+### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB) — DEFAULT
 
 ```bash
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 ```
 
 ### Qwen3.6-35B-A3B -- Q4_K_M (~20GB)
@@ -91,7 +137,7 @@ hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-
 hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
-You don't need all of these -- download whichever models you plan to use.
+You don't need all of these — download whichever models you plan to use.
 
 ## 3. Install Python dependencies
 
@@ -99,9 +145,8 @@ You don't need all of these -- download whichever models you plan to use.
 pip install --user --break-system-packages -r agents/requirements.txt
 ```
 
-This installs the OpenAI SDK, MCP SDK, and MCPO (MCP-to-OpenAPI proxy) needed
-by the agent runner, MCP server (including long-running agent management), and
-Open WebUI tool integration.
+Installs `openai`, `mcp`, and `mcpo` — needed by the agent runner, the MCP
+server (including long-running agent management), and Open WebUI tool integration.
 
 ## 4. Install frontends
 
@@ -111,45 +156,73 @@ Open WebUI tool integration.
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-OpenCode is configured via `opencode.json` in the repo root. MCP tools (bash,
-file I/O, grep) are wired via stdio transport — OpenCode launches the MCP server
-automatically. Run `opencode` in any project directory while the server is running.
+OpenCode reads `opencode.json` from the directory you launch it in. Our
+`opencode.json` (committed in the repo root) wires up:
+- The local llama.cpp server as an OpenAI-compatible provider on `localhost:8080`
+- All 5 models with their tuned context limits
+- The MCP tool server via stdio (auto-launched as a subprocess by OpenCode)
+
+Run `opencode` from the repo root, or copy `opencode.json` to any project
+where you want to use the local stack.
 
 ### Open WebUI (browser chat interface)
-
-Pull the Docker image:
 
 ```bash
 docker pull ghcr.io/open-webui/open-webui:main
 ```
 
-Open WebUI is configured via `docker-compose.yml` and will be available at
-http://localhost:3000 when the stack is running.
+Open WebUI is configured by `docker-compose.yml` (in repo root). It:
+- Runs in `network_mode: host` so it can reach `localhost:8080` (llama.cpp)
+- Auto-disables auth (`WEBUI_AUTH=false`) for local-only use
+- Persists chat history to a Docker named volume (`open-webui-data`)
+
+Available at http://localhost:3000 once the stack is running.
+
+### SearXNG (private web search backend)
+
+```bash
+docker pull searxng/searxng
+```
+
+Used by the `web_search` MCP tool. Our `docker-compose.yml` mounts
+`searxng/settings.yml` (committed in the repo) into the container with two
+non-default settings:
+- JSON format enabled (the stock image has only HTML, which breaks the MCP tool)
+- Rate limiter disabled (for local use)
+- Granian server bound to port 8888 (stock image defaults to 8080, which
+  collides with llama.cpp)
+
+No manual config needed — the mounted file handles all of it.
 
 ## 5. Start the stack
 
 The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
 
 ```bash
-./start.sh                          # default model + MCPO tools + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-q4.sh     # use a different model
+./start.sh                                 # default model + MCPO + Open WebUI + SearXNG
+./start.sh serve-qwen-27b-q4.sh            # use a different model
+./start.sh serve-gemma-4-31b-q5.sh         # use Gemma
 ```
 
 This launches:
 1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
 2. **MCPO proxy** on port 3001 (wraps MCP tools as OpenAPI for Open WebUI)
 3. **Open WebUI** on port 3000 (Docker container)
-4. **configure-webui.sh** (auto-configures tool server + native function calling)
+4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
+5. **configure-webui.sh** (auto-configures tool server + native function calling
+   + system prompt for every detected model)
 
-On a fresh install, `configure-webui.sh` runs automatically and sets up:
-- The MCPO tool server as an OpenAPI endpoint in Open WebUI
-- Native function calling mode for all detected models (required for Qwen tool use)
-- The system prompt from `system-prompt.md` + `system-prompt-tools.md` (applied to all models)
+On first run, `configure-webui.sh` populates Open WebUI with:
+- The MCPO tool server registered as an OpenAPI endpoint
+- Native function calling mode for every model (required for Qwen tool use —
+  the prompt-based default breaks with `<think>` tags)
+- The system prompt (`system-prompt.md` + `system-prompt-tools.md`) written
+  into each model's DB entry
 
-Then use OpenCode separately in any project:
+OpenCode runs separately from the stack:
 
 ```bash
-cd ~/my-project
+cd ~/my-project        # any directory, but opencode.json must be reachable
 opencode
 ```
 
@@ -161,17 +234,16 @@ To stop everything:
 
 ## 6. Verify
 
-- **Model server:** `curl http://localhost:8080/health`
-- **MCPO tools:** `curl http://localhost:3001/docs` (should show OpenAPI docs)
+- **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
+- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 13 tools)
 - **Open WebUI:** open http://localhost:3000 in a browser
-- **OpenCode:** run `opencode` in a project directory, select the local model
-- **Tool use:** in Open WebUI, enable the "Local Tools (MCPO)" tool in the chat
-  input area (wrench icon), then ask the model to run a command
-- **Long-running agents:** ask the model to use `start_agent` to spawn a
-  background agent, then `check_agent` to monitor it
-- **Health check:** `./scripts/healthcheck.sh` (checks all services + GPU VRAM)
+- **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
+- **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
+- **Tool use:** in Open WebUI, click the wrench icon in the chat input and toggle on "Local Tools (MCPO)"
+- **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
+- **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
-- **Eval harness:** `python3 evals/run_eval.py` (benchmark model on 10 coding tasks)
+- **Eval harness:** `python3 evals/run_eval.py` (benchmark on 10 coding tasks)
 
 ## Architecture notes
 
@@ -233,28 +305,31 @@ server integration.
 
 ## Troubleshooting
 
-**`llama-cli not found`** -- llama.cpp isn't built or the build directory structure
+**`llama-cli not found`** — llama.cpp isn't built or the build directory structure
 changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.
 
-**`cudaMalloc failed: out of memory`** -- not enough VRAM. Either another process is
+**`cudaMalloc failed: out of memory`** — not enough VRAM. Either another process is
 using the GPU, or the context length is too high. Override with a smaller context:
 
 ```bash
 ./scripts/run-qwen-27b-q4.sh -c 262144
 ```
 
-See `REFERENCE.md` for VRAM estimates at different context lengths. The OS/desktop
+See `REFERENCE.md` for measured VRAM at different context lengths. The OS/desktop
 compositor uses ~2GB of GPU VRAM — always leave at least 2GB headroom.
 
-**`hf: command not found`** -- install the Hugging Face CLI (step 2 above).
+**`hf: command not found`** — install the Hugging Face CLI (step 2 above).
 Note: `huggingface-cli` is deprecated, use `hf` instead.
 
-**Open WebUI can't connect to model** -- make sure the llama.cpp server is running
+**`permission denied: ./start.sh`** — clone didn't preserve the executable bit.
+Fix: `chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh`.
+
+**Open WebUI can't connect to model** — make sure the llama.cpp server is running
 first (`./start.sh` handles this automatically). The Docker container uses host
 network mode, so it reaches llama.cpp via `localhost:8080`.
 
-**Tools don't work in Open WebUI** -- check these in order:
-1. Is MCPO running? `curl http://localhost:3001/docs` should show the Swagger UI.
+**Tools don't work in Open WebUI** — check these in order:
+1. Is MCPO running? `curl http://localhost:3001/openapi.json` should return JSON.
 2. Is the tool server configured? Admin Settings > External Tools should show
    "Local Tools (MCPO)" with URL `http://localhost:3001`.
 3. Is native function calling enabled? Admin Settings > Models > [your model] >
@@ -265,6 +340,20 @@ network mode, so it reaches llama.cpp via `localhost:8080`.
 If all else fails, re-run `./scripts/configure-webui.sh` and restart Open WebUI
 (`docker restart open-webui`).
 
-**OpenCode shows no local models** -- make sure you're running `opencode` from a
+**`web_search` returns "SearXNG is not running"** — the SearXNG container is
+crashing (check `docker ps` for restart count). Two known causes, both already
+patched in our `docker-compose.yml` and `searxng/settings.yml`:
+1. Granian binds to its default port 8080 (clashes with llama.cpp) unless
+   `GRANIAN_PORT=8888` is set.
+2. The stock `settings.yml` only enables `formats: [html]`, so JSON queries get
+   403 Forbidden. We mount our own with `formats: [html, json]`.
+
+If you ever upgrade the SearXNG image and these break again, see
+`searxng/settings.yml` and the `searxng` service in `docker-compose.yml`.
+
+**OpenCode shows no local models** — make sure you're running `opencode` from a
 directory that can find the `opencode.json` config (the repo root), or copy
 `opencode.json` to your project. The llama.cpp server must be running on port 8080.
+
+**Docker permission denied** — your user isn't in the `docker` group. Run
+`sudo usermod -aG docker "$USER"` and either log out/in or run `newgrp docker`.
