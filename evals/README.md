@@ -20,10 +20,10 @@ python3 evals/scoring.py --compare-hosts             # side-by-side across machi
 
 **Base totals:** 40 easy · 53 medium · 66 hard · 12 categories · 159 base task IDs
 
-**Effective totals after variant rollout:** 197 test units (146 single-variant
-legacy + 51 variant entries from 13 base tasks). Total weighted points are
-preserved at 251.5 (a hard task with 4 variants scores 4 × 0.5 = 2.0 — same as
-a hard single-variant task).
+**Effective totals after variant rollout:** 223 test units (146 single-variant
+legacy + 77 variant entries from 13 base tasks). Total weighted points are
+preserved at 251.5 (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 — same
+as a hard single-variant task).
 
 Difficulty weights (used in accuracy scoring): easy=1, medium=1.5, hard=2 — for
 multi-variant tasks, divided by variant count.
@@ -31,25 +31,58 @@ Time budgets (used in speed scoring): easy=30s, medium=90s, hard=300s.
 
 ### Multi-language variants
 
-13 of the 159 base tasks have Python / Go / C / C++ variants. Each variant is
-its own scored test unit; the leaderboard reports per-language accuracy via
+13 of the 159 base tasks have language variants. Each variant is its own
+scored test unit; the leaderboard reports per-language accuracy via
 `scoring.py --by-language`.
 
-| Task | # variants | Languages |
+**Currently supported languages:** Python (`a`), Go (`b`), C (`c`), C++ (`d`),
+Rust (`e`), Zig (`f`). Full 6-language coverage on all 13 base variant tasks.
+
+**Variant ID convention:** stable letter suffix per language so adding new
+languages doesn't renumber existing variants. (Exception: `122_gemm_blocked`
+has no Python variant — perf-flavored task — so its IDs are a=Go, b=C,
+c=C++, d=Rust, e=Zig.)
+
+| Task | Variants | Languages |
 |---|---:|---|
-| 19_three_way_quicksort | 4 | Py / Go / C / C++ |
-| 31_is_power_of_two | 4 | Py / Go / C / C++ |
-| 51_toposort | 4 | Py / Go / C / C++ |
-| 52_unionfind | 4 | Py / Go / C / C++ |
-| 61_extgcd | 4 | Py / Go / C / C++ |
-| 65_miller_rabin | 4 | Py / Go / C / C++ |
-| 73_count_vowels | 4 | Py / Go / C / C++ |
-| 74_palindrome | 4 | Py / Go / C / C++ |
-| 122_gemm_blocked | 3 | Go / C / C++ (perf-flavored — no Python) |
-| 148_convex_hull | 4 | Py / Go / C / C++ |
-| 155_tonelli_shanks | 4 | Py / Go / C / C++ |
-| 158_karatsuba_bytes | 4 | Py / Go / C / C++ |
-| 159_ntt_convolution | 4 | Py / Go / C / C++ |
+| 19_three_way_quicksort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 31_is_power_of_two | 6 | Py / Go / C / C++ / Rust / Zig |
+| 51_toposort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 52_unionfind | 6 | Py / Go / C / C++ / Rust / Zig |
+| 61_extgcd | 6 | Py / Go / C / C++ / Rust / Zig |
+| 65_miller_rabin | 6 | Py / Go / C / C++ / Rust / Zig |
+| 73_count_vowels | 6 | Py / Go / C / C++ / Rust / Zig |
+| 74_palindrome | 6 | Py / Go / C / C++ / Rust / Zig |
+| 122_gemm_blocked | 5 | Go / C / C++ / Rust / Zig (no Python — perf-flavored) |
+| 148_convex_hull | 6 | Py / Go / C / C++ / Rust / Zig |
+| 155_tonelli_shanks | 6 | Py / Go / C / C++ / Rust / Zig |
+| 158_karatsuba_bytes | 6 | Py / Go / C / C++ / Rust / Zig |
+| 159_ntt_convolution | 6 | Py / Go / C / C++ / Rust / Zig |
+
+**Rollout complete (2026-05-06):** all 13 base tasks now cover 6 languages.
+77 variant entries audited end-to-end with reference impls — see
+`tests/audit_variants.py`.
+
+**Build commands per language:**
+
+| Lang | Build | Run |
+|---|---|---|
+| python | (none) | `python3 sol.py < input.txt` |
+| go | `go build -o sol sol.go` | `./sol < input.txt` |
+| c | `gcc -O2 -std=c11 -Wall -Wextra -o sol sol.c` | `./sol < input.txt` |
+| cpp | `g++ -O2 -std=c++17 -Wall -Wextra -o sol sol.cpp` | `./sol < input.txt` |
+| rust | `rustc -O sol.rs -o sol` | `./sol < input.txt` |
+| zig | `zig build-exe -O ReleaseFast sol.zig` | `./sol < input.txt` |
+
+> **Zig 0.16 idioms** for variant authors:
+> - Entrypoint: `pub fn main(init: std.process.Init) !void`
+> - I/O: `std.Io.File.stdin()` / `std.Io.File.stdout()` (the old `std.io`
+>   namespace is gone)
+> - Reading: `takeDelimiter('\n')` returns `?[]u8` (null at EOF), or use
+>   `appendRemainingUnlimited(arena, &list)` to slurp all of stdin
+> - Writing: write to the writer's interface, then `try sout.flush()`
+> - Compile time: ~7-8s per file (cold). Acceptable for the audit; counts
+>   in elapsed time during model runs.
 
 ### Category × difficulty
 
@@ -214,8 +247,8 @@ Single-variant (legacy form, used by 144 of 159 tasks):
 
 A task may declare a `variants` array. Each variant becomes its own scored
 entry with effective id `{base_id}_{variant_id}`, weight = `difficulty_weight /
-num_variants`. Hard task with 4 variants → each is worth 0.5 (= 2.0 / 4). 3/4
-passing → 1.5 earned.
+num_variants`. Hard task with 6 variants → each is worth ~0.333 (= 2.0 / 6).
+5/6 passing → 1.667 earned.
 
 ```json
 {

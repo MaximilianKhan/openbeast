@@ -10,32 +10,66 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.py — a Python program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && python3 vowels.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_vowels/vowels.py \u2014 a Python program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u \u2014 both cases) on its own line to stdout. Empty lines yield 0.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && python3 vowels.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "b",
       "language": "go",
       "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Compile with `go build -o vowels vowels.go`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && go build -o vowels vowels.go && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u \u2014 both cases) on its own line to stdout. Empty lines yield 0. Compile with `go build -o vowels vowels.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && go build -o vowels vowels.go && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.c — a C program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_vowels/vowels.c \u2014 a C program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u \u2014 both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.cpp — a C++ program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_vowels/vowels.cpp \u2014 a C++ program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u \u2014 both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O vowels.rs -o vowels` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && rustc -O vowels.rs -o vowels && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast vowels.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_vowels && zig build-exe -O ReleaseFast vowels.zig && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_vowels"
     }
   ]

@@ -52,6 +52,7 @@ The detailed walkthrough below explains each step and lists alternate models.
 
 ## Prerequisites
 
+### Core
 - NVIDIA GPU with CUDA support (tested on RTX 5090, Blackwell SM 120)
 - NVIDIA driver installed (`nvidia-smi` should work)
 - `cuda` and `cmake` installed
@@ -59,13 +60,43 @@ The detailed walkthrough below explains each step and lists alternate models.
 - Docker installed (for Open WebUI + SearXNG); user in `docker` group
 - Python 3.10+ with `pip`
 
-On Arch Linux:
+### Compiler toolchains for the eval suite (multi-language variants)
+
+The 159-task eval suite includes 13 base tasks with multi-language variants
+(Python / Go / C / C++ / Rust / Zig). To run those variants, all six
+toolchains need to be available:
+
+| Language | Used for | Install (Arch) |
+|---|---|---|
+| Python 3.10+ | always | `sudo pacman -S python` |
+| Go ≥1.21 | variant `b` | `mise use -g go@latest` (or `sudo pacman -S go`) |
+| C (gcc) | variant `c` | (already required for llama.cpp) |
+| C++ (g++) | variant `d` | (already required for llama.cpp) |
+| Rust (rustc) | variant `e` | `sudo pacman -S rust` |
+| Zig | variant `f` | `mise use -g zig@latest` (no sudo needed) |
+
+If you skip a toolchain, the variant tasks for that language will fail at
+the build step — their pass/fail entries in the leaderboard will record
+as failures. The other variants of the same task still run normally.
+
+### Arch Linux quick install
 
 ```bash
-sudo pacman -S cuda cmake docker
+# Core
+sudo pacman -S cuda cmake docker gcc
+
+# Toolchains (skip any you already have)
+sudo pacman -S go rust         # if installing system-wide
+mise install zig@latest && mise use -g zig@latest    # via mise (no sudo)
+
+# Daemons
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"   # log out/in or run `newgrp docker`
 ```
+
+`mise` is a multi-language version manager (think `asdf` / `nvm`); already
+on the user's box for Go and Node. Using mise for Zig avoids needing sudo
+and lets you switch versions easily.
 
 ## 1. Build llama.cpp
 

@@ -26,8 +26,9 @@ in scoring: easy=1, medium=1.5, hard=2 (per-variant weight = base / num
 variants).
 
 **13 of the 159 base tasks** have multi-language variants (Python / Go / C /
-C++) — see the variant rollout section at the end. Effective test units after
-variants: **197**. Total weighted points: 251.5 (invariant — variants split a
+C++ / Rust / Zig — 6 languages) — see the variant rollout section at the end.
+Effective test units after variants: **223** (146 single-variant legacy + 77
+variant entries). Total weighted points: 251.5 (invariant — variants split a
 single base task's weight, not multiply it).
 
 ### Category × difficulty
@@ -133,27 +134,31 @@ single base task's weight, not multiply it).
 | Security | Vulnerability remediation | 1 |
 | Signal Processing & DSP | Frequency-domain analysis | 1 |
 
-### Multi-language variants (13 base tasks → 51 variant entries)
+### Multi-language variants (13 base tasks → 77 variant entries)
 
 | Task | # variants | Languages |
 |---|---:|---|
-| 19_three_way_quicksort | 4 | Py / Go / C / C++ |
-| 31_is_power_of_two | 4 | Py / Go / C / C++ |
-| 51_toposort | 4 | Py / Go / C / C++ |
-| 52_unionfind | 4 | Py / Go / C / C++ |
-| 61_extgcd | 4 | Py / Go / C / C++ |
-| 65_miller_rabin | 4 | Py / Go / C / C++ |
-| 73_count_vowels | 4 | Py / Go / C / C++ |
-| 74_palindrome | 4 | Py / Go / C / C++ |
-| 122_gemm_blocked | 3 | Go / C / C++ (perf-flavored — no Python) |
-| 148_convex_hull | 4 | Py / Go / C / C++ |
-| 155_tonelli_shanks | 4 | Py / Go / C / C++ |
-| 158_karatsuba_bytes | 4 | Py / Go / C / C++ |
-| 159_ntt_convolution | 4 | Py / Go / C / C++ |
+| 19_three_way_quicksort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 31_is_power_of_two | 6 | Py / Go / C / C++ / Rust / Zig |
+| 51_toposort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 52_unionfind | 6 | Py / Go / C / C++ / Rust / Zig |
+| 61_extgcd | 6 | Py / Go / C / C++ / Rust / Zig |
+| 65_miller_rabin | 6 | Py / Go / C / C++ / Rust / Zig |
+| 73_count_vowels | 6 | Py / Go / C / C++ / Rust / Zig |
+| 74_palindrome | 6 | Py / Go / C / C++ / Rust / Zig |
+| 122_gemm_blocked | 5 | Go / C / C++ / Rust / Zig (perf-flavored — no Python) |
+| 148_convex_hull | 6 | Py / Go / C / C++ / Rust / Zig |
+| 155_tonelli_shanks | 6 | Py / Go / C / C++ / Rust / Zig |
+| 158_karatsuba_bytes | 6 | Py / Go / C / C++ / Rust / Zig |
+| 159_ntt_convolution | 6 | Py / Go / C / C++ / Rust / Zig |
 
 Each variant is its own scored test unit. The leaderboard reports per-language
 accuracy via `python3 evals/scoring.py --by-language`. For full schema /
 methodology / pitfalls, see [`evals/README.md`](evals/README.md).
+
+Effective test units after the rollout: **223** (146 single-variant legacy +
+77 variant entries). All 77 variants verified end-to-end with reference
+implementations (`python3 tests/audit_variants.py`).
 
 ---
 
@@ -233,6 +238,180 @@ Gemma 4 31B-it Q5_K_XL      100.0    100.0    83.3    100.0    92.2    100.0   1
 4. **The 35B uncensored beats the 35B standard on accuracy** by 3.8 points despite identical architecture and same Q4_K_M quant. Interesting datapoint: an uncensored fine-tune at the same quant outperforms the original on most categories. The standard MoE specifically struggles on **LLM / ML** (88.5 % — the only model below 100 % there), **Performance & HW Opt** (91.2 % — only model below 100 %), and **Physics + Math Finance**. The uncensored variant matches or beats it on all 12 categories.
 
 5. **Three universal-100 categories**: Algorithms & DS, Concurrency & Systems, Pure & Abstract Math, plus Signal Processing & DSP (1-task category). Every model hits 100 % on the first three. The harness will need harder additions in these categories before the next round to retain discrimination signal.
+
+---
+
+## v3 smoke test — single-model run on the 197-task suite (2026-05-06)
+
+**Status:** ✅ Complete · single-model smoke test on `Qwen 35B-A3B Uncensored Q4_K_M` · 11:27 → 14:54 PT (3h 27m wall-clock) · pre-overnight validation of v3 changes
+
+This was a smoke test of the v3 suite (Phases 1-4 from `docs/WORK_PLAN.md`)
+against the leaderboard winner before kicking off the full 5-model overnight
+sweep. **Five high-value findings emerged**, summarized below.
+
+### Headline scores
+
+| | v1 (144 tasks) | v3 (197 effective units) | Δ |
+|---|---:|---:|---|
+| Accuracy | 97.30 | **91.75** | −5.55 |
+| Speed | 86.7 | **86.43** | −0.27 |
+| Composite | 94.6 | **90.42** | −4.18 |
+| Pass | 140 / 144 | **177 / 197** (89.8%) | — |
+| Hard pass | 49 / 51 | **65 / 80** | — |
+| Tokens | — (not tracked in v1) | **9.81M total** (8.79M prompt / 1.02M completion) | — |
+| Cost-equivalent (Sonnet 4.6) | — | **~$34** | — |
+
+The accuracy drop is **expected, not a regression**: the v3 suite is harder
+by design (15 hardening tasks added to de-saturate categories, plus 51
+variant entries that surfaced compiled-language gaps that didn't exist in
+the Python-only v1).
+
+### Phase 1 spec/harness fixes — all 4 verified
+
+Net **+4 passes** vs v1 from the targeted fixes:
+
+| Task | v1 | v3 | Note |
+|---|---|---|---|
+| `42_value_at_risk` | ❌ failed | ✅ passed | numpy-substring lint fixed |
+| `85_base64` | ❌ failed | ✅ passed | input-type ambiguity fixed |
+| `121_quorum_kv` | ❌ failed | ✅ passed | return-value contract documented |
+| `17_deploy_rollback` | ❌ failed | ✅ passed | `pre_validate` re-asserts fixtures |
+
+### Per-language accuracy (first time we have this number)
+
+```
+python: 93.21%   (149 / 158)
+   c++: 74.02%   ( 10 /  13)
+     c: 69.29%   (  9 /  13)
+    go: 66.93%   (  9 /  13)
+```
+
+**~26-point gap between Python and Go.** This is the first quantitative
+measurement of the cross-language gap in our local model — and it's much
+larger than expected. Even C++ (closer to Python in flexibility) sits 19
+points below Python.
+
+### Cross-language differentials (4 confirmed)
+
+```
+✅ 19_three_way_quicksort        PPPP    (clean)
+⚠️ 31_is_power_of_two            PFFP    (Go + C fail — surprising on a trivial bit-trick task)
+⚠️ 51_toposort                   PPFF    (C + C++ fail)
+✅ 52_unionfind                  PPPP
+✅ 61_extgcd                     PPPP
+✅ 65_miller_rabin               PPPP
+✅ 73_count_vowels               PPPP
+✅ 74_palindrome                 PPPP
+✅ 122_gemm_blocked              PPP-    (no Python variant by design)
+✅ 148_convex_hull               PPPP
+⚠️ 155_tonelli_shanks            PFFP    (Go + C fail; Go was a typed-int Lsh underflow)
+⚠️ 158_karatsuba_bytes           PFPF    (Go + C++ fail — manual carry handling)
+❌ 159_ntt_convolution           FFFF    (SPEC DEFECT — see below)
+```
+
+**Each differential has a different shape.** Not "Go is uniformly hard for
+the model" — it's task-by-task language fragility. This validates the Phase 4
+investment: the variant system surfaces information the Python-only test
+literally cannot.
+
+### One spec defect we missed: `159_ntt_convolution`
+
+All 4 NTT variants failed — but with **different per-language failures** —
+because the test fixtures include an empty-array case (`([], [1,2,3])`)
+written as a blank line in `input.txt`. Naive line-by-line parsing across
+all 4 languages handles the blank line differently. **Not a model failure;
+a spec defect on our side.** Same class of bug we caught 4× in the v1
+post-mortem; we missed this one during Phase 2 authoring.
+
+Tracked in `docs/TODO.md` as a v3.5 prereq blocking the overnight sweep.
+
+### Skills system: 0 of 197 task agents called any skill tool
+
+`list_skills`, `load_skill`, and `start_skill_agent` were never invoked
+during the smoke test. AGENTS.md alone isn't enough to nudge spontaneous
+skill use on directive task prompts ("Create /tmp/eval_X/... with..."). This
+is OK for evals — eval prompts are too directive for skill descriptions to
+match — but informs the longer-term Phase 5 priority. (`opencode stats` did
+show 1 `list_skills` call from interactive use, so the system works; it just
+doesn't fire on eval-style prompts.)
+
+### Per-category breakdown (re-saturation effects)
+
+| Category | v1 | v3 | Change | Note |
+|---|---:|---:|---|---|
+| LLM / ML | 100.0 | 100.0 | flat | |
+| Math Finance | 92.2 | 100.0 | +7.8 | the 42_value_at_risk fix landed here |
+| SWE / DevOps | 95.9 | 100.0 | +4.1 | the 17_deploy_rollback fix landed here |
+| Signal Proc & DSP | 100.0 | 100.0 | flat | (1 task) |
+| Algorithms & DS | 100.0 | 97.83 | **−2.17** | hardening tasks de-saturated as designed |
+| Concurrency & Sys | 100.0 | 92.31 | **−7.69** | chase-lev hardening worked |
+| Security | 100.0 | 90.0 | −10.0 | UOV is a new fail (hardening) |
+| Physics | 100.0 | 89.19 | −10.81 | rkf45 known-weak |
+| Performance & HW | 100.0 | 88.24 | −11.76 | 22_optimize_quadratic regressed |
+| Probability & Stats | 100.0 | 87.10 | −12.9 | bayesian_ab failed |
+| Pure & Abstract Math | 100.0 | 82.67 | **−17.33** | tonelli/karat/ntt/berlekamp variants |
+| Distributed / SysDesign | 83.3 | 80.56 | −2.74 | flat |
+
+**Three previously-saturated categories de-saturated** (Algorithms & DS,
+Concurrency & Systems, Pure & Abstract Math) — Phase 2 hardening worked as
+designed. Pure & Abstract Math took the biggest hit because the variant
+tasks (Tonelli-Shanks, Karatsuba, NTT, Berlekamp-Massey) cluster there.
+
+### All 20 failures, classified
+
+**Spec defects (4) — discount these:**
+- `159_ntt_convolution` × 4 langs (input format ambiguity on empty case)
+
+**Cross-language gaps (8) — variant-system findings:**
+- `31_is_power_of_two_b/c` (Go, C — trivial task with language-specific traps)
+- `51_toposort_c/d` (C, C++ — manual data-structure work)
+- `155_tonelli_shanks_b/c` (Go, C)
+- `158_karatsuba_bytes_b/d` (Go, C++ — byte-array carry handling)
+
+**Phase 2 hardening discrimination (3) — these are the new tasks doing their job:**
+- `124_rkf45` (max_iter, also v1 weakness)
+- `152_chase_lev_deque` (Python — concurrent code)
+- `156_berlekamp_massey` (subprocess timeout)
+- `143_uov` (Unbalanced Oil-and-Vinegar crypto)
+
+**Probable regressions (3) — flag for investigation in overnight sweep:**
+- `127_aes_keysched` (passed v1, hit 30-min timeout in v3 — likely deep variance)
+- `22_optimize_quadratic` (passed v1, failed v3)
+- `113_bayesian_ab` (passed v1, failed v3)
+- `118_distributed_lock` (passed v1, failed v3)
+- `68_circuit_breaker` (passed v1, failed v3)
+
+(The variance on these can only be characterized by the full 5-model
+overnight sweep — single-run regressions can be noise.)
+
+### Wall-clock recalibration
+
+Original estimate: 70-80 min. Actual: **207 min (3h 27m)**.
+
+The overshoot was driven by **four 18-30 min outlier tasks** that hit
+`max_iter` or `subprocess timeout`:
+- `124_rkf45`: 18 min
+- `127_aes_keysched`: 30 min (hit run_eval's `max_iter * 60` subprocess timeout)
+- `156_berlekamp_massey`: 30 min (same)
+- `158_karatsuba_bytes_d` C++: 28 min
+
+For the upcoming **overnight 5-model sweep**, recalibrate from 10-12h to
+**12-14h** to account for similar outliers across all 5 models.
+
+### Per-task token-cost distribution (first time we have this)
+
+```
+Distribution    Count    Total tokens    Avg
+< 15K              43         400K        9.3K   (easy tasks)
+15K – 30K          78       1,800K       23K     (medium tasks)
+30K – 60K          35       1,500K       43K     (hard tasks)
+60K – 200K          8         800K       100K    (heavy tasks: NTT, gemm c++)
+200K+               4       1,500K       375K    (max_iter outliers)
+```
+
+The four max_iter outliers consumed **15% of all tokens** for **2% of the
+tasks**. These are the highest-leverage candidates for either max_iter
+budget tuning or task-spec sharpening.
 
 ---
 

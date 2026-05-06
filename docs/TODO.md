@@ -2,26 +2,72 @@
 
 ## Up Next
 
-### Tonight — overnight v3 sweep on the 5090
+### v3.5 prereq — fix `159_ntt_convolution` spec defect (BLOCKS overnight sweep)
 
-The v3 eval suite is fully landed (Phases 1–4). Time to actually run it. Plan:
+The 2026-05-06 smoke test on the 35B-A3B Uncensored revealed the same class
+of spec defect we caught 4× in the v1 post-mortem — input-format ambiguity —
+this time in a Phase-2 hardening task we authored ourselves.
 
-**Step 1: Smoke test the winning model first (~70–80 min).**
+**The bug.** `159_ntt_convolution` test fixtures include an empty-array case
+`([], [1,2,3])` to exercise the "if either input is empty, output '0'" branch.
+The setup script writes the empty array as a blank line in `input.txt`. All 4
+language variants fail in different ways:
+
+- **Python:** `IndexError` on parse — naive `line.split()` returns empty list,
+  next-line `NA, NB = na_nb[0], na_nb[1]` blows up
+- **Go:** outputs `"0 0"` instead of expected `"0"` for the empty case
+- **C:** same as Go — outputs an extra `"0 "`
+- **C++:** missing the leading `"0"` line entirely
+
+Because the failure mode is per-language, the cross-language matrix shows
+`159_ntt_convolution: FFFF` which spuriously suggests "the model can't do
+NTT in any language." It can — we proved 8/12 NTT-equivalent variant tasks
+pass cleanly. The issue is our test format.
+
+**The fix.** Two equivalent approaches:
+
+1. **Drop the empty-array case** from the test fixtures. The remaining 14
+   cases still cover correctness; the empty edge case isn't load-bearing for
+   the algorithm itself.
+
+2. **Change the input format** so empty arrays are unambiguous. E.g., put
+   `NA NB` and the values on the same line: `0 3 1 2 3` for an empty `a`
+   followed by `b = [1, 2, 3]`. Update all 4 variant tasks to expect this
+   format.
+
+Recommend (1) — smaller diff, clearer intent, and we're not specifically
+trying to test empty-input handling here. The other 14 test cases exercise
+the algorithm well enough.
+
+**Verification before unblocking the overnight sweep:**
 
 ```bash
-python3 evals/benchmark_all.py --models qwen-35b-a3b-uncensored-q4
+# After the fix, drop the reference impls into /tmp/eval_ntt and re-verify
+python3 tests/audit_variants.py 159_ntt_convolution
+# Should show: 4/4 variants passed (was 0/4 in the smoke test)
+
+# Then run regression
+bash tests/test_scripts.sh   # still 47/47
+
+# Then a quick single-task confirmation against the live model:
+python3 evals/run_eval.py --tasks 159_ntt_convolution
+# Expect 4/4 passes
 ```
 
-This validates that:
-- All 51 multi-language variants behave correctly under a real agent (not just
-  reference impls)
-- Token tracking populates the new column on the leaderboard
-- The 15 hardening tasks (145–159) produce reasonable pass rates on a top-tier model
-- The 4 Phase-1 spec fixes flip pass/fail as predicted (42, 85, 121, 17)
+**Cost of NOT fixing before overnight:** every model in the 5-model sweep
+would burn ~16 task slots (4 NTT variants × 4 models reaching that task)
+on a known-broken test. ~80 wasted task entries in the overnight data.
 
-If anything blows up, fix it before launching the full sweep.
+**Estimated effort:** 30 minutes including verification. Pick up next session
+before kicking off `python3 evals/benchmark_all.py`.
 
-**Step 2: Full 5-model overnight sweep (~10.5–11.5 hours wall-clock).**
+### Tonight — overnight v3 sweep on the 5090 (DEFERRED — gated on the NTT fix above)
+
+The v3 eval suite is fully landed (Phases 1–4) and the smoke test on the
+winning model validated everything except the NTT spec defect noted above.
+Once that's fixed, the overnight sweep is the next step. Plan:
+
+**Run command:**
 
 ```bash
 python3 evals/benchmark_all.py
@@ -39,27 +85,80 @@ Per-model wall-clock estimate (linearly scaled from the 144-task sweep at
 | Gemma 4 31B-it Q5_K_XL | 127 min | **~174 min** |
 | **Sum** | **~7h 21m** | **~10h 0m + 5–10% buffer** |
 
-Adjustments folded in:
-- +5–10% for the 15 new hard-tier tasks (lazy segtree, AC machine, NTT, etc.)
-  pushing into longer iteration loops
-- +~5 min for variant compilation (47 non-Python variants × ~1s × 5 models)
-- Token tracking, pre_validate, fixture re-assertion: all negligible
+**Smoke test recalibration.** The 35B-A3B Uncensored took **207 min** for
+197 tasks (vs the 70-80 min original estimate) due to four 18-30 min
+outliers (rkf45 max_iter, aes_keysched timeout, berlekamp_massey timeout,
+karatsuba_cpp 28-min grind). Apply this realism to the per-model estimates
+above — the slower models likely overshoot too. Plan for **12-14 hour total
+overnight wall-clock**, not 10. Kick off well before bed.
 
-**Step 3: After the sweep finishes, review the v3 leaderboard.**
+**Smoke test scoreboard for reference:**
+
+```
+Qwen 35B-A3B Uncensored Q4_K_M  v3:  91.8  86.4  90.4  177/197  65/80  12388s  9.8M
+                                v1:  97.3  86.7  94.6  140/144  49/51   3024s    —
+```
+
+The accuracy drop (97.3 → 91.8) is expected — harder suite + variant work
+surfaced real cross-language gaps that didn't exist in the Python-only v1.
+4 cross-language differentials confirmed (`31_is_power_of_two`, `51_toposort`,
+`155_tonelli_shanks`, `158_karatsuba_bytes`).
+
+**After the sweep finishes:**
 
 ```bash
 python3 evals/scoring.py --show                    # top-line + tokens column
 python3 evals/scoring.py --by-category             # which categories de-saturated
-python3 evals/scoring.py --by-language             # per-language drilldown across the 51 variants
+python3 evals/scoring.py --by-language             # per-language drilldown across variants
 ```
 
-Update `docs/RESULTS.md` with the v3 sweep section once leaderboard is final.
+Update `docs/RESULTS.md` with the v3 sweep section once the leaderboard is
+final. The smoke-test post-mortem (in chat history but not yet documented)
+should also land here as a reference v3.5 baseline for the 35B-A3B Uncensored.
 
-**Expected impact** (from WORK_PLAN.md): ~+1.3 accuracy points across all
-models from the Phase-1 spec fixes alone, with new discrimination signal in
-the 3 previously-saturated categories (Algorithms & DS, Concurrency &
-Systems, Pure & Abstract Math) from the hardening tasks. Token column gives a
-new view on per-model efficiency.
+### ~~Complete Rust + Zig variant rollout~~ ✓ DONE (2026-05-06)
+
+**Shipped.** All 13 variant base tasks now cover all 6 languages
+(python/go/c/cpp/rust/zig). 78 variant entries total, all verified end-to-end
+via `python3 tests/audit_variants.py`. See "Completed" section below for the
+landing entry.
+
+Toolchain prerequisites added to `docs/INSTALL.md`:
+- Rust 1.95.0 (system pacman install)
+- Zig 0.16.0 (mise-installed; new Zig 0.16 I/O API uses
+  `pub fn main(init: std.process.Init)` with `std.Io.File.stdin()/stdout()`
+  and `takeDelimiter('\n')` for line reads)
+
+Effective test units rose from **197 → 223** (+26 = +13 Rust + +13 Zig).
+
+**Trade-off worth noting:** Zig builds take ~8s per task (cold compile).
+For the audit pass that's 13 × 8 = ~100s overhead; for the full overnight
+sweep, Zig variants will add ~13 × 8 × 5 models = ~9 minutes of pure
+compile time across the run. Acceptable; documented for awareness.
+
+### Skills don't fire spontaneously — Phase 5 (auto-routing) priority increase
+
+Smoke test signal: **0 of 197 task agents called `list_skills` /
+`load_skill` / `start_skill_agent`**. Despite AGENTS.md being at the
+project root, despite the skills system being fully wired, despite the
+system-prompt-tools.md mentioning skills as a tool group — the model
+doesn't invoke skills proactively on eval-style tasks.
+
+Why this is OK in the short term: eval task descriptions are too directive
+("Create /tmp/eval_X/file.py with…") for a skill description to feel
+relevant. We saw `list_skills` fire ONCE in OpenCode interactive use
+(per `opencode stats`), which is the more realistic case.
+
+Why this matters longer term: the skills are valuable specifically when
+the model's task is open-ended ("review this code", "audit this for bugs",
+"write a new eval task"). For those, AGENTS.md task→skill mapping is the
+nudge; we want to confirm it's working in practice over the next few
+weeks of normal use.
+
+**Action:** if real OpenCode usage over the next ~2 weeks shows skill-fire
+rate stays near-zero, escalate Phase 5 (auto-routing layer from
+`docs/SKILLS_PLAN.md`). The pre-flight classifier becomes worth the
+engineering cost. If skills do fire on real conversational work, hold.
 
 ### Expand multi-language variant coverage (driven by Tonelli-Shanks finding)
 
@@ -106,8 +205,10 @@ more cross-language differentials.
 **Concrete next-step plan, gated on tonight's full sweep results:**
 
 1. **After the 5-model overnight sweep**, audit per-language pass rates
-   across all 51 variant entries. Count how many tasks show the
-   "Python ✓ / one-or-more compiled-lang ✗" pattern.
+   across all 77 variant entries (post-Phase 4.5). Count how many tasks show
+   the "Python ✓ / one-or-more compiled-lang ✗" pattern. With Rust + Zig
+   added, expect *new* failure modes (Rust borrow checker, Zig explicit
+   error unions) that the original 4-language matrix could not surface.
 2. **If ≥3 tasks show that pattern**, escalate variant expansion. Phase 4
    deferred items move up the priority list. Consider adding variants to
    currently single-variant tasks where they'd be most informative
@@ -285,10 +386,11 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] Phase 3 — multi-language variant architecture in `run_eval.py` + `scoring.py` + result schema; backward-compat regression bit-identical
 - [x] Token tracking through runner → eval → scoring → leaderboard (separate column, not part of rank)
 - [x] `evals/README.md` with full distribution table, schema, scoring, and pitfall-lessons-learned section
-- [x] Phase 4 (substantial) — 51 variant entries across 13 tasks (Python / Go / C / C++); reference impls verified end-to-end. 5 tasks deferred (see "Up Next").
+- [x] Phase 4 (initial) — 51 variant entries across 13 tasks (Python / Go / C / C++); reference impls verified end-to-end. 5 base tasks deferred (see "Up Next"). [Superseded by Phase 4.5: Rust + Zig added across all 13 → 77 entries — see entry below.]
 - [x] Default model swap to Qwen 35B-A3B Uncensored Q4_K_M (top of leaderboard); start.sh, healthcheck.sh, opencode.json reordering, README/INSTALL/REFERENCE all updated
 - [x] Docs reorganized: INSTALL/REFERENCE/RESULTS/WORK_PLAN/TODO moved to `docs/`; README and system-prompt files stay at base
 - [x] RESULTS.md eval distribution section (categories × difficulty + subcategory drilldown + variant matrix)
 - [x] **Skills system landed** — Phases 1-4 complete. `list_skills` / `load_skill` / `start_skill_agent` / `reload_skills` MCP tools; 6 starter skills (code-review, security-audit, debugging-methodology, deep-counsel, eval-task-author, eval-variant-porter); repo + global discovery with repo-wins-on-collision; `scripts/install-skills.sh` for global symlinks. Phase 5 (auto-routing layer) deferred. See [docs/SKILLS_PLAN.md](SKILLS_PLAN.md).
 - [x] **8 more skills authored** (Tier 1 + Tier 2 from frontier-model behaviors) — `codebase-onboarding`, `spec-extraction`, `git-discipline`, `long-context-synthesis` (Tier 1, universal); `test-driven-development`, `architecture-proposal`, `performance-optimization`, `api-design` (Tier 2, situational). Total: 14 skills.
 - [x] **AGENTS.md at project root** — auto-loaded by OpenCode; nudges the model toward skills with a task→skill mapping. Pairs with the MCP tools to make skills first-class for any OpenCode session in this repo.
+- [x] **Rust + Zig variant rollout complete** (2026-05-06) — all 13 variant base tasks now cover 6 languages (python/go/c/cpp/rust/zig); 77 variant entries audited end-to-end with reference impls. Zig 0.16.0 installed via mise; Rust 1.95.0 from pacman. Effective test units: 197 → 223. The cross-language matrix can now surface failure modes specific to ownership/borrow-checking (Rust) and explicit error unions / compile-time checks (Zig). Audit script persisted at `tests/audit_variants.py`.

@@ -30,9 +30,9 @@ You are writing a single task for the eval suite at `evals/tasks/`. Your output:
 }
 ```
 
-If the task should have multi-language variants (Python / Go / C / C++), use the
-`variants` array instead of top-level setup/task/validation/cleanup. See
-`skills/eval-variant-porter` for that pattern.
+If the task should have multi-language variants (Python / Go / C / C++ / Rust /
+Zig — 6 supported languages), use the `variants` array instead of top-level
+setup/task/validation/cleanup. See `skills/eval-variant-porter` for that pattern.
 
 ## Workflow
 

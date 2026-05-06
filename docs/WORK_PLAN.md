@@ -5,7 +5,8 @@
 - ✅ Phase 2 — 15 hardening tasks (145–159) landed and verified, plus cheat-resistance perf gates on 150/152
 - ✅ Phase 3 — multi-language variant architecture in `run_eval.py` + `scoring.py`; backward-compat regression bit-identical
 - ✅ Token tracking through the eval pipeline; `evals/README.md` distribution doc
-- ✅ Phase 4 (substantial) — 13 tasks variant'd (51 variant entries) end-to-end verified
+- ✅ Phase 4 — 13 tasks variant'd, 4 languages (Py/Go/C/C++) end-to-end verified
+- ✅ Phase 4.5 — Rust + Zig added across all 13 base tasks (77 total variant entries) end-to-end verified (2026-05-06)
 - ⏳ Phase 4 deferred — 5 tasks remain (53_bloom, 145, 146, 152, 153) — see deferred list at bottom
 - ⏳ Validation sweep on winning model
 - ⏳ Full 5-model sweep with the v3 suite
@@ -13,44 +14,48 @@
 This document is the save state. A fresh session should be able to execute the
 remaining work from this file alone.
 
-**Phase 4 actual delivery (51 variant entries across 13 tasks):**
+**Phase 4 + 4.5 actual delivery (77 variant entries across 13 tasks):**
 
 | Task | # variants | Languages |
 |---|---:|---|
-| 31_is_power_of_two | 4 | Py / Go / C / C++ |
-| 73_count_vowels | 4 | Py / Go / C / C++ |
-| 74_palindrome | 4 | Py / Go / C / C++ |
-| 19_three_way_quicksort | 4 | Py / Go / C / C++ |
-| 51_toposort | 4 | Py / Go / C / C++ |
-| 52_unionfind | 4 | Py / Go / C / C++ |
-| 61_extgcd | 4 | Py / Go / C / C++ |
-| 65_miller_rabin | 4 | Py / Go / C / C++ |
-| 122_gemm_blocked | 3 | Go / C / C++ (perf-flavored — no Python) |
-| 148_convex_hull | 4 | Py / Go / C / C++ |
-| 155_tonelli_shanks | 4 | Py / Go / C / C++ |
-| 158_karatsuba_bytes | 4 | Py / Go / C / C++ |
-| 159_ntt_convolution | 4 | Py / Go / C / C++ |
+| 31_is_power_of_two | 6 | Py / Go / C / C++ / Rust / Zig |
+| 73_count_vowels | 6 | Py / Go / C / C++ / Rust / Zig |
+| 74_palindrome | 6 | Py / Go / C / C++ / Rust / Zig |
+| 19_three_way_quicksort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 51_toposort | 6 | Py / Go / C / C++ / Rust / Zig |
+| 52_unionfind | 6 | Py / Go / C / C++ / Rust / Zig |
+| 61_extgcd | 6 | Py / Go / C / C++ / Rust / Zig |
+| 65_miller_rabin | 6 | Py / Go / C / C++ / Rust / Zig |
+| 122_gemm_blocked | 5 | Go / C / C++ / Rust / Zig (perf-flavored — no Python) |
+| 148_convex_hull | 6 | Py / Go / C / C++ / Rust / Zig |
+| 155_tonelli_shanks | 6 | Py / Go / C / C++ / Rust / Zig |
+| 158_karatsuba_bytes | 6 | Py / Go / C / C++ / Rust / Zig |
+| 159_ntt_convolution | 6 | Py / Go / C / C++ / Rust / Zig |
 
-Total: **51 variant entries** + 146 single-variant legacy tasks = **197 effective
+Total: **77 variant entries** + 146 single-variant legacy tasks = **223 effective
 test units** across 159 base task IDs. Total weighted points still equal sum of
 base difficulty weights (251.5) — variant scoring math is invariant.
 
-All 51 variants verified end-to-end with reference implementations passing the
+All 77 variants verified end-to-end with reference implementations passing the
 bash-only validation pipeline (compile if needed → run with stdin → diff against
-expected output OR run `check.py` for non-deterministic outputs).
+expected output OR run `check.py` for non-deterministic outputs). Run via
+`python3 tests/audit_variants.py`.
 
 **Mission summary.** The 5090 sweep finished cleanly but the post-mortem
 surfaced four spec/harness defects (4 of the 5 "all-models-failed" tasks were
 not actually that hard) and three categories saturated at 100% across all
 models. We fixed the defects, added 15 new hard-tier tasks, built the
-multi-language variant infrastructure, and populated 13 of the 18 originally
-planned tasks. The remaining 5 are deferred (see end of doc).
+multi-language variant infrastructure, populated 13 of the 18 originally
+planned tasks (4 langs initially), then expanded all 13 to 6 languages with the
+Rust + Zig rollout (Phase 4.5). The remaining 5 base tasks are deferred (see
+end of doc).
 
 **Toolchain available:**
 - gcc 16.1.1
 - g++ 16.1.1
 - go 1.26.2
-- rustc (present, not used for now)
+- rustc 1.95.0
+- zig 0.16.0 (mise-installed)
 
 ---
 
@@ -462,6 +467,13 @@ follow-up session. Each has a specific reason that makes it heavier than the
 | 146_aho_corasick | Py / Go / C / C++ | Suffix-link automaton + multi-pattern matcher is ~200 lines per language. Heaviest data-structure port. Defer. |
 | 152_chase_lev_deque | Py / Go / C++ | Concurrent code is hard to port — Python uses threading, Go uses goroutines + channels (different paradigm), C++ atomics. Spec needs language-specific framing. Defer. |
 | 153_coroutine_scheduler | Py / Go | Generator-based scheduler is Pythonic; Go's natural equivalent is goroutines + channels — fundamentally different mechanism. Need to re-spec for Go. Defer. |
+
+> **Note (post-Phase-4.5, 2026-05-06):** if/when these deferred tasks are
+> picked up, follow the **6-language pattern** (Py / Go / C / C++ / Rust /
+> Zig) used by the 13 already-shipped variant tasks — not the 4-language
+> plan above. Variant ID convention `a`–`f` per `eval-variant-porter`
+> SKILL.md. The "Original plan" column is preserved here for historical
+> context only.
 
 **Update 2026-05-06 (mid-smoke-test):** the Tonelli-Shanks Go failure during
 the smoke test produced **the first concrete cross-language differential** in

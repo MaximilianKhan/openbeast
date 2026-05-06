@@ -10,8 +10,11 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
-      "task": "Create /tmp/eval_pal/pal.py — a Python program that reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true).",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && python3 pal.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_pal/pal.py \u2014 a Python program that reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && python3 pal.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
@@ -19,23 +22,54 @@
       "language": "go",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "task": "Create /tmp/eval_pal/pal.go (package main) that reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true). Compile with `go build -o pal pal.go`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && go build -o pal pal.go && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && go build -o pal pal.go && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
-      "task": "Create /tmp/eval_pal/pal.c — a C program that reads lines from stdin (use fgets or getline; lines may have any length up to 4096) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_pal/pal.c \u2014 a C program that reads lines from stdin (use fgets or getline; lines may have any length up to 4096) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
-      "task": "Create /tmp/eval_pal/pal.cpp — a C++ program that reads lines from stdin (std::getline) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_pal/pal.cpp \u2014 a C++ program that reads lines from stdin (std::getline) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pal"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O pal.rs -o pal` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && rustc -O pal.rs -o pal && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pal"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast pal.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pal && zig build-exe -O ReleaseFast pal.zig && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_pal"
     }
   ]

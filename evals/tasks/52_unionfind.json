@@ -10,8 +10,11 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.py — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && python3 uf.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_uf/uf.py \u2014 reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations \u2014 only for 'c'.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && python3 uf.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_uf"
     },
     {
@@ -19,23 +22,54 @@
       "language": "go",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
       "task": "Create /tmp/eval_uf/uf.go (package main). Reads stdin: line 1 'N Q', then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c' query. Path compression + union by size/rank. Compile with `go build -o uf uf.go`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && go build -o uf uf.go && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && go build -o uf uf.go && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_uf"
     },
     {
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.c — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_uf/uf.c \u2014 reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_uf"
     },
     {
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_uf/uf.cpp \u2014 reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_uf"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O uf.rs -o uf` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && rustc -O uf.rs -o uf && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_uf"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast uf.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_uf && zig build-exe -O ReleaseFast uf.zig && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_uf"
     }
   ]

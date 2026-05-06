@@ -513,9 +513,11 @@ tokens      = Σ(prompt + completion) across all task runs
 `scoring.py --by-category` produces a per-model × per-category accuracy table
 with subcategory drilldown.
 
-`scoring.py --by-language` produces a per-language accuracy table — meaningful
-once Phase 4 variant rollout (Python / Go / C / C++ versions of select tasks)
-lands.
+`scoring.py --by-language` produces a per-language accuracy table across the
+13 base tasks that have multi-language variants (Python / Go / C / C++ / Rust /
+Zig — 77 total variant entries; one task, `122_gemm_blocked`, has 5 variants
+without a Python entry since it's perf-flavored). Use this view to surface
+cross-language failure modes the Python-only suite cannot.
 
 `scoring.py --compare-hosts` produces a side-by-side comparison across hosts.
 The leaderboard is keyed by `(host_id, model_slug)`, so the same model

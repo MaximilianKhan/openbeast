@@ -66,8 +66,8 @@ accuracy / 86.7 speed). Launched by `./start.sh` with no args.
 
 ### Eval suite
 
-- 159 base tasks; 13 of them have multi-language variants (197 effective
-  test units across Python / Go / C / C++)
+- 159 base tasks; 13 of them have multi-language variants (223 effective
+  test units across Python / Go / C / C++ / Rust / Zig)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
 - Full sweep (5 models): `python3 evals/benchmark_all.py` (~10–12 hours
   overnight on the 5090)

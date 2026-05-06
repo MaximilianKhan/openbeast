@@ -10,32 +10,66 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
-      "task": "Create /tmp/eval_karat/karat.py — reads from stdin: line 1 is T (test cases). Each case: line A is 'NA NB' (digit counts), line B is NA bytes (0-255 space-separated, little-endian) for a, line C is NB bytes for b. Output the product as space-separated bytes (little-endian, no leading zeros except [0] for zero) on its own line. Implement Karatsuba — split each input into halves and use 3 recursive sub-products. Forbidden: int.from_bytes, int.to_bytes, bytes.fromhex, base conversion via int(x, base). You may use ordinary integer arithmetic on individual digits.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_karat; for banned in 'int\\.from_bytes' 'int\\.to_bytes' 'bytes\\.fromhex' '\\.from_bytes' '\\.to_bytes'; do ! grep -qE \"$banned\" karat.py || { echo \"forbidden: $banned\"; exit 1; }; done; ! grep -qE 'int\\s*\\(\\s*[a-zA-Z_]+\\s*,\\s*256\\s*\\)' karat.py || { echo 'int(_, 256) shortcut'; exit 1; }; python3 karat.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_karat/karat.py \u2014 reads from stdin: line 1 is T (test cases). Each case: line A is 'NA NB' (digit counts), line B is NA bytes (0-255 space-separated, little-endian) for a, line C is NB bytes for b. Output the product as space-separated bytes (little-endian, no leading zeros except [0] for zero) on its own line. Implement Karatsuba \u2014 split each input into halves and use 3 recursive sub-products. Forbidden: int.from_bytes, int.to_bytes, bytes.fromhex, base conversion via int(x, base). You may use ordinary integer arithmetic on individual digits.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat; for banned in 'int\\.from_bytes' 'int\\.to_bytes' 'bytes\\.fromhex' '\\.from_bytes' '\\.to_bytes'; do ! grep -qE \"$banned\" karat.py || { echo \"forbidden: $banned\"; exit 1; }; done; ! grep -qE 'int\\s*\\(\\s*[a-zA-Z_]+\\s*,\\s*256\\s*\\)' karat.py || { echo 'int(_, 256) shortcut'; exit 1; }; python3 karat.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_karat"
     },
     {
       "id": "b",
       "language": "go",
       "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
-      "task": "Create /tmp/eval_karat/karat.go (package main). Reads stdin: T cases, each 'NA NB' then NA bytes (little-endian) then NB bytes. Output product as space-separated bytes (little-endian, no leading zeros) on its own line per case. Implement Karatsuba on []byte arrays — split, recurse, combine. Forbidden: math/big, encoding/binary for collapsing arrays into ints. Use only digit-level ops. Compile with `go build -o karat karat.go`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_karat; ! grep -qE 'math/big|encoding/binary' karat.go || { echo 'must not use math/big or encoding/binary'; exit 1; }; go build -o karat karat.go; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_karat/karat.go (package main). Reads stdin: T cases, each 'NA NB' then NA bytes (little-endian) then NB bytes. Output product as space-separated bytes (little-endian, no leading zeros) on its own line per case. Implement Karatsuba on []byte arrays \u2014 split, recurse, combine. Forbidden: math/big, encoding/binary for collapsing arrays into ints. Use only digit-level ops. Compile with `go build -o karat karat.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat; ! grep -qE 'math/big|encoding/binary' karat.go || { echo 'must not use math/big or encoding/binary'; exit 1; }; go build -o karat karat.go; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_karat"
     },
     {
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
-      "task": "Create /tmp/eval_karat/karat.c — reads stdin: T cases, each 'NA NB' then NA bytes, then NB bytes. Output product as space-separated bytes (little-endian, no leading zeros). Implement Karatsuba on byte arrays — split, recurse, combine. Use only uint8_t arithmetic and carries; no big-int library. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o karat karat.c`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_karat; gcc -O2 -std=c11 -Wall -Wextra -o karat karat.c; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_karat/karat.c \u2014 reads stdin: T cases, each 'NA NB' then NA bytes, then NB bytes. Output product as space-separated bytes (little-endian, no leading zeros). Implement Karatsuba on byte arrays \u2014 split, recurse, combine. Use only uint8_t arithmetic and carries; no big-int library. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o karat karat.c`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat; gcc -O2 -std=c11 -Wall -Wextra -o karat karat.c; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_karat"
     },
     {
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
-      "task": "Create /tmp/eval_karat/karat.cpp — reads stdin: T cases, each 'NA NB' then NA bytes, then NB bytes. Output product as space-separated bytes. Implement Karatsuba on std::vector<uint8_t>. Forbidden: __int128 for combining arrays into a single int, gmplib. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o karat karat.cpp`.",
-      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_karat; ! grep -qE '__int128|<gmp' karat.cpp || { echo 'forbidden lib'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o karat karat.cpp; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "task": "Create /tmp/eval_karat/karat.cpp \u2014 reads stdin: T cases, each 'NA NB' then NA bytes, then NB bytes. Output product as space-separated bytes. Implement Karatsuba on std::vector<uint8_t>. Forbidden: __int128 for combining arrays into a single int, gmplib. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o karat karat.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat; ! grep -qE '__int128|<gmp' karat.cpp || { echo 'forbidden lib'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o karat karat.cpp; ./karat < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_karat"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
+      "task": "Create /tmp/eval_karat/karat.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O karat.rs -o karat` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat && rustc -O karat.rs -o karat && ./karat < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_karat"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_karat && cat > /tmp/eval_karat/_gen.py <<'PYEOF'\nimport random\nrandom.seed(123)\ncases = []\nfor _ in range(15):\n    la = random.randint(1, 80); lb = random.randint(1, 80)\n    a = [random.randint(0, 255) for _ in range(la)]\n    b = [random.randint(0, 255) for _ in range(lb)]\n    if a[-1] == 0 and len(a) > 1: a[-1] = 1\n    if b[-1] == 0 and len(b) > 1: b[-1] = 1\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a))\n    lines.append(' '.join(str(x) for x in b))\nopen('/tmp/eval_karat/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef to_int(arr):\n    n = 0\n    for d in reversed(arr): n = n*256 + d\n    return n\ndef from_int(n):\n    if n == 0: return [0]\n    out = []\n    while n: out.append(n & 0xFF); n >>= 8\n    return out\nexp = []\nfor a, b in cases:\n    p = from_int(to_int(a) * to_int(b))\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_karat/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_karat/_gen.py",
+      "task": "Create /tmp/eval_karat/karat.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast karat.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_karat && zig build-exe -O ReleaseFast karat.zig && ./karat < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
       "cleanup": "rm -rf /tmp/eval_karat"
     }
   ]

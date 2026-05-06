@@ -74,7 +74,7 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 - **159-task eval suite** (40 easy / 53 medium / 66 hard) across 12 categories with automated validation — full distribution in [`evals/README.md`](evals/README.md)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces a ranked leaderboard
 - Composite scoring with separate accuracy / speed / token columns (`evals/scoring.py`)
-- Multi-language variant support: a single task can have Python / Go / C / C++ versions, scored fractionally
+- Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
 ## Quick Start (fresh Linux box)
@@ -213,6 +213,7 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** — Skills system design (Pattern A progressive disclosure via MCP)
+- **[docs/WEAK_SPOT_ASSESSMENT.md](docs/WEAK_SPOT_ASSESSMENT.md)** — What other axes could surface model weaknesses; recommended priority for next eval expansions
 - **[docs/TODO.md](docs/TODO.md)** — Roadmap and completed work
 - **[evals/README.md](evals/README.md)** — Eval suite specifics: schema, scoring, pitfalls
 - **[skills/README.md](skills/README.md)** — Skills schema + how to add new ones
