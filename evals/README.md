@@ -252,6 +252,142 @@ then speed. Tokens are tracked but not part of the rank — they're a separate
 column in the leaderboard so you can see how chatty a model is on the way to
 the same answer.
 
+## How token tracking works
+
+Tokens are recorded per task and summed per run. Three numbers per task:
+`tokens_prompt`, `tokens_completion`, `tokens_total` (their sum). They come
+from the standard OpenAI-compatible `usage` field that llama.cpp returns on
+every API call. The agent runner accumulates them across iterations.
+
+Understanding what each number means matters — especially for comparing
+models, interpreting cost-equivalent estimates, and reasoning about thinking
+behavior in Qwen-family models. The two numbers are not symmetrical and the
+ratio is informative.
+
+### Input (prompt_tokens) — everything the model PROCESSES on a single API call
+
+For one API call, `prompt_tokens` is the total of:
+- The system prompt (soul file + tool guidance) — a few thousand tokens
+- The original user task
+- *Every prior assistant message* (the conversation history)
+- *Every prior tool call's arguments and result* — these dominate; a single
+  `read_file` of a 500-line file is ~2-5K tokens
+- Any chat-template scaffolding (turn markers, role tags)
+
+### Output (completion_tokens) — everything the model GENERATES on that call
+
+- The visible response text
+- Any tool-call function arguments
+- Any `<think>...</think>` reasoning block, if the model produced one (Qwen
+  thinking-mode output is part of completion — see below)
+
+### Why prompt >> completion in our totals (typically 13:1 or worse)
+
+A multi-iteration agent **re-sends the entire conversation on every iteration**.
+That means the prompt grows monotonically across iterations:
+
+| Iteration | Prompt size (illustrative, 7-iter task) |
+|---:|---:|
+| 1 | ~5K (system + task) |
+| 2 | ~10K (+ iter-1 stuff) |
+| 3 | ~15K |
+| ... | each round adds the prior round's output + tool results |
+| 7 | ~30–50K |
+
+Sum of all 7 prompts ≈ 160K. Sum of all 7 completions might be 5–10K. That's
+where the 13:1 skew comes from — not from chatty output, but from monotonic
+prompt accumulation. The KV cache makes this efficient at runtime (most of
+the prefix is cached), but the API still counts every token in
+`prompt_tokens` regardless of cache hits.
+
+### Where thinking tokens land — and what Qwen does with them
+
+Qwen3.6 (and Qwen3-A3B, both used in this stack) supports a thinking mode
+where the model emits `<think>...</think>` blocks before its visible
+response. Two things to know:
+
+**1. Thinking tokens count toward `completion_tokens` of the iteration that
+generated them.** They're produced just like any other output: GPU cycles
+consumed, tokens generated, fully counted by the API. A task with
+disproportionate completion tokens (10–15% of total instead of the typical
+5–7%) is a signal the model thought a lot.
+
+**2. Qwen's chat template STRIPS thinking from subsequent prompts.** This is
+the critical design choice. Verified in this stack: the chat template
+referenced by `/props` includes:
+
+```
+{%- if message.reasoning_content %}
+{%- else %}
+    {%- if '</think>' in content %}
+       (strip block before reusing in next turn)
+```
+
+When iteration N's assistant message gets fed back into iteration N+1's
+prompt, the `<think>` block is removed first. Confirmed in our agent logs —
+assistant messages stored in JSONL contain only the visible response, no
+`<think>` tags.
+
+**Why this matters:** if thinking persisted into the next prompt, a 7-turn
+conversation could compound 5–20× more context. Qwen's template handles this
+correctly out of the box, which is why our prompt growth is "merely linear"
+across iterations rather than exponential.
+
+```
+                                Counted in:
+─────────────────────────────────────────────────────────
+<think> output during iter N    →  completion_tokens(iter N)
+visible response during iter N  →  completion_tokens(iter N)
+tool call args during iter N    →  completion_tokens(iter N)
+                                       │
+                                       ▼
+                In iter N+1's prompt:
+                  <think>           →  STRIPPED, not in prompt_tokens
+                  visible response  →  KEPT, in prompt_tokens
+                  tool call args    →  KEPT
+                  tool result       →  KEPT
+```
+
+So thinking is a per-iteration cost only. It doesn't echo forward.
+
+### The cost-equivalent estimate caveat
+
+When the leaderboard or a post-mortem quotes "$X of equivalent Sonnet/Opus
+spend," that's `prompt × $input_rate + completion × $output_rate` — useful
+for ranking but **not literally what you'd pay a frontier API**. Two reasons:
+
+1. **Frontier APIs bill cached prefix at ~10% of fresh input rate.** Our
+   `prompt_tokens` lumps fresh and cached together (llama.cpp's `usage`
+   doesn't separate them). Most of our prompt is cache hits — sometimes 90%+
+   of the total. A frontier API would charge that 90% at the discounted
+   rate.
+
+2. **Thinking tokens are billed differently across providers.** Anthropic
+   counts them as output (same as us). Some other providers separate
+   reasoning from completion in their billing. Worth checking the specific
+   provider's policy if you're translating these numbers for a real
+   migration estimate.
+
+For comparing models *within our local stack* — which is the primary use of
+the TOKENS column — these caveats don't matter. The accounting is consistent
+across all models we benchmark, so the ranking is honest.
+
+For external comparison, OpenCode's `opencode stats` command separates
+fresh-input from cache-read explicitly and is the better source for accurate
+cost translation.
+
+### Summary
+
+| What | Counts toward | Persists into next prompt? |
+|---|---|---|
+| System prompt processing | `prompt_tokens` (every iter) | Yes (cache-hit) |
+| Prior assistant visible text | `prompt_tokens` (next iter) | Yes |
+| Prior `<think>` blocks | `prompt_tokens` (next iter) | **No** — Qwen template strips |
+| Prior tool call args + results | `prompt_tokens` (next iter) | Yes (often the biggest source) |
+| Current iter's visible response | `completion_tokens` | (becomes input next iter) |
+| Current iter's `<think>` block | `completion_tokens` | (stripped before next iter) |
+| Current iter's tool call args | `completion_tokens` | (becomes input next iter) |
+
 ## Result file format
 
 Each run produces `evals/results/eval-{model_slug}-{timestamp}.json` with:
