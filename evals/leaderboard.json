@@ -1,0 +1,157 @@
+{
+  "updated_at": "2026-05-05T19:32:35.222337",
+  "entries": [
+    {
+      "model": "Qwen 35B-A3B MoE Q4_K_M",
+      "model_slug": "qwen-35b-a3b-moe-q4-k-m",
+      "timestamp": "2026-05-05T19:11:56.609480",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver_version": "595.71.05",
+        "memory_total_mib": 32607,
+        "compute_capability": "12.0"
+      },
+      "accuracy": 89.76,
+      "speed": 91.8,
+      "composite": 90.27,
+      "tasks_total": 50,
+      "tasks_passed": 45,
+      "tasks_hard_passed": 20,
+      "elapsed_total_seconds": 1236.1,
+      "breakdown": {
+        "easy": {
+          "earned": 6,
+          "total": 7,
+          "passed": 6,
+          "count": 7
+        },
+        "medium": {
+          "earned": 28.5,
+          "total": 30.0,
+          "passed": 19,
+          "count": 20
+        },
+        "hard": {
+          "earned": 40,
+          "total": 46,
+          "passed": 20,
+          "count": 23
+        }
+      }
+    },
+    {
+      "model": "Qwen 27B Uncensored Q5_K_P",
+      "model_slug": "qwen-27b-uncensored-q5-k-p",
+      "timestamp": "2026-05-05T18:47:07.216575",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver_version": "595.71.05",
+        "memory_total_mib": 32607,
+        "compute_capability": "12.0"
+      },
+      "accuracy": 87.95,
+      "speed": 80.61,
+      "composite": 86.12,
+      "tasks_total": 50,
+      "tasks_passed": 44,
+      "tasks_hard_passed": 20,
+      "elapsed_total_seconds": 1478.2,
+      "breakdown": {
+        "easy": {
+          "earned": 6,
+          "total": 7,
+          "passed": 6,
+          "count": 7
+        },
+        "medium": {
+          "earned": 27.0,
+          "total": 30.0,
+          "passed": 18,
+          "count": 20
+        },
+        "hard": {
+          "earned": 40,
+          "total": 46,
+          "passed": 20,
+          "count": 23
+        }
+      }
+    },
+    {
+      "model": "Qwen 27B Q4_K_M",
+      "model_slug": "qwen-27b-q4-k-m",
+      "timestamp": "2026-05-05T17:51:11.135394",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver_version": "595.71.05",
+        "memory_total_mib": 32607,
+        "compute_capability": "12.0"
+      },
+      "accuracy": 87.95,
+      "speed": 80.18,
+      "composite": 86.01,
+      "tasks_total": 50,
+      "tasks_passed": 44,
+      "tasks_hard_passed": 20,
+      "elapsed_total_seconds": 1693.5,
+      "breakdown": {
+        "easy": {
+          "earned": 6,
+          "total": 7,
+          "passed": 6,
+          "count": 7
+        },
+        "medium": {
+          "earned": 27.0,
+          "total": 30.0,
+          "passed": 18,
+          "count": 20
+        },
+        "hard": {
+          "earned": 40,
+          "total": 46,
+          "passed": 20,
+          "count": 23
+        }
+      }
+    },
+    {
+      "model": "Qwen 27B Q5_K_XL",
+      "model_slug": "qwen-27b-q5-k-xl",
+      "timestamp": "2026-05-05T18:20:34.320123",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver_version": "595.71.05",
+        "memory_total_mib": 32607,
+        "compute_capability": "12.0"
+      },
+      "accuracy": 86.14,
+      "speed": 81.21,
+      "composite": 84.91,
+      "tasks_total": 50,
+      "tasks_passed": 43,
+      "tasks_hard_passed": 20,
+      "elapsed_total_seconds": 1551.9,
+      "breakdown": {
+        "easy": {
+          "earned": 6,
+          "total": 7,
+          "passed": 6,
+          "count": 7
+        },
+        "medium": {
+          "earned": 25.5,
+          "total": 30.0,
+          "passed": 17,
+          "count": 20
+        },
+        "hard": {
+          "earned": 40,
+          "total": 46,
+          "passed": 20,
+          "count": 23
+        }
+      }
+    }
+  ]
+}

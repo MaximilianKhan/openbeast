@@ -1,0 +1,13 @@
+{
+  "id": "38_monte_carlo_pi",
+  "name": "Monte Carlo estimation of pi",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_mcpi",
+  "task": "Create /tmp/eval_mcpi/mcpi.py with a function estimate_pi(n_samples, seed=None) that estimates pi using Monte Carlo: sample uniform points in [-1,1]x[-1,1], count fraction inside the unit circle, multiply by 4. If seed is given, seed Python's random module so the result is reproducible. Use only random and math from the standard library.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_mcpi/mcpi.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = mod.estimate_pi; a = f(50000, seed=42); b = f(50000, seed=42); assert a == b, f'seed not deterministic: {a} vs {b}'; assert abs(a - math.pi) < 0.05, f'inaccurate: {a} vs pi={math.pi}'; c = f(50000, seed=7); assert c != a, 'different seeds should differ'; assert abs(f(200000, seed=1) - math.pi) < 0.025, 'higher N must be tighter'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_mcpi",
+  "max_iter": 15
+}

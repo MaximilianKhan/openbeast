@@ -209,8 +209,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
             scoring.update_leaderboard(entry)
             sweep_summary["scores"].append(entry)
             sweep_summary["models_succeeded"] += 1
-            print(f"\n>>> {model['name']}: composite {entry['composite']} "
-                  f"(corr {entry['correctness']}, speed {entry['speed']})")
+            print(f"\n>>> {model['name']}: accuracy {entry['accuracy']} "
+                  f"speed {entry['speed']} composite {entry['composite']}")
 
         if i < len(models):
             print(f"\nCool-off for {COOLOFF_SECONDS}s before next model...")

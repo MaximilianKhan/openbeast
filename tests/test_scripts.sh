@@ -159,8 +159,8 @@ PY
 )
 TASK_COUNT=$(echo "$TASK_CHECK" | grep '^COUNT=' | cut -d= -f2)
 TASK_ERRORS=$(echo "$TASK_CHECK" | grep '^ERROR:' || true)
-if [[ -z "$TASK_ERRORS" && "${TASK_COUNT:-0}" -ge 30 ]]; then
-  pass "all $TASK_COUNT eval task JSONs valid (≥30 expected)"
+if [[ -z "$TASK_ERRORS" && "${TASK_COUNT:-0}" -ge 50 ]]; then
+  pass "all $TASK_COUNT eval task JSONs valid (≥50 expected)"
 else
   fail "eval tasks have problems: ${TASK_ERRORS:-none} (count=${TASK_COUNT:-0})"
 fi

@@ -1,0 +1,13 @@
+{
+  "id": "47_branchless_min",
+  "name": "Branchless minimum of three integers",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_branchless",
+  "task": "Create /tmp/eval_branchless/branchless.py with a function min3_branchless(a, b, c) that returns the minimum of three integers WITHOUT using any conditional branches. Forbidden tokens (will be checked in source): the keywords if, else, elif, while, for; the builtins min, max, sorted; the operators '<' and '>' and '<=' and '>=' and '==' and '!='; ternary expressions (no 'X if Y else Z'); short-circuit and/or for control flow; abs(); any imports beyond what's already at the top. Allowed: integer arithmetic +, -, *, //, %, **, bitwise & | ^ ~ << >>. Hint: for 32-bit-safe integers, the sign bit can be extracted via right shift on signed numbers in C; in Python you can use (x >> 31) & 1 if you mask, or ((x >> 63) & 1) for 64-bit. Use a bit-twiddling trick to compute min(a,b) then chain.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, re, random; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_branchless/branchless.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_branchless/branchless.py').read(); body = src; \nimport ast as _ast\ntree = _ast.parse(src)\nfor node in _ast.walk(tree):\n    assert not isinstance(node, (_ast.If, _ast.IfExp, _ast.For, _ast.While)), f'forbidden control flow: {type(node).__name__}'\n    if isinstance(node, _ast.Compare):\n        for op in node.ops:\n            assert not isinstance(op, (_ast.Lt, _ast.Gt, _ast.LtE, _ast.GtE, _ast.Eq, _ast.NotEq)), f'forbidden comparison op'\n    if isinstance(node, _ast.BoolOp):\n        raise AssertionError('and/or short-circuit forbidden')\n    if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id in {'min','max','sorted','abs'}:\n        raise AssertionError(f'forbidden call: {node.func.id}')\nf = mod.min3_branchless\nfor a, b, c in [(1,2,3),(3,2,1),(2,1,3),(5,5,5),(-1,0,1),(-10,-5,-20),(100,50,75)]:\n    assert f(a,b,c) == min(a,b,c), f'min3({a},{b},{c}) got {f(a,b,c)}'\nrandom.seed(0)\nfor _ in range(200):\n    a,b,c = random.randint(-1000,1000), random.randint(-1000,1000), random.randint(-1000,1000)\n    assert f(a,b,c) == min(a,b,c), f'random fail at ({a},{b},{c})'\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_branchless",
+  "max_iter": 30
+}

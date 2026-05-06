@@ -1,0 +1,13 @@
+{
+  "id": "49_markov_steady_state",
+  "name": "Markov chain stationary distribution by power iteration",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_markov",
+  "task": "Create /tmp/eval_markov/markov.py with a function stationary(P, tol=1e-10, max_iter=10000) that computes the stationary distribution pi of a finite Markov chain. P is an N×N row-stochastic transition matrix as a list of lists (each row sums to 1). Return pi as a list of N floats summing to 1.0 such that pi @ P = pi (approximately, within tol). Use power iteration: start from a uniform distribution, repeatedly apply pi := pi @ P, stop when the L1 change is below tol. Raise ValueError if any row doesn't sum to ~1, or if max_iter is exceeded. Pure Python — no numpy.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_markov/markov.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_markov/markov.py').read(); assert 'numpy' not in src; ss = mod.stationary; pi = ss([[0.7, 0.3], [0.4, 0.6]]); assert abs(sum(pi) - 1.0) < 1e-9; expected = [4/7, 3/7]; assert all(abs(a-b) < 1e-6 for a,b in zip(pi, expected)), f'2x2 got {pi}, expected {expected}'; pi3 = ss([[0.5, 0.25, 0.25], [0.5, 0.0, 0.5], [0.25, 0.25, 0.5]]); assert abs(sum(pi3) - 1.0) < 1e-9; \ndef matvec(pi, P): return [sum(pi[i]*P[i][j] for i in range(len(pi))) for j in range(len(P[0]))]\ncheck = matvec(pi3, [[0.5, 0.25, 0.25], [0.5, 0.0, 0.5], [0.25, 0.25, 0.5]]); assert all(abs(a-b) < 1e-6 for a,b in zip(check, pi3)), f'pi @ P should equal pi'; r = False;\nfor _ in [1]:\n    try: ss([[0.5, 0.4], [0.3, 0.7]])\n    except ValueError: r = True\nassert r, 'non-stochastic must raise'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_markov",
+  "max_iter": 25
+}
