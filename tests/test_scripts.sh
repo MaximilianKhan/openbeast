@@ -179,6 +179,59 @@ else
   fail "eval tasks have problems: ${TASK_ERRORS:-none} (count=${TASK_COUNT:-0})"
 fi
 
+# --- 6c. Skills validation ---
+echo ""
+echo "Skills validation:"
+SKILL_CHECK=$(python3 - <<'PY'
+import os, sys
+skills_dir = os.path.join(os.environ.get('REPO_DIR', '.'), 'skills')
+errors = []
+count = 0
+if not os.path.isdir(skills_dir):
+    print('COUNT=0')
+else:
+    for entry in sorted(os.listdir(skills_dir)):
+        skill_path = os.path.join(skills_dir, entry)
+        if not os.path.isdir(skill_path) or entry.startswith('_'):
+            continue
+        md_path = os.path.join(skill_path, 'SKILL.md')
+        if not os.path.isfile(md_path):
+            errors.append(f'{entry}: no SKILL.md'); continue
+        try:
+            text = open(md_path).read()
+        except Exception as e:
+            errors.append(f'{entry}: read failed: {e}'); continue
+        if not text.startswith('---'):
+            errors.append(f'{entry}: missing frontmatter'); continue
+        end = text.find('---', 3)
+        if end == -1:
+            errors.append(f'{entry}: unterminated frontmatter'); continue
+        fm = {}
+        for line in text[3:end].strip().split('\n'):
+            if ':' in line:
+                k, _, v = line.partition(':')
+                fm[k.strip()] = v.strip()
+        for required in ('name', 'description'):
+            if required not in fm:
+                errors.append(f'{entry}: missing {required} in frontmatter')
+        if fm.get('name') and fm['name'] != entry:
+            errors.append(f'{entry}: frontmatter name={fm["name"]!r} does not match dir name')
+        body = text[end+3:].strip()
+        if len(body) < 50:
+            errors.append(f'{entry}: body suspiciously short ({len(body)} chars)')
+        count += 1
+    print(f'COUNT={count}')
+for e in errors: print('ERROR:' + e)
+PY
+)
+SKILL_COUNT=$(echo "$SKILL_CHECK" | grep '^COUNT=' | cut -d= -f2)
+SKILL_ERRORS=$(echo "$SKILL_CHECK" | grep '^ERROR:' || true)
+if [[ -z "$SKILL_ERRORS" ]]; then
+  pass "all $SKILL_COUNT skill SKILL.md files valid"
+else
+  fail "skill validation: ${SKILL_ERRORS}"
+fi
+
 # --- 7. Config files exist ---
 echo ""
 echo "Config files:"

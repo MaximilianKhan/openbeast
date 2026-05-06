@@ -49,12 +49,13 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 - 5 pre-configured models (Qwen 27B dense, Qwen 35B MoE, Qwen 27B uncensored, Gemma 4 31B-it)
 - Context lengths tuned to measured VRAM ceilings (380K–512K) on a 32GB card
 
-**Tool Suite (13 MCP tools)**
+**Tool Suite (17 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
 - Code search: `grep` (regex), `list_files` (glob)
 - Shell: `bash` with timeout and output capture
 - Web: `fetch` (URL → readable text), `web_search` (via local SearXNG)
 - Agent management: `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
+- Skills (curated expertise packages): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
 
 **Autonomous Agents**
 - Fire-and-forget background agents that code independently
@@ -176,8 +177,18 @@ docs/                        # All technical documentation
   INSTALL.md                 # Step-by-step installation guide
   REFERENCE.md               # VRAM tables, architecture, configuration
   RESULTS.md                 # Eval distribution + cross-host sweep results
+  SKILLS_PLAN.md             # Skills system design + roadmap
   WORK_PLAN.md               # Active work plan / save state for eval suite work
   TODO.md                    # Roadmap and completed work
+
+skills/                      # Curated expertise packages — loaded on-demand by the model
+  README.md                  # Skill schema + how to add new ones
+  code-review/               # Multi-pass code review
+  security-audit/            # Threat-model-driven security review
+  debugging-methodology/     # Hypothesis-driven root-cause analysis
+  deep-counsel/              # Slow-mode reasoning for intractable problems
+  eval-task-author/          # Authoring eval tasks (encodes the 6 pitfalls)
+  eval-variant-porter/       # Adding multi-language variants to existing tasks
 
 system-prompt.md             # Soul file (persona, applied to all frontends)
 system-prompt-tools.md       # Tool guidance (Open WebUI only)
@@ -193,8 +204,10 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
 - **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
+- **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** — Skills system design (Pattern A progressive disclosure via MCP)
 - **[docs/TODO.md](docs/TODO.md)** — Roadmap and completed work
 - **[evals/README.md](evals/README.md)** — Eval suite specifics: schema, scoring, pitfalls
+- **[skills/README.md](skills/README.md)** — Skills schema + how to add new ones
 
 ## Evals & Benchmarking
 

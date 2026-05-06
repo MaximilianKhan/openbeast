@@ -48,10 +48,19 @@ models/
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
 ├── README.md               # project overview (start here)
+├── skills/                 # curated expertise packages — discovered via MCP
+│   ├── README.md           # skill schema + how to add new ones
+│   ├── code-review/SKILL.md
+│   ├── security-audit/SKILL.md
+│   ├── debugging-methodology/SKILL.md
+│   ├── deep-counsel/SKILL.md
+│   ├── eval-task-author/SKILL.md
+│   └── eval-variant-porter/SKILL.md
 └── docs/
     ├── INSTALL.md          # step-by-step installation guide
     ├── REFERENCE.md        # this file — technical reference
     ├── RESULTS.md          # eval distribution + cross-host sweep results
+    ├── SKILLS_PLAN.md      # skills system design + roadmap
     ├── WORK_PLAN.md        # active work plan / save state for eval suite work
     └── TODO.md             # roadmap and completed work
 ```

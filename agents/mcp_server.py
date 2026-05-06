@@ -481,6 +481,141 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Skills — discovery + load (Pattern A: progressive disclosure via MCP)
+# ---------------------------------------------------------------------------
+
+_REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills")
+_GLOBAL_SKILLS_DIR = os.path.expanduser("~/.local/share/local-llm-skills")
+
+# {name: {"description": str, "frontmatter": dict, "body": str, "path": str, "source": "repo"|"global"}}
+_SKILLS_CACHE: dict | None = None
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Minimal YAML-ish frontmatter parser. Returns ({}, full_text) if no
+    frontmatter is present. Supports `key: value` and `key: [a, b, c]` only —
+    no nesting, no quoting tricks. Keep skill frontmatter simple."""
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("---", 3)
+    if end == -1:
+        return {}, text
+    raw = text[3:end].strip()
+    body = text[end + 3:].lstrip("\n")
+    fm: dict = {}
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = [v.strip() for v in value[1:-1].split(",") if v.strip()]
+        elif value.lower() in ("true", "false"):
+            value = (value.lower() == "true")
+        fm[key] = value
+    return fm, body
+
+
+def _discover_skills(force: bool = False) -> dict:
+    """Walk repo and global skill directories. Repo wins on name collision.
+    Cached after first call; pass force=True to re-scan."""
+    global _SKILLS_CACHE
+    if _SKILLS_CACHE is not None and not force:
+        return _SKILLS_CACHE
+
+    skills: dict = {}
+    # Order matters: repo first so it wins ties
+    for source, base in (("repo", _REPO_SKILLS_DIR), ("global", _GLOBAL_SKILLS_DIR)):
+        if not os.path.isdir(base):
+            continue
+        for entry in sorted(os.listdir(base)):
+            skill_path = os.path.join(base, entry)
+            md_path = os.path.join(skill_path, "SKILL.md")
+            if not os.path.isfile(md_path):
+                continue
+            try:
+                text = open(md_path).read()
+            except Exception:
+                continue
+            fm, body = _parse_frontmatter(text)
+            name = fm.get("name") or entry
+            if name in skills:
+                continue  # repo already claimed this name
+            skills[name] = {
+                "description": fm.get("description", "(no description)"),
+                "frontmatter": fm,
+                "body": body,
+                "path": md_path,
+                "source": source,
+            }
+    _SKILLS_CACHE = skills
+    return skills
+
+
+def _resolve_skill(name: str) -> dict | None:
+    """Return the cached skill record, or None if not found."""
+    return _discover_skills().get(name)
+
+
+@mcp.tool()
+def list_skills() -> str:
+    """List every available skill — name, description, source.
+
+    A skill is a curated package of instructions for a specific kind of work
+    (code review, security audit, eval-task authoring, deep counsel, etc).
+    The full skill body is NOT returned here — call load_skill(name) when one
+    matches the task at hand. This keeps the system prompt small and only
+    pays for the content you need.
+    """
+    skills = _discover_skills()
+    if not skills:
+        return (
+            "No skills installed. Repo skills go in /home/max/Documents/models/skills/; "
+            "global skills go in ~/.local/share/local-llm-skills/. "
+            "Each skill is a folder with a SKILL.md file."
+        )
+    lines = [f"{len(skills)} skill(s) available:", ""]
+    for name in sorted(skills):
+        s = skills[name]
+        src_tag = f"[{s['source']}]"
+        lines.append(f"  {name:30s} {src_tag:>9}  {s['description']}")
+    lines.append("")
+    lines.append("Call load_skill(name) to read the full skill body.")
+    lines.append("Call start_skill_agent(skill, task) to spawn a sub-agent with the skill activated.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def load_skill(name: str) -> str:
+    """Return the full body of a skill (markdown instructions, checklists,
+    examples). Use after list_skills() identifies a relevant skill.
+
+    Args:
+        name: The skill identifier from list_skills() (e.g. 'code-review').
+
+    Returns:
+        The skill's instructional content (frontmatter stripped). Apply these
+        instructions to the work at hand.
+    """
+    skill = _resolve_skill(name)
+    if skill is None:
+        available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
+        return f"Error: skill '{name}' not found. Available: {available}"
+    header = f"=== SKILL: {name} ({skill['source']}) ===\n\n"
+    return header + skill["body"]
+
+
+@mcp.tool()
+def reload_skills() -> str:
+    """Re-scan the skills directories and refresh the cache. Use after adding
+    or editing a skill file without restarting the MCP server."""
+    skills = _discover_skills(force=True)
+    return f"Reloaded {len(skills)} skill(s) from repo and global directories."
+
+
 # --- Agent MCP tools ---
 
 
@@ -559,6 +694,46 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         f"Log: {log_path}\n"
         f"\nUse check_agent('{agent_id}') to monitor progress."
     )
+
+
+@mcp.tool()
+def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int = 200, extra_context: str = "") -> str:
+    """Spawn a long-running sub-agent with a specific skill activated.
+
+    The skill's instructions are loaded and framed as the sub-agent's primary
+    operating context. The sub-agent inherits the soul file + agent
+    instructions + activated skill + task. Use this for specialized work where
+    a skill encodes the right approach (code-review, security-audit,
+    eval-task-author, deep-counsel, etc.).
+
+    Args:
+        skill: Name of the skill to activate (see list_skills()).
+        task: What the sub-agent should accomplish, framed in terms of the skill.
+        workdir: Working directory for file and shell operations.
+        max_iter: Maximum iterations before the agent stops (default 200).
+        extra_context: Additional context to brief the sub-agent (what you've
+                       tried, relevant files, partial findings).
+
+    Returns:
+        Agent ID for use with check_agent, list_agents, and stop_agent.
+    """
+    skill_record = _resolve_skill(skill)
+    if skill_record is None:
+        available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
+        return f"Error: skill '{skill}' not found. Available: {available}"
+
+    framed = (
+        f"=== ACTIVATED SKILL: {skill} (source: {skill_record['source']}) ===\n\n"
+        f"{skill_record['body']}\n\n"
+        f"=== END SKILL ===\n\n"
+        f"Apply the above skill's approach and conventions to the task. "
+        f"Treat the skill body as authoritative guidance for HOW to work, not "
+        f"just background reading."
+    )
+    if extra_context.strip():
+        framed += f"\n\n=== EXTRA CONTEXT FROM CALLER ===\n{extra_context}\n=== END EXTRA CONTEXT ==="
+
+    return start_agent(task=task, workdir=workdir, max_iter=max_iter, context=framed)
 
 
 @mcp.tool()
