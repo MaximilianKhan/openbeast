@@ -46,7 +46,7 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 5 pre-configured models (Qwen 27B dense, Qwen 35B MoE, Qwen 27B uncensored, Gemma 4 31B-it)
+- 5 pre-configured models (Qwen 27B dense, Qwen 27B uncensored, Qwen 35B MoE, **Qwen 35B-A3B uncensored** as default, Gemma 4 31B-it)
 - Context lengths tuned to measured VRAM ceilings (380K–512K) on a 32GB card
 
 **Tool Suite (17 MCP tools)**
@@ -94,8 +94,8 @@ git clone https://github.com/ggml-org/llama.cpp.git
 pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
 
 # 4. Download the default model (or pick another from docs/INSTALL.md)
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
 
 # 5. Install OpenCode (terminal frontend)
 curl -fsSL https://opencode.ai/install | bash
@@ -127,9 +127,9 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
 | Qwen3.6-27B | Q5_K_XL | 19 GB | 416K | 30.7 GB | Higher fidelity (margin only 9 MiB above 2GB rule) |
-| **Qwen3.6-27B Uncensored** | **Q5_K_P** | **21 GB** | **380K** | **30.7 GB** | **Default model** |
+| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 380K | 30.7 GB | Uncensored fine-tune (HauhauCS Aggressive) |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast, KV-efficient, 1M capable; ~4.3 GB headroom (measured) |
-| Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Uncensored fine-tune (HauhauCS Aggressive); ~4.9 GB headroom (measured) |
+| **Qwen3.6-35B-A3B Uncensored** | **Q4_K_M** | **20 GB** | **512K** | **27.1 GB** | **Default model** — top of internal leaderboard at 97.3% / 86.7 speed |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
 
 All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
@@ -149,7 +149,7 @@ scripts/                     # Server, chat, and ops scripts
   healthcheck.sh             # Service health monitor (--restart to auto-recover)
 
 agents/                      # Agent framework + MCP tool server
-  mcp_server.py              # MCP tool server (13 tools, stdio + HTTP transports)
+  mcp_server.py              # MCP tool server (17 tools, stdio + HTTP transports)
   runner.py                  # Autonomous agent loop (LLM + tool use)
   tools.py                   # Tool schemas/handlers for the standalone runner
   requirements.txt           # openai, mcp, mcpo

@@ -285,9 +285,14 @@ with `./start.sh`). Changes take effect on the next new chat.
 
 ### MCP tool server + MCPO proxy
 
-Exposes local tools (bash, read_file, write_file, edit_file, list_files, grep,
-fetch, web_search) and long-running agent management (start_agent, check_agent,
-tail_agent, list_agents, stop_agent) to any MCP-compatible client.
+Exposes 17 tools to any MCP-compatible client, in four groups:
+
+- **Code & files** (5): `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
+- **Shell + web** (3): `bash`, `fetch`, `web_search`
+- **Long-running agent management** (5): `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
+- **Skills** (4): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
+
+Transports:
 
 - **stdio** — used by OpenCode (launched automatically via `opencode.json`)
 - **MCPO** — used by Open WebUI (`http://localhost:3001`, started by `./start.sh`).
@@ -318,6 +323,45 @@ cleans up any running agents on shutdown via `atexit`. Agent logs are written to
 
 If the MCP server restarts, `check_agent` can still read status from log files
 on disk (no live process control, but full history is available).
+
+#### Skills via MCP
+
+Skills are curated expertise packages — markdown files with frontmatter that
+encode hard-won lessons for specific kinds of work (code review, security
+audit, eval-task authoring, deep counsel, debugging methodology, etc.). They
+exist outside the MCP system as files on disk; the MCP exposes them via four
+tools:
+
+- **`list_skills()`** — returns name + description for every skill, repo and
+  global combined. Cheap; pay only for the index.
+- **`load_skill(name)`** — returns the full SKILL.md body for one skill.
+  Used after `list_skills` identifies a relevant one. Frontmatter stripped.
+- **`start_skill_agent(skill, task, ...)`** — spawn a sub-agent with the
+  skill activated as authoritative context. The runner inherits the soul
+  file + agent instructions + the activated skill body + the user task.
+  Returns an agent_id usable with `check_agent`.
+- **`reload_skills()`** — re-scan the skills directories without restarting
+  the MCP server (useful after editing a SKILL.md).
+
+**Discovery order:** repo `skills/` first, then `~/.local/share/local-llm-skills/`.
+Repo wins on name collision. Cached at first call; refresh via `reload_skills()`.
+
+**Currently shipped (14 skills):** see `skills/README.md` for the full table.
+Tier 1 (universal): codebase-onboarding, spec-extraction, git-discipline,
+long-context-synthesis. Tier 2 (situational): test-driven-development,
+architecture-proposal, performance-optimization, api-design. Plus
+code-review, security-audit, debugging-methodology, deep-counsel,
+eval-task-author, eval-variant-porter.
+
+**Adding a skill:** create `skills/<name>/SKILL.md` with required frontmatter
+(`name`, `description`); call `reload_skills()`. Test via
+`bash tests/test_scripts.sh` — the validator checks every SKILL.md parses
+cleanly. See `docs/SKILLS_PLAN.md` for the full design rationale and the
+deferred Phase 5 (auto-routing layer).
+
+**AGENTS.md** (project root) is the project-wide instructions file
+auto-loaded by OpenCode. It contains the task→skill mapping that nudges the
+model to invoke `list_skills` for non-trivial work.
 
 ## 5. Run
 

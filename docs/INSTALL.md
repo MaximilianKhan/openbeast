@@ -2,7 +2,9 @@
 
 This repo runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 13 tools for file I/O, shell, web search, and agent management.
+server providing 17 tools for file I/O, shell, web search, agent management,
+and a curated skills system (14 specialized expertise packages loaded on
+demand).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,
@@ -30,9 +32,9 @@ export PATH=/opt/cuda/bin:$PATH
 # Python deps + Hugging Face CLI
 pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
 
-# Default model
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+# Default model — top of internal leaderboard (97.3% accuracy / 86.7 speed)
+hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
 
 # Frontends
 curl -fsSL https://opencode.ai/install | bash
@@ -106,23 +108,30 @@ Create the weights directory and download whichever models you plan to use:
 mkdir -p weights
 ```
 
-### Qwen3.6-27B -- Q5_K_XL (~19GB)
+### Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) -- Q4_K_M (~20GB) — DEFAULT
 
 ```bash
-hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
+hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
 ```
 
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB) — DEFAULT
+### Qwen3.6-35B-A3B (standard MoE) -- Q4_K_M (~20GB)
+
+```bash
+hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-dir weights/
+```
+
+### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB)
 
 ```bash
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
    Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 ```
 
-### Qwen3.6-35B-A3B -- Q4_K_M (~20GB)
+### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB)
 
 ```bash
-hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-dir weights/
+hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
 ### Gemma 4 31B-it -- Q5_K_XL (~20.4GB)
@@ -232,7 +241,7 @@ To stop everything:
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 13 tools)
+- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 17 tools)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
