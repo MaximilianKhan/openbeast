@@ -445,6 +445,8 @@ python3 evals/benchmark_all.py --list                # show configured models
 
 Total runtime estimate: ~144 tasks × ~90s avg × 5 models ≈ **7-9 hours**. Plan
 to run overnight. Sweep summaries are saved to `evals/results/sweep-{ts}.json`.
+The 2026-05-05/06 sweep on the RTX 5090 took 7h 21m wall-clock (26,489 s).
+Per-host results are documented in [RESULTS.md](RESULTS.md).
 
 #### Scoring + leaderboard
 
@@ -465,6 +467,12 @@ Tie-breakers (in order): raw pass count → hard-task pass count → speed.
 
 `scoring.py --by-category` produces a per-model × per-category accuracy table
 with subcategory drilldown for diagnosing where each model is strong/weak.
+
+`scoring.py --compare-hosts` produces a side-by-side comparison: one row per
+model, one column per host system. The leaderboard is keyed by
+`(host_id, model_slug)`, so the same model evaluated on a 5090 vs. a 2×3090 Ti
+host coexists in the same `evals/leaderboard.json`. The `host_id` is auto-derived
+from `nvidia-smi` (e.g. `NVIDIA GeForce RTX 5090 ×1` or `NVIDIA GeForce RTX 3090 Ti ×2`).
 
 ```bash
 python3 evals/scoring.py --show                      # current leaderboard

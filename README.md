@@ -192,10 +192,23 @@ math, physics, ML/LLM internals, distributed systems, security, signal processin
 and more — every
 task is self-contained (setup + validation + cleanup) with deterministic checks.
 
+**Latest leaderboard** (NVIDIA GeForce RTX 5090 ×1, sweep 2026-05-05/06):
+
+| # | Model | Acc | Speed | Pass | Hard | Time |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | **Qwen 35B-A3B Uncensored Q4_K_M** | **97.3** | 86.7 | **140/144** | **49/51** | 50 min |
+| 2 | Qwen 27B Uncensored Q5_K_P | 96.4 | 72.5 | 139/144 | 49/51 | 97 min |
+| 3 | Qwen 27B Q5_K_XL | 95.5 | 68.2 | 138/144 | 48/51 | 116 min |
+| 4 | Gemma 4 31B-it Q5_K_XL | 94.6 | 57.4 | 137/144 | 47/51 | 127 min |
+| 5 | Qwen 35B-A3B MoE Q4_K_M | 93.5 | 86.3 | 136/144 | 46/51 | 49 min |
+
+Full report with per-category breakdowns and cross-system comparison guide: **[RESULTS.md](RESULTS.md)**.
+
 **Ranking: accuracy is primary, speed is the tie-breaker.** Composite (`0.75 × accuracy + 0.25 × speed`) is shown for backwards compatibility but is no longer the sort key.
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
 - **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
-- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security) with subcategory drilldown — see `evals/scoring.py --by-category`
+- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown — see `evals/scoring.py --by-category`
+- **Multi-host comparison**: leaderboard is keyed by `(host_id, model_slug)`, so the same model run on different machines (e.g. RTX 5090 vs. 2×3090 Ti) coexist. See `evals/scoring.py --compare-hosts`.
 
 ```bash
 # Single-model eval (server must already be running)
@@ -203,7 +216,7 @@ python3 evals/run_eval.py                          # all 144 tasks
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 
-# Multi-model sweep — stops/starts each serve script in turn, ~6-8 hours for all 5
+# Multi-model sweep — stops/starts each serve script in turn, ~7-9 hours for all 5
 python3 evals/benchmark_all.py                     # full sweep
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --list              # show configured models
@@ -211,6 +224,8 @@ python3 evals/benchmark_all.py --list              # show configured models
 # Scoring + leaderboard
 python3 evals/scoring.py --show                    # current leaderboard
 python3 evals/scoring.py --by-category             # per-category accuracy table
+python3 evals/scoring.py --compare-hosts           # side-by-side across systems
+python3 evals/scoring.py --host "NVIDIA GeForce RTX 5090 ×1"   # filter to one host
 python3 evals/scoring.py --rebuild                 # regenerate from results/
 python3 evals/scoring.py --score evals/results/eval-*.json  # score one file
 ```

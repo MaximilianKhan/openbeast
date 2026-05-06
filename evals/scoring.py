@@ -189,6 +189,20 @@ def rank_key(entry: dict) -> tuple:
     )
 
 
+def entry_host_id(entry: dict) -> str:
+    """Return the host_id of an entry. Falls back to `gpu.name` for legacy
+    entries that predate multi-host support, or 'unknown-host' if no GPU
+    info."""
+    gpu = entry.get("gpu", {})
+    return gpu.get("host_id") or gpu.get("name") or "unknown-host"
+
+
+def entry_dedup_key(entry: dict) -> tuple:
+    """The (host_id, model_slug) pair used to deduplicate leaderboard entries.
+    Allows the same model to appear once per host."""
+    return (entry_host_id(entry), entry.get("model_slug", "unknown"))
+
+
 def load_leaderboard(path: str = LEADERBOARD_PATH) -> list[dict]:
     if not os.path.exists(path):
         return []
@@ -198,9 +212,11 @@ def load_leaderboard(path: str = LEADERBOARD_PATH) -> list[dict]:
 
 
 def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH) -> list[dict]:
-    """Insert or replace the entry for this model_slug. Returns sorted list."""
+    """Insert or replace the entry for this (host_id, model_slug). Returns sorted list.
+    Multi-host: results from different machines coexist in the same leaderboard."""
     entries = load_leaderboard(path)
-    entries = [e for e in entries if e.get("model_slug") != score_entry["model_slug"]]
+    target = entry_dedup_key(score_entry)
+    entries = [e for e in entries if entry_dedup_key(e) != target]
     entries.append(score_entry)
     entries.sort(key=rank_key)
     payload = {"updated_at": datetime.now().isoformat(), "entries": entries}
@@ -209,12 +225,15 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH) -> list[
     return entries
 
 
-def format_leaderboard(entries: list[dict]) -> str:
-    """Pretty-print as a table."""
+def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
+    """Pretty-print as a table. If show_host is True, include the host column."""
     if not entries:
         return "(leaderboard is empty)"
 
-    header = f"{'#':>2}  {'MODEL':<32}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}"
+    if show_host:
+        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}"
+    else:
+        header = f"{'#':>2}  {'MODEL':<32}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}"
     sep = "-" * len(header)
     lines = [header, sep]
     for i, e in enumerate(entries, 1):
@@ -225,7 +244,48 @@ def format_leaderboard(entries: list[dict]) -> str:
         passed = f"{e['tasks_passed']}/{e['tasks_total']}"
         hard = str(e["tasks_hard_passed"])
         elapsed = f"{e['elapsed_total_seconds']:.0f}s"
-        lines.append(f"{i:>2}  {model:<32}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}")
+        if show_host:
+            host = entry_host_id(e)[:22]
+            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}")
+        else:
+            lines.append(f"{i:>2}  {model:<32}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}")
+    return "\n".join(lines)
+
+
+def format_host_comparison(entries: list[dict]) -> str:
+    """Side-by-side comparison: one row per model, one column per host.
+    Cells show accuracy (with pass count and elapsed seconds for context).
+    Useful for comparing the SAME model across different GPU/system configs."""
+    if not entries:
+        return "(no entries to compare)"
+    hosts = sorted({entry_host_id(e) for e in entries})
+    if len(hosts) < 2:
+        return f"Only one host present ({hosts[0] if hosts else 'none'}); nothing to compare."
+
+    by_model: dict[str, dict[str, dict]] = {}
+    for e in entries:
+        slug = e.get("model_slug", "unknown")
+        host = entry_host_id(e)
+        by_model.setdefault(slug, {})[host] = e
+
+    short = lambda s: s if len(s) <= 18 else s[:17] + "…"
+    header = f"{'MODEL':<32}  " + "  ".join(f"{short(h):>22}" for h in hosts)
+    lines = [header, "-" * len(header)]
+    # Sort by best accuracy across any host
+    def model_rank(slug):
+        return -max(e["accuracy"] for e in by_model[slug].values())
+    for slug in sorted(by_model, key=model_rank):
+        first_entry = next(iter(by_model[slug].values()))
+        name = first_entry.get("model", slug)[:32]
+        row = f"{name:<32}  "
+        cells = []
+        for h in hosts:
+            if h in by_model[slug]:
+                e = by_model[slug][h]
+                cells.append(f"{e['accuracy']:>5.1f} ({e['tasks_passed']:>3}/{e['tasks_total']:<3} {e['elapsed_total_seconds']:>5.0f}s)")
+            else:
+                cells.append(f"{'—':>22}")
+        lines.append(row + "  ".join(cells))
     return "\n".join(lines)
 
 
@@ -270,6 +330,11 @@ def main():
     parser.add_argument("--show", action="store_true", help="Print current leaderboard")
     parser.add_argument("--by-category", action="store_true",
                         help="Show per-category accuracy breakdown for all leaderboard entries")
+    parser.add_argument("--host", help="Filter leaderboard to a specific host_id")
+    parser.add_argument("--compare-hosts", action="store_true",
+                        help="Side-by-side comparison: one row per model, one column per host")
+    parser.add_argument("--show-host", action="store_true",
+                        help="Include host column in the leaderboard table")
     args = parser.parse_args()
 
     if args.score:
@@ -278,31 +343,45 @@ def main():
         return
 
     if args.rebuild:
-        # Latest result per model_slug wins
-        by_model: dict[str, dict] = {}
+        # Latest result per (host_id, model_slug) wins — keeps results from
+        # different machines side by side.
+        by_key: dict[tuple, dict] = {}
         for path in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
             if not path.startswith("eval-") or not path.endswith(".json"):
                 continue
             full = os.path.join(RESULTS_DIR, path)
             entry = score_results_file(full)
-            slug = entry.get("model_slug", "unknown")
-            existing = by_model.get(slug)
+            key = entry_dedup_key(entry)
+            existing = by_key.get(key)
             if not existing or entry.get("timestamp", "") > existing.get("timestamp", ""):
-                by_model[slug] = entry
-        entries = sorted(by_model.values(), key=rank_key)
+                by_key[key] = entry
+        entries = sorted(by_key.values(), key=rank_key)
         payload = {"updated_at": datetime.now().isoformat(), "entries": entries}
         with open(LEADERBOARD_PATH, "w") as f:
             json.dump(payload, f, indent=2)
-        print(f"Rebuilt leaderboard from {len(entries)} model(s).")
+        n_hosts = len({entry_host_id(e) for e in entries})
+        print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s).")
+
+    if args.compare_hosts:
+        entries = load_leaderboard()
+        print(format_host_comparison(entries))
+        return
 
     if args.by_category:
         entries = load_leaderboard()
+        if args.host:
+            entries = [e for e in entries if entry_host_id(e) == args.host]
         print(format_category_table(entries))
         return
 
     if args.show or args.rebuild or not (args.score or args.rebuild):
         entries = load_leaderboard()
-        print(format_leaderboard(entries))
+        if args.host:
+            entries = [e for e in entries if entry_host_id(e) == args.host]
+        # Auto-show host column when multiple hosts are present
+        n_hosts = len({entry_host_id(e) for e in entries})
+        show_host = args.show_host or n_hosts > 1
+        print(format_leaderboard(entries, show_host=show_host))
 
 
 if __name__ == "__main__":

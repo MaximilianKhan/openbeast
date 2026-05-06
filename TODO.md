@@ -90,3 +90,5 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] Qwen 35B-A3B Uncensored Q4_K_M added as 5th active model
 - [x] Removed redundant Qwen 27B Q4_K_M (Q5 variant supersedes)
 - [x] VRAM measurements re-calibrated (35B-A3B: 23.1 → 27.8 GB at 512K)
+- [x] Multi-host leaderboard schema (host_id keying, `--compare-hosts`, `--host` filter)
+- [x] Full 144-task × 5-model sweep on RTX 5090 (7h 21m, all 5 succeeded — see RESULTS.md)

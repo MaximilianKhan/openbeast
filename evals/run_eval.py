@@ -63,8 +63,15 @@ def slugify(name: str) -> str:
 
 
 def capture_gpu_info() -> dict:
-    """Snapshot the GPU configuration via nvidia-smi. Returns empty dict if
-    nvidia-smi isn't available (e.g. running on a non-NVIDIA box)."""
+    """Snapshot the GPU configuration via nvidia-smi.
+
+    Captures every GPU on the host (not just GPU 0) and derives a `host_id`
+    string of the form "RTX 5090 ×1" or "RTX 3090 Ti ×2 + RTX 4090 ×1" so
+    that benchmark results from different machines can co-exist in the same
+    leaderboard. Backward-compatible top-level fields (name, driver_version,
+    memory_total_mib, compute_capability) describe GPU 0.
+
+    Returns empty dict if nvidia-smi isn't available."""
     try:
         result = subprocess.run(
             ["nvidia-smi",
@@ -74,15 +81,32 @@ def capture_gpu_info() -> dict:
         )
         if result.returncode != 0:
             return {}
-        line = result.stdout.strip().split("\n")[0]
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 4:
-            return {
-                "name": parts[0],
-                "driver_version": parts[1],
-                "memory_total_mib": int(parts[2]),
-                "compute_capability": parts[3],
-            }
+        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        gpus = []
+        for line in lines:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 4:
+                gpus.append({
+                    "name": parts[0],
+                    "driver_version": parts[1],
+                    "memory_total_mib": int(parts[2]),
+                    "compute_capability": parts[3],
+                })
+        if not gpus:
+            return {}
+        from collections import Counter
+        counts = Counter(g["name"] for g in gpus)
+        host_id = " + ".join(f"{name} ×{n}" for name, n in sorted(counts.items()))
+        primary = gpus[0]
+        return {
+            "name": primary["name"],
+            "driver_version": primary["driver_version"],
+            "memory_total_mib": primary["memory_total_mib"],
+            "compute_capability": primary["compute_capability"],
+            "host_id": host_id,
+            "gpu_count": len(gpus),
+            "gpus": gpus,
+        }
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
     return {}
