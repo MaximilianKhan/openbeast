@@ -180,6 +180,46 @@ us the *honest* gap; the port-from-reference view tells us how to
       the hypothesis quantitatively (pick from the hard-tier 4 confirmed
       differentials: 31 / 51 / 155 / 158)
 
+### Smaller queued items (work to do *after* the next sweep, while we assess results)
+
+The full 5-model sweep is the headline next move — it produces the data we
+need to validate or refute the Python-first hypothesis and refresh the
+leaderboard. While that sweep result is being analyzed, three smaller units
+of work are queued:
+
+1. **Author a `python-first-then-port` skill (Tier 3, situational).**
+   Encodes the inference-time strategy from the section above into a
+   reusable skill. Operational value the moment it lands — OpenCode users
+   can invoke it on hard cross-language tasks without us re-writing the
+   strategy each session. Estimated effort: ~30 min. Description focused
+   on the activation criteria (hard-tier task × non-Python target × prior
+   thrashing or expected language-specific gotchas).
+
+2. **Add 1-2 port-from-reference variant pairs to the eval suite.**
+   Wires the Python-first hypothesis into the eval framework so the *next*
+   sweep can quantitatively test it. Pick 1-2 of the 4 confirmed
+   differentials from the v3 smoke test: `31_is_power_of_two`,
+   `51_toposort`, `155_tonelli_shanks`, `158_karatsuba_bytes`. Each pair
+   adds two new variant entries to a base task: a "port from this Python
+   reference" Go variant and a "port from this Python reference" Rust
+   variant. The agent's prompt includes the working Python impl as context
+   instead of a from-scratch ask. Compare pass rate vs. the existing
+   from-scratch Go/Rust variants. Estimated effort: ~1 hour for 1 pair,
+   ~2 hours for both.
+
+3. **Phase 4 deferred — pick up 145 (segment tree lazy) or 146 (Aho-Corasick).**
+   Both are heavyweight algorithmic ports (~150–200 lines per language) but
+   they already have Python reference impls in `/tmp/refs/`. The 6-language
+   pattern from Phase 4.5 transfers cleanly. 145 is more naturally
+   stdio-friendly; 146 is heavier but exercises suffix-link automaton
+   discipline that's idiom-different across languages. Estimated effort:
+   ~3-4 hours per task for full 6-language rollout including reference
+   impls + JSON variants + audit verification.
+
+These three are intentionally pickable in any order, and any one of them can
+be a single focused session. None of them block the sweep; the sweep
+doesn't block any of them.
+
 ### ~~Complete Rust + Zig variant rollout~~ ✓ DONE (2026-05-06)
 
 **Shipped.** All 13 variant base tasks now cover all 6 languages
