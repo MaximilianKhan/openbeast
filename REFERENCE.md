@@ -311,12 +311,13 @@ on disk (no live process control, but full history is available).
 
 ### Full stack
 
-The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
+The default model is **Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) Q4_K_M**
+(top of the internal leaderboard at 97.3 % accuracy on the 144-task sweep).
 
 ```bash
-./start.sh                          # default model + MCP tools + Open WebUI + SearXNG
-./start.sh serve-qwen-35b-a3b.sh    # use a different model
-./stop.sh                           # stop everything (server, MCP, Open WebUI, SearXNG)
+./start.sh                                      # default model + MCP tools + Open WebUI + SearXNG
+./start.sh serve-qwen-27b-uncensored-q5.sh      # use a different model
+./stop.sh                                       # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
 
 ### Web search (SearXNG)
@@ -407,26 +408,11 @@ active slot count. With `--restart`, automatically restarts any service that's d
 
 ### Eval harness
 
-144 tasks across three difficulty tiers (40 easy / 53 medium / 51 hard) and 12
-categories (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats,
-Pure & Abstract Math, Security, Distributed / SysDesign, Concurrency & Systems,
-Physics, Performance & HW Opt, LLM / ML, Signal Processing & DSP). Each task
-has deterministic validation (Python or bash returning exit 0/1). Results are
-tagged with the model name (auto-detected via `/v1/models`) and a snapshot of
-the GPU config (`nvidia-smi`). All 144 tasks verified end-to-end against
-canonical solutions before each suite expansion.
-
-#### Single-model eval
-
-```bash
-python3 evals/run_eval.py --list                     # list all 144 tasks
-python3 evals/run_eval.py                             # run everything
-python3 evals/run_eval.py --tasks 21,22,23            # subset
-python3 evals/run_eval.py --max-iter 5                # cap iterations
-python3 evals/run_eval.py --model-name custom        # override auto-detected name
-```
-
-Results land in `evals/results/eval-{model_slug}-{timestamp}.json` (all kept).
+159 tasks across three difficulty tiers (40 easy / 53 medium / 66 hard) and 12
+categories. Full distribution table, schema, and scoring methodology in
+[**evals/README.md**](evals/README.md) — start there for anything eval-related.
+This section covers operational details specific to the multi-model sweep and
+cross-host comparison.
 
 #### Multi-model benchmark
 
@@ -443,44 +429,52 @@ python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime estimate: ~144 tasks × ~90s avg × 5 models ≈ **7-9 hours**. Plan
-to run overnight. Sweep summaries are saved to `evals/results/sweep-{ts}.json`.
-The 2026-05-05/06 sweep on the RTX 5090 took 7h 21m wall-clock (26,489 s).
-Per-host results are documented in [RESULTS.md](RESULTS.md).
+Total runtime estimate: ~159 tasks × ~90s avg × 5 models ≈ **8-10 hours**.
+Plan to run overnight. Sweep summaries are saved to
+`evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
+7h 21m wall-clock (26,489 s) on the prior 144-task suite — see
+[RESULTS.md](RESULTS.md).
 
 #### Scoring + leaderboard
 
-Ranking is **accuracy-primary**; composite is shown for backward compatibility
-but no longer the sort key. See `evals/scoring.py`:
+Ranking is **accuracy-primary** (tie-break: pass count → hard pass count →
+speed). Composite is shown for backwards compat but is no longer the sort key.
+**Tokens** are tracked per task and summed per run, surfaced as a separate
+column in the leaderboard so you can see how chatty a model is on the way to
+the same answer. See `evals/scoring.py`:
 
 ```
 accuracy    = 100 × Σ(weight × passed) / Σ(weight)
-              where weights: easy=1, medium=1.5, hard=2
+              weights: easy=1, medium=1.5, hard=2 (per-variant: weight / num_variants)
 
 speed       = 100 × mean(max(0, 1 - elapsed/budget)) over passed tasks
-              where budgets: easy=30s, medium=90s, hard=300s
+              budgets: easy=30s, medium=90s, hard=300s
 
-composite   = 0.75 × accuracy + 0.25 × speed   (informational)
+tokens      = Σ(prompt + completion) across all task runs
+              (parsed from runner stdout; 0 if the server didn't return usage)
 ```
-
-Tie-breakers (in order): raw pass count → hard-task pass count → speed.
 
 `scoring.py --by-category` produces a per-model × per-category accuracy table
-with subcategory drilldown for diagnosing where each model is strong/weak.
+with subcategory drilldown.
 
-`scoring.py --compare-hosts` produces a side-by-side comparison: one row per
-model, one column per host system. The leaderboard is keyed by
-`(host_id, model_slug)`, so the same model evaluated on a 5090 vs. a 2×3090 Ti
-host coexists in the same `evals/leaderboard.json`. The `host_id` is auto-derived
-from `nvidia-smi` (e.g. `NVIDIA GeForce RTX 5090 ×1` or `NVIDIA GeForce RTX 3090 Ti ×2`).
+`scoring.py --by-language` produces a per-language accuracy table — meaningful
+once Phase 4 variant rollout (Python / Go / C / C++ versions of select tasks)
+lands.
+
+`scoring.py --compare-hosts` produces a side-by-side comparison across hosts.
+The leaderboard is keyed by `(host_id, model_slug)`, so the same model
+evaluated on a 5090 vs. a 2×3090 Ti host coexists in the same
+`evals/leaderboard.json`. The `host_id` is auto-derived from `nvidia-smi` (e.g.
+`NVIDIA GeForce RTX 5090 ×1` or `NVIDIA GeForce RTX 3090 Ti ×2`).
 
 ```bash
-python3 evals/scoring.py --show                      # current leaderboard
+python3 evals/scoring.py --show                      # current leaderboard (with tokens column)
 python3 evals/scoring.py --rebuild                   # rescore from results/
 python3 evals/scoring.py --score evals/results/eval-foo.json
+python3 evals/scoring.py --by-language               # per-language drilldown
 ```
 
-`evals/leaderboard.json` is auto-maintained — one entry per `model_slug`,
+`evals/leaderboard.json` is auto-maintained — one entry per `(host_id, model_slug)`,
 latest run wins. Result files in `evals/results/` are never deleted, so full
 history is available for trend analysis.
 

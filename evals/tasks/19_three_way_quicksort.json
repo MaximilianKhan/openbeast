@@ -2,14 +2,41 @@
   "id": "19_three_way_quicksort",
   "name": "Three-way quicksort for arrays with duplicates",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_qsort",
-  "task": "Create /tmp/eval_qsort/qsort.py with a function quicksort_3way(arr) that sorts the input list IN PLACE using three-way partitioning (split into <pivot, ==pivot, >pivot regions). Must handle duplicates efficiently and return None (mutates the input). Do NOT use sorted() or list.sort().",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util, random; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_qsort/qsort.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_qsort/qsort.py').read(); assert 'sorted(' not in src and '.sort(' not in src, 'must not call sorted() or list.sort()'; q = mod.quicksort_3way; a = []; q(a); assert a == []; a = [3,1,2]; q(a); assert a == [1,2,3], f'small {a}'; a = [5,5,5,5]; q(a); assert a == [5,5,5,5]; a = [3,1,4,1,5,9,2,6,5,3,5]; q(a); assert a == sorted([3,1,4,1,5,9,2,6,5,3,5]), f'mixed {a}'; random.seed(42); big = [random.randint(0, 50) for _ in range(500)]; expected = sorted(big); q(big); assert big == expected; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_qsort",
-  "max_iter": 20,
   "category": "Algorithms & DS",
-  "subcategory": "Sorting"
+  "subcategory": "Sorting",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
+      "task": "Create /tmp/eval_qs/qs.py — reads from stdin: line 1 is T (test case count). For each case, line A is N >= 1 and line B is N space-separated integers. For each case, output the sorted integers as space-separated values on their own line. Implement three-way quicksort yourself (split into <pivot, ==pivot, >pivot regions, must handle duplicates efficiently). Do NOT call sorted() or list.sort() on the input data.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_qs; ! grep -qE '\\bsorted\\s*\\(|\\.sort\\s*\\(' qs.py || { echo 'must not call sorted() or .sort()'; exit 1; }; python3 qs.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_qs"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
+      "task": "Create /tmp/eval_qs/qs.go (package main). Reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT use sort.Ints, sort.Slice, sort.Sort, or any std sort. Compile with `go build -o qs qs.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_qs; ! grep -qE 'sort\\.(Ints|Slice|Sort|Strings|SliceStable|IntSlice)' qs.go || { echo 'must not use std sort'; exit 1; }; go build -o qs qs.go; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_qs"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
+      "task": "Create /tmp/eval_qs/qs.c — reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT call qsort. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o qs qs.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_qs; ! grep -qE '\\bqsort\\s*\\(' qs.c || { echo 'must not call qsort'; exit 1; }; gcc -O2 -std=c11 -Wall -Wextra -o qs qs.c; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_qs"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
+      "task": "Create /tmp/eval_qs/qs.cpp — reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT call std::sort, std::stable_sort, std::partial_sort, std::nth_element, or qsort. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o qs qs.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_qs; ! grep -qE 'std::(sort|stable_sort|partial_sort|nth_element)\\b|\\bqsort\\s*\\(' qs.cpp || { echo 'must not call std sort'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o qs qs.cpp; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_qs"
+    }
+  ]
 }

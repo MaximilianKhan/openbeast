@@ -1,14 +1,159 @@
 # Eval Suite Results
 
-Cross-system benchmark results for the 144-task eval suite (40 easy / 53 medium /
-51 hard, across 12 categories). Each section below is one host system. Models
+Cross-system benchmark results. Each section below is one host system; models
 are ranked within their host by accuracy primary, speed tie-breaker.
+
+> **Suite version note.** The numbers below are from the **144-task suite**
+> (40 easy / 53 medium / 51 hard). After this sweep we did a post-mortem,
+> fixed 4 spec/harness defects, and added 15 new hard-tier tasks — the live
+> suite is now **159 tasks** (40 easy / 53 medium / 66 hard). Token tracking
+> was also added. The next sweep will use the v3 suite and report a TOKENS
+> column. Distribution table and methodology: [`evals/README.md`](evals/README.md).
 
 ```bash
 python3 evals/scoring.py --compare-hosts                   # side-by-side per-model across systems
 python3 evals/scoring.py --host "NVIDIA GeForce RTX 5090 ×1"   # filter to one host
 python3 evals/scoring.py --by-category                     # per-category drilldown
 ```
+
+---
+
+## Eval suite distribution
+
+**159 base tasks** across **12 categories** with deterministic validation per
+task. Difficulty split: **40 easy · 53 medium · 66 hard**. Difficulty weights
+in scoring: easy=1, medium=1.5, hard=2 (per-variant weight = base / num
+variants).
+
+**13 of the 159 base tasks** have multi-language variants (Python / Go / C /
+C++) — see the variant rollout section at the end. Effective test units after
+variants: **197**. Total weighted points: 251.5 (invariant — variants split a
+single base task's weight, not multiply it).
+
+### Category × difficulty
+
+| Category | Easy | Medium | Hard | Total |
+|---|---:|---:|---:|---:|
+| Algorithms & DS | 4 | 11 | 7 | **22** |
+| Concurrency & Systems | 4 | 4 | 8 | **16** |
+| Distributed / SysDesign | 4 | 4 | 4 | **12** |
+| LLM / ML | 4 | 2 | 3 | **9** |
+| Mathematical Finance | 4 | 5 | 7 | **16** |
+| Performance & HW Opt | 4 | 2 | 5 | **11** |
+| Physics | 4 | 3 | 5 | **12** |
+| Probability & Stats | 3 | 3 | 4 | **10** |
+| Pure & Abstract Math | 3 | 7 | 12 | **22** |
+| SWE / DevOps | 2 | 7 | 6 | **15** |
+| Security | 4 | 4 | 5 | **13** |
+| Signal Processing & DSP | 0 | 1 | 0 | **1** |
+| **Totals** | **40** | **53** | **66** | **159** |
+
+### Subcategory drilldown
+
+| Category | Subcategory | Count |
+|---|---|---:|
+| Algorithms & DS | Computational geometry | 1 |
+| Algorithms & DS | Graph algorithms | 3 |
+| Algorithms & DS | Hashing structures | 2 |
+| Algorithms & DS | Linear data structures | 3 |
+| Algorithms & DS | Parsing | 1 |
+| Algorithms & DS | Recursion / interpretation | 2 |
+| Algorithms & DS | Regex | 1 |
+| Algorithms & DS | Sorting | 1 |
+| Algorithms & DS | String algorithms | 4 |
+| Algorithms & DS | Trees | 4 |
+| Concurrency & Systems | Async patterns | 4 |
+| Concurrency & Systems | Concurrent data structures | 4 |
+| Concurrency & Systems | Networking / state machines | 1 |
+| Concurrency & Systems | Race condition fixes | 1 |
+| Concurrency & Systems | Synchronization primitives | 4 |
+| Concurrency & Systems | Systems APIs | 2 |
+| Distributed / SysDesign | Causal ordering | 1 |
+| Distributed / SysDesign | Consistent hashing | 1 |
+| Distributed / SysDesign | Cryptographic primitives | 1 |
+| Distributed / SysDesign | Distributed coordination | 2 |
+| Distributed / SysDesign | Encoding & serialization | 1 |
+| Distributed / SysDesign | Identifiers | 1 |
+| Distributed / SysDesign | Rate limiting | 2 |
+| Distributed / SysDesign | Replication & consistency | 1 |
+| Distributed / SysDesign | Service patterns | 2 |
+| LLM / ML | Activations | 3 |
+| LLM / ML | Attention | 1 |
+| LLM / ML | Caching | 1 |
+| LLM / ML | Norms | 1 |
+| LLM / ML | Position embeddings | 1 |
+| LLM / ML | Similarity metrics | 2 |
+| Mathematical Finance | Credit risk | 1 |
+| Mathematical Finance | Exotic derivatives | 1 |
+| Mathematical Finance | Fixed income | 2 |
+| Mathematical Finance | Option pricing | 3 |
+| Mathematical Finance | Risk metrics | 3 |
+| Mathematical Finance | Term structure models | 1 |
+| Mathematical Finance | Time value of money | 5 |
+| Performance & HW Opt | Asymptotic refactoring | 1 |
+| Performance & HW Opt | Bit-twiddling | 3 |
+| Performance & HW Opt | Cache locality | 2 |
+| Performance & HW Opt | Loop optimization | 1 |
+| Performance & HW Opt | RISC-V assembly | 3 |
+| Performance & HW Opt | Vectorization | 1 |
+| Physics | 3D rotation / geometry | 1 |
+| Physics | Classical mechanics | 4 |
+| Physics | N-body / orbital mechanics | 1 |
+| Physics | ODE numerical integration | 1 |
+| Physics | PDE / wave propagation | 1 |
+| Physics | Quantum mechanics | 1 |
+| Physics | Solid-state physics | 1 |
+| Physics | Thermodynamics | 2 |
+| Probability & Stats | Combinatorial probability | 1 |
+| Probability & Stats | Descriptive statistics | 3 |
+| Probability & Stats | Inference | 1 |
+| Probability & Stats | Monte Carlo simulation | 1 |
+| Probability & Stats | Optimal stopping | 1 |
+| Probability & Stats | Psychometrics | 2 |
+| Probability & Stats | Stochastic processes | 1 |
+| Pure & Abstract Math | Bit operations (math) | 1 |
+| Pure & Abstract Math | Iterative numerical methods | 3 |
+| Pure & Abstract Math | Linear algebra | 5 |
+| Pure & Abstract Math | Number theory | 8 |
+| Pure & Abstract Math | Polynomial algebra | 5 |
+| SWE / DevOps | APIs / web | 2 |
+| SWE / DevOps | Bash / scripting | 2 |
+| SWE / DevOps | CLI tools | 1 |
+| SWE / DevOps | Data engineering | 3 |
+| SWE / DevOps | Debugging | 3 |
+| SWE / DevOps | File operations | 2 |
+| SWE / DevOps | Refactoring | 1 |
+| SWE / DevOps | Testing | 1 |
+| Security | Auth & access control | 1 |
+| Security | Cipher implementation | 3 |
+| Security | Cryptographic primitives | 3 |
+| Security | Input validation | 1 |
+| Security | Side-channel safety | 1 |
+| Security | Token management | 3 |
+| Security | Vulnerability remediation | 1 |
+| Signal Processing & DSP | Frequency-domain analysis | 1 |
+
+### Multi-language variants (13 base tasks → 51 variant entries)
+
+| Task | # variants | Languages |
+|---|---:|---|
+| 19_three_way_quicksort | 4 | Py / Go / C / C++ |
+| 31_is_power_of_two | 4 | Py / Go / C / C++ |
+| 51_toposort | 4 | Py / Go / C / C++ |
+| 52_unionfind | 4 | Py / Go / C / C++ |
+| 61_extgcd | 4 | Py / Go / C / C++ |
+| 65_miller_rabin | 4 | Py / Go / C / C++ |
+| 73_count_vowels | 4 | Py / Go / C / C++ |
+| 74_palindrome | 4 | Py / Go / C / C++ |
+| 122_gemm_blocked | 3 | Go / C / C++ (perf-flavored — no Python) |
+| 148_convex_hull | 4 | Py / Go / C / C++ |
+| 155_tonelli_shanks | 4 | Py / Go / C / C++ |
+| 158_karatsuba_bytes | 4 | Py / Go / C / C++ |
+| 159_ntt_convolution | 4 | Py / Go / C / C++ |
+
+Each variant is its own scored test unit. The leaderboard reports per-language
+accuracy via `python3 evals/scoring.py --by-language`. For full schema /
+methodology / pitfalls, see [`evals/README.md`](evals/README.md).
 
 ---
 

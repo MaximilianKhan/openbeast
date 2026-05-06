@@ -2,7 +2,7 @@
 
 A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
 
-Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Uncensored** (Q5_K_P) — scores within 4 points of Claude Opus on SWE-bench. 10/10 on our internal eval harness.
+Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models (see `RESULTS.md` and `evals/README.md` for full distribution and methodology).
 
 ## Architecture
 
@@ -70,10 +70,10 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **144-task eval harness** (40 easy / 53 medium / 51 hard) across 12 categories with automated validation (`evals/run_eval.py`)
+- **159-task eval suite** (40 easy / 53 medium / 66 hard) across 12 categories with automated validation — full distribution in [`evals/README.md`](evals/README.md)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces a ranked leaderboard
-- Per-category accuracy breakdown across 12 domains (Algorithms, SWE, Math Finance, Stats, Pure Math, LLM/ML, SysDesign, Concurrency, Physics, Performance, Security, Signal Processing & DSP)
-- Composite scoring with separate correctness + speed columns (`evals/scoring.py`)
+- Composite scoring with separate accuracy / speed / token columns (`evals/scoring.py`)
+- Multi-language variant support: a single task can have Python / Go / C / C++ versions, scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
 ## Quick Start (fresh Linux box)
@@ -163,11 +163,12 @@ tests/                       # Test suite
   test_scripts.sh            # Script structure validation
   test_smoke.sh              # End-to-end stack smoke test (requires running stack)
 
-evals/                       # Eval harness — 144 tasks + multi-model benchmark
+evals/                       # Eval harness — 159 tasks + multi-model benchmark
+  README.md                  # Distribution table, schema, scoring (start here)
   run_eval.py                # Single-model eval runner (model-tagged results)
-  scoring.py                 # Accuracy/speed/composite + per-category breakdown
+  scoring.py                 # Accuracy / speed / tokens + per-category & per-language breakdown
   benchmark_all.py           # Multi-model sweep orchestration
-  tasks/                     # Per-task JSON definitions (01–144) with category tags
+  tasks/                     # Per-task JSON definitions (01–159) with category tags
   results/                   # Per-run results (kept all, model-tagged) [gitignored]
   leaderboard.json           # Latest score per model + per-category drilldown (auto-updated)
 
@@ -187,12 +188,14 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 ## Evals & Benchmarking
 
-The 144-task eval harness covers 12 categories spanning core software engineering,
+The 159-task eval suite covers 12 categories spanning core software engineering,
 math, physics, ML/LLM internals, distributed systems, security, signal processing,
-and more — every
-task is self-contained (setup + validation + cleanup) with deterministic checks.
+and more — every task is self-contained (setup + validation + cleanup) with
+deterministic checks. **Distribution table, schema, and scoring methodology in
+[`evals/README.md`](evals/README.md)**.
 
-**Latest leaderboard** (NVIDIA GeForce RTX 5090 ×1, sweep 2026-05-05/06):
+**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, 2026-05-05/06, on the
+prior 144-task suite — pre-hardening; see RESULTS.md for full report):
 
 | # | Model | Acc | Speed | Pass | Hard | Time |
 |---:|---|---:|---:|---:|---:|---:|
@@ -202,7 +205,9 @@ task is self-contained (setup + validation + cleanup) with deterministic checks.
 | 4 | Gemma 4 31B-it Q5_K_XL | 94.6 | 57.4 | 137/144 | 47/51 | 127 min |
 | 5 | Qwen 35B-A3B MoE Q4_K_M | 93.5 | 86.3 | 136/144 | 46/51 | 49 min |
 
-Full report with per-category breakdowns and cross-system comparison guide: **[RESULTS.md](RESULTS.md)**.
+The next sweep will run against the expanded 159-task suite + 4 spec/harness
+fixes from the post-mortem (see `WORK_PLAN.md`) and will also report **total
+tokens** per model alongside accuracy/speed.
 
 **Ranking: accuracy is primary, speed is the tie-breaker.** Composite (`0.75 × accuracy + 0.25 × speed`) is shown for backwards compatibility but is no longer the sort key.
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
@@ -212,7 +217,7 @@ Full report with per-category breakdowns and cross-system comparison guide: **[R
 
 ```bash
 # Single-model eval (server must already be running)
-python3 evals/run_eval.py                          # all 144 tasks
+python3 evals/run_eval.py                          # all 159 tasks
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 

@@ -1,0 +1,15 @@
+{
+  "id": "156_berlekamp_massey",
+  "name": "Berlekamp-Massey: minimal LFSR recovery over GF(p)",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_bm",
+  "task": "Create /tmp/eval_bm/bm.py with function berlekamp_massey(seq, p) where seq is a list of integers in [0, p) and p is a prime. Return a list [a_1, a_2, ..., a_L] of coefficients (in [0, p)) representing the SHORTEST linear recurrence such that, for every i with L <= i < len(seq), seq[i] = (a_1*seq[i-1] + a_2*seq[i-2] + ... + a_L*seq[i-L]) mod p. L is the minimal recurrence order. If seq is all zeros, return []. Pure Python; no numpy/sympy.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_bm/bm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_bm/bm.py').read(); assert 'import numpy' not in src and 'import sympy' not in src and 'from numpy' not in src and 'from sympy' not in src; bm = mod.berlekamp_massey\ndef verify(seq, coeffs, p):\n    L = len(coeffs)\n    for i in range(L, len(seq)):\n        s = 0\n        for j in range(L): s = (s + coeffs[j] * seq[i-1-j]) % p\n        if s != seq[i]: return False\n    return True\n# zero sequence -> []\nassert bm([0,0,0,0,0,0], 7) == []\n# Constant sequence: a_i = c for all i, recurrence s[i] = 1*s[i-1], L=1, coeffs=[1]\nc = bm([3,3,3,3,3,3,3], 11); assert verify([3]*7, c, 11) and len(c) == 1\n# Fibonacci mod 1000003: s[i] = s[i-1] + s[i-2], coeffs=[1,1], L=2\np = 1000003; fib = [0,1]\nwhile len(fib) < 30: fib.append((fib[-1]+fib[-2]) % p)\nc2 = bm(fib, p); assert verify(fib, c2, p), f'fib failed; coeffs={c2}'; assert len(c2) == 2, f'fib L={len(c2)}, expected 2'\n# Custom LFSR: s[i] = 3*s[i-1] + 2*s[i-2] + 5*s[i-3] mod 13\np = 13; lfsr = [1, 2, 4]\nfor _ in range(20): lfsr.append((3*lfsr[-1] + 2*lfsr[-2] + 5*lfsr[-3]) % p)\nc3 = bm(lfsr, p); assert verify(lfsr, c3, p), f'custom failed; got {c3}'; assert len(c3) <= 3, f'L={len(c3)}, expected <=3'\n# Random LFSR check\nimport random; random.seed(99)\nfor _ in range(5):\n    p = 17; L = random.randint(2, 6); coeffs_true = [random.randint(0, p-1) for _ in range(L)]\n    seq = [random.randint(0, p-1) for _ in range(L)]\n    while len(seq) < 4*L:\n        nxt = sum(coeffs_true[j] * seq[-1-j] for j in range(L)) % p\n        seq.append(nxt)\n    c = bm(seq, p)\n    assert verify(seq, c, p), f'random LFSR failed: true={coeffs_true}, got={c}'\n    assert len(c) <= L, f'returned L={len(c)} > true L={L}'\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bm",
+  "max_iter": 30,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Polynomial algebra"
+}

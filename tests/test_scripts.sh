@@ -130,32 +130,44 @@ done
 echo ""
 echo "Eval task validation:"
 TASK_CHECK=$(python3 - <<'PY'
-import json, ast, os, subprocess, sys
+import json, ast, os, subprocess
 tasks_dir = os.path.join(os.environ.get('REPO_DIR', '.'), 'evals', 'tasks')
 errors = []
 files = sorted(f for f in os.listdir(tasks_dir) if f.endswith('.json'))
+
+def check_unit(label, unit):
+    """A 'unit' is a legacy top-level task or a single variant — both must have task + validation + valid scripts."""
+    for k in ('task', 'validation'):
+        if k not in unit:
+            errors.append(f'{label}: missing {k}')
+    setup = unit.get('setup', '')
+    if setup:
+        r = subprocess.run(['bash', '-n', '-c', setup], capture_output=True, text=True)
+        if r.returncode != 0: errors.append(f'{label}: setup bash {r.stderr.strip()[:80]}')
+    script = unit.get('validation', {}).get('script', '')
+    vtype = unit.get('validation', {}).get('type', 'bash')
+    if vtype == 'python':
+        try: ast.parse(script)
+        except SyntaxError as e: errors.append(f'{label}: validation py {e}')
+    elif vtype == 'bash':
+        r = subprocess.run(['bash', '-n', '-c', script], capture_output=True, text=True)
+        if r.returncode != 0: errors.append(f'{label}: validation bash {r.stderr.strip()[:80]}')
+
 for fn in files:
     path = os.path.join(tasks_dir, fn)
     try:
         data = json.load(open(path))
     except Exception as e:
         errors.append(f'{fn}: JSON {e}'); continue
-    for k in ('id', 'name', 'difficulty', 'task', 'validation'):
+    for k in ('id', 'name', 'difficulty'):
         if k not in data: errors.append(f'{fn}: missing {k}')
-    setup = data.get('setup', '')
-    if setup:
-        r = subprocess.run(['bash', '-n', '-c', setup], capture_output=True, text=True)
-        if r.returncode != 0: errors.append(f'{fn}: setup bash {r.stderr.strip()[:80]}')
-    script = data.get('validation', {}).get('script', '')
-    vtype = data.get('validation', {}).get('type', 'bash')
-    if vtype == 'python':
-        try: ast.parse(script)
-        except SyntaxError as e: errors.append(f'{fn}: validation py {e}')
-    elif vtype == 'bash':
-        r = subprocess.run(['bash', '-n', '-c', script], capture_output=True, text=True)
-        if r.returncode != 0: errors.append(f'{fn}: validation bash {r.stderr.strip()[:80]}')
+    if 'variants' in data:
+        for v in data['variants']:
+            vid = v.get('id', '?')
+            check_unit(f'{fn}[{vid}]', v)
+    else:
+        check_unit(fn, data)
 print(f'COUNT={len(files)}')
-print('ERROR:' + e for e in errors) if False else None
 for e in errors: print('ERROR:' + e)
 PY
 )

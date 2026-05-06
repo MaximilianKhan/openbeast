@@ -1,15 +1,34 @@
 {
   "id": "122_gemm_blocked",
-  "name": "Cache-blocked matrix multiply",
+  "name": "Cache-blocked matrix multiply (GEMM)",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_gemm",
-  "task": "Create /tmp/eval_gemm/gemm.py with gemm_blocked(A, B, block=32) computing C = A * B for two list-of-lists matrices. Use the canonical 6-loop cache-blocked GEMM (ii, jj, kk outer; i, k, j inner) for cache locality. The validator checks correctness against a naive triple-loop reference on a 64\u00d764 matrix.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util,random; spec = importlib.util.spec_from_file_location('m','/tmp/eval_gemm/gemm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); random.seed(0); n = 64; A = [[random.random() for _ in range(n)] for _ in range(n)]; B = [[random.random() for _ in range(n)] for _ in range(n)]; C = mod.gemm_blocked(A, B, block=16); expected = [[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]\nfor i in range(n):\n    for j in range(n):\n        assert abs(C[i][j] - expected[i][j]) < 1e-9\nprint('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_gemm",
-  "max_iter": 30,
   "category": "Performance & HW Opt",
-  "subcategory": "Cache locality"
+  "subcategory": "Cache locality",
+  "max_iter": 30,
+  "variants": [
+    {
+      "id": "a",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_gemm && python3 -c 'import random; random.seed(0); n=64; lines=[str(n)]; A=[[random.random() for _ in range(n)] for _ in range(n)]; B=[[random.random() for _ in range(n)] for _ in range(n)]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in A]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in B]; open(\"/tmp/eval_gemm/input.txt\",\"w\").write(\"\\n\".join(lines)+\"\\n\"); C=[[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]; open(\"/tmp/eval_gemm/expected.txt\",\"w\").write(\"\\n\".join(\" \".join(f\"{x:.6f}\" for x in r) for r in C)+\"\\n\")' && cat > /tmp/eval_gemm/check.py <<'PYEOF'\nout = open('out.txt').read().split()\nexp = open('expected.txt').read().split()\nassert len(out) == len(exp), f'wrong size: got {len(out)} want {len(exp)}'\nfor i, (a, b) in enumerate(zip(out, exp)):\n    assert abs(float(a) - float(b)) < 1e-3, f'index {i}: {a} != {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_gemm/gemm.go (package main). Reads from stdin: line 1 is N (matrix dimension). Next N lines are N space-separated floats (matrix A, row-major). Next N lines similarly for matrix B. Compute C = A * B using a cache-blocked GEMM (block size 16 or 32; canonical 6-loop nesting with ii/jj/kk outer and i/k/j inner for cache locality). Output C as N lines of N space-separated floats with at least 6 decimal places. Compile with `go build -o gemm gemm.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_gemm && go build -o gemm gemm.go && ./gemm < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_gemm"
+    },
+    {
+      "id": "b",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_gemm && python3 -c 'import random; random.seed(0); n=64; lines=[str(n)]; A=[[random.random() for _ in range(n)] for _ in range(n)]; B=[[random.random() for _ in range(n)] for _ in range(n)]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in A]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in B]; open(\"/tmp/eval_gemm/input.txt\",\"w\").write(\"\\n\".join(lines)+\"\\n\"); C=[[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]; open(\"/tmp/eval_gemm/expected.txt\",\"w\").write(\"\\n\".join(\" \".join(f\"{x:.6f}\" for x in r) for r in C)+\"\\n\")' && cat > /tmp/eval_gemm/check.py <<'PYEOF'\nout = open('out.txt').read().split()\nexp = open('expected.txt').read().split()\nassert len(out) == len(exp)\nfor i, (a, b) in enumerate(zip(out, exp)):\n    assert abs(float(a) - float(b)) < 1e-3, f'index {i}: {a} != {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_gemm/gemm.c — reads stdin: N, then matrix A (N×N), then matrix B. Compute C = A*B using cache-blocked GEMM (block 16 or 32; ii/jj/kk outer with i/k/j inner). Output C with 6+ decimals. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o gemm gemm.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_gemm && gcc -O2 -std=c11 -Wall -Wextra -o gemm gemm.c && ./gemm < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_gemm"
+    },
+    {
+      "id": "c",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_gemm && python3 -c 'import random; random.seed(0); n=64; lines=[str(n)]; A=[[random.random() for _ in range(n)] for _ in range(n)]; B=[[random.random() for _ in range(n)] for _ in range(n)]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in A]; [lines.append(\" \".join(f\"{x:.6f}\" for x in r)) for r in B]; open(\"/tmp/eval_gemm/input.txt\",\"w\").write(\"\\n\".join(lines)+\"\\n\"); C=[[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]; open(\"/tmp/eval_gemm/expected.txt\",\"w\").write(\"\\n\".join(\" \".join(f\"{x:.6f}\" for x in r) for r in C)+\"\\n\")' && cat > /tmp/eval_gemm/check.py <<'PYEOF'\nout = open('out.txt').read().split()\nexp = open('expected.txt').read().split()\nassert len(out) == len(exp)\nfor i, (a, b) in enumerate(zip(out, exp)):\n    assert abs(float(a) - float(b)) < 1e-3, f'index {i}: {a} != {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_gemm/gemm.cpp — reads stdin: N, then matrix A (N×N), then matrix B. Compute C = A*B using cache-blocked GEMM (block 16 or 32; ii/jj/kk outer with i/k/j inner). Output C with 6+ decimals. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o gemm gemm.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_gemm && g++ -O2 -std=c++17 -Wall -Wextra -o gemm gemm.cpp && ./gemm < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_gemm"
+    }
+  ]
 }

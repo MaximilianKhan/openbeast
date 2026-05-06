@@ -31,12 +31,18 @@ on structured output (code, JSON) where draft tokens are predictable.
 3. Benchmark before/after with the eval harness
 4. Update serve scripts and docs
 
+### Phase 4 — multi-language variant rollout
+Phase 1, 2, and 3 of the v3 eval refresh are landed (see WORK_PLAN.md). What
+remains: actually convert ~10 existing tasks + 8 new tasks to multi-language
+variants (Python / Go / C / C++). Toolchain is verified (gcc 16, g++ 16, go
+1.26.2). After variants land, run a validation sweep on the winning model only,
+then trigger the full 5-model sweep.
+
 ### Eval harness — agentic + tool-selection tasks
-Current: 144 tasks (40 easy / 53 medium / 51 hard) across 12 categories with
-multi-model benchmark runner, ranked leaderboard, and per-category drilldown.
-Ranking by accuracy primary; speed is the tie-breaker. Next axis to cover:
-agentic tasks (require `web_search` / `start_agent`) and tool-selection tasks
-(does the model prefer `edit_file` over `write_file`?).
+Next axis after variants: agentic tasks (require `web_search` / `start_agent`)
+and tool-selection tasks (does the model prefer `edit_file` over `write_file`?
+Does it know when to spawn a subagent?). These don't fit the current
+deterministic-validation pattern and need a separate harness path.
 
 ## Future Horizon
 
@@ -92,3 +98,10 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] VRAM measurements re-calibrated (35B-A3B: 23.1 → 27.8 GB at 512K)
 - [x] Multi-host leaderboard schema (host_id keying, `--compare-hosts`, `--host` filter)
 - [x] Full 144-task × 5-model sweep on RTX 5090 (7h 21m, all 5 succeeded — see RESULTS.md)
+- [x] Post-sweep post-mortem: identified 4 spec/harness defects (42 numpy lint, 85 type ambiguity, 121 return contract, 17 fixture corruption)
+- [x] Phase 1 — 4 spec/harness fixes landed; `pre_validate` field added to harness for opt-in fixture re-assertion
+- [x] Phase 2 — 15 hardening tasks added (145–159) across the three saturated categories; suite is now 40 easy / 53 medium / 66 hard = 159 total
+- [x] Cheat-resistance perf gates added to 150 + 152 (catches list.pop(0) impls)
+- [x] Phase 3 — multi-language variant architecture in `run_eval.py` + `scoring.py` + result schema; backward-compat regression bit-identical
+- [x] Token tracking through runner → eval → scoring → leaderboard (separate column, not part of rank)
+- [x] `evals/README.md` with full distribution table, schema, scoring, and pitfall-lessons-learned section

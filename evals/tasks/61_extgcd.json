@@ -2,14 +2,41 @@
   "id": "61_extgcd",
   "name": "Extended Euclidean algorithm",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_xgcd",
-  "task": "Create /tmp/eval_xgcd/xgcd.py with extgcd(a, b) returning a tuple (g, x, y) where g = gcd(a, b) and a*x + b*y == g (Bezout identity). Iterative implementation preferred; both inputs are non-negative ints, at least one is positive.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_xgcd/xgcd.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); E = mod.extgcd; g,x,y = E(48,18); assert g == 6 and 48*x+18*y == 6; g,x,y = E(101,13); assert g == 1 and 101*x+13*y == 1; g,x,y = E(270,192); assert g == 6 and 270*x+192*y == 6; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_xgcd",
-  "max_iter": 15,
   "category": "Pure & Abstract Math",
-  "subcategory": "Number theory"
+  "subcategory": "Number theory",
+  "max_iter": 15,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    assert len(parts) == 3, f'case {t}: expected 3 numbers, got {out[t]!r}'\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b), f'case {t}: g={g} but gcd({a},{b})={math.gcd(a,b)}'\n    assert a*x + b*y == g, f'case {t}: {a}*{x} + {b}*{y} = {a*x+b*y} != {g}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_xgcd/xgcd.py — reads from stdin: line 1 is T, next T lines are 'a b' (non-negative integers, at least one positive). For each, output 'g x y' on its own line, where g = gcd(a, b) and a*x + b*y == g (Bezout identity). Iterative implementation preferred.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_xgcd && python3 xgcd.py < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_xgcd"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    assert len(parts) == 3, f'case {t}: expected 3 numbers'\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b), f'case {t}: bad g'\n    assert a*x + b*y == g, f'case {t}: bezout failed'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_xgcd/xgcd.go (package main). Reads stdin: T, then T lines 'a b'. Output 'g x y' per case (Bezout). Use int64 (numbers fit). Compile with `go build -o xgcd xgcd.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_xgcd && go build -o xgcd xgcd.go && ./xgcd < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_xgcd"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b)\n    assert a*x + b*y == g\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_xgcd/xgcd.c — reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for x,y to handle Bezout coefficients which may be negative or large. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o xgcd xgcd.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_xgcd && gcc -O2 -std=c11 -Wall -Wextra -o xgcd xgcd.c && ./xgcd < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_xgcd"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b)\n    assert a*x + b*y == g\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_xgcd/xgcd.cpp — reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for Bezout coefficients. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o xgcd xgcd.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_xgcd && g++ -O2 -std=c++17 -Wall -Wextra -o xgcd xgcd.cpp && ./xgcd < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_xgcd"
+    }
+  ]
 }

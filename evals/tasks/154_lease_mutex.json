@@ -1,0 +1,15 @@
+{
+  "id": "154_lease_mutex",
+  "name": "Lease-based distributed mutex (single-process simulation)",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_lease",
+  "task": "Create /tmp/eval_lease/lease.py with class LeaseMutex. Methods: acquire(holder_id, lease_seconds) returns True if the caller is now the holder (either no current holder, or the previous holder's lease expired); False otherwise. renew(holder_id, lease_seconds) returns True if holder_id is the current valid (unexpired) holder and the lease was extended; False otherwise. release(holder_id) returns True if holder_id was the current holder and the mutex is now free; False otherwise. holder_now() returns the current holder_id if there is a valid (unexpired) lease, else None. Use time.monotonic() for the clock. Method calls are thread-safe (use threading.Lock). Lease expiry must be checked lazily on each call — no background timer threads.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, time, threading; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_lease/lease.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); LM = mod.LeaseMutex\n# basic acquire / release\nm = LM(); assert m.holder_now() is None; assert m.acquire('A', 10.0); assert m.holder_now() == 'A'; assert not m.acquire('B', 10.0); assert m.release('A'); assert m.holder_now() is None\n# expiry-based acquire\nm2 = LM(); assert m2.acquire('A', 0.2); assert not m2.acquire('B', 1.0); time.sleep(0.3); assert m2.holder_now() is None; assert m2.acquire('B', 1.0); assert m2.holder_now() == 'B'\n# renew prevents takeover\nm3 = LM(); assert m3.acquire('A', 0.2); time.sleep(0.1); assert m3.renew('A', 0.5); time.sleep(0.2); assert not m3.acquire('B', 1.0), 'renew should keep A holding'; assert m3.holder_now() == 'A'\n# renew rejected if not holder or expired\nm4 = LM(); m4.acquire('A', 0.2); assert not m4.renew('B', 1.0), 'wrong holder cannot renew'; time.sleep(0.3); assert not m4.renew('A', 1.0), 'expired holder cannot renew'\n# release rejected if not holder\nm5 = LM(); m5.acquire('A', 5.0); assert not m5.release('B'); assert m5.holder_now() == 'A'; assert m5.release('A'); assert m5.holder_now() is None\n# concurrent acquires — exactly one wins\nimport threading\nresults = []; rlk = threading.Lock(); m6 = LM()\ndef contender(tid):\n    ok = m6.acquire(tid, 1.0)\n    with rlk: results.append((tid, ok))\nths = [threading.Thread(target=contender, args=(t,)) for t in range(20)]\nfor t in ths: t.start()\nfor t in ths: t.join()\nwinners = [t for t, ok in results if ok]\nassert len(winners) == 1, f'exactly one should win, got {len(winners)}: {winners}'\nassert m6.holder_now() == winners[0]\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_lease",
+  "max_iter": 25,
+  "category": "Concurrency & Systems",
+  "subcategory": "Synchronization primitives"
+}

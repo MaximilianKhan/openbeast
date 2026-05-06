@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-06T06:47:31.911455",
+  "updated_at": "2026-05-06T09:56:14.470120",
   "entries": [
     {
       "model": "Qwen 35B-A3B Uncensored Q4_K_M",
@@ -28,10 +28,13 @@
       "tasks_passed": 140,
       "tasks_hard_passed": 49,
       "elapsed_total_seconds": 3024.5,
+      "tokens_total": 0,
+      "tokens_prompt": 0,
+      "tokens_completion": 0,
       "breakdown": {
         "easy": {
-          "earned": 38,
-          "total": 40,
+          "earned": 38.0,
+          "total": 40.0,
           "passed": 38,
           "count": 40
         },
@@ -42,8 +45,8 @@
           "count": 53
         },
         "hard": {
-          "earned": 98,
-          "total": 102,
+          "earned": 98.0,
+          "total": 102.0,
           "passed": 49,
           "count": 51
         }
@@ -461,6 +464,14 @@
             }
           }
         }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 97.29,
+          "speed": 86.69,
+          "passed": 140,
+          "count": 144
+        }
       }
     },
     {
@@ -490,10 +501,13 @@
       "tasks_passed": 139,
       "tasks_hard_passed": 49,
       "elapsed_total_seconds": 5819.4,
+      "tokens_total": 0,
+      "tokens_prompt": 0,
+      "tokens_completion": 0,
       "breakdown": {
         "easy": {
-          "earned": 39,
-          "total": 40,
+          "earned": 39.0,
+          "total": 40.0,
           "passed": 39,
           "count": 40
         },
@@ -504,8 +518,8 @@
           "count": 53
         },
         "hard": {
-          "earned": 98,
-          "total": 102,
+          "earned": 98.0,
+          "total": 102.0,
           "passed": 49,
           "count": 51
         }
@@ -923,6 +937,14 @@
             }
           }
         }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 96.39,
+          "speed": 72.54,
+          "passed": 139,
+          "count": 144
+        }
       }
     },
     {
@@ -952,10 +974,13 @@
       "tasks_passed": 138,
       "tasks_hard_passed": 48,
       "elapsed_total_seconds": 6951.4,
+      "tokens_total": 0,
+      "tokens_prompt": 0,
+      "tokens_completion": 0,
       "breakdown": {
         "easy": {
-          "earned": 39,
-          "total": 40,
+          "earned": 39.0,
+          "total": 40.0,
           "passed": 39,
           "count": 40
         },
@@ -966,8 +991,8 @@
           "count": 53
         },
         "hard": {
-          "earned": 96,
-          "total": 102,
+          "earned": 96.0,
+          "total": 102.0,
           "passed": 48,
           "count": 51
         }
@@ -1385,6 +1410,14 @@
             }
           }
         }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 95.49,
+          "speed": 68.2,
+          "passed": 138,
+          "count": 144
+        }
       }
     },
     {
@@ -1414,10 +1447,13 @@
       "tasks_passed": 137,
       "tasks_hard_passed": 47,
       "elapsed_total_seconds": 7646.6,
+      "tokens_total": 0,
+      "tokens_prompt": 0,
+      "tokens_completion": 0,
       "breakdown": {
         "easy": {
-          "earned": 39,
-          "total": 40,
+          "earned": 39.0,
+          "total": 40.0,
           "passed": 39,
           "count": 40
         },
@@ -1428,8 +1464,8 @@
           "count": 53
         },
         "hard": {
-          "earned": 94,
-          "total": 102,
+          "earned": 94.0,
+          "total": 102.0,
           "passed": 47,
           "count": 51
         }
@@ -1847,6 +1883,14 @@
             }
           }
         }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 94.58,
+          "speed": 57.37,
+          "passed": 137,
+          "count": 144
+        }
       }
     },
     {
@@ -1876,10 +1920,13 @@
       "tasks_passed": 136,
       "tasks_hard_passed": 46,
       "elapsed_total_seconds": 2951.2,
+      "tokens_total": 0,
+      "tokens_prompt": 0,
+      "tokens_completion": 0,
       "breakdown": {
         "easy": {
-          "earned": 40,
-          "total": 40,
+          "earned": 40.0,
+          "total": 40.0,
           "passed": 40,
           "count": 40
         },
@@ -1890,8 +1937,8 @@
           "count": 53
         },
         "hard": {
-          "earned": 92,
-          "total": 102,
+          "earned": 92.0,
+          "total": 102.0,
           "passed": 46,
           "count": 51
         }
@@ -2308,6 +2355,14 @@
               "count": 2
             }
           }
+        }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 93.45,
+          "speed": 86.31,
+          "passed": 136,
+          "count": 144
         }
       }
     }

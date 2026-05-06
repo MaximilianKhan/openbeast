@@ -1,15 +1,42 @@
 {
   "id": "74_palindrome",
-  "name": "Palindrome check (alphanumeric)",
+  "name": "Palindrome check (alphanumeric, case-insensitive)",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_pal",
-  "task": "Create /tmp/eval_pal/pal.py with is_palindrome(s) that returns True if s is a palindrome considering only alphanumeric characters and ignoring case. Empty string is a palindrome.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pal/pal.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.is_palindrome; assert P('A man a plan a canal Panama'); assert P('racecar'); assert not P('hello'); assert P(''); print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_pal",
-  "max_iter": 10,
   "category": "Algorithms & DS",
-  "subcategory": "String algorithms"
+  "subcategory": "String algorithms",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.py — a Python program that reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true).",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && python3 pal.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_pal"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.go (package main) that reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true). Compile with `go build -o pal pal.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && go build -o pal pal.go && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_pal"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.c — a C program that reads lines from stdin (use fgets or getline; lines may have any length up to 4096) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_pal"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
+      "task": "Create /tmp/eval_pal/pal.cpp — a C++ program that reads lines from stdin (std::getline) and for each one writes 'true' or 'false' (lowercase) on its own line. A line is a palindrome if its alphanumeric characters (case-insensitive) read the same forward and backward. The empty line is a palindrome. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_pal && g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_pal"
+    }
+  ]
 }

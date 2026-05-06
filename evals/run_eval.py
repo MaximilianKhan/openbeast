@@ -113,14 +113,52 @@ def capture_gpu_info() -> dict:
 
 
 def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
-    """Load task definitions from JSON files."""
+    """Load task definitions from JSON files.
+
+    A task JSON may declare a `variants` array. Each variant becomes its own
+    flattened task entry with effective id `{base_id}_{variant_id}`, plus
+    `base_id`, `variant_id`, `language`, and `variant_count` fields. Variant
+    fields (setup, task, validation, cleanup, language, name, ...) override
+    the corresponding top-level fields. Tasks without a `variants` array are
+    treated as a single Python variant — `variant_count` = 1, no base_id.
+
+    Filter matching: a filter entry that matches the base_id selects ALL of
+    that task's variants; a filter entry matching the effective id selects
+    just that variant.
+    """
     tasks = []
     for path in sorted(Path(TASKS_DIR).glob("*.json")):
         with open(path) as f:
             task = json.load(f)
         task["_path"] = str(path)
-        if task_filter is None or task["id"] in task_filter:
-            tasks.append(task)
+
+        variants = task.get("variants")
+        if not variants:
+            if task_filter is None or task["id"] in task_filter:
+                tasks.append(task)
+            continue
+
+        base_id = task["id"]
+        base_name = task.get("name", base_id)
+        for variant in variants:
+            variant_id = variant["id"]
+            effective_id = f"{base_id}_{variant_id}"
+            if task_filter is not None and base_id not in task_filter and effective_id not in task_filter:
+                continue
+            language = variant.get("language", "python")
+            t = dict(task)
+            t.pop("variants", None)
+            for k, v in variant.items():
+                if k != "id":
+                    t[k] = v
+            t["id"] = effective_id
+            t["base_id"] = base_id
+            t["variant_id"] = variant_id
+            t["language"] = language
+            t["variant_count"] = len(variants)
+            # Preserve the base task's name unless the variant overrides it
+            t["name"] = variant.get("name", f"{base_name} [{language}]")
+            tasks.append(t)
     return tasks
 
 
@@ -136,8 +174,20 @@ def run_setup(task: dict) -> bool:
     return True
 
 
+_TOKEN_LINE = re.compile(r"^TOKENS:\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\d+)\s*$", re.MULTILINE)
+
+
+def _parse_tokens(stdout: str) -> dict:
+    """Pull the last TOKENS: prompt=… completion=… total=… line from runner stdout."""
+    matches = list(_TOKEN_LINE.finditer(stdout))
+    if not matches:
+        return {"prompt": 0, "completion": 0, "total": 0}
+    m = matches[-1]
+    return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
+
+
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -> dict:
-    """Run the agent against a task. Returns timing and iteration info."""
+    """Run the agent against a task. Returns timing, iteration, and token info."""
     max_iter = max_iter_override or task.get("max_iter", 15)
     start_time = time.time()
 
@@ -157,11 +207,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -
             timeout=max_iter * 60,  # rough timeout: 1 min per iteration max
         )
         elapsed = time.time() - start_time
+        tokens = _parse_tokens(result.stdout)
         return {
             "exit_code": result.returncode,
             "elapsed_seconds": round(elapsed, 1),
             "stdout": result.stdout[-2000:],  # last 2K of output
             "stderr": result.stderr[-1000:],
+            "tokens": tokens,
         }
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
@@ -170,7 +222,23 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -
             "elapsed_seconds": round(elapsed, 1),
             "stdout": "(timed out)",
             "stderr": "",
+            "tokens": {"prompt": 0, "completion": 0, "total": 0},
         }
+
+
+def run_pre_validate(task: dict):
+    """Re-assert harness fixtures right before validation.
+
+    Agents have full bash access and can corrupt fixture files during their
+    own testing (e.g. overwriting a healthcheck.sh with `exit 0`). Tasks
+    declare `pre_validate` as an optional shell command that re-creates
+    *only* the harness fixtures (not any file the agent is supposed to
+    write). If absent, this is a no-op.
+    """
+    cmd = task.get("pre_validate")
+    if not cmd:
+        return
+    subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
 
 
 def run_validation(task: dict) -> tuple[bool, str]:
@@ -263,6 +331,11 @@ def run_eval(
                 "passed": False, "reason": "setup_failed",
                 "elapsed_seconds": 0,
             }
+            if "base_id" in task:
+                result["base_id"] = task["base_id"]
+                result["variant_id"] = task["variant_id"]
+                result["language"] = task["language"]
+                result["variant_count"] = task["variant_count"]
             results["tasks"].append(result)
             results["summary"]["failed"] += 1
             print(f"  FAIL (setup failed)")
@@ -273,10 +346,14 @@ def run_eval(
         agent_result = run_agent(task, base_url, max_iter_override)
         print(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
+        # Re-assert fixtures (no-op unless task declares pre_validate).
+        run_pre_validate(task)
+
         # Validate
         passed, validation_output = run_validation(task)
 
         # Record result
+        tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
         result = {
             "id": task_id,
             "name": task_name,
@@ -286,7 +363,16 @@ def run_eval(
             "elapsed_seconds": agent_result["elapsed_seconds"],
             "agent_exit_code": agent_result["exit_code"],
             "validation_output": validation_output,
+            "tokens_prompt": tokens["prompt"],
+            "tokens_completion": tokens["completion"],
+            "tokens_total": tokens["total"],
         }
+        # Variant metadata, only present for tasks that declared `variants`
+        if "base_id" in task:
+            result["base_id"] = task["base_id"]
+            result["variant_id"] = task["variant_id"]
+            result["language"] = task["language"]
+            result["variant_count"] = task["variant_count"]
         results["tasks"].append(result)
 
         if passed:

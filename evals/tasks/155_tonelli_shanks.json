@@ -1,0 +1,42 @@
+{
+  "id": "155_tonelli_shanks",
+  "name": "Tonelli-Shanks square root mod prime p",
+  "difficulty": "hard",
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory",
+  "max_iter": 25,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_tonelli && printf '8\\n0 13\\n10 13\\n2 13\\n2 23\\n3 23\\n4 17\\n3 17\\n4 1000000007\\n' > /tmp/eval_tonelli/input.txt && cat > /tmp/eval_tonelli/check.py <<'PYEOF'\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    n, p = int(inp[idx]), int(inp[idx+1]); idx += 2\n    line = out[t].strip()\n    is_qr = (n == 0) or pow(n, (p-1)//2, p) == 1\n    if not is_qr:\n        assert line == 'NONE', f'case {t}: n={n} p={p} expected NONE got {line!r}'\n    else:\n        r = int(line)\n        assert 0 <= r < p, f'case {t}: r={r} out of range'\n        assert (r * r) % p == n % p, f'case {t}: r^2 mod p = {(r*r)%p} != n={n%p}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_tonelli/ts.py — reads from stdin: line 1 is T, next T lines are 'n p' (p is an odd prime, 0 <= n < p). For each, output an integer r in [0, p) with r*r ≡ n (mod p), or 'NONE' (uppercase) if no such r exists. Either of the two roots is acceptable.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_tonelli && python3 ts.py < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_tonelli"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_tonelli && printf '8\\n0 13\\n10 13\\n2 13\\n2 23\\n3 23\\n4 17\\n3 17\\n4 1000000007\\n' > /tmp/eval_tonelli/input.txt && cat > /tmp/eval_tonelli/check.py <<'PYEOF'\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    n, p = int(inp[idx]), int(inp[idx+1]); idx += 2\n    line = out[t].strip()\n    is_qr = (n == 0) or pow(n, (p-1)//2, p) == 1\n    if not is_qr:\n        assert line == 'NONE', f'case {t}: expected NONE got {line!r}'\n    else:\n        r = int(line)\n        assert (r * r) % p == n % p, f'case {t}: r^2 != n'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_tonelli/ts.go (package main). Reads stdin: T, then T lines 'n p'. Output r (0..p-1) with r*r ≡ n (mod p), or 'NONE' if no root exists. Use math/big for the modular exponentiation in the witness search to handle large primes. Compile with `go build -o ts ts.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_tonelli && go build -o ts ts.go && ./ts < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_tonelli"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_tonelli && printf '8\\n0 13\\n10 13\\n2 13\\n2 23\\n3 23\\n4 17\\n3 17\\n4 1000000007\\n' > /tmp/eval_tonelli/input.txt && cat > /tmp/eval_tonelli/check.py <<'PYEOF'\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    n, p = int(inp[idx]), int(inp[idx+1]); idx += 2\n    line = out[t].strip()\n    is_qr = (n == 0) or pow(n, (p-1)//2, p) == 1\n    if not is_qr:\n        assert line == 'NONE', f'case {t}: expected NONE got {line!r}'\n    else:\n        r = int(line)\n        assert (r * r) % p == n % p, f'case {t}: r^2 != n'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_tonelli/ts.c — reads stdin: T, then T lines 'n p' (uint64_t). Output r or 'NONE'. Use __int128 for modular multiplication so n*n doesn't overflow. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o ts ts.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_tonelli && gcc -O2 -std=c11 -Wall -Wextra -o ts ts.c && ./ts < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_tonelli"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_tonelli && printf '8\\n0 13\\n10 13\\n2 13\\n2 23\\n3 23\\n4 17\\n3 17\\n4 1000000007\\n' > /tmp/eval_tonelli/input.txt && cat > /tmp/eval_tonelli/check.py <<'PYEOF'\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    n, p = int(inp[idx]), int(inp[idx+1]); idx += 2\n    line = out[t].strip()\n    is_qr = (n == 0) or pow(n, (p-1)//2, p) == 1\n    if not is_qr:\n        assert line == 'NONE', f'case {t}: expected NONE got {line!r}'\n    else:\n        r = int(line)\n        assert (r * r) % p == n % p, f'case {t}: r^2 != n'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_tonelli/ts.cpp — reads stdin: T, then T lines 'n p' (uint64_t). Output r or 'NONE'. Use __int128 for the modular multiply so n*n doesn't overflow. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o ts ts.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_tonelli && g++ -O2 -std=c++17 -Wall -Wextra -o ts ts.cpp && ./ts < input.txt > out.txt && python3 check.py"},
+      "cleanup": "rm -rf /tmp/eval_tonelli"
+    }
+  ]
+}

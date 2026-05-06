@@ -225,6 +225,11 @@ def run_agent(
     log_event({"type": "start", "task": task, "model": model, "workdir": workdir})
 
     final_summary = ""
+    # Token usage accumulated across every API call. Servers that don't return
+    # a `usage` field (e.g. some older llama.cpp builds) leave these at 0.
+    tokens_prompt = 0
+    tokens_completion = 0
+    tokens_total = 0
 
     for iteration in range(1, max_iter + 1):
         print(f"\n[iter {iteration}/{max_iter}]")
@@ -242,6 +247,12 @@ def run_agent(
             log_event({"type": "error", "error": str(e)})
             time.sleep(5)
             continue
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            tokens_prompt += getattr(usage, "prompt_tokens", 0) or 0
+            tokens_completion += getattr(usage, "completion_tokens", 0) or 0
+            tokens_total += getattr(usage, "total_tokens", 0) or 0
 
         choice = response.choices[0]
         message = choice.message
@@ -326,13 +337,24 @@ def run_agent(
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
+                # Stable-key line so callers (eval harness) can parse without log path
+                print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
                 print(f"{'=' * 60}")
-                log_event({"type": "done", "summary": final_summary, "iterations": iteration})
+                log_event({
+                    "type": "done", "summary": final_summary, "iterations": iteration,
+                    "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
+                    "tokens_total": tokens_total,
+                })
                 return final_summary
 
     # Max iterations reached
     print(f"\nMax iterations ({max_iter}) reached without task_done.")
-    log_event({"type": "max_iterations", "iterations": max_iter})
+    print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
+    log_event({
+        "type": "max_iterations", "iterations": max_iter,
+        "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
+        "tokens_total": tokens_total,
+    })
     return final_summary or "(max iterations reached)"
 
 

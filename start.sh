@@ -1,12 +1,12 @@
 #!/bin/bash
 # Start the full local AI stack:
-#   1. llama.cpp server (Qwen3.6-27B Uncensored Q5 by default)
+#   1. llama.cpp server (Qwen3.6-35B-A3B Uncensored Q4_K_M by default — top of the leaderboard)
 #   2. MCPO proxy (wraps MCP tools as OpenAPI on http://localhost:3001)
 #   3. Open WebUI (http://localhost:3000)
 #
 # Usage:
-#   ./start.sh                          # default model
-#   ./start.sh serve-qwen-35b-a3b.sh    # specify a different serve script
+#   ./start.sh                                # default model
+#   ./start.sh serve-qwen-27b-uncensored-q5.sh   # specify a different serve script
 #
 # OpenCode connects to the MCP server via stdio (configured in opencode.json),
 # so it doesn't need MCPO — just run `opencode` in any project.
@@ -14,7 +14,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-SERVE_SCRIPT="${1:-serve-qwen-27b-uncensored-q5.sh}"
+SERVE_SCRIPT="${1:-serve-qwen-35b-a3b-uncensored-q4.sh}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2

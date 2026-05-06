@@ -2,14 +2,41 @@
   "id": "52_unionfind",
   "name": "Union-Find with path compression",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_uf",
-  "task": "Create /tmp/eval_uf/uf.py with a UnionFind class. Constructor takes n (int): elements are 0..n-1. Methods: find(x) returns the root of x's set; union(a, b) merges the sets of a and b. Implement path compression in find and union by rank/size. Two elements are in the same set iff find(a) == find(b).",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_uf/uf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); uf = mod.UnionFind(10); uf.union(1,2); uf.union(3,4); uf.union(2,4); assert uf.find(1) == uf.find(4); assert uf.find(3) == uf.find(1); assert uf.find(0) != uf.find(1); uf.union(5,6); uf.union(6,7); uf.union(7,8); uf.union(8,9); assert uf.find(5) == uf.find(9); print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_uf",
-  "max_iter": 20,
   "category": "Algorithms & DS",
-  "subcategory": "Graph algorithms"
+  "subcategory": "Graph algorithms",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.py — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && python3 uf.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_uf"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.go (package main). Reads stdin: line 1 'N Q', then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c' query. Path compression + union by size/rank. Compile with `go build -o uf uf.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && go build -o uf uf.go && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_uf"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.c — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_uf"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
+      "task": "Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_uf && g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_uf"
+    }
+  ]
 }

@@ -1,0 +1,42 @@
+{
+  "id": "159_ntt_convolution",
+  "name": "Polynomial convolution via NTT (number-theoretic transform)",
+  "difficulty": "hard",
+  "category": "Pure & Abstract Math",
+  "subcategory": "Polynomial algebra",
+  "max_iter": 35,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_ntt && cat > /tmp/eval_ntt/_gen.py <<'PYEOF'\nimport random\nMOD = 998244353\nrandom.seed(53)\ncases = [\n    ([], [1,2,3]),\n    ([1], [1]),\n    ([1,2], [1,2]),\n    ([1,2,3], [4,5,6]),\n    ([5,0,3], [2,4]),\n]\nfor _ in range(10):\n    na = random.randint(1, 30); nb = random.randint(1, 30)\n    a = [random.randint(0, MOD-1) for _ in range(na)]\n    b = [random.randint(0, MOD-1) for _ in range(nb)]\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a) if a else '')\n    lines.append(' '.join(str(x) for x in b) if b else '')\nopen('/tmp/eval_ntt/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef naive(a, b):\n    if not a or not b: return [0]\n    out = [0]*(len(a)+len(b)-1)\n    for i, x in enumerate(a):\n        for j, y in enumerate(b): out[i+j] = (out[i+j] + x*y) % MOD\n    return out\nexp = []\nfor a, b in cases:\n    p = naive(a, b)\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_ntt/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_ntt/_gen.py",
+      "task": "Create /tmp/eval_ntt/ntt.py — reads from stdin: line 1 is T (test cases). Each case: line A is 'NA NB' (lengths), line B is NA values mod 998244353 (or empty if NA=0), line C is NB values (or empty). Output the convolution mod p = 998244353 as space-separated values on one line per case. If either input is empty, output '0'. Use NTT with primitive root g = 3, iterative radix-2 with bit-reversal. Pure Python; do not import numpy or sympy.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_ntt; ! grep -qE 'import numpy|import sympy|from numpy|from sympy' ntt.py || { echo 'no numpy/sympy'; exit 1; }; python3 ntt.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_ntt"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_ntt && cat > /tmp/eval_ntt/_gen.py <<'PYEOF'\nimport random\nMOD = 998244353\nrandom.seed(53)\ncases = [\n    ([], [1,2,3]),\n    ([1], [1]),\n    ([1,2], [1,2]),\n    ([1,2,3], [4,5,6]),\n    ([5,0,3], [2,4]),\n]\nfor _ in range(10):\n    na = random.randint(1, 30); nb = random.randint(1, 30)\n    a = [random.randint(0, MOD-1) for _ in range(na)]\n    b = [random.randint(0, MOD-1) for _ in range(nb)]\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a) if a else '')\n    lines.append(' '.join(str(x) for x in b) if b else '')\nopen('/tmp/eval_ntt/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef naive(a, b):\n    if not a or not b: return [0]\n    out = [0]*(len(a)+len(b)-1)\n    for i, x in enumerate(a):\n        for j, y in enumerate(b): out[i+j] = (out[i+j] + x*y) % MOD\n    return out\nexp = []\nfor a, b in cases:\n    p = naive(a, b)\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_ntt/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_ntt/_gen.py",
+      "task": "Create /tmp/eval_ntt/ntt.go (package main). Reads stdin: T cases, each 'NA NB' then values for a and b (or empty lines). Output convolution mod p = 998244353 (g = 3) per case. Iterative radix-2 NTT with bit-reversal. Compile with `go build -o ntt ntt.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_ntt; go build -o ntt ntt.go; ./ntt < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_ntt"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_ntt && cat > /tmp/eval_ntt/_gen.py <<'PYEOF'\nimport random\nMOD = 998244353\nrandom.seed(53)\ncases = [\n    ([], [1,2,3]),\n    ([1], [1]),\n    ([1,2], [1,2]),\n    ([1,2,3], [4,5,6]),\n    ([5,0,3], [2,4]),\n]\nfor _ in range(10):\n    na = random.randint(1, 30); nb = random.randint(1, 30)\n    a = [random.randint(0, MOD-1) for _ in range(na)]\n    b = [random.randint(0, MOD-1) for _ in range(nb)]\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a) if a else '')\n    lines.append(' '.join(str(x) for x in b) if b else '')\nopen('/tmp/eval_ntt/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef naive(a, b):\n    if not a or not b: return [0]\n    out = [0]*(len(a)+len(b)-1)\n    for i, x in enumerate(a):\n        for j, y in enumerate(b): out[i+j] = (out[i+j] + x*y) % MOD\n    return out\nexp = []\nfor a, b in cases:\n    p = naive(a, b)\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_ntt/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_ntt/_gen.py",
+      "task": "Create /tmp/eval_ntt/ntt.c — reads stdin: T cases, each 'NA NB' then NA + NB values (uint64 ranges). Output convolution mod 998244353 (g = 3). Iterative radix-2 NTT with bit-reversal. Use __int128 or careful uint64 to avoid overflow in modular multiply. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o ntt ntt.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_ntt; gcc -O2 -std=c11 -Wall -Wextra -o ntt ntt.c; ./ntt < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_ntt"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_ntt && cat > /tmp/eval_ntt/_gen.py <<'PYEOF'\nimport random\nMOD = 998244353\nrandom.seed(53)\ncases = [\n    ([], [1,2,3]),\n    ([1], [1]),\n    ([1,2], [1,2]),\n    ([1,2,3], [4,5,6]),\n    ([5,0,3], [2,4]),\n]\nfor _ in range(10):\n    na = random.randint(1, 30); nb = random.randint(1, 30)\n    a = [random.randint(0, MOD-1) for _ in range(na)]\n    b = [random.randint(0, MOD-1) for _ in range(nb)]\n    cases.append((a, b))\nlines = [str(len(cases))]\nfor a, b in cases:\n    lines.append(f'{len(a)} {len(b)}')\n    lines.append(' '.join(str(x) for x in a) if a else '')\n    lines.append(' '.join(str(x) for x in b) if b else '')\nopen('/tmp/eval_ntt/input.txt','w').write('\\n'.join(lines)+'\\n')\ndef naive(a, b):\n    if not a or not b: return [0]\n    out = [0]*(len(a)+len(b)-1)\n    for i, x in enumerate(a):\n        for j, y in enumerate(b): out[i+j] = (out[i+j] + x*y) % MOD\n    return out\nexp = []\nfor a, b in cases:\n    p = naive(a, b)\n    exp.append(' '.join(str(x) for x in p))\nopen('/tmp/eval_ntt/expected.txt','w').write('\\n'.join(exp)+'\\n')\nPYEOF\npython3 /tmp/eval_ntt/_gen.py",
+      "task": "Create /tmp/eval_ntt/ntt.cpp — reads stdin: T cases, each 'NA NB' then NA + NB values. Output convolution mod 998244353 (g = 3). Iterative radix-2 NTT. Use __int128 for the modular multiply. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o ntt ntt.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_ntt; g++ -O2 -std=c++17 -Wall -Wextra -o ntt ntt.cpp; ./ntt < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_ntt"
+    }
+  ]
+}

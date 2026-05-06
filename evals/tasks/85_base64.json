@@ -3,7 +3,7 @@
   "name": "URL-safe base64 encode/decode",
   "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_b64",
-  "task": "Create /tmp/eval_b64/b64.py with two functions: b64_encode(data) returning URL-safe base64 (no '=' padding) as a str; b64_decode(s) returning bytes, accepting input with or without padding.",
+  "task": "Create /tmp/eval_b64/b64.py with two functions: b64_encode(data: str) takes a str (UTF-8) and returns URL-safe base64 (no '=' padding) as a str; b64_decode(s: str) returns bytes, accepting input with or without padding.",
   "validation": {
     "type": "python",
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_b64/b64.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); enc = mod.b64_encode('Hello, World!'); assert '=' not in enc; assert mod.b64_decode(enc) == b'Hello, World!'; print('OK')"

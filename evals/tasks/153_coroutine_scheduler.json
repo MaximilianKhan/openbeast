@@ -1,0 +1,15 @@
+{
+  "id": "153_coroutine_scheduler",
+  "name": "Cooperative generator-based coroutine scheduler",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_sched",
+  "task": "Create /tmp/eval_sched/sched.py with class Scheduler. Coroutines are Python generator functions; running coroutines yield values that the scheduler interprets: yield None means 'yield to next ready coro' (round-robin); yield ('sleep', t) means 'reschedule me after t seconds (monotonic clock time)'; yield ('spawn', coro) means 'start coro and continue without waiting'. Methods: spawn(coro) registers a generator and returns nothing, run() drives the loop until all spawned coros complete and returns. Implement with stdlib only — no asyncio, no trio, no curio.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, time, itertools; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_sched/sched.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_sched/sched.py').read(); assert 'import asyncio' not in src and 'import trio' not in src and 'import curio' not in src, 'must not use async frameworks'\n# Round-robin yields\nlog = []\ndef coro(name, n):\n    for i in range(n):\n        log.append((name, i))\n        yield None\nsched = mod.Scheduler(); sched.spawn(coro('A', 3)); sched.spawn(coro('B', 3)); sched.run()\nseq = [n for n, _ in log]\nassert seq.count('A') == 3 and seq.count('B') == 3, f'log: {log}'\nstreaks = max(sum(1 for _ in g) for k,g in itertools.groupby(seq))\nassert streaks <= 2, f'not round-robin: {seq}'\n# Sleep test (out-of-order completion)\ntimes = []\ndef sleeper(name, t):\n    times.append((name, 'start', time.monotonic()))\n    yield ('sleep', t)\n    times.append((name, 'end', time.monotonic()))\nsched2 = mod.Scheduler(); sched2.spawn(sleeper('X', 0.2)); sched2.spawn(sleeper('Y', 0.05))\nstart = time.monotonic(); sched2.run(); elapsed = time.monotonic() - start\nassert 0.18 <= elapsed < 0.5, f'sleep timing off: elapsed={elapsed:.3f}s'\nx_end = next(t for n,e,t in times if n=='X' and e=='end')\ny_end = next(t for n,e,t in times if n=='Y' and e=='end')\nassert y_end < x_end, 'Y(short sleep) should finish before X(long sleep)'\n# Spawn test — child spawned mid-flight runs to completion\nresult = []\ndef child():\n    yield ('sleep', 0.02)\n    result.append('child_done')\ndef parent():\n    yield ('spawn', child())\n    yield ('sleep', 0.06)\n    result.append('parent_done')\nsched3 = mod.Scheduler(); sched3.spawn(parent()); sched3.run()\nassert result == ['child_done', 'parent_done'], f'spawn ordering wrong: {result}'\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_sched",
+  "max_iter": 35,
+  "category": "Concurrency & Systems",
+  "subcategory": "Async patterns"
+}

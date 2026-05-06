@@ -3,6 +3,7 @@
   "name": "Bash deploy script with rollback on failure",
   "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_deploy && printf '#!/bin/bash\\n# Healthcheck: succeeds when current_version is 1.0, fails for 2.0\\nVER=$(cat /tmp/eval_deploy/current_version 2>/dev/null)\\n[[ \"$VER\" == \"1.0\" ]] && exit 0 || exit 1\\n' > /tmp/eval_deploy/healthcheck.sh && chmod +x /tmp/eval_deploy/healthcheck.sh && echo 1.0 > /tmp/eval_deploy/current_version",
+  "pre_validate": "printf '#!/bin/bash\\nVER=$(cat /tmp/eval_deploy/current_version 2>/dev/null)\\n[[ \"$VER\" == \"1.0\" ]] && exit 0 || exit 1\\n' > /tmp/eval_deploy/healthcheck.sh && chmod +x /tmp/eval_deploy/healthcheck.sh && echo 1.0 > /tmp/eval_deploy/current_version",
   "task": "Create /tmp/eval_deploy/deploy.sh that takes a version string as its first argument and: (1) saves the current version to /tmp/eval_deploy/previous_version, (2) writes the new version to /tmp/eval_deploy/current_version, (3) runs /tmp/eval_deploy/healthcheck.sh; (4) if the healthcheck exits non-zero, restore current_version from previous_version and exit non-zero; (5) on success exit 0. Make the script executable.",
   "validation": {
     "type": "bash",

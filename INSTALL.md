@@ -190,12 +190,15 @@ No manual config needed — the mounted file handles all of it.
 
 ## 5. Start the stack
 
-The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
+The default model is **Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) Q4_K_M**
+— top of our internal leaderboard at 97.3 % accuracy with the fastest sweep
+time among the 5 models we benchmarked.
 
 ```bash
-./start.sh                                 # default model + MCPO + Open WebUI + SearXNG
-./start.sh serve-qwen-35b-a3b.sh           # use a different model
-./start.sh serve-gemma-4-31b-q5.sh         # use Gemma
+./start.sh                                       # default model + MCPO + Open WebUI + SearXNG
+./start.sh serve-qwen-27b-uncensored-q5.sh       # 27B Uncensored Q5 (slower but tighter quant)
+./start.sh serve-qwen-35b-a3b.sh                 # standard 35B MoE
+./start.sh serve-gemma-4-31b-q5.sh               # Gemma 4 31B
 ```
 
 This launches:

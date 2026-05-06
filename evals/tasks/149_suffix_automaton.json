@@ -1,0 +1,15 @@
+{
+  "id": "149_suffix_automaton",
+  "name": "Suffix automaton — distinct substring count",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_sam",
+  "task": "Create /tmp/eval_sam/sam.py with class SAM(s) that builds a suffix automaton of the ASCII string s using online construction (extend one character at a time, maintaining the suffix link / clone-state invariants). Method count_distinct_substrings() returns the number of distinct non-empty substrings of s. The full construction plus the count must be O(|s|) overall (linear in the length of s) — do NOT enumerate or hash substrings. The suffix automaton must support construction up to |s| = 50000 in well under 3 seconds.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, time, random; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_sam/sam.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); SAM = mod.SAM; assert SAM('a').count_distinct_substrings() == 1; assert SAM('aa').count_distinct_substrings() == 2; assert SAM('aaa').count_distinct_substrings() == 3; assert SAM('abc').count_distinct_substrings() == 6; assert SAM('abab').count_distinct_substrings() == 7; assert SAM('abcbc').count_distinct_substrings() == 12; assert SAM('banana').count_distinct_substrings() == 15; assert SAM('mississippi').count_distinct_substrings() == 53\n# brute force on random small strings\nrandom.seed(11)\nfor trial in range(20):\n    s = ''.join(random.choice('abc') for _ in range(random.randint(5, 30)))\n    brute = len({s[i:j] for i in range(len(s)) for j in range(i+1, len(s)+1)})\n    got = SAM(s).count_distinct_substrings()\n    assert got == brute, f'string {s!r}: got {got} want {brute}'\n# perf test — ensure linear-time\nbig = ''.join(random.choice('abcde') for _ in range(50000))\nstart = time.time(); SAM(big).count_distinct_substrings(); el = time.time() - start\nassert el < 3.0, f'50000-char SAM took {el:.2f}s — likely not O(n)'\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_sam",
+  "max_iter": 35,
+  "category": "Algorithms & DS",
+  "subcategory": "String algorithms"
+}

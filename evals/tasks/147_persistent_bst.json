@@ -1,0 +1,15 @@
+{
+  "id": "147_persistent_bst",
+  "name": "Persistent (immutable) balanced BST",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_pbst",
+  "task": "Create /tmp/eval_pbst/pbst.py with three functions providing a persistent balanced BST (red-black or AVL): empty() returns an empty tree; insert(tree, key) returns a NEW tree containing key (the input tree must be unchanged — older versions remain queryable forever); contains(tree, key) returns True/False. The BST must remain balanced — operations must be O(log n). 10000 ascending inserts must complete in under 2 seconds, and contains() on any historical version must work in O(log n). Treat keys as comparable integers.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util, time; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_pbst/pbst.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); t0 = mod.empty(); assert not mod.contains(t0, 0); t1 = mod.insert(t0, 5); assert mod.contains(t1, 5); assert not mod.contains(t0, 5), 'persistence violated: t0 changed'; t2 = mod.insert(t1, 3); t3 = mod.insert(t2, 7); assert mod.contains(t3, 3) and mod.contains(t3, 5) and mod.contains(t3, 7); assert mod.contains(t1, 5) and not mod.contains(t1, 3) and not mod.contains(t1, 7), 'old version contaminated'; t = mod.empty(); checkpoints = []; start = time.time()\nfor i in range(10000):\n    t = mod.insert(t, i)\n    if i in (0, 100, 1000, 5000, 9999): checkpoints.append((i, t))\nelapsed = time.time() - start; assert elapsed < 3.0, f'10000 inserts took {elapsed:.2f}s — likely unbalanced'\nfor i in range(10000): assert mod.contains(t, i)\nfor cp_i, cp_t in checkpoints:\n    for k in range(0, cp_i + 1): assert mod.contains(cp_t, k), f'v@{cp_i} missing {k}'\n    if cp_i + 1 < 10000: assert not mod.contains(cp_t, cp_i + 1), f'v@{cp_i} has future key {cp_i+1}'\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pbst",
+  "max_iter": 30,
+  "category": "Algorithms & DS",
+  "subcategory": "Trees"
+}

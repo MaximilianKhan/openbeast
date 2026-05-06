@@ -2,14 +2,41 @@
   "id": "73_count_vowels",
   "name": "Count vowels (case-insensitive)",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_vowels",
-  "task": "Create /tmp/eval_vowels/vowels.py with count_vowels(s) returning the number of vowels (a,e,i,o,u \u2014 both cases) in s.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_vowels/vowels.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.count_vowels; assert C('Hello World') == 3; assert C('AEIOU') == 5; assert C('xyz') == 0; assert C('') == 0; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_vowels",
-  "max_iter": 10,
   "category": "Algorithms & DS",
-  "subcategory": "String algorithms"
+  "subcategory": "String algorithms",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.py — a Python program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && python3 vowels.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Compile with `go build -o vowels vowels.go`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && go build -o vowels vowels.go && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.c — a C program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "task": "Create /tmp/eval_vowels/vowels.cpp — a C++ program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp`.",
+      "validation": {"type": "bash", "script": "set -e; cd /tmp/eval_vowels && g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"},
+      "cleanup": "rm -rf /tmp/eval_vowels"
+    }
+  ]
 }

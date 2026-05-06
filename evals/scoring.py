@@ -61,6 +61,17 @@ ACCURACY_WEIGHT = 0.75
 SPEED_WEIGHT = 0.25
 
 
+def _entry_weight(t: dict) -> float:
+    """Difficulty weight for a single task or variant entry. Variants
+    fractionally split their base task's weight: weight = DIFFICULTY_WEIGHTS[diff]
+    / variant_count. Legacy entries with no variant_count default to 1, so the
+    math is unchanged for the existing 144 single-variant tasks."""
+    diff = t.get("difficulty", "medium")
+    base = DIFFICULTY_WEIGHTS.get(diff, 3)
+    vc = t.get("variant_count") or 1
+    return base / max(1, vc)
+
+
 def compute_accuracy(tasks: list[dict]) -> tuple[float, dict]:
     """Returns (score 0-100, per-difficulty breakdown)."""
     earned = 0
@@ -68,7 +79,7 @@ def compute_accuracy(tasks: list[dict]) -> tuple[float, dict]:
     by_diff = defaultdict(lambda: {"earned": 0, "total": 0, "passed": 0, "count": 0})
     for t in tasks:
         diff = t.get("difficulty", "medium")
-        w = DIFFICULTY_WEIGHTS.get(diff, 3)
+        w = _entry_weight(t)
         passed = bool(t.get("passed"))
         total += w
         by_diff[diff]["total"] += w
@@ -92,11 +103,13 @@ def compute_category_breakdown(tasks: list[dict]) -> dict:
         cat = t.get("category")
         sub = t.get("subcategory")
         if cat is None or sub is None:
-            m_cat, m_sub = meta.get(t.get("id"), (None, None))
+            # For variant entries, look up by base_id since /tasks/*.json carries the base meta
+            lookup_id = t.get("base_id") or t.get("id")
+            m_cat, m_sub = meta.get(lookup_id, (None, None))
             cat = cat or m_cat or "Uncategorized"
             sub = sub or m_sub or "—"
         diff = t.get("difficulty", "medium")
-        w = DIFFICULTY_WEIGHTS.get(diff, 3)
+        w = _entry_weight(t)
         budget = TIME_BUDGETS.get(diff, 90)
         passed = bool(t.get("passed"))
         bucket = by_cat[cat]
@@ -122,6 +135,45 @@ def compute_category_breakdown(tasks: list[dict]) -> dict:
                 sub: {"passed": s["passed"], "count": s["count"]}
                 for sub, s in sorted(b["subcats"].items())
             },
+        }
+    return out
+
+
+def compute_language_breakdown(tasks: list[dict]) -> dict:
+    """Per-language accuracy + speed across variant entries.
+
+    Returns {language: {accuracy, speed, passed, count}}. Tasks with no
+    `language` field (legacy single-variant Python tasks) are bucketed under
+    "python" for cleaner UX. If the result file has no variants at all, the
+    only key is "python".
+    """
+    by_lang = defaultdict(lambda: {
+        "earned": 0.0, "total": 0.0, "passed": 0, "count": 0,
+        "speed_factors": [],
+    })
+    for t in tasks:
+        lang = t.get("language") or "python"
+        diff = t.get("difficulty", "medium")
+        w = _entry_weight(t)
+        budget = TIME_BUDGETS.get(diff, 90)
+        passed = bool(t.get("passed"))
+        bucket = by_lang[lang]
+        bucket["total"] += w
+        bucket["count"] += 1
+        if passed:
+            bucket["earned"] += w
+            bucket["passed"] += 1
+            elapsed = t.get("elapsed_seconds", budget)
+            bucket["speed_factors"].append(max(0.0, 1.0 - elapsed / budget))
+    out = {}
+    for lang, b in by_lang.items():
+        accuracy = (b["earned"] / b["total"] * 100) if b["total"] > 0 else 0.0
+        speed = (sum(b["speed_factors"]) / len(b["speed_factors"]) * 100) if b["speed_factors"] else 0.0
+        out[lang] = {
+            "accuracy": round(accuracy, 2),
+            "speed": round(speed, 2),
+            "passed": b["passed"],
+            "count": b["count"],
         }
     return out
 
@@ -155,10 +207,14 @@ def score_run(results: dict) -> dict:
     speed = compute_speed(tasks)
     composite = compute_composite(accuracy, speed)
     by_category = compute_category_breakdown(tasks)
+    by_language = compute_language_breakdown(tasks)
 
     passed = sum(1 for t in tasks if t.get("passed"))
     hard_passed = sum(1 for t in tasks if t.get("passed") and t.get("difficulty") == "hard")
     elapsed_total = sum(t.get("elapsed_seconds", 0) for t in tasks)
+    tokens_total = sum(t.get("tokens_total", 0) for t in tasks)
+    tokens_prompt = sum(t.get("tokens_prompt", 0) for t in tasks)
+    tokens_completion = sum(t.get("tokens_completion", 0) for t in tasks)
 
     return {
         "model": results.get("model", "unknown"),
@@ -172,8 +228,12 @@ def score_run(results: dict) -> dict:
         "tasks_passed": passed,
         "tasks_hard_passed": hard_passed,
         "elapsed_total_seconds": round(elapsed_total, 1),
+        "tokens_total": tokens_total,
+        "tokens_prompt": tokens_prompt,
+        "tokens_completion": tokens_completion,
         "breakdown": breakdown,
         "by_category": by_category,
+        "by_language": by_language,
     }
 
 
@@ -225,15 +285,26 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH) -> list[
     return entries
 
 
+def _fmt_tokens(n: int) -> str:
+    """Compact token count: 12345 → '12K', 1234567 → '1.2M'. '—' if unset."""
+    if not n:
+        return "—"
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n/1000:.0f}K"
+    return f"{n/1_000_000:.1f}M"
+
+
 def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     """Pretty-print as a table. If show_host is True, include the host column."""
     if not entries:
         return "(leaderboard is empty)"
 
     if show_host:
-        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}"
+        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
     else:
-        header = f"{'#':>2}  {'MODEL':<32}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}"
+        header = f"{'#':>2}  {'MODEL':<32}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
     sep = "-" * len(header)
     lines = [header, sep]
     for i, e in enumerate(entries, 1):
@@ -244,11 +315,12 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         passed = f"{e['tasks_passed']}/{e['tasks_total']}"
         hard = str(e["tasks_hard_passed"])
         elapsed = f"{e['elapsed_total_seconds']:.0f}s"
+        toks = _fmt_tokens(e.get("tokens_total", 0))
         if show_host:
             host = entry_host_id(e)[:22]
-            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}")
+            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
         else:
-            lines.append(f"{i:>2}  {model:<32}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}")
+            lines.append(f"{i:>2}  {model:<32}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
     return "\n".join(lines)
 
 
@@ -296,6 +368,28 @@ def score_results_file(path: str) -> dict:
     return score_run(results)
 
 
+def format_language_table(entries: list[dict]) -> str:
+    """For each model, show per-language accuracy as a wide table."""
+    if not entries:
+        return "(no entries)"
+    langs = sorted({l for e in entries for l in e.get("by_language", {}).keys()})
+    if not langs:
+        return "(no per-language data — re-run scoring with --rebuild after variants land)"
+    header = f"{'MODEL':<28}" + "".join(f"  {l.upper():>14}" for l in langs)
+    lines = [header, "-" * len(header)]
+    for e in entries:
+        bl = e.get("by_language", {})
+        row = f"{e.get('model','?')[:28]:<28}"
+        for l in langs:
+            v = bl.get(l, {})
+            if "accuracy" in v and v.get("count", 0) > 0:
+                row += f"  {v['accuracy']:>5.1f} ({v['passed']:>2}/{v['count']:<2}) "
+            else:
+                row += f"  {'—':>14}"
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def format_category_table(entries: list[dict]) -> str:
     """For each model, show per-category accuracy as a wide table."""
     if not entries:
@@ -330,6 +424,8 @@ def main():
     parser.add_argument("--show", action="store_true", help="Print current leaderboard")
     parser.add_argument("--by-category", action="store_true",
                         help="Show per-category accuracy breakdown for all leaderboard entries")
+    parser.add_argument("--by-language", action="store_true",
+                        help="Show per-language accuracy breakdown across variant tasks")
     parser.add_argument("--host", help="Filter leaderboard to a specific host_id")
     parser.add_argument("--compare-hosts", action="store_true",
                         help="Side-by-side comparison: one row per model, one column per host")
@@ -372,6 +468,13 @@ def main():
         if args.host:
             entries = [e for e in entries if entry_host_id(e) == args.host]
         print(format_category_table(entries))
+        return
+
+    if args.by_language:
+        entries = load_leaderboard()
+        if args.host:
+            entries = [e for e in entries if entry_host_id(e) == args.host]
+        print(format_language_table(entries))
         return
 
     if args.show or args.rebuild or not (args.score or args.rebuild):
