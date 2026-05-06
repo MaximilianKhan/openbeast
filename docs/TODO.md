@@ -61,6 +61,71 @@ the 3 previously-saturated categories (Algorithms & DS, Concurrency &
 Systems, Pure & Abstract Math) from the hardening tasks. Token column gives a
 new view on per-model efficiency.
 
+### Expand multi-language variant coverage (driven by Tonelli-Shanks finding)
+
+**The Tonelli-Shanks Go failure during the 2026-05-06 smoke test was the
+first piece of evidence that variant testing surfaces information the
+Python-only suite cannot.** That alone reshapes the priority of variant
+expansion. Documenting here so we don't lose the thread.
+
+**What happened.** Task `155_tonelli_shanks` is a hard-tier number-theory
+task (modular square root). The 35B-A3B Uncensored solved it cleanly in
+Python ✅, C ✅, and C++ ✅. The Go variant **failed at max_iter (25)** after
+**239K tokens** and 5 visible debugging cycles. The model knew the
+algorithm — it had just written it correctly in three other languages.
+
+**Root cause from the agent log:** the model kept tripping on Go's strict
+typed-int arithmetic around the bit-shift step in the Tonelli-Shanks
+inner loop. Specifically `j = M - i - 1` going negative and underflowing
+when used with `(*big.Int).Lsh(n, uint(j))` — Go's `uint` cast on a
+negative number wraps to a huge value, where Python's `<<` would raise
+ValueError or just compute. The five recorded fix attempts all
+re-encountered the same edge case from different angles.
+
+**Why this is important.** This is exactly the kind of cross-language gap
+the variant system was built to surface, and which a Python-only test
+literally could not. The algorithmic knowledge transfers; the
+language-specific handling of edge cases (typed int overflow, big-int API
+ergonomics, memory management discipline) does not. Whether a model can
+write correct Go is a separate capability from whether it knows
+Tonelli-Shanks.
+
+**Implication for the suite.**
+
+If the smoke test (and tonight's full sweep) produces more findings of
+this shape — Python passes, one or two compiled languages fail — the case
+for expanding variant coverage gets much stronger. The original Phase 4
+plan deferred 5 tasks (53_bloom, 145, 146, 152, 153) as "too heavy this
+session." After the Tonelli finding, **at least 145 (segment tree) and
+146 (Aho-Corasick) jump in priority** — both are algorithmically dense
+in ways that exercise language-specific data-structure idioms (Go's
+slice-of-slice aliasing, C's manual lifetime management, C++'s
+RAII-vs-raw-pointer choices). They're exactly the right shape to produce
+more cross-language differentials.
+
+**Concrete next-step plan, gated on tonight's full sweep results:**
+
+1. **After the 5-model overnight sweep**, audit per-language pass rates
+   across all 51 variant entries. Count how many tasks show the
+   "Python ✓ / one-or-more compiled-lang ✗" pattern.
+2. **If ≥3 tasks show that pattern**, escalate variant expansion. Phase 4
+   deferred items move up the priority list. Consider adding variants to
+   currently single-variant tasks where they'd be most informative
+   (likely candidates: `27_brainfuck_interpreter`, `54_astar`,
+   `45_kv_cache`, `108_hmac_verify`, `137_pollard_rho`).
+3. **If only 1-2 tasks show the pattern** (Tonelli-Shanks alone +
+   maybe one more), variants are still valuable but the marginal value of
+   expanding from 13 → 20 base tasks is lower. Prioritize other axes
+   (skills routing, agentic tasks, speculative decoding).
+4. **Also useful:** look at WHICH language fails most often. If Go is
+   consistently the weak point, that's a different signal than "C is the
+   weak point." Could inform skill creation (e.g., a `go-bigint` skill
+   encoding the typed-int gotchas).
+
+**Don't forget:** add this story to `docs/RESULTS.md` v3 sweep section
+once the post-mortem is written. The Tonelli-Shanks Go anecdote is the
+single most concrete piece of evidence for why we did Phase 4.
+
 ### Token usage aggregator (`scripts/token-stats.py`)
 
 Production-mode telemetry — pull from existing sources, no new service, no

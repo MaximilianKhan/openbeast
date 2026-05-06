@@ -463,6 +463,22 @@ follow-up session. Each has a specific reason that makes it heavier than the
 | 152_chase_lev_deque | Py / Go / C++ | Concurrent code is hard to port — Python uses threading, Go uses goroutines + channels (different paradigm), C++ atomics. Spec needs language-specific framing. Defer. |
 | 153_coroutine_scheduler | Py / Go | Generator-based scheduler is Pythonic; Go's natural equivalent is goroutines + channels — fundamentally different mechanism. Need to re-spec for Go. Defer. |
 
+**Update 2026-05-06 (mid-smoke-test):** the Tonelli-Shanks Go failure during
+the smoke test produced **the first concrete cross-language differential** in
+this stack — the model wrote correct Python, C, and C++ implementations of
+modular square root but failed Go after 25 iterations and 239K tokens,
+specifically thrashing on Go's typed-int handling around `(*big.Int).Lsh(n,
+uint(j))` when `j` could be negative. The algorithmic knowledge transferred
+across three languages; the language-specific edge case did not.
+
+This significantly raises the case for picking up the deferred items —
+especially **145_segment_tree_lazy** and **146_aho_corasick**, which are
+algorithmically dense in ways that exercise language-specific data-structure
+idioms (slice aliasing in Go, manual memory in C, RAII vs raw pointers in
+C++). They're exactly the right shape to produce more cross-language
+differentials. See `docs/TODO.md` "Expand multi-language variant coverage" for
+the post-sweep gating plan.
+
 When picking these up, the patterns from the 13 completed tasks transfer
 cleanly. The audit tool (`/tmp/audit_variants.py` — should be moved into the
 repo as `evals/audit_variants.py` and updated with the new task entries) drops
