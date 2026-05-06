@@ -116,10 +116,74 @@ Update `docs/RESULTS.md` with the v3 sweep section once the leaderboard is
 final. The smoke-test post-mortem (in chat history but not yet documented)
 should also land here as a reference v3.5 baseline for the 35B-A3B Uncensored.
 
+### Inference-time strategy — "Python-first, then port" for hard cross-language tasks
+
+**Empirical finding (2026-05-06):** Qwen 35B-A3B Uncensored shows a stark
+language asymmetry — **Python 93.21 %**, C++ 74.02 %, C 69.29 %, **Go 66.93 %**
+on the v3 variant matrix. Same algorithm, same model, ~26-point delta across
+languages. The Tonelli-Shanks Go failure made the mechanism concrete: the
+model knew the math (Python ✓, C ✓, C++ ✓) but kept thrashing on Go's typed-int
+edges around `(*big.Int).Lsh(n, uint(j))` for negative `j`. Five debug cycles,
+239K tokens, max_iter exhaustion — the algorithmic knowledge transferred
+across three languages; the *language-specific* edge case did not.
+
+**Hypothesis on the cause:** Qwen's training mix is Python-heavy. Algorithmic
+content (LeetCode, competitive-programming archives, library implementations,
+StackOverflow Q&A) is overwhelmingly in Python. For hard / niche algorithms
+(NTT, Tonelli-Shanks, Karatsuba on byte arrays), the Go / Rust / Zig training
+density is *much* thinner — the model has fewer examples of the algorithm
+expressed in those languages, so it has to compose from first principles
+while *also* navigating language-specific gotchas (Go's `uint` cast wrap, C's
+manual lifetimes, Zig's explicit error unions). That double cognitive load
+is where it cracks.
+
+**Strategy for hard-tier cross-language work — both at eval time and in
+real coding sessions:**
+
+1. **Solve in Python first.** Get a working, tested reference. The model
+   is fluent in Python — it'll converge fast, with high accuracy.
+2. **Then port.** Hand the model the working Python and ask for a port to
+   the target language (Go / Rust / Zig / etc.). Porting is a *narrower*
+   cognitive task — the algorithm structure is fixed, only the syntax and
+   language-idiom translation remain. The model's port-from-Python success
+   rate is plausibly higher than its from-scratch success rate in the target
+   language, because it isolates the failure mode (typed-int handling,
+   memory management) from the algorithmic part.
+3. **Reserve for advanced / extreme circumstances.** This isn't worth the
+   round-trip overhead on easy tasks — Qwen handles `is_power_of_two` in
+   any language without help. Apply when (a) the task is hard-tier *and*
+   (b) the target language is non-Python *and* (c) the model has already
+   failed once or shows signs of language-specific thrashing.
+
+**How we could test the hypothesis empirically (eval framework changes):**
+
+- Add a `port-from-reference` variant flavor: same task spec, but the
+  agent's prompt includes the Python reference impl as context, and the
+  ask is "port this to Go" (or Rust / Zig). Compare pass rate vs. the
+  current "write from scratch" Go variant on the same base task.
+- If the port-from-reference rate is materially higher (say ≥10 points)
+  on hard tasks, the strategy is empirically validated. Could become a
+  documented best practice in `AGENTS.md` and a candidate skill
+  (`python-first-then-port`).
+
+**Why this isn't a substitute for testing the model directly.** The eval
+suite measures unaided capability — what the model can do without us
+front-loading the algorithm. Both views matter: unaided capability tells
+us the *honest* gap; the port-from-reference view tells us how to
+*operate around* that gap in production.
+
+**Action items:**
+- [ ] Document the strategy in `AGENTS.md` so OpenCode users see it
+- [ ] Consider authoring a `python-first-then-port` skill (Tier 3 — not
+      universal, but high-value for the niche it covers)
+- [ ] Add 1-2 port-from-reference variant pairs to the eval suite to test
+      the hypothesis quantitatively (pick from the hard-tier 4 confirmed
+      differentials: 31 / 51 / 155 / 158)
+
 ### ~~Complete Rust + Zig variant rollout~~ ✓ DONE (2026-05-06)
 
 **Shipped.** All 13 variant base tasks now cover all 6 languages
-(python/go/c/cpp/rust/zig). 78 variant entries total, all verified end-to-end
+(python/go/c/cpp/rust/zig). 77 variant entries total, all verified end-to-end
 via `python3 tests/audit_variants.py`. See "Completed" section below for the
 landing entry.
 
