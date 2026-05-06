@@ -2,7 +2,7 @@
 
 A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
 
-Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models (see `RESULTS.md` and `evals/README.md` for full distribution and methodology).
+Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models (see [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology).
 
 ## Architecture
 
@@ -92,7 +92,7 @@ git clone https://github.com/ggml-org/llama.cpp.git
 # 3. Install Python deps + Hugging Face CLI
 pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
 
-# 4. Download the default model (or pick another from INSTALL.md)
+# 4. Download the default model (or pick another from docs/INSTALL.md)
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
    Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 
@@ -119,7 +119,7 @@ opencode
 ./agent.sh "add tests for auth.py"
 ```
 
-See **[INSTALL.md](INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
+See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
 
 ## Models
 
@@ -131,7 +131,7 @@ See **[INSTALL.md](INSTALL.md)** for prerequisites, GPU/driver setup, alternate 
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Uncensored fine-tune (HauhauCS Aggressive); ~4.9 GB headroom (measured) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
 
-All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See `REFERENCE.md` for the full measurement curve.
+All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
 
 ## Project Structure
 
@@ -172,6 +172,13 @@ evals/                       # Eval harness — 159 tasks + multi-model benchmar
   results/                   # Per-run results (kept all, model-tagged) [gitignored]
   leaderboard.json           # Latest score per model + per-category drilldown (auto-updated)
 
+docs/                        # All technical documentation
+  INSTALL.md                 # Step-by-step installation guide
+  REFERENCE.md               # VRAM tables, architecture, configuration
+  RESULTS.md                 # Eval distribution + cross-host sweep results
+  WORK_PLAN.md               # Active work plan / save state for eval suite work
+  TODO.md                    # Roadmap and completed work
+
 system-prompt.md             # Soul file (persona, applied to all frontends)
 system-prompt-tools.md       # Tool guidance (Open WebUI only)
 docker-compose.yml           # Open WebUI + SearXNG containers
@@ -182,9 +189,12 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 ## Documentation
 
-- **[INSTALL.md](INSTALL.md)** — Step-by-step installation, prerequisites, troubleshooting
-- **[REFERENCE.md](REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
-- **[TODO.md](TODO.md)** — Roadmap and completed work
+- **[docs/INSTALL.md](docs/INSTALL.md)** — Step-by-step installation, prerequisites, troubleshooting
+- **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
+- **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
+- **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
+- **[docs/TODO.md](docs/TODO.md)** — Roadmap and completed work
+- **[evals/README.md](evals/README.md)** — Eval suite specifics: schema, scoring, pitfalls
 
 ## Evals & Benchmarking
 
@@ -195,7 +205,7 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 [`evals/README.md`](evals/README.md)**.
 
 **Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, 2026-05-05/06, on the
-prior 144-task suite — pre-hardening; see RESULTS.md for full report):
+prior 144-task suite — pre-hardening; see [`docs/RESULTS.md`](docs/RESULTS.md) for full report):
 
 | # | Model | Acc | Speed | Pass | Hard | Time |
 |---:|---|---:|---:|---:|---:|---:|
@@ -206,7 +216,7 @@ prior 144-task suite — pre-hardening; see RESULTS.md for full report):
 | 5 | Qwen 35B-A3B MoE Q4_K_M | 93.5 | 86.3 | 136/144 | 46/51 | 49 min |
 
 The next sweep will run against the expanded 159-task suite + 4 spec/harness
-fixes from the post-mortem (see `WORK_PLAN.md`) and will also report **total
+fixes from the post-mortem (see [`docs/WORK_PLAN.md`](docs/WORK_PLAN.md)) and will also report **total
 tokens** per model alongside accuracy/speed.
 
 **Ranking: accuracy is primary, speed is the tie-breaker.** Composite (`0.75 × accuracy + 0.25 × speed`) is shown for backwards compatibility but is no longer the sort key.

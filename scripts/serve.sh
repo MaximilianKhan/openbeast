@@ -12,7 +12,7 @@ LLAMA_SERVER="$REPO_DIR/llama.cpp/build/bin/llama-server"
 
 if [[ ! -x "$LLAMA_SERVER" ]]; then
   echo "Error: llama-server not found at $LLAMA_SERVER" >&2
-  echo "Build llama.cpp first — see REFERENCE.md" >&2
+  echo "Build llama.cpp first — see docs/REFERENCE.md" >&2
   exit 1
 fi
 

@@ -2,6 +2,65 @@
 
 ## Up Next
 
+### Tonight — overnight v3 sweep on the 5090
+
+The v3 eval suite is fully landed (Phases 1–4). Time to actually run it. Plan:
+
+**Step 1: Smoke test the winning model first (~70–80 min).**
+
+```bash
+python3 evals/benchmark_all.py --models qwen-35b-a3b-uncensored-q4
+```
+
+This validates that:
+- All 51 multi-language variants behave correctly under a real agent (not just
+  reference impls)
+- Token tracking populates the new column on the leaderboard
+- The 15 hardening tasks (145–159) produce reasonable pass rates on a top-tier model
+- The 4 Phase-1 spec fixes flip pass/fail as predicted (42, 85, 121, 17)
+
+If anything blows up, fix it before launching the full sweep.
+
+**Step 2: Full 5-model overnight sweep (~10.5–11.5 hours wall-clock).**
+
+```bash
+python3 evals/benchmark_all.py
+```
+
+Per-model wall-clock estimate (linearly scaled from the 144-task sweep at
+1.37× the unit count, plus ~5–10% for the harder hardening tasks):
+
+| Model | Old (144) | Projected (197) |
+|---|---:|---:|
+| Qwen 35B-A3B Uncensored Q4_K_M | 50 min | **~69 min** |
+| Qwen 35B-A3B MoE Q4_K_M | 49 min | **~67 min** |
+| Qwen 27B Uncensored Q5_K_P | 97 min | **~133 min** |
+| Qwen 27B Q5_K_XL | 116 min | **~159 min** |
+| Gemma 4 31B-it Q5_K_XL | 127 min | **~174 min** |
+| **Sum** | **~7h 21m** | **~10h 0m + 5–10% buffer** |
+
+Adjustments folded in:
+- +5–10% for the 15 new hard-tier tasks (lazy segtree, AC machine, NTT, etc.)
+  pushing into longer iteration loops
+- +~5 min for variant compilation (47 non-Python variants × ~1s × 5 models)
+- Token tracking, pre_validate, fixture re-assertion: all negligible
+
+**Step 3: After the sweep finishes, review the v3 leaderboard.**
+
+```bash
+python3 evals/scoring.py --show                    # top-line + tokens column
+python3 evals/scoring.py --by-category             # which categories de-saturated
+python3 evals/scoring.py --by-language             # per-language drilldown across the 51 variants
+```
+
+Update `docs/RESULTS.md` with the v3 sweep section once leaderboard is final.
+
+**Expected impact** (from WORK_PLAN.md): ~+1.3 accuracy points across all
+models from the Phase-1 spec fixes alone, with new discrimination signal in
+the 3 previously-saturated categories (Algorithms & DS, Concurrency &
+Systems, Pure & Abstract Math) from the hardening tasks. Token column gives a
+new view on per-model efficiency.
+
 ### Tailscale remote access
 Set up Tailscale so the local AI stack can be accessed from the work laptop (or
 any device) over a private encrypted mesh — no port forwarding or static IP needed.
@@ -31,12 +90,13 @@ on structured output (code, JSON) where draft tokens are predictable.
 3. Benchmark before/after with the eval harness
 4. Update serve scripts and docs
 
-### Phase 4 — multi-language variant rollout
-Phase 1, 2, and 3 of the v3 eval refresh are landed (see WORK_PLAN.md). What
-remains: actually convert ~10 existing tasks + 8 new tasks to multi-language
-variants (Python / Go / C / C++). Toolchain is verified (gcc 16, g++ 16, go
-1.26.2). After variants land, run a validation sweep on the winning model only,
-then trigger the full 5-model sweep.
+### Phase 4 follow-up — variant the 5 deferred tasks
+Phase 4 shipped 13 of 18 originally-planned tasks with multi-language variants
+(see docs/WORK_PLAN.md "Phase 4 deferred items" for full breakdown). Five
+tasks remain: 53_bloom (probabilistic test), 145_segment_tree_lazy, 146_aho_corasick,
+152_chase_lev_deque, 153_coroutine_scheduler. Each has a specific reason it
+was held back. Pick up in a focused follow-up session — the audit pattern from
+the 13 completed tasks transfers cleanly.
 
 ### Eval harness — agentic + tool-selection tasks
 Next axis after variants: agentic tasks (require `web_search` / `start_agent`)
@@ -105,3 +165,7 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] Phase 3 — multi-language variant architecture in `run_eval.py` + `scoring.py` + result schema; backward-compat regression bit-identical
 - [x] Token tracking through runner → eval → scoring → leaderboard (separate column, not part of rank)
 - [x] `evals/README.md` with full distribution table, schema, scoring, and pitfall-lessons-learned section
+- [x] Phase 4 (substantial) — 51 variant entries across 13 tasks (Python / Go / C / C++); reference impls verified end-to-end. 5 tasks deferred (see "Up Next").
+- [x] Default model swap to Qwen 35B-A3B Uncensored Q4_K_M (top of leaderboard); start.sh, healthcheck.sh, opencode.json reordering, README/INSTALL/REFERENCE all updated
+- [x] Docs reorganized: INSTALL/REFERENCE/RESULTS/WORK_PLAN/TODO moved to `docs/`; README and system-prompt files stay at base
+- [x] RESULTS.md eval distribution section (categories × difficulty + subcategory drilldown + variant matrix)

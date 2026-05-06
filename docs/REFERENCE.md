@@ -48,9 +48,12 @@ models/
 ├── opencode.json           # OpenCode config (local provider + models)
 ├── docker-compose.yml      # Open WebUI container config
 ├── README.md               # project overview (start here)
-├── INSTALL.md              # step-by-step installation guide
-├── REFERENCE.md            # this file — technical reference
-└── TODO.md                 # roadmap and completed work
+└── docs/
+    ├── INSTALL.md          # step-by-step installation guide
+    ├── REFERENCE.md        # this file — technical reference
+    ├── RESULTS.md          # eval distribution + cross-host sweep results
+    ├── WORK_PLAN.md        # active work plan / save state for eval suite work
+    └── TODO.md             # roadmap and completed work
 ```
 
 ## VRAM estimates (RTX 5090 — 32GB)
