@@ -181,8 +181,16 @@ docs/                        # All technical documentation
   WORK_PLAN.md               # Active work plan / save state for eval suite work
   TODO.md                    # Roadmap and completed work
 
-skills/                      # Curated expertise packages — loaded on-demand by the model
+skills/                      # Curated expertise packages — loaded on-demand by the model (14 total)
   README.md                  # Skill schema + how to add new ones
+  codebase-onboarding/       # Orient before editing — Tier 1
+  spec-extraction/           # Extract precise spec from vague request — Tier 1
+  git-discipline/            # Atomic commits + meaningful messages — Tier 1
+  long-context-synthesis/    # Process huge inputs via chunked passes — Tier 1
+  test-driven-development/   # Real TDD — red, green, refactor — Tier 2
+  architecture-proposal/     # Design doc before code — Tier 2
+  performance-optimization/  # Measure-driven perf work — Tier 2
+  api-design/                # Signature + types + examples first — Tier 2
   code-review/               # Multi-pass code review
   security-audit/            # Threat-model-driven security review
   debugging-methodology/     # Hypothesis-driven root-cause analysis

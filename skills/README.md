@@ -6,7 +6,27 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped
+## Currently shipped (14 skills)
+
+### Universal-applicability (Tier 1)
+
+| Skill | What it's for |
+|---|---|
+| `codebase-onboarding` | Orient before editing — README → structure → entry points → tests, *then* edit |
+| `spec-extraction` | Extract a precise spec (inputs/outputs/edges/constraints/non-goals) from a vague request |
+| `git-discipline` | Atomic commits, meaningful messages, no random staging |
+| `long-context-synthesis` | Process huge inputs (10K+ line PRs, papers) via the chunk → summarize → synthesize loop |
+
+### Specialized work (Tier 2)
+
+| Skill | What it's for |
+|---|---|
+| `test-driven-development` | Real TDD — red, green, refactor; never skip seeing the test fail |
+| `architecture-proposal` | Design doc before code for non-trivial changes (motivation → goals → design → alternatives → risks) |
+| `performance-optimization` | Measure → profile → focused change → re-measure; never speculate |
+| `api-design` | Function signature + types + error model + examples *first*; implement second |
+
+### Review and analysis
 
 | Skill | What it's for |
 |---|---|
@@ -14,7 +34,12 @@ The model discovers them via MCP and loads them on demand. See
 | `security-audit` | Focused security audit across 8 categories with threat-model framing |
 | `debugging-methodology` | Hypothesis-driven root-cause analysis; the `reproduce → hypothesize → falsify` loop |
 | `deep-counsel` | Slow-mode reasoning ritual for intractable problems; the war council |
-| `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from post-mortems |
+
+### Project-specific
+
+| Skill | What it's for |
+|---|---|
+| `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++) to existing tasks |
 
 ## How the model uses them
