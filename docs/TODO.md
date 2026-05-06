@@ -61,6 +61,61 @@ the 3 previously-saturated categories (Algorithms & DS, Concurrency &
 Systems, Pure & Abstract Math) from the hardening tasks. Token column gives a
 new view on per-model efficiency.
 
+### Token usage aggregator (`scripts/token-stats.py`)
+
+Production-mode telemetry — pull from existing sources, no new service, no
+runtime overhead. Built once, run on demand.
+
+**The pitch.** Tokens are tracked everywhere already, but fragmented across
+three stores:
+
+| Source | What it has |
+|---|---|
+| `opencode stats` (sqlite under `~/.local/share/opencode/`) | Per-session input/output/cache tokens, tool usage |
+| `agents/logs/agent-*.jsonl` | Per-task tokens for autonomous agents + MCP-spawned sub-agents (already added) |
+| Open WebUI sqlite (Docker volume) | Per-conversation tokens |
+
+A small aggregator reads all three and prints a unified report. **Zero
+overhead at runtime** — only runs when you ask for a snapshot. Local model
+is free, so this is for awareness/efficiency analysis, not billing.
+
+**Output shape (target):**
+
+```
+$ ./scripts/token-stats.py --last-7d
+
+LAST 7 DAYS
+================================================================
+Source          Sessions    In tokens    Out tokens    Cache rd
+opencode             18         1.2M          187K        21M
+agents/logs/         34         580K           47K          —
+open-webui            5         220K           29K       4.5M
+================================================================
+TOTAL                57         2.0M          263K       25.5M
+
+Equivalent Sonnet 4.6 spend: ~$13.85
+Equivalent Opus 4.7 spend:   ~$45.20
+```
+
+**Design notes (work out details when we build it):**
+- Read-only against each source — never modifies anything
+- Optional flags: `--last-Nd`, `--by-client`, `--by-model`, `--cost-as=sonnet|opus|gpt5`
+- Cache reads are billed at ~10% of input rate at frontier APIs — model that into the cost-translation
+- Only blind spot: interactive `run.sh` chat (no API path; no usage data emitted). Acceptable — marginal use.
+- Optional flag `--watch` for periodic refresh, but not the default
+
+**Why not the proxy idea (`token_proxy.py` on :8090):**
+Investigated and rejected. OpenCode's existing telemetry is comprehensive
+enough that a proxy would be ~80% redundant, add 1-2 ms to every request,
+and require streaming-SSE handling. The aggregator hits the same data with
+zero overhead. Revisit only if a real-time use case appears (none yet).
+
+**Implementation:** ~150 lines of Python, one new file
+`scripts/token-stats.py`. Estimated 1-2 hours including the cost-translation
+table and a couple of useful flags.
+
+**Trigger:** build after the v3 sweep lands and the post-mortem is written.
+
 ### Tailscale remote access
 Set up Tailscale so the local AI stack can be accessed from the work laptop (or
 any device) over a private encrypted mesh — no port forwarding or static IP needed.
