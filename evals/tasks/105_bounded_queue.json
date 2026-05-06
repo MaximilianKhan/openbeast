@@ -1,0 +1,15 @@
+{
+  "id": "105_bounded_queue",
+  "name": "Semaphore-based bounded queue",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_bq",
+  "task": "Create /tmp/eval_bq/bq.py with class BoundedQueue(capacity). Methods put(item, timeout=None) returns True on success or False on timeout when the queue is full; get(timeout=None) returns the item or None on timeout when empty. Implement with two threading.Semaphore (empty_slots, full_slots) plus a Lock for the data structure.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bq/bq.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); q = mod.BoundedQueue(3); assert q.put('a'); assert q.put('b'); assert q.put('c'); assert not q.put('d', timeout=0.05); assert q.get() == 'a'; assert q.put('d'); q2 = mod.BoundedQueue(2); assert q2.get(timeout=0.05) is None; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bq",
+  "max_iter": 25,
+  "category": "Concurrency & Systems",
+  "subcategory": "Concurrent data structures"
+}

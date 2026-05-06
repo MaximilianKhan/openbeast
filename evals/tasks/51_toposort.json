@@ -1,0 +1,15 @@
+{
+  "id": "51_toposort",
+  "name": "Topological sort (Kahn's algorithm)",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_topo",
+  "task": "Create /tmp/eval_topo/topo.py with a function toposort(graph) that returns a topological ordering of the nodes, or None if the graph contains a cycle. Input format: graph is a dict where graph[node] is the list of PREREQUISITES for that node (i.e., they must appear earlier in the output). Every node referenced anywhere must appear in the output. Use Kahn's algorithm (BFS on indegree).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_topo/topo.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); ts = mod.toposort; g = {'shoes':['socks'],'socks':[],'shirt':[],'pants':[],'jacket':['shirt','pants']}; o = ts(g); assert o is not None; pos = {n:i for i,n in enumerate(o)}; assert pos['socks'] < pos['shoes']; assert pos['shirt'] < pos['jacket']; assert pos['pants'] < pos['jacket']; assert ts({'a':['b'],'b':['a']}) is None; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_topo",
+  "max_iter": 20,
+  "category": "Algorithms & DS",
+  "subcategory": "Graph algorithms"
+}

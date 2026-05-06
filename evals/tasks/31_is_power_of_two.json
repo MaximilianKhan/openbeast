@@ -3,11 +3,13 @@
   "name": "Detect a power of two using bitwise tricks",
   "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_pow2",
-  "task": "Create /tmp/eval_pow2/pow2.py with a function is_power_of_two(n) that returns True if n is a positive power of two (1, 2, 4, 8, ...) and False otherwise. n=0 returns False. Negative numbers return False. Use a bitwise approach (n & (n-1) == 0 trick) — do NOT use a loop, division, or math.log.",
+  "task": "Create /tmp/eval_pow2/pow2.py with a function is_power_of_two(n) that returns True if n is a positive power of two (1, 2, 4, 8, ...) and False otherwise. n=0 returns False. Negative numbers return False. Use a bitwise approach (n & (n-1) == 0 trick) \u2014 do NOT use a loop, division, or math.log.",
   "validation": {
     "type": "python",
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_pow2/pow2.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_pow2/pow2.py').read(); assert 'while ' not in src and 'math.log' not in src and 'import math' not in src, 'must use bitwise approach, no loops or log'; f = mod.is_power_of_two; [(_ for _ in ()).throw(AssertionError(f'expected True for {n}')) for n in [1,2,4,8,16,32,64,128,256,1024,1<<30] if not f(n)]; [(_ for _ in ()).throw(AssertionError(f'expected False for {n}')) for n in [0,-1,-2,3,5,6,7,9,10,15,100,1000] if f(n)]; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_pow2",
-  "max_iter": 10
+  "max_iter": 10,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Bit operations (math)"
 }

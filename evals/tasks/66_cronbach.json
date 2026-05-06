@@ -1,0 +1,15 @@
+{
+  "id": "66_cronbach",
+  "name": "Cronbach's alpha",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_cron",
+  "task": "Create /tmp/eval_cron/cron.py with cronbach_alpha(data) returning Cronbach's \u03b1 (a measure of internal consistency reliability). data is a list of respondents, where each respondent is a list of k item scores (so data[i][j] is respondent i's score on item j). Formula: \u03b1 = (k / (k-1)) * (1 - sum(\u03c3\u00b2_j) / \u03c3\u00b2_total), where \u03c3\u00b2_j is the sample variance (denominator n-1) of item j across respondents and \u03c3\u00b2_total is the sample variance of total scores.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cron/cron.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); A = mod.cronbach_alpha; data = [[4,5,4],[3,4,3],[5,5,5],[2,3,2],[4,4,4]]; a = A(data); assert abs(a - 0.9677419355) < 1e-6, f'reference alpha {a}'; import random; random.seed(0); noise = [[random.randint(1,5) for _ in range(5)] for _ in range(40)]; a2 = A(noise); assert a2 < 0.7, f'noise alpha {a2}'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_cron",
+  "max_iter": 20,
+  "category": "Probability & Stats",
+  "subcategory": "Psychometrics"
+}

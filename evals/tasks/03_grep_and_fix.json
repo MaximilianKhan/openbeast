@@ -9,5 +9,7 @@
     "script": "import importlib.util, sys; sys.path.insert(0, '/tmp/eval_proj/src'); spec = importlib.util.spec_from_file_location('u', '/tmp/eval_proj/src/utils.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); result = m.format_name('john', 'doe'); assert result == 'John Doe', f'Expected John Doe got {result}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_proj",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "SWE / DevOps",
+  "subcategory": "Debugging"
 }

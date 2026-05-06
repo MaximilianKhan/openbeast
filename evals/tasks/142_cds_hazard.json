@@ -1,0 +1,15 @@
+{
+  "id": "142_cds_hazard",
+  "name": "CDS hazard rate (constant-hazard approximation)",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_cds",
+  "task": "Create /tmp/eval_cds/cds.py with three functions assuming a flat (constant-in-time) hazard rate. hazard_rate_from_cds(spread_bps, recovery=0.4) \u2014 under constant-hazard approximation lambda = (spread/10000) / (1 - recovery). survival_prob(t, hazard_rate) \u2014 exp(-lambda*t). cumulative_default_prob(t, hazard_rate) \u2014 1 - survival_prob(t).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cds/cds.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); H = mod.hazard_rate_from_cds; SP = mod.survival_prob; CDP = mod.cumulative_default_prob; h = H(200, 0.4); assert abs(h - 0.0333333) < 1e-5; assert SP(0.5, h) > SP(1.0, h) > SP(5.0, h) > 0; assert abs(CDP(0, h)) < 1e-9; assert abs(CDP(2.5, h) + SP(2.5, h) - 1.0) < 1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_cds",
+  "max_iter": 15,
+  "category": "Mathematical Finance",
+  "subcategory": "Credit risk"
+}

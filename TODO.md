@@ -32,10 +32,11 @@ on structured output (code, JSON) where draft tokens are predictable.
 4. Update serve scripts and docs
 
 ### Eval harness — agentic + tool-selection tasks
-Current: 30 tasks (2 easy / 15 medium / 13 hard) with multi-model benchmark
-runner and ranked leaderboard (composite = 0.75×correctness + 0.25×speed).
-Next axis to cover: agentic tasks (require `web_search` / `start_agent`) and
-tool-selection tasks (does the model prefer `edit_file` over `write_file`?).
+Current: 144 tasks (40 easy / 53 medium / 51 hard) across 12 categories with
+multi-model benchmark runner, ranked leaderboard, and per-category drilldown.
+Ranking by accuracy primary; speed is the tie-breaker. Next axis to cover:
+agentic tasks (require `web_search` / `start_agent`) and tool-selection tasks
+(does the model prefer `edit_file` over `write_file`?).
 
 ## Future Horizon
 
@@ -79,7 +80,13 @@ storage. New MCP tool: `semantic_search(query, codebase_path)`.
 - [x] Gemma 4 31B-it integrated as 5th model (220K context, validated)
 - [x] Context lengths re-tuned to measured VRAM ceilings (Qwen + Gemma)
 - [x] SearXNG fixed: granian port collision + JSON format gate
-- [x] Eval harness expanded: 10 → 30 tasks (+10 medium +10 hard)
+- [x] Eval harness expanded: 10 → 30 → 50 → 70 → 128 → 133 → 144 tasks (40 easy / 53 medium / 51 hard)
 - [x] Model-tagged eval results with GPU snapshot via nvidia-smi
 - [x] Multi-model benchmark runner (`evals/benchmark_all.py`)
-- [x] Composite scoring + leaderboard (0.75×correctness + 0.25×speed)
+- [x] Accuracy-primary leaderboard with composite (0.75×accuracy + 0.25×speed) shown
+- [x] 12-category taxonomy with subcategory drilldown (`scoring.py --by-category`)
+- [x] All 144 tasks verified end-to-end against canonical solutions
+- [x] 4 task bugs fixed (23 SQLi tripwire, 27 BF typo, 33 daily-compounding ref, 36 BS ref)
+- [x] Qwen 35B-A3B Uncensored Q4_K_M added as 5th active model
+- [x] Removed redundant Qwen 27B Q4_K_M (Q5 variant supersedes)
+- [x] VRAM measurements re-calibrated (35B-A3B: 23.1 → 27.8 GB at 512K)

@@ -1,0 +1,15 @@
+{
+  "id": "113_bayesian_ab",
+  "name": "Bayesian A/B test posterior",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_ab",
+  "task": "Create /tmp/eval_ab/ab.py with prob_b_better(a_succ, a_fail, b_succ, b_fail, prior_a=1, prior_b=1, samples=20000, seed=42). Compute the posterior probability that B's true conversion rate exceeds A's, given Beta(prior_a + s, prior_b + f) priors for each. Sample via random.Random(seed).betavariate.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_ab/ab.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); p = mod.prob_b_better(50,50,80,20,samples=5000); assert p > 0.99; p2 = mod.prob_b_better(80,20,50,50,samples=5000); assert p2 < 0.01; p3 = mod.prob_b_better(50,50,50,50,samples=5000); assert 0.4 < p3 < 0.6; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_ab",
+  "max_iter": 25,
+  "category": "Probability & Stats",
+  "subcategory": "Inference"
+}

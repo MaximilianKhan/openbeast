@@ -1,0 +1,15 @@
+{
+  "id": "74_palindrome",
+  "name": "Palindrome check (alphanumeric)",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_pal",
+  "task": "Create /tmp/eval_pal/pal.py with is_palindrome(s) that returns True if s is a palindrome considering only alphanumeric characters and ignoring case. Empty string is a palindrome.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pal/pal.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.is_palindrome; assert P('A man a plan a canal Panama'); assert P('racecar'); assert not P('hello'); assert P(''); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pal",
+  "max_iter": 10,
+  "category": "Algorithms & DS",
+  "subcategory": "String algorithms"
+}

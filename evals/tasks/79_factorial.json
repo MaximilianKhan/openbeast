@@ -1,0 +1,15 @@
+{
+  "id": "79_factorial",
+  "name": "Iterative factorial",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_fact",
+  "task": "Create /tmp/eval_fact/fact.py with factorial(n) returning n! iteratively. Raise ValueError on negative input. factorial(0) == 1.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_fact/fact.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); F = mod.factorial; assert F(0) == 1; assert F(1) == 1; assert F(10) == 3628800; assert F(20) == 2432902008176640000\ntry: F(-1)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_fact",
+  "max_iter": 10,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory"
+}

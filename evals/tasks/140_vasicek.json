@@ -1,0 +1,15 @@
+{
+  "id": "140_vasicek",
+  "name": "Vasicek short-rate bond pricing",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_vsk",
+  "task": "Create /tmp/eval_vsk/vsk.py with vasicek_bond_price(r0, a, b, sigma, T, t=0) returning the closed-form Vasicek zero-coupon bond price under dr = a(b - r) dt + sigma dW. Formulas: B(t,T) = (1 - exp(-a*tau)) / a where tau = T - t; A(t,T) = exp((B - tau)*(a\u00b2b - sigma\u00b2/2)/a\u00b2 - sigma\u00b2 B\u00b2 / (4a)); P = A * exp(-B * r0). When a == 0 use the limit P = exp(-r0 * tau). Pure Python.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_vsk/vsk.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); V = mod.vasicek_bond_price; assert abs(V(0.05, 0.1, 0.05, 0.01, 1.0, 1.0) - 1.0) < 1e-9; p1 = V(0.05, 0.1, 0.05, 0.01, 1.0); p2 = V(0.05, 0.1, 0.05, 0.01, 5.0); p3 = V(0.05, 0.1, 0.05, 0.01, 10.0); assert 0.9 < p1 < 1.0 and p2 < p1 and p3 < p2; assert V(0.10, 0.1, 0.05, 0.01, 5.0) < p2; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_vsk",
+  "max_iter": 30,
+  "category": "Mathematical Finance",
+  "subcategory": "Term structure models"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "123_nbody",
+  "name": "N-body Velocity Verlet",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_nb",
+  "task": "Create /tmp/eval_nb/nb.py with nbody_verlet(positions, velocities, masses, dt, steps, G=1.0). Inputs are lists of n-dim vectors. Use the Velocity-Verlet integrator: x(t+dt) = x(t) + v(t) dt + 0.5 a(t) dt\u00b2; a(t+dt) = -G m_j (x_i - x_j) / |r|\u00b3 summed over all j != i; v(t+dt) = v(t) + 0.5 (a(t) + a(t+dt)) dt. Return (positions, velocities) at the final step.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_nb/nb.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); pos = [(-1.0, 0.0), (1.0, 0.0)]; vel = [(0.0, -0.5), (0.0, 0.5)]; masses = [1.0, 1.0]; fp, fv = mod.nbody_verlet(pos, vel, masses, dt=0.001, steps=1000, G=1.0); px = sum(masses[i]*fv[i][0] for i in range(2)); py = sum(masses[i]*fv[i][1] for i in range(2)); assert abs(px) < 1e-6 and abs(py) < 1e-6; cmx = (fp[0][0] + fp[1][0])/2; cmy = (fp[0][1] + fp[1][1])/2; assert abs(cmx) < 1e-6 and abs(cmy) < 1e-6; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_nb",
+  "max_iter": 35,
+  "category": "Physics",
+  "subcategory": "N-body / orbital mechanics"
+}

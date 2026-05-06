@@ -1,0 +1,15 @@
+{
+  "id": "60_irr",
+  "name": "IRR via Newton's method",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_irr",
+  "task": "Create /tmp/eval_irr/irr.py with irr(cashflows, guess=0.1, tol=1e-9, max_iter=200). cashflows[t] is the cash flow at time t (typically cashflows[0] is a negative initial investment). Return the rate r such that sum(cashflows[t]/(1+r)^t) \u2248 0, found by Newton's method starting from guess. Stop when |NPV| < tol or max_iter is reached.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_irr/irr.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); r = mod.irr([-1000,1100]); assert abs(r-0.10) < 1e-7; r = mod.irr([-1000,300,400,500]); npv = sum(c/(1+r)**t for t,c in enumerate([-1000,300,400,500])); assert abs(npv) < 1e-6; cf = [-10000]+[1500]*10; r = mod.irr(cf); npv = sum(c/(1+r)**t for t,c in enumerate(cf)); assert abs(npv) < 1e-6; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_irr",
+  "max_iter": 20,
+  "category": "Mathematical Finance",
+  "subcategory": "Time value of money"
+}

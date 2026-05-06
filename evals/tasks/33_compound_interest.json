@@ -3,11 +3,13 @@
   "name": "Compound interest with arbitrary compounding frequency",
   "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_compound",
-  "task": "Create /tmp/eval_compound/compound.py with a function compound(principal, annual_rate, years, n_per_year=1) that returns the final amount under standard compound interest. Formula: principal × (1 + annual_rate/n_per_year)^(n_per_year × years). Rate is given as a decimal (0.05 = 5%).",
+  "task": "Create /tmp/eval_compound/compound.py with a function compound(principal, annual_rate, years, n_per_year=1) that returns the final amount under standard compound interest. Formula: principal \u00d7 (1 + annual_rate/n_per_year)^(n_per_year \u00d7 years). Rate is given as a decimal (0.05 = 5%).",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_compound/compound.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.compound; assert abs(c(1000, 0.05, 10) - 1628.894626777442) < 1e-6, f'annual got {c(1000,0.05,10)}'; assert abs(c(1000, 0.05, 10, 12) - 1647.0094976902474) < 1e-6, f'monthly got {c(1000,0.05,10,12)}'; assert abs(c(1000, 0.05, 10, 365) - 1648.6608686325018) < 1e-6, 'daily'; assert c(0, 0.10, 5) == 0; assert abs(c(1000, 0.0, 10) - 1000) < 1e-9, 'zero rate keeps principal'; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_compound/compound.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.compound; assert abs(c(1000, 0.05, 10) - 1628.894626777442) < 1e-6, f'annual got {c(1000,0.05,10)}'; assert abs(c(1000, 0.05, 10, 12) - 1647.0094976902474) < 1e-6, f'monthly got {c(1000,0.05,10,12)}'; assert abs(c(1000, 0.05, 10, 365) - 1648.6648137652346) < 1e-6, 'daily'; assert c(0, 0.10, 5) == 0; assert abs(c(1000, 0.0, 10) - 1000) < 1e-9, 'zero rate keeps principal'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_compound",
-  "max_iter": 10
+  "max_iter": 10,
+  "category": "Mathematical Finance",
+  "subcategory": "Time value of money"
 }

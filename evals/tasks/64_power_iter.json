@@ -1,0 +1,15 @@
+{
+  "id": "64_power_iter",
+  "name": "Power iteration for the dominant eigenvalue",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_pow",
+  "task": "Create /tmp/eval_pow/pow.py with power_iter(matrix, iters=200, tol=1e-10) returning the dominant eigenvalue (real, by absolute value) of a square matrix. Use the Rayleigh quotient \u03bb = v^T A v / v^T v after each multiply, and normalize the iterate. Start from v = [1, 1, ..., 1].",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pow/pow.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.power_iter; assert abs(P([[5,0],[0,2]]) - 5) < 1e-6; assert abs(P([[2,1],[1,2]]) - 3) < 1e-6; assert abs(P([[3,1],[0,2]]) - 3) < 1e-6; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pow",
+  "max_iter": 20,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Linear algebra"
+}

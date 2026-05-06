@@ -1,0 +1,15 @@
+{
+  "id": "88_thread_safe_counter",
+  "name": "Thread-safe counter (Lock)",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_tsc",
+  "task": "Create /tmp/eval_tsc/tsc.py with class Counter(initial=0) protected by a threading.Lock. Methods increment(n=1) (returns new value) and value().",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,threading; spec = importlib.util.spec_from_file_location('m','/tmp/eval_tsc/tsc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.Counter(); ts = [threading.Thread(target=lambda: [c.increment() for _ in range(1000)]) for _ in range(10)]\nfor t in ts: t.start()\nfor t in ts: t.join()\nassert c.value() == 10000; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_tsc",
+  "max_iter": 15,
+  "category": "Concurrency & Systems",
+  "subcategory": "Synchronization primitives"
+}

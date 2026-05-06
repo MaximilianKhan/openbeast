@@ -3,11 +3,13 @@
   "name": "Implement a reentrant lock from primitives",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_rlock",
-  "task": "Create /tmp/eval_rlock/rlock.py implementing class MyRLock — a reentrant mutex. Methods: acquire() (blocking, returns when acquired) and release(). Same thread may acquire multiple times; release must be called the same number of times before another thread can acquire. A different thread calling acquire() must block until the owning thread fully releases. Implement using only threading.Lock and threading.Condition — do NOT use threading.RLock.",
+  "task": "Create /tmp/eval_rlock/rlock.py implementing class MyRLock \u2014 a reentrant mutex. Methods: acquire() (blocking, returns when acquired) and release(). Same thread may acquire multiple times; release must be called the same number of times before another thread can acquire. A different thread calling acquire() must block until the owning thread fully releases. Implement using only threading.Lock and threading.Condition \u2014 do NOT use threading.RLock.",
   "validation": {
     "type": "python",
     "script": "import importlib.util, threading, time; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_rlock/rlock.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_rlock/rlock.py').read(); assert 'threading.RLock' not in src and 'from threading import RLock' not in src, 'must not use threading.RLock'; lock = mod.MyRLock(); lock.acquire(); lock.acquire(); lock.acquire(); state = {'b': None}; t = threading.Thread(target=lambda: (lock.acquire(), state.__setitem__('b', time.monotonic()), lock.release())); t.start(); time.sleep(0.3); assert state['b'] is None, 'thread B got the lock too early'; lock.release(); time.sleep(0.1); assert state['b'] is None, 'still 2 acquires deep'; lock.release(); time.sleep(0.1); assert state['b'] is None; lock.release(); t.join(timeout=2); assert not t.is_alive(), 'thread B never got the lock'; assert state['b'] is not None; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_rlock",
-  "max_iter": 30
+  "max_iter": 30,
+  "category": "Concurrency & Systems",
+  "subcategory": "Synchronization primitives"
 }

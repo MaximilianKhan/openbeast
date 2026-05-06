@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_tcp/tcp.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.TCPConnection(); assert c.state == 'CLOSED'; c.connect(); assert c.state == 'SYN_SENT'; c.syn_ack_received(); assert c.state == 'ESTABLISHED'; c.close(); assert c.state == 'FIN_WAIT'; c.ack_received(); assert c.state == 'CLOSED_FINAL'; s = mod.TCPConnection(); s.listen(); assert s.state == 'LISTEN'; s.syn_received(); assert s.state == 'SYN_RECEIVED'; s.ack_received(); assert s.state == 'ESTABLISHED'; s.fin_received(); assert s.state == 'CLOSE_WAIT'; s.close(); assert s.state == 'CLOSED_FINAL'; bad = mod.TCPConnection(); raised = False; \nfor _ in [1]:\n    try: bad.ack_received()\n    except mod.InvalidTransition: raised = True\nassert raised, 'ack_received from CLOSED should raise InvalidTransition'; bad2 = mod.TCPConnection(); bad2.connect(); r2 = False;\nfor _ in [1]:\n    try: bad2.connect()\n    except mod.InvalidTransition: r2 = True\nassert r2, 'connect from SYN_SENT should raise'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_tcp",
-  "max_iter": 30
+  "max_iter": 30,
+  "category": "Concurrency & Systems",
+  "subcategory": "Networking / state machines"
 }

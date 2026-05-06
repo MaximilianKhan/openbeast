@@ -1,0 +1,15 @@
+{
+  "id": "71_reverse_list",
+  "name": "Reverse a singly linked list",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_rev",
+  "task": "Create /tmp/eval_rev/ll.py defining class Node(val, next=None) and a function reverse_list(head) that reverses a singly linked list and returns the new head. Iterative O(n) implementation. reverse_list(None) must return None.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_rev/ll.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); N = mod.Node; n3 = N(3); n2 = N(2, n3); n1 = N(1, n2); h = mod.reverse_list(n1); out = []\nwhile h: out.append(h.val); h = h.next\nassert out == [3,2,1]; assert mod.reverse_list(None) is None; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_rev",
+  "max_iter": 10,
+  "category": "Algorithms & DS",
+  "subcategory": "Linear data structures"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "54_astar",
+  "name": "A* pathfinding on a grid",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_astar",
+  "task": "Create /tmp/eval_astar/astar.py with astar(grid, start, goal). grid is a 2D list of ints (0=passable, 1=wall). start and goal are (row, col) tuples. Return the shortest path as a list of (row, col) tuples INCLUDING both start and goal cells, or None if no path exists. Movement is 4-connected (no diagonals), unit cost; use Manhattan distance as the heuristic.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_astar/astar.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); g = [[0,0,0,0,0],[1,1,0,1,0],[0,0,0,1,0],[0,1,1,1,0],[0,0,0,0,0]]; p = mod.astar(g,(0,0),(4,4)); assert p is not None; assert p[0]==(0,0) and p[-1]==(4,4); assert len(p)==9\nfor i in range(len(p)-1):\n    r1,c1=p[i]; r2,c2=p[i+1]\n    assert abs(r1-r2)+abs(c1-c2)==1 and g[r2][c2]==0\nassert mod.astar([[0,1],[1,0]],(0,0),(1,1)) is None; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_astar",
+  "max_iter": 25,
+  "category": "Algorithms & DS",
+  "subcategory": "Graph algorithms"
+}

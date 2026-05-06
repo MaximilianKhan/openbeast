@@ -6,10 +6,10 @@
 models/
 ├── llama.cpp/              # inference engine (built with CUDA) [gitignored]
 ├── weights/                # GGUF model files [gitignored]
-│   ├── Qwen3.6-27B-Q4_K_M.gguf
 │   ├── Qwen3.6-27B-UD-Q5_K_XL.gguf
 │   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
 │   ├── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+│   ├── Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
 │   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
 ├── start.sh                # launch full stack (server + MCPO + Open WebUI)
 ├── stop.sh                 # stop full stack
@@ -18,15 +18,15 @@ models/
 │   ├── serve.sh            # generic OpenAI-compatible API server
 │   ├── run.sh              # generic interactive chat launcher
 │   ├── configure-webui.sh  # auto-configure Open WebUI
-│   ├── serve-qwen-27b-q4.sh
 │   ├── serve-qwen-27b-q5.sh
 │   ├── serve-qwen-27b-uncensored-q5.sh
 │   ├── serve-qwen-35b-a3b.sh
+│   ├── serve-qwen-35b-a3b-uncensored-q4.sh
 │   ├── serve-gemma-4-31b-q5.sh
-│   ├── run-qwen-27b-q4.sh
 │   ├── run-qwen-27b-q5.sh
 │   ├── run-qwen-27b-uncensored-q5.sh
 │   ├── run-qwen-35b-a3b.sh
+│   ├── run-qwen-35b-a3b-uncensored-q4.sh
 │   └── run-gemma-4-31b-q5.sh
 ├── agents/                 # agent framework + MCP tool server
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
@@ -120,13 +120,18 @@ for browser/video GPU spikes — same cliff that caused Qwen Q5_K_XL OOMs at 512
 |---------|-------|----------|-----------|----------|
 | 64K     | 20 GB | 0.4 GB   | **20.4 GB** | 11.6 GB |
 | 262K    | 20 GB | 1.6 GB   | **21.6 GB** | 10.4 GB |
-| **512K** (default) | 20 GB | 3.1 GB | **23.1 GB** | 8.9 GB |
+| **512K** (default) | 20 GB | 3.1 GB + extra compute | **27.8 GB** | 4.3 GB |
 | 768K    | 20 GB | 4.7 GB   | **24.7 GB** | 7.3 GB  |
 | 1M      | 20 GB | 6.3 GB   | **26.3 GB** | 5.7 GB  |
 
-> **Note:** Real-world measurement (2026-04-27): model=20,583 MiB, KV at 512K=3,131 MiB,
-> compute=1,580 MiB. The MoE 35B-A3B is significantly more KV-efficient than the
-> dense 27B (~6.3 vs ~18 KB/token). Could safely run at 1M context.
+> **Note (2026-05-05 re-measurement):** at 512K total VRAM is **27,807 MiB / 4,271 MiB
+> headroom** — substantially higher than the 2026-04-27 figure (23.1 GB) due to
+> compute/scratch overhead at full context that wasn't captured in the original
+> per-component breakdown. The MoE 35B-A3B Uncensored variant measured the same
+> day at the same 512K setting reported 27,139 MiB / 4,939 MiB. The 64K-262K rows
+> above haven't been re-measured and may also drift; treat them as ceilings.
+> The "1M context safe" claim from the original note is no longer accurate at
+> default slot counts — would need to drop slots to fit.
 
 ## 1. System packages
 
@@ -166,7 +171,6 @@ pip install --user --break-system-packages huggingface-hub[cli]
 ### Qwen3.6-27B (hybrid DeltaNet + attention)
 
 ```bash
-hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-Q4_K_M.gguf --local-dir weights/
 hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
@@ -174,7 +178,6 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir wei
 - **Hybrid architecture:** 48 DeltaNet layers + 16 gated attention layers (64 total)
 - Native max: 262K, extended via YaRN to ~1M
 - Real-world KV cost: **~18 KB/token** (llama.cpp allocates KV for all 64 layers)
-- **Q4_K_M** (~16GB): default **512K** context, ~25GB total
 - **Q5_K_XL** (~19GB): default **416K** context, ~26.3GB total — higher weight fidelity
 
 ### Qwen3.6-27B Uncensored (HauhauCS Aggressive)
@@ -210,7 +213,7 @@ hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-
 - **MoE:** 256 experts, 9 active per token (8 routed + 1 shared). 35B total, 3B active — fast inference.
 - Native max: 262K, extended via YaRN to ~1M
 - Real-world KV cost: **~6.3 KB/token** (measured 2026-04-27, much lower than the 27B)
-- Default **512K** context, ~23.1GB total — could safely run at 1M context
+- Default **512K** context, ~27.8 GB total — re-measured 2026-05-05 (was claimed ~23.1 GB before; compute overhead drove up the total)
 
 ## 4. Frontends
 
@@ -312,7 +315,7 @@ The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
 
 ```bash
 ./start.sh                          # default model + MCP tools + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-q4.sh     # use a different model
+./start.sh serve-qwen-35b-a3b.sh    # use a different model
 ./stop.sh                           # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
 
@@ -328,17 +331,15 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ### Interactive chat (standalone)
 
 ```bash
-./scripts/run-qwen-27b-q4.sh       # Qwen 27B Q4_K_M  (512K ctx, ~25GB VRAM)
 ./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
 ./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
-./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~23.1GB VRAM)
+./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.8 GB VRAM)
 ./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
 ```
 
 ### OpenAI-compatible API server
 
 ```bash
-./scripts/serve-qwen-27b-q4.sh     # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
@@ -368,7 +369,7 @@ All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to ll
 ```bash
 ./scripts/run-qwen-27b-q5.sh -c 524288       # override context length
 ./scripts/serve-qwen-35b-a3b.sh -p 9090      # override port
-./scripts/serve-qwen-27b-q4.sh -np 10        # override parallel slots (default 6)
+./scripts/serve-qwen-27b-q5.sh -np 10        # override parallel slots (default 6)
 ./scripts/run.sh -m weights/some-model.gguf   # use generic script directly
 ```
 
@@ -388,7 +389,7 @@ Override with `-np` for more or fewer slots:
 
 ```bash
 ./scripts/serve-qwen-35b-a3b.sh -np 12   # 12 slots (~42K context per slot)
-./scripts/serve-qwen-27b-q4.sh -np 3    # 3 slots (~170K context per slot)
+./scripts/serve-qwen-27b-q5.sh -np 3    # 3 slots (~138K context per slot)
 ```
 
 Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
@@ -406,15 +407,19 @@ active slot count. With `--restart`, automatically restarts any service that's d
 
 ### Eval harness
 
-30 tasks across three difficulty tiers (2 easy / 15 medium / 13 hard). Each
-task has deterministic validation (Python or bash returning exit 0/1). Results
-are tagged with the model name (auto-detected via `/v1/models`) and a snapshot
-of the GPU config (`nvidia-smi`).
+144 tasks across three difficulty tiers (40 easy / 53 medium / 51 hard) and 12
+categories (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats,
+Pure & Abstract Math, Security, Distributed / SysDesign, Concurrency & Systems,
+Physics, Performance & HW Opt, LLM / ML, Signal Processing & DSP). Each task
+has deterministic validation (Python or bash returning exit 0/1). Results are
+tagged with the model name (auto-detected via `/v1/models`) and a snapshot of
+the GPU config (`nvidia-smi`). All 144 tasks verified end-to-end against
+canonical solutions before each suite expansion.
 
 #### Single-model eval
 
 ```bash
-python3 evals/run_eval.py --list                     # list all 30 tasks
+python3 evals/run_eval.py --list                     # list all 144 tasks
 python3 evals/run_eval.py                             # run everything
 python3 evals/run_eval.py --tasks 21,22,23            # subset
 python3 evals/run_eval.py --max-iter 5                # cap iterations
@@ -438,24 +443,28 @@ python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime estimate: ~30 tasks × ~90s avg × 5 models ≈ **3-4 hours**. Plan
+Total runtime estimate: ~144 tasks × ~90s avg × 5 models ≈ **7-9 hours**. Plan
 to run overnight. Sweep summaries are saved to `evals/results/sweep-{ts}.json`.
 
 #### Scoring + leaderboard
 
-The composite score formula (see `evals/scoring.py`):
+Ranking is **accuracy-primary**; composite is shown for backward compatibility
+but no longer the sort key. See `evals/scoring.py`:
 
 ```
-correctness = 100 × Σ(weight × passed) / Σ(weight)
-              where weights: easy=1, medium=3, hard=5
+accuracy    = 100 × Σ(weight × passed) / Σ(weight)
+              where weights: easy=1, medium=1.5, hard=2
 
 speed       = 100 × mean(max(0, 1 - elapsed/budget)) over passed tasks
               where budgets: easy=30s, medium=90s, hard=300s
 
-composite   = 0.75 × correctness + 0.25 × speed
+composite   = 0.75 × accuracy + 0.25 × speed   (informational)
 ```
 
-Tie-breakers (in order): raw pass count → hard-task pass count → total elapsed.
+Tie-breakers (in order): raw pass count → hard-task pass count → speed.
+
+`scoring.py --by-category` produces a per-model × per-category accuracy table
+with subcategory drilldown for diagnosing where each model is strong/weak.
 
 ```bash
 python3 evals/scoring.py --show                      # current leaderboard

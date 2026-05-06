@@ -9,5 +9,7 @@
     "script": "import importlib.util, time; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_rate/limiter.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); b = m.TokenBucket(capacity=5, refill_per_sec=2.0); assert all(b.consume(1) for _ in range(5)), 'first 5 should succeed'; assert b.consume(1) is False, 'bucket should be empty'; time.sleep(1.1); assert b.consume(2) is True, f'after 1.1s should refill ~2.2 tokens'; assert b.consume(1) is False, 'should be drained again'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_rate",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Rate limiting"
 }

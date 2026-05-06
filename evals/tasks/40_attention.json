@@ -3,11 +3,13 @@
   "name": "Scaled dot-product attention (single head)",
   "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_attn",
-  "task": "Create /tmp/eval_attn/attention.py with a function attention(Q, K, V) that implements single-head scaled dot-product attention. Inputs are 2D lists: Q is (n_q × d_k), K is (n_k × d_k), V is (n_k × d_v). Output is (n_q × d_v). Formula: softmax(Q @ K^T / sqrt(d_k)) @ V, where softmax is taken along each row of the n_q × n_k score matrix and is numerically stable. Pure Python — no numpy/torch.",
+  "task": "Create /tmp/eval_attn/attention.py with a function attention(Q, K, V) that implements single-head scaled dot-product attention. Inputs are 2D lists: Q is (n_q \u00d7 d_k), K is (n_k \u00d7 d_k), V is (n_k \u00d7 d_v). Output is (n_q \u00d7 d_v). Formula: softmax(Q @ K^T / sqrt(d_k)) @ V, where softmax is taken along each row of the n_q \u00d7 n_k score matrix and is numerically stable. Pure Python \u2014 no numpy/torch.",
   "validation": {
     "type": "python",
     "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_attn/attention.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_attn/attention.py').read(); assert 'numpy' not in src and 'torch' not in src, 'no numpy/torch'; a = mod.attention; Q=[[1.0,0.0]]; K=[[1.0,0.0],[0.0,1.0]]; V=[[1.0,2.0],[3.0,4.0]]; out = a(Q, K, V); assert len(out) == 1 and len(out[0]) == 2; s = 1.0/math.sqrt(2); w0 = math.exp(s); w1 = math.exp(0.0); Z = w0 + w1; expected_row = [(w0*1.0 + w1*3.0)/Z, (w0*2.0 + w1*4.0)/Z]; assert abs(out[0][0]-expected_row[0]) < 1e-6 and abs(out[0][1]-expected_row[1]) < 1e-6, f'got {out[0]} expected {expected_row}'; Q2=[[100.0,0.0],[0.0,100.0]]; K2=[[1.0,0.0],[0.0,1.0]]; V2=[[10.0],[20.0]]; out2 = a(Q2, K2, V2); assert abs(out2[0][0]-10.0) < 1e-3, f'sharp Q1 ~> V1: got {out2[0][0]}'; assert abs(out2[1][0]-20.0) < 1e-3, f'sharp Q2 ~> V2: got {out2[1][0]}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_attn",
-  "max_iter": 25
+  "max_iter": 25,
+  "category": "LLM / ML",
+  "subcategory": "Attention"
 }

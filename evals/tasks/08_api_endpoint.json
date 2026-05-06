@@ -9,5 +9,7 @@
     "script": "import importlib.util, sys; sys.path.insert(0, '/tmp/eval_api'); spec = importlib.util.spec_from_file_location('app', '/tmp/eval_api/app.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); client = m.app.test_client(); r1 = client.post('/todos', json={'title': 'Test'}); assert r1.status_code == 201, f'POST status {r1.status_code}'; data = r1.get_json(); assert data['title'] == 'Test'; assert data['completed'] == False; assert 'id' in data; tid = data['id']; r2 = client.get('/todos'); assert len(r2.get_json()) == 1; r3 = client.delete(f'/todos/{tid}'); assert r3.status_code == 204; r4 = client.delete(f'/todos/{tid}'); assert r4.status_code == 404; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_api",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "SWE / DevOps",
+  "subcategory": "APIs / web"
 }

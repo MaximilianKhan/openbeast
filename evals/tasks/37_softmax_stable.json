@@ -9,5 +9,7 @@
     "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_softmax/softmax.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); s = mod.softmax; r = s([1.0, 2.0, 3.0]); assert abs(sum(r) - 1.0) < 1e-9, f'sum {sum(r)}'; assert all(r[i] < r[i+1] for i in range(len(r)-1)), 'monotonic'; expected = [0.0900305731703804, 0.2447284710547976, 0.6652409557748219]; assert all(abs(a-b) < 1e-9 for a,b in zip(r, expected)), f'values: {r}'; r2 = s([1000, 1001, 1002]); assert abs(sum(r2) - 1.0) < 1e-9, 'must not overflow on huge inputs'; assert all(abs(a-b) < 1e-9 for a,b in zip(r2, expected)), 'shift invariance'; r3 = s([0.0]); assert r3 == [1.0], f'singleton {r3}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_softmax",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "LLM / ML",
+  "subcategory": "Activations"
 }

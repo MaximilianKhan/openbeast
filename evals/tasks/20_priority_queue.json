@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_pq/pq.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); pq = mod.PriorityQueue(); [pq.push(v) for v in [5,1,3,2,4]]; assert len(pq) == 5; assert pq.peek() == 1; out = [pq.pop() for _ in range(5)]; assert out == [1,2,3,4,5], f'min-heap got {out}'; pq2 = mod.PriorityQueue(key=len); [pq2.push(s) for s in ['hello', 'hi', 'world', 'a']]; out2 = [pq2.pop() for _ in range(4)]; assert out2[0] == 'a' and len(out2[-1]) == 5, f'by length got {out2}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_pq",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Algorithms & DS",
+  "subcategory": "Linear data structures"
 }

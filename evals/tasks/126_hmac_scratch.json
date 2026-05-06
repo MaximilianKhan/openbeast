@@ -1,0 +1,15 @@
+{
+  "id": "126_hmac_scratch",
+  "name": "HMAC-SHA256 from scratch",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_hmsc",
+  "task": "Create /tmp/eval_hmsc/hmsc.py with hmac_sha256_scratch(key, message) returning the HMAC-SHA256 hex digest WITHOUT using the hmac module (only hashlib.sha256 is allowed). Implement RFC 2104: if len(key) > 64, set key = sha256(key); pad to 64 bytes; compute sha256(opad || sha256(ipad || message)).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,hashlib,hmac; spec = importlib.util.spec_from_file_location('m','/tmp/eval_hmsc/hmsc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); msg = b'The quick brown fox'; key = b'secret_key'; e = hmac.new(key, msg, hashlib.sha256).hexdigest(); a = mod.hmac_sha256_scratch(key, msg); assert e == a, f'{e} vs {a}'; long_key = b'x'*100; e2 = hmac.new(long_key, msg, hashlib.sha256).hexdigest(); a2 = mod.hmac_sha256_scratch(long_key, msg); assert e2 == a2; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_hmsc",
+  "max_iter": 30,
+  "category": "Security",
+  "subcategory": "Cryptographic primitives"
+}

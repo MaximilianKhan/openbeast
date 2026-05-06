@@ -1,0 +1,15 @@
+{
+  "id": "95_swap_xor",
+  "name": "Swap two ints without temp (XOR)",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_swap",
+  "task": "Create /tmp/eval_swap/swap.py with swap_xor(a, b) returning the tuple (b, a) computed using only XOR (no temp variable, no tuple unpacking shortcut).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_swap/swap.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); S = mod.swap_xor; assert S(3, 7) == (7, 3); assert S(0, 0) == (0, 0); assert S(255, 1) == (1, 255); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_swap",
+  "max_iter": 10,
+  "category": "Performance & HW Opt",
+  "subcategory": "Bit-twiddling"
+}

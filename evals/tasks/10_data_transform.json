@@ -9,5 +9,7 @@
     "script": "import json; data = json.load(open('/tmp/eval_data.json')); assert 'Engineering' in data; assert 'Marketing' in data; assert len(data['Engineering']) == 2; assert len(data['Marketing']) == 2; assert data['Engineering'][0]['name'] == 'Alice'; print('OK')"
   },
   "cleanup": "rm -f /tmp/eval_data.csv /tmp/eval_data.json /tmp/eval_transform.py",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "SWE / DevOps",
+  "subcategory": "Data engineering"
 }

@@ -3,11 +3,13 @@
   "name": "Compute the dot product of two vectors",
   "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_dot",
-  "task": "Create /tmp/eval_dot/dot.py with a function dot(a, b) that returns the dot product (sum of element-wise products) of two equal-length lists of numbers. Raise ValueError if lengths differ. Use only the standard library — no numpy.",
+  "task": "Create /tmp/eval_dot/dot.py with a function dot(a, b) that returns the dot product (sum of element-wise products) of two equal-length lists of numbers. Raise ValueError if lengths differ. Use only the standard library \u2014 no numpy.",
   "validation": {
     "type": "python",
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_dot/dot.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); d = mod.dot; assert d([1,2,3], [4,5,6]) == 32; assert d([], []) == 0; assert abs(d([0.5, 1.5, 2.5], [2.0, 1.0, 0.5]) - 3.75) < 1e-9, f'float case got {d([0.5,1.5,2.5],[2.0,1.0,0.5])}'; assert d([-1, 2], [3, -4]) == -11; raised = False;\nfor _ in [1]:\n    try: d([1,2,3], [4,5])\n    except ValueError: raised = True\nassert raised, 'mismatched lengths must raise ValueError'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_dot",
-  "max_iter": 10
+  "max_iter": 10,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Linear algebra"
 }

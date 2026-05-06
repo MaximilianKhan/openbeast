@@ -26,7 +26,33 @@ from datetime import datetime
 
 EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(EVALS_DIR, "results")
+TASKS_DIR = os.path.join(EVALS_DIR, "tasks")
 LEADERBOARD_PATH = os.path.join(EVALS_DIR, "leaderboard.json")
+
+# Cache of task_id -> (category, subcategory) loaded lazily from tasks/*.json
+_TASK_META_CACHE: dict | None = None
+
+
+def _task_meta() -> dict:
+    """Lazy-load category/subcategory metadata from evals/tasks/*.json."""
+    global _TASK_META_CACHE
+    if _TASK_META_CACHE is not None:
+        return _TASK_META_CACHE
+    meta = {}
+    if os.path.isdir(TASKS_DIR):
+        for fn in os.listdir(TASKS_DIR):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(TASKS_DIR, fn)) as f:
+                    d = json.load(f)
+                tid = d.get("id")
+                if tid:
+                    meta[tid] = (d.get("category"), d.get("subcategory"))
+            except Exception:
+                pass
+    _TASK_META_CACHE = meta
+    return meta
 
 DIFFICULTY_WEIGHTS = {"easy": 1, "medium": 1.5, "hard": 2}
 TIME_BUDGETS = {"easy": 30, "medium": 90, "hard": 300}
@@ -53,6 +79,51 @@ def compute_accuracy(tasks: list[dict]) -> tuple[float, dict]:
             by_diff[diff]["passed"] += 1
     score = (earned / total * 100) if total > 0 else 0.0
     return round(score, 2), dict(by_diff)
+
+
+def compute_category_breakdown(tasks: list[dict]) -> dict:
+    """Per-category accuracy + speed. Returns {category: {accuracy, speed, count, passed, subcats}}."""
+    by_cat = defaultdict(lambda: {
+        "earned": 0.0, "total": 0.0, "passed": 0, "count": 0,
+        "speed_factors": [], "subcats": defaultdict(lambda: {"passed": 0, "count": 0}),
+    })
+    meta = _task_meta()
+    for t in tasks:
+        cat = t.get("category")
+        sub = t.get("subcategory")
+        if cat is None or sub is None:
+            m_cat, m_sub = meta.get(t.get("id"), (None, None))
+            cat = cat or m_cat or "Uncategorized"
+            sub = sub or m_sub or "—"
+        diff = t.get("difficulty", "medium")
+        w = DIFFICULTY_WEIGHTS.get(diff, 3)
+        budget = TIME_BUDGETS.get(diff, 90)
+        passed = bool(t.get("passed"))
+        bucket = by_cat[cat]
+        bucket["total"] += w
+        bucket["count"] += 1
+        bucket["subcats"][sub]["count"] += 1
+        if passed:
+            bucket["earned"] += w
+            bucket["passed"] += 1
+            bucket["subcats"][sub]["passed"] += 1
+            elapsed = t.get("elapsed_seconds", budget)
+            bucket["speed_factors"].append(max(0.0, 1.0 - elapsed / budget))
+    out = {}
+    for cat, b in by_cat.items():
+        accuracy = (b["earned"] / b["total"] * 100) if b["total"] > 0 else 0.0
+        speed = (sum(b["speed_factors"]) / len(b["speed_factors"]) * 100) if b["speed_factors"] else 0.0
+        out[cat] = {
+            "accuracy": round(accuracy, 2),
+            "speed": round(speed, 2),
+            "passed": b["passed"],
+            "count": b["count"],
+            "subcategories": {
+                sub: {"passed": s["passed"], "count": s["count"]}
+                for sub, s in sorted(b["subcats"].items())
+            },
+        }
+    return out
 
 
 def compute_speed(tasks: list[dict]) -> float:
@@ -83,6 +154,7 @@ def score_run(results: dict) -> dict:
     accuracy, breakdown = compute_accuracy(tasks)
     speed = compute_speed(tasks)
     composite = compute_composite(accuracy, speed)
+    by_category = compute_category_breakdown(tasks)
 
     passed = sum(1 for t in tasks if t.get("passed"))
     hard_passed = sum(1 for t in tasks if t.get("passed") and t.get("difficulty") == "hard")
@@ -101,6 +173,7 @@ def score_run(results: dict) -> dict:
         "tasks_hard_passed": hard_passed,
         "elapsed_total_seconds": round(elapsed_total, 1),
         "breakdown": breakdown,
+        "by_category": by_category,
     }
 
 
@@ -163,6 +236,30 @@ def score_results_file(path: str) -> dict:
     return score_run(results)
 
 
+def format_category_table(entries: list[dict]) -> str:
+    """For each model, show per-category accuracy as a wide table."""
+    if not entries:
+        return "(no entries)"
+    cats = sorted({c for e in entries for c in e.get("by_category", {}).keys()})
+    if not cats:
+        return "(no per-category data — re-run scoring with --rebuild after categories were added)"
+    # Truncate category names for the header
+    short = lambda s: s if len(s) <= 14 else s[:13] + "…"
+    header = f"{'MODEL':<28}" + "".join(f"  {short(c):>14}" for c in cats)
+    lines = [header, "-" * len(header)]
+    for e in entries:
+        bc = e.get("by_category", {})
+        row = f"{e.get('model','?')[:28]:<28}"
+        for c in cats:
+            v = bc.get(c, {})
+            if "accuracy" in v and v.get("count", 0) > 0:
+                row += f"  {v['accuracy']:>5.1f} ({v['passed']:>2}/{v['count']:<2}) "
+            else:
+                row += f"  {'—':>14}"
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def main():
     """CLI: rescore all results files and rebuild the leaderboard."""
     import argparse
@@ -171,6 +268,8 @@ def main():
                         help="Rebuild leaderboard from all eval-*.json files in results/")
     parser.add_argument("--score", help="Score a single eval-*.json file and print")
     parser.add_argument("--show", action="store_true", help="Print current leaderboard")
+    parser.add_argument("--by-category", action="store_true",
+                        help="Show per-category accuracy breakdown for all leaderboard entries")
     args = parser.parse_args()
 
     if args.score:
@@ -195,6 +294,11 @@ def main():
         with open(LEADERBOARD_PATH, "w") as f:
             json.dump(payload, f, indent=2)
         print(f"Rebuilt leaderboard from {len(entries)} model(s).")
+
+    if args.by_category:
+        entries = load_leaderboard()
+        print(format_category_table(entries))
+        return
 
     if args.show or args.rebuild or not (args.score or args.rebuild):
         entries = load_leaderboard()

@@ -1,0 +1,15 @@
+{
+  "id": "100_constant_time_compare",
+  "name": "Constant-time string compare",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_ct",
+  "task": "Create /tmp/eval_ct/ct.py with constant_time_compare(a, b) returning True iff a == b, with a comparison whose runtime is independent of where the strings differ. Accept str and bytes. Different lengths return False.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_ct/ct.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.constant_time_compare; assert C('abc','abc'); assert not C('abc','abd'); assert not C('abc','abcd'); assert C(b'\\x00\\x01', b'\\x00\\x01'); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_ct",
+  "max_iter": 10,
+  "category": "Security",
+  "subcategory": "Side-channel safety"
+}

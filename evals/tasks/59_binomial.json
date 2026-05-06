@@ -1,0 +1,15 @@
+{
+  "id": "59_binomial",
+  "name": "Binomial tree (CRR) European call",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_crr",
+  "task": "Create /tmp/eval_crr/crr.py with binomial_call(S, K, T, r, sigma, N) returning the price of a European call via a Cox-Ross-Rubinstein binomial tree with N steps. Use dt = T/N, u = exp(sigma*sqrt(dt)), d = 1/u, risk-neutral p = (exp(r*dt) - d) / (u - d), discount exp(-r*dt) per step. Compute terminal payoffs max(S*u^(N-i)*d^i - K, 0) then roll back through the tree.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_crr/crr.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.binomial_call; bs = 10.4505835721856; bn = C(100,100,1.0,0.05,0.2,200); assert abs(bn-bs) < 0.1, f'CRR vs BS got {bn}'; d = C(150,100,1.0,0.05,0.2,100); assert abs(d - (150-100*math.exp(-0.05))) < 1.0; assert C(100,1000,1.0,0.05,0.2,100) < 0.01; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_crr",
+  "max_iter": 25,
+  "category": "Mathematical Finance",
+  "subcategory": "Option pricing"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "89_env_var",
+  "name": "Read env var with default + cast",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_env",
+  "task": "Create /tmp/eval_env/env.py with get_env(name, default=None, cast=str). Reads os.environ.get(name); returns default if missing; otherwise applies cast() and returns its result. If cast() raises ValueError or TypeError, return default.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,os; spec = importlib.util.spec_from_file_location('m','/tmp/eval_env/env.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); G = mod.get_env; os.environ['TEST_X'] = '42'; assert G('TEST_X', cast=int) == 42; assert G('TEST_NOPE', default='hi') == 'hi'; os.environ['TEST_X'] = 'abc'; assert G('TEST_X', default=99, cast=int) == 99; del os.environ['TEST_X']; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_env",
+  "max_iter": 10,
+  "category": "Concurrency & Systems",
+  "subcategory": "Systems APIs"
+}

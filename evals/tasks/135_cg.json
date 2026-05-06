@@ -1,0 +1,15 @@
+{
+  "id": "135_cg",
+  "name": "Conjugate gradient method",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_cg",
+  "task": "Create /tmp/eval_cg/cg.py with conjugate_gradient(A, b, x0=None, tol=1e-10, max_iter=None) solving Ax=b for symmetric positive-definite A using the standard CG iteration: r = b - Ax; p = r; loop: alpha = (r\u00b7r)/(p\u00b7Ap); x += alpha*p; r' = r - alpha*Ap; if |r'|\u00b2 < tol\u00b2 break; beta = (r'\u00b7r')/(r\u00b7r); p = r' + beta*p. Default x0 is zero vector; default max_iter = 2n.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cg/cg.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); CG = mod.conjugate_gradient; A = [[4,1],[1,3]]; b = [1,2]; x = CG(A, b); assert abs(x[0] - 1/11) < 1e-9 and abs(x[1] - 7/11) < 1e-9, x; n = 4; I = [[1.0 if i==j else 0.0 for j in range(n)] for i in range(n)]; bb = [3.14, 2.72, 1.41, 1.62]; xx = CG(I, bb)\nfor i in range(n): assert abs(xx[i] - bb[i]) < 1e-9\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_cg",
+  "max_iter": 30,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Iterative numerical methods"
+}

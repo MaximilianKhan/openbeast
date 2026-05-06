@@ -1,0 +1,15 @@
+{
+  "id": "81_relu",
+  "name": "ReLU element-wise",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_relu",
+  "task": "Create /tmp/eval_relu/relu.py with relu(xs) returning a list with each element x replaced by max(0.0, x).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_relu/relu.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); R = mod.relu; assert R([1,-2,3,-4]) == [1,0,3,0]; assert R([]) == []; assert R([0,0,0]) == [0,0,0]; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_relu",
+  "max_iter": 10,
+  "category": "LLM / ML",
+  "subcategory": "Activations"
+}

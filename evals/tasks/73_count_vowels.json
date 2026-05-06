@@ -1,0 +1,15 @@
+{
+  "id": "73_count_vowels",
+  "name": "Count vowels (case-insensitive)",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_vowels",
+  "task": "Create /tmp/eval_vowels/vowels.py with count_vowels(s) returning the number of vowels (a,e,i,o,u \u2014 both cases) in s.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_vowels/vowels.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.count_vowels; assert C('Hello World') == 3; assert C('AEIOU') == 5; assert C('xyz') == 0; assert C('') == 0; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_vowels",
+  "max_iter": 10,
+  "category": "Algorithms & DS",
+  "subcategory": "String algorithms"
+}

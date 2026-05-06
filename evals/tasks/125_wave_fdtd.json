@@ -1,0 +1,15 @@
+{
+  "id": "125_wave_fdtd",
+  "name": "1D wave equation FDTD",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_wave",
+  "task": "Create /tmp/eval_wave/wave.py with wave_1d(initial, c, dx, dt, steps) solving u_tt = c\u00b2 u_xx via the explicit FDTD scheme u[i, n+1] = 2 u[i, n] - u[i, n-1] + (c dt / dx)\u00b2 (u[i+1, n] - 2 u[i, n] + u[i-1, n]). Boundary: u[0] = u[-1] = 0 (Dirichlet). Initial condition: u(x, 0) = initial[i] and u_t(x, 0) = 0 (so u at t=-dt equals u at t=0). Raise ValueError if (c dt / dx)\u00b2 > 1 (CFL violation). Return the displacement after `steps` updates.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_wave/wave.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); n = 101; dx = 1.0/(n-1); initial = [math.sin(math.pi*i*dx) for i in range(n)]; c = 1.0; dt = 0.5*dx/c; steps = int(2.0/dt); final = mod.wave_1d(initial, c, dx, dt, steps); err = max(abs(final[i] - initial[i]) for i in range(n)); assert err < 0.05, f'wave error {err}'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_wave",
+  "max_iter": 30,
+  "category": "Physics",
+  "subcategory": "PDE / wave propagation"
+}

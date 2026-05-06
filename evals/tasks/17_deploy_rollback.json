@@ -9,5 +9,7 @@
     "script": "set -e; cd /tmp/eval_deploy; chmod +x ./deploy.sh 2>/dev/null || true; [[ -x ./deploy.sh ]] || { echo 'deploy.sh not executable'; exit 1; }; ./deploy.sh 1.0 || { echo 'initial deploy 1.0 failed'; exit 1; }; [[ \"$(cat current_version)\" == '1.0' ]] || { echo 'expected 1.0'; exit 1; }; if ./deploy.sh 2.0; then echo 'should have failed for 2.0'; exit 1; fi; [[ \"$(cat current_version)\" == '1.0' ]] || { echo \"rollback failed; got $(cat current_version)\"; exit 1; }; echo OK"
   },
   "cleanup": "rm -rf /tmp/eval_deploy",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "SWE / DevOps",
+  "subcategory": "Bash / scripting"
 }

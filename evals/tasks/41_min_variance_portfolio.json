@@ -3,11 +3,13 @@
   "name": "Two-asset minimum-variance portfolio (analytical)",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_mvp",
-  "task": "Create /tmp/eval_mvp/portfolio.py with a function min_variance_weights(sigma_a, sigma_b, rho) that returns (w_a, w_b) — the long-only weights (each in [0,1], summing to 1) that minimize the variance of a 2-asset portfolio. sigma_a, sigma_b are the asset volatilities; rho is their correlation. Use the closed-form solution: w_a = (sigma_b^2 - rho*sigma_a*sigma_b) / (sigma_a^2 + sigma_b^2 - 2*rho*sigma_a*sigma_b), then clamp into [0,1] and renormalize so the pair sums to exactly 1. Also expose portfolio_variance(w_a, w_b, sigma_a, sigma_b, rho) returning the resulting variance. Pure Python.",
+  "task": "Create /tmp/eval_mvp/portfolio.py with a function min_variance_weights(sigma_a, sigma_b, rho) that returns (w_a, w_b) \u2014 the long-only weights (each in [0,1], summing to 1) that minimize the variance of a 2-asset portfolio. sigma_a, sigma_b are the asset volatilities; rho is their correlation. Use the closed-form solution: w_a = (sigma_b^2 - rho*sigma_a*sigma_b) / (sigma_a^2 + sigma_b^2 - 2*rho*sigma_a*sigma_b), then clamp into [0,1] and renormalize so the pair sums to exactly 1. Also expose portfolio_variance(w_a, w_b, sigma_a, sigma_b, rho) returning the resulting variance. Pure Python.",
   "validation": {
     "type": "python",
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_mvp/portfolio.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mvw = mod.min_variance_weights; pv = mod.portfolio_variance; w = mvw(0.2, 0.2, 0.0); assert abs(w[0] - 0.5) < 1e-9 and abs(w[1] - 0.5) < 1e-9, f'equal sigma uncorrelated should be 50/50, got {w}'; w2 = mvw(0.1, 0.4, 0.0); assert abs(w2[0] - 16/17) < 1e-6 and abs(w2[1] - 1/17) < 1e-6, f'low-vol should dominate: got {w2}'; w3 = mvw(0.2, 0.4, 0.5); assert abs(sum(w3) - 1.0) < 1e-9 and 0 <= w3[0] <= 1 and 0 <= w3[1] <= 1, 'must be a long-only portfolio'; v = pv(0.5, 0.5, 0.2, 0.2, 0.0); assert abs(v - 0.02) < 1e-9, f'variance got {v}'; v2 = pv(*mvw(0.1, 0.4, 0.0), 0.1, 0.4, 0.0); v_eq = pv(0.5, 0.5, 0.1, 0.4, 0.0); assert v2 < v_eq, 'min-var must beat equal-weight'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_mvp",
-  "max_iter": 25
+  "max_iter": 25,
+  "category": "Mathematical Finance",
+  "subcategory": "Risk metrics"
 }

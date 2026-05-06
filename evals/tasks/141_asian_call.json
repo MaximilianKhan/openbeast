@@ -1,0 +1,15 @@
+{
+  "id": "141_asian_call",
+  "name": "Arithmetic Asian call via Monte Carlo",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_asian",
+  "task": "Create /tmp/eval_asian/asian.py with asian_call_mc(S0, K, T, r, sigma, n_steps, n_paths, seed=42). Simulate geometric-Brownian-motion paths with n_steps observations per path; for each path compute the arithmetic average of the n_steps prices, then the payoff max(avg - K, 0); discount the mean by exp(-rT). Use random.Random(seed) so results are reproducible. Pure Python (math + random).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_asian/asian.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); A = mod.asian_call_mc; price = A(100, 100, 1.0, 0.05, 0.2, 50, 2000, seed=42); assert 4 < price < 8, f'asian {price}'; p1 = A(100, 100, 1.0, 0.05, 0.2, 50, 1000, seed=7); p2 = A(100, 100, 1.0, 0.05, 0.2, 50, 1000, seed=7); assert p1 == p2; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_asian",
+  "max_iter": 35,
+  "category": "Mathematical Finance",
+  "subcategory": "Exotic derivatives"
+}

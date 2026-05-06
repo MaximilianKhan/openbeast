@@ -1,0 +1,15 @@
+{
+  "id": "99_wien",
+  "name": "Wien's displacement law",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_wien",
+  "task": "Create /tmp/eval_wien/wien.py with wien_peak_wavelength(temperature_k) returning the peak wavelength in meters: \u03bb_peak = b / T where b \u2248 2.897771955e-3 m\u00b7K. Raise ValueError if T <= 0.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_wien/wien.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); W = mod.wien_peak_wavelength; assert abs(W(5778) - 5.014e-7) < 1e-9\ntry: W(0)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_wien",
+  "max_iter": 10,
+  "category": "Physics",
+  "subcategory": "Thermodynamics"
+}

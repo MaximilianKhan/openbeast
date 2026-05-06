@@ -1,0 +1,15 @@
+{
+  "id": "124_rkf45",
+  "name": "RKF45 adaptive ODE integrator",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_rkf",
+  "task": "Create /tmp/eval_rkf/rkf.py with rkf45(f, t0, y0, t_end, tol=1e-8, h_init=0.01) integrating dy/dt = f(t, y) from t0 to t_end. Use the Runge-Kutta-Fehlberg 4(5) Butcher tableau: compute both 4th and 5th order updates, estimate error, accept the 5th-order step if error < tol, then adapt h via h_new = 0.9 * h * (tol/err)^0.2, clamped to [h*0.1, h*5]. Return a list of (t, y) tuples for accepted steps (including the initial point and the final point).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_rkf/rkf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = lambda t,y: -y; out = mod.rkf45(f, t0=0, y0=1.0, t_end=1.0, tol=1e-10); t_final, y_final = out[-1]; assert abs(t_final - 1.0) < 1e-9; assert abs(y_final - math.exp(-1)) < 1e-6; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_rkf",
+  "max_iter": 30,
+  "category": "Physics",
+  "subcategory": "ODE numerical integration"
+}

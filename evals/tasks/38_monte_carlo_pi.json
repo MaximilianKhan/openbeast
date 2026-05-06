@@ -9,5 +9,7 @@
     "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_mcpi/mcpi.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = mod.estimate_pi; a = f(50000, seed=42); b = f(50000, seed=42); assert a == b, f'seed not deterministic: {a} vs {b}'; assert abs(a - math.pi) < 0.05, f'inaccurate: {a} vs pi={math.pi}'; c = f(50000, seed=7); assert c != a, 'different seeds should differ'; assert abs(f(200000, seed=1) - math.pi) < 0.025, 'higher N must be tighter'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_mcpi",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "Probability & Stats",
+  "subcategory": "Monte Carlo simulation"
 }

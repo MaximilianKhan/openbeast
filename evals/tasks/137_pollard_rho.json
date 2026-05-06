@@ -1,0 +1,15 @@
+{
+  "id": "137_pollard_rho",
+  "name": "Pollard's rho integer factorization",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_prho",
+  "task": "Create /tmp/eval_prho/prho.py with pollard_rho(n) returning a non-trivial factor of n (1 < factor < n). For even n return 2. Otherwise use the iteration f(x) = (x\u00b2 + c) mod n with cycle detection via Floyd's tortoise-and-hare: x = f(x); y = f(f(y)); d = gcd(|x - y|, n). If d hits n, vary c and retry. Cryptanalytic primitive \u2014 semiprime n is the typical input.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_prho/prho.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); F = mod.pollard_rho; f = F(8051); assert 8051 % f == 0 and 1 < f < 8051; n = 1000003 * 1000033; f2 = F(n); assert n % f2 == 0 and f2 in (1000003, 1000033); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_prho",
+  "max_iter": 30,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory"
+}

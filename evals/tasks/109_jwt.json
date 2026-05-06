@@ -1,0 +1,15 @@
+{
+  "id": "109_jwt",
+  "name": "JWT encode/decode (HS256)",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_jwt",
+  "task": "Create /tmp/eval_jwt/jwt.py with two functions: jwt_encode(payload, secret, algorithm='HS256') returns a JWT string (header.payload.signature, base64url-encoded, no padding); jwt_decode(token, secret, now=None) returns the payload dict (raises ValueError on bad signature, malformed token, or expired 'exp' claim). Compare signatures with hmac.compare_digest. If now is None, use time.time().",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_jwt/jwt.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); payload = {'user_id': 42, 'role': 'admin'}; tok = mod.jwt_encode(payload, 'secret'); assert mod.jwt_decode(tok, 'secret') == payload\ntry: mod.jwt_decode(tok, 'wrong')\nexcept ValueError: pass\nelse: raise AssertionError\ntok2 = mod.jwt_encode({'user_id':1,'exp':100}, 'secret')\ntry: mod.jwt_decode(tok2, 'secret', now=200)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_jwt",
+  "max_iter": 25,
+  "category": "Security",
+  "subcategory": "Token management"
+}

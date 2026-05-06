@@ -1,0 +1,15 @@
+{
+  "id": "94_saxpy",
+  "name": "SAXPY in-place (y = a*x + y)",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_saxpy",
+  "task": "Create /tmp/eval_saxpy/saxpy.py with saxpy(a, x, y) computing y[i] = a*x[i] + y[i] for each i, modifying y in place. Returns the same y list. Raise ValueError if len(x) != len(y).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_saxpy/saxpy.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); S = mod.saxpy; x = [1.0,2.0,3.0,4.0]; y = [10.0,20.0,30.0,40.0]; out = S(2.0, x, y); assert out is y; assert y == [12.0,24.0,36.0,48.0]; y2 = [1.0,2.0,3.0]; S(0.0, [10,20,30], y2); assert y2 == [1.0,2.0,3.0]\ntry: S(1.0, [1,2], [1,2,3])\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_saxpy",
+  "max_iter": 10,
+  "category": "Performance & HW Opt",
+  "subcategory": "Vectorization"
+}

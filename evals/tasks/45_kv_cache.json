@@ -3,11 +3,13 @@
   "name": "KV cache for incremental attention",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_kv",
-  "task": "Create /tmp/eval_kv/kv_cache.py with a class KVCache that supports incremental attention. Constructor takes no args. Methods: append(K_step, V_step) where K_step and V_step are 1D lists representing the new token's key/value vectors (size d_k and d_v); attend(Q_step) where Q_step is a 1D list of size d_k, returns a 1D list of size d_v computed as: softmax((Q_step · K_i) / sqrt(d_k) for each cached step i) @ V_cached. After T calls to append + attend, the result of the T-th call must equal the result of doing full scaled dot-product attention from scratch over all T cached keys/values. Numerically stable softmax. Pure Python.",
+  "task": "Create /tmp/eval_kv/kv_cache.py with a class KVCache that supports incremental attention. Constructor takes no args. Methods: append(K_step, V_step) where K_step and V_step are 1D lists representing the new token's key/value vectors (size d_k and d_v); attend(Q_step) where Q_step is a 1D list of size d_k, returns a 1D list of size d_v computed as: softmax((Q_step \u00b7 K_i) / sqrt(d_k) for each cached step i) @ V_cached. After T calls to append + attend, the result of the T-th call must equal the result of doing full scaled dot-product attention from scratch over all T cached keys/values. Numerically stable softmax. Pure Python.",
   "validation": {
     "type": "python",
     "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_kv/kv_cache.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); cache = mod.KVCache(); steps_K = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]; steps_V = [[10.0, 0.0], [0.0, 20.0], [5.0, 5.0]]; queries = [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]; results = []; \nfor K, V, Q in zip(steps_K, steps_V, queries):\n    cache.append(K, V); results.append(cache.attend(Q))\nimport math as _m\ndef ref(Qs, Ks, Vs):\n    out=[]\n    for q in Qs:\n        scores=[sum(qi*ki for qi,ki in zip(q,k))/_m.sqrt(len(q)) for k in Ks]\n        m=max(scores); ex=[_m.exp(s-m) for s in scores]; Z=sum(ex); w=[e/Z for e in ex]\n        d_v=len(Vs[0]); out.append([sum(w[i]*Vs[i][j] for i in range(len(w))) for j in range(d_v)])\n    return out\nfor t in range(3):\n    r = ref(queries[:t+1], steps_K[:t+1], steps_V[:t+1])[-1]\n    got = results[t]\n    assert all(abs(a-b) < 1e-6 for a,b in zip(got, r)), f'step {t}: got {got} expected {r}'\nprint('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_kv",
-  "max_iter": 30
+  "max_iter": 30,
+  "category": "LLM / ML",
+  "subcategory": "Caching"
 }

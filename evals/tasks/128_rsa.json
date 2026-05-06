@@ -1,0 +1,15 @@
+{
+  "id": "128_rsa",
+  "name": "RSA keygen + sign/verify",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_rsa",
+  "task": "Create /tmp/eval_rsa/rsa.py with three functions: gen_rsa_keys(bits=512, seed=None) returns (n, e, d) where n is the product of two distinct primes of bits//2 each; e=65537 (or smallest odd coprime if not coprime with phi); d is the modular inverse of e mod phi. rsa_sign(message_int, n, d) returns pow(message_int, d, n). rsa_verify(signature, message_int, n, e) returns True iff pow(signature, e, n) == message_int. Use Miller-Rabin for primality.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_rsa/rsa.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); n, e, d = mod.gen_rsa_keys(bits=512, seed=42); assert n.bit_length() in (511, 512); msg = 0xDEADBEEF; sig = mod.rsa_sign(msg, n, d); assert mod.rsa_verify(sig, msg, n, e); assert not mod.rsa_verify(sig, msg + 1, n, e); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_rsa",
+  "max_iter": 35,
+  "category": "Security",
+  "subcategory": "Cipher implementation"
+}

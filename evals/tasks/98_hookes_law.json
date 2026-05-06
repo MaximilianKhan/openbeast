@@ -1,0 +1,15 @@
+{
+  "id": "98_hookes_law",
+  "name": "Hooke's law spring force",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_hooke",
+  "task": "Create /tmp/eval_hooke/hooke.py with spring_force(k, x) returning F = -k * x (the restoring force; negative when x > 0).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_hooke/hooke.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); F = mod.spring_force; assert F(100, 0.1) == -10; assert F(50, 0) == 0; assert F(10, -2) == 20; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_hooke",
+  "max_iter": 10,
+  "category": "Physics",
+  "subcategory": "Classical mechanics"
+}

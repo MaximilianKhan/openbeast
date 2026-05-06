@@ -1,7 +1,7 @@
 #!/bin/bash
 # Qwen3.6-35B-A3B (MoE) Q4_K_M on RTX 5090 (32GB VRAM)
-# 512K context: ~20GB model + ~3.1GB KV = ~23.1GB. Headroom: ~8.9GB.
-# Measured 2026-04-27: KV cost ~6.3 KB/token (very efficient MoE).
+# 512K context: 27,807 MiB total / 4,271 MiB headroom — measured 2026-05-05.
+# Per-token KV ~6.3 KB (MoE-efficient).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 exec "$SCRIPT_DIR/run.sh" \

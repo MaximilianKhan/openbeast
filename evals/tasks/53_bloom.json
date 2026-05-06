@@ -1,0 +1,15 @@
+{
+  "id": "53_bloom",
+  "name": "Bloom filter",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_bloom",
+  "task": "Create /tmp/eval_bloom/bloom.py with class BloomFilter(capacity, error_rate). Compute optimal bit-array size m = ceil(-(capacity * ln(error_rate)) / (ln 2)^2) and number of hash functions k = round((m / capacity) * ln 2). Methods: add(item) and contains(item) \u2014 returns True if maybe-present, False if definitely-not. Use double hashing (hashlib.md5 and hashlib.sha256 of the item, combined as h1 + i*h2). Expose m and k as instance attributes.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bloom/bloom.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); bf = mod.BloomFilter(1000, 0.01); items = [f'user_{i}' for i in range(500)]; [bf.add(it) for it in items]; assert all(bf.contains(it) for it in items); fps = sum(1 for i in range(10000) if bf.contains(f'absent_{i}')); assert fps/10000 < 0.05, f'fp rate {fps/10000}'; assert bf.m > 0 and bf.k > 0; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bloom",
+  "max_iter": 25,
+  "category": "Algorithms & DS",
+  "subcategory": "Hashing structures"
+}

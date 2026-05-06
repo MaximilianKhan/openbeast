@@ -1,0 +1,15 @@
+{
+  "id": "115_fft",
+  "name": "Cooley-Tukey radix-2 FFT",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_fft",
+  "task": "Create /tmp/eval_fft/fft.py with fft(x) returning the discrete Fourier transform of x (a list of complex/real numbers). Length must be a power of 2; raise ValueError otherwise. Implement Cooley-Tukey radix-2 recursively with twiddle factor exp(-2*pi*i*k/N).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_fft/fft.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); o = mod.fft([1,0,0,0]); assert all(abs(v - 1) < 1e-9 for v in o); o2 = mod.fft([1,1,1,1]); assert abs(o2[0] - 4) < 1e-9\nfor v in o2[1:]: assert abs(v) < 1e-9\ninp = [0,1,2,3,4,5,6,7]; o3 = mod.fft(inp); assert abs(o3[0] - sum(inp)) < 1e-9\ntry: mod.fft([1,2,3])\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_fft",
+  "max_iter": 30,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Polynomial algebra"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "103_pbkdf2",
+  "name": "PBKDF2 password hashing",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_pbkdf",
+  "task": "Create /tmp/eval_pbkdf/pw.py with two functions: hash_password(password, iterations=10000) returns 'iterations$saltHex$dkHex' using PBKDF2-HMAC-SHA256 with a fresh 16-byte secrets.token_bytes salt. verify_password(password, stored) returns True iff the password matches; use secrets.compare_digest.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pbkdf/pw.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); h = mod.hash_password('hunter2', iterations=1000); assert mod.verify_password('hunter2', h); assert not mod.verify_password('wrong', h); h2 = mod.hash_password('hunter2', iterations=1000); assert h != h2; assert mod.verify_password('hunter2', h2); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pbkdf",
+  "max_iter": 15,
+  "category": "Security",
+  "subcategory": "Cryptographic primitives"
+}

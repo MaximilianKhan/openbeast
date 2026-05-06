@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_flatten/flatten.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = mod.flatten; assert f({}) == {}, f\"empty {f({})}\"; assert f({'a': 1}) == {'a': 1}; assert f({'a': {'b': 1}}) == {'a.b': 1}; r = f({'a': {'b': {'c': 1}}, 'd': [1,2], 'e': {}}); assert r == {'a.b.c': 1, 'd': [1,2]}, f'nested {r}'; assert f({'x': {'y': 1, 'z': {'w': 2}}}) == {'x.y': 1, 'x.z.w': 2}; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_flatten",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "Algorithms & DS",
+  "subcategory": "Recursion / interpretation"
 }

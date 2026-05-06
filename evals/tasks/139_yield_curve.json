@@ -1,0 +1,15 @@
+{
+  "id": "139_yield_curve",
+  "name": "Bootstrap zero rates from par swap rates",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_yc",
+  "task": "Create /tmp/eval_yc/yc.py with bootstrap_zero_rates(par_swap_rates, frequency=2). Input: list of (tenor_in_years, par_swap_rate) sorted by tenor \u2014 every tenor is a multiple of 1/frequency. Recursively solve for the discount factor at each tenor: 1 = (par/freq) * sum(D(t_i) for prior i) + D(T) * (1 + par/freq). Return a dict {tenor: zero_rate} where zero_rate = -ln(D(T)) / T (continuously compounded, annualized).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_yc/yc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.bootstrap_zero_rates; rates = [(0.5, 0.05),(1.0, 0.05),(1.5, 0.05),(2.0, 0.05)]; z = B(rates, frequency=2); vals = list(z.values()); assert max(vals) - min(vals) < 1e-3, f'flat {vals}'\nfor r in vals: assert 0.04 < r < 0.06\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_yc",
+  "max_iter": 30,
+  "category": "Mathematical Finance",
+  "subcategory": "Fixed income"
+}

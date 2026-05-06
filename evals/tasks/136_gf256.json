@@ -1,0 +1,15 @@
+{
+  "id": "136_gf256",
+  "name": "GF(2^8) finite-field arithmetic",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_gf256",
+  "task": "Create /tmp/eval_gf256/gf.py with two functions over GF(2^8) using the AES irreducible polynomial 0x11b: gf256_mul(a, b, modulus=0x11b) \u2014 Russian-peasant style: shift-XOR loop with conditional reduction by modulus when the high bit overflows; gf256_inv(a, modulus=0x11b) \u2014 multiplicative inverse via Fermat's little theorem (a^254). Raise ValueError when a=0 in inv.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_gf256/gf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); M, I = mod.gf256_mul, mod.gf256_inv; assert M(0x57, 0x83) == 0xc1, 'FIPS-197 example'; assert M(1, 0xab) == 0xab\nfor a in [0x01, 0x57, 0x83, 0xff, 0xab]:\n    assert M(a, I(a)) == 1, f'inv {hex(a)}'\ntry: I(0)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_gf256",
+  "max_iter": 20,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory"
+}

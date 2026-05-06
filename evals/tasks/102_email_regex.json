@@ -1,0 +1,15 @@
+{
+  "id": "102_email_regex",
+  "name": "Email format validation",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_email",
+  "task": "Create /tmp/eval_email/email.py with is_valid_email(s) using a regex matching: [alphanum._%+-]+ @ [alphanum.-]+ . [alpha]{2+}. Anchored at both ends.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_email/email.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); V = mod.is_valid_email; assert V('user@example.com'); assert V('first.last+tag@sub.domain.org'); assert not V('plainaddress'); assert not V('@nodomain.com'); assert not V('missing@dot'); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_email",
+  "max_iter": 15,
+  "category": "Security",
+  "subcategory": "Input validation"
+}

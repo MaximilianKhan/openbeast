@@ -1,0 +1,15 @@
+{
+  "id": "63_det",
+  "name": "Matrix determinant via Gaussian elimination",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_det",
+  "task": "Create /tmp/eval_det/det.py with det(matrix) returning the determinant of a square matrix (list of lists of floats) via Gaussian elimination with partial pivoting. Track row-swap parity for the sign. If the matrix is singular, return 0.0. No NumPy.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_det/det.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); D = mod.det; assert abs(D([[1,2],[3,4]]) - (-2)) < 1e-9; assert abs(D([[1,0,0],[0,1,0],[0,0,1]]) - 1) < 1e-9; assert abs(D([[2,0,0,0],[0,3,0,0],[0,0,4,0],[0,0,0,5]]) - 120) < 1e-9; assert abs(D([[1,2],[2,4]])) < 1e-9; assert abs(D([[6,1,1],[4,-2,5],[2,8,7]]) - (-306)) < 1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_det",
+  "max_iter": 20,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Linear algebra"
+}

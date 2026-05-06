@@ -1,0 +1,15 @@
+{
+  "id": "82_sigmoid",
+  "name": "Numerically stable sigmoid",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_sig",
+  "task": "Create /tmp/eval_sig/sig.py with sigmoid(xs) returning a list of element-wise \u03c3(x) = 1/(1 + e^-x). Use the numerically stable form (compute e^-|x| not e^-x for x >> 0) so that sigmoid([1000]) does NOT overflow and sigmoid([-1000]) does not underflow to NaN.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_sig/sig.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); S = mod.sigmoid; s = S([0,1000,-1000]); assert abs(s[0] - 0.5) < 1e-9; assert s[1] > 0.999999; assert s[2] >= 0; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_sig",
+  "max_iter": 10,
+  "category": "LLM / ML",
+  "subcategory": "Activations"
+}

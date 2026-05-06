@@ -1,0 +1,15 @@
+{
+  "id": "120_2pc",
+  "name": "Two-phase commit coordinator",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_2pc",
+  "task": "Create /tmp/eval_2pc/tpc.py with class TwoPhaseCommit(participants). State starts at 'init'. Method prepare(votes) takes a dict {participant: bool}; returns 'commit' if all True else 'abort', and transitions to 'preparing'. commit() requires unanimous yes votes and transitions to 'committed'. abort() transitions to 'aborted' from 'init' or from 'preparing'+rejection. Improper transitions raise RuntimeError.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_2pc/tpc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); tpc = mod.TwoPhaseCommit(['p1','p2','p3']); assert tpc.prepare({'p1':True,'p2':True,'p3':True}) == 'commit'; tpc.commit(); assert tpc.state == 'committed'; tpc2 = mod.TwoPhaseCommit(['p1','p2']); assert tpc2.prepare({'p1':True,'p2':False}) == 'abort'; tpc2.abort(); assert tpc2.state == 'aborted'; tpc3 = mod.TwoPhaseCommit(['p1']); tpc3.prepare({'p1':False})\ntry: tpc3.commit()\nexcept RuntimeError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_2pc",
+  "max_iter": 25,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Distributed coordination"
+}

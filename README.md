@@ -70,8 +70,9 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **30-task eval harness** (2 easy / 15 medium / 13 hard) with automated validation (`evals/run_eval.py`)
+- **144-task eval harness** (40 easy / 53 medium / 51 hard) across 12 categories with automated validation (`evals/run_eval.py`)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces a ranked leaderboard
+- Per-category accuracy breakdown across 12 domains (Algorithms, SWE, Math Finance, Stats, Pure Math, LLM/ML, SysDesign, Concurrency, Physics, Performance, Security, Signal Processing & DSP)
 - Composite scoring with separate correctness + speed columns (`evals/scoring.py`)
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
@@ -124,10 +125,10 @@ See **[INSTALL.md](INSTALL.md)** for prerequisites, GPU/driver setup, alternate 
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
-| Qwen3.6-27B | Q4_K_M | 16 GB | 512K | ~25 GB | Fast, good quality |
 | Qwen3.6-27B | Q5_K_XL | 19 GB | 416K | 30.7 GB | Higher fidelity (margin only 9 MiB above 2GB rule) |
 | **Qwen3.6-27B Uncensored** | **Q5_K_P** | **21 GB** | **380K** | **30.7 GB** | **Default model** |
-| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | ~23 GB | Fast, KV-efficient, 1M capable |
+| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast, KV-efficient, 1M capable; ~4.3 GB headroom (measured) |
+| Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Uncensored fine-tune (HauhauCS Aggressive); ~4.9 GB headroom (measured) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
 
 All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See `REFERENCE.md` for the full measurement curve.
@@ -162,13 +163,13 @@ tests/                       # Test suite
   test_scripts.sh            # Script structure validation
   test_smoke.sh              # End-to-end stack smoke test (requires running stack)
 
-evals/                       # Eval harness — 30 tasks + multi-model benchmark
+evals/                       # Eval harness — 144 tasks + multi-model benchmark
   run_eval.py                # Single-model eval runner (model-tagged results)
-  scoring.py                 # Correctness/speed/composite scoring + leaderboard
+  scoring.py                 # Accuracy/speed/composite + per-category breakdown
   benchmark_all.py           # Multi-model sweep orchestration
-  tasks/                     # Per-task JSON definitions (01–30)
+  tasks/                     # Per-task JSON definitions (01–144) with category tags
   results/                   # Per-run results (kept all, model-tagged) [gitignored]
-  leaderboard.json           # Latest score per model (auto-updated)
+  leaderboard.json           # Latest score per model + per-category drilldown (auto-updated)
 
 system-prompt.md             # Soul file (persona, applied to all frontends)
 system-prompt-tools.md       # Tool guidance (Open WebUI only)
@@ -186,27 +187,30 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 ## Evals & Benchmarking
 
-The 30-task eval harness exercises everything from "create a file" to
-"patch SQL injection vulnerabilities" and "find and fix a race condition."
+The 144-task eval harness covers 12 categories spanning core software engineering,
+math, physics, ML/LLM internals, distributed systems, security, signal processing,
+and more — every
+task is self-contained (setup + validation + cleanup) with deterministic checks.
 
-**Score = 0.75 × correctness + 0.25 × speed** (separate columns also reported):
-- **Correctness**: difficulty-weighted pass rate (easy=1, medium=3, hard=5; max 112 pts)
+**Ranking: accuracy is primary, speed is the tie-breaker.** Composite (`0.75 × accuracy + 0.25 × speed`) is shown for backwards compatibility but is no longer the sort key.
+- **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
 - **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
-- **Composite**: weighted blend, used for leaderboard ranking
+- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security) with subcategory drilldown — see `evals/scoring.py --by-category`
 
 ```bash
 # Single-model eval (server must already be running)
-python3 evals/run_eval.py                          # all 30 tasks
+python3 evals/run_eval.py                          # all 144 tasks
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 
-# Multi-model sweep — stops/starts each serve script in turn, ~3-4 hours for all 5
+# Multi-model sweep — stops/starts each serve script in turn, ~6-8 hours for all 5
 python3 evals/benchmark_all.py                     # full sweep
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --list              # show configured models
 
 # Scoring + leaderboard
 python3 evals/scoring.py --show                    # current leaderboard
+python3 evals/scoring.py --by-category             # per-category accuracy table
 python3 evals/scoring.py --rebuild                 # regenerate from results/
 python3 evals/scoring.py --score evals/results/eval-*.json  # score one file
 ```
@@ -214,7 +218,8 @@ python3 evals/scoring.py --score evals/results/eval-*.json  # score one file
 Results land in `evals/results/eval-{model_slug}-{timestamp}.json` (one per run,
 all kept). Each result file embeds the model name and a snapshot of the GPU
 config (`nvidia-smi` — name, driver, total VRAM, compute capability). The
-leaderboard at `evals/leaderboard.json` keeps the latest score per model.
+leaderboard at `evals/leaderboard.json` keeps the latest score per model
+including the per-category drilldown.
 
 ## Requirements
 

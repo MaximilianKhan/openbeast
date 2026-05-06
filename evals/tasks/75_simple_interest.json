@@ -1,0 +1,15 @@
+{
+  "id": "75_simple_interest",
+  "name": "Simple interest final amount",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_si",
+  "task": "Create /tmp/eval_si/si.py with simple_interest(principal, rate, years) returning the final amount under simple interest: P * (1 + r * t). rate is a decimal (0.05 = 5%).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_si/si.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); S = mod.simple_interest; assert abs(S(1000, 0.05, 10) - 1500) < 1e-9; assert abs(S(1000, 0, 10) - 1000) < 1e-9; assert abs(S(500, 0.04, 5) - 600) < 1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_si",
+  "max_iter": 10,
+  "category": "Mathematical Finance",
+  "subcategory": "Time value of money"
+}

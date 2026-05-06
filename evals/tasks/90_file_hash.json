@@ -1,0 +1,15 @@
+{
+  "id": "90_file_hash",
+  "name": "Chunked file SHA-256",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_fh && printf 'hello world\\n' > /tmp/eval_fh/data.txt",
+  "task": "Create /tmp/eval_fh/fh.py with file_hash(path, algorithm='sha256', chunk_size=65536) that reads the file in chunks and returns the hex digest. Use hashlib.new(algorithm).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,hashlib; spec = importlib.util.spec_from_file_location('m','/tmp/eval_fh/fh.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); h = mod.file_hash('/tmp/eval_fh/data.txt'); expected = hashlib.sha256(b'hello world\\n').hexdigest(); assert h == expected; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_fh",
+  "max_iter": 10,
+  "category": "Concurrency & Systems",
+  "subcategory": "Systems APIs"
+}

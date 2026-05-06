@@ -1,0 +1,15 @@
+{
+  "id": "122_gemm_blocked",
+  "name": "Cache-blocked matrix multiply",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_gemm",
+  "task": "Create /tmp/eval_gemm/gemm.py with gemm_blocked(A, B, block=32) computing C = A * B for two list-of-lists matrices. Use the canonical 6-loop cache-blocked GEMM (ii, jj, kk outer; i, k, j inner) for cache locality. The validator checks correctness against a naive triple-loop reference on a 64\u00d764 matrix.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,random; spec = importlib.util.spec_from_file_location('m','/tmp/eval_gemm/gemm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); random.seed(0); n = 64; A = [[random.random() for _ in range(n)] for _ in range(n)]; B = [[random.random() for _ in range(n)] for _ in range(n)]; C = mod.gemm_blocked(A, B, block=16); expected = [[sum(A[i][k]*B[k][j] for k in range(n)) for j in range(n)] for i in range(n)]\nfor i in range(n):\n    for j in range(n):\n        assert abs(C[i][j] - expected[i][j]) < 1e-9\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_gemm",
+  "max_iter": 30,
+  "category": "Performance & HW Opt",
+  "subcategory": "Cache locality"
+}

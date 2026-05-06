@@ -1,0 +1,15 @@
+{
+  "id": "84_sha256",
+  "name": "SHA-256 hex digest",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_sha",
+  "task": "Create /tmp/eval_sha/sha.py with sha256_hex(s) returning the SHA-256 hex digest of s. Accept both str (encode UTF-8) and bytes.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_sha/sha.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); H = mod.sha256_hex; assert H('hello') == '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'; assert H(b'') == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_sha",
+  "max_iter": 10,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Cryptographic primitives"
+}

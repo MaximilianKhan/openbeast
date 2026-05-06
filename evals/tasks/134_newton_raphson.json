@@ -1,0 +1,15 @@
+{
+  "id": "134_newton_raphson",
+  "name": "Newton-Raphson root finding",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_nr",
+  "task": "Create /tmp/eval_nr/nr.py with newton_raphson(f, df, x0, tol=1e-10, max_iter=100). f is the function, df is its derivative. Iterate x \u2190 x - f(x)/df(x). Stop when |f(x)| < tol. Raise ValueError if df(x) == 0 at any iterate or max_iter is exceeded without convergence.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_nr/nr.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); NR = mod.newton_raphson; assert abs(NR(lambda x:x*x-2, lambda x:2*x, 1.0) - math.sqrt(2)) < 1e-9; assert abs(NR(lambda x:x**3-27, lambda x:3*x*x, 2.0) - 3) < 1e-9\ntry: NR(lambda x:x*x+1, lambda x:2*x, 0.0)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_nr",
+  "max_iter": 15,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Iterative numerical methods"
+}

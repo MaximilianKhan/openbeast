@@ -9,5 +9,7 @@
     "script": "import importlib.util, threading; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_race/counter.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.Counter(); threads = [threading.Thread(target=mod.run, args=(c, 10000)) for _ in range(10)]; [t.start() for t in threads]; [t.join() for t in threads]; assert c.value == 100000, f'race not fixed: got {c.value}, expected 100000'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_race",
-  "max_iter": 25
+  "max_iter": 25,
+  "category": "Concurrency & Systems",
+  "subcategory": "Race condition fixes"
 }

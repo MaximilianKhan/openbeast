@@ -1,0 +1,15 @@
+{
+  "id": "57_damped",
+  "name": "Damped harmonic oscillator",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_dho",
+  "task": "Create /tmp/eval_dho/dho.py with damped_position(x0, v0, omega0, gamma, t) returning the displacement at time t of a damped harmonic oscillator obeying x'' + 2\u03b3 x' + \u03c9\u2080\u00b2 x = 0. Inputs are guaranteed underdamped (gamma < omega0); gamma == 0 is the undamped case and must also be handled. Use the closed-form solution x(t) = exp(-\u03b3t) [A cos(\u03c9_d t) + B sin(\u03c9_d t)] with \u03c9_d = sqrt(\u03c9\u2080\u00b2 - \u03b3\u00b2), A = x\u2080, B = (v\u2080 + \u03b3 x\u2080) / \u03c9_d.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_dho/dho.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); D = mod.damped_position; assert abs(D(1.0,0.0,5.0,0.5,0)-1.0) < 1e-9; assert abs(D(1.0,0.0,5.0,0.5,100)) < 1e-6; assert abs(D(1.0,0.0,1.0,0.0,math.pi)+1.0) < 1e-9; assert abs(D(0.0,1.0,2.0,0.0,math.pi/4)-0.5) < 1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_dho",
+  "max_iter": 20,
+  "category": "Physics",
+  "subcategory": "Classical mechanics"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "65_miller_rabin",
+  "name": "Miller-Rabin primality",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_mr",
+  "task": "Create /tmp/eval_mr/mr.py with is_prime(n) returning a bool. Implement deterministic Miller-Rabin: for n < 3.317e24 the witness set {2,3,5,7,11,13,17,19,23,29,31,37} is sufficient, so the function gives an exact answer for any 64-bit integer. Handle n < 2, n == 2, even n, and Carmichael numbers correctly.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_mr/mr.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.is_prime\nfor p in [2,3,5,7,11,13,17,19,23,29,7919,1000003]:\n    assert P(p), f'{p}'\nfor c in [1,4,6,9,15,21,25,100,1000,7919*1000003,561,41041]:\n    assert not P(c), f'{c}'\nassert P(2**31 - 1); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_mr",
+  "max_iter": 20,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "56_rodrigues",
+  "name": "Rodrigues' rotation formula",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_rod",
+  "task": "Create /tmp/eval_rod/rot.py with rotate(point, axis, angle_rad) that rotates the 3-tuple `point` about the line through the origin along direction `axis` (3-tuple \u2014 NOT assumed unit-length; normalize internally) by `angle_rad` radians (right-hand rule). Return the rotated point as a 3-tuple. If the axis vector is zero, return the input unchanged. Use Rodrigues' formula: v' = v cos \u03b8 + (k \u00d7 v) sin \u03b8 + k(k\u00b7v)(1 - cos \u03b8).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_rod/rot.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); R = mod.rotate; r = R((1,0,0),(0,0,1),math.pi/2); assert abs(r[0])<1e-9 and abs(r[1]-1)<1e-9 and abs(r[2])<1e-9; r = R((1,2,3),(0,0,1),math.pi); assert abs(r[0]+1)<1e-9 and abs(r[1]+2)<1e-9 and abs(r[2]-3)<1e-9; r = R((1,0,0),(0,0,5),math.pi/2); assert abs(r[1]-1)<1e-9; r = R((0,0,7),(0,0,1),1.234); assert abs(r[2]-7)<1e-9; r = R((1,0,0),(1,1,1),2*math.pi/3); assert abs(r[0])<1e-9 and abs(r[1]-1)<1e-9 and abs(r[2])<1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_rod",
+  "max_iter": 20,
+  "category": "Physics",
+  "subcategory": "3D rotation / geometry"
+}

@@ -8,5 +8,7 @@
     "script": "mkdir -p /tmp/eval_src /tmp/eval_bak && echo 'test' > /tmp/eval_src/file.txt && chmod +x /tmp/eval_backup.sh && OUTPUT=$(bash /tmp/eval_backup.sh /tmp/eval_src /tmp/eval_bak) && ls /tmp/eval_bak/backup-*.tar.gz >/dev/null 2>&1 && bash /tmp/eval_backup.sh /nonexistent /tmp/eval_bak 2>&1; test $? -eq 1 && echo 'OK'"
   },
   "cleanup": "rm -rf /tmp/eval_src /tmp/eval_bak /tmp/eval_backup.sh",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "SWE / DevOps",
+  "subcategory": "Bash / scripting"
 }

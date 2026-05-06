@@ -106,12 +106,6 @@ Create the weights directory and download whichever models you plan to use:
 mkdir -p weights
 ```
 
-### Qwen3.6-27B -- Q4_K_M (~16GB)
-
-```bash
-hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-Q4_K_M.gguf --local-dir weights/
-```
-
 ### Qwen3.6-27B -- Q5_K_XL (~19GB)
 
 ```bash
@@ -200,7 +194,7 @@ The default model is **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P**.
 
 ```bash
 ./start.sh                                 # default model + MCPO + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-q4.sh            # use a different model
+./start.sh serve-qwen-35b-a3b.sh           # use a different model
 ./start.sh serve-gemma-4-31b-q5.sh         # use Gemma
 ```
 
@@ -312,7 +306,7 @@ changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.
 using the GPU, or the context length is too high. Override with a smaller context:
 
 ```bash
-./scripts/run-qwen-27b-q4.sh -c 262144
+./scripts/run-qwen-27b-q5.sh -c 262144
 ```
 
 See `REFERENCE.md` for measured VRAM at different context lengths. The OS/desktop

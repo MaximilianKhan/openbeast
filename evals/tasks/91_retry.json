@@ -1,0 +1,15 @@
+{
+  "id": "91_retry",
+  "name": "Retry decorator with fixed sleep",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_retry",
+  "task": "Create /tmp/eval_retry/retry.py with a decorator retry(retries=3, sleep=0.01, exceptions=(Exception,)) that re-runs the wrapped function up to `retries` extra times, sleeping `sleep` seconds between attempts. After all retries, re-raises the last exception. Use functools.wraps.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_retry/retry.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); attempts = []\n@mod.retry(retries=3, sleep=0)\ndef f():\n    attempts.append(1)\n    if len(attempts) < 3: raise ValueError('x')\n    return 'ok'\nassert f() == 'ok'; assert len(attempts) == 3\n@mod.retry(retries=2, sleep=0)\ndef bad(): raise RuntimeError('nope')\ntry: bad()\nexcept RuntimeError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_retry",
+  "max_iter": 15,
+  "category": "Concurrency & Systems",
+  "subcategory": "Async patterns"
+}

@@ -3,11 +3,13 @@
   "name": "Edit an existing file",
   "difficulty": "easy",
   "setup": "echo 'def add(a, b):\\n    return a - b' > /tmp/eval_math.py",
-  "task": "There is a bug in /tmp/eval_math.py — the add function subtracts instead of adding. Fix it.",
+  "task": "There is a bug in /tmp/eval_math.py \u2014 the add function subtracts instead of adding. Fix it.",
   "validation": {
     "type": "python",
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_math.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); assert m.add(2, 3) == 5, f'Expected 5 got {m.add(2, 3)}'; print('OK')"
   },
   "cleanup": "rm -f /tmp/eval_math.py",
-  "max_iter": 10
+  "max_iter": 10,
+  "category": "SWE / DevOps",
+  "subcategory": "File operations"
 }

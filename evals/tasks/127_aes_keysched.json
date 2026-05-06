@@ -1,0 +1,15 @@
+{
+  "id": "127_aes_keysched",
+  "name": "AES-128 key schedule",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_aes",
+  "task": "Create /tmp/eval_aes/aes.py with aes128_key_expand(key) returning a list of 11 round keys (each 16 bytes) for AES-128 per FIPS-197. Use the standard AES S-box and Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36]. Validate the test vector: key 2b7e151628aed2a6abf7158809cf4f3c \u2192 round_key[10] = d014f9a8c9ee2589e13f0cc8b6630ca6.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_aes/aes.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); key = bytes.fromhex('2b7e151628aed2a6abf7158809cf4f3c'); rks = mod.aes128_key_expand(key); assert len(rks) == 11; assert rks[0] == key; assert rks[10].hex() == 'd014f9a8c9ee2589e13f0cc8b6630ca6'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_aes",
+  "max_iter": 30,
+  "category": "Security",
+  "subcategory": "Cipher implementation"
+}

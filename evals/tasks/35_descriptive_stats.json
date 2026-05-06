@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_stats/stats.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_stats/stats.py').read(); assert 'import statistics' not in src and 'from statistics' not in src, 'no statistics module allowed'; assert mod.mean([1,2,3,4,5]) == 3.0; assert abs(mod.variance([1,2,3,4,5]) - 2.0) < 1e-9, f'pop var got {mod.variance([1,2,3,4,5])}'; assert abs(mod.variance([1,2,3,4,5], sample=True) - 2.5) < 1e-9, f'sample var got {mod.variance([1,2,3,4,5], sample=True)}'; assert abs(mod.stdev([1,2,3,4,5]) - 1.4142135623730951) < 1e-9; assert abs(mod.stdev([1,2,3,4,5], sample=True) - 1.5811388300841898) < 1e-9; r = False;\nfor _ in [1]:\n    try: mod.mean([])\n    except ValueError: r = True\nassert r, 'empty mean'; r2 = False;\nfor _ in [1]:\n    try: mod.variance([5], sample=True)\n    except ValueError: r2 = True\nassert r2, 'sample var of singleton'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_stats",
-  "max_iter": 12
+  "max_iter": 12,
+  "category": "Probability & Stats",
+  "subcategory": "Descriptive statistics"
 }

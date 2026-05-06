@@ -1,0 +1,15 @@
+{
+  "id": "92_popcount",
+  "name": "Population count",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_pop",
+  "task": "Create /tmp/eval_pop/pop.py with popcount(n) returning the number of set bits in non-negative integer n. Raise ValueError on negative input.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pop/pop.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.popcount; assert P(0) == 0; assert P(1) == 1; assert P(7) == 3; assert P(255) == 8; assert P(0xFFFFFFFF) == 32; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_pop",
+  "max_iter": 10,
+  "category": "Performance & HW Opt",
+  "subcategory": "Bit-twiddling"
+}

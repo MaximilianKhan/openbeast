@@ -1,0 +1,15 @@
+{
+  "id": "93_horner",
+  "name": "Horner's polynomial evaluation",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_horner",
+  "task": "Create /tmp/eval_horner/horner.py with horner(coeffs, x) evaluating the polynomial coeffs[0] + coeffs[1]*x + coeffs[2]*x^2 + ... + coeffs[n]*x^n at x using Horner's method (n multiplications, n additions). Empty coeffs list returns 0. Constant polynomial (single coefficient) returns that coefficient.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_horner/horner.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); H = mod.horner; assert H([1,2,3], 2) == 17; assert H([5,-3,7], 0) == 5; assert H([1,2,3,4], 1) == 10; assert H([42], 100) == 42; assert H([], 5) == 0; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_horner",
+  "max_iter": 10,
+  "category": "Performance & HW Opt",
+  "subcategory": "Loop optimization"
+}

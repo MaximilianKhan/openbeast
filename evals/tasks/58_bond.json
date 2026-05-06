@@ -1,0 +1,15 @@
+{
+  "id": "58_bond",
+  "name": "Bond price + Macaulay duration",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_bond",
+  "task": "Create /tmp/eval_bond/bond.py with bond(face, coupon_rate, ytm, n_periods) returning a tuple (price, macaulay_duration). Inputs are PER-PERIOD (so for a 10-year semiannual bond pass n_periods=20 and per-period rates). coupon_rate and ytm are decimals. Coupon is paid each period; face is repaid at maturity. Macaulay duration = sum(t * PV(CF_t)) / price.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bond/bond.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.bond; p,d = B(1000,0.05,0.05,10); assert abs(p-1000)<1e-6; assert abs(d-8.107822)<1e-4; p,d = B(1000,0.04,0.05,30); assert abs(p-846.275490)<1e-3; assert abs(d-16.898898)<1e-3; p,d = B(1000,0.0,0.05,5); assert abs(d-5)<1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bond",
+  "max_iter": 20,
+  "category": "Mathematical Finance",
+  "subcategory": "Fixed income"
+}

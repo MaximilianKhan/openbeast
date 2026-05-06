@@ -9,5 +9,7 @@
     "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_rope/rope.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rope = mod.apply_rope; r0 = rope([1.0, 0.0, 1.0, 0.0], 0); assert all(abs(a-b) < 1e-9 for a,b in zip(r0, [1.0, 0.0, 1.0, 0.0])), f'pos=0 should be identity: {r0}'; x = [1.0, 0.0]; r1 = rope(x, 1, base=10000.0); assert abs(r1[0] - math.cos(1.0)) < 1e-9 and abs(r1[1] - math.sin(1.0)) < 1e-9, f'd=2 simple rotation: {r1}'; x4 = [1.0, 0.0, 1.0, 0.0]; r4 = rope(x4, 5, base=10000.0); theta0 = 5 / (10000.0**(0/4)); theta1 = 5 / (10000.0**(2/4)); expected = [math.cos(theta0), math.sin(theta0), math.cos(theta1), math.sin(theta1)]; assert all(abs(a-b) < 1e-9 for a,b in zip(r4, expected)), f'd=4 pos=5: {r4} vs {expected}'; raised = False;\nfor _ in [1]:\n    try: rope([1.0, 2.0, 3.0], 1)\n    except ValueError: raised = True\nassert raised, 'odd d must raise'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_rope",
-  "max_iter": 25
+  "max_iter": 25,
+  "category": "LLM / ML",
+  "subcategory": "Position embeddings"
 }

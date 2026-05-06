@@ -1,6 +1,6 @@
 {
   "id": "48_birthday_paradox",
-  "name": "Birthday paradox — exact collision probability",
+  "name": "Birthday paradox \u2014 exact collision probability",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_bday",
   "task": "Create /tmp/eval_bday/bday.py with a function collision_prob(n, days=365) that returns the EXACT probability that at least two people in a group of n share a birthday, assuming uniform iid distribution over `days` days. Use the complement: 1 - prod_{k=0..n-1} (days - k) / days. Handle: n <= 1 returns 0.0; n > days returns 1.0. Also expose smallest_n_for(target_prob, days=365) that returns the minimum n where collision_prob(n, days) >= target_prob. Pure Python.",
@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_bday/bday.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); cp = mod.collision_prob; sn = mod.smallest_n_for; assert cp(0) == 0.0; assert cp(1) == 0.0; assert cp(366) == 1.0; assert cp(400) == 1.0; assert abs(cp(2) - 1/365) < 1e-9, f'n=2 got {cp(2)}'; assert abs(cp(23) - 0.5072972343239854) < 1e-9, f'classic n=23 got {cp(23)}'; assert abs(cp(50) - 0.9703735795779884) < 1e-9, f'n=50 got {cp(50)}'; assert abs(cp(70) - 0.9991595759651571) < 1e-9, f'n=70 got {cp(70)}'; assert sn(0.5) == 23, f'smallest n for 50% got {sn(0.5)}'; assert sn(0.99) == 57, f'99% got {sn(0.99)}'; assert sn(0.5, days=10) == 5, f'10 days 50% got {sn(0.5, days=10)}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_bday",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Probability & Stats",
+  "subcategory": "Combinatorial probability"
 }

@@ -1,0 +1,15 @@
+{
+  "id": "68_circuit_breaker",
+  "name": "Circuit breaker state machine",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_cb",
+  "task": "Create /tmp/eval_cb/cb.py with class CircuitBreaker(failure_threshold, recovery_timeout). States: 'closed', 'open', 'half_open'. Methods: allow_request(now) returns whether a request may proceed; record_success() and record_failure(now) update state. Transitions: in closed, failure_threshold consecutive failures \u2192 open; in open, after recovery_timeout seconds since opening \u2192 half_open on next allow_request; in half_open, only one probe request allowed at a time \u2014 success returns to closed and resets failures, failure returns to open and restarts the timer. Expose `state` as a string attribute.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cb/cb.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); cb = mod.CircuitBreaker(3, 5.0); assert cb.allow_request(0.0); cb.record_failure(0.0); cb.record_failure(0.1); cb.record_failure(0.2); assert not cb.allow_request(0.3); assert not cb.allow_request(4.9); assert cb.allow_request(5.5); assert not cb.allow_request(5.6); cb.record_success(); assert cb.allow_request(5.7); cb.record_failure(6.0); cb.record_failure(6.1); cb.record_failure(6.2); assert not cb.allow_request(6.3); assert cb.allow_request(11.5); cb.record_failure(11.6); assert not cb.allow_request(15.0); assert cb.allow_request(16.7); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_cb",
+  "max_iter": 25,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Service patterns"
+}

@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./start.sh                          # default model
-#   ./start.sh serve-qwen-27b-q4.sh     # specify a different serve script
+#   ./start.sh serve-qwen-35b-a3b.sh    # specify a different serve script
 #
 # OpenCode connects to the MCP server via stdio (configured in opencode.json),
 # so it doesn't need MCPO — just run `opencode` in any project.

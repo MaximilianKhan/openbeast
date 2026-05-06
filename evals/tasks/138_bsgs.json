@@ -1,0 +1,15 @@
+{
+  "id": "138_bsgs",
+  "name": "Baby-step giant-step discrete log",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_bsgs",
+  "task": "Create /tmp/eval_bsgs/bsgs.py with bsgs(g, h, p) solving g^x \u2261 h (mod p) for prime p. Use the baby-step / giant-step algorithm: m = ceil(sqrt(p)); precompute table {g^j mod p: j} for j=0..m-1; then iterate y = h * g^(-im) for i=0..m, checking each against the table \u2014 match gives x = i*m + j. Return smallest non-negative x, or None if no solution exists.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bsgs/bsgs.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.bsgs; p = 23; g = 5; h = pow(g, 16, p); x = B(g, h, p); assert pow(g, x, p) == h % p; p2 = 7919; g2 = 2; h2 = pow(g2, 1234, p2); x2 = B(g2, h2, p2); assert pow(g2, x2, p2) == h2; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_bsgs",
+  "max_iter": 30,
+  "category": "Pure & Abstract Math",
+  "subcategory": "Number theory"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "106_debouncer",
+  "name": "Debouncer (timer-based)",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_deb",
+  "task": "Create /tmp/eval_deb/deb.py with class Debouncer(delay, fn). Calling the instance schedules fn(*args, **kwargs) to fire after `delay` seconds of no further calls. Each call cancels the previous pending timer. Use threading.Timer (daemon=True). Provide cancel() to abort any pending fire.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,time; spec = importlib.util.spec_from_file_location('m','/tmp/eval_deb/deb.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); calls = []; d = mod.Debouncer(0.05, lambda x: calls.append(x)); d('a'); d('b'); d('c'); time.sleep(0.15); assert calls == ['c'], f'got {calls}'; d.cancel(); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_deb",
+  "max_iter": 20,
+  "category": "Concurrency & Systems",
+  "subcategory": "Async patterns"
+}

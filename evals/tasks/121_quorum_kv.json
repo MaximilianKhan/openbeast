@@ -1,0 +1,15 @@
+{
+  "id": "121_quorum_kv",
+  "name": "Dynamo-style quorum read/write",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_qkv",
+  "task": "Create /tmp/eval_qkv/qkv.py with class QuorumKV(n, r, w). Constructor raises ValueError if r + w <= n. Method write(key, value, timestamp, node, success_replicas) writes to the given replicas if len(success_replicas) >= w; per replica, last-write-wins ordered by (timestamp, node). read(key, response_replicas) returns the latest value if len(response_replicas) >= r else None; performs read repair on stale replicas in the response set.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_qkv/qkv.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); kv = mod.QuorumKV(n=5, r=3, w=3); assert kv.write('k1','v1', timestamp=1, node='A', success_replicas=[0,1,2]); assert kv.read('k1', response_replicas=[0,1,3]) == 'v1'; kv.write('k1','v2', timestamp=2, node='B', success_replicas=[2,3,4]); assert kv.read('k1', response_replicas=[0,1,4]) == 'v2'; assert not kv.write('k2','v', timestamp=1, node='A', success_replicas=[0,1]); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_qkv",
+  "max_iter": 30,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Replication & consistency"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "67_dprime",
+  "name": "Signal detection: d-prime and criterion",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_sdt",
+  "task": "Create /tmp/eval_sdt/sdt.py with dprime(hits, misses, false_alarms, correct_rejections) returning (d_prime, criterion). Compute H = hits/(hits+misses), F = false_alarms/(false_alarms+correct_rejections). Apply the loglinear correction when H or F is exactly 0 or 1: replace with 0.5/N or 1 - 0.5/N (where N is the trials in that condition). Then d' = z(H) - z(F) and c = -0.5 * (z(H) + z(F)), where z is the inverse standard-normal CDF. Use statistics.NormalDist().inv_cdf(p) from the stdlib.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_sdt/sdt.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); D = mod.dprime; d,c = D(84,16,16,84); assert abs(d-2.0) < 0.05; assert abs(c) < 0.05; d2,_ = D(50,50,50,50); assert abs(d2) < 1e-9; d3,_ = D(100,0,0,100); assert d3 > 4; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_sdt",
+  "max_iter": 25,
+  "category": "Probability & Stats",
+  "subcategory": "Psychometrics"
+}

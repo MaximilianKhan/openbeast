@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_trie/trie.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); t = mod.Trie(); [t.insert(w) for w in ['apple','app','apricot','banana','application']]; assert t.search('apple') is True; assert t.search('appl') is False; assert t.starts_with('app') is True; assert t.starts_with('cat') is False; ac = t.autocomplete('app'); assert ac == sorted(['app','apple','application']), f'autocomplete got {ac}'; assert t.autocomplete('xyz') == []; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_trie",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Algorithms & DS",
+  "subcategory": "Trees"
 }

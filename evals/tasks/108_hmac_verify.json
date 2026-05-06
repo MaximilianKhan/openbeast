@@ -1,0 +1,15 @@
+{
+  "id": "108_hmac_verify",
+  "name": "HMAC sign + timing-safe verify",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_hm",
+  "task": "Create /tmp/eval_hm/hm.py with two functions: hmac_sign(message, key) returns the HMAC-SHA256 hex digest using the stdlib hmac module; hmac_verify(message, key, signature) returns True iff signature matches, using hmac.compare_digest for timing-safe comparison.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_hm/hm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); sig = mod.hmac_sign('hello','secret'); assert mod.hmac_verify('hello','secret',sig); assert not mod.hmac_verify('hello','wrong',sig); assert not mod.hmac_verify('tampered','secret',sig); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_hm",
+  "max_iter": 20,
+  "category": "Security",
+  "subcategory": "Cryptographic primitives"
+}

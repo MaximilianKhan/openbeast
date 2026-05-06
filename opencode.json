@@ -22,15 +22,15 @@
             "output": 32768
           }
         },
-        "qwen-27b-q4": {
-          "name": "Qwen3.6-27B Q4_K_M",
+        "qwen-35b-a3b": {
+          "name": "Qwen3.6-35B-A3B MoE",
           "limit": {
             "context": 524288,
             "output": 32768
           }
         },
-        "qwen-35b-a3b": {
-          "name": "Qwen3.6-35B-A3B MoE",
+        "qwen-35b-a3b-uncensored-q4": {
+          "name": "Qwen3.6-35B-A3B Uncensored Q4_K_M",
           "limit": {
             "context": 524288,
             "output": 32768

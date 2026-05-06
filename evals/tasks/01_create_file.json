@@ -8,5 +8,7 @@
     "script": "import importlib.util, sys; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_hello.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); assert m.greet('World') == 'Hello, World!', f'Expected Hello, World! got {m.greet(\"World\")}'; print('OK')"
   },
   "cleanup": "rm -f /tmp/eval_hello.py",
-  "max_iter": 10
+  "max_iter": 10,
+  "category": "SWE / DevOps",
+  "subcategory": "File operations"
 }

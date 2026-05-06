@@ -1,0 +1,15 @@
+{
+  "id": "52_unionfind",
+  "name": "Union-Find with path compression",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_uf",
+  "task": "Create /tmp/eval_uf/uf.py with a UnionFind class. Constructor takes n (int): elements are 0..n-1. Methods: find(x) returns the root of x's set; union(a, b) merges the sets of a and b. Implement path compression in find and union by rank/size. Two elements are in the same set iff find(a) == find(b).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_uf/uf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); uf = mod.UnionFind(10); uf.union(1,2); uf.union(3,4); uf.union(2,4); assert uf.find(1) == uf.find(4); assert uf.find(3) == uf.find(1); assert uf.find(0) != uf.find(1); uf.union(5,6); uf.union(6,7); uf.union(7,8); uf.union(8,9); assert uf.find(5) == uf.find(9); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_uf",
+  "max_iter": 20,
+  "category": "Algorithms & DS",
+  "subcategory": "Graph algorithms"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "77_apr_apy",
+  "name": "APR \u2194 APY conversions",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_apr",
+  "task": "Create /tmp/eval_apr/apr.py with two functions: apr_to_apy(apr, n_per_year) = (1 + apr/n)^n - 1, and apy_to_apr(apy, n_per_year) = n * ((1 + apy)^(1/n) - 1).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_apr/apr.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); a = mod.apr_to_apy(0.12, 12); assert abs(a - 0.12682503013196977) < 1e-10; assert abs(mod.apy_to_apr(a, 12) - 0.12) < 1e-10; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_apr",
+  "max_iter": 10,
+  "category": "Mathematical Finance",
+  "subcategory": "Time value of money"
+}

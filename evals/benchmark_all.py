@@ -48,9 +48,6 @@ import scoring   # noqa: E402
 # ---------------------------------------------------------------------------
 
 MODELS = [
-    {"slug": "qwen-27b-q4",
-     "name": "Qwen 27B Q4_K_M",
-     "serve": "scripts/serve-qwen-27b-q4.sh"},
     {"slug": "qwen-27b-q5",
      "name": "Qwen 27B Q5_K_XL",
      "serve": "scripts/serve-qwen-27b-q5.sh"},
@@ -60,6 +57,9 @@ MODELS = [
     {"slug": "qwen-35b-a3b",
      "name": "Qwen 35B-A3B MoE Q4_K_M",
      "serve": "scripts/serve-qwen-35b-a3b.sh"},
+    {"slug": "qwen-35b-a3b-uncensored-q4",
+     "name": "Qwen 35B-A3B Uncensored Q4_K_M",
+     "serve": "scripts/serve-qwen-35b-a3b-uncensored-q4.sh"},
     {"slug": "gemma-4-31b-q5",
      "name": "Gemma 4 31B-it Q5_K_XL",
      "serve": "scripts/serve-gemma-4-31b-q5.sh"},

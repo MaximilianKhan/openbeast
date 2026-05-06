@@ -1,0 +1,15 @@
+{
+  "id": "104_threadsafe_lru",
+  "name": "Thread-safe LRU cache",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_tsl",
+  "task": "Create /tmp/eval_tsl/tsl.py with class ThreadSafeLRU(capacity). Same get/put semantics as a standard LRU (get returns -1 on miss; put updates and possibly evicts), but every public operation must acquire a threading.Lock for safety against concurrent use.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,threading; spec = importlib.util.spec_from_file_location('m','/tmp/eval_tsl/tsl.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.ThreadSafeLRU(2); c.put(1,'a'); c.put(2,'b'); assert c.get(1)=='a'; c.put(3,'c'); assert c.get(2)==-1\ndef worker():\n    for _ in range(100): c.get(1); c.put(1,'a')\nts = [threading.Thread(target=worker) for _ in range(5)]\nfor t in ts: t.start()\nfor t in ts: t.join()\nassert c.get(1)=='a'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_tsl",
+  "max_iter": 25,
+  "category": "Concurrency & Systems",
+  "subcategory": "Concurrent data structures"
+}

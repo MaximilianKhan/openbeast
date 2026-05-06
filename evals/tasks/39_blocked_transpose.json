@@ -3,11 +3,13 @@
   "name": "Cache-aware blocked matrix transpose",
   "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_blockt",
-  "task": "Create /tmp/eval_blockt/transpose.py with a function blocked_transpose(matrix, block_size=32) that returns the transpose of an MxN row-major matrix (list of lists) using a CACHE-BLOCKED algorithm. Iterate over blocks of size block_size first, then transpose each block — this dramatically improves cache locality vs. a naive nested-loop transpose for large matrices. Do NOT use numpy or zip(*matrix). Verify correctness on rectangular (non-square) inputs and inputs whose dimensions are not multiples of block_size.",
+  "task": "Create /tmp/eval_blockt/transpose.py with a function blocked_transpose(matrix, block_size=32) that returns the transpose of an MxN row-major matrix (list of lists) using a CACHE-BLOCKED algorithm. Iterate over blocks of size block_size first, then transpose each block \u2014 this dramatically improves cache locality vs. a naive nested-loop transpose for large matrices. Do NOT use numpy or zip(*matrix). Verify correctness on rectangular (non-square) inputs and inputs whose dimensions are not multiples of block_size.",
   "validation": {
     "type": "python",
     "script": "import importlib.util, random; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_blockt/transpose.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src = open('/tmp/eval_blockt/transpose.py').read(); assert 'numpy' not in src and 'zip(*' not in src, 'must not use numpy or zip(*matrix)'; bt = mod.blocked_transpose; assert bt([[1,2,3],[4,5,6]]) == [[1,4],[2,5],[3,6]], 'small rectangular'; assert bt([[1]]) == [[1]]; sq = [[i*4+j for j in range(4)] for i in range(4)]; assert bt(sq) == [[0,4,8,12],[1,5,9,13],[2,6,10,14],[3,7,11,15]], 'square 4x4'; random.seed(0); big = [[random.randint(0,1000) for _ in range(67)] for _ in range(43)]; expected = [[big[r][c] for r in range(43)] for c in range(67)]; assert bt(big, block_size=16) == expected, 'non-multiple dims with bs=16'; assert bt(big, block_size=8) == expected, 'non-multiple dims with bs=8'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_blockt",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Performance & HW Opt",
+  "subcategory": "Cache locality"
 }

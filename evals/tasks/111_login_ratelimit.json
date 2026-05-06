@@ -1,0 +1,15 @@
+{
+  "id": "111_login_ratelimit",
+  "name": "Rate-limited login with lockout",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_lrl",
+  "task": "Create /tmp/eval_lrl/lrl.py with class LoginRateLimiter(max_failures=5, window=300, lockout_seconds=900). Method allow(user, now) returns False if the user is currently locked out, True otherwise. record_failure(user, now) appends a failure timestamp; after `max_failures` failures within the rolling `window`, lock the user out for `lockout_seconds`. record_success(user) resets failures and lockout for that user.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_lrl/lrl.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rl = mod.LoginRateLimiter(max_failures=3, window=60, lockout_seconds=120)\nfor i in range(3):\n    assert rl.allow('alice', now=i)\n    rl.record_failure('alice', now=i)\nassert not rl.allow('alice', now=3); assert not rl.allow('alice', now=100); assert rl.allow('alice', now=200); assert rl.allow('bob', now=3); rl.record_success('alice'); assert rl.allow('alice', now=300); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_lrl",
+  "max_iter": 25,
+  "category": "Security",
+  "subcategory": "Auth & access control"
+}

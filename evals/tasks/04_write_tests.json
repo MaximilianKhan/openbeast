@@ -9,5 +9,7 @@
     "script": "cd /tmp/eval_calc && python3 -m pytest test_calc.py -v 2>&1 | tail -1 | grep -q 'passed'"
   },
   "cleanup": "rm -rf /tmp/eval_calc",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "SWE / DevOps",
+  "subcategory": "Testing"
 }

@@ -1,0 +1,15 @@
+{
+  "id": "76_fv_annuity",
+  "name": "Future value of an ordinary annuity",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_fva",
+  "task": "Create /tmp/eval_fva/fva.py with fv_annuity(payment, rate, periods) returning FV = payment * ((1+r)^n - 1) / r for r > 0; if r == 0, return payment * periods.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_fva/fva.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); F = mod.fv_annuity; assert abs(F(100, 0.05, 10) - 1257.78925) < 1e-3; assert abs(F(100, 0, 10) - 1000) < 1e-9; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_fva",
+  "max_iter": 10,
+  "category": "Mathematical Finance",
+  "subcategory": "Time value of money"
+}

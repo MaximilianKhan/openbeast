@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_lru/lru.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); c = m.LRUCache(2); c.put(1,1); c.put(2,2); assert c.get(1) == 1, 'get(1) after put'; c.put(3,3); assert c.get(2) == -1, f'2 should be evicted, got {c.get(2)}'; assert c.get(3) == 3; c.put(4,4); assert c.get(1) == -1, f'1 should be evicted now, got {c.get(1)}'; assert c.get(3) == 3; assert c.get(4) == 4; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_lru",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "Algorithms & DS",
+  "subcategory": "Hashing structures"
 }

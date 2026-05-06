@@ -8,5 +8,7 @@
     "script": "echo -e 'hello world\\nfoo bar baz' > /tmp/eval_wc_test.txt && OUTPUT=$(python3 /tmp/eval_wc.py /tmp/eval_wc_test.txt) && echo \"$OUTPUT\" | grep -q '2' && echo \"$OUTPUT\" | grep -q '5' && python3 /tmp/eval_wc.py /nonexistent 2>&1; test $? -eq 1 && rm -f /tmp/eval_wc_test.txt && echo 'OK'"
   },
   "cleanup": "rm -f /tmp/eval_wc.py /tmp/eval_wc_test.txt",
-  "max_iter": 15
+  "max_iter": 15,
+  "category": "SWE / DevOps",
+  "subcategory": "CLI tools"
 }

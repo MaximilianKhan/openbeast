@@ -1,0 +1,15 @@
+{
+  "id": "87_backoff",
+  "name": "Exponential backoff delay",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_back",
+  "task": "Create /tmp/eval_back/back.py with backoff_delay(attempt, base=1.0, factor=2.0, max_delay=60.0) returning min(max_delay, base * factor^attempt). Raise ValueError on negative attempt.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_back/back.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.backoff_delay; assert B(0) == 1.0; assert B(1) == 2.0; assert B(2) == 4.0; assert B(10) == 60.0\ntry: B(-1)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_back",
+  "max_iter": 10,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Service patterns"
+}

@@ -31,11 +31,13 @@ echo ""
 echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh
-  serve-qwen-27b-q4.sh serve-qwen-27b-q5.sh
+  serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
+  serve-qwen-35b-a3b-uncensored-q4.sh
   serve-gemma-4-31b-q5.sh
-  run-qwen-27b-q4.sh run-qwen-27b-q5.sh
+  run-qwen-27b-q5.sh
   run-qwen-27b-uncensored-q5.sh run-qwen-35b-a3b.sh
+  run-qwen-35b-a3b-uncensored-q4.sh
   run-gemma-4-31b-q5.sh
 )
 for script in "${EXPECTED_SCRIPTS[@]}"; do

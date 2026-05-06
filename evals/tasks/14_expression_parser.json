@@ -9,5 +9,7 @@
     "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_parser/parser.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); p = mod.parse; assert p('1') == 1, f\"'1' got {p('1')}\"; assert p('2 + 3') == ['+', 2, 3]; assert p('2 + 3 * 4') == ['+', 2, ['*', 3, 4]], f\"got {p('2 + 3 * 4')}\"; assert p('(2 + 3) * 4') == ['*', ['+', 2, 3], 4]; assert p('10 - 2 - 3') == ['-', ['-', 10, 2], 3], f\"left-assoc got {p('10 - 2 - 3')}\"; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_parser",
-  "max_iter": 25
+  "max_iter": 25,
+  "category": "Algorithms & DS",
+  "subcategory": "Parsing"
 }

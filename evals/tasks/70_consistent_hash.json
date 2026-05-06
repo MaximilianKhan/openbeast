@@ -1,0 +1,15 @@
+{
+  "id": "70_consistent_hash",
+  "name": "Consistent hashing ring",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_ring",
+  "task": "Create /tmp/eval_ring/ring.py with class Ring(replicas=100). Methods: add(node) registers a node by inserting `replicas` virtual nodes (hashed as f'{node}#{i}' for i in 0..replicas-1) into a sorted ring; remove(node) removes them all; get(key) returns the node whose first virtual-node hash is >= hash(key) (wrapping to the smallest if past the end), or None if no nodes exist. Use hashlib.md5 for hashing (decode hexdigest as int).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_ring/ring.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); r = mod.Ring(50); [r.add(n) for n in ['n1','n2','n3']]; assert r.get('apple') == r.get('apple'); keys = [f'k{i}' for i in range(1000)]; pre = {k:r.get(k) for k in keys}; r.remove('n2'); post = {k:r.get(k) for k in keys}; assert all(v != 'n2' for v in post.values())\nfor k,v in pre.items():\n    if v != 'n2': assert post[k] == v\ncnt = {'n1':0,'n3':0}\nfor v in post.values(): cnt[v] += 1\nfor n,c in cnt.items(): assert 300 < c < 700\nprint('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_ring",
+  "max_iter": 25,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Consistent hashing"
+}

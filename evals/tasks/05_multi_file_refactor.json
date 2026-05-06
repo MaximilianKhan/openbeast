@@ -3,11 +3,13 @@
   "name": "Refactor code across multiple files",
   "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_refactor && echo 'import json\\n\\ndef save_user(name, email):\\n    data = {\"name\": name, \"email\": email}\\n    with open(\"/tmp/eval_refactor/users.json\", \"w\") as f:\\n        json.dump(data, f)\\n\\ndef load_user():\\n    with open(\"/tmp/eval_refactor/users.json\") as f:\\n        return json.load(f)' > /tmp/eval_refactor/storage.py && echo 'from storage import save_user, load_user\\n\\nsave_user(\"Alice\", \"alice@example.com\")\\nuser = load_user()\\nprint(user[\"name\"])' > /tmp/eval_refactor/app.py",
-  "task": "Refactor /tmp/eval_refactor/storage.py to support multiple users. save_user should append to a list of users (not overwrite), and load_users (renamed, plural) should return the full list. Update app.py to use the new API — save two users and print both names.",
+  "task": "Refactor /tmp/eval_refactor/storage.py to support multiple users. save_user should append to a list of users (not overwrite), and load_users (renamed, plural) should return the full list. Update app.py to use the new API \u2014 save two users and print both names.",
   "validation": {
     "type": "bash",
     "script": "cd /tmp/eval_refactor && rm -f users.json && python3 app.py 2>&1 | grep -q 'Alice' && python3 -c \"import json; data=json.load(open('users.json')); assert len(data)>=2, f'Expected 2+ users got {len(data)}'; print('OK')\""
   },
   "cleanup": "rm -rf /tmp/eval_refactor",
-  "max_iter": 20
+  "max_iter": 20,
+  "category": "SWE / DevOps",
+  "subcategory": "Refactoring"
 }

@@ -1,0 +1,15 @@
+{
+  "id": "86_uuid4",
+  "name": "UUIDv4 generate + validate",
+  "difficulty": "easy",
+  "setup": "mkdir -p /tmp/eval_uuid",
+  "task": "Create /tmp/eval_uuid/uuid_util.py with two functions: make_uuid4() returning a string UUIDv4 (use uuid.uuid4()); is_uuid4(s) returning True iff s matches the canonical UUIDv4 format (8-4-4-4-12 hex with version digit 4 and variant digit in [89ab]).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_uuid/uuid_util.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); u = mod.make_uuid4(); assert mod.is_uuid4(u); assert mod.is_uuid4('f47ac10b-58cc-4372-a567-0e02b2c3d479'); assert not mod.is_uuid4('550e8400-e29b-11d4-a716-446655440000'); assert not mod.is_uuid4('not-a-uuid'); print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_uuid",
+  "max_iter": 10,
+  "category": "Distributed / SysDesign",
+  "subcategory": "Identifiers"
+}

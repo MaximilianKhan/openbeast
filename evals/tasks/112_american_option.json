@@ -1,0 +1,15 @@
+{
+  "id": "112_american_option",
+  "name": "American option pricing (binomial)",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_amer",
+  "task": "Create /tmp/eval_amer/amer.py with two functions: american_call(S, K, T, r, sigma, N=200) and american_put(S, K, T, r, sigma, N=200). Use a Cox-Ross-Rubinstein binomial tree with `N` steps. At each node, compare continuation value to immediate exercise value and take the max. Without dividends, american_call equals european_call (early exercise never optimal); american_put strictly exceeds european_put when r > 0.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math; spec = importlib.util.spec_from_file_location('m','/tmp/eval_amer/amer.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.american_call(100, 100, 1.0, 0.05, 0.2, N=400); assert abs(c - 10.4505835721856) < 0.05, f'amer call {c}'; p = mod.american_put(100, 100, 1.0, 0.05, 0.2, N=400); assert p > 5.57, f'amer put {p} should exceed euro put'; print('OK')"
+  },
+  "cleanup": "rm -rf /tmp/eval_amer",
+  "max_iter": 30,
+  "category": "Mathematical Finance",
+  "subcategory": "Option pricing"
+}
