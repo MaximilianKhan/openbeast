@@ -93,7 +93,7 @@ python3 check.py
     {"id": "c", "language": "c",    "setup": "...", "task": "Create /tmp/eval_X/sol.c. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o sol sol.c`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "d", "language": "cpp",  "setup": "...", "task": "Create /tmp/eval_X/sol.cpp. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o sol sol.cpp`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "e", "language": "rust", "setup": "...", "task": "Create /tmp/eval_X/sol.rs. Idiomatic Rust 2021+; compile with `rustc -O sol.rs -o sol`. ...", "validation": {...}, "cleanup": "..."},
-    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig. Zig 0.16+ idioms (`pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()`/`stdout()`); compile with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
+    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig. Zig 0.16+ idioms — see the canonical Zig section below for the full pattern, especially the `&fr.interface` indirection. Compile with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
   ]
 }
 ```
@@ -150,12 +150,10 @@ docstrings legitimately. See `eval-task-author` SKILL pitfall #1.
 - **Rust**: `io::stdin().read_to_string(&mut s).unwrap()` then
   `s.split_ascii_whitespace()`. `BufWriter::new(stdout.lock())` for fast
   output. `u128` for modular-multiply overflow, `i64`/`u64` otherwise.
-- **Zig 0.16**: entrypoint `pub fn main(init: std.process.Init) !void`. Get
-  arena via `init.arena.allocator()` for transient allocations. For stdio:
-  `std.Io.File.stdin().reader(io, &buf)` + `appendRemainingUnlimited(arena,
-  &list)` to slurp all input, then `std.mem.tokenizeAny` to scan whitespace.
-  `try sout.flush()` before return — without it your output is buffered and
-  silently dropped on exit. Cold compile is ~7-8s/file (acceptable).
+- **Zig 0.16** — see the dedicated section below. Quick checklist: `std.Io`
+  (capital I), `&fr.interface` to reach the rich Reader/Writer API, `try
+  w.flush()` before return, prefer `const` over `var`, rename unused params
+  to `_`. Cold compile ~7-8s/file.
 
 ## Common gotchas
 
@@ -173,6 +171,107 @@ docstrings legitimately. See `eval-task-author` SKILL pitfall #1.
   larger than other compilers. Adjust perf-gate thresholds for Zig variants
   accordingly, and remember that across a 5-model overnight sweep the Zig
   compile cost adds up (~9 min total for 13 variant tasks × 5 models).
+
+## Zig 0.16 canonical patterns
+
+> **Why this section exists.** The original Zig variant rollout taught the
+> model to call methods like `takeDelimiter` and `appendRemainingUnlimited`
+> directly on `std.Io.File.Reader`. Those methods don't live there — they
+> live on the underlying `std.Io.Reader` *interface*, accessed via
+> `&fr.interface`. The omission scored 0/13 across both 27B models in the
+> first v3 sweep. These templates are the verified fix. Use them in every
+> Zig variant `task` field.
+
+### Critical API rules
+
+1. **Capital `Io`.** `std.Io`, not `std.io`. The lowercase namespace was
+   removed in Zig 0.15+.
+2. **The `.interface` indirection.** `std.Io.File.Reader` and
+   `std.Io.File.Writer` are concrete file readers/writers with ~10 public
+   methods. The rich API (65+ methods including `takeDelimiter`,
+   `appendRemainingUnlimited`, `print`) lives on `std.Io.Reader` /
+   `std.Io.Writer` (the interface). Get there via `const r = &fr.interface;`.
+3. **`init.io` and `init.arena`.** The `Init` param exposes both. Pass
+   `init.io` to `.reader()` / `.writer()`. Use `init.arena.allocator()` for
+   transient heap allocations.
+4. **Always `try w.flush()`** before return — output is buffered and
+   silently dropped on exit if you don't.
+
+### Strict-default footguns (these are *errors*, not warnings)
+
+- **Unused function parameter.** Rename to `_`: `pub fn main(_: std.process.Init) !void { ... }` if you don't need `init`. (You'll need it for stdio though.)
+- **Unused local constant.** Discard with `_ = unused_value;` or just don't bind it.
+- **`var` never mutated.** Use `const` instead. Zig errors if a `var` is never reassigned.
+- **Unused imports** of named items. Prefer `const std = @import("std");` and access fields qualified — `std.foo` doesn't trigger unused-import.
+
+### Template 1 — Line-by-line stdin → stdout (most common)
+
+```zig
+const std = @import("std");
+
+pub fn main(init: std.process.Init) !void {
+    var in_buf: [4096]u8 = undefined;
+    var fr = std.Io.File.stdin().reader(init.io, &in_buf);
+    const r = &fr.interface;
+
+    var out_buf: [4096]u8 = undefined;
+    var fw = std.Io.File.stdout().writer(init.io, &out_buf);
+    const w = &fw.interface;
+
+    while (try r.takeDelimiter('\n')) |line| {
+        // Process `line` (a []u8 slice without the newline)
+        try w.print("{s}\n", .{line});
+    }
+    try w.flush();
+}
+```
+
+### Template 2 — Slurp all stdin → tokenize whitespace
+
+```zig
+const std = @import("std");
+
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+
+    var in_buf: [4096]u8 = undefined;
+    var fr = std.Io.File.stdin().reader(init.io, &in_buf);
+    const r = &fr.interface;
+
+    var data: std.ArrayList(u8) = .empty;
+    try r.appendRemainingUnlimited(arena, &data);
+
+    var out_buf: [4096]u8 = undefined;
+    var fw = std.Io.File.stdout().writer(init.io, &out_buf);
+    const w = &fw.interface;
+
+    var it = std.mem.tokenizeAny(u8, data.items, " \n\r\t");
+    while (it.next()) |tok| {
+        const n = try std.fmt.parseInt(i64, tok, 10);
+        try w.print("{d}\n", .{n});
+    }
+    try w.flush();
+}
+```
+
+Both templates verified to compile and run on `zig 0.16.0` (mise install).
+Use Template 1 when input is line-oriented (one record per line); use
+Template 2 when input is a stream of whitespace-separated tokens.
+
+### Useful interface methods (on `std.Io.Reader` via `&fr.interface`)
+
+- `takeDelimiter(byte) !?[]u8` — read up to and excluding delimiter; returns `null` at EOF
+- `takeDelimiterExclusive(byte) ![]u8` — same but errors at EOF instead of returning null
+- `appendRemainingUnlimited(allocator, *ArrayList(u8)) !void` — slurp all remaining bytes
+- `takeByte() !u8` — single byte
+- `readSliceAll([]u8) !void` — fill a fixed-size buffer
+
+### Useful interface methods (on `std.Io.Writer` via `&fw.interface`)
+
+- `print(fmt, args) !void` — formatted output (`{d}`, `{s}`, `{x}`, etc.)
+- `writeAll([]const u8) !void` — write a slice
+- `writeByte(u8) !void` — single byte
+- `flush() !void` — **must call before return**
 
 ## Done criteria for a variant task
 

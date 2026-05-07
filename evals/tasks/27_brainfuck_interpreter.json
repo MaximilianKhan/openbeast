@@ -2,14 +2,75 @@
   "id": "27_brainfuck_interpreter",
   "name": "Brainfuck interpreter",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_bf",
-  "task": "Create /tmp/eval_bf/bf.py with a function bf(code, input_str='') that runs a Brainfuck program and returns the output as a string. Support all 8 commands: > < + - . , [ ]. The tape is unbounded to the right (initialize cells lazily), starts at position 0, and cells are unsigned 8-bit (wrap mod 256). Bracket matching must be O(n) preprocessed (don't re-scan on every loop iteration).",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_bf/bf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); assert mod.bf('+++>++<[->+<]>.') == '\\x05', 'simple add: 3+2=5'; assert mod.bf('+'*65 + '.') == 'A', 'output A via 65 increments'; hello = '++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.'; out = mod.bf(hello); assert out == 'Hello World!\\n', f'hello world got {out!r}'; assert mod.bf(',+.', 'A') == 'B', 'echo input + 1'; assert mod.bf('+'*256 + '.') == '\\x00', 'wrap-around'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_bf",
-  "max_iter": 30,
   "category": "Algorithms & DS",
-  "subcategory": "Recursion / interpretation"
+  "subcategory": "Recursion / interpretation",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.py — Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; python3 bf.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.go (package main). Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Compile with `go build -o bf bf.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; go build -o bf bf.go && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.c — Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o bf bf.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; gcc -O2 -std=c11 -Wall -Wextra -o bf bf.c -lm && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.cpp — Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o bf bf.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; g++ -O2 -std=c++17 -Wall -Wextra -o bf bf.cpp && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.rs — Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Idiomatic Rust 2021+; compile with `rustc -O bf.rs -o bf`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; rustc -O bf.rs -o bf 2>/dev/null && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt",
+      "task": "Create /tmp/eval_bf/bf.zig — Reads from stdin: line 1 is T (test cases). Each case is two lines: line A is the Brainfuck program (single line, no embedded newlines); line B is the input string (may be empty). Run the program (8 commands: > < + - . , [ ]; tape lazy/zero-initialized, cells unsigned 8-bit wrap, 30000+ cells; bracket matching pre-computed in O(n)) and write its output to stdout. End each test's output with a newline. The bytes in the test fixtures are printable ASCII so a strict diff works. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast bf.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bf; zig build-exe -O ReleaseFast bf.zig && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_bf"
+    }
+  ]
 }

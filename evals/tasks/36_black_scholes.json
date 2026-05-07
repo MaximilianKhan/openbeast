@@ -1,15 +1,76 @@
 {
   "id": "36_black_scholes",
-  "name": "Black-Scholes European call option price",
+  "name": "Black-Scholes European call price",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_bs",
-  "task": "Create /tmp/eval_bs/bs.py with a function bs_call(S, K, T, r, sigma) returning the Black-Scholes price of a European CALL option. S=spot, K=strike, T=time to maturity in years, r=continuously-compounded risk-free rate (decimal), sigma=annualized volatility (decimal). Use the standard formula: C = S*N(d1) - K*exp(-r*T)*N(d2), with d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)) and d2 = d1 - sigma*sqrt(T). The cumulative normal N can be computed as 0.5 * (1 + erf(x / sqrt(2))) \u2014 math.erf is available in stdlib. Pure Python, no scipy.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_bs/bs.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); c = mod.bs_call; ref = c(100, 100, 1.0, 0.05, 0.2); assert abs(ref - 10.4505835721856) < 1e-4, f'ATM 1y got {ref}'; assert abs(c(100, 110, 0.5, 0.03, 0.25) - 3.8985511832) < 1e-4, f'OTM 6m got {c(100,110,0.5,0.03,0.25)}'; assert abs(c(50, 100, 1.0, 0.05, 0.2) - 0.0) < 0.01, f'deep OTM got {c(50,100,1.0,0.05,0.2)}'; assert abs(c(150, 100, 1.0, 0.05, 0.2) - (150 - 100*2.718281828459045**(-0.05))) < 1.0, 'deep ITM ~ S - K*exp(-rT)'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_bs",
-  "max_iter": 20,
   "category": "Mathematical Finance",
-  "subcategory": "Option pricing"
+  "subcategory": "Option pricing",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.py \u2014 Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && python3 bs.py < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.go (package main). Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Compile with `go build -o bs bs.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && go build -o bs bs.go && ./bs < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.c \u2014 Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Compile with `gcc -O2 -std=c11 -Wall -Wextra -o bs bs.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && gcc -O2 -std=c11 -Wall -Wextra -o bs bs.c -lm && ./bs < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.cpp \u2014 Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o bs bs.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && g++ -O2 -std=c++17 -Wall -Wextra -o bs bs.cpp && ./bs < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.rs \u2014 Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Idiomatic Rust 2021+; compile with `rustc -O bs.rs -o bs`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && rustc -O bs.rs -o bs 2>/dev/null && ./bs < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_bs/bs.zig \u2014 Reads from stdin: line 1 is T. Each next line is 'S K T r sigma' (5 floats: spot, strike, time-to-expiry years, risk-free rate, volatility). Output the Black-Scholes European call price c = S*N(d1) - K*exp(-r*T)*N(d2) where d1 = (ln(S/K) + (r + sigma^2/2)*T) / (sigma*sqrt(T)), d2 = d1 - sigma*sqrt(T), and N(.) is the standard normal CDF. Format to 4 decimals. If your stdlib lacks erf, use the Abramowitz & Stegun 7.1.26 approximation (p=0.3275911, a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429). Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return \u2014 output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast bs.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_bs && zig build-exe -O ReleaseFast bs.zig && ./bs < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_bs"
+    }
+  ]
 }

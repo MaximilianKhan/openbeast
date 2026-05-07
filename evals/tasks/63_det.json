@@ -2,14 +2,75 @@
   "id": "63_det",
   "name": "Matrix determinant via Gaussian elimination",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_det",
-  "task": "Create /tmp/eval_det/det.py with det(matrix) returning the determinant of a square matrix (list of lists of floats) via Gaussian elimination with partial pivoting. Track row-swap parity for the sign. If the matrix is singular, return 0.0. No NumPy.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_det/det.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); D = mod.det; assert abs(D([[1,2],[3,4]]) - (-2)) < 1e-9; assert abs(D([[1,0,0],[0,1,0],[0,0,1]]) - 1) < 1e-9; assert abs(D([[2,0,0,0],[0,3,0,0],[0,0,4,0],[0,0,0,5]]) - 120) < 1e-9; assert abs(D([[1,2],[2,4]])) < 1e-9; assert abs(D([[6,1,1],[4,-2,5],[2,8,7]]) - (-306)) < 1e-9; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_det",
-  "max_iter": 20,
   "category": "Pure & Abstract Math",
-  "subcategory": "Linear algebra"
+  "subcategory": "Linear algebra",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.py — Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; python3 det.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.go (package main). Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Compile with `go build -o det det.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; go build -o det det.go && ./det < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.c — Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o det det.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; gcc -O2 -std=c11 -Wall -Wextra -o det det.c -lm && ./det < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.cpp — Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o det det.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; g++ -O2 -std=c++17 -Wall -Wextra -o det det.cpp && ./det < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.rs — Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Idiomatic Rust 2021+; compile with `rustc -O det.rs -o det`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; rustc -O det.rs -o det 2>/dev/null && ./det < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_det && printf '4\\n2\\n1 2\\n3 4\\n3\\n1 0 0\\n0 1 0\\n0 0 1\\n3\\n2 -1 0\\n-1 2 -1\\n0 -1 2\\n4\\n1 2 3 4\\n5 6 7 8\\n9 10 11 12\\n13 14 15 16\\n' > /tmp/eval_det/input.txt && printf -- '-2.000000\\n1.000000\\n4.000000\\n0.000000\\n' > /tmp/eval_det/expected.txt",
+      "task": "Create /tmp/eval_det/det.zig — Reads from stdin: line 1 is T. Each case: line A is N (matrix dimension). Next N lines are N space-separated floats (row-major). Output the matrix determinant, formatted to 6 decimals. Use Gaussian elimination with partial pivoting — track sign flips on row swaps. If a pivot is exactly zero with no nonzero replacement below, the determinant is 0. Use double-precision floats. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast det.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_det; zig build-exe -O ReleaseFast det.zig && ./det < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_det"
+    }
+  ]
 }

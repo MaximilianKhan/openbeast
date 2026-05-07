@@ -1,15 +1,76 @@
 {
   "id": "62_crt",
-  "name": "Chinese Remainder Theorem",
+  "name": "Chinese Remainder Theorem (general moduli)",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_crt",
-  "task": "Create /tmp/eval_crt/crt.py with crt(remainders, moduli) returning the smallest non-negative x satisfying x \u2261 r_i (mod m_i) for each (r_i, m_i) pair. Moduli are guaranteed pairwise coprime. Result is x mod prod(moduli). You may use pow(a, -1, m) (stdlib modular inverse).",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_crt/crt.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.crt; assert C([2,3,2],[3,5,7]) == 23; assert C([1,0],[4,3]) == 9; assert C([0,0,0],[3,5,7]) == 0; assert C([2],[7]) == 2; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_crt",
-  "max_iter": 20,
   "category": "Pure & Abstract Math",
-  "subcategory": "Number theory"
+  "subcategory": "Number theory",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.py — Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; python3 crt.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.go (package main). Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Compile with `go build -o crt crt.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; go build -o crt crt.go && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.c — Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o crt crt.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; gcc -O2 -std=c11 -Wall -Wextra -o crt crt.c -lm && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.cpp — Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o crt crt.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; g++ -O2 -std=c++17 -Wall -Wextra -o crt crt.cpp && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.rs — Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Idiomatic Rust 2021+; compile with `rustc -O crt.rs -o crt`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; rustc -O crt.rs -o crt 2>/dev/null && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
+      "task": "Create /tmp/eval_crt/crt.zig — Reads from stdin: line 1 is T. Each case: line A is K (number of equations, >= 1). Next K lines are 'r m' pairs (remainder and modulus, m >= 1, 0 <= r < m). Output the smallest non-negative integer x satisfying x ≡ r_i (mod m_i) for all i, or -1 if no solution exists. Use general CRT (handles non-coprime moduli — gcd(m_i, m_j) need not be 1, but the remainders must be consistent on the gcd). Use 64-bit signed arithmetic; all answers fit in i64. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast crt.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_crt; zig build-exe -O ReleaseFast crt.zig && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_crt"
+    }
+  ]
 }

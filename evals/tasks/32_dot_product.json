@@ -1,15 +1,76 @@
 {
   "id": "32_dot_product",
-  "name": "Compute the dot product of two vectors",
+  "name": "Dot product of two integer vectors",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_dot",
-  "task": "Create /tmp/eval_dot/dot.py with a function dot(a, b) that returns the dot product (sum of element-wise products) of two equal-length lists of numbers. Raise ValueError if lengths differ. Use only the standard library \u2014 no numpy.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_dot/dot.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); d = mod.dot; assert d([1,2,3], [4,5,6]) == 32; assert d([], []) == 0; assert abs(d([0.5, 1.5, 2.5], [2.0, 1.0, 0.5]) - 3.75) < 1e-9, f'float case got {d([0.5,1.5,2.5],[2.0,1.0,0.5])}'; assert d([-1, 2], [3, -4]) == -11; raised = False;\nfor _ in [1]:\n    try: d([1,2,3], [4,5])\n    except ValueError: raised = True\nassert raised, 'mismatched lengths must raise ValueError'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_dot",
-  "max_iter": 10,
   "category": "Pure & Abstract Math",
-  "subcategory": "Linear algebra"
+  "subcategory": "Linear algebra",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.py — Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; python3 dot.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.go (package main). Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Compile with `go build -o dot dot.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; go build -o dot dot.go && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.c — Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Compile with `gcc -O2 -std=c11 -Wall -Wextra -o dot dot.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; gcc -O2 -std=c11 -Wall -Wextra -o dot dot.c -lm && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.cpp — Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o dot dot.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; g++ -O2 -std=c++17 -Wall -Wextra -o dot dot.cpp && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.rs — Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Idiomatic Rust 2021+; compile with `rustc -O dot.rs -o dot`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; rustc -O dot.rs -o dot 2>/dev/null && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt",
+      "task": "Create /tmp/eval_dot/dot.zig — Reads from stdin: line 1 is T (test case count). Each case: line A is N (>= 0). Line B is N space-separated integers (a) — empty line if N=0. Line C is N space-separated integers (b). For each case, output the integer dot product sum(a[i]*b[i]) on its own line. Use a 64-bit accumulator (values can exceed 2^32). Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast dot.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_dot; zig build-exe -O ReleaseFast dot.zig && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_dot"
+    }
+  ]
 }

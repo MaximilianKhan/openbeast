@@ -1,15 +1,76 @@
 {
   "id": "100_constant_time_compare",
-  "name": "Constant-time string compare",
+  "name": "Constant-time string equality",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_ct",
-  "task": "Create /tmp/eval_ct/ct.py with constant_time_compare(a, b) returning True iff a == b, with a comparison whose runtime is independent of where the strings differ. Accept str and bytes. Different lengths return False.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_ct/ct.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.constant_time_compare; assert C('abc','abc'); assert not C('abc','abd'); assert not C('abc','abcd'); assert C(b'\\x00\\x01', b'\\x00\\x01'); print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_ct",
-  "max_iter": 10,
   "category": "Security",
-  "subcategory": "Side-channel safety"
+  "subcategory": "Side-channel safety",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.py — Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"hmac\\\\.compare_digest|secrets\\\\.compare_digest\" ct.py || { echo 'forbidden api'; exit 1; }; python3 ct.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.go (package main). Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Compile with `go build -o ct ct.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"subtle\\\\.ConstantTime|crypto/subtle\" ct.go || { echo 'forbidden api'; exit 1; }; go build -o ct ct.go && ./ct < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.c — Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o ct ct.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"\\\\bmemcmp\\\\b|\\\\bstrcmp\\\\b\" ct.c || { echo 'forbidden api'; exit 1; }; gcc -O2 -std=c11 -Wall -Wextra -o ct ct.c -lm && ./ct < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.cpp — Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o ct ct.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"\\\\bmemcmp\\\\b|\\\\bstrcmp\\\\b\" ct.cpp || { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o ct ct.cpp && ./ct < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.rs — Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Idiomatic Rust 2021+; compile with `rustc -O ct.rs -o ct`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"subtle::|constant_time_eq\" ct.rs || { echo 'forbidden api'; exit 1; }; rustc -O ct.rs -o ct 2>/dev/null && ./ct < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_ct && printf '6\\nhello\\nhello\\nhello\\nworld\\nabc\\nabd\\nabc\\nabcd\\n\\n\\n0123456789\\n0123456789\\n' > /tmp/eval_ct/input.txt && printf 'true\\nfalse\\nfalse\\nfalse\\ntrue\\ntrue\\n' > /tmp/eval_ct/expected.txt",
+      "task": "Create /tmp/eval_ct/ct.zig — Reads from stdin: line 1 is T. Each case is two consecutive lines (a and b — strings, may be empty). For each case, output 'true' if a == b else 'false', on its own line. Implement a constant-time comparison: loop over all bytes (length-padded, length mismatch sets a 'differ' flag) and OR a XOR-accumulator. Do NOT short-circuit on first difference. Do NOT call any stdlib constant-time / timing-safe equality helper. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast ct.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_ct; ! grep -qE \"std\\\\.crypto\\\\.timing_safe|std\\\\.crypto\\\\.utils\\\\.timingSafeEql\" ct.zig || { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast ct.zig && ./ct < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_ct"
+    }
+  ]
 }

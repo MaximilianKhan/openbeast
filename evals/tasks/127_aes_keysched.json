@@ -2,14 +2,75 @@
   "id": "127_aes_keysched",
   "name": "AES-128 key schedule",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_aes",
-  "task": "Create /tmp/eval_aes/aes.py with aes128_key_expand(key) returning a list of 11 round keys (each 16 bytes) for AES-128 per FIPS-197. Use the standard AES S-box and Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36]. Validate the test vector: key 2b7e151628aed2a6abf7158809cf4f3c \u2192 round_key[10] = d014f9a8c9ee2589e13f0cc8b6630ca6.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_aes/aes.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); key = bytes.fromhex('2b7e151628aed2a6abf7158809cf4f3c'); rks = mod.aes128_key_expand(key); assert len(rks) == 11; assert rks[0] == key; assert rks[10].hex() == 'd014f9a8c9ee2589e13f0cc8b6630ca6'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_aes",
-  "max_iter": 30,
   "category": "Security",
-  "subcategory": "Cipher implementation"
+  "subcategory": "Cipher implementation",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.py — Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; python3 aes.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.go (package main). Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Compile with `go build -o aes aes.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; go build -o aes aes.go && ./aes < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.c — Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o aes aes.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; gcc -O2 -std=c11 -Wall -Wextra -o aes aes.c -lm && ./aes < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.cpp — Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o aes aes.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; g++ -O2 -std=c++17 -Wall -Wextra -o aes aes.cpp && ./aes < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.rs — Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Idiomatic Rust 2021+; compile with `rustc -O aes.rs -o aes`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; rustc -O aes.rs -o aes 2>/dev/null && ./aes < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_aes && printf '2\\n2b7e151628aed2a6abf7158809cf4f3c\\n000102030405060708090a0b0c0d0e0f\\n' > /tmp/eval_aes/input.txt && cat > /tmp/eval_aes/expected.txt <<'EOF'\n2b7e151628aed2a6abf7158809cf4f3c\na0fafe1788542cb123a339392a6c7605\nf2c295f27a96b9435935807a7359f67f\n3d80477d4716fe3e1e237e446d7a883b\nef44a541a8525b7fb671253bdb0bad00\nd4d1c6f87c839d87caf2b8bc11f915bc\n6d88a37a110b3efddbf98641ca0093fd\n4e54f70e5f5fc9f384a64fb24ea6dc4f\nead27321b58dbad2312bf5607f8d292f\nac7766f319fadc2128d12941575c006e\nd014f9a8c9ee2589e13f0cc8b6630ca6\n000102030405060708090a0b0c0d0e0f\nd6aa74fdd2af72fadaa678f1d6ab76fe\nb692cf0b643dbdf1be9bc5006830b3fe\nb6ff744ed2c2c9bf6c590cbf0469bf41\n47f7f7bc95353e03f96c32bcfd058dfd\n3caaa3e8a99f9deb50f3af57adf622aa\n5e390f7df7a69296a7553dc10aa31f6b\n14f9701ae35fe28c440adf4d4ea9c026\n47438735a41c65b9e016baf4aebf7ad2\n549932d1f08557681093ed9cbe2c974e\n13111d7fe3944a17f307a78b4d2b30c5\nEOF",
+      "task": "Create /tmp/eval_aes/aes.zig — Reads from stdin: line 1 is T. Each next line is a 32-character hex string encoding a 16-byte AES-128 key. For each, output 11 lines (one per round key), each a 32-char lowercase hex string of the round key bytes. Implement the FIPS-197 AES key schedule: SubBytes via the standard 256-byte S-box, RotWord (rotate 4 bytes left by 1), Rcon = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36] (1-indexed; Rcon[i] used in iteration ceil(i/Nk)). Round 0 = the input key. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast aes.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_aes; zig build-exe -O ReleaseFast aes.zig && ./aes < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_aes"
+    }
+  ]
 }

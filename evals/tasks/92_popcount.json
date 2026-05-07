@@ -1,15 +1,76 @@
 {
   "id": "92_popcount",
-  "name": "Population count",
+  "name": "Population count (manual implementation)",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_pop",
-  "task": "Create /tmp/eval_pop/pop.py with popcount(n) returning the number of set bits in non-negative integer n. Raise ValueError on negative input.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_pop/pop.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); P = mod.popcount; assert P(0) == 0; assert P(1) == 1; assert P(7) == 3; assert P(255) == 8; assert P(0xFFFFFFFF) == 32; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_pop",
-  "max_iter": 10,
   "category": "Performance & HW Opt",
-  "subcategory": "Bit-twiddling"
+  "subcategory": "Bit-twiddling",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.py — Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"\\\\.bit_count\\\\(|bin\\\\(.*\\\\)\\\\.count\\\\(\" pop.py || { echo 'forbidden api'; exit 1; }; python3 pop.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.go (package main). Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Compile with `go build -o pop pop.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"bits\\\\.OnesCount\" pop.go || { echo 'forbidden api'; exit 1; }; go build -o pop pop.go && ./pop < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.c — Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o pop pop.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"__builtin_popcount\" pop.c || { echo 'forbidden api'; exit 1; }; gcc -O2 -std=c11 -Wall -Wextra -o pop pop.c -lm && ./pop < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.cpp — Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o pop pop.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"__builtin_popcount|std::popcount\" pop.cpp || { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o pop pop.cpp && ./pop < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.rs — Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Idiomatic Rust 2021+; compile with `rustc -O pop.rs -o pop`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"\\\\.count_ones\\\\(\" pop.rs || { echo 'forbidden api'; exit 1; }; rustc -O pop.rs -o pop 2>/dev/null && ./pop < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_pop && printf '10\\n0\\n1\\n2\\n3\\n7\\n255\\n4294967295\\n1024\\n12345\\n9223372036854775807\\n' > /tmp/eval_pop/input.txt && printf '0\\n1\\n1\\n2\\n3\\n8\\n32\\n1\\n6\\n63\\n' > /tmp/eval_pop/expected.txt",
+      "task": "Create /tmp/eval_pop/pop.zig — Reads from stdin: line 1 is T. Each next line is a non-negative integer (may be up to 64-bit unsigned, i.e. up to 2^63-1). For each, output the number of set bits on its own line. Implement popcount yourself — no language-builtin popcount intrinsic. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast pop.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pop; ! grep -qE \"@popCount\" pop.zig || { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast pop.zig && ./pop < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pop"
+    }
+  ]
 }

@@ -10,7 +10,7 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.py \u2014 reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations \u2014 only for 'c'.",
+      "task": "Create /tmp/eval_uf/uf.py — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && python3 uf.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -32,7 +32,7 @@
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.c \u2014 reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
+      "task": "Create /tmp/eval_uf/uf.c — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -43,7 +43,7 @@
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.cpp \u2014 reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
+      "task": "Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -54,7 +54,7 @@
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O uf.rs -o uf` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_uf/uf.rs — same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O uf.rs -o uf` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && rustc -O uf.rs -o uf && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -65,7 +65,7 @@
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast uf.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_uf/uf.zig — same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast uf.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && zig build-exe -O ReleaseFast uf.zig && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"

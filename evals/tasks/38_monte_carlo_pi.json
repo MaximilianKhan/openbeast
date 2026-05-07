@@ -1,15 +1,76 @@
 {
   "id": "38_monte_carlo_pi",
-  "name": "Monte Carlo estimation of pi",
+  "name": "Monte Carlo π (deterministic LCG, integer-only predicate)",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_mcpi",
-  "task": "Create /tmp/eval_mcpi/mcpi.py with a function estimate_pi(n_samples, seed=None) that estimates pi using Monte Carlo: sample uniform points in [-1,1]x[-1,1], count fraction inside the unit circle, multiply by 4. If seed is given, seed Python's random module so the result is reproducible. Use only random and math from the standard library.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_mcpi/mcpi.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); f = mod.estimate_pi; a = f(50000, seed=42); b = f(50000, seed=42); assert a == b, f'seed not deterministic: {a} vs {b}'; assert abs(a - math.pi) < 0.05, f'inaccurate: {a} vs pi={math.pi}'; c = f(50000, seed=7); assert c != a, 'different seeds should differ'; assert abs(f(200000, seed=1) - math.pi) < 0.025, 'higher N must be tighter'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_mcpi",
-  "max_iter": 15,
   "category": "Probability & Stats",
-  "subcategory": "Monte Carlo simulation"
+  "subcategory": "Monte Carlo simulation",
+  "max_iter": 15,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.py — Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; python3 mcpi.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.go (package main). Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Compile with `go build -o mcpi mcpi.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; go build -o mcpi mcpi.go && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.c — Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o mcpi mcpi.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; gcc -O2 -std=c11 -Wall -Wextra -o mcpi mcpi.c -lm && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.cpp — Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o mcpi mcpi.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; g++ -O2 -std=c++17 -Wall -Wextra -o mcpi mcpi.cpp && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.rs — Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Idiomatic Rust 2021+; compile with `rustc -O mcpi.rs -o mcpi`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; rustc -O mcpi.rs -o mcpi 2>/dev/null && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF",
+      "task": "Create /tmp/eval_mcpi/mcpi.zig — Reads from stdin: line 1 is T (test cases). Each next line is 'N seed'. Use a 64-bit LCG with multiplier 6364136223846793005 and increment 1442695040888963407 (Knuth MMIX), wrapping at 2^64. Initialize state = seed. For N samples, advance the LCG once and take x = (state >> 33) & 0x3FFFFFFF (30 bits), advance again and take y similarly. Count samples where x*x + y*y < (1<<30)*(1<<30). Output that integer count on its own line. Use 64-bit unsigned arithmetic for state and 64-bit (or 128-bit) for the x*x+y*y comparison. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast mcpi.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_mcpi; zig build-exe -O ReleaseFast mcpi.zig && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_mcpi"
+    }
+  ]
 }

@@ -2,14 +2,75 @@
   "id": "82_sigmoid",
   "name": "Numerically stable sigmoid",
   "difficulty": "easy",
-  "setup": "mkdir -p /tmp/eval_sig",
-  "task": "Create /tmp/eval_sig/sig.py with sigmoid(xs) returning a list of element-wise \u03c3(x) = 1/(1 + e^-x). Use the numerically stable form (compute e^-|x| not e^-x for x >> 0) so that sigmoid([1000]) does NOT overflow and sigmoid([-1000]) does not underflow to NaN.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_sig/sig.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); S = mod.sigmoid; s = S([0,1000,-1000]); assert abs(s[0] - 0.5) < 1e-9; assert s[1] > 0.999999; assert s[2] >= 0; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_sig",
-  "max_iter": 10,
   "category": "LLM / ML",
-  "subcategory": "Activations"
+  "subcategory": "Activations",
+  "max_iter": 10,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.py — Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; python3 sig.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.go (package main). Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Compile with `go build -o sig sig.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; go build -o sig sig.go && ./sig < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.c — Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o sig sig.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; gcc -O2 -std=c11 -Wall -Wextra -o sig sig.c -lm && ./sig < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.cpp — Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o sig sig.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; g++ -O2 -std=c++17 -Wall -Wextra -o sig sig.cpp && ./sig < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.rs — Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Idiomatic Rust 2021+; compile with `rustc -O sig.rs -o sig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; rustc -O sig.rs -o sig 2>/dev/null && ./sig < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_sig && printf '5\\n3\\n0 0 0\\n5\\n-2 -1 0 1 2\\n3\\n1000 -1000 0\\n4\\n10 -10 0.5 -0.5\\n2\\n100 -100\\n' > /tmp/eval_sig/input.txt && cat > /tmp/eval_sig/expected.txt <<'EOF'\n0.500000000 0.500000000 0.500000000\n0.119202922 0.268941421 0.500000000 0.731058579 0.880797078\n1.000000000 0.000000000 0.500000000\n0.999954602 0.000045398 0.622459331 0.377540669\n1.000000000 0.000000000\nEOF",
+      "task": "Create /tmp/eval_sig/sig.zig — Reads from stdin: line 1 is T. Each case: line A is N (>= 1). Line B is N space-separated floats. For each case, output the element-wise sigmoid σ(x) = 1/(1 + e^-x) for each value, formatted as `%.9f`, space-separated on one line. Use the numerically stable form: for x >= 0, 1/(1+exp(-x)); for x < 0, exp(x)/(1+exp(x)) — so sigmoid(1000) doesn't overflow and sigmoid(-1000) doesn't underflow to NaN. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast sig.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_sig; zig build-exe -O ReleaseFast sig.zig && ./sig < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_sig"
+    }
+  ]
 }

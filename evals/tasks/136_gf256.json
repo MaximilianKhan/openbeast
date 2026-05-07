@@ -1,15 +1,76 @@
 {
   "id": "136_gf256",
-  "name": "GF(2^8) finite-field arithmetic",
+  "name": "GF(2^8) finite-field arithmetic (AES polynomial)",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_gf256",
-  "task": "Create /tmp/eval_gf256/gf.py with two functions over GF(2^8) using the AES irreducible polynomial 0x11b: gf256_mul(a, b, modulus=0x11b) \u2014 Russian-peasant style: shift-XOR loop with conditional reduction by modulus when the high bit overflows; gf256_inv(a, modulus=0x11b) \u2014 multiplicative inverse via Fermat's little theorem (a^254). Raise ValueError when a=0 in inv.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_gf256/gf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); M, I = mod.gf256_mul, mod.gf256_inv; assert M(0x57, 0x83) == 0xc1, 'FIPS-197 example'; assert M(1, 0xab) == 0xab\nfor a in [0x01, 0x57, 0x83, 0xff, 0xab]:\n    assert M(a, I(a)) == 1, f'inv {hex(a)}'\ntry: I(0)\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_gf256",
-  "max_iter": 20,
   "category": "Pure & Abstract Math",
-  "subcategory": "Number theory"
+  "subcategory": "Number theory",
+  "max_iter": 15,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.py — Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; python3 gf.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.go (package main). Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Compile with `go build -o gf gf.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; go build -o gf gf.go && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.c — Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o gf gf.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; gcc -O2 -std=c11 -Wall -Wextra -o gf gf.c -lm && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.cpp — Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o gf gf.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; g++ -O2 -std=c++17 -Wall -Wextra -o gf gf.cpp && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.rs — Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Idiomatic Rust 2021+; compile with `rustc -O gf.rs -o gf`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; rustc -O gf.rs -o gf 2>/dev/null && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'",
+      "task": "Create /tmp/eval_gf/gf.zig — Reads from stdin: line 1 is T. Each next line is 'op a b' where op is '+' or '*' and a, b are 0..255 (decimal, or hex with 0x prefix). For each, output the result of the operation in GF(2^8) with reduction polynomial 0x11B (the AES Rijndael polynomial) on its own line as a decimal integer. '+' is XOR; '*' is polynomial multiplication mod 0x11B (shift-and-XOR). Output is always 0..255. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast gf.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_gf; zig build-exe -O ReleaseFast gf.zig && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_gf"
+    }
+  ]
 }

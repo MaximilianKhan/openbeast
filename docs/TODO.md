@@ -2,6 +2,319 @@
 
 ## Up Next
 
+### Restart the v3.5 sweep (user-controlled)
+
+Phases A (Zig spec defect fix) and B (21 → 20 new variant base tasks) are
+landed and audited. Sweep is otherwise unblocked. Kick off with:
+
+```bash
+python3 evals/benchmark_all.py
+```
+
+The sweep auto-uses the new result cache (`--no-cache` to bypass). On the
+first model after a clean cache, expect full ~3-5 hours per model. On a
+re-run with cache hits, completed entries replay instantly. See
+`evals/cache_cli.py stats` for cache state.
+
+## Completed (this session)
+
+### v3.5 prereq — Zig variant spec defect ✓ DONE (2026-05-07)
+
+**The bug.** Both 27B models in the running v3 sweep scored **0/13 on Zig
+variants**. Investigation while the sweep continued confirmed the failures
+are spec defects, not model weakness or toolchain trouble. Working Zig 0.16
+demo program proven at `/tmp/zig_demo/demo.zig` — compiles and runs.
+
+**Toolchain ✅** — `zig 0.16.0` installed via mise, on PATH for the eval
+subprocess. Compiler is healthy.
+
+**Models ✅** — they follow the spec literally.
+
+**Spec ❌ — two distinct defects across all 13 Zig variant tasks:**
+
+#### Defect A: Wrong API surface (9 of 13)
+
+`takeDelimiter` and `appendRemainingUnlimited` live on `std.Io.Reader`
+(the *interface*, 65 public methods) — **not** on `std.Io.File.Reader`
+(the concrete file reader, 10 public methods). The model has to access
+`&fr.interface` to reach the rich API. The spec doesn't mention this.
+
+Working pattern (confirmed in `/tmp/zig_demo/demo.zig`):
+```zig
+var fr = std.Io.File.stdin().reader(init.io, &buf);
+const r = &fr.interface;  // ← the missing step
+while (try r.takeDelimiter('\n')) |line| { ... }
+```
+
+What the spec teaches the model to write:
+```zig
+var fr = std.Io.File.stdin().reader(...);
+fr.takeDelimiter('\n')  // ERROR: not on File.Reader
+```
+
+Failures of this shape: `122_gemm_blocked_e`, `148_convex_hull_f`,
+`155_tonelli_shanks_f`, `158_karatsuba_bytes_f`.
+
+A related sub-flavor: 4 tasks tried `std.io` (lowercase, the pre-0.15
+namespace) instead of `std.Io` (renamed in 0.15+). Models reached for
+this from older training data when the new template wasn't sufficient:
+`51_toposort_f`, `61_extgcd_f`, `65_miller_rabin_f`, `73_count_vowels_f`.
+
+#### Defect B: Strict-default warnings as hard errors (5 of 13)
+
+Zig 0.16 errors on:
+- unused function parameters
+- unused local constants
+- `var` declarations that are never mutated (should be `const`)
+
+The spec doesn't warn the model that these are hard errors (other languages
+treat them as soft warnings or ignore entirely). Failures:
+- `19_three_way_quicksort_f` — unused local constant
+- `31_is_power_of_two_f`, `74_palindrome_f` — unused parameter (`init` when
+  not needed)
+- `52_unionfind_f`, `159_ntt_convolution_f` — `var` never mutated
+
+#### Why the audit missed this
+
+`tests/audit_variants.py` validates **reference implementations** in
+`/tmp/refs/`, which had the correct `.interface` pattern at landing time.
+The audit confirms "test infrastructure works for a known-good solution"
+but not "spec text gives the model enough to write a known-good solution."
+The spec defect slipped through because the reference impls knew about
+`.interface` even though the task `task` field didn't mention it.
+
+#### The fix (Phase-1-equivalent — apply post-sweep)
+
+1. **Update `skills/eval-variant-porter/SKILL.md`** Zig section:
+   - Show the `&fr.interface` indirection explicitly in the example
+   - Mention `init.io` is the `Io` instance
+   - Call out strict-default footguns: prefer `const` over `var`, use
+     `_ = unused;` to silence intentional unused values, rename unused
+     parameters to `_`
+   - Reaffirm `std.Io` (capital I), not `std.io`
+
+2. **Edit all 13 Zig variant `task` fields** in `evals/tasks/*.json` to
+   include the canonical pattern (or link to it). The `task` text is what
+   the model sees as the spec; this is the load-bearing change. Tasks:
+   `19, 31, 51, 52, 61, 65, 73, 74, 122, 148, 155, 158, 159` (variant `f`
+   in 12 cases, variant `e` for `122_gemm_blocked` per the no-Python rule).
+
+3. **Strengthen the audit** to check the model-facing spec, not just the
+   reference impl. Add a "spec-completeness" check: for each variant,
+   does the `task` text mention the language constructs the reference
+   impl actually uses? E.g., if the Zig ref impl uses `&fr.interface`,
+   the spec should mention it. Could be a lint pass over all variants.
+
+4. **Re-run the affected models** on the Zig variants once the spec is
+   fixed — selective re-test, not a full sweep. `python3 evals/run_eval.py
+   --tasks 19,31,51,52,61,65,73,74,122,148,155,158,159` against each model
+   in turn. Update the leaderboard with the corrected entries.
+
+**Cost of NOT fixing:** the v3 leaderboard entries permanently understate
+all 5 models' true Zig capability by ~13 tasks each. The relative ranking
+is preserved (defect hits all models equally), but the absolute accuracy
+numbers and the "Zig 0%" finding in `RESULTS.md` would mislead future
+analysis without this footnote.
+
+**Estimated effort:** 1-2 hours including verification — fix the SKILL,
+patch the 13 task fields, re-run the audit with refreshed `/tmp/refs/`,
+re-run the 13 Zig variants against the 5 models (~30-60 min compute).
+
+---
+
+### v3.5 — expand variant coverage from 13 → 33 base tasks ✓ DONE (2026-05-07)
+
+**Status:** Landed. 20 new variant base tasks added (instead of the 21 in
+the original plan; `108_hmac_verify` dropped because cross-lang HMAC
+requires SHA-256 from scratch in 6 langs — heavy lift, deferred. `145` and
+`146` substituted with `47_branchless_min` and `137_pollard_rho` which are
+similarly hard-tier but tractable per-lang implementations).
+
+**Final 20 tasks shipped, all 6-lang (py/go/c/cpp/rust/zig):**
+- Easy (5): `32_dot_product`, `71_reverse_list`, `82_sigmoid`, `92_popcount`, `100_constant_time_compare`
+- Medium (9): `11_bst`, `20_priority_queue`, `54_astar`, `38_monte_carlo_pi`, `39_blocked_transpose`, `36_black_scholes`, `62_crt`, `63_det`, `136_gf256`
+- Hard (6): `27_brainfuck_interpreter`, `115_fft`, `123_nbody`, `127_aes_keysched`, `47_branchless_min`, `137_pollard_rho`
+
+**Audit verification:** 120/120 new variant entries pass with reference
+impls (`tests/audit_variants.py` clean, spec-completeness lint clean).
+With Phase A's 13/13 Zig fixes, total = 133/133 variant entries verified
+end-to-end this session.
+
+**Suite size:** 159 base tasks (unchanged) → **~313 effective variant
+entries** post-rollout (was 223). Sweep wall-clock projects to ~16-20h on
+the 5090 — partial reruns benefit massively from the result cache (see
+below).
+
+---
+
+### v3.5 deferred / superseded picks (was in the original 21)
+
+The original plan had 21 picks. Three changed during implementation:
+- **`108_hmac_verify`** — dropped. Cross-lang HMAC needs SHA-256 from
+  scratch in Rust/Zig (no stdlib SHA-256 in either). Heavy lift, low signal
+  marginal vs `100_constant_time_compare` already covering Security.
+- **`145_segment_tree_lazy`** — substituted with `47_branchless_min`. The
+  original task was on the Phase 4 deferred list at ~150-200 LOC/lang.
+  `47_branchless_min` is hard-tier in the same Performance/bit-twiddling
+  vein, ~30-50 LOC/lang.
+- **`146_aho_corasick`** — substituted with `137_pollard_rho`. Same
+  reasoning: AC is ~200 LOC/lang for suffix-link automaton; Pollard's rho
+  is hard-tier in Pure Math, ~50-80 LOC/lang.
+
+If Max wants a follow-up session for the 3 substitutions, the Phase 4
+deferred entries (53_bloom, 145, 146, 152, 153) are still tracked below
+and the Aho-Corasick + segment tree implementations would be done with the
+established 6-lang pattern.
+
+---
+
+### Result cache for retryable sweeps ✓ DONE (2026-05-07)
+
+`evals/cache.py` + `evals/cache_cli.py` + integration in `run_eval.py` and
+`benchmark_all.py`. Hash key = `model_slug.task_id.task_spec_hash.context_hash`
+where `task_spec_hash` is sha256 of canonical-encoded task dict and
+`context_hash` is sha256 of system-prompt.md + system-prompt-tools.md +
+opencode.json.
+
+**Behavior:**
+- On match: replay the cached result, skip agent + validation. Logged as
+  "CACHED (Xs, PASS|FAIL) — skipping live run".
+- On miss: live run, then cache the result.
+- Cache invalidates automatically when (a) task spec changes (e.g. you edit
+  a setup or task field) or (b) the agent runtime context changes (system
+  prompt, available tools).
+- Both PASS and FAIL are cached — a deterministic FAIL on the same input
+  is replay-safe.
+
+**Bypass:** `python3 evals/run_eval.py --no-cache` or
+`python3 evals/benchmark_all.py --no-cache`.
+
+**Manage:**
+- `python3 evals/cache_cli.py stats`
+- `python3 evals/cache_cli.py list [--model SLUG]`
+- `python3 evals/cache_cli.py clear [--model SLUG]`
+
+**Why it matters:** mid-sweep crash, model swap, or partial rerun used to
+mean re-paying the entire compute cost. Now: kill, fix, restart — only the
+not-yet-cached tasks live-run. On a 16-20h sweep this is a 10-100× speedup
+for partial replays.
+
+**Next-session todo (if needed):** add a `--cache-only` mode that runs
+ONLY cache hits (skip uncached entirely) for fast leaderboard rebuilds
+from prior runs.
+
+---
+
+### Original Zig prereq + variant rollout plan (preserved for reference)
+
+#### v3.5 prereq — fix Zig variant spec defect (mid-sweep finding, 2026-05-07)
+
+**Why.** The v3 sweep's first two models showed dramatic per-language
+gaps (Python 99.86% vs C++ 81.34% on Q5_K_XL; Go flipping from 90% to
+100% between models on the same task set). 13 base tasks is enough to
+confirm the gaps exist but too thin to characterize *which* algorithms
+or *which* domains drive them. 33 base tasks (≈ doubled coverage) gets
+us to ~190 effective variant entries (≈ 33 × 5.7 langs avg). Adds ~115
+new entries to the suite for ~2× the discrimination signal.
+
+**Selection criteria** (per `eval-variant-porter` SKILL):
+- Algorithm/data-structure tasks where stdio I/O is natural
+- Tasks where the *language* genuinely matters (perf, low-level discipline,
+  numerical stability)
+- Avoid Python-idiomatic tasks (decorators, dunders, threading.RLock)
+- Avoid concurrency tasks where the paradigm differs across languages
+- Avoid web/Flask-specific tasks (SWE/DevOps category)
+- Avoid probabilistic-validation tasks (Bloom etc.) until a separate
+  cross-language probabilistic harness is built
+
+**The 20 picks** — chosen to broaden category coverage. Currently 13
+variant tasks span only 3 categories (Algorithms & DS, Pure & Abstract
+Math, Performance & HW Opt × 1 only). The picks below add Security,
+LLM/ML, Probability & Stats, Mathematical Finance, and Physics for the
+first time, while filling out the under-covered Performance category.
+
+**Easy (5)** — language-fluency warmups in each new category:
+
+| ID | Task | Category | Why this one |
+|---|---|---|---|
+| 32_dot_product | Linear-algebra warmup | Pure Math | Tests basic loop + accumulator discipline; pairs with 31 / 73 / 74 as a 4th easy-tier warmup |
+| 71_reverse_list | Reverse a singly linked list | Algorithms & DS — Linear DS | Pointer/lifetime discipline differs sharply: Python uses refs, C/Rust manage explicitly, Zig + ownership semantics |
+| 82_sigmoid | Numerically stable sigmoid | LLM / ML — Activations | First LLM/ML variant. `1/(1+exp(-x))` underflow handling is a classic FP gotcha; cross-language signal on numerical-stability awareness |
+| 92_popcount | Population count | Performance — Bit-twiddling | Bit ops are perfect cross-language: Python `bin(x).count('1')`, C `__builtin_popcount`, Rust `.count_ones()`, Zig `@popCount`. Tests language-idiom fluency |
+| 100_constant_time_compare | Constant-time string compare | Security — Side-channel | First Security variant. Loop-XOR pattern is identical across langs but timing-safety semantics differ |
+
+**Medium (10)** — meat of the variant value:
+
+| ID | Task | Category | Why this one |
+|---|---|---|---|
+| 11_bst | Binary search tree | Algorithms & DS — Trees | Tree DS with insert/delete/search via stdio op log. Tests pointer/reference discipline across langs |
+| 20_priority_queue | Priority queue (heap) | Algorithms & DS — Linear DS | Sift-up/down + heapify — classic algorithm, exercises array indexing and comparator handling |
+| 54_astar | A* pathfinding | Algorithms & DS — Graph | Grid input via stdio, classic graph algo. Heap + heuristic; exercises priority queue + graph traversal together |
+| 38_monte_carlo_pi | Monte Carlo π | Probability & Stats — Monte Carlo | First Probability variant. RNG seeding differs sharply across langs (Python/Go/C/C++/Rust/Zig all have different default PRNGs) — exposes that gap |
+| 39_blocked_transpose | Cache-aware blocked transpose | Performance — Cache locality | Companion to 122_gemm_blocked. Cache locality matters more in compiled langs than Python |
+| 36_black_scholes | Black-Scholes call price | Math Finance — Option pricing | First Math Finance variant. erf/normal-CDF is in stdlib for some langs, not others (Zig: from scratch). Tests numerical fluency |
+| 62_crt | Chinese Remainder Theorem | Pure Math — Number theory | Pairs with 61_extgcd; bigger-number arithmetic exposes overflow discipline (C/Go need `int64`/`__int128`) |
+| 63_det | Determinant via Gaussian elim | Pure Math — Linear algebra | Numerical stability + partial pivoting; FP discipline cross-lang |
+| 136_gf256 | GF(2^8) finite-field arithmetic | Pure Math — Number theory | Byte-level finite-field — perfect for low-level langs. Used in AES, Reed-Solomon, etc. Tests bitwise discipline |
+| 108_hmac_verify | HMAC sign + timing-safe verify | Security — Crypto primitives | Companion to 100_constant_time_compare. Crypto primitives are where Python's "use stdlib" cleanness differs most from C/Zig "implement from primitives" |
+
+(*Total picks: 5 easy + 10 medium + 6 hard = 21 tasks. Max asked for 20;
+this list intentionally has one extra Security pick (`108_hmac_verify`)
+that pairs with `100_constant_time_compare` at the easy tier — drop it
+if effort needs trimming, but keeping both gives full 2-tier Security
+coverage in one rollout.*)
+
+**Hard (6)** — real differentiators:
+
+| ID | Task | Category | Why this one |
+|---|---|---|---|
+| 27_brainfuck_interpreter | Brainfuck interpreter | Algorithms & DS — Interpretation | Interpreter loop + jump table. Switch/match/jump dispatch differs sharply per lang (Python dict, C switch, Rust match, Zig comptime) |
+| 115_fft | Cooley-Tukey radix-2 FFT | Pure Math — Polynomial algebra | Complement to 159_ntt_convolution. Exercises complex arithmetic (Python native, Go via `cmplx`, C via `_Complex` or struct, Zig from scratch) |
+| 123_nbody | N-body Velocity Verlet | Physics — N-body | First Physics variant. Vector arithmetic + integration loop. Numerical drift differs by lang FP semantics |
+| 127_aes_keysched | AES-128 key schedule | Security — Cipher impl | First Security cipher variant. Byte-level rotation, S-box lookup — a perfect exercise for low-level discipline |
+| 145_segment_tree_lazy | Segment tree, lazy propagation | Algorithms & DS — Trees | Already deferred in Phase 4. Heavy port (~150 LOC/lang) but high-signal — push-down timing varies idiomatically per lang |
+| 146_aho_corasick | Aho-Corasick multi-pattern | Algorithms & DS — String | Already deferred in Phase 4. Suffix-link automaton; queue/struct-of-arrays choices matter sharply per lang |
+
+#### Implementation pattern (per task)
+
+For each new variant base task, follow the `eval-variant-porter` SKILL:
+
+1. Pick the 5–6 target languages (Python + Go + C + C++ + Rust + Zig is
+   the standard 6-language set; some perf-flavored tasks like 39 might
+   skip Python).
+2. Author reference impls in each lang at `/tmp/refs/{slug}.{ext}`.
+3. Patch the task JSON: replace top-level `setup`/`task`/`validation`/
+   `cleanup` with a `variants` array of N entries.
+4. Run `python3 tests/audit_variants.py {task_id}` — confirm N/N variants
+   pass with reference impls.
+5. Run `bash tests/test_scripts.sh` — confirm syntax-level regression.
+
+**One commit per ~3-5 task batch** so the leaderboard story stays
+auditable. Total effort estimate (assuming Zig spec defect is fixed first):
+- 5 easy × ~30 min each = 2.5 hours
+- 9 medium × ~60-90 min each = 9-13 hours
+- 6 hard × ~3-4 hours each = 18-24 hours
+- **Sweep cost after rollout:** ~115 new variant entries × (33–35 sec
+  median) × 5 models = ~6h additional sweep time. Suite total grows from
+  223 → ~338 entries (~10–12h sweep → ~16–18h sweep — push to a weekend
+  or run with `--models` filter for incremental rebuilds).
+
+#### Sequencing recommendation
+
+1. **Fix Zig spec defect first** (1-2 hr) — otherwise every new Zig
+   variant inherits the same broken template.
+2. **Easy batch (1 commit, ~3 hr)** — 5 easy tasks. Confirms the new
+   spec template works end-to-end; cheap to re-run if the template
+   needs another iteration.
+3. **Medium batch in two commits, ~10 hr total** — split by category to
+   keep PRs reviewable.
+4. **Hard batch deferrable** — 145, 146 are already on the deferred list;
+   the other 4 hard picks can land alongside or in a follow-up session.
+5. **Re-sweep after each batch** with `--tasks` filter, not full sweep.
+   Full sweep only when the suite is stable for the leaderboard refresh.
+
+---
+
 ### Tonight — overnight v3 sweep on the 5090
 
 The v3 eval suite is fully landed (Phases 1–4) and the smoke test on the

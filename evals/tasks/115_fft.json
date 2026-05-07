@@ -1,15 +1,76 @@
 {
   "id": "115_fft",
-  "name": "Cooley-Tukey radix-2 FFT",
+  "name": "Cooley-Tukey radix-2 FFT (real input)",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_fft",
-  "task": "Create /tmp/eval_fft/fft.py with fft(x) returning the discrete Fourier transform of x (a list of complex/real numbers). Length must be a power of 2; raise ValueError otherwise. Implement Cooley-Tukey radix-2 recursively with twiddle factor exp(-2*pi*i*k/N).",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_fft/fft.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); o = mod.fft([1,0,0,0]); assert all(abs(v - 1) < 1e-9 for v in o); o2 = mod.fft([1,1,1,1]); assert abs(o2[0] - 4) < 1e-9\nfor v in o2[1:]: assert abs(v) < 1e-9\ninp = [0,1,2,3,4,5,6,7]; o3 = mod.fft(inp); assert abs(o3[0] - sum(inp)) < 1e-9\ntry: mod.fft([1,2,3])\nexcept ValueError: pass\nelse: raise AssertionError\nprint('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_fft",
-  "max_iter": 30,
   "category": "Pure & Abstract Math",
-  "subcategory": "Polynomial algebra"
+  "subcategory": "Polynomial algebra",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.py — Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && python3 fft.py < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.go (package main). Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Compile with `go build -o fft fft.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && go build -o fft fft.go && ./fft < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.c — Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Compile with `gcc -O2 -std=c11 -Wall -Wextra -o fft fft.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && gcc -O2 -std=c11 -Wall -Wextra -o fft fft.c -lm && ./fft < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.cpp — Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o fft fft.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && g++ -O2 -std=c++17 -Wall -Wextra -o fft fft.cpp && ./fft < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.rs — Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Idiomatic Rust 2021+; compile with `rustc -O fft.rs -o fft`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && rustc -O fft.rs -o fft 2>/dev/null && ./fft < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_fft && cat > /tmp/eval_fft/input.txt <<'EOF'\n4\n4\n1.0 0.0 0.0 0.0\n4\n1.0 1.0 1.0 1.0\n4\n1.0 2.0 3.0 4.0\n8\n1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0\nEOF\ncat > /tmp/eval_fft/expected.txt <<'EOF'\n1.0000 -0.0000\n1.0000 0.0000\n1.0000 0.0000\n1.0000 0.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n10.0000 -0.0000\n-2.0000 2.0000\n-2.0000 0.0000\n-2.0000 -2.0000\n4.0000 -0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n4.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\n0.0000 0.0000\nEOF\ncat > /tmp/eval_fft/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_fft/fft.zig — Reads from stdin: line 1 is T (test cases). Each case: line A is N (must be a power of 2). Line B is N space-separated real-valued floats (the real input; imaginary parts zero). For each case, output N lines, each with two floats 'real imag' formatted to 4 decimals, representing the Cooley-Tukey radix-2 FFT with twiddle factor exp(-2*pi*i*k/N). The expected outputs use ~1e-3 tolerance (validation runs check.py). Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast fft.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_fft && zig build-exe -O ReleaseFast fft.zig && ./fft < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_fft"
+    }
+  ]
 }

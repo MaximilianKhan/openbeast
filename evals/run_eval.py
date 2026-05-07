@@ -282,8 +282,10 @@ def run_eval(
     base_url: str = "http://localhost:8080/v1",
     max_iter_override: int | None = None,
     model_name: str | None = None,
+    use_cache: bool = True,
 ) -> dict:
     """Run the full eval suite. Returns results dict."""
+    import cache  # local import — keeps run_eval importable in environments without cache.py
     tasks = load_tasks(task_filter)
     if not tasks:
         print("No tasks found.")
@@ -316,6 +318,7 @@ def run_eval(
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
 
+    cache_hits = 0
     for i, task in enumerate(tasks, 1):
         task_id = task["id"]
         task_name = task.get("name", task_id)
@@ -323,6 +326,25 @@ def run_eval(
 
         print(f"\n[{i}/{len(tasks)}] {task_name} ({difficulty})")
         print(f"  Task: {task['task'][:80]}...")
+
+        # Cache check — same task spec + same model + same agent context = same answer.
+        # Saves the agent run and the validation step. Setup/cleanup still run on the
+        # live path so /tmp fixtures land for any downstream inspection.
+        if use_cache:
+            ck = cache.cache_key(task, model_slug)
+            cached = cache.cache_get(ck)
+            if cached is not None:
+                cached = dict(cached)
+                cached["from_cache"] = True
+                results["tasks"].append(cached)
+                if cached.get("passed"):
+                    results["summary"]["passed"] += 1
+                else:
+                    results["summary"]["failed"] += 1
+                cache_hits += 1
+                tag = "PASS" if cached.get("passed") else "FAIL"
+                print(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
+                continue
 
         # Setup
         if not run_setup(task):
@@ -382,6 +404,15 @@ def run_eval(
             results["summary"]["failed"] += 1
             print(f"  FAIL: {validation_output[:100]}")
 
+        # Cache the result for future reruns. Setup is idempotent and cheap;
+        # we still re-run it on cache miss. We intentionally cache both PASS
+        # and FAIL — a deterministic FAIL on the same input is replay-safe.
+        if use_cache:
+            try:
+                cache.cache_put(ck, result)
+            except Exception as e:
+                print(f"  (cache write failed: {e})")
+
         # Cleanup
         run_cleanup(task)
 
@@ -393,6 +424,8 @@ def run_eval(
     s = results["summary"]
     print(f"\n{'=' * 60}")
     print(f"Results: {s['passed']}/{s['total']} passed, {s['failed']} failed")
+    if use_cache and cache_hits:
+        print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
     print(f"Saved to: {results_path}")
     print(f"{'=' * 60}")
 
@@ -406,6 +439,7 @@ def main():
     parser.add_argument("--max-iter", type=int, help="Override max iterations for all tasks")
     parser.add_argument("--model-name", help="Override model name (default: auto-detect from /v1/models)")
     parser.add_argument("--list", action="store_true", help="List available tasks and exit")
+    parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
     args = parser.parse_args()
 
     if args.list:
@@ -421,6 +455,7 @@ def main():
         base_url=args.base_url,
         max_iter_override=args.max_iter,
         model_name=args.model_name,
+        use_cache=not args.no_cache,
     )
 
     # Exit with failure if any task failed

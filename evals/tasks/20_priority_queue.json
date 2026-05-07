@@ -1,15 +1,76 @@
 {
   "id": "20_priority_queue",
-  "name": "Priority queue with custom comparator",
+  "name": "Min-heap priority queue (push / pop-min)",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_pq",
-  "task": "Create /tmp/eval_pq/pq.py with a PriorityQueue class. Constructor takes an optional key function (default None = min-heap on the items themselves). Methods: push(item), pop() returns and removes the highest-priority item (lowest key), peek() returns it without removing, __len__. Internally use heapq if you like, but the API must match.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_pq/pq.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); pq = mod.PriorityQueue(); [pq.push(v) for v in [5,1,3,2,4]]; assert len(pq) == 5; assert pq.peek() == 1; out = [pq.pop() for _ in range(5)]; assert out == [1,2,3,4,5], f'min-heap got {out}'; pq2 = mod.PriorityQueue(key=len); [pq2.push(s) for s in ['hello', 'hi', 'world', 'a']]; out2 = [pq2.pop() for _ in range(4)]; assert out2[0] == 'a' and len(out2[-1]) == 5, f'by length got {out2}'; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_pq",
-  "max_iter": 20,
   "category": "Algorithms & DS",
-  "subcategory": "Linear data structures"
+  "subcategory": "Linear data structures",
+  "max_iter": 15,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.py — Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; ! grep -qE \"\\\\bimport heapq|from heapq\" pq.py || { echo 'forbidden api'; exit 1; }; python3 pq.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.go (package main). Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Compile with `go build -o pq pq.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; ! grep -qE \"container/heap\" pq.go || { echo 'forbidden api'; exit 1; }; go build -o pq pq.go && ./pq < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.c — Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o pq pq.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; gcc -O2 -std=c11 -Wall -Wextra -o pq pq.c -lm && ./pq < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.cpp — Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o pq pq.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; ! grep -qE \"std::priority_queue|std::make_heap|std::push_heap|std::pop_heap\" pq.cpp || { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o pq pq.cpp && ./pq < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.rs — Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Idiomatic Rust 2021+; compile with `rustc -O pq.rs -o pq`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; ! grep -qE \"BinaryHeap\" pq.rs || { echo 'forbidden api'; exit 1; }; rustc -O pq.rs -o pq 2>/dev/null && ./pq < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_pq && printf '2\\n6\\np 5\\np 3\\np 8\\no\\no\\no\\n3\\np 100\\no\\no\\n' > /tmp/eval_pq/input.txt && printf '3\\n5\\n8\\n100\\n-\\n' > /tmp/eval_pq/expected.txt",
+      "task": "Create /tmp/eval_pq/pq.zig — Reads from stdin: line 1 is T. Each case: line A is Q (operation count). Next Q lines are operations: 'p V' (push integer V) or 'o' (pop minimum). For each 'o' op, output the popped value on its own line, or '-' if the heap is empty. Implement the binary min-heap yourself with sift-up on push and sift-down on pop — no language-builtin priority queue / heap. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast pq.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_pq; ! grep -qE \"std\\\\.PriorityQueue\" pq.zig || { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast pq.zig && ./pq < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+      },
+      "cleanup": "rm -rf /tmp/eval_pq"
+    }
+  ]
 }

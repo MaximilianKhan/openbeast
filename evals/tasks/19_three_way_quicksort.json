@@ -10,7 +10,7 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.py \u2014 reads from stdin: line 1 is T (test case count). For each case, line A is N >= 1 and line B is N space-separated integers. For each case, output the sorted integers as space-separated values on their own line. Implement three-way quicksort yourself (split into <pivot, ==pivot, >pivot regions, must handle duplicates efficiently). Do NOT call sorted() or list.sort() on the input data.",
+      "task": "Create /tmp/eval_qs/qs.py — reads from stdin: line 1 is T (test case count). For each case, line A is N >= 1 and line B is N space-separated integers. For each case, output the sorted integers as space-separated values on their own line. Implement three-way quicksort yourself (split into <pivot, ==pivot, >pivot regions, must handle duplicates efficiently). Do NOT call sorted() or list.sort() on the input data.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs; ! grep -qE '\\bsorted\\s*\\(|\\.sort\\s*\\(' qs.py || { echo 'must not call sorted() or .sort()'; exit 1; }; python3 qs.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
@@ -21,7 +21,7 @@
       "id": "b",
       "language": "go",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.go (package main). Reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself \u2014 do NOT use sort.Ints, sort.Slice, sort.Sort, or any std sort. Compile with `go build -o qs qs.go`.",
+      "task": "Create /tmp/eval_qs/qs.go (package main). Reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT use sort.Ints, sort.Slice, sort.Sort, or any std sort. Compile with `go build -o qs qs.go`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs; ! grep -qE 'sort\\.(Ints|Slice|Sort|Strings|SliceStable|IntSlice)' qs.go || { echo 'must not use std sort'; exit 1; }; go build -o qs qs.go; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
@@ -32,7 +32,7 @@
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.c \u2014 reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself \u2014 do NOT call qsort. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o qs qs.c`.",
+      "task": "Create /tmp/eval_qs/qs.c — reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT call qsort. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o qs qs.c`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs; ! grep -qE '\\bqsort\\s*\\(' qs.c || { echo 'must not call qsort'; exit 1; }; gcc -O2 -std=c11 -Wall -Wextra -o qs qs.c; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
@@ -43,7 +43,7 @@
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.cpp \u2014 reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself \u2014 do NOT call std::sort, std::stable_sort, std::partial_sort, std::nth_element, or qsort. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o qs qs.cpp`.",
+      "task": "Create /tmp/eval_qs/qs.cpp — reads from stdin: line 1 is T, then per case line A is N and line B is N space-separated integers. Output each sorted array on its own line. Implement three-way quicksort yourself — do NOT call std::sort, std::stable_sort, std::partial_sort, std::nth_element, or qsort. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o qs qs.cpp`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs; ! grep -qE 'std::(sort|stable_sort|partial_sort|nth_element)\\b|\\bqsort\\s*\\(' qs.cpp || { echo 'must not call std sort'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o qs qs.cpp; ./qs < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
@@ -54,7 +54,7 @@
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O qs.rs -o qs` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_qs/qs.rs — same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O qs.rs -o qs` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs && rustc -O qs.rs -o qs && ./qs < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -65,7 +65,7 @@
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_qs && printf '5\\n3\\n3 1 2\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n10\\n7 7 3 3 7 1 1 9 9 1\\n8\\n-3 0 -1 5 -3 2 5 0\\n' > /tmp/eval_qs/input.txt && printf '1 2 3\\n5 5 5 5\\n1 1 2 3 3 4 5 5 5 6 9\\n1 1 1 3 3 7 7 7 9 9\\n-3 -3 -1 0 0 2 5 5\\n' > /tmp/eval_qs/expected.txt",
-      "task": "Create /tmp/eval_qs/qs.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast qs.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_qs/qs.zig — same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast qs.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_qs && zig build-exe -O ReleaseFast qs.zig && ./qs < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"

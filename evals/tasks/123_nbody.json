@@ -1,15 +1,76 @@
 {
   "id": "123_nbody",
-  "name": "N-body Velocity Verlet",
+  "name": "2D N-body Velocity-Verlet integrator",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_nb",
-  "task": "Create /tmp/eval_nb/nb.py with nbody_verlet(positions, velocities, masses, dt, steps, G=1.0). Inputs are lists of n-dim vectors. Use the Velocity-Verlet integrator: x(t+dt) = x(t) + v(t) dt + 0.5 a(t) dt\u00b2; a(t+dt) = -G m_j (x_i - x_j) / |r|\u00b3 summed over all j != i; v(t+dt) = v(t) + 0.5 (a(t) + a(t+dt)) dt. Return (positions, velocities) at the final step.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_nb/nb.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); pos = [(-1.0, 0.0), (1.0, 0.0)]; vel = [(0.0, -0.5), (0.0, 0.5)]; masses = [1.0, 1.0]; fp, fv = mod.nbody_verlet(pos, vel, masses, dt=0.001, steps=1000, G=1.0); px = sum(masses[i]*fv[i][0] for i in range(2)); py = sum(masses[i]*fv[i][1] for i in range(2)); assert abs(px) < 1e-6 and abs(py) < 1e-6; cmx = (fp[0][0] + fp[1][0])/2; cmy = (fp[0][1] + fp[1][1])/2; assert abs(cmx) < 1e-6 and abs(cmy) < 1e-6; print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_nb",
-  "max_iter": 35,
   "category": "Physics",
-  "subcategory": "N-body / orbital mechanics"
+  "subcategory": "N-body / orbital mechanics",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.py — Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && python3 nbody.py < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.go (package main). Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Compile with `go build -o nbody nbody.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && go build -o nbody nbody.go && ./nbody < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.c — Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o nbody nbody.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && gcc -O2 -std=c11 -Wall -Wextra -o nbody nbody.c -lm && ./nbody < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.cpp — Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o nbody nbody.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && g++ -O2 -std=c++17 -Wall -Wextra -o nbody nbody.cpp && ./nbody < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.rs — Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Idiomatic Rust 2021+; compile with `rustc -O nbody.rs -o nbody`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && rustc -O nbody.rs -o nbody 2>/dev/null && ./nbody < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_nbody && cat > /tmp/eval_nbody/input.txt <<'EOF'\n1\n2 0.01 100\n1.0 -1.0 0.0 0.0 -0.5\n1.0 1.0 0.0 0.0 0.5\nEOF\ncat > /tmp/eval_nbody/expected.txt <<'EOF'\n-0.877582 -0.479428 0.239712 -0.438791\n0.877582 0.479428 -0.239712 0.438791\nEOF\ncat > /tmp/eval_nbody/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'idx {i}: {a} vs {b}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_nbody/nbody.zig — Reads from stdin: line 1 is T. Each case: line A is 'N dt steps'. Next N lines are 'mass x y vx vy' (2D position+velocity). Use Velocity-Verlet with G=1.0: x(t+dt) = x(t) + v(t)*dt + 0.5*a(t)*dt^2; a uses pairwise F_ij = G*m_j*(x_j - x_i)/|r|^3; v(t+dt) = v(t) + 0.5*(a(t) + a(t+dt))*dt. Output N lines per case, each 'fx fy vx vy' formatted to 6 decimals (positions and velocities at the final step). 1e-3 tolerance. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast nbody.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_nbody && zig build-exe -O ReleaseFast nbody.zig && ./nbody < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_nbody"
+    }
+  ]
 }

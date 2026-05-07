@@ -1,10 +1,10 @@
 {
-  "updated_at": "2026-05-06T14:54:59.421123",
+  "updated_at": "2026-05-07T06:52:57.697769",
   "entries": [
     {
-      "model": "Qwen 27B Uncensored Q5_K_P",
-      "model_slug": "qwen-27b-uncensored-q5-k-p",
-      "timestamp": "2026-05-06T01:20:28.316481",
+      "model": "Qwen 27B Q5_K_XL",
+      "model_slug": "qwen-27b-q5-k-xl",
+      "timestamp": "2026-05-06T21:30:29.244188",
       "gpu": {
         "name": "NVIDIA GeForce RTX 5090",
         "driver_version": "595.71.05",
@@ -21,41 +21,41 @@
           }
         ]
       },
-      "accuracy": 96.39,
-      "speed": 72.54,
-      "composite": 90.43,
-      "tasks_total": 144,
-      "tasks_passed": 139,
-      "tasks_hard_passed": 49,
-      "elapsed_total_seconds": 5819.4,
-      "tokens_total": 0,
-      "tokens_prompt": 0,
-      "tokens_completion": 0,
+      "accuracy": 97.99,
+      "speed": 68.04,
+      "composite": 90.5,
+      "tasks_total": 223,
+      "tasks_passed": 205,
+      "tasks_hard_passed": 82,
+      "elapsed_total_seconds": 15402.1,
+      "tokens_total": 12646812,
+      "tokens_prompt": 11946001,
+      "tokens_completion": 700811,
       "breakdown": {
         "easy": {
-          "earned": 39.0,
-          "total": 40.0,
-          "passed": 39,
-          "count": 40
+          "earned": 39.5,
+          "total": 39.99999999999999,
+          "passed": 52,
+          "count": 55
         },
         "medium": {
-          "earned": 76.5,
+          "earned": 77.75,
           "total": 79.5,
-          "passed": 51,
-          "count": 53
+          "passed": 71,
+          "count": 78
         },
         "hard": {
-          "earned": 98.0,
-          "total": 102.0,
-          "passed": 49,
-          "count": 51
+          "earned": 129.1999999999999,
+          "total": 131.9999999999999,
+          "passed": 82,
+          "count": 90
         }
       },
       "by_category": {
         "SWE / DevOps": {
-          "accuracy": 93.88,
-          "speed": 84.49,
-          "passed": 14,
+          "accuracy": 100.0,
+          "speed": 83.64,
+          "passed": 15,
           "count": 15,
           "subcategories": {
             "APIs / web": {
@@ -63,7 +63,514 @@
               "count": 2
             },
             "Bash / scripting": {
+              "passed": 2,
+              "count": 2
+            },
+            "CLI tools": {
               "passed": 1,
+              "count": 1
+            },
+            "Data engineering": {
+              "passed": 3,
+              "count": 3
+            },
+            "Debugging": {
+              "passed": 3,
+              "count": 3
+            },
+            "File operations": {
+              "passed": 2,
+              "count": 2
+            },
+            "Refactoring": {
+              "passed": 1,
+              "count": 1
+            },
+            "Testing": {
+              "passed": 1,
+              "count": 1
+            }
+          }
+        },
+        "Security": {
+          "accuracy": 100.0,
+          "speed": 61.62,
+          "passed": 13,
+          "count": 13,
+          "subcategories": {
+            "Auth & access control": {
+              "passed": 1,
+              "count": 1
+            },
+            "Cipher implementation": {
+              "passed": 3,
+              "count": 3
+            },
+            "Cryptographic primitives": {
+              "passed": 3,
+              "count": 3
+            },
+            "Input validation": {
+              "passed": 1,
+              "count": 1
+            },
+            "Side-channel safety": {
+              "passed": 1,
+              "count": 1
+            },
+            "Token management": {
+              "passed": 3,
+              "count": 3
+            },
+            "Vulnerability remediation": {
+              "passed": 1,
+              "count": 1
+            }
+          }
+        },
+        "Concurrency & Systems": {
+          "accuracy": 100.0,
+          "speed": 62.95,
+          "passed": 16,
+          "count": 16,
+          "subcategories": {
+            "Async patterns": {
+              "passed": 4,
+              "count": 4
+            },
+            "Concurrent data structures": {
+              "passed": 4,
+              "count": 4
+            },
+            "Networking / state machines": {
+              "passed": 1,
+              "count": 1
+            },
+            "Race condition fixes": {
+              "passed": 1,
+              "count": 1
+            },
+            "Synchronization primitives": {
+              "passed": 4,
+              "count": 4
+            },
+            "Systems APIs": {
+              "passed": 2,
+              "count": 2
+            }
+          }
+        },
+        "Mathematical Finance": {
+          "accuracy": 100.0,
+          "speed": 76.61,
+          "passed": 16,
+          "count": 16,
+          "subcategories": {
+            "Credit risk": {
+              "passed": 1,
+              "count": 1
+            },
+            "Exotic derivatives": {
+              "passed": 1,
+              "count": 1
+            },
+            "Fixed income": {
+              "passed": 2,
+              "count": 2
+            },
+            "Option pricing": {
+              "passed": 3,
+              "count": 3
+            },
+            "Risk metrics": {
+              "passed": 3,
+              "count": 3
+            },
+            "Term structure models": {
+              "passed": 1,
+              "count": 1
+            },
+            "Time value of money": {
+              "passed": 5,
+              "count": 5
+            }
+          }
+        },
+        "Probability & Stats": {
+          "accuracy": 100.0,
+          "speed": 78.05,
+          "passed": 10,
+          "count": 10,
+          "subcategories": {
+            "Combinatorial probability": {
+              "passed": 1,
+              "count": 1
+            },
+            "Descriptive statistics": {
+              "passed": 3,
+              "count": 3
+            },
+            "Inference": {
+              "passed": 1,
+              "count": 1
+            },
+            "Monte Carlo simulation": {
+              "passed": 1,
+              "count": 1
+            },
+            "Optimal stopping": {
+              "passed": 1,
+              "count": 1
+            },
+            "Psychometrics": {
+              "passed": 2,
+              "count": 2
+            },
+            "Stochastic processes": {
+              "passed": 1,
+              "count": 1
+            }
+          }
+        },
+        "Pure & Abstract Math": {
+          "accuracy": 93.78,
+          "speed": 58.44,
+          "passed": 44,
+          "count": 52,
+          "subcategories": {
+            "Bit operations (math)": {
+              "passed": 5,
+              "count": 6
+            },
+            "Iterative numerical methods": {
+              "passed": 3,
+              "count": 3
+            },
+            "Linear algebra": {
+              "passed": 5,
+              "count": 5
+            },
+            "Number theory": {
+              "passed": 20,
+              "count": 23
+            },
+            "Polynomial algebra": {
+              "passed": 11,
+              "count": 15
+            }
+          }
+        },
+        "Distributed / SysDesign": {
+          "accuracy": 100.0,
+          "speed": 69.8,
+          "passed": 12,
+          "count": 12,
+          "subcategories": {
+            "Causal ordering": {
+              "passed": 1,
+              "count": 1
+            },
+            "Consistent hashing": {
+              "passed": 1,
+              "count": 1
+            },
+            "Cryptographic primitives": {
+              "passed": 1,
+              "count": 1
+            },
+            "Distributed coordination": {
+              "passed": 2,
+              "count": 2
+            },
+            "Encoding & serialization": {
+              "passed": 1,
+              "count": 1
+            },
+            "Identifiers": {
+              "passed": 1,
+              "count": 1
+            },
+            "Rate limiting": {
+              "passed": 2,
+              "count": 2
+            },
+            "Replication & consistency": {
+              "passed": 1,
+              "count": 1
+            },
+            "Service patterns": {
+              "passed": 2,
+              "count": 2
+            }
+          }
+        },
+        "Algorithms & DS": {
+          "accuracy": 94.44,
+          "speed": 67.06,
+          "passed": 44,
+          "count": 52,
+          "subcategories": {
+            "Computational geometry": {
+              "passed": 5,
+              "count": 6
+            },
+            "Graph algorithms": {
+              "passed": 9,
+              "count": 13
+            },
+            "Hashing structures": {
+              "passed": 2,
+              "count": 2
+            },
+            "Linear data structures": {
+              "passed": 3,
+              "count": 3
+            },
+            "Parsing": {
+              "passed": 1,
+              "count": 1
+            },
+            "Recursion / interpretation": {
+              "passed": 2,
+              "count": 2
+            },
+            "Regex": {
+              "passed": 1,
+              "count": 1
+            },
+            "Sorting": {
+              "passed": 5,
+              "count": 6
+            },
+            "String algorithms": {
+              "passed": 12,
+              "count": 14
+            },
+            "Trees": {
+              "passed": 4,
+              "count": 4
+            }
+          }
+        },
+        "Performance & HW Opt": {
+          "accuracy": 95.29,
+          "speed": 72.71,
+          "passed": 13,
+          "count": 15,
+          "subcategories": {
+            "Asymptotic refactoring": {
+              "passed": 1,
+              "count": 1
+            },
+            "Bit-twiddling": {
+              "passed": 3,
+              "count": 3
+            },
+            "Cache locality": {
+              "passed": 4,
+              "count": 6
+            },
+            "Loop optimization": {
+              "passed": 1,
+              "count": 1
+            },
+            "RISC-V assembly": {
+              "passed": 3,
+              "count": 3
+            },
+            "Vectorization": {
+              "passed": 1,
+              "count": 1
+            }
+          }
+        },
+        "Physics": {
+          "accuracy": 100.0,
+          "speed": 71.78,
+          "passed": 12,
+          "count": 12,
+          "subcategories": {
+            "3D rotation / geometry": {
+              "passed": 1,
+              "count": 1
+            },
+            "Classical mechanics": {
+              "passed": 4,
+              "count": 4
+            },
+            "N-body / orbital mechanics": {
+              "passed": 1,
+              "count": 1
+            },
+            "ODE numerical integration": {
+              "passed": 1,
+              "count": 1
+            },
+            "PDE / wave propagation": {
+              "passed": 1,
+              "count": 1
+            },
+            "Quantum mechanics": {
+              "passed": 1,
+              "count": 1
+            },
+            "Solid-state physics": {
+              "passed": 1,
+              "count": 1
+            },
+            "Thermodynamics": {
+              "passed": 2,
+              "count": 2
+            }
+          }
+        },
+        "Signal Processing & DSP": {
+          "accuracy": 100.0,
+          "speed": 57.33,
+          "passed": 1,
+          "count": 1,
+          "subcategories": {
+            "Frequency-domain analysis": {
+              "passed": 1,
+              "count": 1
+            }
+          }
+        },
+        "LLM / ML": {
+          "accuracy": 100.0,
+          "speed": 72.82,
+          "passed": 9,
+          "count": 9,
+          "subcategories": {
+            "Activations": {
+              "passed": 3,
+              "count": 3
+            },
+            "Attention": {
+              "passed": 1,
+              "count": 1
+            },
+            "Caching": {
+              "passed": 1,
+              "count": 1
+            },
+            "Norms": {
+              "passed": 1,
+              "count": 1
+            },
+            "Position embeddings": {
+              "passed": 1,
+              "count": 1
+            },
+            "Similarity metrics": {
+              "passed": 2,
+              "count": 2
+            }
+          }
+        }
+      },
+      "by_language": {
+        "python": {
+          "accuracy": 99.86,
+          "speed": 73.25,
+          "passed": 157,
+          "count": 158
+        },
+        "go": {
+          "accuracy": 90.43,
+          "speed": 65.67,
+          "passed": 12,
+          "count": 13
+        },
+        "c": {
+          "accuracy": 92.82,
+          "speed": 45.51,
+          "passed": 12,
+          "count": 13
+        },
+        "cpp": {
+          "accuracy": 81.34,
+          "speed": 53.25,
+          "passed": 11,
+          "count": 13
+        },
+        "rust": {
+          "accuracy": 100.0,
+          "speed": 40.62,
+          "passed": 13,
+          "count": 13
+        },
+        "zig": {
+          "accuracy": 0.0,
+          "speed": 0.0,
+          "passed": 0,
+          "count": 13
+        }
+      }
+    },
+    {
+      "model": "Qwen 27B Uncensored Q5_K_P",
+      "model_slug": "qwen-27b-uncensored-q5-k-p",
+      "timestamp": "2026-05-07T01:52:32.276591",
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 5090",
+        "driver_version": "595.71.05",
+        "memory_total_mib": 32607,
+        "compute_capability": "12.0",
+        "host_id": "NVIDIA GeForce RTX 5090 \u00d71",
+        "gpu_count": 1,
+        "gpus": [
+          {
+            "name": "NVIDIA GeForce RTX 5090",
+            "driver_version": "595.71.05",
+            "memory_total_mib": 32607,
+            "compute_capability": "12.0"
+          }
+        ]
+      },
+      "accuracy": 96.6,
+      "speed": 62.69,
+      "composite": 88.12,
+      "tasks_total": 223,
+      "tasks_passed": 203,
+      "tasks_hard_passed": 81,
+      "elapsed_total_seconds": 18010.4,
+      "tokens_total": 15091790,
+      "tokens_prompt": 14205919,
+      "tokens_completion": 885871,
+      "breakdown": {
+        "easy": {
+          "earned": 39.5,
+          "total": 39.99999999999999,
+          "passed": 52,
+          "count": 55
+        },
+        "medium": {
+          "earned": 76.25,
+          "total": 79.5,
+          "passed": 70,
+          "count": 78
+        },
+        "hard": {
+          "earned": 127.1999999999999,
+          "total": 131.9999999999999,
+          "passed": 81,
+          "count": 90
+        }
+      },
+      "by_category": {
+        "SWE / DevOps": {
+          "accuracy": 100.0,
+          "speed": 84.23,
+          "passed": 15,
+          "count": 15,
+          "subcategories": {
+            "APIs / web": {
+              "passed": 2,
+              "count": 2
+            },
+            "Bash / scripting": {
+              "passed": 2,
               "count": 2
             },
             "CLI tools": {
@@ -94,7 +601,7 @@
         },
         "Security": {
           "accuracy": 92.5,
-          "speed": 61.86,
+          "speed": 63.56,
           "passed": 12,
           "count": 13,
           "subcategories": {
@@ -130,17 +637,17 @@
         },
         "Concurrency & Systems": {
           "accuracy": 100.0,
-          "speed": 60.54,
-          "passed": 11,
-          "count": 11,
+          "speed": 65.62,
+          "passed": 16,
+          "count": 16,
           "subcategories": {
             "Async patterns": {
-              "passed": 3,
-              "count": 3
+              "passed": 4,
+              "count": 4
             },
             "Concurrent data structures": {
-              "passed": 2,
-              "count": 2
+              "passed": 4,
+              "count": 4
             },
             "Networking / state machines": {
               "passed": 1,
@@ -151,8 +658,8 @@
               "count": 1
             },
             "Synchronization primitives": {
-              "passed": 2,
-              "count": 2
+              "passed": 4,
+              "count": 4
             },
             "Systems APIs": {
               "passed": 2,
@@ -161,9 +668,9 @@
           }
         },
         "Mathematical Finance": {
-          "accuracy": 92.16,
-          "speed": 77.03,
-          "passed": 15,
+          "accuracy": 100.0,
+          "speed": 70.45,
+          "passed": 16,
           "count": 16,
           "subcategories": {
             "Credit risk": {
@@ -183,7 +690,7 @@
               "count": 3
             },
             "Risk metrics": {
-              "passed": 2,
+              "passed": 3,
               "count": 3
             },
             "Term structure models": {
@@ -198,7 +705,7 @@
         },
         "Probability & Stats": {
           "accuracy": 100.0,
-          "speed": 74.46,
+          "speed": 68.42,
           "passed": 10,
           "count": 10,
           "subcategories": {
@@ -233,37 +740,37 @@
           }
         },
         "Pure & Abstract Math": {
-          "accuracy": 100.0,
-          "speed": 76.05,
-          "passed": 17,
-          "count": 17,
+          "accuracy": 93.78,
+          "speed": 53.78,
+          "passed": 44,
+          "count": 52,
           "subcategories": {
             "Bit operations (math)": {
-              "passed": 1,
-              "count": 1
+              "passed": 5,
+              "count": 6
             },
             "Iterative numerical methods": {
               "passed": 3,
               "count": 3
             },
             "Linear algebra": {
-              "passed": 4,
-              "count": 4
+              "passed": 5,
+              "count": 5
             },
             "Number theory": {
-              "passed": 7,
-              "count": 7
+              "passed": 20,
+              "count": 23
             },
             "Polynomial algebra": {
-              "passed": 2,
-              "count": 2
+              "passed": 11,
+              "count": 15
             }
           }
         },
         "Distributed / SysDesign": {
-          "accuracy": 94.44,
-          "speed": 69.89,
-          "passed": 11,
+          "accuracy": 100.0,
+          "speed": 56.96,
+          "passed": 12,
           "count": 12,
           "subcategories": {
             "Causal ordering": {
@@ -283,7 +790,7 @@
               "count": 2
             },
             "Encoding & serialization": {
-              "passed": 0,
+              "passed": 1,
               "count": 1
             },
             "Identifiers": {
@@ -305,14 +812,18 @@
           }
         },
         "Algorithms & DS": {
-          "accuracy": 100.0,
-          "speed": 77.59,
-          "passed": 17,
-          "count": 17,
+          "accuracy": 94.44,
+          "speed": 58.52,
+          "passed": 44,
+          "count": 52,
           "subcategories": {
+            "Computational geometry": {
+              "passed": 5,
+              "count": 6
+            },
             "Graph algorithms": {
-              "passed": 3,
-              "count": 3
+              "passed": 10,
+              "count": 13
             },
             "Hashing structures": {
               "passed": 2,
@@ -335,24 +846,24 @@
               "count": 1
             },
             "Sorting": {
-              "passed": 1,
-              "count": 1
+              "passed": 4,
+              "count": 6
             },
             "String algorithms": {
-              "passed": 2,
-              "count": 2
+              "passed": 12,
+              "count": 14
             },
             "Trees": {
-              "passed": 2,
-              "count": 2
+              "passed": 4,
+              "count": 4
             }
           }
         },
         "Performance & HW Opt": {
-          "accuracy": 100.0,
-          "speed": 61.89,
-          "passed": 11,
-          "count": 11,
+          "accuracy": 95.29,
+          "speed": 61.99,
+          "passed": 13,
+          "count": 15,
           "subcategories": {
             "Asymptotic refactoring": {
               "passed": 1,
@@ -363,8 +874,8 @@
               "count": 3
             },
             "Cache locality": {
-              "passed": 2,
-              "count": 2
+              "passed": 4,
+              "count": 6
             },
             "Loop optimization": {
               "passed": 1,
@@ -382,7 +893,7 @@
         },
         "Physics": {
           "accuracy": 89.19,
-          "speed": 76.89,
+          "speed": 71.84,
           "passed": 11,
           "count": 12,
           "subcategories": {
@@ -422,7 +933,7 @@
         },
         "Signal Processing & DSP": {
           "accuracy": 100.0,
-          "speed": 36.67,
+          "speed": 25.44,
           "passed": 1,
           "count": 1,
           "subcategories": {
@@ -434,7 +945,7 @@
         },
         "LLM / ML": {
           "accuracy": 100.0,
-          "speed": 72.02,
+          "speed": 65.92,
           "passed": 9,
           "count": 9,
           "subcategories": {
@@ -467,483 +978,40 @@
       },
       "by_language": {
         "python": {
-          "accuracy": 96.39,
-          "speed": 72.54,
-          "passed": 139,
-          "count": 144
-        }
-      }
-    },
-    {
-      "model": "Qwen 27B Q5_K_XL",
-      "model_slug": "qwen-27b-q5-k-xl",
-      "timestamp": "2026-05-05T23:24:22.209281",
-      "gpu": {
-        "name": "NVIDIA GeForce RTX 5090",
-        "driver_version": "595.71.05",
-        "memory_total_mib": 32607,
-        "compute_capability": "12.0",
-        "host_id": "NVIDIA GeForce RTX 5090 \u00d71",
-        "gpu_count": 1,
-        "gpus": [
-          {
-            "name": "NVIDIA GeForce RTX 5090",
-            "driver_version": "595.71.05",
-            "memory_total_mib": 32607,
-            "compute_capability": "12.0"
-          }
-        ]
-      },
-      "accuracy": 95.49,
-      "speed": 68.2,
-      "composite": 88.67,
-      "tasks_total": 144,
-      "tasks_passed": 138,
-      "tasks_hard_passed": 48,
-      "elapsed_total_seconds": 6951.4,
-      "tokens_total": 0,
-      "tokens_prompt": 0,
-      "tokens_completion": 0,
-      "breakdown": {
-        "easy": {
-          "earned": 39.0,
-          "total": 40.0,
-          "passed": 39,
-          "count": 40
+          "accuracy": 98.26,
+          "speed": 67.08,
+          "passed": 154,
+          "count": 158
         },
-        "medium": {
-          "earned": 76.5,
-          "total": 79.5,
-          "passed": 51,
-          "count": 53
-        },
-        "hard": {
-          "earned": 96.0,
-          "total": 102.0,
-          "passed": 48,
-          "count": 51
-        }
-      },
-      "by_category": {
-        "SWE / DevOps": {
-          "accuracy": 93.88,
-          "speed": 81.58,
-          "passed": 14,
-          "count": 15,
-          "subcategories": {
-            "APIs / web": {
-              "passed": 2,
-              "count": 2
-            },
-            "Bash / scripting": {
-              "passed": 1,
-              "count": 2
-            },
-            "CLI tools": {
-              "passed": 1,
-              "count": 1
-            },
-            "Data engineering": {
-              "passed": 3,
-              "count": 3
-            },
-            "Debugging": {
-              "passed": 3,
-              "count": 3
-            },
-            "File operations": {
-              "passed": 2,
-              "count": 2
-            },
-            "Refactoring": {
-              "passed": 1,
-              "count": 1
-            },
-            "Testing": {
-              "passed": 1,
-              "count": 1
-            }
-          }
-        },
-        "Security": {
-          "accuracy": 92.5,
-          "speed": 51.22,
-          "passed": 12,
-          "count": 13,
-          "subcategories": {
-            "Auth & access control": {
-              "passed": 1,
-              "count": 1
-            },
-            "Cipher implementation": {
-              "passed": 3,
-              "count": 3
-            },
-            "Cryptographic primitives": {
-              "passed": 2,
-              "count": 3
-            },
-            "Input validation": {
-              "passed": 1,
-              "count": 1
-            },
-            "Side-channel safety": {
-              "passed": 1,
-              "count": 1
-            },
-            "Token management": {
-              "passed": 3,
-              "count": 3
-            },
-            "Vulnerability remediation": {
-              "passed": 1,
-              "count": 1
-            }
-          }
-        },
-        "Concurrency & Systems": {
+        "go": {
           "accuracy": 100.0,
-          "speed": 62.36,
+          "speed": 55.72,
+          "passed": 13,
+          "count": 13
+        },
+        "c": {
+          "accuracy": 83.25,
+          "speed": 51.08,
           "passed": 11,
-          "count": 11,
-          "subcategories": {
-            "Async patterns": {
-              "passed": 3,
-              "count": 3
-            },
-            "Concurrent data structures": {
-              "passed": 2,
-              "count": 2
-            },
-            "Networking / state machines": {
-              "passed": 1,
-              "count": 1
-            },
-            "Race condition fixes": {
-              "passed": 1,
-              "count": 1
-            },
-            "Synchronization primitives": {
-              "passed": 2,
-              "count": 2
-            },
-            "Systems APIs": {
-              "passed": 2,
-              "count": 2
-            }
-          }
+          "count": 13
         },
-        "Mathematical Finance": {
-          "accuracy": 92.16,
-          "speed": 69.08,
-          "passed": 15,
-          "count": 16,
-          "subcategories": {
-            "Credit risk": {
-              "passed": 1,
-              "count": 1
-            },
-            "Exotic derivatives": {
-              "passed": 1,
-              "count": 1
-            },
-            "Fixed income": {
-              "passed": 2,
-              "count": 2
-            },
-            "Option pricing": {
-              "passed": 3,
-              "count": 3
-            },
-            "Risk metrics": {
-              "passed": 2,
-              "count": 3
-            },
-            "Term structure models": {
-              "passed": 1,
-              "count": 1
-            },
-            "Time value of money": {
-              "passed": 5,
-              "count": 5
-            }
-          }
-        },
-        "Probability & Stats": {
-          "accuracy": 87.1,
-          "speed": 72.85,
-          "passed": 9,
-          "count": 10,
-          "subcategories": {
-            "Combinatorial probability": {
-              "passed": 1,
-              "count": 1
-            },
-            "Descriptive statistics": {
-              "passed": 3,
-              "count": 3
-            },
-            "Inference": {
-              "passed": 1,
-              "count": 1
-            },
-            "Monte Carlo simulation": {
-              "passed": 1,
-              "count": 1
-            },
-            "Optimal stopping": {
-              "passed": 1,
-              "count": 1
-            },
-            "Psychometrics": {
-              "passed": 2,
-              "count": 2
-            },
-            "Stochastic processes": {
-              "passed": 0,
-              "count": 1
-            }
-          }
-        },
-        "Pure & Abstract Math": {
-          "accuracy": 100.0,
-          "speed": 70.07,
-          "passed": 17,
-          "count": 17,
-          "subcategories": {
-            "Bit operations (math)": {
-              "passed": 1,
-              "count": 1
-            },
-            "Iterative numerical methods": {
-              "passed": 3,
-              "count": 3
-            },
-            "Linear algebra": {
-              "passed": 4,
-              "count": 4
-            },
-            "Number theory": {
-              "passed": 7,
-              "count": 7
-            },
-            "Polynomial algebra": {
-              "passed": 2,
-              "count": 2
-            }
-          }
-        },
-        "Distributed / SysDesign": {
-          "accuracy": 83.33,
-          "speed": 62.88,
-          "passed": 10,
-          "count": 12,
-          "subcategories": {
-            "Causal ordering": {
-              "passed": 1,
-              "count": 1
-            },
-            "Consistent hashing": {
-              "passed": 1,
-              "count": 1
-            },
-            "Cryptographic primitives": {
-              "passed": 1,
-              "count": 1
-            },
-            "Distributed coordination": {
-              "passed": 2,
-              "count": 2
-            },
-            "Encoding & serialization": {
-              "passed": 0,
-              "count": 1
-            },
-            "Identifiers": {
-              "passed": 1,
-              "count": 1
-            },
-            "Rate limiting": {
-              "passed": 2,
-              "count": 2
-            },
-            "Replication & consistency": {
-              "passed": 0,
-              "count": 1
-            },
-            "Service patterns": {
-              "passed": 2,
-              "count": 2
-            }
-          }
-        },
-        "Algorithms & DS": {
-          "accuracy": 100.0,
-          "speed": 70.17,
-          "passed": 17,
-          "count": 17,
-          "subcategories": {
-            "Graph algorithms": {
-              "passed": 3,
-              "count": 3
-            },
-            "Hashing structures": {
-              "passed": 2,
-              "count": 2
-            },
-            "Linear data structures": {
-              "passed": 3,
-              "count": 3
-            },
-            "Parsing": {
-              "passed": 1,
-              "count": 1
-            },
-            "Recursion / interpretation": {
-              "passed": 2,
-              "count": 2
-            },
-            "Regex": {
-              "passed": 1,
-              "count": 1
-            },
-            "Sorting": {
-              "passed": 1,
-              "count": 1
-            },
-            "String algorithms": {
-              "passed": 2,
-              "count": 2
-            },
-            "Trees": {
-              "passed": 2,
-              "count": 2
-            }
-          }
-        },
-        "Performance & HW Opt": {
-          "accuracy": 100.0,
-          "speed": 68.37,
-          "passed": 11,
-          "count": 11,
-          "subcategories": {
-            "Asymptotic refactoring": {
-              "passed": 1,
-              "count": 1
-            },
-            "Bit-twiddling": {
-              "passed": 3,
-              "count": 3
-            },
-            "Cache locality": {
-              "passed": 2,
-              "count": 2
-            },
-            "Loop optimization": {
-              "passed": 1,
-              "count": 1
-            },
-            "RISC-V assembly": {
-              "passed": 3,
-              "count": 3
-            },
-            "Vectorization": {
-              "passed": 1,
-              "count": 1
-            }
-          }
-        },
-        "Physics": {
-          "accuracy": 100.0,
-          "speed": 67.56,
+        "cpp": {
+          "accuracy": 88.52,
+          "speed": 45.69,
           "passed": 12,
-          "count": 12,
-          "subcategories": {
-            "3D rotation / geometry": {
-              "passed": 1,
-              "count": 1
-            },
-            "Classical mechanics": {
-              "passed": 4,
-              "count": 4
-            },
-            "N-body / orbital mechanics": {
-              "passed": 1,
-              "count": 1
-            },
-            "ODE numerical integration": {
-              "passed": 1,
-              "count": 1
-            },
-            "PDE / wave propagation": {
-              "passed": 1,
-              "count": 1
-            },
-            "Quantum mechanics": {
-              "passed": 1,
-              "count": 1
-            },
-            "Solid-state physics": {
-              "passed": 1,
-              "count": 1
-            },
-            "Thermodynamics": {
-              "passed": 2,
-              "count": 2
-            }
-          }
+          "count": 13
         },
-        "Signal Processing & DSP": {
+        "rust": {
           "accuracy": 100.0,
-          "speed": 48.78,
-          "passed": 1,
-          "count": 1,
-          "subcategories": {
-            "Frequency-domain analysis": {
-              "passed": 1,
-              "count": 1
-            }
-          }
+          "speed": 43.19,
+          "passed": 13,
+          "count": 13
         },
-        "LLM / ML": {
-          "accuracy": 100.0,
-          "speed": 72.47,
-          "passed": 9,
-          "count": 9,
-          "subcategories": {
-            "Activations": {
-              "passed": 3,
-              "count": 3
-            },
-            "Attention": {
-              "passed": 1,
-              "count": 1
-            },
-            "Caching": {
-              "passed": 1,
-              "count": 1
-            },
-            "Norms": {
-              "passed": 1,
-              "count": 1
-            },
-            "Position embeddings": {
-              "passed": 1,
-              "count": 1
-            },
-            "Similarity metrics": {
-              "passed": 2,
-              "count": 2
-            }
-          }
-        }
-      },
-      "by_language": {
-        "python": {
-          "accuracy": 95.49,
-          "speed": 68.2,
-          "passed": 138,
-          "count": 144
+        "zig": {
+          "accuracy": 0.0,
+          "speed": 0.0,
+          "passed": 0,
+          "count": 13
         }
       }
     },

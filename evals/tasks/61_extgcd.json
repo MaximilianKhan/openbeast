@@ -10,7 +10,7 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    assert len(parts) == 3, f'case {t}: expected 3 numbers, got {out[t]!r}'\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b), f'case {t}: g={g} but gcd({a},{b})={math.gcd(a,b)}'\n    assert a*x + b*y == g, f'case {t}: {a}*{x} + {b}*{y} = {a*x+b*y} != {g}'\nprint('OK')\nPYEOF",
-      "task": "Create /tmp/eval_xgcd/xgcd.py \u2014 reads from stdin: line 1 is T, next T lines are 'a b' (non-negative integers, at least one positive). For each, output 'g x y' on its own line, where g = gcd(a, b) and a*x + b*y == g (Bezout identity). Iterative implementation preferred.",
+      "task": "Create /tmp/eval_xgcd/xgcd.py — reads from stdin: line 1 is T, next T lines are 'a b' (non-negative integers, at least one positive). For each, output 'g x y' on its own line, where g = gcd(a, b) and a*x + b*y == g (Bezout identity). Iterative implementation preferred.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_xgcd && python3 xgcd.py < input.txt > out.txt && python3 check.py"
@@ -32,7 +32,7 @@
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b)\n    assert a*x + b*y == g\nprint('OK')\nPYEOF",
-      "task": "Create /tmp/eval_xgcd/xgcd.c \u2014 reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for x,y to handle Bezout coefficients which may be negative or large. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o xgcd xgcd.c`.",
+      "task": "Create /tmp/eval_xgcd/xgcd.c — reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for x,y to handle Bezout coefficients which may be negative or large. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o xgcd xgcd.c`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_xgcd && gcc -O2 -std=c11 -Wall -Wextra -o xgcd xgcd.c && ./xgcd < input.txt > out.txt && python3 check.py"
@@ -43,7 +43,7 @@
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b)\n    assert a*x + b*y == g\nprint('OK')\nPYEOF",
-      "task": "Create /tmp/eval_xgcd/xgcd.cpp \u2014 reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for Bezout coefficients. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o xgcd xgcd.cpp`.",
+      "task": "Create /tmp/eval_xgcd/xgcd.cpp — reads stdin: T, then T lines 'a b'. Output 'g x y' per case. Use long long for Bezout coefficients. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o xgcd xgcd.cpp`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_xgcd && g++ -O2 -std=c++17 -Wall -Wextra -o xgcd xgcd.cpp && ./xgcd < input.txt > out.txt && python3 check.py"
@@ -54,7 +54,7 @@
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    assert len(parts) == 3, f'case {t}: expected 3 numbers, got {out[t]!r}'\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b), f'case {t}: g={g} but gcd({a},{b})={math.gcd(a,b)}'\n    assert a*x + b*y == g, f'case {t}: {a}*{x} + {b}*{y} = {a*x+b*y} != {g}'\nprint('OK')\nPYEOF",
-      "task": "Create /tmp/eval_xgcd/xgcd.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O xgcd.rs -o xgcd` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_xgcd/xgcd.rs — same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O xgcd.rs -o xgcd` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_xgcd && rustc -O xgcd.rs -o xgcd && ./xgcd < input.txt > out.txt && python3 check.py"
@@ -65,7 +65,7 @@
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_xgcd && printf '5\\n48 18\\n101 13\\n270 192\\n1 1\\n123456789 987654321\\n' > /tmp/eval_xgcd/input.txt && cat > /tmp/eval_xgcd/check.py <<'PYEOF'\nimport math\ninp = open('input.txt').read().split()\nout = open('out.txt').read().splitlines()\nT = int(inp[0]); idx = 1\nfor t in range(T):\n    a, b = int(inp[idx]), int(inp[idx+1]); idx += 2\n    parts = out[t].split()\n    assert len(parts) == 3, f'case {t}: expected 3 numbers, got {out[t]!r}'\n    g, x, y = int(parts[0]), int(parts[1]), int(parts[2])\n    assert g == math.gcd(a, b), f'case {t}: g={g} but gcd({a},{b})={math.gcd(a,b)}'\n    assert a*x + b*y == g, f'case {t}: {a}*{x} + {b}*{y} = {a*x+b*y} != {g}'\nprint('OK')\nPYEOF",
-      "task": "Create /tmp/eval_xgcd/xgcd.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast xgcd.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_xgcd/xgcd.zig — same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast xgcd.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_xgcd && zig build-exe -O ReleaseFast xgcd.zig && ./xgcd < input.txt > out.txt && python3 check.py"

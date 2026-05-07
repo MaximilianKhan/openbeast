@@ -68,7 +68,7 @@ MODELS = [
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
 LLAMA_PORT = 8080
 HEALTH_TIMEOUT = 180   # seconds to wait for model load
-COOLOFF_SECONDS = 5    # between models
+COOLOFF_SECONDS = 300  # 5-min thermal break between models
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,8 @@ def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
 # ---------------------------------------------------------------------------
 
 def benchmark_model(model: dict, task_filter: list[str] | None,
-                    max_iter_override: int | None) -> dict:
+                    max_iter_override: int | None,
+                    use_cache: bool = True) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
@@ -161,6 +162,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
             task_filter=task_filter,
             max_iter_override=max_iter_override,
             model_name=model["name"],
+            use_cache=use_cache,
         )
     except Exception as e:
         stop_llama_server()
@@ -182,7 +184,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
 # ---------------------------------------------------------------------------
 
 def run_sweep(models: list[dict], task_filter: list[str] | None,
-              max_iter_override: int | None) -> dict:
+              max_iter_override: int | None, use_cache: bool = True) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -195,7 +197,7 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
 
     for i, model in enumerate(models, 1):
         print(f"\n[{i}/{len(models)}] Starting model")
-        outcome = benchmark_model(model, task_filter, max_iter_override)
+        outcome = benchmark_model(model, task_filter, max_iter_override, use_cache=use_cache)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -242,6 +244,7 @@ def main():
     parser.add_argument("--tasks", help="Comma-separated task IDs (default: all)")
     parser.add_argument("--max-iter", type=int, help="Override max iterations per task")
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
+    parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
     args = parser.parse_args()
 
     if args.list:
@@ -270,7 +273,7 @@ def main():
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    summary = run_sweep(models, task_filter, args.max_iter)
+    summary = run_sweep(models, task_filter, args.max_iter, use_cache=not args.no_cache)
     summary_path = save_sweep_summary(summary)
 
     # Final report

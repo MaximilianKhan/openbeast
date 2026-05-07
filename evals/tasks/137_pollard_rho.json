@@ -1,15 +1,76 @@
 {
   "id": "137_pollard_rho",
-  "name": "Pollard's rho integer factorization",
+  "name": "Pollard's rho factorization (Floyd cycle detection)",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_prho",
-  "task": "Create /tmp/eval_prho/prho.py with pollard_rho(n) returning a non-trivial factor of n (1 < factor < n). For even n return 2. Otherwise use the iteration f(x) = (x\u00b2 + c) mod n with cycle detection via Floyd's tortoise-and-hare: x = f(x); y = f(f(y)); d = gcd(|x - y|, n). If d hits n, vary c and retry. Cryptanalytic primitive \u2014 semiprime n is the typical input.",
-  "validation": {
-    "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_prho/prho.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); F = mod.pollard_rho; f = F(8051); assert 8051 % f == 0 and 1 < f < 8051; n = 1000003 * 1000033; f2 = F(n); assert n % f2 == 0 and f2 in (1000003, 1000033); print('OK')"
-  },
-  "cleanup": "rm -rf /tmp/eval_prho",
-  "max_iter": 30,
   "category": "Pure & Abstract Math",
-  "subcategory": "Number theory"
+  "subcategory": "Number theory",
+  "max_iter": 20,
+  "variants": [
+    {
+      "id": "a",
+      "language": "python",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.py — Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Pure Python; no numpy.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && python3 prho.py < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    },
+    {
+      "id": "b",
+      "language": "go",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.go (package main). Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Compile with `go build -o prho prho.go`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && go build -o prho prho.go && ./prho < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    },
+    {
+      "id": "c",
+      "language": "c",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.c — Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o prho prho.c -lm`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && gcc -O2 -std=c11 -Wall -Wextra -o prho prho.c -lm && ./prho < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    },
+    {
+      "id": "d",
+      "language": "cpp",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.cpp — Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o prho prho.cpp`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && g++ -O2 -std=c++17 -Wall -Wextra -o prho prho.cpp && ./prho < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    },
+    {
+      "id": "e",
+      "language": "rust",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.rs — Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Idiomatic Rust 2021+; compile with `rustc -O prho.rs -o prho`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && rustc -O prho.rs -o prho 2>/dev/null && ./prho < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    },
+    {
+      "id": "f",
+      "language": "zig",
+      "setup": "mkdir -p /tmp/eval_prho && printf '5\\n8051\\n1024\\n100000007000000049\\n15\\n1000003000033\\n' > /tmp/eval_prho/input.txt && cat > /tmp/eval_prho/check.py <<'PYEOF'\nfrom math import gcd\nns = open('input.txt').read().split()\nT = int(ns[0])\nout = [int(x) for x in open('out.txt').read().split()]\nassert len(out) == T, f'got {len(out)} want {T}'\nfor i in range(T):\n    n = int(ns[1+i]); f = out[i]\n    assert 1 < f < n, f'case {i}: f={f} not in (1, n={n})'\n    assert n % f == 0, f'case {i}: f={f} does not divide n={n}'\nprint('OK')\nPYEOF",
+      "task": "Create /tmp/eval_prho/prho.zig — Reads from stdin: line 1 is T. Each next line is a positive integer n (possibly up to ~10^18, semiprime or composite, n >= 4). For each, output a non-trivial factor f such that 1 < f < n and n % f == 0, on its own line. For even n return 2. Otherwise iterate f(x) = (x*x + c) mod n with Floyd's tortoise-and-hare cycle detection: x_{i+1} = f(x_i), y_{i+1} = f(f(y_i)), d = gcd(|x - y|, n); if d == n, vary c and retry. Use 128-bit (or u128/i128) arithmetic for the modular multiply to avoid overflow on n > 2^32. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast prho.zig`.",
+      "validation": {
+        "type": "bash",
+        "script": "set -e; cd /tmp/eval_prho && zig build-exe -O ReleaseFast prho.zig && ./prho < input.txt > out.txt && python3 check.py"
+      },
+      "cleanup": "rm -rf /tmp/eval_prho"
+    }
+  ]
 }

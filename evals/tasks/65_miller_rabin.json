@@ -10,7 +10,7 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_mr && printf '20\\n2\\n3\\n5\\n7\\n11\\n13\\n17\\n19\\n23\\n29\\n7919\\n1000003\\n2147483647\\n1\\n4\\n6\\n9\\n15\\n561\\n41041\\n' > /tmp/eval_mr/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_mr/expected.txt",
-      "task": "Create /tmp/eval_mr/mr.py \u2014 reads from stdin: line 1 is T, next T lines are integers. For each, output 'true' (lowercase) if the integer is prime, 'false' otherwise. Implement deterministic Miller-Rabin with the witness set {2,3,5,7,11,13,17,19,23,29,31,37} (sufficient for any 64-bit unsigned integer). Handle n < 2, n == 2, even n, and Carmichael numbers (561, 41041) correctly.",
+      "task": "Create /tmp/eval_mr/mr.py — reads from stdin: line 1 is T, next T lines are integers. For each, output 'true' (lowercase) if the integer is prime, 'false' otherwise. Implement deterministic Miller-Rabin with the witness set {2,3,5,7,11,13,17,19,23,29,31,37} (sufficient for any 64-bit unsigned integer). Handle n < 2, n == 2, even n, and Carmichael numbers (561, 41041) correctly.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mr && python3 mr.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -32,7 +32,7 @@
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_mr && printf '20\\n2\\n3\\n5\\n7\\n11\\n13\\n17\\n19\\n23\\n29\\n7919\\n1000003\\n2147483647\\n1\\n4\\n6\\n9\\n15\\n561\\n41041\\n' > /tmp/eval_mr/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_mr/expected.txt",
-      "task": "Create /tmp/eval_mr/mr.c \u2014 reads stdin: T, then T integers (uint64_t). For each, output 'true' or 'false'. Implement deterministic Miller-Rabin with witness set {2,3,5,7,11,13,17,19,23,29,31,37}. Use __int128 or careful overflow handling for the modular multiply step. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o mr mr.c`.",
+      "task": "Create /tmp/eval_mr/mr.c — reads stdin: T, then T integers (uint64_t). For each, output 'true' or 'false'. Implement deterministic Miller-Rabin with witness set {2,3,5,7,11,13,17,19,23,29,31,37}. Use __int128 or careful overflow handling for the modular multiply step. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o mr mr.c`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mr && gcc -O2 -std=c11 -Wall -Wextra -o mr mr.c && ./mr < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -43,7 +43,7 @@
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_mr && printf '20\\n2\\n3\\n5\\n7\\n11\\n13\\n17\\n19\\n23\\n29\\n7919\\n1000003\\n2147483647\\n1\\n4\\n6\\n9\\n15\\n561\\n41041\\n' > /tmp/eval_mr/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_mr/expected.txt",
-      "task": "Create /tmp/eval_mr/mr.cpp \u2014 reads stdin: T, then T integers (uint64_t). For each, output 'true' or 'false'. Implement deterministic Miller-Rabin with witness set {2,3,5,7,11,13,17,19,23,29,31,37}. Use __int128 for the modular multiply step. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o mr mr.cpp`.",
+      "task": "Create /tmp/eval_mr/mr.cpp — reads stdin: T, then T integers (uint64_t). For each, output 'true' or 'false'. Implement deterministic Miller-Rabin with witness set {2,3,5,7,11,13,17,19,23,29,31,37}. Use __int128 for the modular multiply step. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o mr mr.cpp`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mr && g++ -O2 -std=c++17 -Wall -Wextra -o mr mr.cpp && ./mr < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -54,7 +54,7 @@
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_mr && printf '20\\n2\\n3\\n5\\n7\\n11\\n13\\n17\\n19\\n23\\n29\\n7919\\n1000003\\n2147483647\\n1\\n4\\n6\\n9\\n15\\n561\\n41041\\n' > /tmp/eval_mr/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_mr/expected.txt",
-      "task": "Create /tmp/eval_mr/mr.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O mr.rs -o mr` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_mr/mr.rs — same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O mr.rs -o mr` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mr && rustc -O mr.rs -o mr && ./mr < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -65,7 +65,7 @@
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_mr && printf '20\\n2\\n3\\n5\\n7\\n11\\n13\\n17\\n19\\n23\\n29\\n7919\\n1000003\\n2147483647\\n1\\n4\\n6\\n9\\n15\\n561\\n41041\\n' > /tmp/eval_mr/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_mr/expected.txt",
-      "task": "Create /tmp/eval_mr/mr.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms: `pub fn main(init: std.process.Init) !void`, `std.Io.File.stdin()` / `stdout()` for I/O, `takeDelimiter('\\n')` (returns optional, null at EOF) or `appendRemainingUnlimited` to slurp stdin. Will be compiled with `zig build-exe -O ReleaseFast mr.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_mr/mr.zig — same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast mr.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mr && zig build-exe -O ReleaseFast mr.zig && ./mr < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
