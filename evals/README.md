@@ -9,12 +9,65 @@ ranks models in a leaderboard keyed by (host_id, model_slug).
 python3 evals/run_eval.py --list                     # list every task
 python3 evals/run_eval.py                            # run all 159 against the live server on :8080
 python3 evals/run_eval.py --tasks 145,146            # run a subset
+python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
+python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
 python3 evals/benchmark_all.py                       # full sweep across configured models
+python3 evals/benchmark_all.py --cache-only          # rebuild leaderboard from cache without ever starting a server
 python3 evals/scoring.py --rebuild                   # rescore all eval-*.json files into leaderboard.json
 python3 evals/scoring.py --by-category               # per-category drilldown table
-python3 evals/scoring.py --by-language               # per-language drilldown (only meaningful once variants land)
+python3 evals/scoring.py --by-language               # per-language drilldown
 python3 evals/scoring.py --compare-hosts             # side-by-side across machines
+python3 evals/cache_cli.py stats                     # cache: entries, total size, context hash
+python3 evals/cache_cli.py list --model SLUG         # list cached entries for one model
+python3 evals/cache_cli.py clear --model SLUG        # invalidate one model's cached results
+python3 evals/tool_efficiency.py                     # per-model tool-use metrics from agents/logs
+python3 evals/tool_efficiency.py --since 2026-05-07  # only logs since this date
+python3 evals/tool_efficiency.py --model SLUG        # drill into one model's tool-call frequencies
 ```
+
+## Result cache (durable, file-backed)
+
+Reruns are slow when most of the suite hasn't changed. The cache short-
+circuits any (model, task, agent_context) tuple whose inputs match a
+prior live run. See `evals/cache.py` for the hash-key construction;
+durability verified by `tests/test_cache.py` (cross-process round-trip,
+atomic writes, corrupt-file safety).
+
+Invalidates automatically when (a) any task spec changes (setup, task,
+validation, cleanup, max_iter), (b) the model changes, or (c) the agent
+runtime context changes — namely `system-prompt.md`,
+`system-prompt-tools.md`, or `opencode.json`. Timeouts (`agent_exit_code
+== -1`) are NOT cached: those are environmental, not deterministic.
+
+`--cache-only` mode is the fast-path for "rebuild the leaderboard from
+prior runs" — no server start, no live calls, cache misses are recorded
+as `skipped_cache_miss` for visibility.
+
+Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}.{ctx_hash}.json`.
+Tiny (<1 KB each), atomically written via `tmp+rename`, gitignored.
+
+## Tool-selection efficiency (per-model)
+
+`evals/tool_efficiency.py` reads `agents/logs/agent-*.jsonl` and reports
+how each model uses its tools. The leaderboard ranks accuracy + speed;
+this view ranks *how* the model gets there. Same data the agent already
+writes, no new measurement needed.
+
+| Metric | What it means |
+|---|---|
+| `iters_avg` | Mean iteration count per task. Lower = better planning. |
+| `tools/T` | Mean tool invocations per task. Higher might indicate thrashing. |
+| `edit:wr` | `edit_file:write_file` ratio. Higher = more targeted; <1 = wasteful overwrites. |
+| `bash/T` | Bash calls per task. Lower = more targeted use of dedicated tools. |
+| `rd_dup` | `read_file` calls / unique paths read. 1.0 = no rereads; >3.0 = thrashing. |
+| `agent` | `start_agent` / `start_skill_agent` / `list_skills` / `load_skill` calls. |
+
+Aggregates across every `agents/logs/agent-*.jsonl` (top-level + sub-agent
+runs). The model identifier is whatever the `start` record stored —
+usually the llama-server `-a` alias (e.g. `qwen-27b-q5`), distinct from
+the longer leaderboard `model_name` used elsewhere. For a multi-model
+sweep, each model's logs separate naturally so the table becomes a real
+cross-model comparison.
 
 ## Distribution
 

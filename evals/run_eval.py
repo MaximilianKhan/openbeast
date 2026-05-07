@@ -283,18 +283,30 @@ def run_eval(
     max_iter_override: int | None = None,
     model_name: str | None = None,
     use_cache: bool = True,
+    cache_only: bool = False,
 ) -> dict:
-    """Run the full eval suite. Returns results dict."""
+    """Run the full eval suite. Returns results dict.
+
+    cache_only: when True, never invoke the agent. Cache hits replay; cache
+    misses are recorded as 'skipped_cache_miss' with passed=False. Used for
+    fast leaderboard rebuilds from prior runs after a scoring/spec tweak."""
     import cache  # local import — keeps run_eval importable in environments without cache.py
+    if cache_only and not use_cache:
+        raise ValueError("cache_only requires use_cache=True (cache_only is meaningless without cache lookup)")
     tasks = load_tasks(task_filter)
     if not tasks:
         print("No tasks found.")
         return {}
 
     if not model_name:
+        if cache_only:
+            # Cache-only doesn't talk to the server — there might be no
+            # server running. Require the user to name the model so the
+            # cache key resolves correctly.
+            raise ValueError("--cache-only requires --model-name (no live server query in cache-only mode)")
         model_name = detect_model(base_url)
     model_slug = slugify(model_name)
-    gpu_info = capture_gpu_info()
+    gpu_info = capture_gpu_info() if not cache_only else None
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -319,6 +331,7 @@ def run_eval(
     }
 
     cache_hits = 0
+    cache_misses_skipped = 0
     for i, task in enumerate(tasks, 1):
         task_id = task["id"]
         task_name = task.get("name", task_id)
@@ -345,6 +358,26 @@ def run_eval(
                 tag = "PASS" if cached.get("passed") else "FAIL"
                 print(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
                 continue
+
+        # cache_only: never invoke the agent. Record a skipped placeholder.
+        if cache_only:
+            result = {
+                "id": task_id, "name": task_name, "difficulty": difficulty,
+                "model": model_name, "passed": False,
+                "reason": "skipped_cache_miss",
+                "elapsed_seconds": 0,
+                "from_cache": False,
+            }
+            if "base_id" in task:
+                result["base_id"] = task["base_id"]
+                result["variant_id"] = task["variant_id"]
+                result["language"] = task["language"]
+                result["variant_count"] = task["variant_count"]
+            results["tasks"].append(result)
+            results["summary"]["failed"] += 1
+            cache_misses_skipped += 1
+            print(f"  SKIPPED (cache miss; --cache-only mode)")
+            continue
 
         # Setup
         if not run_setup(task):
@@ -427,6 +460,8 @@ def run_eval(
     print(f"Results: {s['passed']}/{s['total']} passed, {s['failed']} failed")
     if use_cache and cache_hits:
         print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
+    if cache_only and cache_misses_skipped:
+        print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
     print(f"Saved to: {results_path}")
     print(f"{'=' * 60}")
 
@@ -441,6 +476,8 @@ def main():
     parser.add_argument("--model-name", help="Override model name (default: auto-detect from /v1/models)")
     parser.add_argument("--list", action="store_true", help="List available tasks and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
+    parser.add_argument("--cache-only", action="store_true",
+                        help="Replay cache only — skip live runs entirely. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
 
     if args.list:
@@ -451,12 +488,16 @@ def main():
         return
 
     task_filter = args.tasks.split(",") if args.tasks else None
+    if args.cache_only and args.no_cache:
+        print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
     results = run_eval(
         task_filter=task_filter,
         base_url=args.base_url,
         max_iter_override=args.max_iter,
         model_name=args.model_name,
         use_cache=not args.no_cache,
+        cache_only=args.cache_only,
     )
 
     # Exit with failure if any task failed

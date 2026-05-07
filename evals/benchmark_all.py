@@ -133,13 +133,33 @@ def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
 
 def benchmark_model(model: dict, task_filter: list[str] | None,
                     max_iter_override: int | None,
-                    use_cache: bool = True) -> dict:
+                    use_cache: bool = True,
+                    cache_only: bool = False) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
     print(f"# Benchmarking: {model['name']} ({model['slug']})")
     print(f"# Serve: {model['serve']}")
     print(f"{'#' * 60}\n")
+
+    if cache_only:
+        # Cache-only mode never talks to the server. Skip start/health/stop.
+        print("Cache-only: skipping server start; replaying cache hits…\n")
+        try:
+            results = run_eval.run_eval(
+                task_filter=task_filter,
+                max_iter_override=max_iter_override,
+                model_name=model["name"],
+                use_cache=True,
+                cache_only=True,
+            )
+        except Exception as e:
+            return {"slug": model["slug"], "name": model["name"],
+                    "error": f"cache-only eval crashed: {e}"}
+        if not results:
+            return {"slug": model["slug"], "name": model["name"],
+                    "error": "eval produced no results"}
+        return {"slug": model["slug"], "name": model["name"], "results": results}
 
     print("Stopping any running llama-server...")
     stop_llama_server()
@@ -184,7 +204,9 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
 # ---------------------------------------------------------------------------
 
 def run_sweep(models: list[dict], task_filter: list[str] | None,
-              max_iter_override: int | None, use_cache: bool = True) -> dict:
+              max_iter_override: int | None,
+              use_cache: bool = True,
+              cache_only: bool = False) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -197,7 +219,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
 
     for i, model in enumerate(models, 1):
         print(f"\n[{i}/{len(models)}] Starting model")
-        outcome = benchmark_model(model, task_filter, max_iter_override, use_cache=use_cache)
+        outcome = benchmark_model(model, task_filter, max_iter_override,
+                                   use_cache=use_cache, cache_only=cache_only)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -245,6 +268,8 @@ def main():
     parser.add_argument("--max-iter", type=int, help="Override max iterations per task")
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
+    parser.add_argument("--cache-only", action="store_true",
+                        help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
 
     if args.list:
@@ -273,7 +298,12 @@ def main():
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    summary = run_sweep(models, task_filter, args.max_iter, use_cache=not args.no_cache)
+    if args.cache_only and args.no_cache:
+        print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+    summary = run_sweep(models, task_filter, args.max_iter,
+                         use_cache=not args.no_cache,
+                         cache_only=args.cache_only)
     summary_path = save_sweep_summary(summary)
 
     # Final report
