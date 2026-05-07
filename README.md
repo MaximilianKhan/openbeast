@@ -2,7 +2,7 @@
 
 A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
 
-Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models (see [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology).
+Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models. Eval suite is now at v3.5 — 159 base tasks, 33 of them with full 6-language variants (~313 effective test units), result cache for retryable sweeps, and tool-selection efficiency analyzer. See [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology.
 
 ## Architecture
 

@@ -1,20 +1,64 @@
 # TODO
 
-## Up Next
+## ⏳ READY — only the sweep remains
 
-### Restart the v3.5 sweep (user-controlled)
-
-Phases A (Zig spec defect fix) and B (21 → 20 new variant base tasks) are
-landed and audited. Sweep is otherwise unblocked. Kick off with:
+All v3.5 build work is **landed, audited, committed, and pushed**. The
+single remaining step is to run the sweep against the upgraded suite.
 
 ```bash
 python3 evals/benchmark_all.py
 ```
 
-The sweep auto-uses the new result cache (`--no-cache` to bypass). On the
-first model after a clean cache, expect full ~3-5 hours per model. On a
-re-run with cache hits, completed entries replay instantly. See
-`evals/cache_cli.py stats` for cache state.
+**No setup needed.** The cache (`evals/cache/`) starts empty; the first
+sweep populates it. Any subsequent partial rerun replays cache hits
+instantly via `--cache-only` or transparently during a normal rerun.
+
+**Wall-clock estimate:** ~16–20h on the 5090 for all 5 models on the
+~313-unit suite (5 models × ~3-4 h average + 4× 5-min cool-offs). Best
+to start late evening so models 4–5 finish overnight + early morning.
+
+**If anything fails mid-sweep:** kill it, fix the issue, restart with
+`python3 evals/benchmark_all.py`. Completed tasks replay from cache;
+only the missing portion runs live. The "lose 14h of progress" failure
+mode is gone.
+
+**Diagnostics during a live run:**
+- `tail -f evals/results/sweep-run-*.log` — live progress
+- `python3 evals/cache_cli.py stats` — cache fill rate
+- `nvidia-smi` — GPU temp/util
+- `pgrep -fa benchmark_all` — alive check
+
+**Post-sweep — what to do once it finishes:**
+1. `python3 evals/scoring.py --show` — top-line + tokens column
+2. `python3 evals/scoring.py --by-category` — see which categories
+   de-saturated with the v3.5 hardening
+3. `python3 evals/scoring.py --by-language` — per-language drilldown
+   across the 33 variant base tasks (the headline new view)
+4. `python3 evals/tool_efficiency.py` — per-model tool-use comparison
+   (built this session; cross-model meaningful for the first time)
+5. Update `docs/RESULTS.md` v3.5 section with the leaderboard,
+   per-language matrix, and tool-efficiency table
+6. If Zig is still 0/13 across all models after the spec fix → spec
+   defect remains; investigate. If Zig now passes → fix is validated
+   for production sweeps
+
+**Status of every prerequisite:**
+
+| Component | Status | Location |
+|---|---|---|
+| Zig spec defect fix | ✅ landed (commit 62443ef) | `skills/eval-variant-porter/SKILL.md`, all 13 Zig variant `task` fields |
+| 20 new variant tasks | ✅ landed (commit 62443ef) | `evals/tasks/{32,71,82,92,100,11,20,54,38,39,36,62,63,136,27,115,123,127,47,137}*.json` |
+| Reference impls (durable) | ✅ landed (commit e57433a) | `evals/refs/` — 133 ref impls + README |
+| Generators archived | ✅ landed (commit e57433a) | `evals/scripts/{easy,medium,hard,patch_zig}*.py` + README |
+| Result cache | ✅ landed (commit 62443ef) + tested (commit e57433a) | `evals/cache.py`, `evals/cache_cli.py`, `tests/test_cache.py` (16/16) |
+| --cache-only mode | ✅ landed (commit 97829fb) | `evals/run_eval.py`, `evals/benchmark_all.py` |
+| Tool-efficiency analyzer | ✅ landed (commit 97829fb) | `evals/tool_efficiency.py`, `tests/test_tool_efficiency.py` (13/13) |
+| Spec-completeness lint | ✅ landed (commit 62443ef) | `tests/audit_variants.py` |
+| Documentation | ✅ landed (commit e57433a) | `evals/README.md`, `docs/{RESULTS,WORK_PLAN,INSTALL,REFERENCE,WEAK_SPOT_ASSESSMENT}.md`, `skills/eval-{task-author,variant-porter}/SKILL.md` |
+| Test status | ✅ all green | 47/47 `test_scripts.sh`, 16/16 `test_cache.py`, 13/13 `test_tool_efficiency.py`, 133/133 audit_variants (lint clean) |
+
+That's the complete picture. Next action is yours: kick the sweep when
+you're ready for the GPU commitment.
 
 ## Completed (this session)
 
@@ -315,7 +359,15 @@ auditable. Total effort estimate (assuming Zig spec defect is fixed first):
 
 ---
 
-### Tonight — overnight v3 sweep on the 5090
+### ~~Tonight — overnight v3 sweep on the 5090~~ (HISTORICAL — superseded by the v3.5 ready-to-sweep banner at the top)
+
+> Kept for reference. The original v3 sweep was started, killed mid-way
+> (see Zig spec defect mid-sweep finding above), and the suite was then
+> hardened into v3.5. The current state is "READY to sweep against the
+> v3.5 suite" — see the banner at the top of this file. The plan below
+> is the v3 plan; run-time projections below are no longer accurate
+> (suite size grew 223 → ~313 effective units; expect ~16-20h, not
+> 12-14h).
 
 The v3 eval suite is fully landed (Phases 1–4) and the smoke test on the
 winning model validated end-to-end. Plan:
@@ -433,12 +485,13 @@ us the *honest* gap; the port-from-reference view tells us how to
       the hypothesis quantitatively (pick from the hard-tier 4 confirmed
       differentials: 31 / 51 / 155 / 158)
 
-### Smaller queued items (work to do *after* the next sweep, while we assess results)
+### Smaller queued items (work to do *after* the v3.5 sweep, while we assess results)
 
-The full 5-model sweep is the headline next move — it produces the data we
-need to validate or refute the Python-first hypothesis and refresh the
-leaderboard. While that sweep result is being analyzed, three smaller units
-of work are queued:
+> **Note:** Originally three items here. The third (`145`/`146` Phase 4
+> deferred) was de-prioritized when v3.5 substituted in `47_branchless_min`
+> and `137_pollard_rho` as cross-language hard picks at tractable size.
+> Items 1 and 2 below remain queued; revisit `145`/`146` only if v3.5
+> data shows the substitutes don't differentiate.
 
 1. **Author a `python-first-then-port` skill (Tier 3, situational).**
    Encodes the inference-time strategy from the section above into a
