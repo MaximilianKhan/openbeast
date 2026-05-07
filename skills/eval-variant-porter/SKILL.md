@@ -276,7 +276,7 @@ Template 2 when input is a stream of whitespace-separated tokens.
 ## Done criteria for a variant task
 
 - [ ] All variants in the JSON (a–f as appropriate)
-- [ ] Reference impl for each language in `/tmp/refs/{slug}.{ext}`
+- [ ] Reference impl for each language in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
 - [ ] All variants pass validation with their reference impls — verified via
       `python3 tests/audit_variants.py {task_id}`
 - [ ] Forbidden-API lints catch obvious cheats in each language

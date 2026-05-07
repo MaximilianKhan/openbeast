@@ -404,10 +404,11 @@ def run_eval(
             results["summary"]["failed"] += 1
             print(f"  FAIL: {validation_output[:100]}")
 
-        # Cache the result for future reruns. Setup is idempotent and cheap;
-        # we still re-run it on cache miss. We intentionally cache both PASS
-        # and FAIL — a deterministic FAIL on the same input is replay-safe.
-        if use_cache:
+        # Cache the result for future reruns. We cache both PASS and
+        # deterministic FAIL — replaying a known fail is replay-safe.
+        # We do NOT cache timeouts (agent_exit_code == -1): those are
+        # environmental, not deterministic, and we want a clean retry.
+        if use_cache and result.get("agent_exit_code") != -1:
             try:
                 cache.cache_put(ck, result)
             except Exception as e:

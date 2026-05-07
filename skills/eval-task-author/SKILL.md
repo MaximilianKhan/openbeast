@@ -165,7 +165,7 @@ top-level CATEGORY requires updating `docs/RESULTS.md` and `evals/README.md`.
 ## Done criteria
 
 - [ ] Task JSON file in `evals/tasks/`
-- [ ] Reference impl in `/tmp/refs/{slug}.{ext}`
+- [ ] Reference impl in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
 - [ ] Validation accepts reference impl (`OK`)
 - [ ] Validation rejects an obvious wrong impl
 - [ ] `tests/test_scripts.sh` passes

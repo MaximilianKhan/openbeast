@@ -9,8 +9,8 @@
     {
       "id": "a",
       "language": "python",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.py \u2014 Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Pure Python; no numpy.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.py — Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Pure Python; no numpy.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; python3 astar.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
@@ -20,8 +20,8 @@
     {
       "id": "b",
       "language": "go",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.go (package main). Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `go build -o astar astar.go`.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.go (package main). Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `go build -o astar astar.go`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; go build -o astar astar.go && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -31,8 +31,8 @@
     {
       "id": "c",
       "language": "c",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.c \u2014 Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o astar astar.c -lm`.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.c — Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o astar astar.c -lm`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; gcc -O2 -std=c11 -Wall -Wextra -o astar astar.c -lm && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -42,8 +42,8 @@
     {
       "id": "d",
       "language": "cpp",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.cpp \u2014 Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o astar astar.cpp`.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.cpp — Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o astar astar.cpp`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; g++ -O2 -std=c++17 -Wall -Wextra -o astar astar.cpp && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -53,8 +53,8 @@
     {
       "id": "e",
       "language": "rust",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.rs \u2014 Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Idiomatic Rust 2021+; compile with `rustc -O astar.rs -o astar`.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.rs — Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Idiomatic Rust 2021+; compile with `rustc -O astar.rs -o astar`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; rustc -O astar.rs -o astar 2>/dev/null && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
@@ -64,8 +64,8 @@
     {
       "id": "f",
       "language": "zig",
-      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<EOF\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
-      "task": "Create /tmp/eval_astar/astar.zig \u2014 Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each \u2014 '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return \u2014 output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast astar.zig`.",
+      "setup": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt",
+      "task": "Create /tmp/eval_astar/astar.zig — Reads from stdin: line 1 is T. Each case: line A is 'H W' (rows, cols). Next H lines are W characters each — '.' open, '#' wall, 'S' start, 'G' goal. Find the shortest 4-connected path (up/down/left/right) from S to G and output its step count, or -1 if unreachable. BFS or A* both fine (uniform-cost grid). One integer per line. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast astar.zig`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; zig build-exe -O ReleaseFast astar.zig && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"

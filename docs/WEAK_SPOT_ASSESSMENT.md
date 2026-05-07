@@ -22,7 +22,7 @@ out as new eval categories; some won't.
 | Algorithmic / data-structure correctness | 159 base tasks across 12 categories | 91.75 % on v3 |
 | Difficulty tiers | easy / medium / hard with weighted scoring | 47/49 easy, 65/68 medium, 65/80 hard |
 | Subdomains | 50 subcategories from graph algos to lattice math | per-category accuracy in `RESULTS.md` |
-| Cross-language transfer | 77 multi-language variant entries across 13 base tasks (Py/Go/C/C++/Rust/Zig — 6 langs) | 4 cross-language differentials confirmed in the v3 smoke test (still on the original 4-lang matrix); Rust + Zig added post-smoke-test, will surface new failure modes in the next sweep |
+| Cross-language transfer | 187 multi-language variant entries across 33 base tasks (Py/Go/C/C++/Rust/Zig — 6 langs) | 4 cross-language differentials confirmed in the v3 smoke test, plus a Zig spec defect surfaced and fixed in v3.5 (2026-05-07). Variant coverage expanded from 13 → 33 base tasks in v3.5. |
 | Speed | per-task time budgets | 86.4 speed score |
 | Token efficiency | per-task token tracking | 9.81M total / median 23K per task |
 | Tool-use basics | bash, file I/O, grep, fetch, web_search | implicit in the agent runs (≥1.8M tool calls in eval history) |

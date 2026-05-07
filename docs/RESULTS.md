@@ -4,11 +4,15 @@ Cross-system benchmark results. Each section below is one host system; models
 are ranked within their host by accuracy primary, speed tie-breaker.
 
 > **Suite version note.** The numbers below are from the **144-task suite**
-> (40 easy / 53 medium / 51 hard). After this sweep we did a post-mortem,
-> fixed 4 spec/harness defects, and added 15 new hard-tier tasks — the live
-> suite is now **159 tasks** (40 easy / 53 medium / 66 hard). Token tracking
-> was also added. The next sweep will use the v3 suite and report a TOKENS
-> column. Distribution table and methodology: [`evals/README.md`](evals/README.md).
+> (40 easy / 53 medium / 51 hard). The suite was hardened in three steps
+> after this sweep: (1) v3 — 4 spec/harness fixes + 15 new hard tasks →
+> 159 base tasks; (2) v3 — 13 base tasks variant'd across 6 langs (77
+> entries); (3) v3.5 (2026-05-07) — Zig spec defect fixed + 20 more base
+> tasks variant'd (additional 120 entries). The live suite is now
+> **~313 effective test units** across **33 variant base tasks** + 126
+> single-variant legacy tasks, with token tracking and a result cache
+> (`evals/cache/`) for retryable sweeps. Distribution table and
+> methodology: [`evals/README.md`](../evals/README.md).
 
 ```bash
 python3 evals/scoring.py --compare-hosts                   # side-by-side per-model across systems
@@ -25,11 +29,11 @@ task. Difficulty split: **40 easy · 53 medium · 66 hard**. Difficulty weights
 in scoring: easy=1, medium=1.5, hard=2 (per-variant weight = base / num
 variants).
 
-**13 of the 159 base tasks** have multi-language variants (Python / Go / C /
-C++ / Rust / Zig — 6 languages) — see the variant rollout section at the end.
-Effective test units after variants: **223** (146 single-variant legacy + 77
-variant entries). Total weighted points: 251.5 (invariant — variants split a
-single base task's weight, not multiply it).
+**33 of the 159 base tasks** have multi-language variants (Python / Go / C /
+C++ / Rust / Zig — 6 languages) — see the variant rollout section at the
+end. Effective test units after variants: **~313** (126 single-variant
+legacy + 187 variant entries). Total weighted points are invariant —
+variants split a single base task's weight, not multiply it.
 
 ### Category × difficulty
 

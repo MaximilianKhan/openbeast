@@ -1,15 +1,17 @@
 # Eval suite v3 — fixes, hardening, and multi-language variants
 
-**Status (2026-05-06):**
+**Status (2026-05-07, post-v3.5):**
 - ✅ Phase 1 — 4 spec/harness fixes landed and verified
 - ✅ Phase 2 — 15 hardening tasks (145–159) landed and verified, plus cheat-resistance perf gates on 150/152
 - ✅ Phase 3 — multi-language variant architecture in `run_eval.py` + `scoring.py`; backward-compat regression bit-identical
 - ✅ Token tracking through the eval pipeline; `evals/README.md` distribution doc
 - ✅ Phase 4 — 13 tasks variant'd, 4 languages (Py/Go/C/C++) end-to-end verified
 - ✅ Phase 4.5 — Rust + Zig added across all 13 base tasks (77 total variant entries) end-to-end verified (2026-05-06)
-- ⏳ Phase 4 deferred — 5 tasks remain (53_bloom, 145, 146, 152, 153) — see deferred list at bottom
-- ⏳ Validation sweep on winning model
-- ⏳ Full 5-model sweep with the v3 suite
+- ✅ Phase 5a (v3.5) — Zig spec defect fixed (2026-05-07): SKILL.md template corrected with `&fr.interface` indirection, all 13 Zig variant `task` fields patched, audit hardened with spec-completeness lint, all 13 Zig refs verified. See `docs/TODO.md` "v3.5 prereq" entry for full root-cause writeup.
+- ✅ Phase 5b (v3.5) — 20 new variant base tasks added with full 6-lang coverage (2026-05-07): 5 easy + 9 medium + 6 hard = 120 new variant entries audited end-to-end. Suite now 33 variant base tasks → ~313 effective test units.
+- ✅ Phase 5c (v3.5) — Result cache landed (`evals/cache.py`, `evals/cache_cli.py`, `--no-cache` flags on `run_eval.py` + `benchmark_all.py`). Hash key includes task spec + agent runtime context (system-prompt.md, system-prompt-tools.md, opencode.json). Durability verified by `tests/test_cache.py` (16/16 pass).
+- ⏳ Phase 4 deferred — 5 tasks remain (53_bloom, 145, 146, 152, 153). 145 + 146 were *substituted* in v3.5 with 47_branchless_min + 137_pollard_rho. The original heavy ports remain deferred for a focused future session.
+- ⏳ Full 5-model sweep with the v3.5 suite — user-controlled restart.
 
 This document is the save state. A fresh session should be able to execute the
 remaining work from this file alone.

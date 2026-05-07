@@ -62,9 +62,10 @@ The detailed walkthrough below explains each step and lists alternate models.
 
 ### Compiler toolchains for the eval suite (multi-language variants)
 
-The 159-task eval suite includes 13 base tasks with multi-language variants
-(Python / Go / C / C++ / Rust / Zig). To run those variants, all six
-toolchains need to be available:
+The 159-task eval suite includes 33 base tasks with multi-language variants
+(Python / Go / C / C++ / Rust / Zig — ~187 variant entries; suite now ~313
+effective test units total). To run those variants, all six toolchains need
+to be available:
 
 | Language | Used for | Install (Arch) |
 |---|---|---|

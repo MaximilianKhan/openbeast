@@ -20,10 +20,11 @@ python3 evals/scoring.py --compare-hosts             # side-by-side across machi
 
 **Base totals:** 40 easy · 53 medium · 66 hard · 12 categories · 159 base task IDs
 
-**Effective totals after variant rollout:** 223 test units (146 single-variant
-legacy + 77 variant entries from 13 base tasks). Total weighted points are
-preserved at 251.5 (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 — same
-as a hard single-variant task).
+**Effective totals after v3.5 variant rollout (2026-05-07):** ~313 test
+units = 126 single-variant legacy + 187 variant entries across **33 base
+tasks** with multi-language variants (py/go/c/cpp/rust/zig). Total weighted
+points preserved (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 —
+same as a hard single-variant task).
 
 Difficulty weights (used in accuracy scoring): easy=1, medium=1.5, hard=2 — for
 multi-variant tasks, divided by variant count.
@@ -31,17 +32,19 @@ Time budgets (used in speed scoring): easy=30s, medium=90s, hard=300s.
 
 ### Multi-language variants
 
-13 of the 159 base tasks have language variants. Each variant is its own
+33 of the 159 base tasks have language variants. Each variant is its own
 scored test unit; the leaderboard reports per-language accuracy via
 `scoring.py --by-language`.
 
-**Currently supported languages:** Python (`a`), Go (`b`), C (`c`), C++ (`d`),
-Rust (`e`), Zig (`f`). Full 6-language coverage on all 13 base variant tasks.
+**Supported languages:** Python (`a`), Go (`b`), C (`c`), C++ (`d`),
+Rust (`e`), Zig (`f`). Full 6-language coverage on most variant tasks.
 
 **Variant ID convention:** stable letter suffix per language so adding new
 languages doesn't renumber existing variants. (Exception: `122_gemm_blocked`
 has no Python variant — perf-flavored task — so its IDs are a=Go, b=C,
 c=C++, d=Rust, e=Zig.)
+
+**Phase 4/4.5 rollout (2026-05-06) — 13 base tasks (77 variant entries):**
 
 | Task | Variants | Languages |
 |---|---:|---|
@@ -59,9 +62,16 @@ c=C++, d=Rust, e=Zig.)
 | 158_karatsuba_bytes | 6 | Py / Go / C / C++ / Rust / Zig |
 | 159_ntt_convolution | 6 | Py / Go / C / C++ / Rust / Zig |
 
-**Rollout complete (2026-05-06):** all 13 base tasks now cover 6 languages.
-77 variant entries audited end-to-end with reference impls — see
-`tests/audit_variants.py`.
+**Phase 5 rollout (v3.5, 2026-05-07) — 20 new variant base tasks (120 entries):**
+
+| Tier | Tasks |
+|---|---|
+| Easy (5) | 32_dot_product · 71_reverse_list · 82_sigmoid · 92_popcount · 100_constant_time_compare |
+| Medium (9) | 11_bst · 20_priority_queue · 54_astar · 38_monte_carlo_pi · 39_blocked_transpose · 36_black_scholes · 62_crt · 63_det · 136_gf256 |
+| Hard (6) | 27_brainfuck_interpreter · 115_fft · 123_nbody · 127_aes_keysched · 47_branchless_min · 137_pollard_rho |
+
+All 20 new tasks: full 6-lang coverage, 120/120 audited end-to-end via
+`python3 tests/audit_variants.py`. Reference impls in `evals/refs/`.
 
 **Build commands per language:**
 

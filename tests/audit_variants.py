@@ -12,7 +12,7 @@ import json, subprocess, sys, shutil, os, time
 from pathlib import Path
 
 TASKS_DIR = Path('/home/max/Documents/models/evals/tasks')
-REFS = Path('/tmp/refs')
+REFS = Path('/home/max/Documents/models/evals/refs')
 LANG_EXT = {'python': 'py', 'go': 'go', 'c': 'c', 'cpp': 'cpp', 'rust': 'rs', 'zig': 'zig'}
 
 # Essential phrases the model-facing `task` text MUST mention per language,
@@ -119,7 +119,7 @@ def audit(task_ids):
             ext = LANG_EXT.get(lang)
             if ext is None:
                 print(f"  [MISS] {t['id']} ({lang}): unknown language"); continue
-            ref_path = f'/tmp/refs/{stem}.{ext}'
+            ref_path = str(REFS / f'{stem}.{ext}')
             if not os.path.exists(ref_path):
                 print(f"  [MISS] {t['id']} ({lang}): no ref at {ref_path}"); continue
             r0 = subprocess.run(t['setup'], shell=True, capture_output=True, text=True, timeout=30)
