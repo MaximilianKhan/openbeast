@@ -2,70 +2,10 @@
 
 ## Up Next
 
-### v3.5 prereq — fix `159_ntt_convolution` spec defect (BLOCKS overnight sweep)
-
-The 2026-05-06 smoke test on the 35B-A3B Uncensored revealed the same class
-of spec defect we caught 4× in the v1 post-mortem — input-format ambiguity —
-this time in a Phase-2 hardening task we authored ourselves.
-
-**The bug.** `159_ntt_convolution` test fixtures include an empty-array case
-`([], [1,2,3])` to exercise the "if either input is empty, output '0'" branch.
-The setup script writes the empty array as a blank line in `input.txt`. All 4
-language variants fail in different ways:
-
-- **Python:** `IndexError` on parse — naive `line.split()` returns empty list,
-  next-line `NA, NB = na_nb[0], na_nb[1]` blows up
-- **Go:** outputs `"0 0"` instead of expected `"0"` for the empty case
-- **C:** same as Go — outputs an extra `"0 "`
-- **C++:** missing the leading `"0"` line entirely
-
-Because the failure mode is per-language, the cross-language matrix shows
-`159_ntt_convolution: FFFF` which spuriously suggests "the model can't do
-NTT in any language." It can — we proved 8/12 NTT-equivalent variant tasks
-pass cleanly. The issue is our test format.
-
-**The fix.** Two equivalent approaches:
-
-1. **Drop the empty-array case** from the test fixtures. The remaining 14
-   cases still cover correctness; the empty edge case isn't load-bearing for
-   the algorithm itself.
-
-2. **Change the input format** so empty arrays are unambiguous. E.g., put
-   `NA NB` and the values on the same line: `0 3 1 2 3` for an empty `a`
-   followed by `b = [1, 2, 3]`. Update all 4 variant tasks to expect this
-   format.
-
-Recommend (1) — smaller diff, clearer intent, and we're not specifically
-trying to test empty-input handling here. The other 14 test cases exercise
-the algorithm well enough.
-
-**Verification before unblocking the overnight sweep:**
-
-```bash
-# After the fix, drop the reference impls into /tmp/eval_ntt and re-verify
-python3 tests/audit_variants.py 159_ntt_convolution
-# Should show: 4/4 variants passed (was 0/4 in the smoke test)
-
-# Then run regression
-bash tests/test_scripts.sh   # still 47/47
-
-# Then a quick single-task confirmation against the live model:
-python3 evals/run_eval.py --tasks 159_ntt_convolution
-# Expect 4/4 passes
-```
-
-**Cost of NOT fixing before overnight:** every model in the 5-model sweep
-would burn ~16 task slots (4 NTT variants × 4 models reaching that task)
-on a known-broken test. ~80 wasted task entries in the overnight data.
-
-**Estimated effort:** 30 minutes including verification. Pick up next session
-before kicking off `python3 evals/benchmark_all.py`.
-
-### Tonight — overnight v3 sweep on the 5090 (DEFERRED — gated on the NTT fix above)
+### Tonight — overnight v3 sweep on the 5090
 
 The v3 eval suite is fully landed (Phases 1–4) and the smoke test on the
-winning model validated everything except the NTT spec defect noted above.
-Once that's fixed, the overnight sweep is the next step. Plan:
+winning model validated end-to-end. Plan:
 
 **Run command:**
 
