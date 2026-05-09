@@ -494,10 +494,13 @@ Plan to run overnight. Sweep summaries are saved to
 #### Scoring + leaderboard
 
 Ranking is **accuracy-primary** (tie-break: pass count → hard pass count →
-speed). Composite is shown for backwards compat but is no longer the sort key.
-**Tokens** are tracked per task and summed per run, surfaced as a separate
-column in the leaderboard so you can see how chatty a model is on the way to
-the same answer. See `evals/scoring.py`:
+speed). **Tokens** (prompt + completion) and **API-equivalent cost** (Sonnet
+4.6 pricing as a sense-of-scale baseline: $3/M input, $15/M output) are
+tracked per task and summed per run, surfaced as separate columns so you can
+see how chatty a model is on the way to the same answer. There is
+intentionally no composite score — speed and accuracy trade off in opposite
+directions on this suite, and a weighted average hides the signal. See
+`evals/scoring.py`:
 
 ```
 accuracy    = 100 × Σ(weight × passed) / Σ(weight)

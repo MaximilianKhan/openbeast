@@ -71,9 +71,9 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **159-task eval suite** (40 easy / 53 medium / 66 hard) across 12 categories with automated validation — full distribution in [`evals/README.md`](evals/README.md)
-- **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces a ranked leaderboard
-- Composite scoring with separate accuracy / speed / token columns (`evals/scoring.py`)
+- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard) with automated validation — full distribution in [`evals/README.md`](evals/README.md)
+- **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces an accuracy-ranked leaderboard
+- Per-task tracking of accuracy, speed, prompt/completion tokens, and API-equivalent cost (`evals/scoring.py`)
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
@@ -126,10 +126,10 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
-| Qwen3.6-27B | Q5_K_XL | 19 GB | 416K | 30.7 GB | Higher fidelity (margin only 9 MiB above 2GB rule) |
-| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 380K | 30.7 GB | Uncensored fine-tune (HauhauCS Aggressive) |
-| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast, KV-efficient, 1M capable; ~4.3 GB headroom (measured) |
-| **Qwen3.6-35B-A3B Uncensored** | **Q4_K_M** | **20 GB** | **512K** | **27.1 GB** | **Default model** — top of internal leaderboard at 97.3% / 86.7 speed |
+| **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **416K** | **30.7 GB** | **Top accuracy** on v3.5 (97.85%); slower per-token than the MoEs |
+| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 380K | 30.7 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 |
+| Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
+| Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
 
 All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
@@ -226,22 +226,19 @@ and more — every task is self-contained (setup + validation + cleanup) with
 deterministic checks. **Distribution table, schema, and scoring methodology in
 [`evals/README.md`](evals/README.md)**.
 
-**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, 2026-05-05/06, on the
-prior 144-task suite — pre-hardening; see [`docs/RESULTS.md`](docs/RESULTS.md) for full report):
+**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables):
 
-| # | Model | Acc | Speed | Pass | Hard | Time |
-|---:|---|---:|---:|---:|---:|---:|
-| 1 | **Qwen 35B-A3B Uncensored Q4_K_M** | **97.3** | 86.7 | **140/144** | **49/51** | 50 min |
-| 2 | Qwen 27B Uncensored Q5_K_P | 96.4 | 72.5 | 139/144 | 49/51 | 97 min |
-| 3 | Qwen 27B Q5_K_XL | 95.5 | 68.2 | 138/144 | 48/51 | 116 min |
-| 4 | Gemma 4 31B-it Q5_K_XL | 94.6 | 57.4 | 137/144 | 47/51 | 127 min |
-| 5 | Qwen 35B-A3B MoE Q4_K_M | 93.5 | 86.3 | 136/144 | 46/51 | 49 min |
+| # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 17.24 M | $70.27 | 8h 50m |
+| 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 17.97 M | $70.89 | 8h 25m |
+| 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 26.70 M | $111.37 | 6h 54m |
+| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 45m |
+| — | Gemma 4 31B-it Q5_K_XL | _running_ | — | — | — | — | — | — |
 
-The next sweep will run against the expanded 159-task suite + 4 spec/harness
-fixes from the post-mortem (see [`docs/WORK_PLAN.md`](docs/WORK_PLAN.md)) and will also report **total
-tokens** per model alongside accuracy/speed.
+Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) — sense-of-scale only; these all ran locally on the 5090.
 
-**Ranking: accuracy is primary, speed is the tie-breaker.** Composite (`0.75 × accuracy + 0.25 × speed`) is shown for backwards compatibility but is no longer the sort key.
+**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns rather than collapsed into a composite — they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
 - **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
 - **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown — see `evals/scoring.py --by-category`

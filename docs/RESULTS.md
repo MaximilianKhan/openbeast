@@ -1,17 +1,14 @@
 # Eval Suite Results
 
-Cross-system benchmark results. Each section below is one host system; models
-are ranked within their host by accuracy primary, speed tie-breaker.
+Cross-system benchmark results. Each section below is one host system. Models
+are **ranked by accuracy** — speed and token cost are reported as separate
+columns, not folded into a composite score.
 
-> **Suite version note.** The numbers below are from the **144-task suite**
-> (40 easy / 53 medium / 51 hard). The suite was hardened in three steps
-> after this sweep: (1) v3 — 4 spec/harness fixes + 15 new hard tasks →
-> 159 base tasks; (2) v3 — 13 base tasks variant'd across 6 langs (77
-> entries); (3) v3.5 (2026-05-07) — Zig spec defect fixed + 20 more base
-> tasks variant'd (additional 120 entries). The live suite is now
-> **~313 effective test units** across **33 variant base tasks** + 126
-> single-variant legacy tasks, with token tracking and a result cache
-> (`evals/cache/`) for retryable sweeps. Distribution table and
+> **Suite version.** Live results below are from the **v3.5 suite — 323
+> effective test units** (159 base tasks · 33 variant'd across 6 languages ·
+> 187 variant entries replacing 33 base entries). Difficulty split:
+> 80 easy · 123 medium · 120 hard. Token tracking on every task; result
+> cache at `evals/cache/` for retryable sweeps. Distribution table and
 > methodology: [`evals/README.md`](../evals/README.md).
 
 ```bash
@@ -138,7 +135,7 @@ variants split a single base task's weight, not multiply it.
 | Security | Vulnerability remediation | 1 |
 | Signal Processing & DSP | Frequency-domain analysis | 1 |
 
-### Multi-language variants (13 base tasks → 77 variant entries)
+### Multi-language variants (33 base tasks → 187 variant entries; 13 listed below seeded the rollout, 20 more added in v3.5)
 
 | Task | # variants | Languages |
 |---|---:|---|
@@ -160,15 +157,18 @@ Each variant is its own scored test unit. The leaderboard reports per-language
 accuracy via `python3 evals/scoring.py --by-language`. For full schema /
 methodology / pitfalls, see [`evals/README.md`](evals/README.md).
 
-Effective test units after the rollout: **223** (146 single-variant legacy +
-77 variant entries). All 77 variants verified end-to-end with reference
+Effective test units after the v3.5 rollout: **323** (126 single-variant base
+tasks + 187 variant entries; 10 multi-variant base tasks ship < 6 langs, hence
+323 vs the 313 ceiling). All variants verified end-to-end with reference
 implementations (`python3 tests/audit_variants.py`).
 
 ---
 
 ## Host: NVIDIA GeForce RTX 5090 ×1
 
-**Status:** ✅ Complete · sweep ran 2026-05-05 23:24 → 2026-05-06 06:45 PT (7h 21m)
+**Status:** 4 of 5 models complete (v3.5 sweep ran 2026-05-08 04:13 → 21:42 PT;
+Gemma 4 31B-it currently re-running after the original Gemma slot was killed
+mid-run at task 8/323).
 
 ### System fingerprint
 
@@ -184,64 +184,88 @@ implementations (`python3 tests/audit_variants.py`).
 | **RAM** | 122 GiB |
 | **OS** | Arch Linux (kernel 7.0.3-arch1-2) |
 | **Inference engine** | llama.cpp built with CUDA, Blackwell-tuned |
-| **Sweep wall-clock** | 26,489 s (7h 21m total, all 5 models succeeded) |
 
-### Leaderboard
+### Leaderboard (v3.5 — 323 effective units)
 
-Ranking: accuracy primary, speed tie-breaker, hard-pass count tie-breaker beyond that.
+**Ranking: accuracy.** Tie-breakers: total pass count → hard-pass count → speed.
+Tokens are tracked separately so a chatty path to the same answer is visible.
+**Cost** is the API-equivalent if these prompts had been served by Anthropic
+Sonnet 4.6 ($3/M input, $15/M output, no caching) — a sense-of-scale baseline,
+not an actual outlay (these all ran locally on the 5090).
 
-| # | Model | Accuracy | Speed | Composite | Pass | Hard | Wall-time |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | **Qwen 35B-A3B Uncensored Q4_K_M** | **97.3** | 86.7 | **94.6** | **140/144** | **49/51** | 3,024 s |
-| 2 | Qwen 27B Uncensored Q5_K_P | 96.4 | 72.5 | 90.4 | 139/144 | 49/51 | 5,819 s |
-| 3 | Qwen 27B Q5_K_XL | 95.5 | 68.2 | 88.7 | 138/144 | 48/51 | 6,951 s |
-| 4 | Gemma 4 31B-it Q5_K_XL | 94.6 | 57.4 | 85.3 | 137/144 | 47/51 | 7,647 s |
-| 5 | Qwen 35B-A3B MoE Q4_K_M | 93.5 | 86.3 | 91.7 | 136/144 | 46/51 | 2,951 s |
+| # | Model | Acc | Speed | Pass | Hard | Tokens (P / C) | Cost ≈ | Wall |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 15.69 M / 1.55 M | **$70.27** | 8h 50m |
+| 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 16.56 M / 1.41 M | $70.89 | 8h 25m |
+| 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 24.09 M / 2.61 M | $111.37 | 6h 54m |
+| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 24.77 M / 2.19 M | $107.12 | 5h 45m |
+| — | Gemma 4 31B-it Q5_K_XL | _running_ | — | — | — | — | — | — |
+
+**Sweep total so far** (4 models): 86.06 M prompt + 7.76 M completion = **93.82 M tokens**, ≈ **$359.65** API-equivalent, **29h 54m** GPU wall-time.
 
 ### Difficulty breakdown
 
-| Model | Easy | Medium | Hard |
+| Model | Easy (80) | Medium (123) | Hard (120) |
 |---|---:|---:|---:|
-| Qwen 35B-A3B Uncensored Q4_K_M | 38/40 | 53/53 | 49/51 |
-| Qwen 27B Uncensored Q5_K_P | 39/40 | 51/53 | 49/51 |
-| Qwen 27B Q5_K_XL | 39/40 | 51/53 | 48/51 |
-| Gemma 4 31B-it Q5_K_XL | 39/40 | 51/53 | 47/51 |
-| Qwen 35B-A3B MoE Q4_K_M | 40/40 | 50/53 | 46/51 |
+| Qwen 27B Q5_K_XL | 73/80 | 114/123 | 114/120 |
+| Qwen 27B Uncensored Q5_K_P | 75/80 | 113/123 | 110/120 |
+| Qwen 35B-A3B MoE Q4_K_M | 70/80 | 111/123 | 97/120 |
+| Qwen 35B-A3B Uncensored Q4_K_M | 73/80 | 105/123 | 93/120 |
 
-### Per-category accuracy (12 categories)
+### Per-category accuracy (12 categories, accuracy %)
 
 ```
-MODEL                      Algos&DS  Concur  Distrib   LLM/ML  MathFin  PerfHW   Phys  Prob&Stats   PureMath  SWE/DevOps  Security  DSP
-35B Uncensored Q4_K_M       100.0    100.0    83.3    100.0    92.2    100.0   100.0    100.0       100.0       95.9     100.0   100.0
-27B Uncensored Q5_K_P       100.0    100.0    94.4    100.0    92.2    100.0    89.2    100.0       100.0       93.9      92.5   100.0
-27B Q5_K_XL                 100.0    100.0    83.3    100.0    92.2    100.0   100.0     87.1       100.0       93.9      92.5   100.0
-Gemma 4 31B-it Q5_K_XL      100.0    100.0    83.3    100.0    92.2    100.0   100.0    100.0       100.0       87.8      80.0   100.0
-35B MoE Q4_K_M              100.0    100.0    77.8     88.5    84.3     91.2    89.2    100.0       100.0       93.9     100.0   100.0
+MODEL                          Algos&DS  Concur  Distrib  LLM/ML  MathFin  PerfHW   Phys  Prob&Stats  PureMath  SWE/DevOps  Security   DSP
+Qwen 27B Q5_K_XL                  92.5   100.0    100.0   100.0    100.0    98.5  100.0       98.4      94.7       100.0      98.3  100.0
+Qwen 27B Uncensored Q5_K_P        93.7   100.0     88.9    98.7     99.0    99.0   98.2       98.4      92.4       100.0      92.5  100.0
+Qwen 35B-A3B MoE Q4_K_M           90.3   100.0    100.0    98.7    100.0    80.5   78.4       98.4      87.6       100.0     100.0  100.0
+Qwen 35B-A3B Uncensored Q4_K_M    83.1    84.6     80.6    98.7     99.0    93.2   80.2       98.4      86.7       100.0      97.5  100.0
 ```
 
-(Cells are accuracy %; column abbreviations: PureMath = Pure & Abstract Math, etc.)
+### Per-language accuracy (variant tasks, accuracy %)
 
-### Failure pattern (which tasks tripped multiple models)
+```
+MODEL                           python   c    cpp    go   rust   zig
+Qwen 27B Q5_K_XL                  99.9  93.2  90.3  93.2  96.1  66.9
+Qwen 27B Uncensored Q5_K_P        98.3  90.3  93.2  96.1  93.2  55.2
+Qwen 35B-A3B MoE Q4_K_M           97.8  82.5  83.5  80.5  83.5  40.9
+Qwen 35B-A3B Uncensored Q4_K_M    94.2  82.5  85.4  78.6  96.1  15.6
+```
 
-| # models failing | Task | Difficulty | Diagnosis |
-|---:|---|---|---|
-| 5/5 | `42_value_at_risk` | hard | The CVaR convention is ambiguous in practice — even with our spec clarification, the float-tolerance + ceil/floor edge case is brutal. Worth a tighter spec or split into VaR-only and CVaR-only tasks. |
-| 4/5 | `121_quorum_kv` | hard | Dynamo-style quorum with read-repair: the timestamp + tie-break-by-node ordering trips models. Spec is correct; the task is genuinely hard. |
-| 4/5 | `17_deploy_rollback` | medium | Bash deploy with healthcheck + rollback. Models struggle with stateful bash + cleanup ordering. |
-| 4/5 | `85_base64` | easy | URL-safe base64 with padding stripped — surprising failures. Likely an ambiguity around accepting bytes vs. str inputs. |
-| 2/5 | `108_hmac_verify`, `124_rkf45` | medium / hard | One-off model errors, not a task issue. |
+### Notable observations (v3.5 vs v1)
 
-### Notable observations
+1. **Ranking flipped at the top.** Qwen **27B Q5_K_XL** is now #1 (97.85 %)
+   — it was #3 (95.5 %) on the v1 144-task suite. The previous champion,
+   35B-A3B Uncensored, fell from 97.3 % to **90.33 %** and is now last among
+   the four completed models. Larger ≠ better on the harder variant-heavy
+   suite.
 
-1. **The new uncensored 35B-A3B Q4_K_M is the runaway winner** — at 97.3 % accuracy it beats every other model AND its speed (86.7) is virtually tied with the standard MoE 35B (86.3, fastest by raw seconds). It's both more accurate AND nearly as fast as the second-fastest model. Composite 94.6 is 4 points clear of #2.
+2. **Zig is the differentiator.** Per-language gap on Zig variants is
+   enormous: 27B Q5_K_XL hits 66.9 %, but 35B-A3B Uncensored manages only
+   **15.6 %**. Zig was the v3.5 prerequisite (spec defect fixed pre-sweep);
+   the language is now functioning as a strong discriminator.
 
-2. **Two-track speed regime.** Looking at wall-time: 35B-A3B variants finish in ~50 min (MoE only activates 3B params at a time → fast); the 27B and Gemma 31B dense models take 1.5–2 hr. The MoE architecture is the dominant lever for sweep throughput.
+3. **Speed/accuracy tradeoff is real and inverted from the headline.** The
+   MoE 35B variants are 30–50 % faster (Speed 74–80 vs 53–57) but 4–7
+   accuracy points behind the 27B dense models. If you only cared about
+   speed, the MoE is your pick; if accuracy is the bar, the smaller dense
+   model wins.
 
-3. **Gemma is still the slowest by a wide margin** (7,647 s vs ~3,000 s for the MoEs) but ties the field on hard-task accuracy (47/51). Consistent with the prior 50-task observation: Gemma trades raw speed for careful answers.
+4. **MoE chattiness costs ~50 % more tokens.** Both 35B-A3B runs spent
+   ~26 M tokens vs ~17 M for the 27B runs — and produced worse accuracy,
+   meaning the extra completion tokens are not buying correctness on this
+   suite. Cost-equivalent for the MoEs is ~$110 vs ~$70 for the duals.
 
-4. **The 35B uncensored beats the 35B standard on accuracy** by 3.8 points despite identical architecture and same Q4_K_M quant. Interesting datapoint: an uncensored fine-tune at the same quant outperforms the original on most categories. The standard MoE specifically struggles on **LLM / ML** (88.5 % — the only model below 100 % there), **Performance & HW Opt** (91.2 % — only model below 100 %), and **Physics + Math Finance**. The uncensored variant matches or beats it on all 12 categories.
+5. **Three categories still saturated** at 100 %: Concurrency & Systems
+   (top 3 models), SWE/DevOps (all 4), Signal Processing & DSP (all 4 — but
+   it's a 1-task category, not informative). Concurrency was de-saturated
+   in v3 then re-saturated by the 27B duals — worth more concurrency
+   hardening before the next sweep.
 
-5. **Three universal-100 categories**: Algorithms & DS, Concurrency & Systems, Pure & Abstract Math, plus Signal Processing & DSP (1-task category). Every model hits 100 % on the first three. The harness will need harder additions in these categories before the next round to retain discrimination signal.
+6. **27B Uncensored leads on easy tasks** (75/80 vs 73/80 for the
+   accuracy-leader 27B Q5_K_XL) but loses 4 hard tasks vs Q5_K_XL — the
+   uncensored fine-tune is slightly more confident on small problems and
+   slightly less reliable on the hardest ones.
 
 ---
 
@@ -259,11 +283,10 @@ sweep. **Five high-value findings emerged**, summarized below.
 |---|---:|---:|---|
 | Accuracy | 97.30 | **91.75** | −5.55 |
 | Speed | 86.7 | **86.43** | −0.27 |
-| Composite | 94.6 | **90.42** | −4.18 |
 | Pass | 140 / 144 | **177 / 197** (89.8%) | — |
 | Hard pass | 49 / 51 | **65 / 80** | — |
 | Tokens | — (not tracked in v1) | **9.81M total** (8.79M prompt / 1.02M completion) | — |
-| Cost-equivalent (Sonnet 4.6) | — | **~$34** | — |
+| Cost-equivalent (Sonnet 4.6, $3/$15 per M) | — | **~$41.67** | — |
 
 The accuracy drop is **expected, not a regression**: the v3 suite is harder
 by design (15 hardening tasks added to de-saturate categories, plus 51

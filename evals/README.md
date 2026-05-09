@@ -339,14 +339,16 @@ filtering by effective id selects one.
 weight(task)   = DIFFICULTY_WEIGHTS[diff] / max(1, variant_count)
 accuracy       = 100 × Σ(weight × passed) / Σ(weight)
 speed_factor   = max(0, 1 − elapsed / time_budget)   # per passed task
-speed          = 100 × mean(speed_factor)            # informational
-composite      = 0.75 × accuracy + 0.25 × speed      # informational
+speed          = 100 × mean(speed_factor)            # separate signal, not folded in
 ```
 
 Ranking is by **accuracy** first, then total pass count, then hard pass count,
-then speed. Tokens are tracked but not part of the rank — they're a separate
-column in the leaderboard so you can see how chatty a model is on the way to
-the same answer.
+then speed. Tokens (prompt + completion) and API-equivalent cost are tracked
+separately so a chatty path to the same answer is visible — they are not part
+of the rank. There is intentionally **no composite score**: speed and accuracy
+trade off in opposite directions on this suite (the MoE 35B variants are
+faster but trail the dense 27B models on accuracy), and a weighted average
+hides that signal.
 
 ## How token tracking works
 
