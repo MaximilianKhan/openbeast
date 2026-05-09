@@ -68,7 +68,7 @@ MODELS = [
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
 LLAMA_PORT = 8080
 HEALTH_TIMEOUT = 180   # seconds to wait for model load
-COOLOFF_SECONDS = 300  # 5-min thermal break between models
+COOLOFF_SECONDS = 600  # 10-min thermal break between models
 
 
 # ---------------------------------------------------------------------------
