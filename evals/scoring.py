@@ -221,6 +221,7 @@ def score_run(results: dict) -> dict:
         "model_slug": results.get("model_slug", "unknown"),
         "timestamp": results.get("timestamp"),
         "gpu": results.get("gpu", {}),
+        "inference_engine": results.get("inference_engine", {}),
         "accuracy": accuracy,
         "speed": speed,
         "composite": composite,

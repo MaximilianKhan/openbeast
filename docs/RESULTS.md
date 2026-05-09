@@ -183,7 +183,8 @@ mid-run at task 8/323).
 | **CPU** | AMD Ryzen 9 9950X3D (16-core) |
 | **RAM** | 122 GiB |
 | **OS** | Arch Linux (kernel 7.0.3-arch1-2) |
-| **Inference engine** | llama.cpp built with CUDA, Blackwell-tuned |
+| **Inference engine** | llama.cpp **build 8893** · commit `6217b4958` · GNU 15.2.1 · Blackwell-tuned (CUDA arch 120) |
+| **Engine source HEAD** | `2bacb1eb` (2026-05-05) — binary not yet rebuilt against current source |
 
 ### Leaderboard (v3.5 — 323 effective units)
 
@@ -193,15 +194,15 @@ Tokens are tracked separately so a chatty path to the same answer is visible.
 Sonnet 4.6 ($3/M input, $15/M output, no caching) — a sense-of-scale baseline,
 not an actual outlay (these all ran locally on the 5090).
 
-| # | Model | Acc | Speed | Pass | Hard | Tokens (P / C) | Cost ≈ | Wall |
+| # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 15.69 M / 1.55 M | **$70.27** | 8h 50m |
-| 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 16.56 M / 1.41 M | $70.89 | 8h 25m |
-| 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 24.09 M / 2.61 M | $111.37 | 6h 54m |
-| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 24.77 M / 2.19 M | $107.12 | 5h 45m |
-| — | Gemma 4 31B-it Q5_K_XL | _running_ | — | — | — | — | — | — |
+| 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 17.24 M | $70.27 | 8h 50m |
+| 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 17.97 M | $70.89 | 8h 24m |
+| 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 26.70 M | $111.37 | 6h 53m |
+| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
+| 5 | Gemma 4 31B-it Q5_K_XL | 24.00 | 57.45 | 59/323 | 30/120 | 3.75 M | $15.26 | 11h 08m |
 
-**Sweep total so far** (4 models): 86.06 M prompt + 7.76 M completion = **93.82 M tokens**, ≈ **$359.65** API-equivalent, **29h 54m** GPU wall-time.
+**Sweep total** (5 models): 84.53 M prompt + 8.09 M completion = **92.61 M tokens**, ≈ **$374.90** API-equivalent, **41h 02m** GPU wall-time.
 
 ### Difficulty breakdown
 

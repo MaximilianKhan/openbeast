@@ -112,6 +112,49 @@ def capture_gpu_info() -> dict:
     return {}
 
 
+def capture_inference_engine_info() -> dict:
+    """Snapshot the llama.cpp binary's version + build commit + compiler.
+
+    Reads from `<repo>/llama.cpp/build/bin/llama-server --version`, which
+    prints lines like `version: 8893 (6217b4958)` and `built with GNU 15.2.1`.
+    `CUDA_VISIBLE_DEVICES=""` disables ggml's CUDA init so this call doesn't
+    contend for VRAM with a running server. Also captures the llama.cpp
+    source-tree HEAD via `git rev-parse HEAD`, which may differ from the
+    binary's embedded commit if the source was updated since the last build.
+
+    Returns empty dict on any failure (binary missing, llama.cpp tree gone,
+    parse failure)."""
+    binary = Path(__file__).resolve().parent.parent / "llama.cpp" / "build" / "bin" / "llama-server"
+    info: dict = {"name": "llama.cpp", "binary": str(binary)}
+    try:
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
+        result = subprocess.run(
+            [str(binary), "--version"],
+            capture_output=True, text=True, timeout=10, env=env,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        m = re.search(r"^version:\s+(\S+)\s+\(([0-9a-f]+)\)\s*$", out, re.MULTILINE)
+        if m:
+            info["build"] = m.group(1)
+            info["commit"] = m.group(2)
+        m = re.search(r"^built with\s+(.+?)\s+for\s+(.+?)\s*$", out, re.MULTILINE)
+        if m:
+            info["compiler"] = m.group(1)
+            info["target"] = m.group(2)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(binary.parent.parent.parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            info["source_head"] = result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return info
+
+
 def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     """Load task definitions from JSON files.
 
@@ -307,6 +350,7 @@ def run_eval(
         model_name = detect_model(base_url)
     model_slug = slugify(model_name)
     gpu_info = capture_gpu_info() if not cache_only else None
+    engine_info = capture_inference_engine_info() if not cache_only else None
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -317,6 +361,10 @@ def run_eval(
     print(f"Server: {base_url}")
     if gpu_info:
         print(f"GPU:    {gpu_info.get('name', '?')} ({gpu_info.get('memory_total_mib', '?')} MiB, driver {gpu_info.get('driver_version', '?')})")
+    if engine_info and engine_info.get("build"):
+        head = (engine_info.get("source_head") or "")[:9]
+        head_note = f"; source HEAD {head}" if head and head != engine_info.get("commit", "") else ""
+        print(f"Engine: llama.cpp {engine_info.get('build', '?')} ({engine_info.get('commit', '?')}){head_note}")
     print(f"Results: {results_path}")
     print("=" * 60)
 
@@ -326,6 +374,7 @@ def run_eval(
         "model_slug": model_slug,
         "base_url": base_url,
         "gpu": gpu_info,
+        "inference_engine": engine_info,
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
