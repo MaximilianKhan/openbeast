@@ -130,7 +130,7 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 | Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 380K | 30.7 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
-| Gemma 4 31B-it | Q5_K_XL | 20 GB | 220K | 30.7 GB | Different family; KV cost rises with context (20→25 KB/token) |
+| Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
 
 All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
 
@@ -237,6 +237,17 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 | — | Gemma 4 31B-it Q5_K_XL | _running_ | — | — | — | — | — | — |
 
 Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) — sense-of-scale only; these all ran locally on the 5090.
+
+**At-a-glance: per-language accuracy** (variant tasks, % accuracy; bold = top, italic = floor):
+
+| Model | Python | C | C++ | Go | Rust | Zig | Best at |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen 27B Q5_K_XL | **99.9** | **93.2** | 90.3 | 93.2 | 96.1 | **66.9** | Python, C, Zig |
+| Qwen 27B Uncensored Q5_K_P | 98.3 | 90.3 | **93.2** | **96.1** | 93.2 | 55.2 | Go, C++ |
+| Qwen 35B-A3B MoE Q4_K_M | 97.8 | 82.5 | 83.5 | 80.5 | 83.5 | 40.9 | (no #1) — middle on most |
+| Qwen 35B-A3B Uncensored Q4_K_M | 94.2 | 82.5 | 85.4 | 78.6 | **96.1** | _15.6_ | Rust (tied); avoid for Zig |
+
+The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board — pick a smaller model and a faster one if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
 
 **Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns rather than collapsed into a composite — they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)

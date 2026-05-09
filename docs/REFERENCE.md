@@ -117,14 +117,20 @@ Per-token KV starts close to Qwen 27B but rises with context length —
 | Context | **Total Used** | Headroom (32GB card) | Status |
 |---------|----------------|----------------------|--------|
 | 128K    | **28,680 MiB** | 4,088 MiB            | safe   |
-| 200K    | **30,155 MiB** | 2,613 MiB            | safe   |
-| **220K** (default) | **30,688 MiB** | **2,080 MiB** | **measured ceiling — exactly meets 2GB rule** |
+| **192K** (default, 2026-05-08) | **~29,800 MiB** | **~2,800 MiB** | **current default — comfortable headroom under sustained KV pressure** |
+| 200K    | **30,155 MiB** | 2,613 MiB            | safe at idle, tight under load |
+| 220K    | **30,688 MiB** | 2,080 MiB            | meets 2GB rule on paper; crashed mid-eval 2026-05-08 |
 | 250K    | **31,439 MiB** | 1,329 MiB            | below 2GB rule — OOM risk on OS spikes |
 
-**Why default is 220K:** Each step beyond 200K costs more per token (KV growth
-appears non-linear, possibly due to compute buffer scaling). 220K is the highest
-context that respects the 2GB headroom rule. 250K worked but left no margin
-for browser/video GPU spikes — same cliff that caused Qwen Q5_K_XL OOMs at 512K.
+**Why default dropped from 220K to 192K (2026-05-08):** During the v3.5 eval
+sweep, llama-server died between tasks 10–11 at the 220K default. Headroom
+on paper was 2,080 MiB but sustained KV pressure (back-to-back 6-variant
+const-time-compare tasks at 4-bit KV quant) appeared to exhaust the
+allocator. Dropping to 192K (~13% reduction) cleared the crash; the same
+task that took 164s and failed at 220K passed in 70.7s at 192K. Largest
+observed eval prompt is ~47K, so 192K is plenty for sequential workloads.
+Earlier KV-growth observation still holds: cost per token rises non-linearly
+beyond 200K — same cliff that caused Qwen Q5_K_XL OOMs at 512K.
 
 ### Qwen3.6-35B-A3B — 40 layers, real-world KV cost: ~6.3 KB/token
 
