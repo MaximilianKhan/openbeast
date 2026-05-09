@@ -327,12 +327,21 @@ def run_eval(
     model_name: str | None = None,
     use_cache: bool = True,
     cache_only: bool = False,
+    health_check=None,
+    recover_cb=None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
     cache_only: when True, never invoke the agent. Cache hits replay; cache
     misses are recorded as 'skipped_cache_miss' with passed=False. Used for
-    fast leaderboard rebuilds from prior runs after a scoring/spec tweak."""
+    fast leaderboard rebuilds from prior runs after a scoring/spec tweak.
+
+    health_check / recover_cb: optional pair injected by benchmark_all.py.
+    Before each live task, `health_check()` probes /health; if it returns
+    False, `recover_cb()` is invoked to kill+restart the serve script. If
+    recovery fails the task is recorded as `server_unhealthy` (not cached)
+    and the eval aborts — silently grinding through hundreds of dead-server
+    tasks is what produced the v3.5 Gemma 24% phantom result."""
     import cache  # local import — keeps run_eval importable in environments without cache.py
     if cache_only and not use_cache:
         raise ValueError("cache_only requires use_cache=True (cache_only is meaningless without cache lookup)")
@@ -427,6 +436,29 @@ def run_eval(
             cache_misses_skipped += 1
             print(f"  SKIPPED (cache miss; --cache-only mode)")
             continue
+
+        # Health check + recovery before each live task. If the server is
+        # gone, restart it once; if it still won't come back, abort the run.
+        if health_check is not None and not health_check():
+            print("  Server unhealthy before task — attempting recovery...")
+            recovered = bool(recover_cb and recover_cb())
+            if not recovered:
+                result = {
+                    "id": task_id, "name": task_name, "difficulty": difficulty,
+                    "model": model_name, "passed": False,
+                    "reason": "server_unhealthy",
+                    "elapsed_seconds": 0,
+                    "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
+                }
+                if "base_id" in task:
+                    result["base_id"] = task["base_id"]
+                    result["variant_id"] = task["variant_id"]
+                    result["language"] = task["language"]
+                    result["variant_count"] = task["variant_count"]
+                results["tasks"].append(result)
+                results["summary"]["failed"] += 1
+                print(f"  ABORT: server unreachable; remaining {len(tasks)-i} tasks skipped")
+                break
 
         # Setup
         if not run_setup(task):

@@ -99,18 +99,35 @@ def _port_in_use(port: int) -> bool:
         s.close()
 
 
-def start_model(serve_script: str) -> subprocess.Popen:
-    """Launch a serve script in the background. Returns the Popen handle."""
+def _server_log_path(slug: str) -> str:
+    """Per-restart server log path. Distinct timestamp on every call so a
+    mid-sweep restart leaves a separate file from the original boot."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return os.path.join(RESULTS_DIR, f"server-{slug}-{ts}.log")
+
+
+def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Popen, str]:
+    """Launch a serve script in the background. Returns (Popen, log_path).
+
+    llama-server stdout+stderr are tee'd to evals/results/server-{slug}-{ts}.log
+    so a silent crash mid-sweep leaves evidence (the v3.5 Gemma run had its
+    server die at task 64 and 256 subsequent tasks logged 0 tokens with no
+    crash trace anywhere — DEVNULL ate the cause)."""
     full_path = os.path.join(REPO_DIR, serve_script)
     if not os.path.isfile(full_path):
         raise FileNotFoundError(f"Serve script not found: {full_path}")
-    return subprocess.Popen(
+    log_path = _server_log_path(slug)
+    log_fp = open(log_path, "wb", buffering=0)
+    print(f"  Server log: {log_path}")
+    proc = subprocess.Popen(
         ["bash", full_path],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fp,
+        stderr=subprocess.STDOUT,
         cwd=REPO_DIR,
         start_new_session=True,
     )
+    return proc, log_path
 
 
 def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
@@ -125,6 +142,43 @@ def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
             pass
         time.sleep(1)
     return False
+
+
+def ping_health(timeout: float = 2.0, retries: int = 2, gap: float = 3.0) -> bool:
+    """Health probe with cheap retry to absorb transient blips (a request
+    saturating slots can briefly delay /health). Returns True if any attempt
+    sees 'ok'; only declares the server unhealthy after `retries` consecutive
+    misses."""
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(LLAMA_HEALTH_URL, timeout=timeout) as resp:
+                if b"ok" in resp.read():
+                    return True
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(gap)
+    return False
+
+
+def restart_server(serve_script: str, slug: str,
+                   health_timeout: int = HEALTH_TIMEOUT) -> bool:
+    """Kill llama-server, restart it, wait for /health. Returns True on
+    success. Used as the per-task recovery callback when a sweep encounters
+    an unhealthy server mid-run."""
+    print("  Server unhealthy — restarting...")
+    stop_llama_server()
+    try:
+        start_model(serve_script, slug)
+    except FileNotFoundError as e:
+        print(f"  Restart failed: {e}")
+        return False
+    print(f"  Waiting for /health (up to {health_timeout}s)...")
+    if not wait_for_health(timeout=health_timeout):
+        print("  Server failed to come back healthy.")
+        return False
+    print("  Server recovered.")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +220,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
 
     print(f"Starting {model['serve']}...")
     try:
-        proc = start_model(model["serve"])
+        start_model(model["serve"], model["slug"])
     except FileNotFoundError as e:
         return {"slug": model["slug"], "name": model["name"], "error": str(e)}
 
@@ -176,6 +230,12 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
         return {"slug": model["slug"], "name": model["name"],
                 "error": "model failed to become healthy within timeout"}
 
+    # Per-task recovery: if /health stops responding mid-sweep, kill+restart
+    # the serve script before the next task instead of letting the agent burn
+    # 35 connection-error iterations × 5s for the rest of the run.
+    def _recover() -> bool:
+        return restart_server(model["serve"], model["slug"])
+
     print("Model healthy. Running eval suite...\n")
     try:
         results = run_eval.run_eval(
@@ -183,6 +243,8 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
             max_iter_override=max_iter_override,
             model_name=model["name"],
             use_cache=use_cache,
+            health_check=ping_health,
+            recover_cb=_recover,
         )
     except Exception as e:
         stop_llama_server()
