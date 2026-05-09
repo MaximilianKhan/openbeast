@@ -7,38 +7,38 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 ## Architecture
 
 ```
-                            +------------------+
-                            |   Open WebUI     |  Browser chat (port 3000)
-                            |   (Docker)       |
-                            +--------+---------+
-                                     |
-                                     v
-+----------------+          +--------+---------+          +----------------+
-|   OpenCode     |          |   MCPO Proxy     |          |   SearXNG      |
-|   (terminal)   |          |   (port 3001)    |          |   (port 8888)  |
-+-------+--------+          +--------+---------+          +-------+--------+
-        |                            |                            |
-        | stdio                      | stdio                      |
-        v                            v                            |
-+-------+----------------------------+---------+                  |
-|              MCP Tool Server                 | <----------------+
-|         (agents/mcp_server.py)               |    web_search
-|                                              |
-|  bash | read | write | edit | grep | fetch   |
-|  web_search | start_agent | check_agent      |
-|  tail_agent | list_agents | stop_agent       |
-+-----------------------+----------------------+
-                        |
-                        v
-          +-------------+-------------+
-          |     llama.cpp Server      |
-          |      (port 8080)          |
-          |  6 parallel slots         |
-          |  unified KV cache         |
-          |  continuous batching      |
-          +---------------------------+
-          |  RTX 5090 (32GB GDDR7)    |
-          +---------------------------+
+                             ┌────────────────────┐
+                             │     Open WebUI     │
+                             │     (port 3000)    │
+                             └──────────┬─────────┘
+                                        │
+                                        ▼
+   ┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐
+   │      OpenCode      │    │     MCPO Proxy     │    │      SearXNG       │
+   │     (terminal)     │    │     (port 3001)    │    │     (port 8888)    │
+   └──────────┬─────────┘    └──────────┬─────────┘    └──────────┬─────────┘
+              │                         │                         │
+              │ stdio                   │ HTTP                    │ web_search
+              ▼                         ▼                         ▼
+   ┌─────────────────────────────────────────────────────────────────────────┐
+   │                            MCP Tool Server                              │
+   │                         (agents/mcp_server.py)                          │
+   │                                                                         │
+   │       bash · read · write · edit · grep · fetch                         │
+   │       web_search · start_agent · check_agent                            │
+   │       tail_agent · list_agents · stop_agent                             │
+   └─────────────────────────────────────┬───────────────────────────────────┘
+                                         │
+                                         ▼
+                          ┌────────────────────────────┐
+                          │      llama.cpp Server      │
+                          │        (port 8080)         │
+                          │      6 parallel slots      │
+                          │      unified KV cache      │
+                          │     continuous batching    │
+                          ├────────────────────────────┤
+                          │   RTX 5090 · 32 GB GDDR7   │
+                          └────────────────────────────┘
 ```
 
 ## Features
