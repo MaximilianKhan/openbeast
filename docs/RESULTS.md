@@ -199,10 +199,10 @@ not an actual outlay (these all ran locally on the 5090).
 | 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 17.24 M | $70.27 | 8h 50m |
 | 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 17.97 M | $70.89 | 8h 24m |
 | 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 26.70 M | $111.37 | 6h 53m |
-| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
-| 5 | Gemma 4 31B-it Q5_K_XL | 24.00 | 57.45 | 59/323 | 30/120 | 3.75 M | $15.26 | 11h 08m |
+| 4 | Gemma 4 31B-it Q5_K_XL | 92.39 | 41.58 | 288/323 | 104/120 | 12.52 M | $54.23 | 9h 53m |
+| 5 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
 
-**Sweep total** (5 models): 84.53 M prompt + 8.09 M completion = **92.61 M tokens**, ≈ **$374.90** API-equivalent, **41h 02m** GPU wall-time.
+**Sweep total** (5 models): 92.23 M prompt + 9.15 M completion = **101.38 M tokens**, ≈ **$413.88** API-equivalent, **39h 46m** GPU wall-time.
 
 ### Difficulty breakdown
 

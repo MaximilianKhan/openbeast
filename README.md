@@ -233,8 +233,8 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 | 1 | **Qwen 27B Q5_K_XL** | **97.85** | 53.74 | **301/323** | **114/120** | 17.24 M | $70.27 | 8h 50m |
 | 2 | Qwen 27B Uncensored Q5_K_P | 96.16 | 57.29 | 298/323 | 110/120 | 17.97 M | $70.89 | 8h 24m |
 | 3 | Qwen 35B-A3B MoE Q4_K_M | 93.74 | 74.30 | 278/323 | 97/120 | 26.70 M | $111.37 | 6h 53m |
-| 4 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
-| 5 | Gemma 4 31B-it Q5_K_XL | 24.00 | 57.45 | 59/323 | 30/120 | 3.75 M | $15.26 | 11h 08m |
+| 4 | Gemma 4 31B-it Q5_K_XL | 92.39 | 41.58 | 288/323 | 104/120 | 12.52 M | $54.23 | 9h 53m |
+| 5 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
 
 Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) — sense-of-scale only; these all ran locally on the 5090.
 
@@ -244,9 +244,9 @@ Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) �
 |---|---:|---:|---:|---:|---:|---:|---|
 | Qwen 27B Q5_K_XL | **99.9** | **93.2** | 90.3 | 93.2 | **96.1** | **66.9** | Python, C, Rust, Zig |
 | Qwen 27B Uncensored Q5_K_P | 98.3 | 90.3 | **93.2** | **96.1** | 93.2 | 55.2 | C++, Go |
-| Qwen 35B-A3B MoE Q4_K_M | 97.8 | 82.5 | 83.5 | 80.5 | 83.5 | 40.9 | — |
-| Qwen 35B-A3B Uncensored Q4_K_M | 94.2 | 82.5 | 85.4 | 78.6 | **96.1** | 15.6 | Rust |
-| Gemma 4 31B-it Q5_K_XL | _25.7_ | _17.3_ | _17.3_ | _17.3_ | _14.4_ | _12.7_ | — |
+| Qwen 35B-A3B MoE Q4_K_M | 97.8 | _82.5_ | _83.5_ | 80.5 | _83.5_ | 40.9 | — |
+| Gemma 4 31B-it Q5_K_XL | 94.3 | 88.3 | 86.4 | 94.2 | 91.2 | 54.5 | — |
+| Qwen 35B-A3B Uncensored Q4_K_M | _94.2_ | _82.5_ | 85.4 | _78.6_ | **96.1** | _15.6_ | Rust |
 
 The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board — pick a smaller model and a faster one if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
 
