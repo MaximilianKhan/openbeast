@@ -131,6 +131,10 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
+| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 256K (TBD) | TBD | MTP draft heads baked in; `--spec-type draft-mtp` for ~1.5–2× speedup. Forces `-np 1` (no parallel slots, no `--mmproj`). Context conservative pending measurement. |
+| Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 384K (TBD) | TBD | Same as above for the MoE; same `-np 1` constraint. Not yet benchmarked. |
+| Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 350K (TBD) | TBD | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
+| Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 256K (TBD) | TBD | Same fine-tune with MTP heads; same `-np 1` / no-`mmproj` MTP constraints. Not yet benchmarked. |
 
 All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
 

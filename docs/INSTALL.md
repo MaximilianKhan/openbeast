@@ -172,6 +172,69 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir wei
 hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
+### Qwen3.6-27B **MTP** -- Q5_K_XL (~20.4GB)
+
+Builds with Multi-Token Prediction (MTP) draft heads baked in. Pairs with
+llama.cpp's `--spec-type draft-mtp` for ~1.5–2× faster inference (per unsloth).
+Slightly heavier than the non-MTP build because of the embedded MTP head tensors.
+
+```bash
+hf download unsloth/Qwen3.6-27B-MTP-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf \
+   --local-dir weights/.mtp-staging-27b
+mv weights/.mtp-staging-27b/Qwen3.6-27B-UD-Q5_K_XL.gguf \
+   weights/Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf
+rm -rf weights/.mtp-staging-27b   # hf leaves a .cache/ subdir behind
+```
+
+The rename keeps the MTP and non-MTP builds side-by-side under distinct names.
+
+### Qwen3.6-35B-A3B **MTP** (MoE) -- Q4_K_M (~22.7GB)
+
+Same idea — MTP heads embedded for `--spec-type draft-mtp` use.
+
+```bash
+hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
+   --local-dir weights/.mtp-staging-35b
+mv weights/.mtp-staging-35b/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
+   weights/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
+rm -rf weights/.mtp-staging-35b   # hf leaves a .cache/ subdir behind
+```
+
+**MTP launch constraints (upstream llama.cpp limitations as of 2026-05-22):**
+- `-np 1` is forced — MTP doesn't yet support more than one parallel slot.
+  The MTP serve scripts pin this; concurrent requests serialize.
+- `--mmproj` is not yet supported with MTP — no vision input on these builds.
+
+### Qwopus3.6-27B-v2 (Jackrong SFT) -- Q5_K_M (~19.2GB)
+
+Reasoning-enhanced fine-tune of Qwen3.6-27B trained on Trace Inversion
+datasets distilled from Claude Opus 4.6/4.7 reasoning traces. Standard
+(non-MTP) build.
+
+```bash
+hf download Jackrong/Qwopus3.6-27B-v2-GGUF Qwopus3.6-27B-v2-Q5_K_M.gguf \
+   --local-dir weights/
+rm -rf weights/.cache   # hf leaves a cache subdir behind
+```
+
+### Qwopus3.6-27B-v2 **MTP** (Jackrong SFT) -- Q5_K_M (~19.5GB)
+
+Same fine-tune with MTP draft heads embedded — pairs with `--spec-type
+draft-mtp`. Inherits the same `-np 1` / no-`mmproj` MTP constraints.
+
+```bash
+hf download Jackrong/Qwopus3.6-27B-v2-MTP-GGUF Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf \
+   --local-dir weights/
+rm -rf weights/.cache   # hf leaves a cache subdir behind
+```
+
+**Context caveat for both Qwopus variants:** Jackrong's README cites
+"32K/128K native context" — the YaRN extension that ships in the unsloth
+Qwen3.6 GGUFs may or may not be intact in their conversion. The serve
+scripts ship at our standard 350K (non-MTP) / 256K (MTP) contexts;
+if outputs degrade past ~128K in practice, back the contexts down to
+something within native limits.
+
 You don't need all of these — download whichever models you plan to use.
 
 ## 3. Install Python dependencies

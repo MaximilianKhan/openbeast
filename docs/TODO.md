@@ -570,6 +570,54 @@ rate stays near-zero, escalate Phase 5 (auto-routing layer from
 `docs/SKILLS_PLAN.md`). The pre-flight classifier becomes worth the
 engineering cost. If skills do fire on real conversational work, hold.
 
+### Selectively pull skills from browse.sh
+
+Pull curated skills from <https://browse.sh/> into our local `skills/`
+catalog to expand what the model can invoke without writing every skill
+from scratch.
+
+**Why "selectively" is non-negotiable.** A skill is authoritative
+context — `start_skill_agent` loads the SKILL.md body straight into the
+sub-agent's system prompt. A poisoned skill is a prompt-injection /
+context-poisoning vector that the runner has no defense against: a
+malicious skill could exfiltrate files via `bash`/`fetch`, plant
+backdoors via `edit_file`, or silently bias every downstream task. One
+bad skill ruins the whole catalog because once skills auto-route
+(Phase 5 in `docs/SKILLS_PLAN.md`), the model picks which to load —
+not us.
+
+**Selection gate (do not skip any step):**
+1. **Per-skill review, not bulk import.** Each candidate gets read end
+   to end by Max before it lands in `skills/`. No directory sync, no
+   "pull everything matching tag X."
+2. **Pin a content hash.** Record the SHA-256 of the SKILL.md body at
+   import time in a `skills/REMOTE_PROVENANCE.md` ledger (source URL +
+   hash + import date + Max's initials). Upstream edits don't silently
+   reach us.
+3. **Sandbox-read first.** Before importing, load the skill into a
+   throwaway session and probe: does it instruct the model to run
+   `bash` against unfamiliar paths? Touch `~/.ssh`, `~/.config`,
+   git remotes, credential files? Fetch arbitrary URLs? Any of those
+   → reject or rewrite.
+4. **Strip + rewrite, don't mirror.** Even "good" skills usually carry
+   author-specific assumptions (paths, tool names, project structure).
+   Adapt them to our MCP tool surface (`edit_file`, `web_search`,
+   `start_agent`, etc.) and re-attribute in frontmatter.
+5. **Re-review on update.** If we ever refresh an imported skill,
+   treat it as a fresh import — diff the SKILL.md, re-run the sandbox
+   probe, update the hash in the ledger.
+
+**Out of scope (explicitly):** any automated "pull latest" job, any
+MCP tool that fetches skills at runtime from a remote source, any
+trust-on-first-use scheme. The whole catalog's integrity depends on
+the human-in-the-loop gate.
+
+**First candidates to evaluate** (none imported yet — placeholder for
+the first review session): start with skills that augment categories
+we know are weak from `evals/scoring.py --by-language` (Zig idioms,
+Rust borrow patterns) and skills that complement Tier 1/2 in
+`skills/README.md` without overlap.
+
 ### Expand multi-language variant coverage (driven by Tonelli-Shanks finding)
 
 **The Tonelli-Shanks Go failure during the 2026-05-06 smoke test was the
@@ -710,16 +758,71 @@ any device) over a private encrypted mesh — no port forwarding or static IP ne
 works from any network. Free for personal use (up to 100 devices). No router
 config, no dynamic DNS, no exposed ports.
 
-### Speculative decoding
-Pair the 27B model with a small ~0.5B Qwen draft model for 1.5-3x inference
-speedup. llama.cpp supports this natively via `--model-draft`. Biggest gains
-on structured output (code, JSON) where draft tokens are predictable.
+### Speculative decoding — MTP variants scaffolded 2026-05-22, benchmark pending
 
-**Steps:**
-1. Download a small Qwen 3.6 draft model (0.6B or similar) to `weights/`
-2. Add `--model-draft` flag to `scripts/serve.sh`
-3. Benchmark before/after with the eval harness
-4. Update serve scripts and docs
+**Status:** the separate-draft-model approach (originally planned with a small
+0.6B Qwen) is **superseded** by MTP (Multi-Token Prediction). Unsloth shipped
+MTP-enabled GGUFs and llama.cpp (HEAD `0f3cb3fc8`, PR #22673 + follow-ups)
+now supports `--spec-type draft-mtp` natively. The MTP heads share the base
+model's representations — strictly better than bolting on an external draft
+model.
+
+**What's landed:**
+- `scripts/{serve,run}-qwen-27b-mtp-q5.sh` — Qwen3.6-27B Q5_K_XL MTP build
+- `scripts/{serve,run}-qwen-35b-a3b-mtp.sh` — Qwen3.6-35B-A3B Q4_K_M MTP build
+- Both registered in `opencode.json`, `tests/test_scripts.sh` expects them
+- Weights downloading from `unsloth/Qwen3.6-{27B,35B-A3B}-MTP-GGUF`
+- Conservative starting contexts (256K / 384K) pending VRAM measurement
+- See `docs/REFERENCE.md` "Qwen3.6 MTP variants" section for the full notes
+
+**Constraints to respect when benchmarking:**
+- MTP pins `-np 1` (upstream limitation) — so the MTP variants can only serve
+  one request at a time. Eval sweeps need to account for that vs. the 6-slot
+  non-MTP runs (no concurrency benefit during the sweep, only per-request
+  speedup).
+- `--mmproj` not supported with MTP — no vision input.
+
+**Next steps:**
+1. Verify clean launch + measure VRAM with `nvidia-smi` under real load.
+   Raise (or, if needed, lower) the conservative 256K / 384K contexts to
+   land near the 2 GB headroom rule. Context-vs-MTP-buffer is the knob to
+   tune first, before anything else.
+2. **Switch the MTP scripts to the production tuning** (currently they ship
+   with safe defaults `--spec-draft-n-max 2`, no `--spec-draft-p-min`). Target:
+   - `--spec-draft-n-max 4` (draft 4 tokens ahead per step instead of 2)
+   - `--spec-draft-p-min 0.75` (only accept draft tokens whose probability
+     exceeds 0.75 — tighter quality bar than the default 0.00)
+   Both apply to all four MTP scripts (`{serve,run}-qwen-{27b-mtp-q5,35b-a3b-mtp}.sh`).
+   The user explicitly requested these values 2026-05-22; they're held back
+   from the initial scaffolding until a clean-launch + VRAM measurement
+   confirms there's headroom for the deeper draft horizon.
+3. **Add `qwen-27b-mtp-q5`, `qwen-35b-a3b-mtp`, and `qwopus-27b-v2-mtp-q5`
+   to `evals/benchmark_all.py`** as additional models in the next sweep
+   (plus the non-MTP `qwopus-27b-v2-q5` as a regular row alongside our other
+   27B variants).
+   - **Sweep cannot parallelize MTP runs.** MTP forces `-np 1`, so the
+     per-task concurrency benefit our non-MTP runs get from 6 unified slots
+     is *gone* for all MTP models. Eval throughput on the MTP rows will
+     be bounded by single-request speed × task count. Plan wall-clock
+     accordingly — expect each MTP model to take noticeably longer than
+     its non-MTP sibling on the same task count, even with the MTP
+     per-token speedup, because tasks can no longer overlap.
+   - This is purely a sweep-orchestration note; the MTP per-request
+     speedup is what we're actually measuring.
+   - **Qwopus-specific check first:** before sweeping, verify outputs are
+     coherent past 128K. Jackrong's README cites 32K/128K native context
+     and the YaRN extension we rely on in the unsloth Qwen3.6 GGUFs may
+     or may not be intact in their conversion. If long-context outputs
+     degrade, drop the Qwopus serve scripts' contexts before benchmarking.
+4. Compare apples-to-apples against the non-MTP siblings on the v3.5 suite:
+   accuracy should be identical, speed-per-request should be 1.5–2× per
+   unsloth's claim. If speed gain is smaller after the step-2 tuning,
+   revisit `--spec-draft-n-max` and `--spec-draft-p-min` together (tighter
+   p-min trades draft acceptance rate for quality; deeper n-max amplifies
+   both wins and losses).
+5. If results look good, consider promoting the MTP MoE to the auto-launch
+   default (currently the non-MTP uncensored 35B-A3B). Tradeoff: lose 6-slot
+   parallelism for single-request speed.
 
 ### Phase 4 follow-up — variant the 5 deferred tasks
 Phase 4 shipped 13 of 18 originally-planned tasks with multi-language variants

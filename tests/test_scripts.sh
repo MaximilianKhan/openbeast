@@ -34,10 +34,14 @@ EXPECTED_SCRIPTS=(
   serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-35b-a3b-uncensored-q4.sh
+  serve-qwen-27b-mtp-q5.sh serve-qwen-35b-a3b-mtp.sh
+  serve-qwopus-27b-v2-q5.sh serve-qwopus-27b-v2-mtp-q5.sh
   serve-gemma-4-31b-q5.sh
   run-qwen-27b-q5.sh
   run-qwen-27b-uncensored-q5.sh run-qwen-35b-a3b.sh
   run-qwen-35b-a3b-uncensored-q4.sh
+  run-qwen-27b-mtp-q5.sh run-qwen-35b-a3b-mtp.sh
+  run-qwopus-27b-v2-q5.sh run-qwopus-27b-v2-mtp-q5.sh
   run-gemma-4-31b-q5.sh
 )
 for script in "${EXPECTED_SCRIPTS[@]}"; do

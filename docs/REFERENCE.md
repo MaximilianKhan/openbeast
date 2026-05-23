@@ -10,6 +10,10 @@ models/
 │   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
 │   ├── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 │   ├── Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
+│   ├── Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf          # MTP variant
+│   ├── Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf       # MTP variant
+│   ├── Qwopus3.6-27B-v2-Q5_K_M.gguf             # Jackrong SFT fine-tune
+│   ├── Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf         # Jackrong SFT + MTP heads
 │   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
 ├── start.sh                # launch full stack (server + MCPO + Open WebUI)
 ├── stop.sh                 # stop full stack
@@ -22,11 +26,19 @@ models/
 │   ├── serve-qwen-27b-uncensored-q5.sh
 │   ├── serve-qwen-35b-a3b.sh
 │   ├── serve-qwen-35b-a3b-uncensored-q4.sh
+│   ├── serve-qwen-27b-mtp-q5.sh
+│   ├── serve-qwen-35b-a3b-mtp.sh
+│   ├── serve-qwopus-27b-v2-q5.sh
+│   ├── serve-qwopus-27b-v2-mtp-q5.sh
 │   ├── serve-gemma-4-31b-q5.sh
 │   ├── run-qwen-27b-q5.sh
 │   ├── run-qwen-27b-uncensored-q5.sh
 │   ├── run-qwen-35b-a3b.sh
 │   ├── run-qwen-35b-a3b-uncensored-q4.sh
+│   ├── run-qwen-27b-mtp-q5.sh
+│   ├── run-qwen-35b-a3b-mtp.sh
+│   ├── run-qwopus-27b-v2-q5.sh
+│   ├── run-qwopus-27b-v2-mtp-q5.sh
 │   └── run-gemma-4-31b-q5.sh
 ├── agents/                 # agent framework + MCP tool server
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
@@ -147,6 +159,55 @@ beyond 200K — same cliff that caused Qwen Q5_K_XL OOMs at 512K.
 | **512K** (default) | 20 GB | 3.1 GB + extra compute | **27.8 GB** | 4.3 GB |
 | 768K    | 20 GB | 4.7 GB   | **24.7 GB** | 7.3 GB  |
 | 1M      | 20 GB | 6.3 GB   | **26.3 GB** | 5.7 GB  |
+
+### Qwen3.6 **MTP** variants (Multi-Token Prediction, scaffolded 2026-05-22)
+
+Models: `unsloth/Qwen3.6-27B-MTP-GGUF` and `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`.
+MTP draft heads are baked into the same GGUF — no sidecar file. Launched
+with `--spec-type draft-mtp --spec-draft-n-max 2` (the unsloth-recommended
+config). Per their README, expect ~1.5–2× faster inference at no accuracy
+loss when the draft acceptance rate is high.
+
+**Upstream constraints (llama.cpp as of 2026-05-22, see commit log around
+`#22673` and follow-ups through `#23461`):**
+- `-np > 1` is not supported with MTP — serve scripts pin `-np 1`. Concurrent
+  requests serialize.
+- `--mmproj` is not supported with MTP — no vision input on these builds.
+
+**VRAM:** not yet measured. Both GGUFs are ~0.7–1.4 GB heavier than the
+non-MTP builds because the MTP head tensors are loaded into VRAM alongside
+the main weights. The MTP draft path also allocates additional scratch
+buffers at runtime. Conservative starting contexts pending real measurement:
+
+| Variant | Starting context | Rationale |
+|---------|------------------|-----------|
+| 27B MTP Q5_K_XL | **256K** (-c 262144) | Non-MTP 27B Q5_K_XL runs at 350K with ~3.2 GB headroom; +1.4 GB heads + draft buffers → drop ~25% |
+| 35B-A3B MTP Q4_K_M | **384K** (-c 393216) | Non-MTP 35B-A3B runs at 512K with ~4.3 GB headroom; +0.7 GB heads + draft buffers → drop ~25% |
+| Qwopus 27B v2 MTP Q5_K_M | **256K** (-c 262144) | Matches the unsloth 27B MTP starting context; Jackrong's MTP build is the same size class |
+
+After a clean first launch, measure with `nvidia-smi` under load and raise
+contexts to land near the 2 GB headroom rule.
+
+### Qwopus3.6-27B-v2 (Jackrong SFT, added 2026-05-22)
+
+Models: `Jackrong/Qwopus3.6-27B-v2-GGUF` (non-MTP) and
+`Jackrong/Qwopus3.6-27B-v2-MTP-GGUF` (MTP). Both are SFT fine-tunes of
+Qwen3.6-27B trained on Trace Inversion datasets distilled from Claude
+Opus 4.6/4.7 reasoning traces — reasoning-quality oriented rather than a
+speed or uncensored play.
+
+Architecturally identical to Qwen3.6-27B (64 layers, dense), so VRAM
+behavior should track our existing 27B numbers — non-MTP at Q5_K_M is
+19.2 GB on disk vs 19 GB for our unsloth UD-Q5_K_XL. Treat the 27B KV
+table above as the starting estimate.
+
+**Context caveat:** Jackrong's README cites "32K/128K native context."
+The YaRN extension that ships in the unsloth Qwen3.6 GGUFs (extending
+the 262K native to ~1M) may or may not be intact in this conversion. The
+serve scripts ship at 350K (non-MTP) / 256K (MTP) to match our other 27B
+variants, but if outputs degrade past ~128K under real use, back off
+the context. Validate by running the same long-context probe against
+both Qwopus and the unsloth Qwen3.6-27B build.
 
 > **Note (2026-05-05 re-measurement):** at 512K total VRAM is **27,807 MiB / 4,271 MiB
 > headroom** — substantially higher than the 2026-04-27 figure (23.1 GB) due to
@@ -403,6 +464,10 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (350K ctx, ~29.5GB VRAM)
 ./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (350K ctx, ~30.0GB VRAM)
 ./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.8 GB VRAM)
+./scripts/run-qwen-27b-mtp-q5.sh   # Qwen 27B MTP Q5_K_XL (256K ctx, single-slot speculative)
+./scripts/run-qwen-35b-a3b-mtp.sh  # Qwen 35B-A3B MTP MoE (384K ctx, single-slot speculative)
+./scripts/run-qwopus-27b-v2-q5.sh       # Qwopus 27B v2 Q5_K_M (Jackrong SFT, 350K ctx)
+./scripts/run-qwopus-27b-v2-mtp-q5.sh   # Qwopus 27B v2 MTP Q5_K_M (single-slot speculative, 256K ctx)
 ./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
 ```
 
@@ -412,6 +477,10 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwen-27b-mtp-q5.sh   # MTP variant — single-slot, --spec-type draft-mtp
+./scripts/serve-qwen-35b-a3b-mtp.sh  # MTP variant — single-slot, --spec-type draft-mtp
+./scripts/serve-qwopus-27b-v2-q5.sh       # http://localhost:8080/v1/chat/completions
+./scripts/serve-qwopus-27b-v2-mtp-q5.sh   # MTP variant — single-slot, --spec-type draft-mtp
 ./scripts/serve-gemma-4-31b-q5.sh  # http://localhost:8080/v1/chat/completions
 ```
 
