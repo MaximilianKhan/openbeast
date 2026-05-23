@@ -47,7 +47,7 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
 - 5 pre-configured models (Qwen 27B dense, Qwen 27B uncensored, Qwen 35B MoE, **Qwen 35B-A3B uncensored** as default, Gemma 4 31B-it)
-- Context lengths tuned to measured VRAM ceilings (380K–512K) on a 32GB card
+- Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card
 
 **Tool Suite (17 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
@@ -126,8 +126,8 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
-| **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **416K** | **30.7 GB** | **Top accuracy** on v3.5 (97.85%); slower per-token than the MoEs |
-| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 380K | 30.7 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 |
+| **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **350K** | **~29.5 GB** | **Top accuracy** on v3.5 (97.85%, benchmarked at 416K); slower per-token than the MoEs |
+| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 350K | ~30.0 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 (benchmarked at 380K) |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |

@@ -88,22 +88,28 @@ measurements.
 **Q5_K_XL (~19GB weights) — higher fidelity, tighter fit**
 
 Re-measured 2026-05-05: actual KV cost runs denser than the original 18 KB/token
-estimate. The 416K default still works but lands tight against the 2GB rule.
+estimate. The 416K default landed tight against the 2GB rule and was crashing
+under sustained OS+KV pressure, so the operational default was dropped to **350K**
+on 2026-05-22. v3.5 benchmark accuracy (97.85%) was measured at 416K and stands.
 
 | Context | **Total Used** | Headroom (32GB card) | Status |
 |---------|----------------|----------------------|--------|
-| **416K** (default) | **30,711 MiB** | **2,057 MiB** | **measured — 9 MiB above 2GB rule (tight)** |
-| 408K (suggested if OOMs) | ~30,560 MiB | ~2,200 MiB | safer alternative — comparable to other models' margin |
+| **350K** (default, 2026-05-22) | **~29,500 MiB** (est.) | **~3,200 MiB** (est.) | **current default — comfortable headroom, removes crash mode** |
+| 408K    | ~30,560 MiB    | ~2,200 MiB           | comparable to other models' margin |
+| 416K (prior default, benchmarked at) | **30,711 MiB** | **2,057 MiB** | measured — 9 MiB above 2GB rule (tight); crashes observed under sustained load |
 
 **Uncensored (HauhauCS Aggressive) Q5_K_P (~21GB weights)**
 
 Re-measured 2026-05-05: actual KV cost runs denser than the original 18 KB/token
 estimate (closer to ~20 KB at high context). The original 416K default was too
-tight. New default: **380K**, validated at 2,120 MiB headroom.
+tight; an interim 380K default still crashed intermittently. Operational default
+dropped to **350K** on 2026-05-22 to clear the crash mode. v3.5 benchmark accuracy
+(96.16%) was measured at 380K and stands.
 
 | Context | **Total Used** | Headroom (32GB card) | Status |
 |---------|----------------|----------------------|--------|
-| **380K** (default) | **30,648 MiB** | **2,120 MiB** | **measured — meets 2GB rule** |
+| **350K** (default, 2026-05-22) | **~30,000 MiB** (est.) | **~2,800 MiB** (est.) | **current default — clears the crash mode at 380K** |
+| 380K (prior default, benchmarked at) | **30,648 MiB** | **2,120 MiB** | measured — meets 2GB rule on paper; crashed intermittently under sustained load |
 | 416K    | **31,405 MiB** | 1,363 MiB            | below 2GB rule — OOM risk on OS spikes |
 
 ### Gemma 4 31B-it — measured KV cost (non-linear, grows with context)
@@ -196,7 +202,7 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir wei
 - **Hybrid architecture:** 48 DeltaNet layers + 16 gated attention layers (64 total)
 - Native max: 262K, extended via YaRN to ~1M
 - Real-world KV cost: **~18 KB/token** (llama.cpp allocates KV for all 64 layers)
-- **Q5_K_XL** (~19GB): default **416K** context, ~26.3GB total — higher weight fidelity
+- **Q5_K_XL** (~19GB): default **350K** context, ~29.5GB total — higher weight fidelity (reduced from 416K on 2026-05-22 after crashes; v3.5 benchmark numbers were measured at 416K)
 
 ### Qwen3.6-27B Uncensored (HauhauCS Aggressive)
 
@@ -207,7 +213,7 @@ hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Unce
 - Source: https://huggingface.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive
 - Same base architecture as Qwen3.6-27B (64 layers, ~18 KB/token KV cost)
 - Fine-tuned with safety filters removed
-- **Q5_K_P** (~21GB): default **416K** context, ~28.3GB total
+- **Q5_K_P** (~21GB): default **350K** context, ~30.0GB total (reduced from 380K on 2026-05-22 after intermittent crashes; v3.5 benchmark numbers were measured at 380K)
 
 ### Gemma 4 31B-it (Q5_K_XL — 20.4GB)
 
@@ -394,8 +400,8 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ### Interactive chat (standalone)
 
 ```bash
-./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (416K ctx, ~26.3GB VRAM)
-./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (416K ctx, ~28.3GB VRAM)
+./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (350K ctx, ~29.5GB VRAM)
+./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (350K ctx, ~30.0GB VRAM)
 ./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.8 GB VRAM)
 ./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
 ```

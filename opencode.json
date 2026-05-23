@@ -25,7 +25,7 @@
         "qwen-27b-uncensored-q5": {
           "name": "Qwen3.6-27B Uncensored Q5_K_P",
           "limit": {
-            "context": 389120,
+            "context": 358400,
             "output": 32768
           }
         },
@@ -39,7 +39,7 @@
         "qwen-27b-q5": {
           "name": "Qwen3.6-27B Q5_K_XL",
           "limit": {
-            "context": 425984,
+            "context": 358400,
             "output": 32768
           }
         },
