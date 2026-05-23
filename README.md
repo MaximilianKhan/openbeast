@@ -46,8 +46,8 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 5 pre-configured models (Qwen 27B dense, Qwen 27B uncensored, Qwen 35B MoE, **Qwen 35B-A3B uncensored** as default, Gemma 4 31B-it)
-- Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card
+- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense, Qwen 27B uncensored, Qwen 35B MoE, **Qwen 35B-A3B uncensored** as default, Gemma 4 31B-it) and 4 scaffolded 2026-05-22 awaiting first launch (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
+- Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 
 **Tool Suite (17 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
@@ -136,7 +136,7 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 | Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 350K (TBD) | TBD | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
 | Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 256K (TBD) | TBD | Same fine-tune with MTP heads; same `-np 1` / no-`mmproj` MTP constraints. Not yet benchmarked. |
 
-All context lengths validated against the 2GB OS-headroom rule on a 32GB card. See [`docs/REFERENCE.md`](docs/REFERENCE.md) for the full measurement curve.
+The first five rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card. The four `(TBD)` rows (scaffolded 2026-05-22) ship with conservative starting contexts pending real `nvidia-smi` measurement under load — see [`docs/REFERENCE.md`](docs/REFERENCE.md) for the rationale on each and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding — MTP variants" for the benchmark plan.
 
 ## Project Structure
 
@@ -230,7 +230,7 @@ and more — every task is self-contained (setup + validation + cleanup) with
 deterministic checks. **Distribution table, schema, and scoring methodology in
 [`evals/README.md`](evals/README.md)**.
 
-**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables):
+**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP) — they need a clean launch + VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
 
 | # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|
