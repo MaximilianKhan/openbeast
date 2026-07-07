@@ -5,7 +5,8 @@
 # Historical measurement: 416K = 30,711 MiB / 2,057 MiB headroom (2026-05-05).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwen3.6-27B-UD-Q5_K_XL.gguf" \
+  -m "$WEIGHTS_DIR/Qwen3.6-27B-UD-Q5_K_XL.gguf" \
   -c 358400 \
   "$@"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop the full local AI stack.
+# Stop the full OpenBeast stack.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

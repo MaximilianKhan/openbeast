@@ -81,15 +81,24 @@ else
   fail "run.sh doesn't use REPO_DIR for llama.cpp"
 fi
 
-# Model scripts should reference REPO_DIR for weights
+# Model scripts should resolve weights via the WEIGHTS_DIR helper, not a
+# hardcoded in-repo path — this keeps weights relocatable (NVMe/USB/NAS).
 for script in "$REPO_DIR"/scripts/serve-*.sh "$REPO_DIR"/scripts/run-*.sh; do
   name=$(basename "$script")
   # Skip the generic launchers — they take -m from the caller.
   [[ "$name" == "serve.sh" || "$name" == "run.sh" ]] && continue
-  if grep -q 'REPO_DIR.*weights/' "$script"; then
-    pass "$name uses REPO_DIR for weights path"
+  if grep -q 'lib/weights.sh' "$script" && grep -q 'WEIGHTS_DIR/' "$script"; then
+    pass "$name resolves weights via WEIGHTS_DIR"
   else
-    fail "$name doesn't use REPO_DIR for weights"
+    fail "$name doesn't use the WEIGHTS_DIR resolver"
+  fi
+done
+
+# The resolver must not hardcode an in-repo weights path in launch scripts.
+for script in "$REPO_DIR"/scripts/serve-*.sh "$REPO_DIR"/scripts/run-*.sh; do
+  name=$(basename "$script")
+  if grep -q 'REPO_DIR/weights/' "$script"; then
+    fail "$name still hardcodes \$REPO_DIR/weights/"
   fi
 done
 

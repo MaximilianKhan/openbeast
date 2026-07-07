@@ -1,6 +1,6 @@
 # Installation
 
-This repo runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
+OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
 server providing 17 tools for file I/O, shell, web search, agent management,
 and a curated skills system (14 specialized expertise packages loaded on
@@ -21,7 +21,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 
 # Clone the repo
-git clone <repo-url> models && cd models
+git clone <repo-url> openbeast && cd openbeast
 
 # Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -32,9 +32,9 @@ export PATH=/opt/cuda/bin:$PATH
 # Python deps + Hugging Face CLI
 pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
 
-# Default model — top of internal leaderboard (97.3% accuracy / 86.7 speed)
-hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
+# Default model — uncensored 27B fine-tune (#2 on the v3.5 leaderboard, 96.16%)
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 
 # Frontends
 curl -fsSL https://opencode.ai/install | bash
@@ -134,13 +134,30 @@ pip install --user --break-system-packages huggingface-hub[cli]
 (The `--break-system-packages` flag is Arch-specific; on Debian/Ubuntu use a
 venv or `pipx` instead.)
 
-Create the weights directory and download whichever models you plan to use:
+Weights do not have to live inside the repo. OpenBeast resolves the weights
+directory (env var → `openbeast.conf` → `./weights` → `../weights`) — see
+**[§ Where weights live](#where-weights-live)** below to put them on an NVMe,
+USB drive, or NAS. The examples below use `--local-dir weights/` (the in-repo
+default); substitute your chosen directory if different.
 
 ```bash
 mkdir -p weights
 ```
 
-### Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) -- Q4_K_M (~20GB) — DEFAULT
+### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB) — DEFAULT
+
+```bash
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+```
+
+### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top accuracy (97.85%)
+
+```bash
+hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
+```
+
+### Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) -- Q4_K_M (~20GB)
 
 ```bash
 hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
@@ -151,19 +168,6 @@ hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
 
 ```bash
 hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --local-dir weights/
-```
-
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB)
-
-```bash
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
-```
-
-### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB)
-
-```bash
-hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
 ```
 
 ### Gemma 4 31B-it -- Q5_K_XL (~20.4GB)
@@ -237,6 +241,30 @@ something within native limits.
 
 You don't need all of these — download whichever models you plan to use.
 
+### Where weights live
+
+You do **not** have to keep weights inside the repo. Every launch script
+resolves a weights directory via `scripts/lib/weights.sh`, checking these in
+order (first match wins):
+
+1. **`$OPENBEAST_WEIGHTS_DIR`** — environment variable (per-shell override):
+   ```bash
+   OPENBEAST_WEIGHTS_DIR=/mnt/nvme/gguf ./start.sh
+   ```
+2. **`WEIGHTS_DIR=` in `openbeast.conf`** — repo-root config, for a persistent
+   choice. Gitignored, so your personal path is never committed:
+   ```bash
+   cp openbeast.conf.example openbeast.conf
+   # edit: WEIGHTS_DIR=/mnt/nas/ai/weights   (NVMe, USB, NAS, ~ , or relative)
+   ```
+3. **`./weights/`** — an in-repo folder, used automatically if it exists (what
+   the download commands above create).
+4. **`../weights/`** — the default for a fresh clone with no `./weights`: a
+   sibling folder next to the `openbeast` checkout.
+
+Paths accept `~` and may be relative (resolved against the repo root). If the
+resolved directory is missing, the launch scripts tell you exactly how to set it.
+
 ## 3. Install Python dependencies
 
 ```bash
@@ -294,14 +322,16 @@ No manual config needed — the mounted file handles all of it.
 
 ## 5. Start the stack
 
-The default model is **Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) Q4_K_M**
-— top of our internal leaderboard at 97.3 % accuracy with the fastest sweep
-time among the 5 models we benchmarked.
+The default model is **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive) — an
+uncensored fine-tune that scores 96.16 % on the v3.5 sweep (#2 overall). Swap in
+another model with a single arg (below): the dense 27B Q5 for top accuracy, or a
+35B-A3B MoE when interactive speed matters more.
 
 ```bash
-./start.sh                                       # default model + MCPO + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-uncensored-q5.sh       # 27B Uncensored Q5 (slower but tighter quant)
-./start.sh serve-qwen-35b-a3b.sh                 # standard 35B MoE
+./start.sh                                       # default model (27B Uncensored Q5) + MCPO + Open WebUI + SearXNG
+./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top accuracy (97.85%)
+./start.sh serve-qwen-35b-a3b.sh                 # standard 35B-A3B MoE (30–50% faster tokens)
+./start.sh serve-qwen-35b-a3b-uncensored-q4.sh   # 35B-A3B Uncensored MoE (fastest wall-clock)
 ./start.sh serve-gemma-4-31b-q5.sh               # Gemma 4 31B
 ```
 

@@ -11,8 +11,9 @@
 # (see comments in serve-qwen-27b-mtp-q5.sh for rationale).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf" \
+  -m "$WEIGHTS_DIR/Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf" \
   -c 262144 \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \

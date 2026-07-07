@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health monitor for the local AI stack.
+# Health monitor for the OpenBeast stack.
 #
 # Checks all services and optionally restarts failed ones.
 #
@@ -52,7 +52,7 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
       kill "$SERVE_PID" 2>/dev/null
       sleep 2
     fi
-    "$SCRIPT_DIR/serve-qwen-35b-a3b-uncensored-q4.sh" &
+    "$SCRIPT_DIR/serve-qwen-27b-uncensored-q5.sh" &
     echo "       → started (waiting for health...)"
     for i in $(seq 1 30); do
       if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then

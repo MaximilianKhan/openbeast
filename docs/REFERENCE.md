@@ -3,9 +3,11 @@
 ## Directory layout
 
 ```
-models/
+openbeast/
 ├── llama.cpp/              # inference engine (built with CUDA) [gitignored]
-├── weights/                # GGUF model files [gitignored]
+├── openbeast.conf.example  # config template — copy to openbeast.conf to relocate weights
+├── scripts/lib/weights.sh  # resolves the weights dir (env / config / ./weights / ../weights)
+├── weights/                # GGUF model files — default location, relocatable [gitignored]
 │   ├── Qwen3.6-27B-UD-Q5_K_XL.gguf
 │   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
 │   ├── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
@@ -247,7 +249,12 @@ cmake --build build --config Release -j$(nproc)
 
 ## 3. Download models
 
-All weights go into `weights/`.
+Weights go into the OpenBeast weights directory. By default that is `weights/`
+inside the repo, but it is relocatable — set `$OPENBEAST_WEIGHTS_DIR` or
+`WEIGHTS_DIR=` in `openbeast.conf` to point at an NVMe/USB/NAS path instead.
+See [INSTALL.md § Where weights live](INSTALL.md#where-weights-live). The
+`--local-dir weights/` in the commands below just targets the in-repo default;
+substitute your directory if different.
 
 ```bash
 pip install --user --break-system-packages huggingface-hub[cli]
@@ -440,12 +447,14 @@ model to invoke `list_skills` for non-trivial work.
 
 ### Full stack
 
-The default model is **Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) Q4_K_M**
-(top of the internal leaderboard at 97.3 % accuracy on the 144-task sweep).
+The default model is **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive
+uncensored fine-tune; #2 on the internal leaderboard at 96.16 % on v3.5). The
+dense 27B Q5 leads on raw accuracy (97.85 %) and the 35B-A3B MoEs are faster —
+each is one `./start.sh <serve-script>` away.
 
 ```bash
 ./start.sh                                      # default model + MCP tools + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-uncensored-q5.sh      # use a different model
+./start.sh serve-qwen-27b-q5.sh                 # use a different model (dense 27B Q5, top accuracy)
 ./stop.sh                                       # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
 

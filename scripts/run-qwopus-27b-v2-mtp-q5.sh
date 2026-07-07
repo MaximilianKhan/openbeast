@@ -10,8 +10,9 @@
 # (see comments in serve-qwopus-27b-v2-mtp-q5.sh for rationale).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf" \
+  -m "$WEIGHTS_DIR/Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf" \
   -c 262144 \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \

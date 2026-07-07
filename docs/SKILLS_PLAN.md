@@ -1,4 +1,4 @@
-# Skills for the local LLM stack
+# Skills for OpenBeast
 
 **Status (2026-05-06):** ✅ Phases 1–4 implemented in this same session. ⏸️
 Phase 5 (routing layer) deferred — not enough friction yet to justify the

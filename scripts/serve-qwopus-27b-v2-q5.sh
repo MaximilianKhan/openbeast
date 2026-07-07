@@ -14,8 +14,9 @@
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/serve.sh" \
-  -m "$REPO_DIR/weights/Qwopus3.6-27B-v2-Q5_K_M.gguf" \
+  -m "$WEIGHTS_DIR/Qwopus3.6-27B-v2-Q5_K_M.gguf" \
   -a "Qwopus 27B v2 Q5" \
   -c 358400 \
   "$@"

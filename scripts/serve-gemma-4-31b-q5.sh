@@ -8,8 +8,9 @@
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/serve.sh" \
-  -m "$REPO_DIR/weights/gemma-4-31B-it-UD-Q5_K_XL.gguf" \
+  -m "$WEIGHTS_DIR/gemma-4-31B-it-UD-Q5_K_XL.gguf" \
   -a "Gemma 4 31B" \
   -c 196608 \
   "$@"

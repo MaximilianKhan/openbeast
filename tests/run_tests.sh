@@ -10,7 +10,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "========================================"
-echo " Local LLM Stack — Test Suite"
+echo " OpenBeast — Test Suite"
 echo "========================================"
 echo ""
 

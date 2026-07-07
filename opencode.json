@@ -15,24 +15,10 @@
         "baseURL": "http://localhost:8080/v1"
       },
       "models": {
-        "qwen-35b-a3b-uncensored-q4": {
-          "name": "Qwen3.6-35B-A3B Uncensored Q4_K_M (default)",
-          "limit": {
-            "context": 524288,
-            "output": 32768
-          }
-        },
         "qwen-27b-uncensored-q5": {
-          "name": "Qwen3.6-27B Uncensored Q5_K_P",
+          "name": "Qwen3.6-27B Uncensored Q5_K_P (default)",
           "limit": {
             "context": 358400,
-            "output": 32768
-          }
-        },
-        "qwen-35b-a3b": {
-          "name": "Qwen3.6-35B-A3B MoE",
-          "limit": {
-            "context": 524288,
             "output": 32768
           }
         },
@@ -40,6 +26,20 @@
           "name": "Qwen3.6-27B Q5_K_XL",
           "limit": {
             "context": 358400,
+            "output": 32768
+          }
+        },
+        "qwen-35b-a3b-uncensored-q4": {
+          "name": "Qwen3.6-35B-A3B Uncensored Q4_K_M",
+          "limit": {
+            "context": 524288,
+            "output": 32768
+          }
+        },
+        "qwen-35b-a3b": {
+          "name": "Qwen3.6-35B-A3B MoE",
+          "limit": {
+            "context": 524288,
             "output": 32768
           }
         },

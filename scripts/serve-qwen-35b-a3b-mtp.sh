@@ -20,8 +20,9 @@
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/serve.sh" \
-  -m "$REPO_DIR/weights/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf" \
+  -m "$WEIGHTS_DIR/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf" \
   -a "Qwen 35B MoE MTP" \
   -c 393216 \
   -np 1 \

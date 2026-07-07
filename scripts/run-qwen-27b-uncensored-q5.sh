@@ -6,7 +6,8 @@
 # 416K = 31,405 MiB / 1.36 GB headroom (below 2GB rule, OOM-prone).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf" \
+  -m "$WEIGHTS_DIR/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf" \
   -c 358400 \
   "$@"

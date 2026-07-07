@@ -1,5 +1,5 @@
 #!/bin/bash
-# Configure Open WebUI for the local AI stack.
+# Configure Open WebUI for the OpenBeast stack.
 # Idempotent — safe to run multiple times.
 #
 # Sets up:

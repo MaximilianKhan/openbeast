@@ -6,7 +6,8 @@
 # serve-qwopus-27b-v2-q5.sh for the YaRN-extension caveat.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwopus3.6-27B-v2-Q5_K_M.gguf" \
+  -m "$WEIGHTS_DIR/Qwopus3.6-27B-v2-Q5_K_M.gguf" \
   -c 358400 \
   "$@"

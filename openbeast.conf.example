@@ -1,0 +1,21 @@
+# OpenBeast configuration — copy to "openbeast.conf" and edit.
+#
+#   cp openbeast.conf.example openbeast.conf
+#
+# openbeast.conf is gitignored, so your local paths never get committed.
+
+# Where your .gguf model weights live. Weights are large and are NOT stored in
+# the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
+# point OpenBeast at them here.
+#
+# Accepts absolute paths, ~ for your home dir, or a path relative to the repo.
+# If unset here, OpenBeast falls back to (in order): $OPENBEAST_WEIGHTS_DIR,
+# an existing ./weights/ inside the repo, then ../weights next to the repo.
+#
+# Examples:
+#   WEIGHTS_DIR=/mnt/nvme/gguf
+#   WEIGHTS_DIR=~/models/gguf
+#   WEIGHTS_DIR=/run/media/max/USB-SSD/weights
+#   WEIGHTS_DIR=/mnt/nas/ai/weights
+
+WEIGHTS_DIR=../weights

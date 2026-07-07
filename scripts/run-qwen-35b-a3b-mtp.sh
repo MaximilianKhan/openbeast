@@ -11,8 +11,9 @@
 # (see comments in serve-qwen-35b-a3b-mtp.sh for rationale).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
-  -m "$REPO_DIR/weights/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf" \
+  -m "$WEIGHTS_DIR/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf" \
   -c 393216 \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \

@@ -741,7 +741,7 @@ table and a couple of useful flags.
 **Trigger:** build after the v3 sweep lands and the post-mortem is written.
 
 ### Tailscale remote access
-Set up Tailscale so the local AI stack can be accessed from the work laptop (or
+Set up Tailscale so OpenBeast can be accessed from the work laptop (or
 any device) over a private encrypted mesh — no port forwarding or static IP needed.
 
 **Steps:**
@@ -821,7 +821,7 @@ model.
    p-min trades draft acceptance rate for quality; deeper n-max amplifies
    both wins and losses).
 5. If results look good, consider promoting the MTP MoE to the auto-launch
-   default (currently the non-MTP uncensored 35B-A3B). Tradeoff: lose 6-slot
+   default (currently Qwen 27B Uncensored Q5_K_P). Tradeoff: lose 6-slot
    parallelism for single-request speed.
 
 ### Phase 4 follow-up — variant the 5 deferred tasks

@@ -1,8 +1,8 @@
-# Local AI Stack
+# OpenBeast
 
 A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
 
-Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-35B-A3B Uncensored Q4_K_M** — top of the internal leaderboard at 97.3 % accuracy / 86.7 speed on the 144-task sweep, with the fastest wall-clock among 5 benchmarked models. Eval suite is now at v3.5 — 159 base tasks, 33 of them with full 6-language variants (~313 effective test units), result cache for retryable sweeps, and tool-selection efficiency analyzer. See [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology.
+Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive) — an uncensored fine-tune that lands **#2 on the internal leaderboard at 96.16 % accuracy** on the v3.5 sweep. If you want the top raw benchmark score instead, the standard dense **Qwen3.6-27B Q5_K_XL** leads at 97.85 %; the Qwen3.6-35B-A3B MoE variants run 30–50 % faster per token — either swaps in with a single argument to `start.sh`. Eval suite is now at v3.5 — 159 base tasks, 33 of them with full 6-language variants (~313 effective test units), result cache for retryable sweeps, and tool-selection efficiency analyzer. See [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense, Qwen 27B uncensored, Qwen 35B MoE, **Qwen 35B-A3B uncensored** as default, Gemma 4 31B-it) and 4 scaffolded 2026-05-22 awaiting first launch (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
+- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 scaffolded 2026-05-22 awaiting first launch (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 
 **Tool Suite (17 MCP tools)**
@@ -83,7 +83,7 @@ Assuming NVIDIA driver, CUDA, Docker, and Python 3.10+ are installed:
 
 ```bash
 # 1. Clone and enter the repo
-git clone <repo-url> models && cd models
+git clone <repo-url> openbeast && cd openbeast
 
 # 2. Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -94,8 +94,9 @@ git clone https://github.com/ggml-org/llama.cpp.git
 pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
 
 # 4. Download the default model (or pick another from docs/INSTALL.md)
-hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
+#    --local-dir can be anywhere — see "Model weights location" below.
+hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
+   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
 
 # 5. Install OpenCode (terminal frontend)
 curl -fsSL https://opencode.ai/install | bash
@@ -121,6 +122,30 @@ opencode
 ```
 
 See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
+
+## Model weights location
+
+Weights are large (10s of GB each), so OpenBeast never requires you to store
+them inside the repo. Every launch script resolves a weights directory through
+`scripts/lib/weights.sh`, checking these in order (first match wins):
+
+1. **`$OPENBEAST_WEIGHTS_DIR`** — environment variable, highest priority. Best
+   for a one-off: `OPENBEAST_WEIGHTS_DIR=/mnt/nvme/gguf ./start.sh`.
+2. **`WEIGHTS_DIR=` in `openbeast.conf`** — a repo-root config file for a
+   persistent choice. Copy the template and edit it:
+   ```bash
+   cp openbeast.conf.example openbeast.conf
+   # WEIGHTS_DIR=/mnt/nas/ai/weights   (NVMe, USB, NAS mount, ~ , or relative)
+   ```
+   `openbeast.conf` is gitignored, so your personal path is never committed.
+3. **`./weights/`** — an in-repo folder, used automatically if it exists
+   (this is what the Quick Start creates, and what long-time setups already use).
+4. **`../weights/`** — the default for a fresh clone with no `./weights`: a
+   sibling folder right next to the `openbeast` checkout.
+
+Paths accept `~` and may be relative (resolved against the repo root). If the
+resolved directory doesn't exist, the launch scripts print exactly how to point
+OpenBeast at your weights instead of failing with a cryptic "model not found".
 
 ## Models
 
@@ -206,7 +231,9 @@ system-prompt.md             # Soul file (persona, applied to all frontends)
 system-prompt-tools.md       # Tool guidance (Open WebUI only)
 docker-compose.yml           # Open WebUI + SearXNG containers
 opencode.json                # OpenCode project config (MCP wiring + model list)
-weights/                     # GGUF model files [gitignored]
+weights/                     # GGUF model files (default location; relocatable — see below) [gitignored]
+openbeast.conf.example       # Config template — copy to openbeast.conf to set a custom weights dir
+scripts/lib/weights.sh       # Resolves the weights directory (env / config / ./weights / ../weights)
 llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 ```
 

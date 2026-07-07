@@ -1,7 +1,7 @@
 # Agent Instructions for this Repository
 
-You're working in **a fully local AI workstation** — llama.cpp serving Qwen
-and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
+You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
+serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
 a 159-task eval suite (40 easy / 53 medium / 66 hard across 12 categories),
 and 14 curated skills for specialized work.
 
@@ -50,8 +50,10 @@ your main conversation stays responsive while the sub-agent grinds.
 
 ### Default model
 
-`Qwen3.6-35B-A3B Uncensored Q4_K_M` (top of internal leaderboard at 97.3%
-accuracy / 86.7 speed). Launched by `./start.sh` with no args.
+`Qwen3.6-27B Uncensored Q5_K_P` (HauhauCS Aggressive uncensored fine-tune; #2 on
+the internal leaderboard at 96.16% on v3.5). Launched by `./start.sh` with no args.
+The dense `Qwen3.6-27B Q5_K_XL` is the top raw scorer (97.85%) and the 35B-A3B MoEs
+are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 
 ### Where things live
 

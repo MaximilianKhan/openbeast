@@ -2,6 +2,9 @@
 llama.cpp/
 weights/
 
+# Local machine config (weights location, etc.) — never commit personal paths
+openbeast.conf
+
 # Agent logs
 agents/logs/
 
