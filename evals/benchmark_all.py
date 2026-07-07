@@ -283,7 +283,8 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
 def run_sweep(models: list[dict], task_filter: list[str] | None,
               max_iter_override: int | None,
               use_cache: bool = True,
-              cache_only: bool = False) -> dict:
+              cache_only: bool = False,
+              update_leaderboard: bool = True) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -308,7 +309,10 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
             })
         else:
             entry = scoring.score_run(outcome["results"])
-            scoring.update_leaderboard(entry)
+            if update_leaderboard:
+                scoring.update_leaderboard(entry)
+            else:
+                print("  (--no-leaderboard: score not recorded in leaderboard.json)")
             sweep_summary["scores"].append(entry)
             sweep_summary["models_succeeded"] += 1
             print(f"\n>>> {model['name']}: accuracy {entry['accuracy']} "
@@ -345,6 +349,11 @@ def main():
     parser.add_argument("--max-iter", type=int, help="Override max iterations per task")
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
+    parser.add_argument("--no-leaderboard", action="store_true",
+                        help="Do not record scores in leaderboard.json. REQUIRED for "
+                             "smoke tests / partial-suite runs: the leaderboard must only "
+                             "ever contain full-suite sweeps, or its accuracy numbers "
+                             "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
@@ -378,9 +387,15 @@ def main():
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
+    if args.tasks and not args.no_leaderboard:
+        print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
+              "will be recorded in leaderboard.json and mix incomparably with "
+              "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
+              file=sys.stderr)
     summary = run_sweep(models, task_filter, args.max_iter,
                          use_cache=not args.no_cache,
-                         cache_only=args.cache_only)
+                         cache_only=args.cache_only,
+                         update_leaderboard=not args.no_leaderboard)
     summary_path = save_sweep_summary(summary)
 
     # Final report

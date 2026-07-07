@@ -847,8 +847,22 @@ model.
    p-min affects speed only, and unconditional drafting is faster. The 27B's
    n8 draft buffers cost ~600 MiB, so its context backed off 320K→288K.
    Full tuning table in REFERENCE.md "MTP variants".
-3. **Add `qwen-27b-mtp-q5`, `qwen-35b-a3b-mtp`, and `qwopus-27b-v2-mtp-q5`
-   to `evals/benchmark_all.py`** as additional models in the next sweep
+3. ✅ **Done 2026-07-07** — all four rows added to `evals/benchmark_all.py`
+   AND smoke-validated end-to-end on the 13-task stratified subset (results
+   quarantined in `evals/results/smoke/`, leaderboard untouched via the new
+   `--no-leaderboard` flag):
+   - qwen-27b-mtp-q5: 13/13 · qwen-35b-a3b-mtp: 13/13 (100.0 acc)
+   - qwopus-27b-v2-mtp-q5: 13/13 · qwopus-27b-v2-q5: 12/13 after infra-blip
+     rerun of 137 (the honest FAIL: `65_miller_rabin_e` — 20 min of CoT
+     without ever writing mr.rs; the MTP sibling passed the same task, its
+     ~2× token speed letting the long reasoning finish inside the timeout)
+   - Notable: on sequential eval work, single-slot MTP beat 6-slot non-MTP
+     on wall-clock (Qwopus MTP 1502s vs non-MTP 1679s, same 13 tasks) —
+     the sweep runs tasks sequentially, so `-np 1` costs nothing there.
+
+   Original step preserved below:
+   Add `qwen-27b-mtp-q5`, `qwen-35b-a3b-mtp`, and `qwopus-27b-v2-mtp-q5`
+   to `evals/benchmark_all.py` as additional models in the next sweep
    (plus the non-MTP `qwopus-27b-v2-q5` as a regular row alongside our other
    27B variants).
    - **Sweep cannot parallelize MTP runs.** MTP forces `-np 1`, so the
