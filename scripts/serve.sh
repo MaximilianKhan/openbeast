@@ -16,6 +16,14 @@ if [[ ! -x "$LLAMA_SERVER" ]]; then
   exit 1
 fi
 
+# The binary's baked-in RUNPATH points at wherever llama.cpp was built, which
+# breaks if the repo moves. Resolve its shared libs relative to the binary.
+export LD_LIBRARY_PATH="$(dirname "$LLAMA_SERVER")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# BIND_HOST / LLAMA_API_KEY from openbeast.conf (remote access goes through
+# Tailscale Serve — see scripts/setup-tailscale.sh).
+source "$SCRIPT_DIR/lib/conf.sh"
+
 # Defaults (overridable by model scripts or CLI flags)
 MODEL=""
 ALIAS=""
@@ -23,7 +31,7 @@ CONTEXT=65536
 KV_QUANT="q4_0"
 GPU_LAYERS=99
 PARALLEL=6
-HOST="0.0.0.0"
+HOST="$BIND_HOST"
 PORT=8080
 
 # Parse known flags; collect the rest for passthrough
@@ -52,11 +60,17 @@ if [[ -n "$ALIAS" ]]; then
   ALIAS_ARGS=(-a "$ALIAS")
 fi
 
+API_KEY_ARGS=()
+if [[ -n "$LLAMA_API_KEY" ]]; then
+  API_KEY_ARGS=(--api-key "$LLAMA_API_KEY")
+fi
+
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
 
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
   "${ALIAS_ARGS[@]}" \
+  "${API_KEY_ARGS[@]}" \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -np "$PARALLEL" \

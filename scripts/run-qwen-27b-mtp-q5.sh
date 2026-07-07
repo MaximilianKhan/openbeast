@@ -5,16 +5,19 @@
 #
 # MTP launch flags:
 #   --spec-type draft-mtp     enable MTP draft path
-#   --spec-draft-n-max 2      draft 2 tokens ahead per step
+#   --spec-draft-n-max 8      draft 8 tokens ahead per step (tuned 2026-07-07,
+#                             2.75x over baseline — see serve script)
+#   --spec-draft-p-min 0.0    draft unconditionally (no probability gate)
 #
-# Context: 256K (-c 262144) — conservative starting point pending measurement
-# (see comments in serve-qwen-27b-mtp-q5.sh for rationale).
+# Context: 288K (-c 294912) — measured ceiling 2026-07-07 at n-max 8
+# (see comments in serve-qwen-27b-mtp-q5.sh for the numbers).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/run.sh" \
   -m "$WEIGHTS_DIR/Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf" \
-  -c 262144 \
+  -c 294912 \
   --spec-type draft-mtp \
-  --spec-draft-n-max 2 \
+  --spec-draft-n-max 8 \
+  --spec-draft-p-min 0.0 \
   "$@"

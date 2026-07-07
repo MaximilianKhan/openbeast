@@ -30,7 +30,7 @@ done
 echo ""
 echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
-  serve.sh run.sh configure-webui.sh healthcheck.sh
+  serve.sh run.sh configure-webui.sh healthcheck.sh setup-tailscale.sh
   serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-35b-a3b-uncensored-q4.sh
@@ -99,6 +99,23 @@ for script in "$REPO_DIR"/scripts/serve-*.sh "$REPO_DIR"/scripts/run-*.sh; do
   name=$(basename "$script")
   if grep -q 'REPO_DIR/weights/' "$script"; then
     fail "$name still hardcodes \$REPO_DIR/weights/"
+  fi
+done
+
+# Bind-surface hardening (Tailscale rollout 2026-07-07): services must take
+# their listen address from the BIND_HOST resolver (lib/conf.sh), never a
+# hardcoded 0.0.0.0 — the tailnet proxy is the only intended way in.
+if grep -q 'lib/conf.sh' "$REPO_DIR/scripts/serve.sh" \
+   && grep -q 'HOST="\$BIND_HOST"' "$REPO_DIR/scripts/serve.sh"; then
+  pass "serve.sh takes its bind address from lib/conf.sh"
+else
+  fail "serve.sh doesn't resolve BIND_HOST via lib/conf.sh"
+fi
+for f in scripts/serve.sh scripts/healthcheck.sh start.sh docker-compose.yml; do
+  if grep -q '0\.0\.0\.0' "$REPO_DIR/$f"; then
+    fail "$f hardcodes 0.0.0.0 (use BIND_HOST / OPENBEAST_BIND)"
+  else
+    pass "$f has no hardcoded 0.0.0.0"
   fi
 done
 

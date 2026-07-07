@@ -19,3 +19,28 @@
 #   WEIGHTS_DIR=/mnt/nas/ai/weights
 
 WEIGHTS_DIR=../weights
+
+# ---------------------------------------------------------------------------
+# Network / remote access  (see docs/REMOTE_ACCESS_PLAN.md and
+# scripts/setup-tailscale.sh — one command sets up secure access from
+# anywhere via Tailscale)
+# ---------------------------------------------------------------------------
+
+# Address the stack's services bind to. Default (even without this file) is
+# 127.0.0.1: loopback-only, with remote devices coming in through Tailscale
+# Serve's authenticated HTTPS proxy. Set 0.0.0.0 to restore the legacy
+# LAN-open behavior (any device on your network can reach every service,
+# unauthenticated — not recommended).
+#BIND_HOST=127.0.0.1
+
+# Optional: require "Authorization: Bearer <key>" on the llama-server API.
+# Off by default — the tailnet is already the security boundary, and the
+# eval harness / agents don't send a key yet. Enable if your tailnet has
+# other users.
+#LLAMA_API_KEY=
+
+# Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
+# tool-server + native function-calling config now that WEBUI_AUTH is on.
+# Create the account in the browser on first visit, then mirror it here.
+#WEBUI_ADMIN_EMAIL=
+#WEBUI_ADMIN_PASSWORD=

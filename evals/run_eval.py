@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -205,14 +206,52 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
+def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
+    """subprocess.run-alike that SIGKILLs the whole process group on timeout.
+
+    Twin of agents/tools.py run_reaped — kept inline so the eval harness has
+    no import dependency on the agent package. Plain subprocess.run with
+    shell=True kills only /bin/sh on timeout, orphaning the grandchildren:
+    on 2026-07-07 two orphaned model-written programs grew to ~140 GB each
+    and OOM-killed the session (see docs/TODO.md post-mortem). The rlimit
+    bounds a memory bomb in the window before the timeout fires.
+
+    Returns (returncode, merged stdout+stderr). Raises TimeoutExpired.
+    """
+    def _preexec():
+        import resource
+        cap = 32 * 1024**3
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+
+    proc = subprocess.Popen(
+        cmd, shell=shell,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True, preexec_fn=_preexec,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+
+
 def run_setup(task: dict) -> bool:
     """Run task setup command. Returns True on success."""
     setup = task.get("setup")
     if not setup:
         return True
-    result = subprocess.run(setup, shell=True, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0:
-        print(f"  Setup failed: {result.stderr[:200]}")
+    returncode, output = _run_reaped(setup, timeout=30, shell=True)
+    if returncode != 0:
+        print(f"  Setup failed: {output[:200]}")
         return False
     return True
 
@@ -242,23 +281,37 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -
         task["task"],
     ]
 
+    # start_new_session so an agent timeout SIGKILLs the runner's whole
+    # process group, not just the runner (its bash-tool children reap their
+    # own groups — see agents/tools.py run_reaped).
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=max_iter * 60,  # rough timeout: 1 min per iteration max
-        )
+        stdout, stderr = proc.communicate(timeout=max_iter * 60)  # rough timeout: 1 min per iteration max
         elapsed = time.time() - start_time
-        tokens = _parse_tokens(result.stdout)
+        tokens = _parse_tokens(stdout)
         return {
-            "exit_code": result.returncode,
+            "exit_code": proc.returncode,
             "elapsed_seconds": round(elapsed, 1),
-            "stdout": result.stdout[-2000:],  # last 2K of output
-            "stderr": result.stderr[-1000:],
+            "stdout": stdout[-2000:],  # last 2K of output
+            "stderr": stderr[-1000:],
             "tokens": tokens,
         }
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         elapsed = time.time() - start_time
         return {
             "exit_code": -1,
@@ -281,7 +334,7 @@ def run_pre_validate(task: dict):
     cmd = task.get("pre_validate")
     if not cmd:
         return
-    subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    _run_reaped(cmd, timeout=30, shell=True)
 
 
 def run_validation(task: dict) -> tuple[bool, str]:
@@ -295,18 +348,13 @@ def run_validation(task: dict) -> tuple[bool, str]:
 
     try:
         if vtype == "python":
-            result = subprocess.run(
-                [sys.executable, "-c", script],
-                capture_output=True, text=True, timeout=30,
+            returncode, output = _run_reaped(
+                [sys.executable, "-c", script], timeout=30,
             )
         else:
-            result = subprocess.run(
-                script, shell=True,
-                capture_output=True, text=True, timeout=30,
-            )
-        passed = result.returncode == 0
-        output = (result.stdout + result.stderr).strip()[:500]
-        return passed, output
+            returncode, output = _run_reaped(script, timeout=30, shell=True)
+        passed = returncode == 0
+        return passed, output.strip()[:500]
     except subprocess.TimeoutExpired:
         return False, "Validation timed out"
     except Exception as e:
@@ -317,7 +365,7 @@ def run_cleanup(task: dict):
     """Run cleanup command."""
     cleanup = task.get("cleanup")
     if cleanup:
-        subprocess.run(cleanup, shell=True, capture_output=True, timeout=30)
+        _run_reaped(cleanup, timeout=30, shell=True)
 
 
 def run_eval(

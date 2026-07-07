@@ -166,9 +166,24 @@ beyond 200K — same cliff that caused Qwen Q5_K_XL OOMs at 512K.
 
 Models: `unsloth/Qwen3.6-27B-MTP-GGUF` and `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`.
 MTP draft heads are baked into the same GGUF — no sidecar file. Launched
-with `--spec-type draft-mtp --spec-draft-n-max 2` (the unsloth-recommended
-config). Per their README, expect ~1.5–2× faster inference at no accuracy
-loss when the draft acceptance rate is high.
+with `--spec-type draft-mtp` plus per-model tuned draft parameters
+(benchmarked empirically 2026-07-07 on greedy 640-token code/reasoning
+generations; speculative decoding is lossless — the target model verifies
+every draft token, so these knobs affect speed only):
+
+| Model | Tuned config | tok/s | Baseline (no spec) | Speedup | Accept |
+|-------|--------------|------:|-------------------:|--------:|-------:|
+| 27B MTP Q5_K_XL | `n-max 8, p-min 0.0` | 184 | 66.8 | **2.75×** | 55% |
+| 35B-A3B MTP Q4_K_M | `n-max 4, p-min 0.0` | 379 | 259 | **1.46×** | 65% |
+| Qwopus 27B v2 MTP | `n-max 4, p-min 0.0` | 147 | 68.5 | **2.14×** | 62% |
+
+Tuning findings: probability-gating drafts (`p-min` 0.5–0.9) always measured
+slower than drafting unconditionally — MTP heads are nearly free to run, so
+rejected drafts cost little. Dense models reward deep drafts (27B optimum
+n8); the fast-decoding MoE inverts at n8+ (below baseline — verification
+batches cost more than they save). The Qwopus SFT fine-tune has lower draft
+acceptance than base Qwen (its output distribution shifted relative to the
+MTP heads), so its optimum stays at n4.
 
 **Upstream constraints (llama.cpp as of 2026-05-22, see commit log around
 `#22673` and follow-ups through `#23461`):**
@@ -176,19 +191,21 @@ loss when the draft acceptance rate is high.
   requests serialize.
 - `--mmproj` is not supported with MTP — no vision input on these builds.
 
-**VRAM:** not yet measured. Both GGUFs are ~0.7–1.4 GB heavier than the
-non-MTP builds because the MTP head tensors are loaded into VRAM alongside
-the main weights. The MTP draft path also allocates additional scratch
-buffers at runtime. Conservative starting contexts pending real measurement:
+**VRAM (measured 2026-07-07 via `scripts/measure-vram.sh`):** both GGUFs are
+~0.7–1.4 GB heavier than the non-MTP builds because the MTP head tensors are
+loaded into VRAM alongside the main weights, and the MTP draft path allocates
+additional scratch buffers. KV is allocated up-front at load, so these peaks
+are reachable without sending traffic. Totals include ~1.3 GB of desktop
+baseline on the shared card.
 
-| Variant | Starting context | Rationale |
-|---------|------------------|-----------|
-| 27B MTP Q5_K_XL | **256K** (-c 262144) | Non-MTP 27B Q5_K_XL runs at 350K with ~3.2 GB headroom; +1.4 GB heads + draft buffers → drop ~25% |
-| 35B-A3B MTP Q4_K_M | **384K** (-c 393216) | Non-MTP 35B-A3B runs at 512K with ~4.3 GB headroom; +0.7 GB heads + draft buffers → drop ~25% |
-| Qwopus 27B v2 MTP Q5_K_M | **256K** (-c 262144) | Matches the unsloth 27B MTP starting context; Jackrong's MTP build is the same size class |
+Measurements below are at each model's tuned draft config (draft buffers
+scale with `n-max`: the 27B's n8 costs ~600 MiB more than n4):
 
-After a clean first launch, measure with `nvidia-smi` under load and raise
-contexts to land near the 2 GB headroom rule.
+| Variant | Max context (default) | Measured | Notes |
+|---------|----------------------|----------|-------|
+| 27B MTP Q5_K_XL | **288K** (-c 294912) | 30,063 MiB / 2,544 MiB headroom | At the tuned n-max 8. 320K went TIGHT at n8 (30,959 MiB / 1,648 MiB) — 32K of context traded for the 2.75× decode speed. ~28 KB/token KV. |
+| 35B-A3B MTP Q4_K_M | **512K** (-c 524288) | 29,449 MiB / 3,158 MiB headroom | Matches the non-MTP MoE ceiling; light ~12 KB/token KV absorbs the MTP heads. 384K = 27,833 MiB / 4,774 MiB. |
+| Qwopus 27B v2 MTP Q5_K_M | **336K** (-c 344064) | 30,027 MiB / 2,580 MiB headroom | 352K = 30,475 MiB / 2,132 MiB — passes the 2 GB rule on paper but matches the uncensored 27B's sustained-load crash zone, so backed off one notch. ~27 KB/token KV. |
 
 ### Qwopus3.6-27B-v2 (Jackrong SFT, added 2026-05-22)
 
@@ -198,18 +215,21 @@ Qwen3.6-27B trained on Trace Inversion datasets distilled from Claude
 Opus 4.6/4.7 reasoning traces — reasoning-quality oriented rather than a
 speed or uncensored play.
 
-Architecturally identical to Qwen3.6-27B (64 layers, dense), so VRAM
-behavior should track our existing 27B numbers — non-MTP at Q5_K_M is
-19.2 GB on disk vs 19 GB for our unsloth UD-Q5_K_XL. Treat the 27B KV
-table above as the starting estimate.
+Architecturally identical to Qwen3.6-27B (64 layers, dense) — non-MTP at
+Q5_K_M is 19.2 GB on disk vs 19 GB for our unsloth UD-Q5_K_XL.
+
+**VRAM (measured 2026-07-07):** non-MTP runs **416K** (-c 425984) at
+29,980 MiB / 2,627 MiB headroom (350K = 28,460 MiB / 4,147 MiB; 440K would
+land right at the 2 GB rule). ~23 KB/token KV. The MTP build's numbers are
+in the MTP table above.
 
 **Context caveat:** Jackrong's README cites "32K/128K native context."
 The YaRN extension that ships in the unsloth Qwen3.6 GGUFs (extending
 the 262K native to ~1M) may or may not be intact in this conversion. The
-serve scripts ship at 350K (non-MTP) / 256K (MTP) to match our other 27B
-variants, but if outputs degrade past ~128K under real use, back off
-the context. Validate by running the same long-context probe against
-both Qwopus and the unsloth Qwen3.6-27B build.
+serve scripts ship at the VRAM ceilings above (416K non-MTP / 352K MTP),
+but if outputs degrade past ~128K under real use, back off the context.
+Validate by running the same long-context probe against both Qwopus and
+the unsloth Qwen3.6-27B build.
 
 > **Note (2026-05-05 re-measurement):** at 512K total VRAM is **27,807 MiB / 4,271 MiB
 > headroom** — substantially higher than the 2026-04-27 figure (23.1 GB) due to
@@ -473,10 +493,10 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (350K ctx, ~29.5GB VRAM)
 ./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (350K ctx, ~30.0GB VRAM)
 ./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.8 GB VRAM)
-./scripts/run-qwen-27b-mtp-q5.sh   # Qwen 27B MTP Q5_K_XL (256K ctx, single-slot speculative)
-./scripts/run-qwen-35b-a3b-mtp.sh  # Qwen 35B-A3B MTP MoE (384K ctx, single-slot speculative)
-./scripts/run-qwopus-27b-v2-q5.sh       # Qwopus 27B v2 Q5_K_M (Jackrong SFT, 350K ctx)
-./scripts/run-qwopus-27b-v2-mtp-q5.sh   # Qwopus 27B v2 MTP Q5_K_M (single-slot speculative, 256K ctx)
+./scripts/run-qwen-27b-mtp-q5.sh   # Qwen 27B MTP Q5_K_XL (288K ctx, single-slot speculative)
+./scripts/run-qwen-35b-a3b-mtp.sh  # Qwen 35B-A3B MTP MoE (512K ctx, single-slot speculative)
+./scripts/run-qwopus-27b-v2-q5.sh       # Qwopus 27B v2 Q5_K_M (Jackrong SFT, 416K ctx)
+./scripts/run-qwopus-27b-v2-mtp-q5.sh   # Qwopus 27B v2 MTP Q5_K_M (single-slot speculative, 336K ctx)
 ./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
 ```
 

@@ -10,7 +10,9 @@ import html as html_module
 import json
 import os
 import re
+import resource
 import shlex
+import signal
 import subprocess
 import glob as glob_module
 import urllib.error
@@ -21,24 +23,65 @@ import urllib.request
 # Tool handlers
 # ---------------------------------------------------------------------------
 
+# Per-process address-space cap for model-written code. subprocess timeouts
+# with shell=True kill only the sh wrapper — before the 2026-07-07 fix below,
+# the grandchild survived as an orphan and two runaway eval programs grew to
+# ~140 GB each, exhausting RAM + 187 GB swap and OOM-killing the whole
+# session. The killpg reaps the tree at timeout; this rlimit bounds how much
+# a memory bomb can grab in the seconds before the timeout fires.
+_CHILD_AS_LIMIT = 32 * 1024**3
+
+
+def _child_preexec():
+    resource.setrlimit(resource.RLIMIT_AS, (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+
+
+def run_reaped(command, timeout, **popen_kw):
+    """subprocess.run(shell=True)-alike that kills the WHOLE process group on
+    timeout. Plain subprocess.run kills only the direct child (/bin/sh),
+    orphaning whatever the shell spawned — and then blocks in communicate()
+    on the pipe the orphan still holds. start_new_session puts the tree in
+    its own group so SIGKILL reaches every descendant.
+
+    Returns (returncode, stdout_str) — stderr is folded into stdout.
+    Raises subprocess.TimeoutExpired after reaping on timeout.
+    """
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        preexec_fn=_child_preexec,
+        **popen_kw,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()  # belt-and-suspenders if the leader left its group
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+
+
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr."""
     try:
-        result = subprocess.run(
+        returncode, output = run_reaped(
             command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            timeout,
             cwd=os.environ.get("AGENT_WORKDIR", os.getcwd()),
         )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += result.stderr
         if not output.strip():
-            output = f"(exit code {result.returncode})"
+            output = f"(exit code {returncode})"
         return output[:50_000]  # cap output size
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {timeout}s"

@@ -123,6 +123,50 @@ opencode
 
 See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
 
+## Remote access (Tailscale)
+
+The stack binds to `127.0.0.1` by default — nothing is reachable from the
+network, not even the LAN. To use OpenBeast from your phone or laptop
+anywhere (cellular included), one script puts it on your private tailnet
+with automatic HTTPS:
+
+```bash
+./scripts/setup-tailscale.sh
+```
+
+Five minutes, verified end-to-end. It installs Tailscale, joins your tailnet
+as `beast` (browser SSO login on first run), walks you through the two
+one-time tailnet toggles (MagicDNS + HTTPS Certificates — it prints the
+admin-console link and waits), and publishes exactly two services —
+tailnet-only, never the public internet:
+
+| URL | Service |
+|---|---|
+| `https://<host>.<tailnet>.ts.net` | Open WebUI (chat) |
+| `https://<host>.<tailnet>.ts.net:8443/v1` | llama-server (OpenAI-compatible API) |
+
+Every connecting device authenticates via its WireGuard key; the WebUI
+additionally requires an account now (`WEBUI_AUTH=true` — first signup
+becomes admin; mirror the credentials into `openbeast.conf` as
+`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` so `configure-webui.sh` can
+keep working). MCPO and SearXNG stay loopback-only — they serve the model,
+not humans.
+
+- **Phone:** install the Tailscale app, sign in, open the chat URL, "Add to
+  Home Screen" (the WebUI is a PWA).
+- **Remote coding agent:** on any tailnet machine, point OpenCode's
+  `baseURL` at `https://<host>.<tailnet>.ts.net:8443/v1` — full coding agent
+  against the home GPU from anywhere.
+- **Legacy LAN-open behavior:** set `BIND_HOST=0.0.0.0` in `openbeast.conf`
+  (or `OPENBEAST_BIND=0.0.0.0`) — not recommended; every service becomes
+  reachable unauthenticated on the LAN.
+- Optional API key for the llama-server: set `LLAMA_API_KEY` in
+  `openbeast.conf` (off by default; the tailnet is the boundary).
+
+Design rationale, alternatives considered (Headscale, NetBird, plain
+WireGuard), and the verification checklist live in
+**[docs/REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md)**.
+
 ## Model weights location
 
 Weights are large (10s of GB each), so OpenBeast never requires you to store
@@ -156,12 +200,12 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
-| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 256K (TBD) | TBD | MTP draft heads baked in; `--spec-type draft-mtp` for ~1.5–2× speedup. Forces `-np 1` (no parallel slots, no `--mmproj`). Context conservative pending measurement. |
-| Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 384K (TBD) | TBD | Same as above for the MoE; same `-np 1` constraint. Not yet benchmarked. |
-| Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 350K (TBD) | TBD | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
-| Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 256K (TBD) | TBD | Same fine-tune with MTP heads; same `-np 1` / no-`mmproj` MTP constraints. Not yet benchmarked. |
+| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots, no `--mmproj`). 2.5 GB headroom at the tuned config. Not yet benchmarked. |
+| Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). Not yet benchmarked. |
+| Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 416K | 29.3 GB | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. 2.6 GB headroom measured. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
+| Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). Not yet benchmarked. |
 
-The first five rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card. The four `(TBD)` rows (scaffolded 2026-05-22) ship with conservative starting contexts pending real `nvidia-smi` measurement under load — see [`docs/REFERENCE.md`](docs/REFERENCE.md) for the rationale on each and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding — MTP variants" for the benchmark plan.
+All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding — MTP variants" for the benchmark plan.
 
 ## Project Structure
 

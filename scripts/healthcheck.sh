@@ -14,6 +14,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/conf.sh"
 
 LLAMA_URL="${LLAMA_URL:-http://localhost:8080}"
 MCPO_URL="${MCPO_URL:-http://localhost:3001}"
@@ -70,7 +71,7 @@ if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi"; then
     echo "       → restarting MCPO..."
     pkill -f "mcpo" 2>/dev/null || true
     sleep 1
-    mcpo --port 3001 --host 0.0.0.0 -- python3 "$REPO_DIR/agents/mcp_server.py" &
+    mcpo --port 3001 --host "$BIND_HOST" -- python3 "$REPO_DIR/agents/mcp_server.py" &
     sleep 3
     echo "       → restarted"
   fi
@@ -93,6 +94,28 @@ if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
     docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng
     sleep 3
     echo "       → restarted"
+  fi
+fi
+
+# Tailscale (remote access) — only checked when installed; the stack is
+# fully functional without it, just localhost-only.
+if command -v tailscale &>/dev/null; then
+  TS_ONLINE=$(tailscale status --json 2>/dev/null | python3 -c "
+import sys, json
+try: print('yes' if json.load(sys.stdin)['Self']['Online'] else 'no')
+except Exception: print('no')
+" 2>/dev/null)
+  if [[ "$TS_ONLINE" == "yes" ]]; then
+    echo "  OK   Tailscale (remote access)"
+    HEALTHY=$((HEALTHY + 1))
+  else
+    echo "  DOWN Tailscale (remote access)"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → restarting tailscaled..."
+      sudo systemctl restart tailscaled
+      sleep 3
+    fi
   fi
 fi
 

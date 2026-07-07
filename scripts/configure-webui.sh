@@ -15,6 +15,7 @@ WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
 MCPO_URL="${MCPO_URL:-http://localhost:3001}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
 
 # Load system prompt: soul file + tool guidance (Open WebUI needs both)
 SYSTEM_PROMPT=""
@@ -32,14 +33,29 @@ until curl -s "$WEBUI_URL/api/version" > /dev/null 2>&1; do
   sleep 1
 done
 
-# Get admin token (works when WEBUI_AUTH=false with default admin user)
-TOKEN=$(curl -s "$WEBUI_URL/api/v1/auths/signin" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@localhost","password":""}' \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
+# Get admin token. Two paths:
+#   • WEBUI_AUTH=false (legacy): the default admin user signs in with an
+#     empty password.
+#   • WEBUI_AUTH=true (default since the Tailscale rollout): set
+#     WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in openbeast.conf to the
+#     admin account you created on first visit.
+_signin() {
+  curl -s "$WEBUI_URL/api/v1/auths/signin" \
+    -H "Content-Type: application/json" \
+    -d "$(printf '{"email":"%s","password":"%s"}' "$1" "$2")" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null
+}
+
+TOKEN=$(_signin "admin@localhost" "")
+if [[ -z "$TOKEN" && -n "$WEBUI_ADMIN_EMAIL" ]]; then
+  TOKEN=$(_signin "$WEBUI_ADMIN_EMAIL" "$WEBUI_ADMIN_PASSWORD")
+fi
 
 if [[ -z "$TOKEN" ]]; then
-  echo "Warning: Could not get admin token. Configure Open WebUI manually:" >&2
+  echo "Warning: Could not get admin token." >&2
+  echo "  If you just enabled auth: create the admin account in the browser" >&2
+  echo "  first, then put WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in" >&2
+  echo "  openbeast.conf and re-run this script. Or configure manually:" >&2
   echo "  1. Admin Settings → External Tools → Add: OpenAPI, $MCPO_URL" >&2
   echo "  2. Admin Settings → Models → [model] → Function Calling: Native" >&2
   exit 0

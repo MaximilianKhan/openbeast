@@ -1,5 +1,48 @@
 # TODO
 
+## 🧯 Post-mortem: 2026-07-07 session OOM crash (RESOLVED — harness hardened)
+
+**What happened.** At 12:59:50 the kernel OOM killer fired with 122 GB RAM
+*and* all 187 GB of swap exhausted ("Free swap = 200kB"), killed the largest
+process, and systemd then reaped the whole terminal scope — Claude session,
+smoke harness, and llama-server together.
+
+**Root cause.** `subprocess.run(cmd, shell=True, timeout=N)` kills only the
+`/bin/sh` wrapper on timeout; the shell's children survive as orphans. During
+the 35B-A3B MTP smoke run, task `27_brainfuck_interpreter_a` produced a buggy
+`bf.py`; two of the agent's own `bash` tool calls running it timed out at
+120 s, orphaning two `python3 bf.py` processes stuck in an unbounded
+tape-growth loop. Each grew to ~140 GB anonymous memory over ~12 minutes
+(44 GB + 99 GB swapped / 61 GB + 77 GB swapped in the OOM report). Not a VRAM
+issue, not an llama.cpp leak — llama-server's host RSS was 817 MB. The same
+pattern also leaked harmless-but-real orphans in the 27B run (a stdin-blocked
+`bf.py`, a `python3 -c` trial-division on 10^18) and, verified live, two
+CPU-burning `./prho` binaries in a post-crash rerun.
+
+**Fixes landed (all tested — `tests/test_proc_hygiene.py`, 7/7):**
+1. `agents/tools.py bash()` and every shell spawn in `evals/run_eval.py`
+   (setup / pre_validate / validation / cleanup / agent runner) now launch
+   children with `start_new_session=True` and SIGKILL the **whole process
+   group** on timeout — grandchildren included. This also fixes the silent
+   hang where `communicate()` blocked on a pipe an orphan still held.
+2. `RLIMIT_AS` = 32 GB on all model-code subprocesses — a memory bomb dies
+   with `MemoryError` in-process instead of eating the box during the
+   seconds before its timeout fires.
+3. Sweeps/smokes should run inside a memory-capped systemd scope so any
+   future unknown failure mode is contained away from the interactive
+   session: `systemd-run --user --scope --unit=openbeast-sweep
+   -p MemoryMax=96G -p MemorySwapMax=8G -- python3 evals/benchmark_all.py …`
+
+**Related field note (same day):** don't reconfigure the network while an
+eval is live. Running `setup-tailscale.sh` (tailscaled bring-up, DNS/route
+changes 13:45–13:47) during the Qwopus v2 smoke made every request of task
+`137_pollard_rho_b` fail with `Connection error.` — 20/20 iterations, 0
+tokens, recorded (and cached!) as a FAIL that was really an infra blip. The
+poisoned cache entry was removed and the task re-run. If an eval row ever
+shows 0 tokens with all-iteration connection errors, suspect the
+environment, not the model — and consider pointing the harness at
+`127.0.0.1` instead of `localhost` to dodge resolver reconfigurations.
+
 ## ⏳ READY — only the sweep remains
 
 All v3.5 build work is **landed, audited, committed, and pushed**. The
@@ -740,7 +783,14 @@ table and a couple of useful flags.
 
 **Trigger:** build after the v3 sweep lands and the post-mortem is written.
 
-### Tailscale remote access
+### Tailscale remote access — ✅ implemented 2026-07-07, awaiting first run
+Superseded by `docs/REMOTE_ACCESS_PLAN.md` (full design) and
+`scripts/setup-tailscale.sh` (implementation, incl. tailnet-only HTTPS via
+`tailscale serve` + the 127.0.0.1 bind-surface shrink via `BIND_HOST`).
+Remaining: run `./scripts/setup-tailscale.sh` (needs sudo + browser SSO),
+create the WebUI admin account, mirror creds into `openbeast.conf`.
+Original sketch below kept for reference.
+
 Set up Tailscale so OpenBeast can be accessed from the work laptop (or
 any device) over a private encrypted mesh — no port forwarding or static IP needed.
 
@@ -783,19 +833,20 @@ model.
 - `--mmproj` not supported with MTP — no vision input.
 
 **Next steps:**
-1. Verify clean launch + measure VRAM with `nvidia-smi` under real load.
-   Raise (or, if needed, lower) the conservative 256K / 384K contexts to
-   land near the 2 GB headroom rule. Context-vs-MTP-buffer is the knob to
-   tune first, before anything else.
-2. **Switch the MTP scripts to the production tuning** (currently they ship
-   with safe defaults `--spec-draft-n-max 2`, no `--spec-draft-p-min`). Target:
-   - `--spec-draft-n-max 4` (draft 4 tokens ahead per step instead of 2)
-   - `--spec-draft-p-min 0.75` (only accept draft tokens whose probability
-     exceeds 0.75 — tighter quality bar than the default 0.00)
-   Both apply to all four MTP scripts (`{serve,run}-qwen-{27b-mtp-q5,35b-a3b-mtp}.sh`).
-   The user explicitly requested these values 2026-05-22; they're held back
-   from the initial scaffolding until a clean-launch + VRAM measurement
-   confirms there's headroom for the deeper draft horizon.
+1. ✅ **Done 2026-07-07** — clean launches verified and VRAM measured via
+   `scripts/measure-vram.sh` (required rebuilding llama.cpp first: the old
+   binary predated MTP support and carried a dead RUNPATH from the repo's
+   pre-OpenBeast location). Contexts raised to measured ceilings: 27B MTP
+   256K→320K, 35B-A3B MTP 384K→512K, Qwopus v2 350K→416K, Qwopus v2 MTP
+   256K→336K. Numbers in README "## Models" and REFERENCE "MTP variants".
+2. ✅ **Done 2026-07-07** — spec parameters tuned *empirically* per model
+   (superseding the originally requested n-max 4 / p-min 0.75, which measured
+   slower on every model): 27B MTP `n8/p0.0` (184 tok/s, 2.75×), 35B-A3B MTP
+   `n4/p0.0` (379 tok/s, 1.46×), Qwopus MTP `n4/p0.0` (147 tok/s, 2.14×).
+   p-min gating never won — drafts are verified by the target model, so
+   p-min affects speed only, and unconditional drafting is faster. The 27B's
+   n8 draft buffers cost ~600 MiB, so its context backed off 320K→288K.
+   Full tuning table in REFERENCE.md "MTP variants".
 3. **Add `qwen-27b-mtp-q5`, `qwen-35b-a3b-mtp`, and `qwopus-27b-v2-mtp-q5`
    to `evals/benchmark_all.py`** as additional models in the next sweep
    (plus the non-MTP `qwopus-27b-v2-q5` as a regular row alongside our other

@@ -5,8 +5,14 @@ services:
     network_mode: host
     environment:
       - OPENAI_API_BASE_URL=http://localhost:8080/v1
-      - OPENAI_API_KEY=not-needed
-      - WEBUI_AUTH=false
+      - OPENAI_API_KEY=${OPENBEAST_API_KEY:-not-needed}
+      # Auth on: first signup becomes admin. Required now that the WebUI is
+      # reachable from the whole tailnet (scripts/setup-tailscale.sh), not
+      # just this machine. Set OPENBEAST_WEBUI_AUTH=false for the old
+      # localhost-trusting behavior.
+      - WEBUI_AUTH=${OPENBEAST_WEBUI_AUTH:-true}
+      # Loopback-only by default; Tailscale Serve proxies remote devices in.
+      - HOST=${OPENBEAST_BIND:-127.0.0.1}
       - PORT=3000
     volumes:
       - open-webui-data:/app/backend/data
@@ -22,7 +28,7 @@ services:
       # BIND_ADDRESS from older uwsgi-based images is ignored. Without this override,
       # granian tries to bind 8080 and clashes with llama-server.
       - GRANIAN_PORT=8888
-      - GRANIAN_HOST=0.0.0.0
+      - GRANIAN_HOST=${OPENBEAST_BIND:-127.0.0.1}
     volumes:
       # Override default settings.yml to enable JSON format (required by web_search
       # MCP tool) and disable the rate limiter for local use.

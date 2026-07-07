@@ -13,6 +13,14 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$SCRIPT_DIR"
+
+# BIND_HOST (default 127.0.0.1 — loopback-only; remote devices come in via
+# Tailscale Serve, see scripts/setup-tailscale.sh). docker-compose reads it
+# through the OPENBEAST_BIND env var exported by lib/conf.sh sourcing below.
+source "$SCRIPT_DIR/scripts/lib/conf.sh"
+export OPENBEAST_BIND="$BIND_HOST"
+export OPENBEAST_API_KEY="${LLAMA_API_KEY:-not-needed}"
 
 SERVE_SCRIPT="${1:-serve-qwen-27b-uncensored-q5.sh}"
 
@@ -45,7 +53,7 @@ done
 echo "llama.cpp server ready on http://localhost:8080"
 
 echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
-mcpo --port 3001 --host 0.0.0.0 -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
+mcpo --port 3001 --host "$BIND_HOST" -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
 MCPO_PID=$!
 sleep 2
 echo "MCPO proxy ready on http://localhost:3001"

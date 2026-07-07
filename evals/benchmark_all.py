@@ -63,6 +63,21 @@ MODELS = [
     {"slug": "gemma-4-31b-q5",
      "name": "Gemma 4 31B-it Q5_K_XL",
      "serve": "scripts/serve-gemma-4-31b-q5.sh"},
+    # MTP + Qwopus rows added 2026-07-07. MTP models pin -np 1 (no parallel
+    # slots) — irrelevant for the sweep, which runs tasks sequentially anyway,
+    # and the tuned speculative decode makes them faster per token.
+    {"slug": "qwen-27b-mtp-q5",
+     "name": "Qwen 27B MTP Q5_K_XL",
+     "serve": "scripts/serve-qwen-27b-mtp-q5.sh"},
+    {"slug": "qwen-35b-a3b-mtp",
+     "name": "Qwen 35B-A3B MTP MoE Q4_K_M",
+     "serve": "scripts/serve-qwen-35b-a3b-mtp.sh"},
+    {"slug": "qwopus-27b-v2-q5",
+     "name": "Qwopus 27B v2 Q5_K_M",
+     "serve": "scripts/serve-qwopus-27b-v2-q5.sh"},
+    {"slug": "qwopus-27b-v2-mtp-q5",
+     "name": "Qwopus 27B v2 MTP Q5_K_M",
+     "serve": "scripts/serve-qwopus-27b-v2-mtp-q5.sh"},
 ]
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"

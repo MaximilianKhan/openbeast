@@ -376,6 +376,76 @@ To stop everything:
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
 - **Eval harness:** `python3 evals/run_eval.py` (benchmark on 10 coding tasks)
 
+## 7. Remote access (optional, recommended)
+
+Everything binds `127.0.0.1` by default, so the stack is unreachable from
+other devices until you join a tailnet (or explicitly opt back into LAN-open
+binds with `BIND_HOST=0.0.0.0`). Verified end-to-end 2026-07-07; the whole
+flow is ~5 minutes.
+
+**You need:** any Google/GitHub/Microsoft account for Tailscale's free plan
+(100 devices, 3 users — plenty).
+
+```bash
+./scripts/setup-tailscale.sh
+```
+
+The script is idempotent (safe to re-run anytime) and stops for exactly two
+browser moments, telling you precisely what to do at each:
+
+1. **Tailnet login** — it prints a login URL; sign in with your SSO account.
+   The machine joins as `beast` (override with `TS_HOSTNAME=<name>`).
+2. **Two one-time tailnet toggles** — on first setup it sends you to
+   <https://login.tailscale.com/admin/dns> to enable **MagicDNS** and
+   **HTTPS Certificates**, then waits and continues automatically once you
+   flip them. (The cert-transparency warning on the HTTPS toggle is
+   expected: machine *names* become publicly logged, the services behind
+   them stay tailnet-only.)
+
+It finishes by printing your two permanent URLs:
+
+| URL | What |
+|---|---|
+| `https://beast.<tailnet>.ts.net` | Open WebUI (chat) |
+| `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API |
+
+### Post-setup (one time, ~3 minutes)
+
+1. Restart the stack so the loopback binds + WebUI auth take effect:
+   `./stop.sh && ./start.sh`
+2. Open the WebUI URL and **create the admin account immediately** —
+   `WEBUI_AUTH=true` now, and the *first* signup becomes admin.
+3. Mirror those credentials into `openbeast.conf` (`WEBUI_ADMIN_EMAIL` /
+   `WEBUI_ADMIN_PASSWORD`) so `scripts/configure-webui.sh` can keep applying
+   tool-server config on restarts.
+
+### Add your devices (each ~1 minute)
+
+- **Phone:** install the Tailscale app → sign in with the same account →
+  open `https://beast.<tailnet>.ts.net` → browser menu → "Add to Home
+  Screen". Open WebUI is a PWA — it installs like a native chat app and
+  works anywhere you have signal, home or abroad.
+- **Laptop:** install Tailscale ([tailscale.com/download](https://tailscale.com/download)),
+  sign in, done — both URLs work in any browser.
+- **Coding agent from anywhere:** point OpenCode (or any OpenAI-compatible
+  client) at the API URL. In `opencode.json`, use
+  `"baseURL": "https://beast.<tailnet>.ts.net:8443/v1"` — full agent
+  against your home GPU from a cafe.
+
+### Verify the security boundary
+
+- From a device **off** your home network (phone hotspot):
+  `curl https://beast.<tailnet>.ts.net:8443/v1/models` → model list.
+- Same URL with Tailscale disconnected on that device → connection fails.
+  That failure is the proof the perimeter works.
+- `./scripts/healthcheck.sh` — the report includes a Tailscale row.
+- Optional: `nmap <this-machine's-LAN-IP>` from a LAN device — ports 3000,
+  8080, 3001, 8888 all closed.
+
+See [REMOTE_ACCESS_PLAN.md](REMOTE_ACCESS_PLAN.md) for the full design
+rationale (why Tailscale, the Headscale escape hatch, what's deliberately
+out of scope) and the README "Remote access" section for day-to-day usage.
+
 ## Architecture notes
 
 ### Why MCPO instead of direct MCP?
