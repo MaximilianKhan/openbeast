@@ -142,9 +142,12 @@ def measure(warmup=1, runs=2):
 
 
 def _one(prompt):
+    # enable_thinking=false so the measured tokens are actual answer decode, not
+    # a reasoning block — a cleaner, more representative tok/s for the workload.
     body = json.dumps({
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0, "max_tokens": MAX_TOKENS,
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(CHAT, data=body,
                                  headers={"Content-Type": "application/json"})
@@ -222,7 +225,9 @@ def main():
 
     RESULTS.mkdir(exist_ok=True)
     slugs = args.models.split(",") if args.models else list(MODELS)
-    stamp = os.environ.get("OPENBEAST_STAMP", str(int(os.path.getmtime(__file__))))
+    # Wall-clock stamp so re-runs don't overwrite prior profiling results
+    # (the old getmtime(__file__) was constant per file version).
+    stamp = os.environ.get("OPENBEAST_STAMP", str(int(time.time())))
     path = RESULTS / f"mtp_profile_{stamp}.json"
     out = []
     for slug in slugs:

@@ -199,6 +199,22 @@ def compute_composite(accuracy: float, speed: float) -> float:
     return round(ACCURACY_WEIGHT * accuracy + SPEED_WEIGHT * speed, 2)
 
 
+def _suite_version(results: dict) -> str:
+    """Suite version for a run. Prefer the recorded field (new runs write it);
+    otherwise infer from the effective-unit count so `--rebuild` from older
+    result files (which predate the field) still tags rows correctly instead
+    of flipping everything to 'unknown'. 291 units = v4, 323 = v3.5."""
+    sv = results.get("suite_version")
+    if sv:
+        return sv
+    total = (results.get("summary") or {}).get("total")
+    if total == 291:
+        return "v4"
+    if total == 323:
+        return "v3.5"
+    return "legacy" if total else "unknown"
+
+
 def score_run(results: dict) -> dict:
     """Compute scores for a single eval run. Returns dict suitable for the
     leaderboard."""
@@ -220,7 +236,7 @@ def score_run(results: dict) -> dict:
         "model": results.get("model", "unknown"),
         "model_slug": results.get("model_slug", "unknown"),
         "timestamp": results.get("timestamp"),
-        "suite_version": results.get("suite_version", "unknown"),
+        "suite_version": _suite_version(results),
         "gpu": results.get("gpu", {}),
         "inference_engine": results.get("inference_engine", {}),
         "runtime": results.get("runtime", {}),

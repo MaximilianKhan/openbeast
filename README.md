@@ -128,7 +128,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 VRAM-measured 2026-07-07, awaiting first benchmark sweep (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
+- 9 pre-configured models: 5 non-MTP benchmarked on v3.5 (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it), 3 MTP benchmarked on the hardened v4 suite 2026-07-08 (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2 MTP), and Qwopus 27B v2 (non-MTP) VRAM-measured, awaiting its sweep
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is enabled out of the box for maximum answer quality on your normal chats and coding. Thinking is a *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), stateless and isolated, so automated sub-calls (e.g. a structured JSON classification or routing step) can opt out for speed and clean output without changing your deployment or affecting any other request. You keep thinking on where it matters; the plumbing opts itself out where it doesn't.
 
@@ -156,7 +156,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up, and `./stop.sh` shuts everything down gracefully any time
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard units) with automated validation; full distribution in [`evals/README.md`](evals/README.md)
+- **291-unit eval suite** (137 base tasks, 31 with multi-language variants across 6 languages; hardened v4) with automated validation; full distribution in [`evals/README.md`](evals/README.md)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) that sweeps every model and produces an accuracy-ranked leaderboard
 - Per-task tracking of accuracy, speed, prompt/completion tokens, and API-equivalent cost (`evals/scoring.py`)
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
@@ -328,12 +328,12 @@ tests/                       # Test suite
   test_scripts.sh            # Script structure validation
   test_smoke.sh              # End-to-end stack smoke test (requires running stack)
 
-evals/                       # Eval harness — 159 tasks + multi-model benchmark
+evals/                       # Eval harness — 137 tasks / 291 units + multi-model benchmark
   README.md                  # Distribution table, schema, scoring (start here)
   run_eval.py                # Single-model eval runner (model-tagged results)
   scoring.py                 # Accuracy / speed / tokens + per-category & per-language breakdown
   benchmark_all.py           # Multi-model sweep orchestration
-  tasks/                     # Per-task JSON definitions (01–159) with category tags
+  tasks/                     # Per-task JSON definitions (numbered; gaps from v4 pruning) with category tags
   results/                   # Per-run results (kept all, model-tagged) [gitignored]
   leaderboard.json           # Latest score per model + per-category drilldown (auto-updated)
 
@@ -399,11 +399,23 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 > **The suite is now v4** (137 base tasks / 291 units), hardened so a correct
 > solution passes and every documented cheat is empirically rejected
 > (see [`evals/CHANGELOG.md`](evals/CHANGELOG.md) and
-> [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). The
-> leaderboard below is the **legacy v3.5** run, kept as the "before"; the first
-> v4 leaderboard lands after the next sweep.
+> [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). The first
+> v4 results — the three MTP models — are in; the five non-MTP models below are
+> still their **legacy v3.5** scores, pending a v4 re-run. Suite version is
+> stamped per row.
 
-**Legacy v3.5 leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5, 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP). They need a clean launch and VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
+**v4 leaderboard** (RTX 5090 ×1, 291 units, 2026-07-08 — the MTP models; full
+analysis in [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)):
+
+| # | Model | Acc | Speed | Pass | Hard | Wall |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B MTP Q5_K_XL** | **95.63** | 73.0 | 273/291 | 98/104 | 3.8h |
+| 2 | Qwen 35B-A3B MTP MoE Q4_K_M | 93.76 | **83.0** | 254/291 | 85/104 | 4.3h |
+| 3 | Qwopus 27B v2 MTP Q5_K_M | 93.00 | 75.3 | 260/291 | 89/104 | 4.6h |
+
+**Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; these five
+non-MTP models await a v4 re-run — see [`docs/RESULTS.md`](docs/RESULTS.md)).
+v3.5 and v4 numbers are **not directly comparable** (different suites):
 
 | # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|
@@ -435,7 +447,7 @@ The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator o
 
 ```bash
 # Single-model eval (server must already be running)
-python3 evals/run_eval.py                          # all 159 tasks
+python3 evals/run_eval.py                          # all tasks (v4: 291 units)
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 

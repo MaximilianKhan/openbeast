@@ -80,7 +80,7 @@ Per-language accuracy on the v4 variant tasks, MTP models:
 | Model | Zig | (other 5 langs) |
 |---|---:|---|
 | Qwen 27B MTP | 66.6% | ~93-97% |
-| Qwopus 27B v2 MTP | 44.7% | ~90%+ |
+| Qwopus 27B v2 MTP | 44.7% | ~85-97% |
 | Qwen 35B-A3B MTP | 34.5% | ~85-97% |
 
 Every model is near-saturated on Python/Go/C/C++/Rust and **collapses on Zig**

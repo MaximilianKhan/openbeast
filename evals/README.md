@@ -7,14 +7,14 @@
 > The v3.5 counts and leaderboard below are retained as the "before" and are
 > **not comparable** to v4.
 
-159 self-contained coding tasks for benchmarking local LLMs. Each task has a
+137 self-contained coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
 deterministic validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
 
 ```bash
 python3 evals/run_eval.py --list                     # list every task
-python3 evals/run_eval.py                            # run all 159 against the live server on :8080
+python3 evals/run_eval.py                            # run all tasks against the live server on :8080
 python3 evals/run_eval.py --tasks 145,146            # run a subset
 python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
 python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
@@ -78,7 +78,13 @@ cross-model comparison.
 
 ## Distribution
 
-**Base totals:** 40 easy · 53 medium · 66 hard base tasks · 12 categories · 159 base task IDs
+> **Note:** the tables below document the **v3.5** rollout (159 base / 323
+> units). v4 pruned 25 tasks and added 3 DSP (→ 137 base / 291 units); some
+> variant tasks listed here (e.g. 39_blocked_transpose, 47_branchless_min) were
+> removed. See [`CHANGELOG.md`](CHANGELOG.md) and [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md)
+> for the v4 delta; this section is retained as rollout history.
+
+**Base totals (v3.5):** 40 easy · 53 medium · 66 hard base tasks · 12 categories · 159 base task IDs
 
 **Effective totals after v3.5 variant rollout (2026-05-07):** 323 test
 units = 126 single-variant legacy + 197 variant entries across **33 base
