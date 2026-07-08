@@ -12,7 +12,10 @@ services:
     container_name: open-webui
     network_mode: host
     environment:
-      - OPENAI_API_BASE_URL=http://localhost:8080/v1
+      # Model endpoint. Defaults to llama-server (8080); when the agent-spawn
+      # router is enabled (AGENT_ROUTER=true), lib/conf.sh sets OPENBEAST_MODEL_URL
+      # to the router port so WebUI chats get reliable background-agent spawning.
+      - OPENAI_API_BASE_URL=${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}
       - OPENAI_API_KEY=${OPENBEAST_API_KEY:-not-needed}
       # Auth OFF by default: local-only single-user installs get no login
       # wall and configure-webui.sh auto-configures via the default admin

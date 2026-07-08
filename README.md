@@ -141,6 +141,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Skills (curated expertise packages): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
 
 **Autonomous Agents**
+- **Agent-spawn router** (opt-in, `AGENT_ROUTER=true`): local models rarely call the "spawn a background agent" tool on their own judgment, so a grammar-constrained pre-flight classifier detects delegation requests ("do this in the background while we keep talking") and spawns the agent *deterministically*. Normal chat passes through untouched with thinking on. See [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §8-11.
 - Fire-and-forget background agents that code independently
 - Context briefing from spawning model
 - JSONL logging with full replay/resumption (`agents/logs/`)

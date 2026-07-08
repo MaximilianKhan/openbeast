@@ -49,6 +49,21 @@ LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
 GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)}"
+# Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
+# turns "spawn a background agent" requests into real agents. Off by default.
+# When on, start.sh runs agents/router.py on ROUTER_PORT in front of
+# llama-server (8080), and the human frontends (WebUI/OpenCode) point at it;
+# evals and spawned agents keep hitting 8080 directly (never routed).
+AGENT_ROUTER="${OPENBEAST_AGENT_ROUTER:-$(_ob_conf_value AGENT_ROUTER || echo false)}"
+ROUTER_PORT="${OPENBEAST_ROUTER_PORT:-$(_ob_conf_value ROUTER_PORT || echo 8088)}"
+if [[ "$AGENT_ROUTER" == "true" ]]; then
+  MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
+else
+  MODEL_URL="http://localhost:8080/v1"
+fi
+export AGENT_ROUTER ROUTER_PORT
+# Frontends read this for the model endpoint (docker-compose interpolates it).
+export OPENBEAST_MODEL_URL="$MODEL_URL"
 # Daemon-mode memory cap as a PERCENT of this machine's physical RAM
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).

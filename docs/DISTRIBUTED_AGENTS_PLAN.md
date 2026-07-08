@@ -1,6 +1,8 @@
 # Distributed agents — main box executes, worker box thinks
 
-**Status: PLANNED (not built). Do not lose this thought.**
+**Status: the agent-spawn ROUTER is BUILT + wired (2026-07-08, opt-in `AGENT_ROUTER`); the main->worker DISTRIBUTED split remains planned.**
+
+> Router shipped: `agents/router.py` + start.sh integration + conf toggle. It solves the STEP-3 blocker (models won't self-spawn). The remaining work below is the multi-node main-executes/worker-thinks split.
 
 **The feature (Max, 2026-07-08):** let a user run OpenBeast's agents so that
 the **filesystem work happens on their MAIN machine** (where their code lives,

@@ -45,7 +45,7 @@ _pid_alive() { # _pid_alive <pidfile>
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
-  for name in supervisor llama mcpo; do
+  for name in supervisor llama mcpo router; do
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f"; then
       echo "  $name: running (pid $(cat "$f"))"
@@ -167,13 +167,16 @@ cleanup() {
   if [[ -n "${CONFIG_PID:-}" ]]; then
     kill "$CONFIG_PID" 2>/dev/null || true
   fi
+  if [[ -n "${ROUTER_PID:-}" ]]; then
+    kill "$ROUTER_PID" 2>/dev/null && echo "agent router stopped."
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
   fi
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid"
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" "$RUN_DIR/router.pid"
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -226,6 +229,30 @@ for _i in $(seq 1 30); do
 done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: MCPO not serving after 30s" >&2; exit 1; }
 echo "MCPO proxy ready on http://localhost:3001"
+
+# Agent-spawn router (opt-in, AGENT_ROUTER=true). Sits on ROUTER_PORT in front
+# of llama-server (8080); frontends point at it via OPENBEAST_MODEL_URL. Needs
+# MCPO up (it spawns via MCPO). llama-server stays direct on 8080 so evals and
+# spawned agents are never routed. See docs/RESEARCH_FINDINGS §8-11.
+if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
+  echo "Starting agent-spawn router on http://localhost:${ROUTER_PORT}..."
+  OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
+  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+  OPENBEAST_MCPO_URL="http://127.0.0.1:3001" \
+    python3 "$SCRIPT_DIR/agents/router.py" &
+  ROUTER_PID=$!
+  echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
+  ROUTER_UP=0
+  for _i in $(seq 1 20); do
+    if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
+      echo "Error: agent router exited during startup — see output above" >&2; exit 1
+    fi
+    curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 && { ROUTER_UP=1; break; }
+    sleep 1
+  done
+  [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
+  echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
+fi
 
 echo "Starting Open WebUI..."
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d

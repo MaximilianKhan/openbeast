@@ -73,3 +73,19 @@ WEIGHTS_DIR=../weights
 # Create the account in the browser on first visit, then mirror it here.
 #WEBUI_ADMIN_EMAIL=
 #WEBUI_ADMIN_PASSWORD=
+
+# ---------------------------------------------------------------------------
+# Agent-spawn router  (see docs/RESEARCH_FINDINGS.md §8-11)
+# ---------------------------------------------------------------------------
+
+# Opt-in proxy that reliably turns "spawn a background agent / do this in the
+# background" chat requests into real agents. Local models won't call
+# start_agent on their own judgment; the router detects the intent with a
+# grammar-constrained pre-flight classification and spawns deterministically.
+# When true, start.sh runs agents/router.py on ROUTER_PORT in front of
+# llama-server (8080); WebUI/OpenCode point at it automatically. llama-server
+# stays direct on 8080, so evals and spawned agents are never routed.
+# Adds ~500ms to chat turns that look like delegation requests; normal turns
+# pass through untouched (thinking stays ON). Default: false.
+#AGENT_ROUTER=false
+#ROUTER_PORT=8088
