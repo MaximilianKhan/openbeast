@@ -156,7 +156,12 @@ done
 
 # Cleanup on exit: stop MCPO and llama.cpp, drop pidfiles. Runs on Ctrl+C,
 # ./stop.sh (SIGTERM), and after an OOM kill takes out llama-server.
+# Idempotent: the TERM path exits, which fires the EXIT trap a second time.
+CLEANED=0
+STOPPING=0
 cleanup() {
+  [[ $CLEANED -eq 1 ]] && return 0
+  CLEANED=1
   echo ""
   echo "Shutting down..."
   if [[ -n "${CONFIG_PID:-}" ]]; then
@@ -170,28 +175,37 @@ cleanup() {
   fi
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'STOPPING=1; cleanup; exit 143' INT TERM
 
-echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
-"$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
-LLAMA_PID=$!
-echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
-
-echo "Waiting for llama.cpp server to be ready..."
 # Probe where llama-server actually listens: loopback answers for loopback
 # and wildcard binds; a specific LAN/tailnet address must be probed directly.
 case "$BIND_HOST" in
   127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
   *)                   HEALTH_HOST="$BIND_HOST" ;;
 esac
-until curl -s "http://$HEALTH_HOST:8080/health" > /dev/null 2>&1; do
-  if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-    echo "Error: llama-server exited during startup — see its output above" >&2
-    echo "       (common causes: missing weight file, VRAM OOM)" >&2
-    exit 1
-  fi
-  sleep 1
-done
+
+launch_llama() {
+  echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
+  "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
+  LLAMA_PID=$!
+  echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
+}
+
+wait_llama_health() { # returns 1 if the process dies before becoming healthy
+  until curl -s "http://$HEALTH_HOST:8080/health" > /dev/null 2>&1; do
+    kill -0 "$LLAMA_PID" 2>/dev/null || return 1
+    sleep 1
+  done
+}
+
+launch_llama
+echo "Waiting for llama.cpp server to be ready..."
+if ! wait_llama_health; then
+  echo "Error: llama-server exited during startup — see its output above" >&2
+  echo "       (common causes: missing weight file, VRAM OOM)" >&2
+  exit 1
+fi
 echo "llama.cpp server ready on http://localhost:8080"
 
 echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
@@ -233,8 +247,28 @@ else
   echo "Press Ctrl+C to stop. Or run './stop.sh' from another terminal."
 fi
 
-# Supervise: if llama-server exits (crash, OOM kill inside the scope, or a
-# healthcheck restart), log it and shut the rest down gracefully via the trap.
-rc=0
-wait $LLAMA_PID || rc=$?
-echo "llama-server exited (status $rc) — stopping the rest of the stack."
+# Supervise with bounded self-healing: an unexpected llama-server death
+# (VRAM OOM, crash, a healthcheck --restart kill) gets up to 3 relaunches;
+# staying healthy 5+ minutes refills the budget. ./stop.sh's TERM sets
+# STOPPING via the trap, so a shutdown is never mistaken for a crash.
+RESTARTS=0
+while true; do
+  LAUNCHED_AT=$SECONDS
+  rc=0
+  wait $LLAMA_PID || rc=$?
+  [[ $STOPPING -eq 1 ]] && exit 0
+  [[ $((SECONDS - LAUNCHED_AT)) -gt 300 ]] && RESTARTS=0
+  if [[ $RESTARTS -ge 3 ]]; then
+    echo "llama-server exited (status $rc) with the restart budget spent — stopping the stack."
+    exit 1
+  fi
+  RESTARTS=$((RESTARTS + 1))
+  echo "llama-server exited unexpectedly (status $rc) — relaunching ($RESTARTS/3) in 5s..."
+  sleep 5
+  launch_llama
+  if ! wait_llama_health; then
+    echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
+    exit 1
+  fi
+  echo "llama-server healthy again after restart $RESTARTS."
+done

@@ -46,22 +46,38 @@ echo ""
 # llama.cpp
 if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
   if $RESTART; then
-    echo "       → restarting llama.cpp..."
-    # pkill handles multiple stale PIDs; || true because "nothing to kill"
-    # (or a race with a process exiting) must not abort the healthcheck.
-    if pgrep -f "llama-server" >/dev/null 2>&1; then
+    # If a start.sh supervisor is alive, it owns llama-server: kill the
+    # server and let the supervisor's self-healing loop relaunch it —
+    # starting our own copy here would race it for the port and the VRAM.
+    SUP_PID_FILE="$REPO_DIR/.run/supervisor.pid"
+    if [[ -f "$SUP_PID_FILE" ]] && kill -0 "$(cat "$SUP_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+      echo "       → supervisor alive: killing llama-server, letting it relaunch..."
       pkill -f "llama-server" 2>/dev/null || true
-      sleep 2
-    fi
-    "$SCRIPT_DIR/serve-qwen-27b-uncensored-q5.sh" &
-    echo "       → started (waiting for health...)"
-    for i in $(seq 1 30); do
-      if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
-        echo "       → healthy after ${i}s"
-        break
+      for i in $(seq 1 180); do
+        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
+          echo "       → healthy after ${i}s (supervisor relaunched it)"
+          break
+        fi
+        sleep 1
+      done
+    else
+      echo "       → no supervisor: restarting llama.cpp directly..."
+      # pkill handles multiple stale PIDs; || true because "nothing to kill"
+      # (or a race with a process exiting) must not abort the healthcheck.
+      if pgrep -f "llama-server" >/dev/null 2>&1; then
+        pkill -f "llama-server" 2>/dev/null || true
+        sleep 2
       fi
-      sleep 1
-    done
+      "$SCRIPT_DIR/serve-qwen-27b-uncensored-q5.sh" &
+      echo "       → started (waiting for health...)"
+      for i in $(seq 1 180); do
+        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
+          echo "       → healthy after ${i}s"
+          break
+        fi
+        sleep 1
+      done
+    fi
   fi
 fi
 
