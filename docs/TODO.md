@@ -905,6 +905,16 @@ deterministic-validation pattern and need a separate harness path.
 
 ## Future Horizon
 
+### Arsenal expansion — research complete, phased plan ready (2026-07-07)
+Deep-research verdicts in [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md)
+(9 findings, 25 claims 3-vote-verified). Headlines: ADOPT ChunkHound
+(semantic code search, MIT, llama.cpp embeddings) + Sandlock (unprivileged
+Landlock/seccomp sandboxing — composes with our rlimit layer); wrap
+Playwright CLI as a *skill* (the 68-tool Playwright MCP server is
+token-hostile to Qwen-class models); BUILD our own memory tool
+(sqlite-vec/LanceDB + llama.cpp embeddings — Mem0/Letta default to cloud
+and assume frontier models) and canned-query SQLite tool. Phase 1 ≈ 1 week.
+
 ### Multi-model routing
 Run two models simultaneously on different ports (e.g., 35B-A3B on :8080 for fast
 agent work, 27B Q5 on :8081 for deep reasoning). Build a lightweight router that

@@ -43,4 +43,9 @@ BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
 LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
-export BIND_HOST LLAMA_API_KEY WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
+export BIND_HOST WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
+# Export the key only when real: llama-server reads the LLAMA_API_KEY env
+# var natively, and an exported empty string still counts as "set" to it.
+if [[ -n "$LLAMA_API_KEY" ]]; then
+  export LLAMA_API_KEY
+fi

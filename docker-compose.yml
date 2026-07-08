@@ -1,3 +1,11 @@
+# Pin the compose project name. Compose otherwise derives it from the
+# directory name — when this repo was renamed models/ → openbeast/ the old
+# project's containers kept the fixed container_names, and `compose up`
+# failed with name conflicts while the data volume silently forked
+# (models_open-webui-data vs openbeast_open-webui-data). Pinning makes the
+# project immune to future directory renames.
+name: openbeast
+
 services:
   open-webui:
     image: ghcr.io/open-webui/open-webui:main

@@ -506,6 +506,30 @@ server integration.
 
 ## Troubleshooting
 
+**Renamed the repo directory → `start.sh` dies with `Conflict. The container
+name "/open-webui" is already in use`** — Docker Compose derives its project
+name from the directory, so containers created under the old name conflict
+with the new project (and `start.sh`'s cleanup then stops llama/MCPO too,
+leaving only the old container running). The compose file now pins
+`name: openbeast`, so this can't recur — but if you're recovering from a
+rename that predates the pin:
+
+1. `docker rm -f open-webui searxng` — containers are disposable; data
+   lives in volumes.
+2. Check for a forked data volume: `docker volume ls | grep open-webui-data`.
+   If both `<oldname>_open-webui-data` and `openbeast_open-webui-data`
+   exist, your chats/config are in the old one. Migrate:
+   ```bash
+   docker stop open-webui
+   docker run --rm -v <oldname>_open-webui-data:/old:ro \
+     -v openbeast_open-webui-data:/new alpine \
+     sh -c 'rm -rf /new/* ; cp -a /old/. /new/'
+   ```
+3. Rerun `./start.sh`. Note: a database from the `WEBUI_AUTH=false` era has
+   an `admin@localhost` account with no usable password — set one directly
+   before logging in (bcrypt-hash a password into the `auth` table of
+   `webui.db`) or you'll be locked out under `WEBUI_AUTH=true`.
+
 **`llama-cli not found`** — llama.cpp isn't built or the build directory structure
 changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.
 

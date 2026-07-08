@@ -20,7 +20,13 @@ REPO_DIR="$SCRIPT_DIR"
 # through the OPENBEAST_BIND env var exported by lib/conf.sh sourcing below.
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 export OPENBEAST_BIND="$BIND_HOST"
-export OPENBEAST_API_KEY="${LLAMA_API_KEY:-not-needed}"
+# Only propagate a real key. Exporting the WebUI's "not-needed" placeholder
+# would leak into serve.sh's conf resolution (OPENBEAST_API_KEY has top
+# priority there) and silently key-protect the llama API; docker-compose
+# already has its own not-needed default for the WebUI side.
+if [[ -n "$LLAMA_API_KEY" ]]; then
+  export OPENBEAST_API_KEY="$LLAMA_API_KEY"
+fi
 
 SERVE_SCRIPT="${1:-serve-qwen-27b-uncensored-q5.sh}"
 
@@ -28,6 +34,22 @@ if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
   exit 1
 fi
+
+# Fail fast on docker container-name conflicts BEFORE the multi-minute model
+# load. Containers named ours but owned by another compose project (e.g.
+# created before the repo was renamed) make `docker compose up` fail, and
+# set -e would then tear the whole stack down mid-start.
+for cname in open-webui searxng; do
+  owner=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$cname" 2>/dev/null || true)
+  if [[ -n "$owner" && "$owner" != "openbeast" ]]; then
+    echo "Error: container '$cname' belongs to compose project '$owner', not 'openbeast'." >&2
+    echo "  Its data lives in a docker volume and survives removal. Fix with:" >&2
+    echo "    docker rm -f $cname     # then rerun ./start.sh" >&2
+    echo "  If the old project had WebUI data, see docs/INSTALL.md troubleshooting" >&2
+    echo "  ('renamed repo directory') for the volume-migration steps." >&2
+    exit 1
+  fi
+done
 
 # Cleanup on exit: stop MCPO and llama.cpp
 cleanup() {
