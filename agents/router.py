@@ -26,10 +26,13 @@ Env:
   OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8081)
   OPENBEAST_MCPO_URL         MCPO base for start_agent (default http://127.0.0.1:3001)
 """
+from __future__ import annotations
+
 import json
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 
 import httpx
 from starlette.applications import Starlette
@@ -44,16 +47,17 @@ PORT = int(os.environ.get("OPENBEAST_ROUTER_PORT", "8088"))
 UPSTREAM = os.environ.get("OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 MCPO = os.environ.get("OPENBEAST_MCPO_URL", "http://127.0.0.1:3001").rstrip("/")
 
-# Recall-oriented prefilter: if the last user turn contains NONE of these, it is
-# almost certainly not a delegation request, so we skip the classify call and
-# pass straight through (keeps normal chat at zero added latency). Broad on
-# purpose — a false positive only costs one classify; a false negative would
-# miss a spawn. The grammar classify is the real decision-maker.
+# Prefilter: if the last user turn contains NONE of these, skip the classify
+# call and pass straight through (normal chat = zero added latency). Tuned for
+# PRECISION — only genuine delegation phrasing, because a false positive costs
+# a ~500ms classify on the single MTP slot and normal coding chat is full of
+# words like "handle"/"yourself"/"while we". We deliberately trade catching
+# keyword-free IMPLICIT spawns ("handle this huge thing while I grab coffee")
+# for keeping every normal turn fast; explicit requests ("spawn/launch an
+# agent", "in the background", "autonomous", "report back") still all fire.
 _HINTS = re.compile(
-    r"\b(agent|background|spawn|launch|kick[ -]?off|in parallel|meanwhile|"
-    r"while (i|we)|on your own|by yourself|yourself|handle (it|this|the)|"
-    r"take care of|don'?t (wait|block)|report back|check back|go ahead and|"
-    r"autonomous|delegate)\b",
+    r"\b(agents?|background|spawn|launch|kick[ -]?off|autonomous|delegate|"
+    r"in parallel|meanwhile|report back|check back|don'?t (wait|block))\b",
     re.IGNORECASE,
 )
 
@@ -230,12 +234,21 @@ async def chat_completions(request: Request):
     return await _proxy_through(request, client, raw)
 
 
+async def root(request: Request):
+    """A browser hitting the router's root would otherwise see llama-server's
+    proxied page (no OpenBeast tools) and look 'broken'. Explain instead."""
+    return Response(
+        "OpenBeast agent-spawn router — this is a headless API endpoint, not a "
+        "web UI. It sits in front of llama-server and answers /v1/... requests.\n\n"
+        "There are no tools or chat here by design. Use the Open WebUI at "
+        "http://localhost:3000 for chat + tools; it talks to this router "
+        "automatically.\n",
+        media_type="text/plain")
+
+
 async def passthrough(request: Request):
     client: httpx.AsyncClient = request.app.state.client
     return await _proxy_through(request, client, await request.body())
-
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
@@ -249,6 +262,7 @@ async def _lifespan(app):
 
 app = Starlette(
     routes=[
+        Route("/", root, methods=["GET"]),
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),
         Route("/{path:path}", passthrough, methods=["GET", "POST", "PUT", "DELETE", "PATCH"]),
     ],
