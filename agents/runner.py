@@ -114,8 +114,6 @@ def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
     return "\n".join(parts)
 
 
-SYSTEM_PROMPT = build_system_prompt()
-
 # ---------------------------------------------------------------------------
 # Agent loop
 # ---------------------------------------------------------------------------
@@ -123,6 +121,8 @@ SYSTEM_PROMPT = build_system_prompt()
 def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
     """Reconstruct the conversation from a JSONL log for resumption."""
     messages = [{"role": "system", "content": system_prompt}]
+    # Track recent assistant contents in a set for O(1) dedup instead of O(n²) scan.
+    seen_assistant: set[str] = set()
     with open(log_path, "r") as f:
         for line in f:
             line = line.strip()
@@ -137,17 +137,11 @@ def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
             if etype == "start":
                 messages.append({"role": "user", "content": event.get("task", "")})
             elif etype == "assistant":
-                # Only add standalone assistant messages (no tool calls)
-                # Tool-calling assistant messages are logged as part of tool_call events
                 content = event.get("content", "")
-                if content and not any(
-                    m.get("role") == "assistant" and m.get("content") == content
-                    for m in messages[-3:]
-                ):
+                if content and content not in seen_assistant:
+                    seen_assistant.add(content)
                     messages.append({"role": "assistant", "content": content})
             elif etype == "tool_call":
-                # We can't fully reconstruct tool_call_id-linked messages without
-                # more log detail, but we can add the tool result as context
                 name = event.get("name", "")
                 result = event.get("result", "")
                 if name and result:
@@ -157,6 +151,29 @@ def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
                     })
 
     return messages
+
+
+def _tool_summary(name: str, args: dict) -> str:
+    """One-line summary for printing a tool call to the console."""
+    summaries = {
+        "bash": lambda a: a.get("command", "")[:100],
+        "read_file": lambda a: a.get("path", ""),
+        "write_file": lambda a: a.get("path", ""),
+        "edit_file": lambda a: a.get("path", ""),
+        "grep": lambda a: f"'{a.get('pattern', '')}' in {a.get('path', '.')}",
+        "list_files": lambda a: f"{a.get('directory', '.')} {a.get('pattern', '')}",
+        "fetch": lambda a: a.get("url", "")[:80],
+        "task_done": lambda a: a.get("summary", "")[:100],
+    }
+    fmt = summaries.get(name)
+    if fmt:
+        return fmt(args)
+    return str(args)[:100]
+
+
+def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int) -> None:
+    """Print the stable-key token line that the eval harness parses."""
+    print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
 
 
 def run_agent(
@@ -298,24 +315,8 @@ def run_agent(
             if not handler:
                 result = f"Error: unknown tool '{fn_name}'"
             else:
-                if fn_name == "bash":
-                    print(f"  > bash: {fn_args.get('command', '')[:100]}")
-                elif fn_name == "read_file":
-                    print(f"  > read: {fn_args.get('path', '')}")
-                elif fn_name == "write_file":
-                    print(f"  > write: {fn_args.get('path', '')}")
-                elif fn_name == "edit_file":
-                    print(f"  > edit: {fn_args.get('path', '')}")
-                elif fn_name == "grep":
-                    print(f"  > grep: {fn_args.get('pattern', '')} in {fn_args.get('path', '.')}")
-                elif fn_name == "list_files":
-                    print(f"  > ls: {fn_args.get('directory', '.')} {fn_args.get('pattern', '')}")
-                elif fn_name == "fetch":
-                    print(f"  > fetch: {fn_args.get('url', '')[:80]}")
-                elif fn_name == "task_done":
-                    print(f"  > task_done")
-
-                result = handler(fn_args)
+                print(f"  > {fn_name}: {_tool_summary(fn_name, fn_args)}")
+                result = handler(**fn_args)
 
             log_event({
                 "type": "tool_call",
@@ -337,8 +338,7 @@ def run_agent(
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
-                # Stable-key line so callers (eval harness) can parse without log path
-                print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
+                _print_token_summary(tokens_prompt, tokens_completion, tokens_total)
                 print(f"{'=' * 60}")
                 log_event({
                     "type": "done", "summary": final_summary, "iterations": iteration,
@@ -349,7 +349,7 @@ def run_agent(
 
     # Max iterations reached
     print(f"\nMax iterations ({max_iter}) reached without task_done.")
-    print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
+    _print_token_summary(tokens_prompt, tokens_completion, tokens_total)
     log_event({
         "type": "max_iterations", "iterations": max_iter,
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,

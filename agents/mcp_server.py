@@ -209,27 +209,34 @@ def _format_elapsed(start: datetime) -> str:
     return f"{hours}h {mins}m {secs}s"
 
 
+def _classify_agent_status(alive: bool, events: list[dict], returncode: int | None = None) -> str:
+    """Determine agent status string from liveness and log events.
+
+    Shared by _agent_status_report, _orphaned_log_report, and list_agents
+    to avoid duplicating the classification logic.
+    """
+    has_done = any(e.get("type") == "done" for e in events)
+    has_max_iter = any(e.get("type") == "max_iterations" for e in events)
+    if has_done:
+        return "completed"
+    if has_max_iter:
+        return "max_iterations_reached"
+    if not alive:
+        return f"exited (code {returncode})" if returncode is not None else "exited"
+    return "running"
+
+
 def _agent_status_report(record: _AgentRecord) -> str:
     """Build a structured status report for a tracked agent."""
     alive = record.process.poll() is None
     events = _parse_agent_log(record.log_path)
+    status = _classify_agent_status(alive, events, record.process.returncode)
 
-    # Classify terminal state
     done_event = next((e for e in events if e.get("type") == "done"), None)
-    max_iter_event = next((e for e in events if e.get("type") == "max_iterations"), None)
     error_events = [e for e in events if e.get("type") == "error"]
     iteration_events = [e for e in events if e.get("type") == "iteration"]
     tool_events = [e for e in events if e.get("type") == "tool_call"]
     assistant_events = [e for e in events if e.get("type") == "assistant"]
-
-    if done_event:
-        status = "completed"
-    elif max_iter_event:
-        status = "max_iterations_reached"
-    elif not alive:
-        status = f"exited (code {record.process.returncode})"
-    else:
-        status = "running"
 
     current_iter = len(iteration_events)
     elapsed = _format_elapsed(record.started_at)
@@ -292,24 +299,20 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
 
     start_event = next((e for e in events if e.get("type") == "start"), None)
     done_event = next((e for e in events if e.get("type") == "done"), None)
-    max_iter_event = next((e for e in events if e.get("type") == "max_iterations"), None)
     iteration_events = [e for e in events if e.get("type") == "iteration"]
 
     task = start_event.get("task", "?")[:300] if start_event else "?"
+    status = _classify_agent_status(alive=False, events=events)
 
     lines = [
         f"Agent: {agent_id} (from previous session — no process control)",
         f"Task: {task}",
+        f"Status: {status}",
         f"Iterations: {len(iteration_events)}",
     ]
 
     if done_event:
-        lines.append(f"Status: completed")
         lines.append(f"Summary: {done_event.get('summary', '(none)')}")
-    elif max_iter_event:
-        lines.append(f"Status: max_iterations_reached")
-    else:
-        lines.append(f"Status: unknown (server restarted)")
 
     lines.append(f"Log: {log_path}")
     return "\n".join(lines)
@@ -612,18 +615,8 @@ def list_agents() -> str:
     for agent_id, record in _agents.items():
         alive = record.process.poll() is None
         events = _parse_agent_log(record.log_path)
-        done = any(e.get("type") == "done" for e in events)
-        max_reached = any(e.get("type") == "max_iterations" for e in events)
         iters = sum(1 for e in events if e.get("type") == "iteration")
-
-        if done:
-            status = "completed"
-        elif max_reached:
-            status = "max_iterations"
-        elif alive:
-            status = "running"
-        else:
-            status = f"exited ({record.process.returncode})"
+        status = _classify_agent_status(alive, events, record.process.returncode)
 
         elapsed = _format_elapsed(record.started_at)
         task_preview = record.task[:50].replace("\n", " ")

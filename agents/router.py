@@ -29,6 +29,7 @@ Env:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -116,8 +117,9 @@ async def _classify(client, user_text):
         d = json.loads(content)
         if d.get("spawn"):
             return True, (d.get("task") or "").strip(), (d.get("workdir") or ".").strip()
-    except Exception:
-        pass  # any classify failure -> treat as no-spawn (fail safe: never block a turn)
+    except Exception as exc:
+        logging.debug("classify failed (passing through): %s", exc)
+        # any classify failure -> treat as no-spawn (fail safe: never block a turn)
     return False, "", "."
 
 

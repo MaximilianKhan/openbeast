@@ -211,6 +211,27 @@ if ! wait_llama_health; then
 fi
 echo "llama.cpp server ready on http://localhost:8080"
 
+# Warm the KV cache with the WebUI system prompt so the user's FIRST chat
+# doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
+# processed from scratch). Best-effort; never blocks startup. The primed
+# prefix is reused by every subsequent same-prompt turn.
+if [[ -f "$REPO_DIR/system-prompt.md" ]]; then
+  ( SYS="$(cat "$REPO_DIR/system-prompt.md" "$REPO_DIR/system-prompt-tools.md" 2>/dev/null)"
+    python3 - "$SYS" <<'WARM' >/dev/null 2>&1 || true
+import json, sys, urllib.request
+body=json.dumps({"messages":[{"role":"system","content":sys.argv[1]},
+    {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
+    "chat_template_kwargs":{"enable_thinking":False}}).encode()
+try:
+    urllib.request.urlopen(urllib.request.Request(
+        "http://127.0.0.1:8080/v1/chat/completions", data=body,
+        headers={"Content-Type":"application/json"}), timeout=60).read()
+except Exception:
+    pass
+WARM
+    echo "  (KV cache warmed with the system prompt)" ) &
+fi
+
 echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
 command -v mcpo >/dev/null 2>&1 \
   || { echo "Error: mcpo not found on PATH (pip install --user mcpo puts it in ~/.local/bin)" >&2; exit 1; }

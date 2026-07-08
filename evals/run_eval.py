@@ -42,6 +42,11 @@ TASKS_DIR = os.path.join(EVALS_DIR, "tasks")
 RESULTS_DIR = os.path.join(EVALS_DIR, "results")
 RUNNER_PATH = os.path.join(EVALS_DIR, "..", "agents", "runner.py")
 
+# Shared process-reaping from agents/tools.py — single source of truth for
+# SIGKILL-the-group + rlimit + output-cap logic.
+sys.path.insert(0, os.path.join(EVALS_DIR, "..", "agents"))
+from tools import run_reaped  # noqa: E402
+
 
 def detect_model(base_url: str) -> str:
     """Query /v1/models on the llama.cpp server. Returns the alias the model
@@ -233,41 +238,19 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
 
 
 def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
-    """subprocess.run-alike that SIGKILLs the whole process group on timeout.
+    """Thin wrapper around tools.run_reaped for eval-harness callers.
 
-    Twin of agents/tools.py run_reaped — kept inline so the eval harness has
-    no import dependency on the agent package. Plain subprocess.run with
-    shell=True kills only /bin/sh on timeout, orphaning the grandchildren:
-    on 2026-07-07 two orphaned model-written programs grew to ~140 GB each
-    and OOM-killed the session (see docs/TODO.md post-mortem). The rlimit
-    bounds a memory bomb in the window before the timeout fires.
+    tools.run_reaped only supports shell=True (it manages the process group
+    and rlimit itself). For non-shell commands we shell-quote them into a
+    single string so the same safety guarantees apply.
 
     Returns (returncode, merged stdout+stderr). Raises TimeoutExpired.
     """
-    def _preexec():
-        import resource
-        cap = 32 * 1024**3
-        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-
-    proc = subprocess.Popen(
-        cmd, shell=shell,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        start_new_session=True, preexec_fn=_preexec,
-    )
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-        return proc.returncode, out or ""
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.kill()
-        try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        raise
+    if isinstance(cmd, list):
+        shell_cmd = " ".join(shlex.quote(c) for c in cmd)
+    else:
+        shell_cmd = cmd
+    return run_reaped(shell_cmd, timeout)
 
 
 def run_setup(task: dict) -> bool:

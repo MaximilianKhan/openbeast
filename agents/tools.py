@@ -1,25 +1,27 @@
-"""
-Built-in tools for the agent runner.
+"""Built-in tools for the agent runner.
 
 Each tool is defined as:
   - A schema (OpenAI function-calling format)
   - A handler function that executes the tool and returns a string result
 """
 
-import html as html_module
+from __future__ import annotations
+
+import glob
+import html
 import json
 import os
 import re
 import resource
 import shlex
 import signal
-import stat as stat_module
+import stat
 import subprocess
 import threading
-import glob as glob_module
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 # Largest slice of a child's output we retain in the PARENT process. The
 # RLIMIT_AS below caps the child's own memory, but `cat /dev/zero` streams
@@ -136,7 +138,11 @@ def run_reaped(command, timeout, **popen_kw):
 
 
 def bash(command: str, timeout: int = 120) -> str:
-    """Run a shell command and return stdout + stderr."""
+    """Run a shell command and return stdout + stderr.
+
+    Enforced safety: child process group is SIGKILLed on timeout,
+    RLIMIT_AS caps the child's address space, and output is capped.
+    """
     try:
         # Arsenal Phase 1 hook: OPENBEAST_BASH_WRAPPER is a command prefix
         # (e.g. "sandlock --profile openbeast --") that wraps every model
@@ -200,7 +206,7 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         # regular-file check and the read see the same inode.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         st = os.fstat(fd)
-        if not stat_module.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode):
             os.close(fd)
             return f"Error: not a regular file (refusing to read {path})"
         if st.st_size > _MAX_READ_BYTES:
@@ -240,7 +246,7 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
         directory = os.path.expanduser(directory)
-        matches = sorted(glob_module.glob(os.path.join(directory, pattern), recursive=True))
+        matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
         files = [m for m in matches if os.path.isfile(m)]
         if not files:
             return f"No files matching '{pattern}' in {directory}"
@@ -353,7 +359,7 @@ def fetch(url: str, max_length: int = 50_000) -> str:
             text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
             text = re.sub(r"<[^>]+>", " ", text)
-            text = html_module.unescape(text)
+            text = html.unescape(text)
             text = re.sub(r"[^\S\n]+", " ", text)
             text = re.sub(r"\n{3,}", "\n\n", text)
             text = text.strip()
@@ -423,157 +429,183 @@ def task_done(summary: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool registry
+# Tool registry — single source of truth
 # ---------------------------------------------------------------------------
 
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "bash",
-            "description": "Run a shell command. Use for building, testing, git operations, installing packages, or any system task.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The shell command to execute"},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)", "default": 120},
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read lines from a file. Returns numbered lines.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the file"},
-                    "offset": {"type": "integer", "description": "Line offset to start from (0-indexed)", "default": 0},
-                    "limit": {"type": "integer", "description": "Max lines to read", "default": 500},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file. Creates directories if needed. Overwrites existing files.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to write to"},
-                    "content": {"type": "string", "description": "File content"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "List files matching a glob pattern in a directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "directory": {"type": "string", "description": "Directory to search", "default": "."},
-                    "pattern": {"type": "string", "description": "Glob pattern (e.g. '**/*.py')", "default": "**/*"},
+# Each entry: (handler_fn, openai_schema_dict).
+# TOOL_SCHEMAS and TOOL_HANDLERS are derived from this list, so they can never
+# drift out of sync.
+_TOOL_REGISTRY: list[tuple[Any, dict]] = [
+    (
+        bash,
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Run a shell command. Use for building, testing, git operations, installing packages, or any system task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The shell command to execute"},
+                        "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)", "default": 120},
+                    },
+                    "required": ["command"],
                 },
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep",
-            "description": "Search file contents for a regex pattern. Returns matching lines with file paths and line numbers.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                    "path": {"type": "string", "description": "File or directory to search in", "default": "."},
-                    "file_glob": {"type": "string", "description": "Filter files by glob (e.g. '*.py')"},
+    ),
+    (
+        read_file,
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read lines from a file. Returns numbered lines.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the file"},
+                        "offset": {"type": "integer", "description": "Line offset to start from (0-indexed)", "default": 0},
+                        "limit": {"type": "integer", "description": "Max lines to read", "default": 500},
+                    },
+                    "required": ["path"],
                 },
-                "required": ["pattern"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit_file",
-            "description": "Replace an exact string in a file with new content. Use this instead of write_file when modifying existing files — it's safer and more precise. The old_string must appear exactly once unless replace_all is true. To insert text, include surrounding context in old_string and add new text within that context in new_string.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the file to edit"},
-                    "old_string": {"type": "string", "description": "The exact text to find (must be unique in the file)"},
-                    "new_string": {"type": "string", "description": "The replacement text"},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring uniqueness", "default": False},
+    ),
+    (
+        write_file,
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a file. Creates directories if needed. Overwrites existing files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to write to"},
+                        "content": {"type": "string", "description": "File content"},
+                    },
+                    "required": ["path", "content"],
                 },
-                "required": ["path", "old_string", "new_string"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch",
-            "description": "Fetch content from a URL and return it as text. HTML pages are cleaned (scripts/styles removed, tags stripped) to return readable text. JSON and plain text are returned as-is.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The URL to fetch (http or https)"},
-                    "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000)", "default": 50000},
+    ),
+    (
+        list_files,
+        {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files matching a glob pattern in a directory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {"type": "string", "description": "Directory to search", "default": "."},
+                        "pattern": {"type": "string", "description": "Glob pattern (e.g. '**/*.py')", "default": "**/*"},
+                    },
                 },
-                "required": ["url"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web using the local SearXNG instance. Returns titles, URLs, and snippets. Requires SearXNG running on port 8888.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query string"},
-                    "max_results": {"type": "integer", "description": "Maximum results to return (default 10)", "default": 10},
+    ),
+    (
+        grep,
+        {
+            "type": "function",
+            "function": {
+                "name": "grep",
+                "description": "Search file contents for a regex pattern. Returns matching lines with file paths and line numbers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                        "path": {"type": "string", "description": "File or directory to search in", "default": "."},
+                        "file_glob": {"type": "string", "description": "Filter files by glob (e.g. '*.py')"},
+                    },
+                    "required": ["pattern"],
                 },
-                "required": ["query"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "task_done",
-            "description": "Call this when the task is fully complete. Provide a summary of what was accomplished.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "description": "Summary of what was accomplished"},
+    ),
+    (
+        edit_file,
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Replace an exact string in a file with new content. Use this instead of write_file when modifying existing files — it's safer and more precise. The old_string must appear exactly once unless replace_all is true. To insert text, include surrounding context in old_string and add new text within that context in new_string.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the file to edit"},
+                        "old_string": {"type": "string", "description": "The exact text to find (must be unique in the file)"},
+                        "new_string": {"type": "string", "description": "The replacement text"},
+                        "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring uniqueness", "default": False},
+                    },
+                    "required": ["path", "old_string", "new_string"],
                 },
-                "required": ["summary"],
             },
         },
-    },
+    ),
+    (
+        fetch,
+        {
+            "type": "function",
+            "function": {
+                "name": "fetch",
+                "description": "Fetch content from a URL and return it as text. HTML pages are cleaned (scripts/styles removed, tags stripped) to return readable text. JSON and plain text are returned as-is.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The URL to fetch (http or https)"},
+                        "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000)", "default": 50000},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+    ),
+    (
+        web_search,
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web using the local SearXNG instance. Returns titles, URLs, and snippets. Requires SearXNG running on port 8888.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query string"},
+                        "max_results": {"type": "integer", "description": "Maximum results to return (default 10)", "default": 10},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+    ),
+    (
+        task_done,
+        {
+            "type": "function",
+            "function": {
+                "name": "task_done",
+                "description": "Call this when the task is fully complete. Provide a summary of what was accomplished.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "Summary of what was accomplished"},
+                    },
+                    "required": ["summary"],
+                },
+            },
+        },
+    ),
 ]
 
-TOOL_HANDLERS = {
-    "bash": lambda args: bash(args["command"], args.get("timeout", 120)),
-    "read_file": lambda args: read_file(args["path"], args.get("offset", 0), args.get("limit", 500)),
-    "write_file": lambda args: write_file(args["path"], args["content"]),
-    "edit_file": lambda args: edit_file(args["path"], args["old_string"], args["new_string"], args.get("replace_all", False)),
-    "list_files": lambda args: list_files(args.get("directory", "."), args.get("pattern", "**/*")),
-    "grep": lambda args: grep(args["pattern"], args.get("path", "."), args.get("file_glob", "")),
-    "fetch": lambda args: fetch(args["url"], args.get("max_length", 50_000)),
-    "web_search": lambda args: web_search(args["query"], args.get("max_results", 10)),
-    "task_done": lambda args: task_done(args["summary"]),
-}
+# Derived exports — always in sync with _TOOL_REGISTRY.
+TOOL_SCHEMAS = [schema for _, schema in _TOOL_REGISTRY]
+
+TOOL_HANDLERS: dict[str, Any] = {}
+for _fn, _schema in _TOOL_REGISTRY:
+    _name = _schema["function"]["name"]
+    TOOL_HANDLERS[_name] = _fn  # runner calls handler(args_dict) directly
