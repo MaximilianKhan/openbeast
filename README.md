@@ -55,7 +55,7 @@ Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
 **35B-A3B MoE** variants run 30–50 % faster per token — each swaps in with one
 argument to `start.sh`. Nine models are pre-configured, benchmarked against a
-v3.5 eval suite of 159 base tasks (33 with full 6-language variants, ~313
+v3.5 eval suite of 159 base tasks (33 with multi-language variants, 323
 effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 [`evals/README.md`](evals/README.md).
 
@@ -79,9 +79,10 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
    │                            MCP Tool Server                              │
    │                         (agents/mcp_server.py)                          │
    │                                                                         │
-   │       bash · read · write · edit · grep · fetch                         │
-   │       web_search · start_agent · check_agent                            │
-   │       tail_agent · list_agents · stop_agent                             │
+   │       bash · read · write · edit · grep · list_files                    │
+   │       fetch · web_search                                                │
+   │       start_agent · check_agent · tail_agent · list_agents · stop_agent │
+   │       list_skills · load_skill · start_skill_agent · reload_skills      │
    └─────────────────────────────────────┬───────────────────────────────────┘
                                          │
                                          ▼
@@ -101,7 +102,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 scaffolded 2026-05-22 awaiting first launch (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
+- 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 VRAM-measured 2026-07-07, awaiting first benchmark sweep (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 
 **Tool Suite (17 MCP tools)**
@@ -126,7 +127,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 **Operations**
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard) with automated validation — full distribution in [`evals/README.md`](evals/README.md)
+- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard units) with automated validation — full distribution in [`evals/README.md`](evals/README.md)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces an accuracy-ranked leaderboard
 - Per-task tracking of accuracy, speed, prompt/completion tokens, and API-equivalent cost (`evals/scoring.py`)
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
@@ -140,7 +141,7 @@ CUDA, Docker, and Python 3.10+ are installed:
 
 ```bash
 # 1. Clone and enter the repo
-git clone <repo-url> openbeast && cd openbeast
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
 # 2. Build llama.cpp with CUDA. CUDA_ARCH is auto-detected from your GPU
 #    (5090=120, 4090=89, 3090=86). nvcc lives in /opt/cuda/bin on Arch —
@@ -400,7 +401,9 @@ python3 evals/run_eval.py                          # all 159 tasks
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 
-# Multi-model sweep — stops/starts each serve script in turn, ~7-9 hours for all 5
+# Multi-model sweep — stops/starts each serve script in turn. Covers all 9
+# configured models (5 benchmarked so far; those 5 take ~16-20h on the v3.5
+# suite — budget roughly a day for all 9)
 python3 evals/benchmark_all.py                     # full sweep
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --list              # show configured models

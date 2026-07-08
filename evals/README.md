@@ -71,10 +71,10 @@ cross-model comparison.
 
 ## Distribution
 
-**Base totals:** 40 easy · 53 medium · 66 hard · 12 categories · 159 base task IDs
+**Base totals:** 40 easy · 53 medium · 66 hard base tasks · 12 categories · 159 base task IDs
 
-**Effective totals after v3.5 variant rollout (2026-05-07):** ~313 test
-units = 126 single-variant legacy + 187 variant entries across **33 base
+**Effective totals after v3.5 variant rollout (2026-05-07):** 323 test
+units = 126 single-variant legacy + 197 variant entries across **33 base
 tasks** with multi-language variants (py/go/c/cpp/rust/zig). Total weighted
 points preserved (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 —
 same as a hard single-variant task).

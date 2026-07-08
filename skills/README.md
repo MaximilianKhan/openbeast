@@ -40,7 +40,7 @@ The model discovers them via MCP and loads them on demand. See
 | Skill | What it's for |
 |---|---|
 | `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
-| `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++) to existing tasks |
+| `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 
 ## How the model uses them
 

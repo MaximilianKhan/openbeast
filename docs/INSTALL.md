@@ -12,6 +12,9 @@ SearXNG settings) lives in the repo and is portable across Linux boxes.
 
 ## TL;DR — Fresh box bootstrap
 
+`./bootstrap.sh` automates everything in this TL;DR (recommended); the steps
+below are the manual equivalent.
+
 For a working stack on a fresh Linux machine with NVIDIA + Docker:
 
 ```bash
@@ -21,7 +24,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 
 # Clone the repo
-git clone <repo-url> openbeast && cd openbeast
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
 # Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -63,7 +66,7 @@ The detailed walkthrough below explains each step and lists alternate models.
 ### Compiler toolchains for the eval suite (multi-language variants)
 
 The 159-task eval suite includes 33 base tasks with multi-language variants
-(Python / Go / C / C++ / Rust / Zig — ~187 variant entries; suite now ~313
+(Python / Go / C / C++ / Rust / Zig — 197 variant entries; suite now 323
 effective test units total). To run those variants, all six toolchains need
 to be available:
 
@@ -235,7 +238,7 @@ rm -rf weights/.cache   # hf leaves a cache subdir behind
 **Context caveat for both Qwopus variants:** Jackrong's README cites
 "32K/128K native context" — the YaRN extension that ships in the unsloth
 Qwen3.6 GGUFs may or may not be intact in their conversion. The serve
-scripts ship at our standard 350K (non-MTP) / 256K (MTP) contexts;
+scripts ship at our standard 416K (non-MTP) / 336K (MTP) contexts;
 if outputs degrade past ~128K in practice, back the contexts down to
 something within native limits.
 
@@ -285,7 +288,7 @@ curl -fsSL https://opencode.ai/install | bash
 OpenCode reads `opencode.json` from the directory you launch it in. Our
 `opencode.json` (committed in the repo root) wires up:
 - The local llama.cpp server as an OpenAI-compatible provider on `localhost:8080`
-- All 5 models with their tuned context limits
+- All 9 configured models with their tuned context limits
 - The MCP tool server via stdio (auto-launched as a subprocess by OpenCode)
 
 Run `opencode` from the repo root, or copy `opencode.json` to any project
@@ -376,7 +379,7 @@ To stop everything:
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
-- **Eval harness:** `python3 evals/run_eval.py` (benchmark on 10 coding tasks)
+- **Eval harness:** `python3 evals/run_eval.py` (159-task suite; see evals/README.md)
 
 ## 7. Remote access (optional, recommended)
 

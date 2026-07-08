@@ -107,6 +107,7 @@ this" gate. One config PUT via `configure-webui.sh`-style API call; make
 `configure-webui.sh` assert it thereafter (idempotent).
 
 ### Phase 1 — guest profile (~half day)
+**As-built differs:** guest got `web_search` only (no `fetch`); see the wiring section above.
 1. Add a second tool-server connection to the same MCPO URL:
    `arsenal-guest`, `function_name_filter_list: web_search,fetch`,
    `access_grants: []` (everyone).

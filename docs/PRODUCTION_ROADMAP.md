@@ -76,16 +76,16 @@ afford blind multi-step discovery; ours can't. That's the confusion.
 ## C. Docs / packaging — the community-pillar gaps (from the audit)
 
 Highest impact-to-effort, ordered:
-1. **Add `LICENSE`** (S/high) — currently ABSENT. Legal blocker to any use or
+1. **Add `LICENSE`** (S/high) — ✅ DONE 2026-07-07 (commit 5fb14e6, Apache-2.0). Was: currently ABSENT. Legal blocker to any use or
    contribution. Nothing else matters until this exists. *Needs Max: pick one
    (MIT or Apache-2.0 recommended for max adoption).*
-2. **`bootstrap.sh` — one-command install** (L/high). Collapse the 8 fragile
+2. **`bootstrap.sh` — one-command install** (L/high) — ✅ DONE 2026-07-07 (commit 5fb14e6). Collapse the 8 fragile
    manual steps into one: detect GPU arch + CUDA PATH, build llama.cpp (skip
    if built), pip (venv on Debian / `--break-system-packages` on Arch),
    download the default weight (skip if present), pull images, start, then
    guide admin-account creation + re-run `configure-webui.sh`. Every piece
    already exists in-repo; just stitch them.
-3. **"Tier 0: just chat" minimal path** (S/high) — `llama-server` + one
+3. **"Tier 0: just chat" minimal path** (S/high) — ✅ DONE 2026-07-07 (commit 5fb14e6, `./bootstrap.sh --minimal`) — `llama-server` + one
    weight + `curl localhost:8080`, no Docker/MCPO/auth. Let a newcomer
    succeed in 10 minutes; the full stack becomes the opt-in upgrade.
 4. **Fix the front-door quick-start** (S/high) — done for CUDA PATH + arch;

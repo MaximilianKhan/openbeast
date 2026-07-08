@@ -9,7 +9,8 @@
 # point OpenBeast at them here.
 #
 # Accepts absolute paths, ~ for your home dir, or a path relative to the repo.
-# If unset here, OpenBeast falls back to (in order): $OPENBEAST_WEIGHTS_DIR,
+# Resolution order (first match wins): the $OPENBEAST_WEIGHTS_DIR env var
+# overrides everything (per-shell override), then WEIGHTS_DIR set here, then
 # an existing ./weights/ inside the repo, then ../weights next to the repo.
 #
 # Examples:

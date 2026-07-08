@@ -12,10 +12,15 @@
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Install deps if needed
+# Install deps if needed. --break-system-packages only where PEP-668
+# requires it (Arch, newer Debian) — older pip errors on the unknown flag.
 if ! python3 -c "import openai" 2>/dev/null; then
   echo "Installing agent dependencies..."
-  pip install --user --break-system-packages -q -r "$REPO_DIR/agents/requirements.txt"
+  PIP_FLAGS=""
+  if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
+    PIP_FLAGS="--break-system-packages"
+  fi
+  pip install --user $PIP_FLAGS -q -r "$REPO_DIR/agents/requirements.txt"
 fi
 
 exec python3 "$REPO_DIR/agents/runner.py" "$@"

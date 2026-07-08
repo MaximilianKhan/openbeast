@@ -16,17 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 
 # BIND_HOST (default 127.0.0.1 — loopback-only; remote devices come in via
-# Tailscale Serve, see scripts/setup-tailscale.sh). docker-compose reads it
-# through the OPENBEAST_BIND env var exported by lib/conf.sh sourcing below.
+# Tailscale Serve, see scripts/setup-tailscale.sh). lib/conf.sh also exports
+# OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation.
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
-export OPENBEAST_BIND="$BIND_HOST"
-# Only propagate a real key. Exporting the WebUI's "not-needed" placeholder
-# would leak into serve.sh's conf resolution (OPENBEAST_API_KEY has top
-# priority there) and silently key-protect the llama API; docker-compose
-# already has its own not-needed default for the WebUI side.
-if [[ -n "$LLAMA_API_KEY" ]]; then
-  export OPENBEAST_API_KEY="$LLAMA_API_KEY"
-fi
 
 SERVE_SCRIPT="${1:-serve-qwen-27b-uncensored-q5.sh}"
 
@@ -55,6 +47,9 @@ done
 cleanup() {
   echo ""
   echo "Shutting down..."
+  if [[ -n "${CONFIG_PID:-}" ]]; then
+    kill "$CONFIG_PID" 2>/dev/null || true
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
@@ -69,7 +64,18 @@ echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
 LLAMA_PID=$!
 
 echo "Waiting for llama.cpp server to be ready..."
-until curl -s http://localhost:8080/health > /dev/null 2>&1; do
+# Probe where llama-server actually listens: loopback answers for loopback
+# and wildcard binds; a specific LAN/tailnet address must be probed directly.
+case "$BIND_HOST" in
+  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
+  *)                   HEALTH_HOST="$BIND_HOST" ;;
+esac
+until curl -s "http://$HEALTH_HOST:8080/health" > /dev/null 2>&1; do
+  if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+    echo "Error: llama-server exited during startup — see its output above" >&2
+    echo "       (common causes: missing weight file, VRAM OOM)" >&2
+    exit 1
+  fi
   sleep 1
 done
 echo "llama.cpp server ready on http://localhost:8080"
@@ -85,6 +91,7 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
 
 # Configure Open WebUI (tool server + native function calling) in background
 "$SCRIPT_DIR/scripts/configure-webui.sh" &
+CONFIG_PID=$!
 
 echo ""
 echo "Stack is running:"

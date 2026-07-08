@@ -325,13 +325,26 @@ class TestWebSearch(unittest.TestCase):
 
 class TestWriteGuards(unittest.TestCase):
     """Protected-path guard on write_file / edit_file (credential stores,
-    shell rc files, /etc, git configs)."""
+    shell rc files, /etc, git configs). Runs against a sandbox HOME so a
+    guard regression can never touch the real dotfiles."""
+
+    def setUp(self):
+        self._real_home = os.environ.get("HOME")
+        self.home = tempfile.mkdtemp(prefix="fakehome_")
+        os.environ["HOME"] = self.home
+
+    def tearDown(self):
+        if self._real_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._real_home
+        shutil.rmtree(self.home, ignore_errors=True)
 
     def test_write_refuses_ssh_dir(self):
         result = write_file("~/.ssh/test_guard_probe", "x")
         self.assertIn("refusing", result.lower())
         self.assertFalse(
-            os.path.exists(os.path.expanduser("~/.ssh/test_guard_probe")))
+            os.path.exists(os.path.join(self.home, ".ssh", "test_guard_probe")))
 
     def test_write_refuses_bashrc(self):
         result = write_file("~/.bashrc", "x")
@@ -352,11 +365,21 @@ class TestWriteGuards(unittest.TestCase):
     def test_symlink_cannot_dodge_guard(self):
         tmpdir = tempfile.mkdtemp()
         try:
-            link = os.path.join(tmpdir, "innocent.txt")
-            os.symlink(os.path.expanduser("~/.ssh"), os.path.join(tmpdir, "s"))
-            link = os.path.join(tmpdir, "s", "probe")
-            result = write_file(link, "x")
+            os.symlink(os.path.join(self.home, ".ssh"),
+                       os.path.join(tmpdir, "s"))
+            result = write_file(os.path.join(tmpdir, "s", "probe"), "x")
             self.assertIn("refusing", result.lower())
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_project_local_dotfiles_are_allowed(self):
+        # The guard is scoped to HOME: a project-local .npmrc or a dotfiles
+        # repo's .bashrc copy is legitimate coding work.
+        tmpdir = tempfile.mkdtemp()
+        try:
+            for name in (".npmrc", ".bashrc", os.path.join("data", ".ssh_keys.txt")):
+                result = write_file(os.path.join(tmpdir, name), "x")
+                self.assertIn("Wrote", result, f"guard wrongly blocked {name}")
         finally:
             shutil.rmtree(tmpdir)
 
@@ -390,6 +413,17 @@ class TestResourceCaps(unittest.TestCase):
         rc, out = run_reaped("head -c 1024 /dev/urandom", 30)
         self.assertEqual(rc, 0)
         self.assertIsInstance(out, str)
+
+    def test_run_reaped_background_child_does_not_hang(self):
+        # A backgrounded grandchild holding the stdout pipe must not wedge
+        # the call after the shell exits; the group gets reaped instead.
+        import time
+        from tools import run_reaped
+        start = time.monotonic()
+        rc, out = run_reaped("sleep 60 & echo hi", 30)
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(rc, 0)
+        self.assertIn("hi", out)
 
 
 class TestTaskDone(unittest.TestCase):

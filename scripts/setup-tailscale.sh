@@ -33,7 +33,17 @@ echo ""
 # --- 1. Install + enable -----------------------------------------------------
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "[1/4] Installing tailscale..."
-  sudo pacman -S --needed --noconfirm tailscale
+  if command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --needed --noconfirm tailscale
+  elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
+    # Tailscale's official installer handles Debian/Ubuntu/Fedora repos.
+    curl -fsSL https://tailscale.com/install.sh | sh
+  else
+    echo "Error: no supported package manager found." >&2
+    echo "       Install tailscale manually (https://tailscale.com/download)" >&2
+    echo "       and re-run this script." >&2
+    exit 1
+  fi
 else
   echo "[1/4] tailscale already installed."
 fi

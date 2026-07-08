@@ -47,10 +47,10 @@ echo ""
 if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
   if $RESTART; then
     echo "       → restarting llama.cpp..."
-    # Find the most recent serve script used (from process list)
-    SERVE_PID=$(pgrep -f "llama-server" 2>/dev/null || true)
-    if [[ -n "$SERVE_PID" ]]; then
-      kill "$SERVE_PID" 2>/dev/null
+    # pkill handles multiple stale PIDs; || true because "nothing to kill"
+    # (or a race with a process exiting) must not abort the healthcheck.
+    if pgrep -f "llama-server" >/dev/null 2>&1; then
+      pkill -f "llama-server" 2>/dev/null || true
       sleep 2
     fi
     "$SCRIPT_DIR/serve-qwen-27b-uncensored-q5.sh" &
@@ -122,12 +122,17 @@ fi
 # GPU VRAM usage
 echo ""
 if command -v nvidia-smi &>/dev/null; then
-  VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-  VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
-  VRAM_PCT=$((VRAM_USED * 100 / VRAM_TOTAL))
-  echo "  GPU VRAM: ${VRAM_USED}/${VRAM_TOTAL} MiB (${VRAM_PCT}%)"
-  if [[ $VRAM_PCT -gt 95 ]]; then
-    echo "  WARNING: VRAM usage above 95% — risk of OOM"
+  VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+  VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 ]]; then
+    echo "  GPU VRAM: unavailable (nvidia-smi returned no data)"
+    VRAM_PCT=0
+  else
+    VRAM_PCT=$((VRAM_USED * 100 / VRAM_TOTAL))
+    echo "  GPU VRAM: ${VRAM_USED}/${VRAM_TOTAL} MiB (${VRAM_PCT}%)"
+    if [[ $VRAM_PCT -gt 95 ]]; then
+      echo "  WARNING: VRAM usage above 95% — risk of OOM"
+    fi
   fi
 fi
 

@@ -19,6 +19,12 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
+# Resolve user config BEFORE any `docker compose up` — conf.sh exports
+# OPENBEAST_BIND / OPENBEAST_WEBUI_AUTH / OPENBEAST_API_KEY so recreated
+# containers keep the user's auth and bind settings instead of reverting
+# to compose defaults.
+source "$REPO_DIR/scripts/lib/conf.sh"
+
 c_bold=$'\033[1m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 step() { echo; echo "${c_bold}==> $*${c_rst}"; }
 ok()   { echo "  ${c_grn}✓${c_rst} $*"; }
@@ -83,7 +89,9 @@ update_llama() {
   fi
 
   local cuda_arch
-  cuda_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+  # || true: under pipefail a missing/failing nvidia-smi would kill the
+  # script inside the substitution, never reaching the fallback.
+  cuda_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
   cuda_arch="${cuda_arch:-120}"
   ok "GPU compute capability → CMAKE_CUDA_ARCHITECTURES=$cuda_arch"
   cmake -S "$src" -B "$build" \

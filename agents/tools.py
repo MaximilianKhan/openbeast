@@ -44,10 +44,6 @@ _MAX_READ_BYTES = 64 * 1024 * 1024
 _CHILD_AS_LIMIT = 32 * 1024**3
 
 
-def _child_preexec():
-    resource.setrlimit(resource.RLIMIT_AS, (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
-
-
 def _killpg(proc):
     """SIGKILL the whole process group, then reap the leader."""
     try:
@@ -83,9 +79,16 @@ def run_reaped(command, timeout, **popen_kw):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
-        preexec_fn=_child_preexec,
         **popen_kw,
     )
+    # Cap the child's address space from the parent. prlimit (instead of a
+    # preexec_fn) is safe when the caller is a threaded server (FastMCP);
+    # /bin/sh's own children inherit the limit when it forks them.
+    try:
+        resource.prlimit(proc.pid, resource.RLIMIT_AS,
+                         (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+    except (OSError, ProcessLookupError):
+        pass
     kept = bytearray()
     total = [0]
 
@@ -107,6 +110,21 @@ def run_reaped(command, timeout, **popen_kw):
         raise
     finally:
         reader.join(timeout=5)
+        if reader.is_alive():
+            # The shell exited but a backgrounded grandchild still holds the
+            # stdout pipe — the reader would block forever (and so would we).
+            # Killing the group unblocks it AND enforces the no-orphans
+            # policy: nothing outlives the tool call. Long-lived daemons must
+            # detach properly (setsid + redirect away from the pipe).
+            _killpg(proc)
+            reader.join(timeout=2)
+        if reader.is_alive():
+            # Grandchild escaped the group (setsid): force EOF on the raw fd.
+            try:
+                os.close(proc.stdout.fileno())
+            except OSError:
+                pass
+            reader.join(timeout=2)
         try:
             proc.stdout.close()
         except Exception:
@@ -135,13 +153,14 @@ def bash(command: str, timeout: int = 120) -> str:
 
 
 # Credential / persistence locations model-written file ops must never touch.
-# Realpath-resolved (so symlinks can't dodge it). Defense-in-depth: the
-# authoritative sandbox is Arsenal Phase 1 (Sandlock); this closes the
-# obvious exfil/persistence vectors today without constraining normal coding.
+# Realpath-resolved (so symlinks can't dodge it) and scoped to the real HOME —
+# a project-local .npmrc or a dotfiles repo's copy of .bashrc is legitimate
+# coding work; only the live copies under ~ are persistence/exfil targets.
+# Defense-in-depth: the authoritative sandbox is Arsenal Phase 1 (Sandlock).
 _PROTECTED_DIRS = (".ssh", ".gnupg", ".aws")
 _PROTECTED_BASENAMES = {
     ".netrc", ".git-credentials", ".npmrc", ".pypirc",
-    ".bashrc", ".bash_profile", ".zshrc", ".profile", "authorized_keys",
+    ".bashrc", ".bash_profile", ".zshrc", ".profile",
 }
 
 
@@ -150,12 +169,14 @@ def _guard_write_path(path: str):
     target, else None. Applied to write_file / edit_file only — reads stay
     open (an agent may legitimately read config)."""
     rp = os.path.realpath(os.path.expanduser(path))
-    parts = rp.split(os.sep)
-    base = os.path.basename(rp)
-    if base in _PROTECTED_BASENAMES:
-        return f"Error: refusing to write protected file {rp}"
-    if any(seg in parts for seg in _PROTECTED_DIRS):
-        return f"Error: refusing to write inside a credential store ({rp})"
+    home = os.path.realpath(os.path.expanduser("~"))
+    rel = os.path.relpath(rp, home)
+    inside_home = rel != os.pardir and not rel.startswith(os.pardir + os.sep)
+    if inside_home:
+        if rel.split(os.sep)[0] in _PROTECTED_DIRS:
+            return f"Error: refusing to write inside a credential store ({rp})"
+        if rel in _PROTECTED_BASENAMES:
+            return f"Error: refusing to write protected file {rp}"
     if rp == "/etc" or rp.startswith("/etc/"):
         return f"Error: refusing to write under /etc ({rp})"
     if rp.endswith(f"{os.sep}.git{os.sep}config"):
@@ -167,13 +188,19 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file."""
     try:
         path = os.path.expanduser(path)
-        st = os.stat(path)
+        # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
+        # regular-file check and the read see the same inode.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode):
+            os.close(fd)
             return f"Error: not a regular file (refusing to read {path})"
         if st.st_size > _MAX_READ_BYTES:
+            os.close(fd)
             return (f"Error: file too large ({st.st_size} bytes > "
                     f"{_MAX_READ_BYTES}); read a slice with bash instead")
-        with open(path, "r", errors="replace") as f:
+        os.set_blocking(fd, True)
+        with os.fdopen(fd, "r", errors="replace") as f:
             lines = f.readlines()
         total = len(lines)
         selected = lines[offset : offset + limit]
@@ -190,7 +217,9 @@ def write_file(path: str, content: str) -> str:
         blocked = _guard_write_path(path)
         if blocked:
             return blocked
-        path = os.path.expanduser(path)
+        # Write the path the guard actually vetted, not the raw one — a
+        # symlink swapped in after the check can't redirect the write.
+        path = os.path.realpath(os.path.expanduser(path))
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
             f.write(content)
@@ -237,7 +266,8 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         blocked = _guard_write_path(path)
         if blocked:
             return blocked
-        path = os.path.expanduser(path)
+        # Operate on the path the guard vetted (see write_file).
+        path = os.path.realpath(os.path.expanduser(path))
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
 

@@ -28,8 +28,15 @@ fi
 
 echo "Configuring Open WebUI..."
 
-# Wait for Open WebUI to be ready
-until curl -s "$WEBUI_URL/api/version" > /dev/null 2>&1; do
+# Wait for Open WebUI to be ready — bounded so a container that never comes
+# up can't leave this loop orphaned forever (start.sh backgrounds us).
+for _i in $(seq 1 180); do
+  curl -s "$WEBUI_URL/api/version" > /dev/null 2>&1 && break
+  if [[ $_i -eq 180 ]]; then
+    echo "Error: Open WebUI not reachable after 180s — giving up." >&2
+    echo "       Re-run ./scripts/configure-webui.sh once it's up." >&2
+    exit 1
+  fi
   sleep 1
 done
 
@@ -40,10 +47,15 @@ done
 #     WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in openbeast.conf to the
 #     admin account you created on first visit.
 _signin() {
+  # || true: a non-JSON response (502 HTML, connection reset) makes the
+  # python step exit 1; under pipefail that would silently kill the whole
+  # script at the TOKEN=$(...) assignment instead of reaching the fallback
+  # guidance below.
   curl -s "$WEBUI_URL/api/v1/auths/signin" \
     -H "Content-Type: application/json" \
     -d "$(printf '{"email":"%s","password":"%s"}' "$1" "$2")" \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null \
+    || true
 }
 
 TOKEN=$(_signin "admin@localhost" "")
@@ -120,7 +132,7 @@ for m in data.get('data', []):
         params = m.get('info', {}).get('params', {})
         fc = params.get('function_calling', '')
         print(f'{mid}|{fc}')
-" 2>/dev/null)
+" 2>/dev/null || true)
 
 if [[ -z "$MODELS" ]]; then
   echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
@@ -137,11 +149,13 @@ else
   while IFS='|' read -r model_id fc_mode; do
     [[ -z "$model_id" ]] && continue
     echo "  Configuring $model_id..."
-    docker exec open-webui python3 -c "
+    docker exec -e MODEL_ID="$model_id" open-webui python3 -c "
 import sqlite3, json, os, time
 
 db = sqlite3.connect('/app/backend/data/webui.db')
-model_id = '$model_id'
+# Passed via env, not interpolated into source — a model alias containing
+# a quote must not become Python code.
+model_id = os.environ['MODEL_ID']
 # Both RBAC connections; per-user access control decides which resolve.
 tool_refs = json.loads('$TOOL_REFS')
 

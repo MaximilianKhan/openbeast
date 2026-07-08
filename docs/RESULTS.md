@@ -6,7 +6,7 @@ columns, not folded into a composite score.
 
 > **Suite version.** Live results below are from the **v3.5 suite — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
-> 187 variant entries replacing 33 base entries). Difficulty split:
+> 197 variant entries replacing 33 base entries). Difficulty split:
 > 80 easy · 123 medium · 120 hard. Token tracking on every task; result
 > cache at `evals/cache/` for retryable sweeps. Distribution table and
 > methodology: [`evals/README.md`](../evals/README.md).
@@ -28,8 +28,8 @@ variants).
 
 **33 of the 159 base tasks** have multi-language variants (Python / Go / C /
 C++ / Rust / Zig — 6 languages) — see the variant rollout section at the
-end. Effective test units after variants: **~313** (126 single-variant
-legacy + 187 variant entries). Total weighted points are invariant —
+end. Effective test units after variants: **323** (126 single-variant
+legacy + 197 variant entries). Total weighted points are invariant —
 variants split a single base task's weight, not multiply it.
 
 ### Category × difficulty
@@ -135,7 +135,7 @@ variants split a single base task's weight, not multiply it.
 | Security | Vulnerability remediation | 1 |
 | Signal Processing & DSP | Frequency-domain analysis | 1 |
 
-### Multi-language variants (33 base tasks → 187 variant entries; 13 listed below seeded the rollout, 20 more added in v3.5)
+### Multi-language variants (33 base tasks → 197 variant entries; 13 listed below seeded the rollout, 20 more added in v3.5)
 
 | Task | # variants | Languages |
 |---|---:|---|
@@ -158,8 +158,8 @@ accuracy via `python3 evals/scoring.py --by-language`. For full schema /
 methodology / pitfalls, see [`evals/README.md`](evals/README.md).
 
 Effective test units after the v3.5 rollout: **323** (126 single-variant base
-tasks + 187 variant entries; 10 multi-variant base tasks ship < 6 langs, hence
-323 vs the 313 ceiling). All variants verified end-to-end with reference
+tasks + 197 variant entries; one variant task, `122_gemm_blocked`, ships 5
+languages instead of 6, hence 197 rather than 198). All variants verified end-to-end with reference
 implementations (`python3 tests/audit_variants.py`).
 
 ---

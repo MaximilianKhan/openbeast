@@ -34,9 +34,15 @@ echo ""
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""
-if python3 -m pytest "$REPO_DIR/tests/test_tools.py" -v --tb=short 2>/dev/null; then
-  echo ""
-  echo "Tool tests: ALL PASSED"
+if python3 -c "import pytest" 2>/dev/null; then
+  if python3 -m pytest "$REPO_DIR/tests/test_tools.py" -v --tb=short; then
+    echo ""
+    echo "Tool tests: ALL PASSED"
+  else
+    echo ""
+    echo "Tool tests: SOME FAILED"
+    OVERALL=1
+  fi
 else
   # Fallback: run with unittest if pytest not installed
   echo "(pytest not found, falling back to unittest)"

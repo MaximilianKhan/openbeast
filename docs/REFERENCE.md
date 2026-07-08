@@ -90,7 +90,7 @@ measurements.
 
 ### Qwen3.6-27B — 64 layers, real-world KV cost: ~18 KB/token
 
-**Q4_K_M (~16GB weights)**
+**Q4_K_M (~16GB weights)** (historical measurement — not a shipped config)
 
 | Context | Model | KV Cache | **Total** | Headroom |
 |---------|-------|----------|-----------|----------|
@@ -226,7 +226,7 @@ in the MTP table above.
 **Context caveat:** Jackrong's README cites "32K/128K native context."
 The YaRN extension that ships in the unsloth Qwen3.6 GGUFs (extending
 the 262K native to ~1M) may or may not be intact in this conversion. The
-serve scripts ship at the VRAM ceilings above (416K non-MTP / 352K MTP),
+serve scripts ship at the VRAM ceilings above (416K non-MTP / 336K MTP),
 but if outputs degrade past ~128K under real use, back off the context.
 Validate by running the same long-context probe against both Qwopus and
 the unsloth Qwen3.6-27B build.
@@ -311,8 +311,9 @@ hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-d
 
 - Source: https://huggingface.co/unsloth/gemma-4-31B-it-GGUF
 - Different family from Qwen — uses sliding-window attention
-- KV cost not yet measured; default **128K** context (conservative)
-- Raise `-c` after validating actual VRAM usage with a real launch
+- KV cost measured 2026-05-05 (non-linear, 20→25 KB/token — see the Gemma
+  VRAM table above); default **192K** context (`-c 196608`, set 2026-05-08
+  after a sustained-load crash at 220K)
 
 ### Qwen3.6-35B-A3B (MoE + hybrid DeltaNet, Q4_K_M — 22GB)
 
@@ -541,7 +542,7 @@ and snippets. Models can also use `fetch` to read full page content from search 
 ./scripts/run-qwen-35b-a3b-mtp.sh  # Qwen 35B-A3B MTP MoE (512K ctx, single-slot speculative)
 ./scripts/run-qwopus-27b-v2-q5.sh       # Qwopus 27B v2 Q5_K_M (Jackrong SFT, 416K ctx)
 ./scripts/run-qwopus-27b-v2-mtp-q5.sh   # Qwopus 27B v2 MTP Q5_K_M (single-slot speculative, 336K ctx)
-./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (128K ctx, ~20.4GB model + KV TBD)
+./scripts/run-gemma-4-31b-q5.sh    # Gemma 4 31B-it Q5_K_XL (192K ctx, ~29.8GB VRAM measured)
 ```
 
 ### OpenAI-compatible API server
@@ -618,8 +619,8 @@ active slot count. With `--restart`, automatically restarts any service that's d
 
 ### Eval harness
 
-159 tasks across three difficulty tiers (40 easy / 53 medium / 66 hard) and 12
-categories. Full distribution table, schema, and scoring methodology in
+159 tasks across three difficulty tiers (40/53/66 base tasks: easy/medium/hard)
+and 12 categories. Full distribution table, schema, and scoring methodology in
 [**evals/README.md**](evals/README.md) — start there for anything eval-related.
 This section covers operational details specific to the multi-model sweep and
 cross-host comparison.
@@ -633,14 +634,15 @@ leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
 flagged in the sweep summary.
 
 ```bash
-python3 evals/benchmark_all.py                       # all 5 models, full suite
+python3 evals/benchmark_all.py                       # all 9 configured models, full suite
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime estimate: ~159 tasks × ~90s avg × 5 models ≈ **8-10 hours**.
-Plan to run overnight. Sweep summaries are saved to
+Total runtime: the 5 models benchmarked so far took **~16–20 hours** on the
+v3.5 suite; a sweep of all 9 configured models will run longer — budget
+roughly a day. Plan to run overnight. Sweep summaries are saved to
 `evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
 7h 21m wall-clock (26,489 s) on the prior 144-task suite — see
 [RESULTS.md](RESULTS.md).
@@ -672,7 +674,7 @@ with subcategory drilldown.
 
 `scoring.py --by-language` produces a per-language accuracy table across the
 33 base tasks that have multi-language variants (Python / Go / C / C++ / Rust /
-Zig — 187 total variant entries; one task, `122_gemm_blocked`, has 5
+Zig — 197 total variant entries; one task, `122_gemm_blocked`, has 5
 variants without a Python entry since it's perf-flavored). Use this view to
 surface cross-language failure modes the Python-only suite cannot.
 

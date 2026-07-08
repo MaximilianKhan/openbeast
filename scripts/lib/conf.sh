@@ -51,8 +51,18 @@ WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSW
 WEBUI_AUTH="${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || echo false)}"
 export BIND_HOST WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
 export OPENBEAST_WEBUI_AUTH="$WEBUI_AUTH"
+# docker-compose interpolates OPENBEAST_BIND / OPENBEAST_API_KEY directly.
+# Export them HERE so every caller that later runs `docker compose up`
+# (start.sh, healthcheck.sh --restart, update.sh --images) recreates
+# containers with the user's real settings — an update must never silently
+# revert WEBUI auth or the bind address to defaults.
+export OPENBEAST_BIND="$BIND_HOST"
 # Export the key only when real: llama-server reads the LLAMA_API_KEY env
 # var natively, and an exported empty string still counts as "set" to it.
+# Same logic for OPENBEAST_API_KEY: exporting the WebUI's "not-needed"
+# placeholder would leak into serve.sh's conf resolution and silently
+# key-protect the llama API.
 if [[ -n "$LLAMA_API_KEY" ]]; then
   export LLAMA_API_KEY
+  export OPENBEAST_API_KEY="$LLAMA_API_KEY"
 fi

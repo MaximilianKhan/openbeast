@@ -6,6 +6,7 @@
 
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export REPO_DIR  # the embedded Python heredocs read it from the environment
 
 PASS=0
 FAIL=0

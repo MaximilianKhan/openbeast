@@ -112,7 +112,9 @@ LLAMA_BIN="$REPO_DIR/llama.cpp/build/bin/llama-server"
 if [[ -x "$LLAMA_BIN" ]]; then
   ok "already built ($LLAMA_BIN)"
 else
-  CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+  # || true: under pipefail a failing nvidia-smi would kill the script
+  # inside the substitution, never reaching the :-120 fallback.
+  CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
   CUDA_ARCH="${CUDA_ARCH:-120}"
   ok "GPU compute capability → CMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH"
   [[ -d "$REPO_DIR/llama.cpp/.git" ]] || git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
@@ -143,6 +145,12 @@ command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
 
 # ---- 4. default model weight (skip if present) -----------------------------
 step "Default model weight (~21 GB — the one big download)"
+# Pre-create the default weights dir BEFORE sourcing the resolver: on a
+# fresh clone no weights dir exists anywhere and weights.sh hard-exits with
+# its "point OpenBeast at your weights" guidance — correct for serve scripts,
+# fatal for the bootstrapper whose job is to create it. If the user already
+# configured a custom dir (env/conf), the resolver prefers that as usual.
+mkdir -p "$REPO_DIR/weights"
 # Resolve the weights dir the same way the serve scripts do.
 source "$REPO_DIR/scripts/lib/weights.sh"
 : "${WEIGHTS_DIR:=$REPO_DIR/weights}"
@@ -153,7 +161,7 @@ if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
   ok "already downloaded ($WEIGHTS_DIR/$WEIGHT_FILE)"
 else
   warn "downloading the default 27B model — this is the long step, grab coffee."
-  HF_BIN="$(command -v hf || command -v huggingface-cli)"
+  HF_BIN="$(command -v hf || command -v huggingface-cli || true)"
   [[ -n "$HF_BIN" ]] || die "hf CLI not found after install; add ~/.local/bin to PATH and re-run"
   "$HF_BIN" download "$HF_REPO" "$WEIGHT_FILE" --local-dir "$WEIGHTS_DIR"
   [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] && ok "downloaded to $WEIGHTS_DIR" || die "download failed"
