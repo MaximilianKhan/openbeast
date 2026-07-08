@@ -44,7 +44,29 @@ the backfill only after the sweep has fully finished writing):
 
 Then proceed to profiling (step 2, below).
 
-## ⏳ POST-SWEEP STEP 3 — verify local models actually use the meta-tools
+## ✅ POST-SWEEP STEP 3 — verified 2026-07-08: skills FIRE, start_agent does NOT
+
+**Result (tests/verify_agent_spawn.py, Qwen 27B MTP):** skills 2/2 ✅ (index
+injection validated), controls 2/2 ✅, but start_agent 0/5 → 1/5 even with an
+aggressive tool description — the 27B will NOT reliably delegate to background
+agents by judgment alone (strong "just start coding" prior). Details in
+docs/RESEARCH_FINDINGS §8. Applied: aggressive start_agent docstring
+(mcp_server.py, 0→1 lift) + directive prompt guidance (system-prompt-tools.md).
+Per Max's gate, we do NOT profile other models' spawn behavior until fixed.
+
+## ⏳ BLOCKER FIX — pre-flight intent router for agent-spawning (the real fix)
+
+start_agent won't fire via model judgment (STEP 3). Robust fix = don't rely on
+judgment; DETECT the spawn intent and FORCE the call:
+- A cheap pre-flight classifier (heuristic on the user turn: "spawn/launch/kick
+  off/in the background/while we keep talking/don't block", OR a tiny model
+  call) that, on a detected spawn-request, sets `tool_choice` to FORCE
+  start_agent (or invokes runner.py directly and returns the agent ID).
+- Same conclusion SKILLS_PLAN reached (Phase-5 auto-router): meta-tools on weak
+  local models need routing, not hope. Reuse that design.
+- Gates the whole distributed-agents feature (docs/DISTRIBUTED_AGENTS_PLAN.md)
+  and the multi-node vision. Re-run tests/verify_agent_spawn.py to measure the
+  fix; target >=4/5. THEN proceed to profile other models.
 
 UNVERIFIED to date: whether a local model (in WebUI/OpenCode via MCPO)
 reliably (a) calls `start_agent` to spawn a background agent when it should,

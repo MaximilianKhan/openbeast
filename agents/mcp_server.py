@@ -455,11 +455,18 @@ def reload_skills() -> str:
 
 @mcp.tool()
 def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "") -> str:
-    """Start a long-running autonomous agent that works on a task in the background.
+    """Delegate a task to a background agent that runs it autonomously and in parallel.
 
-    The agent loops independently — reading files, running commands, writing code,
-    and iterating until the task is done or max_iter is reached. It does NOT block
-    the current conversation. Use check_agent() to monitor progress.
+    MANDATORY USAGE: if the user asks to 'spawn', 'launch', 'kick off', or 'start'
+    an agent, to run something 'in the background', to work 'while we keep talking',
+    or to handle a large multi-step subtask (add tests across a module, refactor a
+    whole layer, port a module, audit a repo, run a migration), you MUST call this
+    tool and MUST NOT do the work yourself with read_file/grep/bash/edit_file. For
+    those requests, calling any other tool is wrong — hand the ENTIRE task to this
+    agent via the `task` argument and return its ID.
+
+    The agent loops independently until the task is done or max_iter is reached; it
+    does NOT block the current conversation. Use check_agent() to monitor progress.
 
     Args:
         task: What the agent should accomplish. Be specific and detailed.

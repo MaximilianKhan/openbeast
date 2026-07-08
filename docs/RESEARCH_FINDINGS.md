@@ -102,7 +102,7 @@ The eval tasks use tiny context (well under a few K tokens), so these ceilings
 did NOT affect benchmark scores — they matter for deployment (how much
 code/conversation you can hold), not for these results.
 
-## 7. MTP throughput profiling — peak deployment configs (2026-07-08, in progress)
+## 7. MTP throughput profiling — peak deployment configs (2026-07-08)
 
 Sweeping the lossless speculation knobs to find peak tok/s per model
 (evals/profile_mtp.py; plan docs/MTP_PROFILING_PLAN.md). HOLDS FIXED the lossy
@@ -160,3 +160,49 @@ block (python/openai/mcp) + full llama.cpp build/commit/source_head + GPU.
 The v4 rows are the 3 MTP models; the other 5 are still v3.5 pending a rerun.
 The v4 suite itself was rebuilt from a 117-defect review of v3.5 — see
 docs/EVAL_REVIEW_2026-07-07.md and docs/EVAL_V4_PLAN.md.
+
+---
+
+## 8. Meta-tool usage: skills fire, agent-spawning does NOT (2026-07-08)
+
+**Test:** `tests/verify_agent_spawn.py` — Qwen 27B MTP (the v4 winner), real
+system prompt + realistic 12-tool menu (base tools + start_agent + skills),
+prompts that should spawn / should skill / should do neither. Talks straight
+to llama-server /v1 (the same decision the model makes behind MCPO/WebUI).
+
+**Results:**
+
+| Behavior | Hit-rate | Verdict |
+|---|---|---|
+| Skills (`load_skill` on audit/authoring prompts) | 2/2 | ✅ WORKS |
+| Controls (don't spawn on math / simple file read) | 2/2 | ✅ correct |
+| **`start_agent` on explicit spawn requests** | **0/5 → 1/5** | ❌ **DOES NOT reliably fire** |
+
+- **Skills validated.** The skill-index-in-prompt fix (§ SKILLS_PLAN) works —
+  the 27B reliably loads the right skill. Confirms the "inject the menu"
+  approach beats blind `list_skills` discovery.
+- **Agent-spawning is a hard blocker.** Even when the user *explicitly* says
+  "spawn a background agent / kick off an autonomous agent / in the
+  background", the 27B does the work INLINE (read_file, grep, bash) and
+  ignores `start_agent`. It has a strong "just start coding" prior.
+- **Prompt engineering barely moved it.** Directive system-prompt guidance:
+  still 0/5. Aggressive *tool-description* ("MANDATORY: … MUST NOT do the work
+  yourself"): 0/5 → **1/5**. The tool description is the higher-leverage lever
+  (the model weights it at decision time), but 1/5 is still a failure.
+
+**Conclusion:** a 27B local model will NOT reliably delegate to background
+agents through tool-choice judgment alone. This is the prerequisite gate for
+the whole distributed-agent / multi-node vision — and it is currently RED.
+
+**The real fix (architectural, not prompt):** a **pre-flight intent router** —
+a small classifier (cheap heuristic or a tiny model call) that detects a
+spawn-request BEFORE the main model runs, and either (a) sets `tool_choice` to
+FORCE `start_agent`, or (b) invokes the agent directly and hands the model the
+agent ID. Do not rely on the model choosing to delegate; detect the intent and
+force it. Same conclusion the SKILLS_PLAN reached for skills (Phase-5
+auto-router) — meta-tools on weak local models need routing, not hope.
+
+Applied now regardless: the aggressive `start_agent` docstring (0→1 win) is in
+mcp_server.py so production gets the small lift. Per Max's gate ("validate on
+the optimal model before profiling others"), we do NOT proceed to profiling
+other models' spawn behavior — the blocker must be solved first.
