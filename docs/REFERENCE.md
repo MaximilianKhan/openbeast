@@ -355,6 +355,47 @@ On a fresh install, the first `./start.sh` handles everything.
 - Web search (configurable)
 - Tool use via MCPO (bash, file I/O, edit, grep, fetch, agent management)
 
+**Enabling tools in a chat:** tool access is per-conversation by design —
+click the **＋ (integrations) icon in the message input** and toggle on the
+**local-mcp / Local Tools (MCPO)** tool server, then ask something that
+needs a tool ("search the web for…"). Without the toggle the model chats
+bare, which is why a fresh conversation can't search the web even though
+the server is configured. Native function calling + the soul-file system
+prompt are already set per model by `configure-webui.sh`; if a model ever
+shows up without them (e.g. a brand-new alias), re-run
+`./scripts/configure-webui.sh` — it's idempotent.
+
+### Open WebUI login & accounts (since the 2026-07-07 Tailscale rollout)
+
+**How to log in.** `WEBUI_AUTH=true` is the default now that the WebUI is
+reachable from the whole tailnet — the login screen appears everywhere,
+localhost included. The admin account is `admin@localhost`; its password
+lives in the gitignored `openbeast.conf` (`WEBUI_ADMIN_EMAIL` /
+`WEBUI_ADMIN_PASSWORD`). You log in once per device/browser; a session
+token persists after that. If you change the password in the UI
+(Settings → Account), update `openbeast.conf` to match — that's what
+`configure-webui.sh` uses to re-apply tool config on restarts.
+
+**How to turn auth off.** Set `OPENBEAST_WEBUI_AUTH=false` in the
+environment before `./start.sh` (or edit the default in
+`docker-compose.yml`). This restores the old zero-login single-user mode.
+Trade-off: anyone holding any device on your tailnet — including a lost
+phone — gets the full admin UI. Layered defense says leave it on; the cost
+is one login per device.
+
+**Accounts and history — it's real multi-user, not one shared login:**
+- Every account has its **own separate chat history**, settings, and
+  prompts, stored server-side in the Docker volume.
+- **Same account on many devices = same history everywhere** — start a chat
+  on the desktop, continue it on your phone. That's the normal
+  single-owner setup: one account, all your devices.
+- **More people = more accounts**, each with private history. Create them
+  in Admin Panel → Users, or let people self-register at the login screen
+  (signup is enabled by default; new signups land as role `pending` until
+  you approve them in the admin panel — nobody gets in without your nod).
+- Roles: `admin` (settings, models, users) vs `user` (chat only) vs
+  `pending` (no access yet). Guests get `user`, not `admin`.
+
 ### System prompt (soul file)
 
 The system prompt is split into two files:
