@@ -270,3 +270,12 @@ return empty content before the JSON — the exact failure seen at thinking-ON.
 The CPU 0.8B (unsloth/Qwen3.5-0.8B-GGUF) stays a valid FUTURE option if we ever
 want the router fully off-GPU (frees the main model from per-turn double-duty)
 or need many turns/sec — but it's not needed for correctness. Reserve, not shipped.
+
+**Per-request toggle confirmed isolated (2026-07-08).** On the SAME running
+27B server, back-to-back: default request → 1036 chars reasoning (thinks);
+`enable_thinking=true` → thinks; router call `enable_thinking=false` → 0
+reasoning, clean JSON; default request AGAIN → 1036 chars reasoning. The
+thinking-off router call does NOT contaminate subsequent normal calls — the
+toggle is stateless/per-request. So normal usage keeps thinking ON (default,
+no config change) while the router opts itself out for its one classification
+call. One model, one server. Confirms: no CPU model required.
