@@ -1,0 +1,15 @@
+{
+  "id": "160_fir_lowpass",
+  "name": "Windowed-sinc FIR low-pass filter",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_fir",
+  "task": "Create /tmp/eval_fir/fir.py with two functions. design_lowpass(num_taps, cutoff_hz, fs) returns a list of num_taps FIR filter coefficients for a low-pass filter with the given cutoff frequency (Hz) and sample rate fs (Hz), built as a windowed sinc: h[n] = sinc-based ideal low-pass impulse response (normalized cutoff fc = cutoff_hz/fs, ideal tap value 2*fc*sinc(2*fc*(n-M/2)) where M = num_taps-1 and sinc(x)=sin(pi*x)/(pi*x) with the x=0 limit equal to 1), multiplied by a Hamming window w[n] = 0.54 - 0.46*cos(2*pi*n/M), then normalized so the coefficients sum to 1 (unity DC gain). The result is symmetric (linear phase). apply_fir(x, coeffs) applies the filter by causal convolution and returns an output list the SAME length as x: y[n] = sum over k of coeffs[k]*x[n-k], treating x[n-k]=0 for n-k<0. Implement it yourself using the math module only; do NOT call any third-party FIR/convolution/filter-design routine (e.g. numpy.convolve, scipy.signal).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math,io,tokenize,re\ndef _strip(s):\n    out=[]\n    try:\n        for t in tokenize.generate_tokens(io.StringIO(s).readline):\n            if t.type in (tokenize.COMMENT,tokenize.STRING): continue\n            out.append(t.string)\n    except Exception: return s\n    return ' '.join(out)\n_src=open('/tmp/eval_fir/fir.py').read(); _code=_strip(_src)\nassert not re.search(r'(?:^|\\\\s)import\\\\s+(numpy|scipy)\\\\b',_code) and not re.search(r'from\\\\s+(numpy|scipy)\\\\b',_code), 'no numpy/scipy'\nassert not re.search(r'\\\\.fft\\\\b|\\\\brfft\\\\b|\\\\blfilter\\\\b|\\\\bfirwin\\\\b|\\\\bconvolve\\\\b',_code), 'implement it yourself; no library DSP routines'\nspec=importlib.util.spec_from_file_location('m','/tmp/eval_fir/fir.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nDL,AF=mod.design_lowpass,mod.apply_fir\nfs=8000\nh=DL(51,1000,fs)\nassert len(h)==51, 'wrong tap count'\nassert abs(sum(h)-1.0)<1e-6, 'DC gain must be unity (normalized)'\nassert all(abs(h[i]-h[50-i])<1e-9 for i in range(51)), 'must be symmetric (linear phase)'\ndef pp(sig,skip):\n    t=sig[skip:]; return max(t)-min(t)\nlo=[math.sin(2*math.pi*200*n/fs) for n in range(600)]\nhi=[math.sin(2*math.pi*3000*n/fs) for n in range(600)]\nylo=AF(lo,h); yhi=AF(hi,h)\nassert len(ylo)==len(lo), 'apply_fir must return same-length output'\nassert abs(pp(ylo,200)/2 - 1.0)<0.12, 'passband sine must pass ~unchanged'\nassert pp(yhi,200)/2 < 0.12, 'stopband sine must be strongly attenuated'\nprint('OK')\n"
+  },
+  "cleanup": "rm -rf /tmp/eval_fir",
+  "max_iter": 25,
+  "category": "Signal Processing & DSP",
+  "subcategory": "FIR filter design"
+}

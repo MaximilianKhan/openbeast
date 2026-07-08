@@ -1,0 +1,15 @@
+{
+  "id": "162_biquad_iir",
+  "name": "Direct-Form-I biquad IIR filter",
+  "difficulty": "hard",
+  "setup": "mkdir -p /tmp/eval_biquad",
+  "task": "Create /tmp/eval_biquad/biquad.py with biquad_filter(x, b, a). Apply a second-order IIR (biquad) filter to the real signal x using the Direct Form I difference equation. b = [b0, b1, b2] are the feedforward coefficients and a = [a0, a1, a2] the feedback coefficients; first normalize all coefficients by a0. The recurrence is y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2], with x[n]=y[n]=0 for n<0. Return an output list the same length as x. The feedback terms are essential \u2014 this is a recursive filter, not an FIR. Implement it yourself with the math module only; do NOT call any third-party IIR/filter routine (e.g. scipy.signal.lfilter).",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math,io,tokenize,re\ndef _strip(s):\n    out=[]\n    try:\n        for t in tokenize.generate_tokens(io.StringIO(s).readline):\n            if t.type in (tokenize.COMMENT,tokenize.STRING): continue\n            out.append(t.string)\n    except Exception: return s\n    return ' '.join(out)\n_src=open('/tmp/eval_biquad/biquad.py').read(); _code=_strip(_src)\nassert not re.search(r'(?:^|\\\\s)import\\\\s+(numpy|scipy)\\\\b',_code) and not re.search(r'from\\\\s+(numpy|scipy)\\\\b',_code), 'no numpy/scipy'\nassert not re.search(r'\\\\.fft\\\\b|\\\\brfft\\\\b|\\\\blfilter\\\\b|\\\\bfirwin\\\\b|\\\\bconvolve\\\\b',_code), 'implement it yourself; no library DSP routines'\nspec=importlib.util.spec_from_file_location('m','/tmp/eval_biquad/biquad.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nBF=mod.biquad_filter\ndef ref(x,b,a):\n    b0,b1,b2=b; a0,a1,a2=a; b0/=a0;b1/=a0;b2/=a0;a1/=a0;a2/=a0\n    y=[];x1=x2=y1=y2=0.0\n    for xn in x:\n        yn=b0*xn+b1*x1+b2*x2-a1*y1-a2*y2; y.append(yn); x2=x1;x1=xn;y2=y1;y1=yn\n    return y\nw0=2*math.pi*500/8000; al=math.sin(w0)/(2*0.7071); cw=math.cos(w0)\nb=[(1-cw)/2,1-cw,(1-cw)/2]; a=[1+al,-2*cw,1-al]\nimp=[1.0]+[0.0]*9; yi=BF(imp,b,a); ri=ref(imp,b,a)\nassert len(yi)==len(imp), 'output length must match input'\nassert all(abs(yi[n]-ri[n])<1e-6 for n in range(10)), 'impulse response must match the Direct-Form-I recurrence (feedback included)'\ndc=BF([1.0]*400,b,a)[-1]\nassert abs(dc - sum(b)/sum(a))<1e-4, 'DC gain must equal (b0+b1+b2)/(a0+a1+a2)'\ndef pp(s,sk): t=s[sk:]; return max(t)-min(t)\nlo=[math.sin(2*math.pi*100*n/8000) for n in range(800)]\nhi=[math.sin(2*math.pi*3000*n/8000) for n in range(800)]\nassert abs(pp(BF(lo,b,a),400)/2 - 1.0)<0.1, 'low-pass biquad must pass a low-frequency sine'\nassert pp(BF(hi,b,a),400)/2 < 0.15, 'low-pass biquad must attenuate a high-frequency sine'\nprint('OK')\n"
+  },
+  "cleanup": "rm -rf /tmp/eval_biquad",
+  "max_iter": 25,
+  "category": "Signal Processing & DSP",
+  "subcategory": "IIR / recursive filters"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "161_goertzel",
+  "name": "Goertzel single-frequency power detection",
+  "difficulty": "medium",
+  "setup": "mkdir -p /tmp/eval_goertzel",
+  "task": "Create /tmp/eval_goertzel/goertzel.py with goertzel_power(x, target_hz, fs). Given a real signal x (list of floats), a target frequency target_hz, and sample rate fs, return the power (squared magnitude) of the signal at the target frequency using the Goertzel algorithm \u2014 the efficient second-order recurrence that computes a single DFT bin. Use bin index k = round(target_hz*N/fs) where N = len(x); let w = 2*pi*k/N and coeff = 2*cos(w); run s[n] = x[n] + coeff*s[n-1] - s[n-2] over the samples (s starts at 0), then return the power |X_k|^2 = s1^2 + s2^2 - coeff*s1*s2 where s1, s2 are the last two states. The result must equal |X_k|^2 of the length-N DFT. Implement the recurrence yourself with the math module only; do NOT call any FFT/DFT routine from a third-party array library.",
+  "validation": {
+    "type": "python",
+    "script": "import importlib.util,math,io,tokenize,re\ndef _strip(s):\n    out=[]\n    try:\n        for t in tokenize.generate_tokens(io.StringIO(s).readline):\n            if t.type in (tokenize.COMMENT,tokenize.STRING): continue\n            out.append(t.string)\n    except Exception: return s\n    return ' '.join(out)\n_src=open('/tmp/eval_goertzel/goertzel.py').read(); _code=_strip(_src)\nassert not re.search(r'(?:^|\\\\s)import\\\\s+(numpy|scipy)\\\\b',_code) and not re.search(r'from\\\\s+(numpy|scipy)\\\\b',_code), 'no numpy/scipy'\nassert not re.search(r'\\\\.fft\\\\b|\\\\brfft\\\\b|\\\\blfilter\\\\b|\\\\bfirwin\\\\b|\\\\bconvolve\\\\b',_code), 'implement it yourself; no library DSP routines'\nspec=importlib.util.spec_from_file_location('m','/tmp/eval_goertzel/goertzel.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\nGP=mod.goertzel_power\nfs=8000; N=256; A=1.5\ndef dftp(x,k):\n    M=len(x); re=sum(x[n]*math.cos(-2*math.pi*k*n/M) for n in range(M)); im=sum(x[n]*math.sin(-2*math.pi*k*n/M) for n in range(M)); return re*re+im*im\nk=10; f0=k*fs/N\nx=[A*math.sin(2*math.pi*f0*n/fs) for n in range(N)]\ng=GP(x,f0,fs); ref=dftp(x,k)\nassert abs(g-ref) <= 1e-4*ref + 1e-6, 'power at target must match the DFT bin magnitude squared'\noff=GP(x, 40*fs/N, fs)\nassert off < 1.0, 'a frequency absent from the signal must have ~zero power'\nassert g/max(off,1e-9) > 1e4, 'must isolate the target frequency'\ny=[A*math.sin(2*math.pi*(30*fs/N)*n/fs) for n in range(N)]\nassert abs(GP(y,30*fs/N,fs)-dftp(y,30)) <= 1e-4*dftp(y,30)+1e-6, 'must work for any target bin'\nprint('OK')\n"
+  },
+  "cleanup": "rm -rf /tmp/eval_goertzel",
+  "max_iter": 25,
+  "category": "Signal Processing & DSP",
+  "subcategory": "Tone detection (Goertzel)"
+}
