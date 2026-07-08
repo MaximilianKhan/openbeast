@@ -37,8 +37,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-PORT = int(os.environ.get("OPENBEAST_ROUTER_PORT", "8080"))
-UPSTREAM = os.environ.get("OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8081").rstrip("/")
+# Defaults match the WIRED stack topology (router 8088 in front of llama-server
+# 8080) so `python3 agents/router.py` standalone doesn't collide with
+# llama-server on 8080. start.sh passes these explicitly anyway.
+PORT = int(os.environ.get("OPENBEAST_ROUTER_PORT", "8088"))
+UPSTREAM = os.environ.get("OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 MCPO = os.environ.get("OPENBEAST_MCPO_URL", "http://127.0.0.1:3001").rstrip("/")
 
 # Recall-oriented prefilter: if the last user turn contains NONE of these, it is
@@ -100,12 +103,15 @@ async def _classify(client, user_text):
         "response_format": {"type": "json_schema",
                             "json_schema": {"name": "route", "schema": _SCHEMA, "strict": True}},
     }
+    # Returns (spawn: bool, task: str, workdir: str). spawn reflects the model's
+    # raw decision; the caller decides what to do when spawn=true but the task
+    # came back too thin (so we surface it instead of silently passing through).
     try:
         r = await client.post(f"{UPSTREAM}/v1/chat/completions", json=body, timeout=60)
         content = r.json()["choices"][0]["message"].get("content") or ""
         d = json.loads(content)
-        if d.get("spawn") and len((d.get("task") or "").strip()) > 8:
-            return True, d["task"].strip(), (d.get("workdir") or ".").strip()
+        if d.get("spawn"):
+            return True, (d.get("task") or "").strip(), (d.get("workdir") or ".").strip()
     except Exception:
         pass  # any classify failure -> treat as no-spawn (fail safe: never block a turn)
     return False, "", "."
@@ -150,20 +156,33 @@ def _synthetic(model, text, stream):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# Hop-by-hop headers must not be forwarded in either direction (RFC 7230 §6.1);
+# httpx sets its own content-length for a fixed body, so forwarding the client's
+# would conflict. content-encoding is deliberately NOT stripped from the
+# response: aiter_raw() relays still-encoded bytes, so the header must stay
+# truthful (do not switch to aiter_bytes without also stripping it).
+_HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection"}
+
+
 async def _proxy_through(request, client, body_bytes):
     """Transparently relay a request upstream, streaming the response back."""
     upstream_url = f"{UPSTREAM}{request.url.path}"
     if request.url.query:
         upstream_url += f"?{request.url.query}"
-    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
     req = client.build_request(request.method, upstream_url, content=body_bytes, headers=headers)
-    resp = await client.send(req, stream=True)
+    try:
+        resp = await client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        # Upstream (llama-server) unreachable — return a clean 502, not a raw 500.
+        return JSONResponse(
+            {"error": {"message": f"model server unreachable via router: {e}",
+                       "type": "upstream_unavailable"}}, status_code=502)
 
     async def body_iter():
         async for chunk in resp.aiter_raw():
             yield chunk
-    hdrs = {k: v for k, v in resp.headers.items()
-            if k.lower() not in ("content-length", "transfer-encoding", "connection")}
+    hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
     return StreamingResponse(body_iter(), status_code=resp.status_code,
                              headers=hdrs, background=_Closer(resp))
 
@@ -190,6 +209,13 @@ async def chat_completions(request: Request):
     # Route only genuine user turns that clear the recall prefilter.
     if user_text and _HINTS.search(user_text):
         spawn, task, workdir = await _classify(client, user_text)
+        if spawn and len(task) <= 8:
+            # Detected a delegation request but couldn't extract a usable task —
+            # surface it rather than silently letting the model answer inline.
+            return _synthetic(model,
+                "That looks like a request to run something as a background agent, "
+                "but I couldn't pin down a clear task for it. Want to rephrase it as "
+                "a concrete task, or should I just handle it here inline?", stream)
         if spawn:
             agent_id, err = await _spawn(client, task, workdir)
             if agent_id:
