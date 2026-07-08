@@ -49,6 +49,13 @@ the agent actually runs (check `agents/logs/`, `check_agent`). Repeat for a
 skill-triggering prompt. Record hit-rate; if ~0%, the fix is prompt/routing
 work (see docs/SKILLS_PLAN.md pruning + PRODUCTION_ROADMAP §B).
 
+ - **DOC (low effort, high value):** state OpenBeast's ethos plainly in the
+   README — "opinionated: maximize the intelligence your hardware can hold,
+   no compromise; an entry point to WIN and a clear ladder to upgrade UP
+   (more model, more nodes), never downsize." Hardware Profiles is the entry
+   point; the no-compromise scaling ladder is the upgrade path. See memory
+   [max-intelligence-no-compromise].
+
 ## 🔭 INVESTIGATION — multi-node orchestrator + parallel worker fleet
 
 Max's architecture (2026-07-08), = the parked "Mark of the Beast" direction:
