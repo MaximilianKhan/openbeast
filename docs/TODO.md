@@ -31,6 +31,52 @@ the backfill only after the sweep has fully finished writing):
 
 Then proceed to profiling (step 2, below).
 
+## ⏳ POST-SWEEP STEP 3 — verify local models actually use the meta-tools
+
+UNVERIFIED to date: whether a local model (in WebUI/OpenCode via MCPO)
+reliably (a) calls `start_agent` to spawn a background agent when it should,
+and (b) fires skills now that the skill index is injected into
+`system-prompt-tools.md`. Neither the eval sweep nor any recent change tested
+this — `runner.py` deliberately lacks `start_agent` (no recursive spawn), so
+evals don't exercise it. This is the PREREQUISITE GATE for the multi-node
+orchestrator/worker architecture below — no point building that topology if
+the primary model won't reliably kick off agents.
+
+Test (needs GPU free + stack up): bring up `./start.sh -d`, give the default
+27B a prompt that should trigger a background agent ("spawn an agent to
+refactor X while we keep talking"), watch whether it calls `start_agent` and
+the agent actually runs (check `agents/logs/`, `check_agent`). Repeat for a
+skill-triggering prompt. Record hit-rate; if ~0%, the fix is prompt/routing
+work (see docs/SKILLS_PLAN.md pruning + PRODUCTION_ROADMAP §B).
+
+## 🔭 INVESTIGATION — multi-node orchestrator + parallel worker fleet
+
+Max's architecture (2026-07-08), = the parked "Mark of the Beast" direction:
+- **Primary/orchestrator = MTP** (single-stream, latency-optimized). It's the
+  model you talk to and that spawns agents; inherently one session, so MTP's
+  `-np 1` serialization limit doesn't hurt — you just get the 2.75x decode.
+- **Worker fleet = non-MTP, high `-np`** on separate hardware (e.g. a
+  2x3090Ti box) for aggregate parallel throughput across many concurrent
+  agents. MTP CANNOT parallelize (upstream `-np 1` pin), so workers must be
+  plain batched serving.
+
+Assessment: the CORE split is correct. Open measurements/decisions before
+building (Hardware-Profiles Phase 2 territory):
+1. **Right-size the worker model** — orchestrator is the smartest model
+   (27B MTP); workers do scoped subtasks where a 14B non-MTP may suffice →
+   more slots, faster, cheaper. Test 27B-worker vs 14B-worker quality on real
+   agent subtasks before committing.
+2. **2 instances vs tensor-split** on the 3090Ti box — prefer one
+   llama-server PER card (24GB each) + a load balancer over one tensor-split
+   instance (no PCIe cross-talk), UNLESS the worker model needs >24GB.
+3. **np/KV envelope** — `-np 10` is feasible but KV-per-slot constrains
+   per-slot context on 24GB; measure model×quant×slots×context (extend
+   scripts/measure-vram.sh).
+4. **Router/transport** — orchestrator's `start_agent` must target the worker
+   endpoint(s); wants a tailnet-native least-loaded router. The RBAC +
+   remote-access layer already generalizes to a fleet.
+Depends on STEP 3 passing first (does the orchestrator reliably spawn?).
+
 ## ⏳ POST-SWEEP STEP 2 — MTP throughput profiling (after step 1)
 
 Find the peak tok/s DEPLOYMENT config for each MTP model by brute-forcing
