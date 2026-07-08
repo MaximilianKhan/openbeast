@@ -905,6 +905,14 @@ deterministic-validation pattern and need a separate harness path.
 
 ## Future Horizon
 
+### RBAC — multi-user tool lockdown (PLANNED 2026-07-07, Phase 0 gates guest accounts)
+Full design in [RBAC_PLAN.md](RBAC_PLAN.md). Today any WebUI account can run
+bash/edit_file as Max's Unix user — **do Phase 0 (admin-only access_grants
+on the local-mcp connection, ~10 min) before creating the first family
+account.** Then: guest profile (web_search+fetch via a filtered second
+connection), per-profile API keys + Sandlock sandboxing (converges with
+Arsenal Phase 1a), audit logging.
+
 ### Arsenal expansion — research complete, phased plan ready (2026-07-07)
 Deep-research verdicts in [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md)
 (9 findings, 25 claims 3-vote-verified). Headlines: ADOPT ChunkHound
