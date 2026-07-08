@@ -3,13 +3,13 @@
 [![CI](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml/badge.svg)](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Your own private AI workstation — frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
+**Your own private AI workstation: frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
 17-tool arsenal (shell, file editing, web search, background sub-agents), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
-access, and family-grade multi-user permissions — all self-hosted, all yours.
+access, and family-grade multi-user permissions. All self-hosted, all yours.
 
 ## Install (one command)
 
@@ -20,12 +20,12 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
 `bootstrap.sh` detects your GPU, builds llama.cpp, installs dependencies,
 downloads the default model, and launches the full stack with **all tools
-wired and no login wall** — the complete demo, out of the box. It checks the
+wired and no login wall**: the complete demo, out of the box. It checks the
 heavy prerequisites (NVIDIA driver, CUDA, Docker) and tells you exactly what
 to install if anything's missing.
 
-**Just want to chat?** `./bootstrap.sh --minimal` sets up Tier 0 — the model
-server only, no Docker, no tools — and you point any OpenAI-compatible client
+**Just want to chat?** `./bootstrap.sh --minimal` sets up Tier 0 (the model
+server only, no Docker, no tools), and you point any OpenAI-compatible client
 at `http://localhost:8080/v1`.
 
 **Want it on your phone, securely, from anywhere?** `./scripts/setup-tailscale.sh`
@@ -33,7 +33,7 @@ puts the stack on your private tailnet with automatic HTTPS in about five
 minutes. See ["Remote access"](#remote-access-tailscale) below.
 
 **Already installed?** `./scripts/update.sh` pulls the latest llama.cpp (and
-rebuilds it), container images, and Python deps in one shot — details in
+rebuilds it), container images, and Python deps in one shot. Details in
 [`docs/UPDATING.md`](docs/UPDATING.md).
 
 ## Why OpenBeast
@@ -56,24 +56,24 @@ with, reach from any device, and safely share with your household.
 ### Our opinion
 
 OpenBeast is opinionated, and this is the opinion: **maximize the intelligence
-your hardware can hold — no compromise.** Fill every GPU with the largest,
+your hardware can hold, no compromise.** Fill every GPU with the largest,
 most-accurate model that fits, never a stew of smaller, weaker ones. Quality of
 work is the goal; you never trade it away for more parallel slots.
 
-It's an **entry point to win.** OpenBeast meets your hardware where it is —
-detects your GPU tier and hands you a working, best-your-card-can-hold config
-on day one — then gives you a clear ladder to **grow *up* into the system you
-actually want.** One card today; a second, NVLinked box for parallel agents
-tomorrow; a fleet after that — always the same top-tier model, just more of the
+It's an **entry point to win.** OpenBeast meets your hardware where it is,
+detecting your GPU tier and handing you a working, best-your-card-can-hold
+config on day one, then gives you a clear ladder to **grow *up* into the system
+you actually want.** One card today; a second, NVLinked box for parallel agents
+tomorrow; a fleet after that, always the same top-tier model, just more of the
 hardware to run it on. The direction is always more intelligence, never less.
-When you need to scale, you add silicon — you don't downsize the mind. Other
-setups optimize for other things; OpenBeast optimizes for the smartest work
+When you need to scale, you add silicon; you don't downsize the mind. Other
+setups optimize for other things. OpenBeast optimizes for the smartest work
 your machine can do.
 
 Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 **Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
-**35B-A3B MoE** variants run 30–50 % faster per token — each swaps in with one
+**35B-A3B MoE** variants run 30–50 % faster per token. Each swaps in with one
 argument to `start.sh`. Nine models are pre-configured, benchmarked against a
 v3.5 eval suite of 159 base tasks (33 with multi-language variants, 323
 effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
@@ -120,7 +120,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 ## Features
 
 **Model Serving**
-- llama.cpp with CUDA (Blackwell SM 120) — full GPU offload
+- llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
 - 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 VRAM-measured 2026-07-07, awaiting first benchmark sweep (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
@@ -140,16 +140,16 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Token budget awareness (~85K per slot)
 
 **Frontends**
-- [Open WebUI](https://github.com/open-webui/open-webui) — browser chat with persistent history, file upload, tool use
-- [OpenCode](https://opencode.ai) — terminal coding agent with built-in tools
-- `agent.sh` — headless autonomous agent for scripted/scheduled tasks
+- [Open WebUI](https://github.com/open-webui/open-webui): browser chat with persistent history, file upload, tool use
+- [OpenCode](https://opencode.ai): terminal coding agent with built-in tools
+- `agent.sh`: headless autonomous agent for scripted/scheduled tasks
 
 **Operations**
-- Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up; `./stop.sh` shuts everything down gracefully any time
+- Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up, and `./stop.sh` shuts everything down gracefully any time
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
-- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard units) with automated validation — full distribution in [`evals/README.md`](evals/README.md)
-- **Multi-model benchmark** runner (`evals/benchmark_all.py`) — sweeps every model and produces an accuracy-ranked leaderboard
+- **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard units) with automated validation; full distribution in [`evals/README.md`](evals/README.md)
+- **Multi-model benchmark** runner (`evals/benchmark_all.py`) that sweeps every model and produces an accuracy-ranked leaderboard
 - Per-task tracking of accuracy, speed, prompt/completion tokens, and API-equivalent cost (`evals/scoring.py`)
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
@@ -208,7 +208,7 @@ See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, 
 
 ## Remote access (Tailscale)
 
-The stack binds to `127.0.0.1` by default — nothing is reachable from the
+The stack binds to `127.0.0.1` by default, so nothing is reachable from the
 network, not even the LAN. To use OpenBeast from your phone or laptop
 anywhere (cellular included), one script puts it on your private tailnet
 with automatic HTTPS:
@@ -219,8 +219,8 @@ with automatic HTTPS:
 
 Five minutes, verified end-to-end. It installs Tailscale, joins your tailnet
 as `beast` (browser SSO login on first run), walks you through the two
-one-time tailnet toggles (MagicDNS + HTTPS Certificates — it prints the
-admin-console link and waits), and publishes exactly two services —
+one-time tailnet toggles (MagicDNS + HTTPS Certificates; it prints the
+admin-console link and waits), and publishes exactly two services,
 tailnet-only, never the public internet:
 
 | URL | Service |
@@ -229,19 +229,19 @@ tailnet-only, never the public internet:
 | `https://<host>.<tailnet>.ts.net:8443/v1` | llama-server (OpenAI-compatible API) |
 
 Every connecting device authenticates via its WireGuard key; the WebUI
-additionally requires an account now (`WEBUI_AUTH=true` — first signup
-becomes admin; mirror the credentials into `openbeast.conf` as
+additionally requires an account now (`WEBUI_AUTH=true`; first signup
+becomes admin, mirror the credentials into `openbeast.conf` as
 `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` so `configure-webui.sh` can
-keep working). MCPO and SearXNG stay loopback-only — they serve the model,
+keep working). MCPO and SearXNG stay loopback-only; they serve the model,
 not humans.
 
 - **Phone:** install the Tailscale app, sign in, open the chat URL, "Add to
   Home Screen" (the WebUI is a PWA).
 - **Remote coding agent:** on any tailnet machine, point OpenCode's
-  `baseURL` at `https://<host>.<tailnet>.ts.net:8443/v1` — full coding agent
-  against the home GPU from anywhere.
+  `baseURL` at `https://<host>.<tailnet>.ts.net:8443/v1` for a full coding
+  agent against the home GPU from anywhere.
 - **Legacy LAN-open behavior:** set `BIND_HOST=0.0.0.0` in `openbeast.conf`
-  (or `OPENBEAST_BIND=0.0.0.0`) — not recommended; every service becomes
+  (or `OPENBEAST_BIND=0.0.0.0`). Not recommended; every service becomes
   reachable unauthenticated on the LAN.
 - Optional API key for the llama-server: set `LLAMA_API_KEY` in
   `openbeast.conf` (off by default; the tailnet is the boundary).
@@ -256,18 +256,18 @@ Weights are large (10s of GB each), so OpenBeast never requires you to store
 them inside the repo. Every launch script resolves a weights directory through
 `scripts/lib/weights.sh`, checking these in order (first match wins):
 
-1. **`$OPENBEAST_WEIGHTS_DIR`** — environment variable, highest priority. Best
+1. **`$OPENBEAST_WEIGHTS_DIR`**, environment variable, highest priority. Best
    for a one-off: `OPENBEAST_WEIGHTS_DIR=/mnt/nvme/gguf ./start.sh`.
-2. **`WEIGHTS_DIR=` in `openbeast.conf`** — a repo-root config file for a
+2. **`WEIGHTS_DIR=` in `openbeast.conf`**, a repo-root config file for a
    persistent choice. Copy the template and edit it:
    ```bash
    cp openbeast.conf.example openbeast.conf
    # WEIGHTS_DIR=/mnt/nas/ai/weights   (NVMe, USB, NAS mount, ~ , or relative)
    ```
    `openbeast.conf` is gitignored, so your personal path is never committed.
-3. **`./weights/`** — an in-repo folder, used automatically if it exists
+3. **`./weights/`**, an in-repo folder, used automatically if it exists
    (this is what the Quick Start creates, and what long-time setups already use).
-4. **`../weights/`** — the default for a fresh clone with no `./weights`: a
+4. **`../weights/`**, the default for a fresh clone with no `./weights`: a
    sibling folder right next to the `openbeast` checkout.
 
 Paths accept `~` and may be relative (resolved against the repo root). If the
@@ -288,7 +288,7 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 | Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 416K | 29.3 GB | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. 2.6 GB headroom measured. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
 | Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). Not yet benchmarked. |
 
-All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding — MTP variants" for the benchmark plan.
+All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding, MTP variants" for the benchmark plan.
 
 ## Project Structure
 
@@ -366,35 +366,35 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 ## Documentation
 
-- **[docs/INSTALL.md](docs/INSTALL.md)** — Step-by-step installation, prerequisites, troubleshooting
-- **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
-- **[docs/TOOLS.md](docs/TOOLS.md)** — Every tool a model can call: inventory, provenance (custom vs pulled-in), hardening, RBAC visibility
-- **[docs/UPDATING.md](docs/UPDATING.md)** — Updating every pulled-in component (llama.cpp, images, Python deps) with one command
-- **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)** — GPU detection and recommended configs per hardware tier (5090 is the measured reference; 3090/4090/AMD/Intel advisory)
-- **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
-- **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
-- **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** — Skills system design (Pattern A progressive disclosure via MCP)
-- **[docs/WEAK_SPOT_ASSESSMENT.md](docs/WEAK_SPOT_ASSESSMENT.md)** — What other axes could surface model weaknesses; recommended priority for next eval expansions
-- **[docs/TODO.md](docs/TODO.md)** — Roadmap and completed work
-- **[evals/README.md](evals/README.md)** — Eval suite specifics: schema, scoring, pitfalls
-- **[skills/README.md](skills/README.md)** — Skills schema + how to add new ones
+- **[docs/INSTALL.md](docs/INSTALL.md)**: Step-by-step installation, prerequisites, troubleshooting
+- **[docs/REFERENCE.md](docs/REFERENCE.md)**: VRAM tables (measured), architecture details, all configuration options
+- **[docs/TOOLS.md](docs/TOOLS.md)**: Every tool a model can call: inventory, provenance (custom vs pulled-in), hardening, RBAC visibility
+- **[docs/UPDATING.md](docs/UPDATING.md)**: Updating every pulled-in component (llama.cpp, images, Python deps) with one command
+- **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)**: GPU detection and recommended configs per hardware tier (5090 is the measured reference; 3090/4090/AMD/Intel advisory)
+- **[docs/RESULTS.md](docs/RESULTS.md)**: Eval distribution, sweep results, multi-host comparison
+- **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)**: Active work plan and save state for ongoing eval suite work
+- **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)**: Skills system design (Pattern A progressive disclosure via MCP)
+- **[docs/WEAK_SPOT_ASSESSMENT.md](docs/WEAK_SPOT_ASSESSMENT.md)**: What other axes could surface model weaknesses; recommended priority for next eval expansions
+- **[docs/TODO.md](docs/TODO.md)**: Roadmap and completed work
+- **[evals/README.md](evals/README.md)**: Eval suite specifics: schema, scoring, pitfalls
+- **[skills/README.md](skills/README.md)**: Skills schema + how to add new ones
 
 ## Evals & Benchmarking
 
 The eval suite covers 12 categories spanning core software engineering,
 math, physics, ML/LLM internals, distributed systems, security, signal processing,
-and more — every task is self-contained (setup + validation + cleanup) with
+and more. Every task is self-contained (setup + validation + cleanup) with
 deterministic checks. **Distribution table, schema, and scoring methodology in
 [`evals/README.md`](evals/README.md)**.
 
-> **The suite is now v4** (137 base tasks / 291 units) — hardened so a correct
+> **The suite is now v4** (137 base tasks / 291 units), hardened so a correct
 > solution passes and every documented cheat is empirically rejected
 > (see [`evals/CHANGELOG.md`](evals/CHANGELOG.md) and
 > [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). The
 > leaderboard below is the **legacy v3.5** run, kept as the "before"; the first
 > v4 leaderboard lands after the next sweep.
 
-**Legacy v3.5 leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP) — they need a clean launch + VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
+**Legacy v3.5 leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5, 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP). They need a clean launch and VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
 
 | # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|
@@ -404,7 +404,7 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 | 4 | Gemma 4 31B-it Q5_K_XL | 92.39 | 41.58 | 288/323 | 104/120 | 12.52 M | $54.23 | 9h 53m |
 | 5 | Qwen 35B-A3B Uncensored Q4_K_M | 90.33 | 79.92 | 271/323 | 93/120 | 26.95 M | $107.12 | 5h 44m |
 
-Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) — sense-of-scale only; these all ran locally on the 5090.
+Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output), a sense-of-scale figure only; these all ran locally on the 5090.
 
 **At-a-glance: per-language accuracy** (variant tasks, % accuracy; bold = top, italic = floor):
 
@@ -416,12 +416,12 @@ Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output) �
 | Gemma 4 31B-it Q5_K_XL | 94.3 | 88.3 | 86.4 | 94.2 | 91.2 | 54.5 | — |
 | Qwen 35B-A3B Uncensored Q4_K_M | _94.2_ | _82.5_ | 85.4 | _78.6_ | **96.1** | _15.6_ | Rust |
 
-The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board — pick a smaller model and a faster one if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
+The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board, so pick a smaller, faster model if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
 
-**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns rather than collapsed into a composite — they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
+**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns rather than collapsed into a composite, since they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
 - **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
-- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown — see `evals/scoring.py --by-category`
+- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown; see `evals/scoring.py --by-category`
 - **Multi-host comparison**: leaderboard is keyed by `(host_id, model_slug)`, so the same model run on different machines (e.g. RTX 5090 vs. 2×3090 Ti) coexist. See `evals/scoring.py --compare-hosts`.
 
 ```bash
@@ -466,9 +466,9 @@ outstanding open source projects, and each deserves the credit:
 
 | Project | What it does in OpenBeast | Upstream |
 |---|---|---|
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) | The inference engine — `llama-server` serves every model, OpenAI-compatible | ggml-org |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) | The inference engine; `llama-server` serves every model, OpenAI-compatible | ggml-org |
 | [Open WebUI](https://github.com/open-webui/open-webui) (Open WebUI License, BSD-3-based) | The browser chat frontend, user accounts, and RBAC surface | open-webui |
-| [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) | Private metasearch — powers the `web_search` tool with no tracking | searxng |
+| [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) | Private metasearch; powers the `web_search` tool with no tracking | searxng |
 | [MCPO](https://github.com/open-webui/mcpo) (MIT) | MCP→OpenAPI proxy that exposes our tool server to Open WebUI | open-webui |
 | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | The protocol layer our tool server (`agents/mcp_server.py`) is built on | modelcontextprotocol |
 | [OpenCode](https://github.com/sst/opencode) (MIT) | The terminal coding agent frontend | sst |
@@ -478,15 +478,15 @@ outstanding open source projects, and each deserves the credit:
 
 Model weights (Qwen, Gemma, and community finetunes) are downloaded from
 Hugging Face and carry their own upstream licenses. License labels above are
-as published at time of writing — always check upstream for current terms.
+as published at time of writing; always check upstream for current terms.
 
 See [`docs/UPDATING.md`](docs/UPDATING.md) for how to pull the latest version
 of every component with one command.
 
 ## License
 
-[Apache License 2.0](LICENSE) — permissive, with an explicit patent grant.
-Use it, fork it, build a business on it (on-prem, air-gapped, commercial — all
+[Apache License 2.0](LICENSE): permissive, with an explicit patent grant.
+Use it, fork it, build a business on it (on-prem, air-gapped, commercial, all
 fair game). See [`NOTICE`](NOTICE) for the third-party components OpenBeast
 orchestrates; model weights carry their own upstream licenses.
 
