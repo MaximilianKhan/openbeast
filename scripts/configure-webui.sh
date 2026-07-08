@@ -105,6 +105,16 @@ else
   echo "  Tool server already configured."
 fi
 
+# Resolve the MCPO server's id so models can reference it in meta.toolIds
+# ("server:<id>") — that's what attaches the tools to every chat by default
+# instead of requiring the per-conversation ＋-menu toggle.
+MCPO_SERVER_ID=$(curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null | python3 -c "
+import sys, json
+for c in json.load(sys.stdin).get('TOOL_SERVER_CONNECTIONS', []):
+    if c.get('url') == '$MCPO_URL':
+        print(c.get('info', {}).get('id', ''))
+        break" 2>/dev/null)
+
 # --- 2. Set native function calling for all models ---
 # Wait briefly for Open WebUI to detect models from llama.cpp
 sleep 3
@@ -142,6 +152,7 @@ import sqlite3, json, os, time
 
 db = sqlite3.connect('/app/backend/data/webui.db')
 model_id = '$model_id'
+tool_ref = 'server:$MCPO_SERVER_ID' if '$MCPO_SERVER_ID' else ''
 
 # Load system prompt
 system_prompt = ''
@@ -164,16 +175,23 @@ if row:
         params['system'] = system_prompt
         changed = True
 
+    # Attach the MCPO tool server by default (no per-chat toggle needed)
+    if tool_ref and tool_ref not in meta.get('toolIds', []):
+        meta['toolIds'] = meta.get('toolIds', []) + [tool_ref]
+        changed = True
+
     if changed:
         db.execute('UPDATE model SET params=?, meta=? WHERE id=?', (json.dumps(params), json.dumps(meta), model_id))
         db.commit()
-        print('    Updated (native FC + system prompt).')
+        print('    Updated (native FC + system prompt + default tools).')
     else:
         print('    Already configured.')
 else:
     # Model detected by API but not yet in DB — insert it
     params = json.dumps({'function_calling': 'native'})
     meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}}
+    if tool_ref:
+        meta_dict['toolIds'] = [tool_ref]
     if system_prompt:
         params_dict = json.loads(params)
         params_dict['system'] = system_prompt
@@ -185,7 +203,7 @@ else:
         (model_id, 'system', model_id, meta, params, now, now, 1)
     )
     db.commit()
-    print('    Created model entry (native FC + system prompt).')
+    print('    Created model entry (native FC + system prompt + default tools).')
 " 2>/dev/null
   done <<< "$MODELS"
 fi
