@@ -372,6 +372,7 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[docs/UPDATING.md](docs/UPDATING.md)**: Updating every pulled-in component (llama.cpp, images, Python deps) with one command
 - **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)**: GPU detection and recommended configs per hardware tier (5090 is the measured reference; 3090/4090/AMD/Intel advisory)
 - **[docs/RESULTS.md](docs/RESULTS.md)**: Eval distribution, sweep results, multi-host comparison
+- **[docs/RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md)**: Consolidated research log (MTP losslessness, speedups, Zig discriminator, profiling, model comparisons)
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)**: Active work plan and save state for ongoing eval suite work
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)**: Skills system design (Pattern A progressive disclosure via MCP)
 - **[docs/WEAK_SPOT_ASSESSMENT.md](docs/WEAK_SPOT_ASSESSMENT.md)**: What other axes could surface model weaknesses; recommended priority for next eval expansions
