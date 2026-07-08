@@ -1,0 +1,16 @@
+OpenBeast
+Copyright 2026 Maximilian Khan
+
+This product includes software developed as part of the OpenBeast project
+(https://github.com/MaximilianKhan/openbeast).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+This repository orchestrates, but does not vendor, several third-party
+projects that carry their own licenses, including:
+  - llama.cpp (MIT)               https://github.com/ggml-org/llama.cpp
+  - Open WebUI                    https://github.com/open-webui/open-webui
+  - SearXNG (AGPL-3.0)            https://github.com/searxng/searxng
+  - MCPO                          https://github.com/open-webui/mcpo
+Model weights (Qwen, Gemma, etc.) are downloaded separately and are governed
+by their own upstream licenses.

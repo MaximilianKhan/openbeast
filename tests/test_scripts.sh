@@ -18,7 +18,7 @@ echo ""
 
 # --- 1. Entry points exist and are executable ---
 echo "Entry points:"
-for script in start.sh stop.sh agent.sh; do
+for script in bootstrap.sh start.sh stop.sh agent.sh; do
   if [[ -x "$REPO_DIR/$script" ]]; then
     pass "$script exists and is executable"
   else
@@ -56,7 +56,7 @@ done
 echo ""
 echo "Root cleanliness:"
 STALE=$(find "$REPO_DIR" -maxdepth 1 -name "*.sh" \
-  ! -name "start.sh" ! -name "stop.sh" ! -name "agent.sh" -printf "%f\n" 2>/dev/null)
+  ! -name "bootstrap.sh" ! -name "start.sh" ! -name "stop.sh" ! -name "agent.sh" -printf "%f\n" 2>/dev/null)
 if [[ -z "$STALE" ]]; then
   pass "no stale .sh files at repo root"
 else

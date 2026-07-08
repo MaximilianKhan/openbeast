@@ -1,8 +1,59 @@
-# OpenBeast
+# 🦾 OpenBeast
 
-A fully local, GPU-accelerated AI coding workstation. Run frontier-class language models on your own hardware with a complete tool suite, autonomous agents, web search, and multiple frontends — no cloud APIs, no API keys, no data leaving your machine.
+**Your own private AI workstation — frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
 
-Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive) — an uncensored fine-tune that lands **#2 on the internal leaderboard at 96.16 % accuracy** on the v3.5 sweep. If you want the top raw benchmark score instead, the standard dense **Qwen3.6-27B Q5_K_XL** leads at 97.85 %; the Qwen3.6-35B-A3B MoE variants run 30–50 % faster per token — either swaps in with a single argument to `start.sh`. Eval suite is now at v3.5 — 159 base tasks, 33 of them with full 6-language variants (~313 effective test units), result cache for retryable sweeps, and tool-selection efficiency analyzer. See [`docs/RESULTS.md`](docs/RESULTS.md) and [`evals/README.md`](evals/README.md) for full distribution and methodology.
+Most local-model tools stop at "chat with a model." OpenBeast is the whole
+stack: an OpenAI-compatible model server, an autonomous agent with a
+17-tool arsenal (shell, file editing, web search, background sub-agents), a
+browser chat UI *and* a terminal coding agent, one-command encrypted remote
+access, and family-grade multi-user permissions — all self-hosted, all yours.
+
+## Install (one command)
+
+```bash
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
+./bootstrap.sh
+```
+
+`bootstrap.sh` detects your GPU, builds llama.cpp, installs dependencies,
+downloads the default model, and launches the full stack with **all tools
+wired and no login wall** — the complete demo, out of the box. It checks the
+heavy prerequisites (NVIDIA driver, CUDA, Docker) and tells you exactly what
+to install if anything's missing.
+
+**Just want to chat?** `./bootstrap.sh --minimal` sets up Tier 0 — the model
+server only, no Docker, no tools — and you point any OpenAI-compatible client
+at `http://localhost:8080/v1`.
+
+**Want it on your phone, securely, from anywhere?** `./scripts/setup-tailscale.sh`
+puts the stack on your private tailnet with automatic HTTPS in about five
+minutes. See ["Remote access"](#remote-access-tailscale) below.
+
+## Why OpenBeast
+
+| | OpenBeast | Ollama | LM Studio | text-generation-webui |
+|---|:---:|:---:|:---:|:---:|
+| Fully local, no cloud | ✅ | ✅ | ✅ | ✅ |
+| OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ |
+| **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial |
+| **Terminal coding agent** (OpenCode) | ✅ | — | — | — |
+| **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — |
+| **Multi-user roles / RBAC** (family-safe: guests get web, not your files) | ✅ | — | — | — |
+| **Speculative decoding** (MTP, 1.5–2.75× tok/s) | ✅ | partial | partial | partial |
+| **VRAM-measured context tuning** + reproducible eval leaderboard | ✅ | — | — | — |
+
+Ollama and LM Studio are excellent *model runners*. OpenBeast is a *workstation*
+built around one: it turns a local model into an agent you can actually work
+with, reach from any device, and safely share with your household.
+
+Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
+**Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
+the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
+**35B-A3B MoE** variants run 30–50 % faster per token — each swaps in with one
+argument to `start.sh`. Nine models are pre-configured, benchmarked against a
+v3.5 eval suite of 159 base tasks (33 with full 6-language variants, ~313
+effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
+[`evals/README.md`](evals/README.md).
 
 ## Architecture
 
@@ -77,9 +128,11 @@ Built and tuned on an RTX 5090 (32GB) running Arch Linux. Default model: **Qwen3
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
-## Quick Start (fresh Linux box)
+## Manual install (the long way)
 
-Assuming NVIDIA driver, CUDA, Docker, and Python 3.10+ are installed:
+`./bootstrap.sh` (above) automates all of this. These are the same steps by
+hand, if you'd rather run them yourself or adapt them. Assumes NVIDIA driver,
+CUDA, Docker, and Python 3.10+ are installed:
 
 ```bash
 # 1. Clone and enter the repo
@@ -367,3 +420,28 @@ including the per-category drilldown.
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model. Each model adds 16–21 GB.
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults
+
+## License
+
+[Apache License 2.0](LICENSE) — permissive, with an explicit patent grant.
+Use it, fork it, build a business on it (on-prem, air-gapped, commercial — all
+fair game). See [`NOTICE`](NOTICE) for the third-party components OpenBeast
+orchestrates; model weights carry their own upstream licenses.
+
+---
+
+<!--
+  A small Latin blessing to close. Translation:
+  "Behold the Beast — but tamed. It brands your brow with no foreign lord's
+  number; its mark stays in your own silicon, and the key is in your hands.
+  Saint Michael the Archangel, guard our gates: defend our networks in
+  battle, lest our data stray into the cloud. The local Beast roars for the
+  people — and your data never leaves home."
+
+  The joke: Revelation's "mark of the beast" (a foreign lord branding you) is
+  inverted — OpenBeast's mark is a blessing that never leaves your machine,
+  and the security layer (Tailscale, RBAC, sandboxing) is St. Michael at the
+  gate. "Nube" = cloud, both the heavenly kind and the data-harvesting kind.
+-->
+
+<sub><i>Ecce Bestia — sed domita. Frontem tuam numero domini alieni non signat; signum eius in silicio tuo manet, et clavis penes te est. Sancte Michael Archangele, portas nostras custodi: retia nostra in proelio defende, ne data in nubem vagentur. Bestia localis pro populo rugit — nec datum tuum domo umquam exit.</i></sub>

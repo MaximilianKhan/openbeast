@@ -299,7 +299,9 @@ docker pull ghcr.io/open-webui/open-webui:main
 
 Open WebUI is configured by `docker-compose.yml` (in repo root). It:
 - Runs in `network_mode: host` so it can reach `localhost:8080` (llama.cpp)
-- Auto-disables auth (`WEBUI_AUTH=false`) for local-only use
+- Defaults to no login wall (`WEBUI_AUTH=false`) for local-only use — the
+  full-tools demo works immediately. `scripts/setup-tailscale.sh` turns auth
+  on (and RBAC tiers apply) when you expose the WebUI to your tailnet; see §7.
 - Persists chat history to a Docker named volume (`open-webui-data`)
 
 Available at http://localhost:3000 once the stack is running.

@@ -917,6 +917,34 @@ fresh-install regression (now defaults false, tailscale flips true), stale
 Also: **process-supervision gap** — llama-server + mcpo run bare; add systemd
 units so they restart on crash/boot like the docker services do.
 
+### RESEARCH EXPERIMENT — does preemptive skill-chaining break the ~0% barrier? (2026-07-07)
+**Hypothesis (Max):** skills fire ~0% on small local models because the
+model must *blindly* discover them (`list_skills` → `load_skill` chain it
+never initiates). If we PREEMPTIVELY inject the chain — i.e. surface a skill
+index up front and/or auto-invoke `list_skills` at the start of an
+open-ended turn — small models may finally route to skills. This matters
+because OpenBeast must serve BOTH small and large models: large models chain
+proactively on their own; small ones need the scaffold.
+
+**Experiment to run:**
+1. Baseline: current skill-fire rate across model sizes on open-ended
+   (non-directive) tasks — instrument the agent runner to log
+   list_skills/load_skill/start_skill_agent calls per task. Confirm the ~0%.
+2. Arm A — **index injection**: put a compact skill menu (name + trigger)
+   in system-prompt-tools.md; measure fire rate + correct-skill-selection.
+3. Arm B — **preemptive list_skills**: runner auto-calls list_skills on
+   turn 1 of open-ended tasks and feeds the result back; measure whether the
+   model then loads the right skill.
+4. Arm C — both. Compare across a small (Gemma/27B) and large model on a
+   held-out set of open-ended tasks (review/audit/debug/design — the shapes
+   where skills add value).
+**Metric:** skill-fire rate AND skill-selection accuracy AND end-task
+quality delta (does firing the skill actually improve the output?). A skill
+that fires but doesn't help is noise.
+**Payoff:** if index-injection alone lifts small-model fire rate materially,
+it becomes the default and validates the SKILLS_PLAN Phase-5 auto-router
+direction. Pairs with the surface-simplification work below.
+
 ### Skills ↔ tools surface simplification (2026-07-07)
 Max flagged confusion; analysis confirms it's structural — 9 of 17 tools are
 meta-machinery (5 agent + 4 skills), and skills fire ~0% on local models due
