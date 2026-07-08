@@ -1,7 +1,23 @@
 # RBAC Plan — multi-user OpenBeast without handing out the filesystem
 
-**Status: PLANNED (2026-07-07) — Phase 0 is REQUIRED before creating the
-first non-admin account.** Nothing implemented yet.
+**Status: Phase 0 + Phase 1 LIVE (2026-07-07) — verified with the real
+Open WebUI access-control code.** A `user`-role account resolves
+`web_search` ONLY (bash/file/agent tools denied at the connection layer); an
+`admin` account gets all 17. Baked into `configure-webui.sh` so fresh
+installs land RBAC'd. Phase 2 (below-app enforcement via per-profile MCPO
+keys + Sandlock) is the remaining hardening.
+
+## How to give someone access (the whole UX)
+
+1. **Admin Panel → Users → Add User** (or let them sign up — new signups
+   land as `pending`, no access, until you act).
+2. Set their **role**: `user` = guest (web search only), `admin` = full
+   arsenal. **That role dropdown IS the RBAC tier.** Nothing else to touch.
+3. They log in from any device on the tailnet and chat. Guests literally do
+   not have `bash`/`edit_file` in their model's tool schema — not "denied,"
+   *absent*.
+
+To demote/revoke: flip the role back to `user`, or delete the account.
 
 ## The problem
 
@@ -20,28 +36,66 @@ Family members need chat + web search. They do not need — and must not
 have — shell access, file mutation, file *reads* (private data), or agent
 spawning.
 
-## Building blocks (verified in our running instance)
+## Building blocks (verified in the running Open WebUI source, 2026-07-07)
 
-Open WebUI's tool-server connections each carry:
-- `config.access_grants` — restrict a connection to specific users/groups
-  (empty = everyone). Checked per-user at tool-resolution time.
-- `config.function_name_filter_list` — expose only a subset of the
-  server's functions on that connection.
+Read straight out of `utils/access_control/__init__.py`,
+`utils/tools.py`, `utils/misc.py`:
 
-So ONE MCPO instance can back **two logical tool profiles** as two
-connections with different filters and grants. `mcpo` also supports
-`--api-key` and multi-server config files if we later want hard separation.
+- **`BYPASS_ADMIN_ACCESS_CONTROL` defaults `True`** → an `admin`-role user
+  **always resolves every tool**, regardless of a connection's grants.
+  Max stays fully armed without any per-connection grant for himself.
+- **`config.access_grants`** on a tool-server connection, checked per-user
+  at tool-resolution time (`has_connection_access` → `has_access`):
+  - empty / missing → **private = admin-only** (non-admins denied).
+  - `[{"principal_type":"user","principal_id":"*","permission":"read"}]`
+    → **public** (everyone).
+  - `{"principal_type":"group","principal_id":"<group_id>",...}` → scope to
+    a WebUI group (the future middle tier).
+  A denied connection is **silently skipped** — its tools never enter the
+  model's schema (not "permission denied" — they don't exist for that user).
+- **`config.function_name_filter_list`** (comma-separated, `is_string_allowed`):
+  allowlist by default; a `!name` entry blocks. So `"!web_search"` = every
+  tool *except* web_search; `"web_search"` = only web_search.
 
-## Tool classification (the profiles)
+So ONE MCPO instance backs **two connections to the same URL** with
+different filters + grants — no second MCPO process needed for v1. `mcpo
+--api-key` and split instances are the Phase-2 hard-enforcement upgrade.
 
-| Profile | Tools | Who |
-|---|---|---|
-| `arsenal-full` | all 17 (bash, read/write/edit file, list_files, grep, fetch, web_search, agent mgmt, skills) | admin group only |
-| `arsenal-guest` | `web_search`, `fetch` | everyone (family) |
+## The tiers (v1 — deliberately just two, = the native WebUI role)
 
-Deliberately NOT in guest: `read_file`/`list_files`/`grep` (private-data
-reads), `bash` (everything), agent tools (spawn = privilege amplification),
-skills (loads instructions into context — audit surface).
+**A user's tier IS their Open WebUI role.** No new concepts, no groups to
+manage. Assign in Admin Panel → Users → role dropdown (or the API).
+
+| Tier | WebUI role | Tools they get | How |
+|---|---|---|---|
+| **Owner** | `admin` | all 17 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
+| **Guest** (family) | `user` | **`web_search` only** | public grant on a filtered connection |
+| *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
+
+**Why guest = web_search only (not fetch, not file reads).** Max's rule:
+"search the web and anything that can't harm the OS; no local filesystem."
+- `web_search` → SearXNG, no local access. **Safe. In.**
+- `fetch` → can hit `file://` and internal URLs (SSRF). **Out of v1**;
+  revisit in Phase 2 once it's scheme-filtered + sandboxed.
+- `read_file`/`list_files`/`grep` → read the local FS (private data). Max
+  said no filesystem — **out.**
+- `bash` / `write_file` / `edit_file` → mutate the OS. **Out.**
+- agent mgmt / skills → privilege amplification + context injection. **Out.**
+
+### Two-connection wiring (implemented by `configure-webui.sh`)
+- **`local-mcp`** (privileged): `function_name_filter_list = "!web_search"`
+  (all 16 other tools), `access_grants = []` → admin-only.
+- **`local-mcp-web`** (public): `function_name_filter_list = "web_search"`,
+  `access_grants = [{user:*}]` → everyone.
+- Every model's `meta.toolIds = ["server:<priv>","server:<web>"]`.
+  - Admin resolves both → 16 + web_search = all 17, **no duplicate**
+    (web_search lives only on the public connection).
+  - Guest resolves only the public one → **web_search, nothing else.**
+
+Future middle tier ("trusted", e.g. an older kid): add a WebUI group, a
+third connection filtered to read-only `read_file`/`list_files`/`grep`
+scoped via Sandlock to a shared folder, granted to that group. Deferred —
+not built until asked.
 
 ## Phases
 

@@ -905,15 +905,39 @@ deterministic-validation pattern and need a separate harness path.
 
 ## Future Horizon
 
-### RBAC — multi-user tool lockdown (PLANNED 2026-07-07, Phase 0 gates guest accounts)
-Full design in [RBAC_PLAN.md](RBAC_PLAN.md). Today any WebUI account can run
-bash/edit_file as Max's Unix user — **do Phase 0 (admin-only access_grants
-on the local-mcp connection, ~10 min) before creating the first family
-account.** Then: guest profile (web_search+fetch via a filtered second
-connection), per-profile API keys + Sandlock sandboxing (converges with
-Arsenal Phase 1a), audit logging.
+### RBAC — multi-user tool lockdown (Phase 0+1 DONE 2026-07-07)
+Full design + UX in [RBAC_PLAN.md](RBAC_PLAN.md). **Live and verified against
+the real Open WebUI access-control code**: `user`-role (guest/family) = only
+`web_search`; `admin` = all 17. Two connections on one MCPO (id1 privileged
+`!web_search` admin-only, id2 `web_search` public), baked into
+`configure-webui.sh`. Assigning a tier = the WebUI role dropdown, nothing
+else. **Remaining — Phase 2 hardening:** below-app enforcement (per-profile
+MCPO `--api-key`s + Sandlock sandbox so a bypassed UI or a second frontend
+can't reach the dangerous tools), then guest `fetch` once SSRF/scheme-
+filtered, then per-tool-call audit log. Converges with Arsenal Phase 1a.
 
-### Arsenal expansion — research complete, phased plan ready (2026-07-07)
+### Arsenal — KICK OFF Phase 1 (recon done, both GO — 2026-07-07)
+Recon prototypes built and verified on this box (see
+[TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md) "Prototype recon"):
+**Sandlock** GO (builds, 8/8 isolation tests held on Landlock ABI 8) and
+**ChunkHound** GO (working local index, CPU embeddings, zero VRAM). Phase 1
+implementation, ~1 week:
+1. **File-tool path allowlist** in `agents/tools.py` (realpath under
+   workdir/`/tmp/eval_*`, never `~/.ssh`/`~/.config`/credentials) — the
+   real credential-exfil fix, Sandlock-independent, do FIRST. Also the
+   in-process gap Sandlock can't cover.
+2. **Sandlock wrap of `bash()`** (argv via `sandlock run … -- /bin/bash
+   -c`), composed under `run_reaped` (Landlock/seccomp = what; RLIMIT_AS +
+   killpg = how much/how long). Pin commit `5c9bafe9`, vendor source, keep
+   MITM/OCI features off.
+3. **guest/admin Sandlock TOML profiles** — the RBAC Phase 2 enforcement layer.
+4. **ChunkHound**: CPU llama.cpp embedding sidecar on :8081 (nomic-embed,
+   ≥2048 ctx) wired into start.sh/stop.sh; `.chunkhound.json` with local
+   base_url (never leak to api.openai.com); reindex script; opencode.json
+   stdio entry; tight-output tool guidance (pin page_size + max_response_tokens).
+   OPS RULE: never `pkill -f llama-server` (kills prod) — target by PID.
+
+### Arsenal expansion — original research verdicts (2026-07-07)
 Deep-research verdicts in [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md)
 (9 findings, 25 claims 3-vote-verified). Headlines: ADOPT ChunkHound
 (semantic code search, MIT, llama.cpp embeddings) + Sandlock (unprivileged

@@ -117,11 +117,73 @@ commit ~5.5 months) — reimplementing the pattern in our tool server is
 - This space moves monthly (Letta mid-migration, Playwright CLI < 1 year
   old, Sandlock 4 months old) — re-verify versions before integrating.
 
+## Prototype recon — Sandlock + ChunkHound both GO (2026-07-07)
+
+Two isolated recon agents built working prototypes on this box (scratch
+dirs only, nothing installed into the live stack, nothing committed). Both
+returned **GO**. Details below feed Phase 1 implementation.
+
+### Sandlock — GO (built + adversarially tested, commit `5c9bafe9`, v0.8.4)
+- **Builds clean** on Arch in ~21s (rustc 1.95). Kernel `7.0.10-arch1-1`
+  exposes **Landlock ABI 8** — above every Sandlock requirement (needs v6).
+- **Source audit clean**: no telemetry/phone-home/sudo/setuid. Two things
+  to keep *off*: the `--http-inject-ca` MITM feature and the `bollard`
+  Docker/OCI path — build only what we use.
+- **8/8 isolation tests held**: blocked `/etc/passwd` + credential reads
+  outside the allowlist, capped a fork bomb, SIGKILL'd a memory bomb,
+  default-denied network, allowed a scoped `--net-allow`. Kernel-enforced
+  FS allowlist is the strong guarantee.
+- **Composition with our `run_reaped`**: Landlock/seccomp = *what* code may
+  touch; RLIMIT_AS + killpg = *how much / how long*. Disjoint axes, they
+  stack. Keep sandlock's `-m` just under the hard rlimit so the friendly
+  SIGKILL fires first; killpg still reaps the supervisor+child tree.
+- **THE GOTCHA**: `bash()` shells out → easy to wrap (argv via
+  `sandlock run … -- /bin/bash -c`). But `read_file`/`write_file`/
+  `edit_file` run **in-process** (`open()`), which Sandlock's subprocess
+  model can't wrap. **Fix independent of Sandlock and worth doing day one:
+  app-level path allowlist on the file tools** (realpath must be under the
+  work dir / `/tmp/eval_*`, never `~/.ssh`, `~/.config`, `.git/config`).
+  Sandboxing bash alone while file tools can still read `~/.ssh` is theater.
+- Maps directly onto RBAC guest/admin via TOML profiles (`guest.toml`:
+  `write=[]`, no network; `admin.toml`: scoped writes + egress) — the RBAC
+  and Arsenal workstreams converge in the sandbox policy.
+- Effort for solid v1 (bash sandboxed + file-tool path gate + 2 profiles):
+  **~1 week**. Pin the commit, vendor source, re-audit on bump (pre-1.0).
+
+### ChunkHound — GO (working local index proven, v3.3.1)
+- **Installed clean** (venv, Python 3.14, all wheels — no compiler).
+  Indexed the OpenBeast repo: **34 files → 264 chunks in 10.3s**, CPU
+  embeddings, **zero VRAM**. Both target semantic queries returned exact
+  ground-truth code as the #1 hit.
+- **Lean MCP surface** — only 4 tools (`search_semantic`, `search_regex`,
+  `get_stats`, `health_check`), good for weak tool-selectors. **BUT
+  `max_response_tokens` defaults to 20000** — must pin `page_size: 3-5` +
+  `max_response_tokens: 1500-3000` in tool guidance or it floods context.
+- **Cloud-leak guardrail**: code default provider is `openai` at
+  `api.openai.com` — if `base_url` is unset and an `OPENAI_API_KEY` is in
+  the env, indexing silently ships code to OpenAI. **Always set `base_url`.**
+- **Local embedding path (the single-5090 answer)**: chat model saturates
+  VRAM (30/32.6 GB), so **run a CPU llama.cpp embedding sidecar** on port
+  8081 reusing our own `llama-server` binary (`--embeddings -ngl 0`), zero
+  VRAM. **Embedding model must be ≥2048-ctx** — bge-small (512-ctx) fails
+  whole batches on cAST's larger chunks; **nomic-embed-text-v1.5** works.
+- **Pitfalls found**: `--include "agents/**/*.py"` silently matched nothing
+  (use simple root-anchored patterns + verify with `get_stats`); one DB is
+  bound to one project root (index the whole repo, not subtree-by-subtree).
+- **Ops hazard (learned the hard way)**: the recon agent ran
+  `pkill -f llama-server` and killed the production chat server. **Never
+  pattern-kill llama-server; target by explicit PID.** Add to serve/stop
+  discipline.
+- Effort: **~0.5 day** (CPU embedding sidecar wired into start.sh/stop.sh +
+  `.chunkhound.json` with local base_url + reindex script + opencode.json
+  stdio entry + tight-output tool guidance).
+
 ## Proposed attack plan
 
 1. **Phase 1 (~1 week):** Sandlock wrap of the bash tool (extends the OOM
-   hardening — sandbox review first) + ChunkHound with llama.cpp embeddings
-   (closes the RAG Future Horizon item).
+   hardening — sandbox review first) + the **file-tool path allowlist**
+   (the real credential-exfil fix, Sandlock-independent) + ChunkHound with
+   a CPU llama.cpp embedding sidecar (closes the RAG Future Horizon item).
 2. **Phase 2 (~3 days):** Playwright CLI skill + in-house canned-query
    SQLite tool.
 3. **Phase 3 (2–4 days):** in-house memory tool (sqlite-vec vs LanceDB

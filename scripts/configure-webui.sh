@@ -63,58 +63,48 @@ fi
 
 AUTH="Authorization: Bearer $TOKEN"
 
-# --- 1. Configure MCPO tool server ---
-# Check if already configured
-EXISTING=$(curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null)
-HAS_MCPO=$(echo "$EXISTING" | python3 -c "
-import sys, json
+# --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
+# See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
+#   id=1 "privileged"  filter !web_search (16 OS-touching tools), admin-only
+#                      (empty access_grants → non-admins denied; admins bypass)
+#   id=2 "web"         filter web_search only, public (everyone incl. guests)
+# Models reference both (meta.toolIds). Open WebUI enforces per-connection
+# access at tool-resolution time, so a `user`-role (family/guest) account
+# resolves web_search ONLY — never bash/file/agent tools. `admin` accounts
+# get all 17 via BYPASS_ADMIN_ACCESS_CONTROL. Idempotent: reconciles to this
+# exact shape every run without clobbering unrelated connections.
+echo "  Reconciling RBAC tool-server connections..."
+curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
+  | MCPO_URL="$MCPO_URL" python3 -c "
+import sys, os, json
+MCPO = os.environ['MCPO_URL']
 data = json.load(sys.stdin)
-conns = data.get('TOOL_SERVER_CONNECTIONS', [])
-print('yes' if any(c.get('url') == '$MCPO_URL' and c.get('type') == 'openapi' for c in conns) else 'no')
-" 2>/dev/null)
+conns = [c for c in data.get('TOOL_SERVER_CONNECTIONS', [])
+         if not (c.get('url') == MCPO and c.get('info', {}).get('id') in ('1', '2', 'local-tools'))]
+priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi', 'auth_type': 'none',
+        'headers': None, 'key': '',
+        'config': {'enable': True, 'function_name_filter_list': '!web_search', 'access_grants': []},
+        'spec_type': 'url', 'spec': '',
+        'info': {'id': '1', 'name': 'Local Tools (privileged)',
+                 'description': 'bash, file r/w/edit, grep, fetch, agents, skills — admin-only'}}
+web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi', 'auth_type': 'none',
+       'headers': None, 'key': '',
+       'config': {'enable': True, 'function_name_filter_list': 'web_search',
+                  'access_grants': [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]},
+       'spec_type': 'url', 'spec': '',
+       'info': {'id': '2', 'name': 'Web Search (all users)',
+                'description': 'web_search via SearXNG — safe for guest accounts'}}
+print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
+" | curl -s -H "$AUTH" -H "Content-Type: application/json" \
+    "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
+echo "  Tool servers configured (privileged=admin-only, web=all users)."
 
-if [[ "$HAS_MCPO" != "yes" ]]; then
-  echo "  Adding MCPO tool server ($MCPO_URL)..."
-  curl -s -H "$AUTH" -H "Content-Type: application/json" \
-    "$WEBUI_URL/api/v1/configs/tool_servers" \
-    -X POST \
-    -d '{
-      "TOOL_SERVER_CONNECTIONS": [{
-        "url": "'"$MCPO_URL"'",
-        "path": "openapi.json",
-        "type": "openapi",
-        "auth_type": "none",
-        "headers": null,
-        "key": "",
-        "config": {
-          "enable": true,
-          "function_name_filter_list": "",
-          "access_grants": []
-        },
-        "spec_type": "url",
-        "spec": "",
-        "info": {
-          "id": "local-tools",
-          "name": "Local Tools (MCPO)",
-          "description": "bash, read/write/edit files, grep, fetch, agent management"
-        }
-      }]
-    }' > /dev/null
-  echo "  Tool server configured."
-else
-  echo "  Tool server already configured."
-fi
+# Model tool wiring uses these two connection ids.
+TOOL_REFS='["server:1","server:2"]'
 
 # Resolve the MCPO server's id so models can reference it in meta.toolIds
 # ("server:<id>") — that's what attaches the tools to every chat by default
 # instead of requiring the per-conversation ＋-menu toggle.
-MCPO_SERVER_ID=$(curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null | python3 -c "
-import sys, json
-for c in json.load(sys.stdin).get('TOOL_SERVER_CONNECTIONS', []):
-    if c.get('url') == '$MCPO_URL':
-        print(c.get('info', {}).get('id', ''))
-        break" 2>/dev/null)
-
 # --- 2. Set native function calling for all models ---
 # Wait briefly for Open WebUI to detect models from llama.cpp
 sleep 3
@@ -152,7 +142,8 @@ import sqlite3, json, os, time
 
 db = sqlite3.connect('/app/backend/data/webui.db')
 model_id = '$model_id'
-tool_ref = 'server:$MCPO_SERVER_ID' if '$MCPO_SERVER_ID' else ''
+# Both RBAC connections; per-user access control decides which resolve.
+tool_refs = json.loads('$TOOL_REFS')
 
 # Load system prompt
 system_prompt = ''
@@ -175,9 +166,9 @@ if row:
         params['system'] = system_prompt
         changed = True
 
-    # Attach the MCPO tool server by default (no per-chat toggle needed)
-    if tool_ref and tool_ref not in meta.get('toolIds', []):
-        meta['toolIds'] = meta.get('toolIds', []) + [tool_ref]
+    # Attach both RBAC tool connections by default (no per-chat toggle).
+    if tool_refs and meta.get('toolIds') != tool_refs:
+        meta['toolIds'] = tool_refs
         changed = True
 
     if changed:
@@ -190,8 +181,8 @@ else:
     # Model detected by API but not yet in DB — insert it
     params = json.dumps({'function_calling': 'native'})
     meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}}
-    if tool_ref:
-        meta_dict['toolIds'] = [tool_ref]
+    if tool_refs:
+        meta_dict['toolIds'] = tool_refs
     if system_prompt:
         params_dict = json.loads(params)
         params_dict['system'] = system_prompt
