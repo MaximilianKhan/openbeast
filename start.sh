@@ -216,10 +216,19 @@ echo "llama.cpp server ready on http://localhost:8080"
 # processed from scratch). Best-effort; never blocks startup. The primed
 # prefix is reused by every subsequent same-prompt turn.
 if [[ -f "$REPO_DIR/system-prompt.md" ]]; then
-  ( SYS="$(cat "$REPO_DIR/system-prompt.md" "$REPO_DIR/system-prompt-tools.md" 2>/dev/null)"
+  # Build SYS byte-for-byte the way configure-webui.sh stores WebUI's system
+  # prompt: $(cat) strips each file's trailing newline, joined by ONE blank
+  # line, then .strip() below mirrors configure-webui's storage. This must
+  # match token-for-token — a raw `cat f1 f2` gives a single '\n' at the file
+  # boundary vs WebUI's '\n\n', so the primed prefix would diverge mid-prompt
+  # and the first real chat still pays a partial reprocess (~57ms).
+  ( SYS="$(cat "$REPO_DIR/system-prompt.md")"
+    if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
+      SYS="$SYS"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
+    fi
     python3 - "$SYS" <<'WARM' >/dev/null 2>&1 || true
 import json, sys, urllib.request
-body=json.dumps({"messages":[{"role":"system","content":sys.argv[1]},
+body=json.dumps({"messages":[{"role":"system","content":sys.argv[1].strip()},
     {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
     "chat_template_kwargs":{"enable_thinking":False}}).encode()
 try:
