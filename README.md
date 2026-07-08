@@ -349,6 +349,7 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
 - **[docs/TOOLS.md](docs/TOOLS.md)** — Every tool a model can call: inventory, provenance (custom vs pulled-in), hardening, RBAC visibility
 - **[docs/UPDATING.md](docs/UPDATING.md)** — Updating every pulled-in component (llama.cpp, images, Python deps) with one command
+- **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)** — GPU detection and recommended configs per hardware tier (5090 is the measured reference; 3090/4090/AMD/Intel advisory)
 - **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** — Skills system design (Pattern A progressive disclosure via MCP)
@@ -425,7 +426,7 @@ including the per-category drilldown.
 
 ## Requirements
 
-- NVIDIA GPU with CUDA (tested on RTX 5090; works on 3090/4090 — set `CMAKE_CUDA_ARCHITECTURES` accordingly)
+- NVIDIA GPU with CUDA (tested on RTX 5090; works on 3090/4090 — `bootstrap.sh` auto-detects the CUDA arch and prints a per-tier config recommendation; see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md))
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model. Each model adds 16–21 GB.
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults

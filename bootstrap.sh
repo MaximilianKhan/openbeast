@@ -67,12 +67,17 @@ need cmake  cmake          "needed to build llama.cpp"
 need gcc    "gcc base-devel" "C/C++ toolchain for the build"
 need python3 python        "runs the MCP tool server + eval harness"
 
-# GPU + driver
-if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-  GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-  ok "NVIDIA GPU: $GPU_NAME"
+# GPU + driver — detect vendor/VRAM and print the profile recommendation.
+# The build itself is still CUDA-only (reference profile: RTX 5090, 32 GB);
+# see docs/HARDWARE_PROFILES.md for the AMD/Intel/multi-GPU plan.
+source "$REPO_DIR/scripts/lib/hardware.sh"
+ob_detect_gpu
+if [[ "$OB_GPU_VENDOR" == "nvidia" ]]; then
+  ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)"
+  ob_profile_advice
 else
-  warn "nvidia-smi not working — an NVIDIA GPU + driver is required."
+  warn "no working NVIDIA GPU — this build path requires one (CUDA)."
+  ob_profile_advice
   echo "      → install the proprietary NVIDIA driver for your distro, then re-run."
   MISSING=1
 fi
