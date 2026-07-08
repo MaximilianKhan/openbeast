@@ -241,3 +241,32 @@ on every user turn. The JSON contract `{spawn, task, workdir}` answers "what
 does it return" — grammar-forced JSON, not free text or a bare boolean (the
 task/workdir extraction comes free). Next: test a 0.8B does 5/5 too; fine-tune
 only if it doesn't.
+
+## 10. Router decision: grammar-only on the main model (no CPU model needed) (2026-07-08)
+
+Per the minimal-components directive: add the CPU 0.8B model ONLY if the
+grammar method doesn't work all the time. It does.
+
+16-case stress test (explicit spawn, IMPLICIT spawn w/ no keywords, inline
+controls, and traps that mention "agent/background" but aren't spawn requests):
+
+| Router | Accuracy | Latency | Notes |
+|---|---|---|---|
+| 27B, grammar, thinking ON | 13/13 then empty-JSON fail | slow | reasoning ate the token budget before the JSON |
+| **27B, grammar, `enable_thinking=false`** | **16/16** | ~493ms | bulletproof; the answer |
+| Qwen3-0.6B CPU, grammar | 5/5 explicit + 4/4 control, missed 1 implicit | ~500ms | GPU-free, but 9/10 |
+
+**DECISION: the router is a grammar-constrained pre-flight call to the main
+model with `enable_thinking=false` — ZERO new model components.** Classifies
+`{spawn, task, workdir}` at 16/16 across explicit/implicit/trap cases. No CPU
+model, no second server. The ~500ms/turn cost is a GPU inference on the model
+we already run — acceptable for a pre-flight gate.
+
+**THE load-bearing implementation detail:** the pre-flight call MUST disable
+thinking (`chat_template_kwargs: {enable_thinking: false}`). A reasoning model
+left thinking will intermittently exhaust max_tokens on its reasoning block and
+return empty content before the JSON — the exact failure seen at thinking-ON.
+
+The CPU 0.8B (unsloth/Qwen3.5-0.8B-GGUF) stays a valid FUTURE option if we ever
+want the router fully off-GPU (frees the main model from per-turn double-duty)
+or need many turns/sec — but it's not needed for correctness. Reserve, not shipped.
