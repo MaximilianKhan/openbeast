@@ -125,11 +125,16 @@ Full curves (tok/s, generation, on the fixed workload):
 |---|---:|---:|---:|---:|---:|---:|
 | 27B MTP | 134.0 | 148.4 | 143.3 | **167.5** | 144.8 | 125.9 |
 | 35B-A3B MTP | 335.1 | **385.3** | 352.0 | 256.5 | 230.8 | 212.1 |
-| Qwopus MTP | 132.6 | **148.7** | 131.4 | 127.2 | 115.2 | (OOM) |
+| Qwopus MTP | 127.4 | **148.2** | 136.6 | 135.9 | 121.4 | OOM |
 
-p_min gate (at each model's best depth) monotonically LOWERS throughput:
+p_min gate (at each model's best depth) LOWERS throughput for all three
+(never a gain — confirming p_min=0.0 is optimal everywhere):
 - 27B @ n8: p0 **167.5** → p0.1 160.6 → p0.25 152.9 → p0.5 142.7
 - MoE @ n4: p0 **385.3** → p0.1 382.5 → p0.25 339.3 → p0.5 322.4
+- Qwopus @ n4: p0 **148.2** → p0.1 145.7 → p0.25 146.4 → p0.5 140.1
+
+(Measurement noise is ~0.5%: Qwopus n4/p0 read 148.7 in the aborted first run,
+148.2 in the clean re-run — same optimum.)
 
 **METHOD NOTE / correction:** mid-run I briefly reported the MoE's
 `n4/p0.1 = 382.5` as a speedup — that was premature, before the `n4/p0 = 385.3`

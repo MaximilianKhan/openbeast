@@ -177,7 +177,7 @@ Load-bearing conditions that must ALL hold, or the agent architecture fails:
   them on shutdown. A fleet needs supervision (pidfiles/systemd) like the
   main stack.
 
-## ⏳ POST-SWEEP STEP 2 — MTP throughput profiling (after step 1)
+## ✅ POST-SWEEP STEP 2 — MTP throughput profiling (DONE 2026-07-08)
 
 Find the peak tok/s DEPLOYMENT config for each MTP model by brute-forcing
 the lossless speculation knobs (safe — MTP verifies every drafted token, so
