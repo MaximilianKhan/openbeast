@@ -80,6 +80,34 @@ fi
 
 AUTH="Authorization: Bearer $TOKEN"
 
+# --- 0. Point WebUI's model connection at the OpenBeast endpoint ---
+# Open WebUI PERSISTS the OpenAI connection in its DB and IGNORES the
+# OPENAI_API_BASE_URL env var once the DB has a value. So the env in
+# docker-compose only seeds a fresh install — for an existing WebUI we must set
+# the DB connection ourselves. OPENBEAST_MODEL_URL (from lib/conf.sh) is the
+# router (:8088) when AGENT_ROUTER=true, else llama-server (:8080). Idempotent.
+CONN_CHANGED=0
+if [[ -n "${OPENBEAST_MODEL_URL:-}" ]]; then
+  echo "  Setting WebUI model connection → $OPENBEAST_MODEL_URL ..."
+  if docker exec -e MODEL_URL="$OPENBEAST_MODEL_URL" open-webui python3 -c "
+import sqlite3, json, os, sys
+db = sqlite3.connect('/app/backend/data/webui.db')
+url = os.environ['MODEL_URL']
+row = db.execute(\"SELECT value FROM config WHERE key='openai.api_base_urls'\").fetchone()
+cur = json.loads(row[0]) if row and row[0] else []
+if cur != [url]:
+    db.execute(\"UPDATE config SET value=? WHERE key='openai.api_base_urls'\", (json.dumps([url]),))
+    db.commit()
+    sys.exit(3)   # signal 'changed'
+" 2>/dev/null; then
+    echo "    already set"
+  elif [[ $? -eq 3 ]]; then
+    echo "    connection updated"; CONN_CHANGED=1
+  else
+    echo "    (could not set connection — WebUI may not be up yet)"
+  fi
+fi
+
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
 # See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
 #   id=1 "privileged"  filter !web_search (16 OS-touching tools), admin-only
@@ -216,6 +244,15 @@ else:
     print('    Created model entry (native FC + system prompt + default tools).')
 " 2>/dev/null
   done <<< "$MODELS"
+fi
+
+# Open WebUI loads the OpenAI connection at startup, so a changed endpoint only
+# takes effect after a restart. All config above is persisted in the DB and
+# survives this restart. (No-op on a fresh install where the env already seeded
+# the right URL, so CONN_CHANGED stays 0.)
+if [[ "${CONN_CHANGED:-0}" == "1" ]]; then
+  echo "  Restarting Open WebUI to load the new model connection..."
+  docker restart open-webui >/dev/null 2>&1 || true
 fi
 
 echo "Open WebUI configured."
