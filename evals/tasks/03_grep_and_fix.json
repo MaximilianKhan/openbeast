@@ -2,7 +2,7 @@
   "id": "03_grep_and_fix",
   "name": "Find and fix a bug across files",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_proj/src && echo 'import utils\\n\\ndef main():\\n    print(utils.format_name(\"john\", \"doe\"))' > /tmp/eval_proj/src/main.py && echo 'def format_name(first, last):\\n    return f\"{first} {last}\"' > /tmp/eval_proj/src/utils.py",
+  "setup": "mkdir -p /tmp/eval_proj/src && printf 'import utils\\n\\ndef main():\\n    print(utils.format_name(\"john\", \"doe\"))\\n' > /tmp/eval_proj/src/main.py && printf 'def format_name(first, last):\\n    return f\"{first} {last}\"\\n' > /tmp/eval_proj/src/utils.py",
   "task": "The project at /tmp/eval_proj has a formatting issue: format_name should capitalize the first letter of each name (e.g., 'John Doe' not 'john doe'). Find and fix the bug.",
   "validation": {
     "type": "python",

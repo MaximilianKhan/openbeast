@@ -10,67 +10,73 @@
       "id": "a",
       "language": "python",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.py \u2014 a Python program that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two (1, 2, 4, 8, ...) or 'false' otherwise. n = 0 \u2192 false. Negative numbers \u2192 false. Use a bitwise approach (the n > 0 and n & (n-1) == 0 trick).",
+      "task": "Create /tmp/eval_pow2/pow2.py — a Python program that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two (1, 2, 4, 8, ...) or 'false' otherwise. n = 0 → false. Negative numbers → false. Use a bitwise approach (the n > 0 and n & (n-1) == 0 trick).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && python3 pow2.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     },
     {
       "id": "b",
       "language": "go",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.go \u2014 a Go program (package main) that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Compile with `go build -o pow2 pow2.go` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && n & (n-1) == 0).",
+      "task": "Create /tmp/eval_pow2/pow2.go — a Go program (package main) that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Compile with `go build -o pow2 pow2.go` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && n & (n-1) == 0).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && go build -o pow2 pow2.go && ./pow2 < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     },
     {
       "id": "c",
       "language": "c",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.c \u2014 a C program that reads long integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o pow2 pow2.c` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && (n & (n-1)) == 0).",
+      "task": "Create /tmp/eval_pow2/pow2.c — a C program that reads long integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o pow2 pow2.c` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && (n & (n-1)) == 0).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && gcc -O2 -std=c11 -Wall -Wextra -o pow2 pow2.c && ./pow2 < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     },
     {
       "id": "d",
       "language": "cpp",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.cpp \u2014 a C++ program that reads long integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o pow2 pow2.cpp` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && (n & (n-1)) == 0).",
+      "task": "Create /tmp/eval_pow2/pow2.cpp — a C++ program that reads long integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two or 'false' otherwise. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o pow2 pow2.cpp` and run with `./pow2 < input.txt`. Use a bitwise approach (n > 0 && (n & (n-1)) == 0).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && g++ -O2 -std=c++17 -Wall -Wextra -o pow2 pow2.cpp && ./pow2 < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     },
     {
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.rs \u2014 same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O pow2.rs -o pow2` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_pow2/pow2.rs — a Rust program that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two (1, 2, 4, 8, ...) or 'false' otherwise. n = 0 → false. Negative numbers → false. Use a bitwise approach (n > 0 && n & (n-1) == 0). Read into a signed 64-bit integer (i64). Idiomatic Rust 2021+; compile with `rustc -O pow2.rs -o pow2` and run with `./pow2 < input.txt`.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && rustc -O pow2.rs -o pow2 && ./pow2 < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     },
     {
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt",
-      "task": "Create /tmp/eval_pow2/pow2.zig \u2014 same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return \u2014 output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast pow2.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_pow2/pow2.zig — a Zig program that reads integers from stdin (one per line, may be negative or zero) and for each one writes 'true' (lowercase) on its own line if it is a positive power of two (1, 2, 4, 8, ...) or 'false' otherwise. n = 0 → false. Negative numbers → false. Use a bitwise approach (n > 0 and n & (n-1) == 0). Parse into a signed 64-bit integer (i64). Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast pow2.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pow2 && zig build-exe -O ReleaseFast pow2.zig && ./pow2 < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_pow2"
+      "cleanup": "rm -rf /tmp/eval_pow2",
+      "pre_validate": "mkdir -p /tmp/eval_pow2 && printf '1\\n2\\n4\\n8\\n16\\n1073741824\\n0\\n-1\\n-2\\n3\\n5\\n100\\n1000\\n' > /tmp/eval_pow2/input.txt && printf 'true\\ntrue\\ntrue\\ntrue\\ntrue\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_pow2/expected.txt"
     }
   ]
 }

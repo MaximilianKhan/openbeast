@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; python3 gf.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; go build -o gf gf.go && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; gcc -O2 -std=c11 -Wall -Wextra -o gf gf.c -lm && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; g++ -O2 -std=c++17 -Wall -Wextra -o gf gf.cpp && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; rustc -O gf.rs -o gf 2>/dev/null && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_gf; zig build-exe -O ReleaseFast gf.zig && ./gf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_gf"
+      "cleanup": "rm -rf /tmp/eval_gf",
+      "pre_validate": "mkdir -p /tmp/eval_gf && printf '8\\n+ 1 2\\n+ 87 19\\n+ 255 255\\n* 1 1\\n* 2 4\\n* 87 19\\n* 0xFF 0xFF\\n* 0x53 0xCA\\n' > /tmp/eval_gf/input.txt && python3 -c '\ndef gfmul(a,b):\n    p = 0\n    for _ in range(8):\n        if b & 1: p ^= a\n        b >>= 1\n        hi = a & 0x80\n        a = (a << 1) & 0xFF\n        if hi: a ^= 0x1B\n    return p\ncases = [(\"+\",1,2),(\"+\",87,19),(\"+\",255,255),(\"*\",1,1),(\"*\",2,4),(\"*\",87,19),(\"*\",0xFF,0xFF),(\"*\",0x53,0xCA)]\nouts = []\nfor op,a,b in cases:\n    if op == \"+\": outs.append(str(a ^ b))\n    else: outs.append(str(gfmul(a,b)))\nopen(\"/tmp/eval_gf/expected.txt\",\"w\").write(\"\\n\".join(outs)+\"\\n\")\n'"
     }
   ]
 }

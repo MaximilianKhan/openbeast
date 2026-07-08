@@ -1,7 +1,7 @@
 {
   "id": "22_optimize_quadratic",
   "name": "Refactor O(n^2) to O(n log n) \u2014 perf-gated",
-  "difficulty": "hard",
+  "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_perf && printf 'def find_duplicates(items):\\n    \"\"\"Return all values that appear more than once, in input order, each once.\"\"\"\\n    # Currently O(n^2) \u2014 too slow for large inputs.\\n    seen_dupes = []\\n    for i, x in enumerate(items):\\n        if x in seen_dupes:\\n            continue\\n        for j in range(i + 1, len(items)):\\n            if items[j] == x:\\n                seen_dupes.append(x)\\n                break\\n    return seen_dupes\\n' > /tmp/eval_perf/dupes.py",
   "task": "The function find_duplicates in /tmp/eval_perf/dupes.py is O(n^2) and too slow for large inputs. Rewrite it so that on N=100,000 elements it completes in under 1 second on this machine, while keeping the SAME signature and SAME output (values that appear more than once, in their first-occurrence order, each listed only once). The naive nested-loop approach must be replaced \u2014 think about hash-based or sort-based strategies.",
   "validation": {

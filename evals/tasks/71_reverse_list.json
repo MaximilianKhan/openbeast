@@ -13,8 +13,9 @@
       "task": "Create /tmp/eval_rev/rev.py — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Pure Python; no numpy.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_rev; ! grep -qE \"\\\\.reverse\\\\(|reversed\\\\(|\\\\[::-1\\\\]\" rev.py || { echo 'forbidden api'; exit 1; }; python3 rev.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_rev; sed 's/#.*//' rev.py | grep -qE \"\\\\.reverse[[:space:]]*\\\\(|(^|[^A-Za-z0-9_.])reversed[[:space:]]*\\\\(|\\\\[[[:space:]]*::[[:space:]]*-1[[:space:]]*\\\\]\" && { echo 'forbidden api'; exit 1; }; python3 rev.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
@@ -24,8 +25,9 @@
       "task": "Create /tmp/eval_rev/rev.go (package main). Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `go build -o rev rev.go`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_rev; ! grep -qE \"slices\\\\.Reverse|sort\\\\.Reverse\" rev.go || { echo 'forbidden api'; exit 1; }; go build -o rev rev.go && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.go | grep -qE \"slices\\\\.Reverse|sort\\\\.Reverse\" && { echo 'forbidden api'; exit 1; }; go build -o rev rev.go && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
@@ -37,6 +39,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; gcc -O2 -std=c11 -Wall -Wextra -o rev rev.c -lm && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
@@ -46,8 +49,9 @@
       "task": "Create /tmp/eval_rev/rev.cpp — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_rev; ! grep -qE \"std::reverse|reverse_iterator\" rev.cpp || { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.cpp | grep -qE \"std::reverse|reverse_iterator\" && { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
@@ -57,8 +61,9 @@
       "task": "Create /tmp/eval_rev/rev.rs — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Idiomatic Rust 2021+; compile with `rustc -O rev.rs -o rev`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_rev; ! grep -qE \"\\\\.reverse\\\\(\\\\)|\\\\.rev\\\\(\\\\)\" rev.rs || { echo 'forbidden api'; exit 1; }; rustc -O rev.rs -o rev 2>/dev/null && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.rs | grep -qE \"\\\\.reverse[[:space:]]*\\\\(|\\\\.rev[[:space:]]*\\\\(\" && { echo 'forbidden api'; exit 1; }; rustc -O rev.rs -o rev && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
@@ -68,8 +73,9 @@
       "task": "Create /tmp/eval_rev/rev.zig — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast rev.zig`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_rev; ! grep -qE \"std\\\\.mem\\\\.reverse\" rev.zig || { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast rev.zig && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.zig | grep -qE \"std\\\\.mem\\\\.reverse\" && { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast rev.zig && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
       "cleanup": "rm -rf /tmp/eval_rev"
     }
   ]

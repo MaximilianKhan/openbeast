@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; python3 astar.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; go build -o astar astar.go && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; gcc -O2 -std=c11 -Wall -Wextra -o astar astar.c -lm && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; g++ -O2 -std=c++17 -Wall -Wextra -o astar astar.cpp && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; rustc -O astar.rs -o astar 2>/dev/null && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_astar; zig build-exe -O ReleaseFast astar.zig && ./astar < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_astar"
+      "cleanup": "rm -rf /tmp/eval_astar",
+      "pre_validate": "mkdir -p /tmp/eval_astar && cat > /tmp/eval_astar/input.txt <<'EOF'\n3\n3 4\nS...\n....\n...G\n5 5\nS....\n###.#\n....#\n.####\n....G\n3 3\nS.#\n###\n#.G\nEOF\nprintf '5\\n14\\n-1\\n' > /tmp/eval_astar/expected.txt"
     }
   ]
 }

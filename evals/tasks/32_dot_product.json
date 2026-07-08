@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; python3 dot.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; go build -o dot dot.go && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; gcc -O2 -std=c11 -Wall -Wextra -o dot dot.c -lm && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; g++ -O2 -std=c++17 -Wall -Wextra -o dot dot.cpp && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; rustc -O dot.rs -o dot 2>/dev/null && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_dot; zig build-exe -O ReleaseFast dot.zig && ./dot < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_dot"
+      "cleanup": "rm -rf /tmp/eval_dot",
+      "pre_validate": "mkdir -p /tmp/eval_dot && printf '5\\n3\\n1 2 3\\n4 5 6\\n0\\n\\n\\n4\\n1 -1 1 -1\\n5 5 5 5\\n5\\n10 20 30 40 50\\n1 2 3 4 5\\n3\\n1000000 1000000 1000000\\n1000000 1000000 1000000\\n' > /tmp/eval_dot/input.txt && printf '32\\n0\\n0\\n550\\n3000000000000\\n' > /tmp/eval_dot/expected.txt"
     }
   ]
 }

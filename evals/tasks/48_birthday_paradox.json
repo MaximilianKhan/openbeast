@@ -1,7 +1,7 @@
 {
   "id": "48_birthday_paradox",
   "name": "Birthday paradox \u2014 exact collision probability",
-  "difficulty": "hard",
+  "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_bday",
   "task": "Create /tmp/eval_bday/bday.py with a function collision_prob(n, days=365) that returns the EXACT probability that at least two people in a group of n share a birthday, assuming uniform iid distribution over `days` days. Use the complement: 1 - prod_{k=0..n-1} (days - k) / days. Handle: n <= 1 returns 0.0; n > days returns 1.0. Also expose smallest_n_for(target_prob, days=365) that returns the minimum n where collision_prob(n, days) >= target_prob. Pure Python.",
   "validation": {

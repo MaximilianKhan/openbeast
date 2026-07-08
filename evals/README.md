@@ -1,5 +1,12 @@
 # Eval suite
 
+> **Suite version: v4 (current).** 137 base tasks / 291 effective units,
+> hardened so a correct solution passes and the documented cheat fails —
+> see [`CHANGELOG.md`](CHANGELOG.md), [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md),
+> and the review that drove it, [`../docs/EVAL_REVIEW_2026-07-07.md`](../docs/EVAL_REVIEW_2026-07-07.md).
+> The v3.5 counts and leaderboard below are retained as the "before" and are
+> **not comparable** to v4.
+
 159 self-contained coding tasks for benchmarking local LLMs. Each task has a
 deterministic validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and

@@ -15,6 +15,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; python3 crt.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     },
     {
@@ -26,6 +27,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; go build -o crt crt.go && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     },
     {
@@ -37,6 +39,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; gcc -O2 -std=c11 -Wall -Wextra -o crt crt.c -lm && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     },
     {
@@ -48,6 +51,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; g++ -O2 -std=c++17 -Wall -Wextra -o crt crt.cpp && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     },
     {
@@ -59,6 +63,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; rustc -O crt.rs -o crt 2>/dev/null && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     },
     {
@@ -70,6 +75,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_crt; zig build-exe -O ReleaseFast crt.zig && ./crt < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_crt && printf '5\\n2\\n2 3\\n3 5\\n3\\n0 3\\n3 4\\n4 5\\n2\\n1 6\\n4 9\\n2\\n1 4\\n4 6\\n3\\n1 2\\n2 3\\n3 5\\n' > /tmp/eval_crt/input.txt && printf '8\\n39\\n13\\n-1\\n23\\n' > /tmp/eval_crt/expected.txt",
       "cleanup": "rm -rf /tmp/eval_crt"
     }
   ]

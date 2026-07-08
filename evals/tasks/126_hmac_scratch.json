@@ -3,10 +3,10 @@
   "name": "HMAC-SHA256 from scratch",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_hmsc",
-  "task": "Create /tmp/eval_hmsc/hmsc.py with hmac_sha256_scratch(key, message) returning the HMAC-SHA256 hex digest WITHOUT using the hmac module (only hashlib.sha256 is allowed). Implement RFC 2104: if len(key) > 64, set key = sha256(key); pad to 64 bytes; compute sha256(opad || sha256(ipad || message)).",
+  "task": "Create /tmp/eval_hmsc/hmsc.py with hmac_sha256_scratch(key, message) taking key and message as bytes and returning the HMAC-SHA256 hex digest (str) WITHOUT using the hmac module (only hashlib.sha256 is allowed). Implement RFC 2104 with the SHA-256 block size B = 64 bytes: (1) if len(key) > 64, replace key with the 32-byte digest sha256(key).digest(); (2) right-pad key with zero bytes to exactly 64 bytes -> k; (3) form ipad_key = k XOR (0x36 repeated 64 times) and opad_key = k XOR (0x5c repeated 64 times), XORing byte-by-byte; (4) return sha256(opad_key + sha256(ipad_key + message).digest()).hexdigest(). Note the inner hash is fed its raw 32-byte .digest(), not its hex string.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util,hashlib,hmac; spec = importlib.util.spec_from_file_location('m','/tmp/eval_hmsc/hmsc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); msg = b'The quick brown fox'; key = b'secret_key'; e = hmac.new(key, msg, hashlib.sha256).hexdigest(); a = mod.hmac_sha256_scratch(key, msg); assert e == a, f'{e} vs {a}'; long_key = b'x'*100; e2 = hmac.new(long_key, msg, hashlib.sha256).hexdigest(); a2 = mod.hmac_sha256_scratch(long_key, msg); assert e2 == a2; print('OK')"
+    "script": "import importlib.util,hashlib,hmac,re; src = open('/tmp/eval_hmsc/hmsc.py').read(); code = re.sub(r'#.*', '', re.sub(r'([\\'\"]).*?\\1', '', src)); assert not re.search(r'^\\s*(?:import|from)\\b[^\\n]*\\bhmac\\b', code, re.M) and not re.search(r'\\bhmac\\s*\\.', code), 'the hmac module is banned; implement it from scratch'; spec = importlib.util.spec_from_file_location('m','/tmp/eval_hmsc/hmsc.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); msg = b'The quick brown fox'; key = b'secret_key'; e = hmac.new(key, msg, hashlib.sha256).hexdigest(); a = mod.hmac_sha256_scratch(key, msg); assert e == a, f'{e} vs {a}'; long_key = b'x'*100; e2 = hmac.new(long_key, msg, hashlib.sha256).hexdigest(); a2 = mod.hmac_sha256_scratch(long_key, msg); assert e2 == a2; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_hmsc",
   "max_iter": 30,

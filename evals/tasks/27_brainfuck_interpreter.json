@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; python3 bf.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; go build -o bf bf.go && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; gcc -O2 -std=c11 -Wall -Wextra -o bf bf.c -lm && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; g++ -O2 -std=c++17 -Wall -Wextra -o bf bf.cpp && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; rustc -O bf.rs -o bf 2>/dev/null && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bf; zig build-exe -O ReleaseFast bf.zig && ./bf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bf"
+      "cleanup": "rm -rf /tmp/eval_bf",
+      "pre_validate": "mkdir -p /tmp/eval_bf && cat > /tmp/eval_bf/input.txt <<'EOF'\n4\n++++++++[>++++++++<-]>.\n\n,+.\nA\n++++++++[>++++++++<-]>+.\n\n+++++++++[>+++++++++<-]>.\n\nEOF\nprintf '@\\nB\\nA\\nQ\\n' > /tmp/eval_bf/expected.txt"
     }
   ]
 }

@@ -364,13 +364,20 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 ## Evals & Benchmarking
 
-The 159-task eval suite covers 12 categories spanning core software engineering,
+The eval suite covers 12 categories spanning core software engineering,
 math, physics, ML/LLM internals, distributed systems, security, signal processing,
 and more — every task is self-contained (setup + validation + cleanup) with
 deterministic checks. **Distribution table, schema, and scoring methodology in
 [`evals/README.md`](evals/README.md)**.
 
-**Latest sweep leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP) — they need a clean launch + VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
+> **The suite is now v4** (137 base tasks / 291 units) — hardened so a correct
+> solution passes and every documented cheat is empirically rejected
+> (see [`evals/CHANGELOG.md`](evals/CHANGELOG.md) and
+> [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). The
+> leaderboard below is the **legacy v3.5** run, kept as the "before"; the first
+> v4 leaderboard lands after the next sweep.
+
+**Legacy v3.5 leaderboard** (NVIDIA GeForce RTX 5090 ×1, v3.5 — 323 effective units, 2026-05-08; Gemma is mid re-run, see [`docs/RESULTS.md`](docs/RESULTS.md) for the full report including per-category and per-language tables). **Not yet on the leaderboard:** the four 2026-05-22 additions (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP) — they need a clean launch + VRAM measurement first, then the next sweep will fold them in. The three MTP rows will measure noticeably slower wall-clock per the `-np 1` constraint even if per-request speed improves; see [`docs/TODO.md`](docs/TODO.md) for the full plan.
 
 | # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|

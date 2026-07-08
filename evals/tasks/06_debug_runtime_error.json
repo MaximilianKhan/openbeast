@@ -2,8 +2,8 @@
   "id": "06_debug_runtime_error",
   "name": "Debug a runtime error",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_debug && echo 'def parse_csv_line(line):\\n    parts = line.split(\",\")\\n    return {\"name\": parts[0], \"age\": int(parts[1]), \"city\": parts[2]}\\n\\ndef process_data(csv_text):\\n    lines = csv_text.strip().split(\"\\n\")\\n    results = []\\n    for line in lines:\\n        results.append(parse_csv_line(line))\\n    return results' > /tmp/eval_debug/parser.py && echo 'from parser import process_data\\n\\ndata = \"\"\"Alice,30,NYC\\nBob,,London\\nCharlie,25,Paris\"\"\"\\n\\nresults = process_data(data)\\nfor r in results:\\n    print(f\"{r[\\\"name\\\"]} is {r[\\\"age\\\"]} from {r[\\\"city\\\"]}\")' > /tmp/eval_debug/main.py",
-  "task": "Running python3 /tmp/eval_debug/main.py crashes. Find the bug and fix it. Bob's age is missing \u2014 handle this gracefully by defaulting missing ages to 0.",
+  "setup": "mkdir -p /tmp/eval_debug && printf 'def parse_csv_line(line):\\n    parts = line.split(\",\")\\n    return {\"name\": parts[0], \"age\": int(parts[1]), \"city\": parts[2]}\\n\\ndef process_data(csv_text):\\n    lines = csv_text.strip().split(\"\\\\n\")\\n    results = []\\n    for line in lines:\\n        results.append(parse_csv_line(line))\\n    return results\\n' > /tmp/eval_debug/parser.py && printf 'from parser import process_data\\n\\ndata = \"Alice,30,NYC\\\\nBob,,London\\\\nCharlie,25,Paris\"\\n\\nresults = process_data(data)\\nfor r in results:\\n    print(f\"{r['\\''name'\\'']} is {r['\\''age'\\'']} from {r['\\''city'\\'']}\")\\n' > /tmp/eval_debug/main.py",
+  "task": "Running python3 /tmp/eval_debug/main.py crashes. Find the bug and fix it. Bob's age is missing — handle this gracefully by defaulting missing ages to 0.",
   "validation": {
     "type": "bash",
     "script": "cd /tmp/eval_debug && python3 main.py 2>&1 | grep -q 'Bob is 0 from London'"

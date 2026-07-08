@@ -1,7 +1,7 @@
 {
   "id": "154_lease_mutex",
   "name": "Lease-based distributed mutex (single-process simulation)",
-  "difficulty": "hard",
+  "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_lease",
   "task": "Create /tmp/eval_lease/lease.py with class LeaseMutex. Methods: acquire(holder_id, lease_seconds) returns True if the caller is now the holder (either no current holder, or the previous holder's lease expired); False otherwise. renew(holder_id, lease_seconds) returns True if holder_id is the current valid (unexpired) holder and the lease was extended; False otherwise. release(holder_id) returns True if holder_id was the current holder and the mutex is now free; False otherwise. holder_now() returns the current holder_id if there is a valid (unexpired) lease, else None. Use time.monotonic() for the clock. Method calls are thread-safe (use threading.Lock). Lease expiry must be checked lazily on each call — no background timer threads.",
   "validation": {

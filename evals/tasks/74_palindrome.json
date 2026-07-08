@@ -15,6 +15,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && python3 pal.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
@@ -26,6 +27,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && go build -o pal pal.go && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
@@ -37,6 +39,7 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && gcc -O2 -std=c11 -Wall -Wextra -o pal pal.c && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
@@ -48,28 +51,31 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && g++ -O2 -std=c++17 -Wall -Wextra -o pal pal.cpp && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
       "id": "e",
       "language": "rust",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
-      "task": "Create /tmp/eval_pal/pal.rs — same I/O contract as the other variants (see Python/Go/C/C++ siblings). Idiomatic Rust 2021+. Will be compiled with `rustc -O pal.rs -o pal` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_pal/pal.rs — reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true). Idiomatic Rust 2021+. Compiled with `rustc -O pal.rs -o pal`; run with input.txt on stdin, output diffed against the expected results.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && rustc -O pal.rs -o pal && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     },
     {
       "id": "f",
       "language": "zig",
       "setup": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
-      "task": "Create /tmp/eval_pal/pal.zig — same I/O contract as the other variants. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Will be compiled with `zig build-exe -O ReleaseFast pal.zig` and tested by piping `input.txt` through stdin and checking against `expected.txt` (or via a check.py validator).",
+      "task": "Create /tmp/eval_pal/pal.zig — reads lines from stdin and for each line writes 'true' (lowercase) on its own line if the line is a palindrome considering only alphanumeric characters (case-insensitive), or 'false' otherwise. The empty line is a palindrome (true). Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compiled with `zig build-exe -O ReleaseFast pal.zig`; run with input.txt on stdin, output diffed against the expected results.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_pal && zig build-exe -O ReleaseFast pal.zig && ./pal < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
+      "pre_validate": "mkdir -p /tmp/eval_pal && printf 'A man a plan a canal Panama\\nracecar\\nhello\\n\\nWas it a car or a cat I saw?\\nNo lemon, no melon\\n' > /tmp/eval_pal/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\ntrue\\ntrue\\n' > /tmp/eval_pal/expected.txt",
       "cleanup": "rm -rf /tmp/eval_pal"
     }
   ]

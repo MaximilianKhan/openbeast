@@ -6,7 +6,7 @@
   "task": "Create /tmp/eval_cos/cos.py with cosine_similarity(a, b) returning dot(a,b) / (|a| * |b|). Raise ValueError on length mismatch or zero-norm vectors.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cos/cos.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.cosine_similarity; assert abs(C([1,0],[1,0]) - 1) < 1e-9; assert abs(C([1,0],[0,1])) < 1e-9; assert abs(C([1,1],[-1,-1]) + 1) < 1e-9; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_cos/cos.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); C = mod.cosine_similarity; assert abs(C([1,0],[1,0]) - 1) < 1e-9; assert abs(C([1,0],[0,1])) < 1e-9; assert abs(C([1,1],[-1,-1]) + 1) < 1e-9\ntry: C([1,2,3],[1,2]); raise SystemExit('no ValueError on length mismatch')\nexcept ValueError: pass\ntry: C([0,0],[1,1]); raise SystemExit('no ValueError on zero-norm a')\nexcept ValueError: pass\ntry: C([1,1],[0,0]); raise SystemExit('no ValueError on zero-norm b')\nexcept ValueError: pass\nprint('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_cos",
   "max_iter": 10,

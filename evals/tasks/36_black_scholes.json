@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && python3 bs.py < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && go build -o bs bs.go && ./bs < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && gcc -O2 -std=c11 -Wall -Wextra -o bs bs.c -lm && ./bs < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && g++ -O2 -std=c++17 -Wall -Wextra -o bs bs.cpp && ./bs < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && rustc -O bs.rs -o bs 2>/dev/null && ./bs < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_bs && zig build-exe -O ReleaseFast bs.zig && ./bs < input.txt > out.txt && python3 check.py"
       },
-      "cleanup": "rm -rf /tmp/eval_bs"
+      "cleanup": "rm -rf /tmp/eval_bs",
+      "pre_validate": "mkdir -p /tmp/eval_bs && printf '4\\n100 100 1.0 0.05 0.2\\n50 50 0.5 0.03 0.3\\n80 100 2.0 0.04 0.25\\n100 50 1.0 0.05 0.5\\n' > /tmp/eval_bs/input.txt && printf '10.4506\\n4.5747\\n6.8985\\n53.4579\\n' > /tmp/eval_bs/expected.txt && cat > /tmp/eval_bs/check.py <<'PYEOF'\nexp = [float(x) for x in open('expected.txt').read().split()]\ngot = [float(x) for x in open('out.txt').read().split()]\nassert len(exp) == len(got), f'got {len(got)} want {len(exp)}'\nfor i,(a,b) in enumerate(zip(exp,got)):\n    assert abs(a-b) < 1e-3, f'case {i}: {a} vs {b}'\nprint('OK')\nPYEOF"
     }
   ]
 }

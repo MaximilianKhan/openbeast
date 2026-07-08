@@ -2,14 +2,15 @@
   "id": "04_write_tests",
   "name": "Write unit tests for existing code",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_calc && echo 'class Calculator:\\n    def add(self, a, b): return a + b\\n    def subtract(self, a, b): return a - b\\n    def multiply(self, a, b): return a * b\\n    def divide(self, a, b):\\n        if b == 0: raise ValueError(\"Cannot divide by zero\")\\n        return a / b' > /tmp/eval_calc/calc.py",
+  "setup": "mkdir -p /tmp/eval_calc && printf 'class Calculator:\\n    def add(self, a, b): return a + b\\n    def subtract(self, a, b): return a - b\\n    def multiply(self, a, b): return a * b\\n    def divide(self, a, b):\\n        if b == 0: raise ValueError(\"Cannot divide by zero\")\\n        return a / b\\n' > /tmp/eval_calc/calc.py",
   "task": "Write unit tests for the Calculator class in /tmp/eval_calc/calc.py. Create /tmp/eval_calc/test_calc.py with tests that cover all four operations including the divide-by-zero case. The tests must pass when run with python -m pytest.",
   "validation": {
-    "type": "bash",
-    "script": "cd /tmp/eval_calc && python3 -m pytest test_calc.py -v 2>&1 | tail -1 | grep -q 'passed'"
+    "type": "python",
+    "script": "import subprocess, sys, os, re, shutil\nD = '/tmp/eval_calc'\ncalc = os.path.join(D, 'calc.py')\ndef wr(s):\n    f = open(calc, 'w'); f.write(s); f.flush(); os.fsync(f.fileno()); f.close()\n    pc = os.path.join(D, '__pycache__')\n    if os.path.isdir(pc): shutil.rmtree(pc)\npristine = open(calc).read()\nenv = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')\ndef run():\n    return subprocess.run([sys.executable, '-B', '-m', 'pytest', 'test_calc.py', '-q', '-p', 'no:cacheprovider'], cwd=D, capture_output=True, text=True, env=env).returncode\nassert run() == 0, 'tests must pass against the correct calc.py'\nmuts = {\n    'add': (r'def add\\(self, a, b\\): return a \\+ b', 'def add(self, a, b): return a - b'),\n    'subtract': (r'def subtract\\(self, a, b\\): return a - b', 'def subtract(self, a, b): return a + b'),\n    'multiply': (r'def multiply\\(self, a, b\\): return a \\* b', 'def multiply(self, a, b): return a + b'),\n    'divzero': (r'if b == 0: raise ValueError\\(\"Cannot divide by zero\"\\)', 'if b == 0: return 0'),\n}\ntry:\n    for name, (pat, repl) in muts.items():\n        mutated, n = re.subn(pat, repl, pristine)\n        assert n == 1, 'internal mutation ' + name\n        wr(mutated)\n        rc = run()\n        wr(pristine)\n        assert rc != 0, 'test suite did not catch the ' + name + ' mutation (operation not covered)'\nfinally:\n    wr(pristine)\nprint('OK')\n"
   },
   "cleanup": "rm -rf /tmp/eval_calc",
   "max_iter": 15,
   "category": "SWE / DevOps",
-  "subcategory": "Testing"
+  "subcategory": "Testing",
+  "pre_validate": "mkdir -p /tmp/eval_calc && printf 'class Calculator:\\n    def add(self, a, b): return a + b\\n    def subtract(self, a, b): return a - b\\n    def multiply(self, a, b): return a * b\\n    def divide(self, a, b):\\n        if b == 0: raise ValueError(\"Cannot divide by zero\")\\n        return a / b\\n' > /tmp/eval_calc/calc.py"
 }

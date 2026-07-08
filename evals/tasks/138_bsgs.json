@@ -3,10 +3,10 @@
   "name": "Baby-step giant-step discrete log",
   "difficulty": "hard",
   "setup": "mkdir -p /tmp/eval_bsgs",
-  "task": "Create /tmp/eval_bsgs/bsgs.py with bsgs(g, h, p) solving g^x \u2261 h (mod p) for prime p. Use the baby-step / giant-step algorithm: m = ceil(sqrt(p)); precompute table {g^j mod p: j} for j=0..m-1; then iterate y = h * g^(-im) for i=0..m, checking each against the table \u2014 match gives x = i*m + j. Return smallest non-negative x, or None if no solution exists.",
+  "task": "Create /tmp/eval_bsgs/bsgs.py with bsgs(g, h, p) solving g^x \u2261 h (mod p) for prime p. Use the baby-step / giant-step algorithm: m = ceil(sqrt(p)); precompute table {g^j mod p: j} for j=0..m-1; then iterate y = h * g^(-im) for i=0..m, checking each against the table \u2014 match gives x = i*m + j. Return smallest non-negative x, or None if no solution exists. One test uses a ~10^12 prime with a large discrete-log exponent: an O(p) linear search exceeds the time limit, so the O(sqrt p) meet-in-the-middle table is required.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bsgs/bsgs.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.bsgs; p = 23; g = 5; h = pow(g, 16, p); x = B(g, h, p); assert pow(g, x, p) == h % p; p2 = 7919; g2 = 2; h2 = pow(g2, 1234, p2); x2 = B(g2, h2, p2); assert pow(g2, x2, p2) == h2; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_bsgs/bsgs.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); B = mod.bsgs; p = 23; g = 5; h = pow(g, 16, p); x = B(g, h, p); assert pow(g, x, p) == h % p; p2 = 7919; g2 = 2; h2 = pow(g2, 1234, p2); x2 = B(g2, h2, p2); assert pow(g2, x2, p2) == h2; p3 = 1000000000039; g3 = 7; h3 = 234878584152; x3 = B(g3, h3, p3); assert x3 is not None and pow(g3, x3, p3) == h3, f'discrete log over 1e12 prime failed: {x3}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_bsgs",
   "max_iter": 30,

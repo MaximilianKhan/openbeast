@@ -7,8 +7,15 @@ deflator, keep all 12 topic categories, and make the suite something
 researchers cannot question. Fewer total tests is acceptable. Prompts
 must not leave shortcut room for local models.
 
-v4 is a **version break**: v3.5 leaderboard numbers are archived, not
-comparable. The sweep runs on v4 once verification is green.
+v4 is a **version break**: v3.5 numbers are NOT comparable to v4. But we
+**preserve v3.5 in full** — its leaderboard, its results, and the review
+that exposed its defects are the evolution narrative for OpenBeast's
+public launch (found 117 issues across 159 tasks → pruned + hardened →
+an unbreakable 134-task suite). We slide into v4 gradually as fixes land;
+v3.5 stays displayed and labeled "legacy — see docs/EVAL_REVIEW for why
+we rebuilt it," and is only archived/removed at a later formal-display
+pass, on Max's call. The sweep runs on v4 once verification is green;
+the v3.5 leaderboard remains in docs/RESULTS.md as the "before".
 
 ## Pruned tasks (25 — 159 → 134 base tasks)
 
@@ -78,6 +85,11 @@ variant tasks stay and get fixed.
 Wave A: prune + this plan (done in the same commit).
 Wave B: 8 slice-fix agents apply the protocol to all flagged survivors.
 Wave C: suite-wide verification — audit_variants, task-structure tests,
-regenerate counts in README/INSTALL/REFERENCE/RESULTS/evals-README,
-archive the v3.5 leaderboard note, tag the suite version.
-Then: the full sweep runs on v4.
+empirical re-verification of every fixed task (correct→PASS, cheat→FAIL).
+Docs: introduce v4 counts as the CURRENT suite while KEEPING the v3.5
+leaderboard in docs/RESULTS.md under a "Legacy (v3.5)" heading pointing
+to docs/EVAL_REVIEW_2026-07-07.md — the before/after is a feature. Tag
+the suite version (v4); do NOT delete v3.5 data. Formal-display archival
+of legacy data is a separate later pass on Max's explicit call.
+Then: the full sweep runs on v4, producing the first v4 leaderboard
+ALONGSIDE (not overwriting) the v3.5 one.

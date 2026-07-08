@@ -1,12 +1,12 @@
 {
   "id": "44_rmsnorm",
   "name": "RMSNorm (used in Llama, Qwen, Gemma)",
-  "difficulty": "hard",
+  "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_rmsnorm",
   "task": "Create /tmp/eval_rmsnorm/rmsnorm.py with a function rms_norm(x, weight, eps=1e-6). x is a 1D list of floats (a single hidden state vector). weight is a 1D list of floats with the same length (the learnable scale, gamma in many papers). Compute: rms = sqrt( mean(x_i^2) + eps ); output_i = (x_i / rms) * weight_i. Return a list. Pure Python.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_rmsnorm/rmsnorm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rn = mod.rms_norm; x = [1.0, 2.0, 3.0, 4.0]; w = [1.0, 1.0, 1.0, 1.0]; out = rn(x, w, eps=0.0); rms = math.sqrt(sum(v*v for v in x)/4); expected = [v/rms for v in x]; assert all(abs(a-b) < 1e-9 for a,b in zip(out, expected)), f'unit weight: {out}'; w2 = [0.5, 1.0, 2.0, 0.0]; out2 = rn(x, w2, eps=0.0); expected2 = [(v/rms)*ww for v, ww in zip(x, w2)]; assert all(abs(a-b) < 1e-9 for a,b in zip(out2, expected2)), 'with weights'; out3 = rn([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], eps=1e-6); assert all(abs(v) < 1e-3 for v in out3), 'eps prevents div-by-zero'; out4 = rn([1e-3]*8, [1.0]*8, eps=1e-6); assert all(0 < v < 2 for v in out4), 'small inputs sane'; print('OK')"
+    "script": "import importlib.util, math; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_rmsnorm/rmsnorm.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rn = mod.rms_norm; x = [1.0, 2.0, 3.0, 4.0]; w = [1.0, 1.0, 1.0, 1.0]; out = rn(x, w, eps=0.0); rms = math.sqrt(sum(v*v for v in x)/4); expected = [v/rms for v in x]; assert all(abs(a-b) < 1e-9 for a,b in zip(out, expected)), f'unit weight: {out}'; w2 = [0.5, 1.0, 2.0, 0.0]; out2 = rn(x, w2, eps=0.0); expected2 = [(v/rms)*ww for v, ww in zip(x, w2)]; assert all(abs(a-b) < 1e-9 for a,b in zip(out2, expected2)), 'with weights'; out3 = rn([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], eps=1e-6); assert all(abs(v) < 1e-3 for v in out3), 'eps prevents div-by-zero'; out4 = rn([1e-3]*8, [1.0]*8, eps=1e-6); assert all(abs(v - 0.7071067811865476) < 1e-3 for v in out4), f'eps must be inside the sqrt: {out4}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_rmsnorm",
   "max_iter": 20,

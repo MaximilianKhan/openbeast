@@ -1,7 +1,7 @@
 {
   "id": "142_cds_hazard",
   "name": "CDS hazard rate (constant-hazard approximation)",
-  "difficulty": "medium",
+  "difficulty": "easy",
   "setup": "mkdir -p /tmp/eval_cds",
   "task": "Create /tmp/eval_cds/cds.py with three functions assuming a flat (constant-in-time) hazard rate. hazard_rate_from_cds(spread_bps, recovery=0.4) \u2014 under constant-hazard approximation lambda = (spread/10000) / (1 - recovery). survival_prob(t, hazard_rate) \u2014 exp(-lambda*t). cumulative_default_prob(t, hazard_rate) \u2014 1 - survival_prob(t).",
   "validation": {

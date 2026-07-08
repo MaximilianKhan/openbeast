@@ -1,15 +1,16 @@
 {
   "id": "10_data_transform",
   "name": "Transform data between formats",
-  "difficulty": "hard",
-  "setup": "echo 'name,email,department\\nAlice,alice@co.com,Engineering\\nBob,bob@co.com,Marketing\\nCharlie,charlie@co.com,Engineering\\nDiana,diana@co.com,Marketing' > /tmp/eval_data.csv",
+  "difficulty": "medium",
+  "setup": "printf 'name,email,department\\nAlice,alice@co.com,Engineering\\nBob,bob@co.com,Marketing\\nCharlie,charlie@co.com,Engineering\\nDiana,diana@co.com,Marketing\\n' > /tmp/eval_data.csv",
   "task": "Create /tmp/eval_transform.py that reads /tmp/eval_data.csv and writes /tmp/eval_data.json with the data grouped by department. Output format: {\"Engineering\": [{\"name\": \"Alice\", \"email\": \"alice@co.com\"}, ...], \"Marketing\": [...]}. Run the script after creating it.",
   "validation": {
     "type": "python",
-    "script": "import json; data = json.load(open('/tmp/eval_data.json')); assert 'Engineering' in data; assert 'Marketing' in data; assert len(data['Engineering']) == 2; assert len(data['Marketing']) == 2; assert data['Engineering'][0]['name'] == 'Alice'; print('OK')"
+    "script": "import json; d = json.load(open('/tmp/eval_data.json')); assert set(d.keys()) == {'Engineering', 'Marketing'}, f'keys {sorted(d.keys())}'; eng = d['Engineering']; mkt = d['Marketing']; assert len(eng) == 2 and len(mkt) == 2, f'group sizes {len(eng)},{len(mkt)}'; assert [r['name'] for r in eng] == ['Alice', 'Charlie'], f'eng names {[r[\"name\"] for r in eng]}'; assert [r['name'] for r in mkt] == ['Bob', 'Diana'], f'mkt names {[r[\"name\"] for r in mkt]}'; assert eng[0]['email'] == 'alice@co.com' and mkt[0]['email'] == 'bob@co.com', 'emails'; assert all(set(r.keys()) == {'name', 'email'} for grp in d.values() for r in grp), 'each record must have exactly name and email keys'; print('OK')"
   },
   "cleanup": "rm -f /tmp/eval_data.csv /tmp/eval_data.json /tmp/eval_transform.py",
   "max_iter": 15,
   "category": "SWE / DevOps",
-  "subcategory": "Data engineering"
+  "subcategory": "Data engineering",
+  "pre_validate": "printf 'name,email,department\\nAlice,alice@co.com,Engineering\\nBob,bob@co.com,Marketing\\nCharlie,charlie@co.com,Engineering\\nDiana,diana@co.com,Marketing\\n' > /tmp/eval_data.csv"
 }

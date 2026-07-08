@@ -15,7 +15,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; python3 mcpi.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     },
     {
       "id": "b",
@@ -26,7 +27,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; go build -o mcpi mcpi.go && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     },
     {
       "id": "c",
@@ -37,7 +39,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; gcc -O2 -std=c11 -Wall -Wextra -o mcpi mcpi.c -lm && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     },
     {
       "id": "d",
@@ -48,7 +51,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; g++ -O2 -std=c++17 -Wall -Wextra -o mcpi mcpi.cpp && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     },
     {
       "id": "e",
@@ -59,7 +63,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; rustc -O mcpi.rs -o mcpi 2>/dev/null && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     },
     {
       "id": "f",
@@ -70,7 +75,8 @@
         "type": "bash",
         "script": "set -e; cd /tmp/eval_mcpi; zig build-exe -O ReleaseFast mcpi.zig && ./mcpi < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_mcpi"
+      "cleanup": "rm -rf /tmp/eval_mcpi",
+      "pre_validate": "mkdir -p /tmp/eval_mcpi && cat > /tmp/eval_mcpi/input.txt <<'EOF'\n4\n1000 0\n10000 42\n5000 12345\n20000 99999\nEOF\ncat > /tmp/eval_mcpi/expected.txt <<'EOF'\n774\n7860\n3911\n15655\nEOF"
     }
   ]
 }

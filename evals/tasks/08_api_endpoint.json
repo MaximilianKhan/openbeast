@@ -2,7 +2,7 @@
   "id": "08_api_endpoint",
   "name": "Add an API endpoint to a Flask app",
   "difficulty": "hard",
-  "setup": "mkdir -p /tmp/eval_api && echo 'from flask import Flask, jsonify, request\\n\\napp = Flask(__name__)\\n\\ntodos = []\\n\\n@app.route(\"/todos\", methods=[\"GET\"])\\ndef get_todos():\\n    return jsonify(todos)\\n\\nif __name__ == \"__main__\":\\n    app.run(port=5999)' > /tmp/eval_api/app.py",
+  "setup": "mkdir -p /tmp/eval_api && printf 'from flask import Flask, jsonify, request\\n\\napp = Flask(__name__)\\n\\ntodos = []\\n\\n@app.route(\"/todos\", methods=[\"GET\"])\\ndef get_todos():\\n    return jsonify(todos)\\n\\nif __name__ == \"__main__\":\\n    app.run(port=5999)\\n' > /tmp/eval_api/app.py",
   "task": "Add a POST /todos endpoint to /tmp/eval_api/app.py that accepts JSON with a 'title' field, creates a todo item with an auto-incrementing 'id' and 'completed': false, appends it to the list, and returns the new todo with HTTP 201. Also add DELETE /todos/<id> that removes a todo by id and returns 204, or 404 if not found.",
   "validation": {
     "type": "python",

@@ -3,13 +3,14 @@
   "name": "CSV to SQLite importer with type inference",
   "difficulty": "medium",
   "setup": "mkdir -p /tmp/eval_csv && printf 'id,name,score,active\\n1,Alice,95.5,true\\n2,Bob,72.0,false\\n3,Carol,88.25,true\\n' > /tmp/eval_csv/data.csv",
-  "task": "Create /tmp/eval_csv/importer.py with a function import_csv(csv_path, db_path, table_name) that reads the CSV, infers each column's SQLite type (INTEGER if all integer-looking, REAL if all numeric and any has a decimal, TEXT otherwise), creates the table, and inserts all rows. The CSV at /tmp/eval_csv/data.csv has columns id,name,score,active \u2014 expected types are INTEGER, TEXT, REAL, TEXT. Use the standard csv and sqlite3 modules.",
+  "task": "Create /tmp/eval_csv/importer.py with a function import_csv(csv_path, db_path, table_name) that reads the CSV, infers each column's SQLite type (INTEGER if all integer-looking, REAL if all numeric and any has a decimal, TEXT otherwise), creates the table, and inserts all rows. The CSV at /tmp/eval_csv/data.csv has columns id,name,score,active — expected types are INTEGER, TEXT, REAL, TEXT. Use the standard csv and sqlite3 modules.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util, sqlite3; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_csv/importer.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.import_csv('/tmp/eval_csv/data.csv', '/tmp/eval_csv/out.db', 'data'); conn = sqlite3.connect('/tmp/eval_csv/out.db'); cur = conn.cursor(); cols = {r[1]: r[2].upper() for r in cur.execute('PRAGMA table_info(data)').fetchall()}; assert cols.get('id') == 'INTEGER', f\"id type {cols.get('id')}\"; assert cols.get('score') == 'REAL', f\"score type {cols.get('score')}\"; assert cols.get('name') == 'TEXT'; rows = cur.execute('SELECT id, name, score FROM data ORDER BY id').fetchall(); assert rows[0] == (1, 'Alice', 95.5), f'row0 {rows[0]}'; assert rows[2] == (3, 'Carol', 88.25); assert len(rows) == 3; print('OK')"
+    "script": "import importlib.util, sqlite3, os; os.path.exists('/tmp/eval_csv/out.db') and os.remove('/tmp/eval_csv/out.db'); spec = importlib.util.spec_from_file_location('m', '/tmp/eval_csv/importer.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.import_csv('/tmp/eval_csv/data.csv', '/tmp/eval_csv/out.db', 'data'); conn = sqlite3.connect('/tmp/eval_csv/out.db'); cur = conn.cursor(); cols = {r[1]: r[2].upper() for r in cur.execute('PRAGMA table_info(data)').fetchall()}; assert cols.get('id') == 'INTEGER', f\"id type {cols.get('id')}\"; assert cols.get('score') == 'REAL', f\"score type {cols.get('score')}\"; assert cols.get('name') == 'TEXT', f\"name type {cols.get('name')}\"; assert cols.get('active') == 'TEXT', f\"active type {cols.get('active')}\"; rows = cur.execute('SELECT id, name, score, active FROM data ORDER BY id').fetchall(); assert len(rows) == 3, f'row count {len(rows)}'; assert rows[0] == (1, 'Alice', 95.5, 'true'), f'row0 {rows[0]}'; assert rows[1] == (2, 'Bob', 72.0, 'false'), f'row1 {rows[1]}'; assert rows[2] == (3, 'Carol', 88.25, 'true'), f'row2 {rows[2]}'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_csv",
   "max_iter": 25,
   "category": "SWE / DevOps",
-  "subcategory": "Data engineering"
+  "subcategory": "Data engineering",
+  "pre_validate": "mkdir -p /tmp/eval_csv && printf 'id,name,score,active\\n1,Alice,95.5,true\\n2,Bob,72.0,false\\n3,Carol,88.25,true\\n' > /tmp/eval_csv/data.csv"
 }

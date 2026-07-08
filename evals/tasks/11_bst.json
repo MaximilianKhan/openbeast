@@ -13,9 +13,10 @@
       "task": "Create /tmp/eval_bst/bst.py — Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Pure Python; no numpy.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; ! grep -qE \"sorted\\\\(|\\\\.sort\\\\(\" bst.py || { echo 'forbidden api'; exit 1; }; python3 bst.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='sorted\\s*\\(|\\.sort\\s*\\(' python3 \"$L\" bst.py py || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && python3 /tmp/eval_bst/bst.py < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     },
     {
       "id": "b",
@@ -24,9 +25,10 @@
       "task": "Create /tmp/eval_bst/bst.go (package main). Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Compile with `go build -o bst bst.go`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; ! grep -qE \"sort\\\\.(Ints|Slice|Sort)\" bst.go || { echo 'forbidden api'; exit 1; }; go build -o bst bst.go && ./bst < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='sort\\.(Ints|Slice|Sort|Strings|SliceStable)\\b' python3 \"$L\" bst.go c || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; go build -o /tmp/eval_bst/bst /tmp/eval_bst/bst.go; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && /tmp/eval_bst/bst < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     },
     {
       "id": "c",
@@ -35,9 +37,10 @@
       "task": "Create /tmp/eval_bst/bst.c — Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o bst bst.c -lm`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; gcc -O2 -std=c11 -Wall -Wextra -o bst bst.c -lm && ./bst < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='\\bqsort\\s*\\(' python3 \"$L\" bst.c c || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; gcc -O2 -std=c11 -Wall -Wextra -o /tmp/eval_bst/bst /tmp/eval_bst/bst.c -lm; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && /tmp/eval_bst/bst < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     },
     {
       "id": "d",
@@ -46,9 +49,10 @@
       "task": "Create /tmp/eval_bst/bst.cpp — Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o bst bst.cpp`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; ! grep -qE \"std::sort|std::set|std::map\" bst.cpp || { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o bst bst.cpp && ./bst < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='std::(sort|stable_sort|set|map|multiset|multimap)\\b' python3 \"$L\" bst.cpp c || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; g++ -O2 -std=c++17 -Wall -Wextra -o /tmp/eval_bst/bst /tmp/eval_bst/bst.cpp; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && /tmp/eval_bst/bst < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     },
     {
       "id": "e",
@@ -57,9 +61,10 @@
       "task": "Create /tmp/eval_bst/bst.rs — Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Idiomatic Rust 2021+; compile with `rustc -O bst.rs -o bst`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; ! grep -qE \"\\\\.sort(_unstable)?\\\\(|BTreeSet|BTreeMap\" bst.rs || { echo 'forbidden api'; exit 1; }; rustc -O bst.rs -o bst 2>/dev/null && ./bst < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='\\.sort(_unstable)?\\s*\\(|BTreeSet|BTreeMap' python3 \"$L\" bst.rs c || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; rustc -O /tmp/eval_bst/bst.rs -o /tmp/eval_bst/bst 2>/dev/null; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && /tmp/eval_bst/bst < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     },
     {
       "id": "f",
@@ -68,9 +73,10 @@
       "task": "Create /tmp/eval_bst/bst.zig — Reads from stdin: line 1 is T (test case count). Each case: line A is N (insert count, >= 1). Line B is N space-separated integers to insert into an initially empty BST in the given order. Skip duplicates (do not insert a value already present). For each case, output the in-order traversal of the resulting BST as space-separated integers on one line. Implement BST yourself — no language-builtin sorted-set / TreeMap. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast bst.zig`.",
       "validation": {
         "type": "bash",
-        "script": "set -e; cd /tmp/eval_bst; zig build-exe -O ReleaseFast bst.zig && ./bst < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
+        "script": "set -e; cd /tmp/eval_bst; L=$(mktemp); printf %s aW1wb3J0IHN5cywgcmUsIG9zCnNyYyA9IG9wZW4oc3lzLmFyZ3ZbMV0pLnJlYWQoKQpsYW5nID0gc3lzLmFyZ3ZbMl0KcGF0ID0gb3MuZW52aXJvblsiRlBBVCJdCmlmIGxhbmcgPT0gInB5IjoKICAgIHNyYyA9IHJlLnN1YihyIiMuKiIsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociciIiJbXHNcU10qPyIiIicsICIiLCBzcmMpCiAgICBzcmMgPSByZS5zdWIociInJydbXHNcU10qPycnJyIsICIiLCBzcmMpCmVsc2U6CiAgICBzcmMgPSByZS5zdWIociIvLy4qIiwgIiIsIHNyYykKICAgIHNyYyA9IHJlLnN1YihyIi9cKltcc1xTXSo/XCovIiwgIiIsIHNyYykKc3JjID0gcmUuc3ViKHInIig/OlxcLnxbXiJcXF0pKiInLCAnIiInLCBzcmMpCnNyYyA9IHJlLnN1YihyIicoPzpcXC58W14nXFxdKSonIiwgIicnIiwgc3JjKQpzeXMuZXhpdCgxIGlmIHJlLnNlYXJjaChwYXQsIHNyYykgZWxzZSAwKQo= | base64 -d > \"$L\"; FPAT='std\\.sort\\.|std\\.mem\\.sort' python3 \"$L\" bst.zig c || { echo 'forbidden api'; rm -f \"$L\"; exit 1; }; rm -f \"$L\"; zig build-exe -O ReleaseFast /tmp/eval_bst/bst.zig -femit-bin=/tmp/eval_bst/bst; R=$(mktemp -d); cp input.txt \"$R/in.txt\"; ( cd \"$R\" && /tmp/eval_bst/bst < in.txt ) > out.txt; rm -rf \"$R\"; diff -u expected.txt out.txt && echo OK"
       },
-      "cleanup": "rm -rf /tmp/eval_bst"
+      "cleanup": "rm -rf /tmp/eval_bst",
+      "pre_validate": "mkdir -p /tmp/eval_bst && printf '4\\n7\\n5 3 8 1 4 7 9\\n1\\n10\\n4\\n5 5 5 5\\n11\\n3 1 4 1 5 9 2 6 5 3 5\\n' > /tmp/eval_bst/input.txt && printf '1 3 4 5 7 8 9\\n10\\n5\\n1 2 3 4 5 6 9\\n' > /tmp/eval_bst/expected.txt"
     }
   ]
 }

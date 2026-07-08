@@ -6,7 +6,7 @@
   "task": "Create /tmp/eval_b64/b64.py with two functions: b64_encode(data: str) takes a str (UTF-8) and returns URL-safe base64 (no '=' padding) as a str; b64_decode(s: str) returns bytes, accepting input with or without padding.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_b64/b64.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); enc = mod.b64_encode('Hello, World!'); assert '=' not in enc; assert mod.b64_decode(enc) == b'Hello, World!'; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_b64/b64.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); enc = mod.b64_encode('Hello, World!'); assert '=' not in enc; assert mod.b64_decode(enc) == b'Hello, World!'; enc2 = mod.b64_encode('<<<???>>>'); assert '+' not in enc2 and '/' not in enc2, 'must use URL-safe alphabet (-_ not +/)'; assert '=' not in enc2; assert mod.b64_decode(enc2) == '<<<???>>>'.encode('utf-8'); assert mod.b64_decode('Zm9vPw==') == b'foo?'; print('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_b64",
   "max_iter": 10,

@@ -8,6 +8,7 @@
     "type": "python",
     "script": "import importlib.util, sqlite3; spec = importlib.util.spec_from_file_location('m', '/tmp/eval_migrate/migrate.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.migrate('/tmp/eval_migrate/users.db'); c = sqlite3.connect('/tmp/eval_migrate/users.db'); cols = [r[1] for r in c.execute('PRAGMA table_info(users)').fetchall()]; assert set(cols) == {'id', 'first_name', 'last_name', 'email'}, f'columns: {cols}'; rows = c.execute('SELECT id, first_name, last_name, email FROM users ORDER BY id').fetchall(); expected = [(1, 'Alice', 'Smith', 'a@x'), (2, 'Bob', 'Jones', 'b@x'), (3, 'Carol', 'Anne Davis', 'c@x'), (4, 'Dan', '', 'd@x'), (5, 'Eve', 'Brown', 'e@x')]; assert rows == expected, f'rows mismatch:\\n  got      {rows}\\n  expected {expected}'; print('OK')"
   },
+  "pre_validate": "rm -f /tmp/eval_migrate/users.db && python3 -c \"import sqlite3; c = sqlite3.connect('/tmp/eval_migrate/users.db'); c.execute('CREATE TABLE users(id INTEGER PRIMARY KEY, full_name TEXT NOT NULL, email TEXT)'); c.executemany('INSERT INTO users(full_name, email) VALUES (?, ?)', [('Alice Smith', 'a@x'), ('Bob Jones', 'b@x'), ('Carol Anne Davis', 'c@x'), ('Dan', 'd@x'), ('Eve Brown', 'e@x')]); c.commit(); c.close()\"",
   "cleanup": "rm -rf /tmp/eval_migrate",
   "max_iter": 30,
   "category": "SWE / DevOps",

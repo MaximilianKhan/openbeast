@@ -13,7 +13,8 @@ int64_t egcd(int64_t a, int64_t b) {
     return g;
 }
 int64_t igcd(int64_t a, int64_t b) {
-    if (a<0) a=-a; if (b<0) b=-b;
+    if (a<0) a=-a;
+    if (b<0) b=-b;
     while (b) { int64_t t=a%b; a=b; b=t; }
     return a;
 }

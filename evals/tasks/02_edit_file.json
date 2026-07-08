@@ -2,7 +2,7 @@
   "id": "02_edit_file",
   "name": "Edit an existing file",
   "difficulty": "easy",
-  "setup": "echo 'def add(a, b):\\n    return a - b' > /tmp/eval_math.py",
+  "setup": "printf 'def add(a, b):\\n    return a - b\\n' > /tmp/eval_math.py",
   "task": "There is a bug in /tmp/eval_math.py \u2014 the add function subtracts instead of adding. Fix it.",
   "validation": {
     "type": "python",

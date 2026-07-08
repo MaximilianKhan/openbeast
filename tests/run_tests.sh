@@ -34,6 +34,7 @@ echo ""
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""
+export OPENBEAST_SKIP_NETWORK_TESTS="${OPENBEAST_SKIP_NETWORK_TESTS:-1}"  # network tests opt-in (httpbin flakiness)
 if python3 -c "import pytest" 2>/dev/null; then
   if python3 -m pytest "$REPO_DIR/tests/test_tools.py" -v --tb=short; then
     echo ""

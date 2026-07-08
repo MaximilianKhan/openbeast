@@ -2,13 +2,13 @@
   "id": "55_projectile",
   "name": "Projectile motion with linear drag",
   "difficulty": "medium",
-  "setup": "mkdir -p /tmp/eval_proj",
-  "task": "Create /tmp/eval_proj/proj.py with projectile(v0, angle_deg, drag, dt, g=9.81) returning (range_m, max_height_m). Simulate 2D motion under gravity with LINEAR drag: acceleration components are ax = -drag * vx and ay = -g - drag * vy (no mass term). Initial position is the origin. Stop when projectile returns to y<=0 with negative vy. Use the supplied dt for time-stepping.",
+  "setup": "mkdir -p /tmp/eval_projectile",
+  "task": "Create /tmp/eval_projectile/proj.py with projectile(v0, angle_deg, drag, dt, g=9.81) returning (range_m, max_height_m). Simulate 2D motion under gravity with LINEAR drag: acceleration components are ax = -drag * vx and ay = -g - drag * vy (no mass term). Initial position is the origin. Stop when projectile returns to y<=0 with negative vy. Use the supplied dt for time-stepping.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_proj/proj.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rng,h = mod.projectile(50, 45, 0.0, 0.0005); exp_r = 50**2/9.81; exp_h = 50**2*0.5/(2*9.81); assert abs(rng-exp_r)/exp_r < 0.02; assert abs(h-exp_h)/exp_h < 0.02; rng_d,_ = mod.projectile(50, 45, 0.1, 0.0005); assert rng_d < rng; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_projectile/proj.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); rng,h = mod.projectile(50, 45, 0.0, 0.0005); exp_r = 50**2/9.81; exp_h = 50**2*0.5/(2*9.81); assert abs(rng-exp_r)/exp_r < 0.02; assert abs(h-exp_h)/exp_h < 0.02; rng_d,_ = mod.projectile(50, 45, 0.1, 0.0005); assert rng_d < rng; print('OK')"
   },
-  "cleanup": "rm -rf /tmp/eval_proj",
+  "cleanup": "rm -rf /tmp/eval_projectile",
   "max_iter": 20,
   "category": "Physics",
   "subcategory": "Classical mechanics"
