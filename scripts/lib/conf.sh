@@ -49,6 +49,10 @@ LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
 GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)}"
+# Daemon-mode memory cap as a PERCENT of this machine's physical RAM
+# (start.sh computes the byte value from /proc/meminfo at every launch, so
+# the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
+MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
 # WEBUI_AUTH default is FALSE (local-only single user — no login wall, and
 # configure-webui.sh can auto-configure via the default admin account). It
 # is flipped to true by scripts/setup-tailscale.sh when the WebUI becomes

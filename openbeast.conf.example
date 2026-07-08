@@ -34,6 +34,14 @@ WEIGHTS_DIR=../weights
 # The $OPENBEAST_GPU_BACKEND env var overrides this per-shell.
 #GPU_BACKEND=auto
 
+# Daemon-mode memory cap, as a PERCENT of this machine's physical RAM
+# (1-100; default 75). `./start.sh -d` computes the byte value fresh at
+# every launch, so the cap adapts to the box automatically — a runaway
+# process can OOM the stack's scope, never the system. Swap inside the
+# scope is additionally capped at 8G regardless of this setting.
+# The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
+#MEM_LIMIT_PCT=75
+
 # ---------------------------------------------------------------------------
 # Network / remote access  (see docs/REMOTE_ACCESS_PLAN.md and
 # scripts/setup-tailscale.sh — one command sets up secure access from

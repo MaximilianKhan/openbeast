@@ -81,12 +81,22 @@ if [[ $DAEMON -eq 1 ]]; then
      && systemd-run --user --scope --quiet true 2>/dev/null; then
     # Transient service in a memory-capped cgroup: if anything in the stack
     # runs away, the kernel OOM-kills inside the scope; the box survives and
-    # the supervisor's trap shuts the remainder down cleanly.
+    # the supervisor's trap shuts the remainder down cleanly. The cap is
+    # MEM_LIMIT_PCT% (default 75) of THIS machine's RAM, resolved fresh at
+    # every launch — override via openbeast.conf or OPENBEAST_MEM_LIMIT_PCT.
+    if ! [[ "$MEM_LIMIT_PCT" =~ ^[0-9]+$ ]] || [[ "$MEM_LIMIT_PCT" -lt 1 || "$MEM_LIMIT_PCT" -gt 100 ]]; then
+      echo "Warning: MEM_LIMIT_PCT='$MEM_LIMIT_PCT' invalid (need 1-100) — using 75" >&2
+      MEM_LIMIT_PCT=75
+    fi
+    MEM_TOTAL_KB=$(grep -m1 MemTotal /proc/meminfo | awk '{print $2}' || true)
+    MEM_TOTAL_KB="${MEM_TOTAL_KB:-33554432}"   # fallback: assume 32 GB
+    MEM_MAX_BYTES=$(( MEM_TOTAL_KB * 1024 / 100 * MEM_LIMIT_PCT ))
+    MEM_MAX_GB=$(( MEM_MAX_BYTES / 1024 / 1024 / 1024 ))
     systemctl --user reset-failed openbeast-stack 2>/dev/null || true
     systemd-run --user --quiet --collect --unit=openbeast-stack \
-      -p MemoryMax=96G -p MemorySwapMax=8G \
+      -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
       "$SCRIPT_DIR/start.sh" --_daemonized "$SERVE_SCRIPT"
-    echo "  (running in memory-capped scope 'openbeast-stack': MemoryMax=96G)"
+    echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G)"
   else
     setsid nohup "$0" --_daemonized "$SERVE_SCRIPT" \
       >>"$RUN_DIR/stack.log" 2>&1 < /dev/null &
