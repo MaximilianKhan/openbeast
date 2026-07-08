@@ -11,8 +11,9 @@ load-bearing tokens the ref impl actually uses."""
 import json, subprocess, sys, shutil, os, time
 from pathlib import Path
 
-TASKS_DIR = Path('/home/max/Documents/models/evals/tasks')
-REFS = Path('/home/max/Documents/models/evals/refs')
+REPO = Path(__file__).resolve().parent.parent
+TASKS_DIR = REPO / 'evals' / 'tasks'
+REFS = REPO / 'evals' / 'refs'
 LANG_EXT = {'python': 'py', 'go': 'go', 'c': 'c', 'cpp': 'cpp', 'rust': 'rs', 'zig': 'zig'}
 
 # Essential phrases the model-facing `task` text MUST mention per language,
@@ -36,7 +37,7 @@ def lint_spec_completeness(task_ids):
     """Lint that each variant's `task` field mentions the load-bearing
     phrases for its language. Reports gaps but does not fail the audit —
     flag for human review."""
-    sys.path.insert(0, '/home/max/Documents/models/evals')
+    sys.path.insert(0, str(REPO / 'evals'))
     from run_eval import load_tasks
     findings = []
     for tid in task_ids:
@@ -105,7 +106,7 @@ TARGETS = {
     '137_pollard_rho':          ('prho', '/tmp/eval_prho'),
 }
 
-sys.path.insert(0, '/home/max/Documents/models/evals')
+sys.path.insert(0, str(REPO / 'evals'))
 from run_eval import load_tasks
 
 def audit(task_ids):

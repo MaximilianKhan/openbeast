@@ -6,7 +6,7 @@ a=go, b=c, c=cpp; we append d=rust, e=zig.
 import json
 import os
 
-TASKS_DIR = "/home/max/Documents/models/evals/tasks"
+TASKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evals", "tasks")
 
 # task_id -> {dir, bin, ext_py, has_validation_check_py, ...}
 # We'll derive everything from an existing variant in the JSON itself.
