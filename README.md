@@ -53,6 +53,23 @@ Ollama and LM Studio are excellent *model runners*. OpenBeast is a *workstation*
 built around one: it turns a local model into an agent you can actually work
 with, reach from any device, and safely share with your household.
 
+### Our opinion
+
+OpenBeast is opinionated, and this is the opinion: **maximize the intelligence
+your hardware can hold — no compromise.** Fill every GPU with the largest,
+most-accurate model that fits, never a stew of smaller, weaker ones. Quality of
+work is the goal; you never trade it away for more parallel slots.
+
+It's an **entry point to win.** OpenBeast meets your hardware where it is —
+detects your GPU tier and hands you a working, best-your-card-can-hold config
+on day one — then gives you a clear ladder to **grow *up* into the system you
+actually want.** One card today; a second, NVLinked box for parallel agents
+tomorrow; a fleet after that — always the same top-tier model, just more of the
+hardware to run it on. The direction is always more intelligence, never less.
+When you need to scale, you add silicon — you don't downsize the mind. Other
+setups optimize for other things; OpenBeast optimizes for the smartest work
+your machine can do.
+
 Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 **Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
