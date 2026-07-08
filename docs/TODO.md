@@ -1,5 +1,18 @@
 # TODO
 
+## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4
+
+5 leaderboard rows are still v3.5 (Qwen 27B Q5_K_XL, Qwen 27B Uncensored,
+Qwen 35B-A3B MoE, Qwen 35B-A3B Uncensored, Gemma 4 31B-it). Rerun them on the
+v4 suite so the WHOLE leaderboard is v4-comparable (currently only the 3 MTP
+models are v4). Same command shape as the MTP sweep, memory-capped scope:
+    systemd-run --user --scope --unit=openbeast-sweep -p MemoryMax=92G \
+      -p MemorySwapMax=8G -- python3 evals/benchmark_all.py \
+      --models qwen-27b-q5,qwen-27b-uncensored-q5,qwen-35b-a3b,qwen-35b-a3b-uncensored-q4,gemma-4-31b-q5
+Rows now carry suite_version so old v3.5 + new v4 coexist cleanly; the new v4
+rows will replace the v3.5 ones for those slugs (leaderboard keyed by
+host+slug). ~another ~13-17h sweep. Not urgent; Max-triggered.
+
 ## ✅ POST-SWEEP STEP 1 — leaderboard provenance (DONE 2026-07-08)
 
 The eval engine (llama.cpp build/commit/source_head/compiler) and GPU are
