@@ -206,3 +206,38 @@ Applied now regardless: the aggressive `start_agent` docstring (0→1 win) is in
 mcp_server.py so production gets the small lift. Per Max's gate ("validate on
 the optimal model before profiling others"), we do NOT proceed to profiling
 other models' spawn behavior — the blocker must be solved first.
+
+## 9. Agent-spawn router: the mechanism that works (2026-07-08)
+
+Building the pre-flight router (§8 blocker). Tested two forcing mechanisms on
+the Qwen 27B MTP:
+
+**Mechanism A — force `tool_choice=start_agent`: FAILS (1/5).** llama.cpp does
+NOT strictly honor OpenAI's forced-function semantics — the model still emitted
+read_file/grep/list_files despite tool_choice naming start_agent. Cannot rely
+on tool_choice forcing at the llama.cpp layer.
+
+**Mechanism B — grammar-constrained JSON classification: WORKS (5/5 + 2/2).**
+A pre-flight call with `response_format: json_schema` forcing
+`{spawn: bool, task: str, workdir: str}`:
+- Spawn detection: **5/5** on explicit requests — and it writes a clean task
+  description AND extracts the workdir (e.g. pulled `/home/max/proj` from an
+  auth.py path).
+- Controls: **2/2** (math question, simple file read → spawn=false).
+
+**The design that follows:**
+1. Pre-flight: a grammar-constrained classification call →
+   `{spawn, task, workdir}`. Grammar enforcement is what makes it reliable
+   (llama.cpp DOES enforce sampling-level grammars, unlike tool_choice).
+2. If spawn=true → the router calls start_agent(task, workdir) DIRECTLY —
+   deterministic, does not depend on the model choosing to call the tool.
+3. If spawn=false → normal conversation.
+
+**This validates the 0.8B-on-CPU idea (Max's question).** The mechanism is a
+grammar-constrained JSON call — model-size-agnostic. Proven on the 27B here;
+the SAME call should work on a 0.8B served CPU-only (GPU-free, ~100-200ms),
+which is the better deployment: the classifier shouldn't burn a GPU inference
+on every user turn. The JSON contract `{spawn, task, workdir}` answers "what
+does it return" — grammar-forced JSON, not free text or a bare boolean (the
+task/workdir extraction comes free). Next: test a 0.8B does 5/5 too; fine-tune
+only if it doesn't.
