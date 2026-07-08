@@ -66,16 +66,68 @@ building (Hardware-Profiles Phase 2 territory):
    (27B MTP); workers do scoped subtasks where a 14B non-MTP may suffice →
    more slots, faster, cheaper. Test 27B-worker vs 14B-worker quality on real
    agent subtasks before committing.
-2. **2 instances vs tensor-split** on the 3090Ti box — prefer one
-   llama-server PER card (24GB each) + a load balancer over one tensor-split
-   instance (no PCIe cross-talk), UNLESS the worker model needs >24GB.
+2. **Tensor-split vs 2 instances** on the 3090Ti box — **the box HAS NVLink**
+   (Max, 2026-07-08), so tensor-split is now a STRONG option (NVLink ~112GB/s
+   vs PCIe), not the fallback it'd be on consumer boards. Two paths:
+   (a) tensor-split one model across both cards → 48GB unified pool for a
+   BIGGER worker model and/or a large shared KV supporting many slots; NVLink
+   makes the cross-GPU tax small. (b) one llama-server PER card + load
+   balancer → simplest max-parallelism when the worker model fits in 24GB.
+   With NVLink, lean (a) if you want >24GB models or a big unified `-np` pool;
+   (b) if workers are small and you want dead-simple horizontal slots. Measure
+   both.
 3. **np/KV envelope** — `-np 10` is feasible but KV-per-slot constrains
-   per-slot context on 24GB; measure model×quant×slots×context (extend
-   scripts/measure-vram.sh).
+   per-slot context on 24GB (or the 48GB NVLink pool); measure
+   model×quant×slots×context (extend scripts/measure-vram.sh).
 4. **Router/transport** — orchestrator's `start_agent` must target the worker
    endpoint(s); wants a tailnet-native least-loaded router. The RBAC +
    remote-access layer already generalizes to a fleet.
 Depends on STEP 3 passing first (does the orchestrator reliably spawn?).
+
+### Single-machine option — MTP model shared by sequential agents (YES, possible)
+Max's Q (2026-07-08): can ONE MTP model on ONE machine pause → spawn agents
+that run one-at-a-time cycling through the same MTP model? **Yes, mechanically
+straightforward:**
+- One MTP `llama-server` at `-np 1` = one KV slot. Orchestrator + every spawned
+  agent (`runner.py`) hit the SAME `:8080`. With one slot, requests SERIALIZE
+  (FIFO) — they time-share the single MTP-accelerated slot. Each generation is
+  MTP-fast (2.75x); the fleet runs sequentially. No second machine needed.
+- COST: with `-np 1` there's one KV cache. Alternating between the
+  orchestrator's conversation and an agent's conversation evicts/reprocesses
+  the incoming context (prompt-processing cost on every switch), since the slot
+  holds one sequence's KV at a time. Mitigate by running agents STRICTLY
+  sequentially (spawn → await → next), so only one conversation is live at a
+  time and you pay the swap once per handoff, not per interleave.
+- Trade vs the two-box design: single MTP box = simplest, each agent FAST, but
+  agents are SEQUENTIAL (no parallelism) + per-switch context reload. Two-box =
+  parallel agents but workers are non-MTP. Choose by workload: few sequential
+  agents that each should be fast → single MTP box; many independent agents →
+  parallel worker fleet.
+- Heterogeneous single-box variant (VRAM permitting, 32GB tight): one 27B-MTP
+  instance (`-np 1`, ~20GB) for the orchestrator + a SMALL non-MTP instance
+  (e.g. 7B, `-np K`, ~6GB) as a parallel worker pool on the same GPU — fast
+  smart orchestrator + small fast parallel workers, no second machine. Measure
+  the VRAM fit.
+
+### Requirements & limitations for agents to work (the checklist)
+Load-bearing conditions that must ALL hold, or the agent architecture fails:
+- **R-spawn:** the orchestrator model must RELIABLY call `start_agent` when
+  appropriate (UNVERIFIED — STEP 3 gates this). If hit-rate ~0%, no topology
+  matters; fix prompt/routing first.
+- **R-endpoint:** spawned agents (`runner.py`) reach a serving endpoint — same
+  box (`:8080`) or a worker box over the tailnet. `AGENT_WORKDIR` / model URL
+  must be wired per target.
+- **R-serialize:** MTP endpoints are `-np 1` → any agents sharing an MTP model
+  serialize; true parallelism REQUIRES a non-MTP high-`-np` endpoint.
+- **R-context:** shared `-np 1` slot reprocesses context on conversation switch;
+  budget for it or run sequentially.
+- **R-VRAM:** slots×context×quant must fit the target card(s); the
+  measure-vram envelope (Hardware Profiles Phase 2) is the gate.
+- **R-recursion:** `runner.py` deliberately lacks `start_agent` (no recursive
+  spawn). If nested agents are ever wanted, that's an explicit design change.
+- **R-cleanup:** background agents log to `agents/logs/`; the MCP server reaps
+  them on shutdown. A fleet needs supervision (pidfiles/systemd) like the
+  main stack.
 
 ## ⏳ POST-SWEEP STEP 2 — MTP throughput profiling (after step 1)
 
