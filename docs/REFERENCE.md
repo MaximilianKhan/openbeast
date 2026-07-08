@@ -433,6 +433,9 @@ Exposes 17 tools to any MCP-compatible client, in four groups:
 - **Long-running agent management** (5): `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
 - **Skills** (4): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
 
+All 17 are custom OpenBeast code — full inventory, provenance, hardening
+notes, and RBAC visibility in [`docs/TOOLS.md`](TOOLS.md).
+
 Transports:
 
 - **stdio** — used by OpenCode (launched automatically via `opencode.json`)

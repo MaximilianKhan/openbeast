@@ -31,6 +31,7 @@ echo ""
 echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh setup-tailscale.sh
+  update.sh
   serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-35b-a3b-uncensored-q4.sh

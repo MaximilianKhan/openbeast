@@ -1,4 +1,4 @@
-# 🦾 OpenBeast
+# 🦁 OpenBeast
 
 **Your own private AI workstation — frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
 
@@ -28,6 +28,10 @@ at `http://localhost:8080/v1`.
 **Want it on your phone, securely, from anywhere?** `./scripts/setup-tailscale.sh`
 puts the stack on your private tailnet with automatic HTTPS in about five
 minutes. See ["Remote access"](#remote-access-tailscale) below.
+
+**Already installed?** `./scripts/update.sh` pulls the latest llama.cpp (and
+rebuilds it), container images, and Python deps in one shot — details in
+[`docs/UPDATING.md`](docs/UPDATING.md).
 
 ## Why OpenBeast
 
@@ -342,6 +346,8 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 
 - **[docs/INSTALL.md](docs/INSTALL.md)** — Step-by-step installation, prerequisites, troubleshooting
 - **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), architecture details, all configuration options
+- **[docs/TOOLS.md](docs/TOOLS.md)** — Every tool a model can call: inventory, provenance (custom vs pulled-in), hardening, RBAC visibility
+- **[docs/UPDATING.md](docs/UPDATING.md)** — Updating every pulled-in component (llama.cpp, images, Python deps) with one command
 - **[docs/RESULTS.md](docs/RESULTS.md)** — Eval distribution, sweep results, multi-host comparison
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** — Active work plan and save state for ongoing eval suite work
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** — Skills system design (Pattern A progressive disclosure via MCP)
@@ -420,6 +426,30 @@ including the per-category drilldown.
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model. Each model adds 16–21 GB.
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults
+
+## Credits — standing on the shoulders of giants
+
+OpenBeast is an orchestration layer. The heavy lifting below it is done by
+outstanding open source projects, and each deserves the credit:
+
+| Project | What it does in OpenBeast | Upstream |
+|---|---|---|
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) | The inference engine — `llama-server` serves every model, OpenAI-compatible | ggml-org |
+| [Open WebUI](https://github.com/open-webui/open-webui) (Open WebUI License, BSD-3-based) | The browser chat frontend, user accounts, and RBAC surface | open-webui |
+| [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) | Private metasearch — powers the `web_search` tool with no tracking | searxng |
+| [MCPO](https://github.com/open-webui/mcpo) (MIT) | MCP→OpenAPI proxy that exposes our tool server to Open WebUI | open-webui |
+| [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | The protocol layer our tool server (`agents/mcp_server.py`) is built on | modelcontextprotocol |
+| [OpenCode](https://github.com/sst/opencode) (MIT) | The terminal coding agent frontend | sst |
+| [openai-python](https://github.com/openai/openai-python) (Apache-2.0) | Client SDK the autonomous agent runner speaks to llama-server with | openai |
+| [huggingface_hub](https://github.com/huggingface/huggingface_hub) (Apache-2.0) | The `hf` CLI that downloads model weights | huggingface |
+| [Tailscale](https://github.com/tailscale/tailscale) (BSD-3-Clause) | Optional: encrypted remote access to the stack from anywhere | tailscale |
+
+Model weights (Qwen, Gemma, and community finetunes) are downloaded from
+Hugging Face and carry their own upstream licenses. License labels above are
+as published at time of writing — always check upstream for current terms.
+
+See [`docs/UPDATING.md`](docs/UPDATING.md) for how to pull the latest version
+of every component with one command.
 
 ## License
 
