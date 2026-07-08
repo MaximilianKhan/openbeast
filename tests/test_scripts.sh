@@ -121,6 +121,44 @@ for f in scripts/serve.sh scripts/healthcheck.sh start.sh docker-compose.yml; do
   fi
 done
 
+# Lifecycle: daemon mode + graceful stop (pidfile-based)
+echo ""
+echo "Lifecycle:"
+if grep -q -- '--daemon' "$REPO_DIR/start.sh" && grep -q -- '--status' "$REPO_DIR/start.sh"; then
+  pass "start.sh supports --daemon and --status"
+else
+  fail "start.sh missing --daemon/--status support"
+fi
+if grep -q 'supervisor.pid' "$REPO_DIR/start.sh" && grep -q 'supervisor.pid' "$REPO_DIR/stop.sh"; then
+  pass "start.sh and stop.sh share the supervisor pidfile"
+else
+  fail "supervisor pidfile not wired through start.sh + stop.sh"
+fi
+if grep -q 'MemoryMax' "$REPO_DIR/start.sh"; then
+  pass "daemon mode uses a memory-capped scope (OOM containment)"
+else
+  fail "start.sh daemon mode has no memory cap"
+fi
+if grep -q '^\.run/' "$REPO_DIR/.gitignore"; then
+  pass ".run/ is gitignored"
+else
+  fail ".run/ missing from .gitignore"
+fi
+
+# Skill index in the tools prompt must be present and fresh
+echo ""
+echo "Skill index:"
+if grep -q "SKILL_INDEX_START" "$REPO_DIR/system-prompt-tools.md"; then
+  pass "system-prompt-tools.md has the generated skill index markers"
+else
+  fail "system-prompt-tools.md missing SKILL_INDEX markers"
+fi
+if python3 "$REPO_DIR/scripts/generate-skill-index.py" --check >/dev/null 2>&1; then
+  pass "skill index is fresh (matches skills/*/SKILL.md)"
+else
+  fail "skill index STALE — run scripts/generate-skill-index.py"
+fi
+
 # start.sh should reference scripts/ directory
 if grep -q 'scripts/' "$REPO_DIR/start.sh"; then
   pass "start.sh references scripts/ directory"
@@ -274,6 +312,36 @@ for file in opencode.json docker-compose.yml system-prompt.md; do
     fail "$file missing"
   fi
 done
+
+# --- 8. GPU backend plumbing (hardware profiles Phase 1, 2026-07-07) ---
+# bootstrap.sh and update.sh must build llama.cpp through the SAME shared
+# lib functions — that's the no-drift guarantee of docs/HARDWARE_PROFILES.md.
+echo ""
+echo "GPU backend plumbing:"
+for fn in ob_resolve_backend ob_cmake_flags ob_backend_preflight; do
+  if grep -q "^${fn}()" "$REPO_DIR/scripts/lib/hardware.sh"; then
+    pass "scripts/lib/hardware.sh defines $fn"
+  else
+    fail "scripts/lib/hardware.sh missing $fn"
+  fi
+done
+for f in bootstrap.sh scripts/update.sh; do
+  if grep -q 'ob_cmake_flags' "$REPO_DIR/$f" && grep -q 'ob_resolve_backend' "$REPO_DIR/$f"; then
+    pass "$f builds via the shared backend lib (ob_resolve_backend + ob_cmake_flags)"
+  else
+    fail "$f doesn't build via ob_resolve_backend/ob_cmake_flags"
+  fi
+done
+if grep -qE '^#?GPU_BACKEND=' "$REPO_DIR/openbeast.conf.example"; then
+  pass "openbeast.conf.example documents GPU_BACKEND"
+else
+  fail "openbeast.conf.example doesn't document GPU_BACKEND"
+fi
+if grep -qE 'GPU_BACKEND=.*_ob_conf_value GPU_BACKEND' "$REPO_DIR/scripts/lib/conf.sh"; then
+  pass "conf.sh resolves GPU_BACKEND (env → conf → default)"
+else
+  fail "conf.sh doesn't resolve GPU_BACKEND"
+fi
 
 # --- Summary ---
 echo ""

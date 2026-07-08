@@ -138,6 +138,14 @@ def run_reaped(command, timeout, **popen_kw):
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr."""
     try:
+        # Arsenal Phase 1 hook: OPENBEAST_BASH_WRAPPER is a command prefix
+        # (e.g. "sandlock --profile openbeast --") that wraps every model
+        # shell command in a kernel-level sandbox. Unset (the default and
+        # the eval-validated configuration) runs the command directly.
+        # Read per-call so a server doesn't need a restart to toggle it.
+        wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
+        if wrapper:
+            command = f"{wrapper} /bin/sh -c {shlex.quote(command)}"
         returncode, output = run_reaped(
             command,
             timeout,

@@ -1,15 +1,17 @@
 # TODO
 
-## Known operational issue: healthcheck --restart vs a live start.sh
+## Known operational issue: healthcheck --restart vs the supervisor
 
-`healthcheck.sh --restart` kills llama-server to restart it, but if the stack
-was launched by a foreground `./start.sh`, that kill makes start.sh's
-`wait $LLAMA_PID` return, fires its EXIT trap, and tears down MCPO (which the
-healthcheck may have just restarted) — a one-service restart collapses the
-supervisor. Deferred from the 2026-07-07 production review: the clean fix is
-pidfile-based supervision (or systemd units) instead of the trap coupling.
-Until then: prefer `./stop.sh && ./start.sh` for restarts when start.sh is
-running in the foreground; `--restart` is safe for stacks started headless.
+`healthcheck.sh --restart` kills llama-server to restart it, but that kill
+makes the start.sh supervisor's `wait $LLAMA_PID` return, fires its EXIT
+trap, and tears down MCPO (which the healthcheck may have just restarted) —
+a one-service restart collapses the stack. Applies to both foreground and
+`-d` daemon runs. **Partial mitigation shipped 2026-07-07:** daemon mode
+(`./start.sh -d`, pidfiles in `.run/`, graceful `./stop.sh`) makes full
+restarts painless — `./stop.sh && ./start.sh -d` is the recommended restart
+path. The remaining v2 fix is a supervisor that *re-launches* a dead
+llama-server (bounded retries) instead of exiting, at which point
+`--restart` becomes redundant.
 
 ## 🧯 Post-mortem: 2026-07-07 session OOM crash (RESOLVED — harness hardened)
 

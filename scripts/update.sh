@@ -22,8 +22,11 @@ cd "$REPO_DIR"
 # Resolve user config BEFORE any `docker compose up` — conf.sh exports
 # OPENBEAST_BIND / OPENBEAST_WEBUI_AUTH / OPENBEAST_API_KEY so recreated
 # containers keep the user's auth and bind settings instead of reverting
-# to compose defaults.
+# to compose defaults. It also resolves GPU_BACKEND (persisted there by
+# bootstrap.sh) so update_llama rebuilds with the same backend flavor;
+# hardware.sh provides the shared backend → cmake-flags mapping.
 source "$REPO_DIR/scripts/lib/conf.sh"
+source "$REPO_DIR/scripts/lib/hardware.sh"
 
 c_bold=$'\033[1m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 step() { echo; echo "${c_bold}==> $*${c_rst}"; }
@@ -88,14 +91,24 @@ update_llama() {
     rm -rf "$build"
   fi
 
-  local cuda_arch
-  # || true: under pipefail a missing/failing nvidia-smi would kill the
-  # script inside the substitution, never reaching the fallback.
-  cuda_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
-  cuda_arch="${cuda_arch:-120}"
-  ok "GPU compute capability → CMAKE_CUDA_ARCHITECTURES=$cuda_arch"
+  # Rebuild with the SAME backend bootstrap used: GPU_BACKEND was persisted
+  # in openbeast.conf and resolved by conf.sh; the flags come from the
+  # shared lib (scripts/lib/hardware.sh) so bootstrap and update never drift.
+  ob_detect_gpu
+  ob_resolve_backend
+  ob_backend_preflight \
+    || die "toolchain for the '$OB_BACKEND' backend is missing (see above)"
+  case "$OB_BACKEND" in
+    hip|sycl) warn "'$OB_BACKEND' backend is UNTESTED by OpenBeast — reference profile is CUDA/5090" ;;
+    cpu)      warn "CPU-only build — inference will be 10-50x slower than on a GPU" ;;
+  esac
+  local cmake_flags
+  cmake_flags="$(ob_cmake_flags)" \
+    || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
+  ok "backend $OB_BACKEND → cmake flags: ${cmake_flags:-none (CPU-only)}"
+  # $cmake_flags is deliberately unquoted — it's a flag list.
   cmake -S "$src" -B "$build" \
-        -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" -DCMAKE_BUILD_TYPE=Release
+        $cmake_flags -DCMAKE_BUILD_TYPE=Release
   cmake --build "$build" --config Release -j"$(nproc)" --target llama-server
   [[ -x "$build/bin/llama-server" ]] || die "rebuild did not produce llama-server"
   ok "rebuilt llama-server ($after)"

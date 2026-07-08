@@ -414,6 +414,19 @@ class TestResourceCaps(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIsInstance(out, str)
 
+    def test_bash_wrapper_hook(self):
+        # The Arsenal Phase 1 sandbox hook: a wrapper prefix must receive
+        # the command; unset must run it directly.
+        old = os.environ.pop("OPENBEAST_BASH_WRAPPER", None)
+        try:
+            os.environ["OPENBEAST_BASH_WRAPPER"] = "env WRAP_MARKER=yes"
+            self.assertIn("yes", bash("printf '%s' \"$WRAP_MARKER\""))
+            del os.environ["OPENBEAST_BASH_WRAPPER"]
+            self.assertNotIn("yes", bash("printf '%s' \"$WRAP_MARKER\""))
+        finally:
+            if old is not None:
+                os.environ["OPENBEAST_BASH_WRAPPER"] = old
+
     def test_run_reaped_background_child_does_not_hang(self):
         # A backgrounded grandchild holding the stdout pipe must not wedge
         # the call after the shell exits; the group gets reaped instead.

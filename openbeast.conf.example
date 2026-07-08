@@ -22,6 +22,19 @@
 WEIGHTS_DIR=../weights
 
 # ---------------------------------------------------------------------------
+# Build  (see docs/HARDWARE_PROFILES.md)
+# ---------------------------------------------------------------------------
+
+# llama.cpp build backend, used by bootstrap.sh and scripts/update.sh --llama.
+# "auto" (the default, even without this file) picks from the detected GPU
+# vendor: NVIDIA→cuda, AMD→hip, Intel Arc→sycl, no GPU→cpu. Set it explicitly
+# to override detection. Only cuda is measured by OpenBeast (reference: one
+# RTX 5090); hip and sycl build but are untested. bootstrap.sh writes the
+# resolved value here so updates always rebuild with the same backend.
+# The $OPENBEAST_GPU_BACKEND env var overrides this per-shell.
+#GPU_BACKEND=auto
+
+# ---------------------------------------------------------------------------
 # Network / remote access  (see docs/REMOTE_ACCESS_PLAN.md and
 # scripts/setup-tailscale.sh — one command sets up secure access from
 # anywhere via Tailscale)

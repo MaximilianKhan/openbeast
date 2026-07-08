@@ -67,32 +67,38 @@ need cmake  cmake          "needed to build llama.cpp"
 need gcc    "gcc base-devel" "C/C++ toolchain for the build"
 need python3 python        "runs the MCP tool server + eval harness"
 
-# GPU + driver — detect vendor/VRAM and print the profile recommendation.
-# The build itself is still CUDA-only (reference profile: RTX 5090, 32 GB);
-# see docs/HARDWARE_PROFILES.md for the AMD/Intel/multi-GPU plan.
+# GPU + driver — detect vendor/VRAM, print the profile recommendation, and
+# resolve the llama.cpp build backend (GPU_BACKEND in openbeast.conf, or
+# auto → vendor mapping). Reference profile is CUDA on a 5090; HIP/SYCL/CPU
+# are built but UNTESTED — see docs/HARDWARE_PROFILES.md.
+source "$REPO_DIR/scripts/lib/conf.sh"
 source "$REPO_DIR/scripts/lib/hardware.sh"
 ob_detect_gpu
-if [[ "$OB_GPU_VENDOR" == "nvidia" ]]; then
-  ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)"
-  ob_profile_advice
-else
-  warn "no working NVIDIA GPU — this build path requires one (CUDA)."
-  ob_profile_advice
-  echo "      → install the proprietary NVIDIA driver for your distro, then re-run."
-  MISSING=1
-fi
+ob_resolve_backend
+case "$OB_GPU_VENDOR" in
+  nvidia) ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
+  amd)    ok "AMD GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
+  intel)  ok "Intel GPU: ${OB_GPU_NAME:-unknown}" ;;
+  none)   warn "no supported GPU detected" ;;
+esac
+ob_profile_advice
+ok "llama.cpp build backend: $OB_BACKEND (GPU_BACKEND=$GPU_BACKEND)"
+case "$OB_BACKEND" in
+  hip|sycl) warn "the '$OB_BACKEND' backend is UNTESTED by OpenBeast — reference profile is CUDA/5090." ;;
+  cpu)      warn "CPU-only build — inference will be 10-50x slower than on a GPU." ;;
+esac
 
-# CUDA toolkit (nvcc). Arch keeps it in /opt/cuda/bin, off PATH by default.
-if ! command -v nvcc >/dev/null 2>&1; then
-  for d in /opt/cuda/bin /usr/local/cuda/bin; do
-    [[ -x "$d/nvcc" ]] && export PATH="$d:$PATH"
-  done
-fi
-if command -v nvcc >/dev/null 2>&1; then
-  ok "CUDA toolkit: $(nvcc --version | grep -oE 'release [0-9.]+' | head -1)"
+# Backend toolchain (nvcc / hipcc+rocminfo / icpx) — checked via the shared
+# lib so update.sh preflights the exact same way.
+if ob_backend_preflight; then
+  case "$OB_BACKEND" in
+    cuda) ok "CUDA toolkit: $(nvcc --version | grep -oE 'release [0-9.]+' | head -1)" ;;
+    hip)  ok "ROCm toolchain present (hipcc + rocminfo)" ;;
+    sycl) ok "oneAPI toolchain present (icpx)" ;;
+    cpu)  ok "CPU backend — no GPU toolchain needed" ;;
+  esac
 else
-  warn "nvcc (CUDA toolkit) missing — needed to build llama.cpp with GPU support."
-  echo "      → $(pkg_install_hint cuda)  (Arch: adds /opt/cuda/bin)"
+  warn "toolchain for the '$OB_BACKEND' backend is missing (details above)."
   MISSING=1
 fi
 
@@ -112,21 +118,41 @@ fi
 [[ $MISSING -eq 1 ]] && die "Missing prerequisites above. Install them and re-run ./bootstrap.sh"
 
 # ---- 2. build llama.cpp (skip if already built) ---------------------------
-step "llama.cpp (CUDA build)"
+step "llama.cpp (${OB_BACKEND^^} build)"
 LLAMA_BIN="$REPO_DIR/llama.cpp/build/bin/llama-server"
 if [[ -x "$LLAMA_BIN" ]]; then
   ok "already built ($LLAMA_BIN)"
 else
-  # || true: under pipefail a failing nvidia-smi would kill the script
-  # inside the substitution, never reaching the :-120 fallback.
-  CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
-  CUDA_ARCH="${CUDA_ARCH:-120}"
-  ok "GPU compute capability → CMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH"
+  # Flags come from the shared lib (scripts/lib/hardware.sh) so bootstrap
+  # and update.sh can never drift. cuda: -DGGML_CUDA=ON + detected arch
+  # (the reference profile, unchanged); hip/sycl/cpu per the backend.
+  CMAKE_FLAGS="$(ob_cmake_flags)" \
+    || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
+  ok "backend $OB_BACKEND → cmake flags: ${CMAKE_FLAGS:-none (CPU-only)}"
   [[ -d "$REPO_DIR/llama.cpp/.git" ]] || git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
+  # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
   cmake -S "$REPO_DIR/llama.cpp" -B "$REPO_DIR/llama.cpp/build" \
-        -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release
+        $CMAKE_FLAGS -DCMAKE_BUILD_TYPE=Release
   cmake --build "$REPO_DIR/llama.cpp/build" --config Release -j"$(nproc)" --target llama-server
   [[ -x "$LLAMA_BIN" ]] && ok "built $LLAMA_BIN" || die "build did not produce llama-server"
+fi
+
+# Persist the resolved backend so scripts/update.sh --llama rebuilds with
+# the SAME flavor instead of re-guessing (docs/HARDWARE_PROFILES.md Phase 1).
+CONF_FILE="$REPO_DIR/openbeast.conf"
+if [[ ! -f "$CONF_FILE" ]]; then
+  {
+    echo "# OpenBeast configuration — created by bootstrap.sh."
+    echo "# All available keys: openbeast.conf.example"
+    echo "GPU_BACKEND=$OB_BACKEND"
+  } > "$CONF_FILE"
+  ok "created openbeast.conf with GPU_BACKEND=$OB_BACKEND"
+elif grep -qE '^[[:space:]]*GPU_BACKEND[[:space:]]*=' "$CONF_FILE"; then
+  sed -i -E "s|^[[:space:]]*GPU_BACKEND[[:space:]]*=.*|GPU_BACKEND=$OB_BACKEND|" "$CONF_FILE"
+  ok "updated GPU_BACKEND=$OB_BACKEND in openbeast.conf"
+else
+  echo "GPU_BACKEND=$OB_BACKEND" >> "$CONF_FILE"
+  ok "persisted GPU_BACKEND=$OB_BACKEND in openbeast.conf"
 fi
 
 # ---- 3. Python dependencies ------------------------------------------------

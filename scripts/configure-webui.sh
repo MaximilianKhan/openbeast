@@ -17,6 +17,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
 
+# Refresh the generated skill menu so the prompt always matches skills/
+# (non-fatal: a broken generator must not block WebUI configuration).
+python3 "$SCRIPT_DIR/generate-skill-index.py" >/dev/null 2>&1 \
+  || echo "Warning: skill index regeneration failed — prompt may list stale skills" >&2
+
 # Load system prompt: soul file + tool guidance (Open WebUI needs both)
 SYSTEM_PROMPT=""
 if [[ -f "$REPO_DIR/system-prompt.md" ]]; then

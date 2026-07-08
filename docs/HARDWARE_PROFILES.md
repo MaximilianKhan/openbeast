@@ -26,16 +26,25 @@ Current advisory tiers (single NVIDIA GPU):
 
 AMD: llama.cpp builds with `-DGGML_HIP=ON` (ROCm ≥ 6); serve scripts work
 unchanged once `llama-server` is HIP-built. Intel Arc: `-DGGML_SYCL=ON`
-(oneAPI). Neither is wired into bootstrap's build step yet — see Phase 1.
+(oneAPI). Both are wired into bootstrap's build step as of Phase 1.
 
-## Phase 1 — vendor-aware build (next)
+## Phase 1 — vendor-aware build (shipped 2026-07-07)
 
-- `bootstrap.sh` picks the llama.cpp build flavor from `OB_GPU_VENDOR`:
-  CUDA (as today) / HIP / SYCL / CPU-only fallback, each gated on its
-  toolchain preflight (nvcc / hipcc+rocminfo / icpx).
-- `scripts/update.sh --llama` rebuilds with the same detected flavor
-  (persist the choice in `openbeast.conf` as `GPU_BACKEND=` so update never
-  guesses differently than bootstrap).
+As built: `scripts/lib/conf.sh` resolves a `GPU_BACKEND` key (env
+`OPENBEAST_GPU_BACKEND` → `openbeast.conf` → default `auto`), and
+`scripts/lib/hardware.sh` maps it to a concrete backend
+(`ob_resolve_backend`: auto + nvidia→cuda, amd→hip, intel→sycl, none→cpu;
+an explicit value wins over detection). The backend → cmake-flags mapping
+(`ob_cmake_flags`) and the toolchain preflight (`ob_backend_preflight`:
+nvcc / hipcc+rocminfo / icpx) live in that one lib, and **both**
+`bootstrap.sh` and `scripts/update.sh --llama` build through it — they
+cannot drift. After a successful build, bootstrap persists the resolved
+`GPU_BACKEND=` into `openbeast.conf` so update never guesses differently
+than bootstrap did. Policy: the CUDA path is byte-for-byte the original
+reference build (`-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=<detected>`);
+hip and sycl builds print a clear "UNTESTED by OpenBeast — reference
+profile is CUDA/5090" warning; cpu warns about the 10-50x slowdown. HIP
+auto-detects the `AMDGPU_TARGETS` gfx target via `rocminfo` when available.
 
 ## Phase 2 — measured profiles per tier
 

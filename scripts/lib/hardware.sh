@@ -10,6 +10,16 @@
 #   OB_VRAM_MB       VRAM of the largest single GPU, in MiB (0 if unknown)
 #   OB_VRAM_TOTAL_MB sum across GPUs, in MiB
 #
+# Build backend selection (Phase 1, docs/HARDWARE_PROFILES.md): after
+# ob_detect_gpu, call ob_resolve_backend to map GPU_BACKEND (lib/conf.sh)
+# plus the detected vendor to a concrete llama.cpp build flavor:
+#
+#   OB_BACKEND       cuda | hip | sycl | cpu
+#
+# ob_backend_preflight checks the backend's toolchain is installed, and
+# ob_cmake_flags echoes the cmake flags for it — bootstrap.sh and
+# scripts/update.sh both build through these so they can never drift.
+#
 # Every shipped serve script is measured and tuned on ONE RTX 5090 (32 GB) —
 # that stays the reference profile and the default assumption. Everything
 # below 30 GB gets *advisory* recommendations (clearly labeled unmeasured);
@@ -95,18 +105,125 @@ ob_profile_advice() {
       ;;
     amd)
       echo "  AMD GPU detected (${OB_GPU_NAME:-unknown}, ${OB_VRAM_MB} MiB)."
-      echo "  bootstrap builds llama.cpp with CUDA only; AMD needs a ROCm/HIP"
-      echo "  build (-DGGML_HIP=ON) — see docs/HARDWARE_PROFILES.md. The"
-      echo "  serve scripts work unchanged once llama-server is HIP-built."
+      echo "  bootstrap builds llama.cpp with ROCm/HIP (-DGGML_HIP=ON) for it,"
+      echo "  but this path is UNTESTED by OpenBeast — the reference profile"
+      echo "  is CUDA on a 5090. See docs/HARDWARE_PROFILES.md."
       ;;
     intel)
       echo "  Intel Arc GPU detected (${OB_GPU_NAME:-unknown})."
-      echo "  llama.cpp supports it via SYCL (-DGGML_SYCL=ON); untested by"
-      echo "  OpenBeast — see docs/HARDWARE_PROFILES.md."
+      echo "  bootstrap builds llama.cpp with SYCL (-DGGML_SYCL=ON, oneAPI),"
+      echo "  UNTESTED by OpenBeast — see docs/HARDWARE_PROFILES.md."
       ;;
     none)
       echo "  No supported GPU detected — CPU-only llama.cpp works but is"
       echo "  10-50x slower; the 27B default is impractical without a GPU."
+      ;;
+  esac
+}
+
+# Map GPU_BACKEND (lib/conf.sh; auto | cuda | hip | sycl | cpu) plus the
+# detected vendor to a concrete build backend in OB_BACKEND. A non-auto
+# GPU_BACKEND always wins over detection. Call ob_detect_gpu first.
+ob_resolve_backend() {
+  local requested="${GPU_BACKEND:-auto}"
+  if [[ "$requested" == "auto" ]]; then
+    case "${OB_GPU_VENDOR:-none}" in
+      nvidia) OB_BACKEND="cuda" ;;
+      amd)    OB_BACKEND="hip"  ;;
+      intel)  OB_BACKEND="sycl" ;;
+      *)      OB_BACKEND="cpu"  ;;
+    esac
+  else
+    OB_BACKEND="$requested"
+  fi
+}
+
+# Check the toolchain for OB_BACKEND is installed. Prints what's missing
+# (with install hints) and returns 1 if anything is absent; silent and 0
+# when the backend is ready to build.
+ob_backend_preflight() {
+  local missing=0 t d
+  case "${OB_BACKEND:-cpu}" in
+    cuda)
+      if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
+        echo "  nvidia-smi not working — the CUDA backend needs the NVIDIA driver."
+        echo "      → install the proprietary NVIDIA driver for your distro"
+        missing=1
+      fi
+      # CUDA toolkit (nvcc). Arch keeps it in /opt/cuda/bin, off PATH by default.
+      if ! command -v nvcc >/dev/null 2>&1; then
+        for d in /opt/cuda/bin /usr/local/cuda/bin; do
+          [[ -x "$d/nvcc" ]] && export PATH="$d:$PATH"
+        done
+      fi
+      if ! command -v nvcc >/dev/null 2>&1; then
+        echo "  nvcc (CUDA toolkit) missing — needed to build llama.cpp with GPU support."
+        echo "      → install 'cuda' with your package manager (Arch: adds /opt/cuda/bin)"
+        missing=1
+      fi
+      ;;
+    hip)
+      for t in hipcc rocminfo; do
+        command -v "$t" >/dev/null 2>&1 && continue
+        echo "  $t missing — the HIP backend needs ROCm >= 6."
+        echo "      → Arch: 'sudo pacman -S rocm-hip-sdk'; Debian/Ubuntu/Fedora: see"
+        echo "        https://rocm.docs.amd.com for the per-distro install"
+        missing=1
+      done
+      ;;
+    sycl)
+      if ! command -v icpx >/dev/null 2>&1; then
+        echo "  icpx missing — the SYCL backend needs the Intel oneAPI DPC++ compiler."
+        echo "      → install intel-oneapi-basekit, then 'source /opt/intel/oneapi/setvars.sh'"
+        echo "        in this shell and re-run"
+        missing=1
+      fi
+      ;;
+    cpu)
+      : # no toolchain beyond the base compiler (checked separately)
+      ;;
+    *)
+      echo "  unknown GPU_BACKEND '${OB_BACKEND}' — valid: auto | cuda | hip | sycl | cpu"
+      missing=1
+      ;;
+  esac
+  return "$missing"
+}
+
+# Echo the llama.cpp cmake flags for OB_BACKEND (empty for cpu; status 1 for
+# an unknown backend). The cuda branch is the reference profile and must
+# stay behavior-identical to the original bootstrap flags: -DGGML_CUDA=ON
+# -DCMAKE_CUDA_ARCHITECTURES=<detected, fallback 120>.
+ob_cmake_flags() {
+  case "${OB_BACKEND:-cpu}" in
+    cuda)
+      # || true: under pipefail a failing nvidia-smi would kill the caller
+      # inside the substitution, never reaching the :-120 fallback.
+      local cuda_arch
+      cuda_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
+      cuda_arch="${cuda_arch:-120}"
+      echo "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$cuda_arch"
+      ;;
+    hip)
+      # Auto-detect the gfx target so ROCm doesn't build for every arch
+      # (gfx000 is the CPU agent — skip it). No target found → let llama.cpp
+      # use its defaults.
+      local gfx
+      gfx=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9a-f]+' | grep -v '^gfx000$' | head -1 || true)
+      if [[ -n "$gfx" ]]; then
+        echo "-DGGML_HIP=ON -DAMDGPU_TARGETS=$gfx"
+      else
+        echo "-DGGML_HIP=ON"
+      fi
+      ;;
+    sycl)
+      echo "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
+      ;;
+    cpu)
+      echo ""
+      ;;
+    *)
+      return 1
       ;;
   esac
 }

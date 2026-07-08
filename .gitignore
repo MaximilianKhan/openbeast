@@ -20,3 +20,4 @@ evals/results/
 .claude/
 .pytest_cache/
 evals/cache/
+.run/

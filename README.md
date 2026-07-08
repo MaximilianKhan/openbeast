@@ -125,6 +125,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - `agent.sh` — headless autonomous agent for scripted/scheduled tasks
 
 **Operations**
+- Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up; `./stop.sh` shuts everything down gracefully any time
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
 - End-to-end smoke test (`tests/test_smoke.sh`)
 - **323-unit eval suite** (159 base tasks · 33 variant'd across 6 languages · 80 easy / 123 medium / 120 hard units) with automated validation — full distribution in [`evals/README.md`](evals/README.md)

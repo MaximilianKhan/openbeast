@@ -191,3 +191,32 @@ the required frontmatter fields.
 - **Skill composition.** Can a skill depend on another skill? Currently no.
 - **Skill marketplace / share.** A separate global-skills repo could be
   cloned to `~/.local/share/local-llm-skills/` so skills sync across machines.
+
+## Discoverability rework (2026-07-07 — shipped) + pruning proposal
+
+**Shipped tonight:** the skill menu is now injected directly into
+`system-prompt-tools.md` between generated markers
+(`scripts/generate-skill-index.py`, auto-refreshed by `configure-webui.sh`,
+staleness-checked by `tests/test_scripts.sh`). This kills the blind
+`list_skills` round-trip that measured ~0% spontaneous firing on 27B —
+the model now sees all 14 skills with activation triggers upfront, and
+`load_skill` is a single hop. The tools-vs-skills mental model
+(tools = actions, skills = methodologies at task start) is stated in the
+prompt per PRODUCTION_ROADMAP §B R3.
+
+**Pruning proposal (R4) — awaiting Max's call, deliberately NOT executed:**
+the index may fix routing without deleting anything; measure skill-fire
+rate after the v3.5 sweep baseline before cutting curated content.
+Candidates if routing is still noisy:
+- `architecture-proposal` + `spec-extraction` + `api-design` → one
+  "design-first" skill with three entry modes (largest overlap: all three
+  are "pause and write the contract before coding").
+- `code-review` and `security-audit` stay separate (different passes,
+  different triggers) — earlier overlap concern withdrawn on re-read.
+- `long-context-synthesis` rarely fires on a 27B with 350K ctx budget in
+  WebUI chats; candidate for global-skills (installed, not repo-default).
+
+**R1 (lean core connection) and R5 (collapse agent-mgmt verbs) remain open**
+— both change the MCP surface (docs/TOOLS.md "17 tools" everywhere) and R1
+needs the RBAC connection layout touched; schedule after the sweep, as their
+own change with docs updated in the same commit.
