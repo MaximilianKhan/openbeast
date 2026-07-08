@@ -60,12 +60,21 @@ Max's architecture (2026-07-08), = the parked "Mark of the Beast" direction:
   agents. MTP CANNOT parallelize (upstream `-np 1` pin), so workers must be
   plain batched serving.
 
+**GOVERNING PRINCIPLE (Max, 2026-07-08): maximize intelligence per hardware,
+NO compromise.** Fill every GPU with the LARGEST/most-accurate model that
+fits — never a stew of smaller models. Quality of work is the objective;
+parallelism is secondary and must NEVER be bought by shrinking the model.
+This RETRACTS the earlier "14B worker" and "27B+7B single-box" ideas.
+
 Assessment: the CORE split is correct. Open measurements/decisions before
 building (Hardware-Profiles Phase 2 territory):
-1. **Right-size the worker model** — orchestrator is the smartest model
-   (27B MTP); workers do scoped subtasks where a 14B non-MTP may suffice →
-   more slots, faster, cheaper. Test 27B-worker vs 14B-worker quality on real
-   agent subtasks before committing.
+1. **Workers run the SAME large model as the orchestrator — do NOT shrink.**
+   (Retracts the earlier right-size-down suggestion.) Parallelism comes from
+   HARDWARE (more VRAM / cards / NVLink tensor-split), never from a smaller,
+   lower-quality worker model. Scaling ladder, all uncompromised: (1) single
+   large MTP model, sequential agents; (2) + 2x3090Ti NVLink box running the
+   SAME-class large model tensor-split across 48GB, non-MTP high-np, for
+   parallel agents; (3) more large-model nodes.
 2. **Tensor-split vs 2 instances** on the 3090Ti box — **the box HAS NVLink**
    (Max, 2026-07-08), so tensor-split is now a STRONG option (NVLink ~112GB/s
    vs PCIe), not the fallback it'd be on consumer boards. Two paths:
@@ -103,11 +112,11 @@ straightforward:**
   parallel agents but workers are non-MTP. Choose by workload: few sequential
   agents that each should be fast → single MTP box; many independent agents →
   parallel worker fleet.
-- Heterogeneous single-box variant (VRAM permitting, 32GB tight): one 27B-MTP
-  instance (`-np 1`, ~20GB) for the orchestrator + a SMALL non-MTP instance
-  (e.g. 7B, `-np K`, ~6GB) as a parallel worker pool on the same GPU — fast
-  smart orchestrator + small fast parallel workers, no second machine. Measure
-  the VRAM fit.
+- ~~Heterogeneous single-box variant (27B-MTP + small 7B worker pool)~~
+  **RETRACTED** per the no-compromise principle: mixing in a small
+  lower-quality worker model sacrifices output quality. If one 32GB card can't
+  hold a second LARGE model, keep it single-model (sequential agents) and add
+  hardware for parallelism instead.
 
 ### Requirements & limitations for agents to work (the checklist)
 Load-bearing conditions that must ALL hold, or the agent architecture fails:
