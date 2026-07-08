@@ -20,6 +20,59 @@ everything, bump a suite version marker, note it in docs/RESULTS.md.
 
 ---
 
+## Executive summary
+
+**All 159 tasks reviewed. 42 fully clean (26%), 117 flagged: 32 high,
+~99 med, ~111 low findings.** Many mechanical claims were verified by
+executing code, not inferred. The defects split into two families that
+corrupt the leaderboard in OPPOSITE directions:
+
+**Score inflators (models get credit they didn't earn):**
+- Empty/stub submissions pass: 09 (nothing at all), 07 (`sys.exit(1)`),
+  141 (`return 6.0`), 125 (`return initial`), 139 (return input
+  untouched), 140 (A≡1), 21 (unfixed race passes 5/5).
+- Named algorithm never forced: 137 (typo'd semiprime — trial division
+  suffices), 155, 159, 138, 122, 130, 47, 95, 100, 117, 144; dead perf
+  gates 145/146/147 (measured), thin gates 150/152.
+- Fixture cheats: readable expected.txt (S3), rewritable check.py with
+  no pre_validate (S1 — 20+ tasks).
+
+**Score deflators (correct solutions fail):**
+- Echo-mangled fixtures in 02–06, 08, 10 (S4 — verified broken).
+- Comment-trippable lints: 24, 40, 43, 49 (bare `'numpy' not in src` —
+  the Phase-1 defect fixed only for 42), 71, 150, 151, 158, plus lint
+  bait in 11/19/20/23/92/100.
+- Unpromised assertions: 118 (`t1 == 1`), 120 (`state` attribute name),
+  14 (associativity), 108/109 (str/bytes coin-flips), 123 (spec says
+  "fx fy", expected file holds positions), 126 (spec formula is WRONG —
+  omits the key XOR), 63 (`-0.000000` diff brittleness), 19e/f + 31e/f +
+  148/155/158/159 Rust/Zig (I/O contract referenced but never shown).
+- Timing flakes on a loaded box: 106, 107, 13.
+- Self-test consumes the fixture → correct solution fails: 29, 16.
+
+**Reading the pending sweep:** the suite is FROZEN for comparability, so
+run it as-is — but interpret with this ledger open. Deflators depress
+all models roughly equally (relative ranking mostly survives); inflators
+compress the top (weak and strong models both "pass" unenforced tasks).
+Absolute accuracy numbers are soft by several points in both directions.
+
+**Fix-batch plan (post-sweep, suite version v4):**
+1. **Mechanical sweep, low risk:** S4 echo→printf; add pre_validate to
+   every fixture task (S1); per-step `|| exit 1` in 07/09; pytest exit
+   code in 04; delete-out.db in 16; 55's /tmp collision; 123's field
+   names; anchored-regex lints everywhere (S2); inline Rust/Zig
+   contracts (S6).
+2. **Enforcement repairs:** recalibrate/replace perf gates (145/146/147/
+   150/152, memory-bound 147); fix 137's semiprime; large cases for
+   155/159/138/122/158; validation-side verification for 143/109/100.
+3. **Spec repairs:** 126's formula; 118/120/134/135 return contracts;
+   untested-promise probes (~20 tasks, one assert each).
+4. **Bookkeeping:** difficulty relabels (~12 tasks); commit the missing
+   refs (S5); regenerate docs/RESULTS.md notes with the version bump.
+
+Each fix batch re-verifies per the eval-task-author skill: reference
+passes, deliberately-wrong impl fails.
+
 ## Systemic findings (affect many tasks)
 
 - **S1 [high] pre_validate is opt-in and almost nobody opts in.**
@@ -280,4 +333,97 @@ setup/validation snippets — these are reproduced defects, not inferences.**
   35_descriptive_stats (its lint correctly uses import-form — the
   pattern the whole suite should follow).
 
-<!-- Slices 121-140 and 141-159 appended as reviewers return. -->
+## Slice 121–140 (reviewed: 20, OK: 0, improve: 20 — 4 high, 21 med, 24 low)
+
+All four highs are false-positive/cheat paths that INFLATE scores:
+
+- **137_pollard_rho [high]** — the fixture never requires Pollard rho:
+  100000007000000049 is divisible by 3 (almost certainly a typo for
+  100000007 × 1000000007 = 100000007700000049), and the smallest factors
+  across all five cases are {83, 2, 3, 3, 37} — a 5-line trial-division
+  loop passes instantly in every language; the 128-bit mulmod content of
+  this "hard" task is never exercised. Desired: fix the typo'd semiprime
+  + add one with both factors ~1e9.
+- **125_wave_fdtd [high]** — the only functional check evolves sin(πx)
+  over exactly one FULL period and asserts return ≈ initial: `return
+  initial` passes with error 0 (verified). Desired: add a half-period
+  check against −initial.
+- **139_yield_curve [high]** — flat-curve-only validation: returning the
+  par rates untouched passes both asserts (true zero rate 0.04938 vs
+  0.05 — indistinguishable at the 1e-3 gate). Desired: sloped input with
+  precomputed zeros at 1e-6.
+- **140_vasicek [high]** — the A(t,T) term (the only nontrivial part) is
+  unverified: P = exp(−B·r0) with A ≡ 1 passes every assert. Desired:
+  one absolute closed-form price at 1e-9.
+- **Unenforced-algorithm family [med]:** 122_gemm (naive 3-loop GEMM
+  passes a "hard" blocking task — no perf gate, N=64), 130 (iterative
+  loop passes the "recursive + ABI" task), 138_bsgs (p ≤ 7919 —
+  brute force passes; needs ~1e12-scale p).
+- **RISC-V trio 129/130/131 [med each]** — rvi.py (the judge itself!) is
+  agent-writable with no pre_validate; and the interpreter's narrow
+  instruction subset is undocumented — a legal RV32I solution dies with
+  NotImplementedError. Desired: pre_validate + "read rvi.py first" note.
+- **126_hmac_scratch [med×2]** — "WITHOUT the hmac module" wholly
+  unenforced; AND the spec's formula is wrong as written (omits the key
+  XOR into ipad/opad and the .digest() on the hashed key) — only prior
+  HMAC knowledge saves a literal-minded model.
+- **123_nbody [med]** — spec says fields are "fx fy vx vy" but
+  expected.txt is positions (verified independently) — a literal model
+  prints forces and fails. Desired: 'x y vx vy'.
+- **S1 instances:** 122, 123, 127, 129, 130, 131, 136, 137 (8 more
+  fixture tasks without pre_validate).
+- **132/133 [med]** — γ>0 ferroelectric branch satisfiable by P=0 (a
+  root of the residual); quantum task observes only |ψ[0]|² with all-real
+  H's — σy sign errors and all phase errors pass.
+- **[low] cluster:** difficulty overlabels (126, 132, 133, 135, 140 all
+  "hard" for formula transcription; 131 harder-labeled than the harder
+  129), promised ValueErrors untested (121, 125, 132), return contracts
+  implicit (134, 135 — the WORK_PLAN 1.3 class), 127's garbled Rcon hint.
+
+## Slice 141–159 (reviewed: 19, OK: 3, improve: 16 — 11 high, 15 med, 12 low)
+
+The hard tier — where the 2.0 weights live — has the most broken
+enforcement. All perf measurements below were run empirically.
+
+- **Dead perf gates [high×3, measured]:** 145_segment_tree_lazy (naive
+  O(n)-per-update finishes in 0.47s vs the 2.5s budget), 146_aho_corasick
+  (naive per-pattern `str.find` = 0.003s vs 2.0s — C-speed find beats any
+  Python automaton), 147_persistent_bst (copy-list + bisect = 0.04s vs
+  3.0s; the real discriminator is MEMORY — bound peak via tracemalloc).
+  Two more gates are coin-flips on faster hardware [med]: 150 (cheat
+  only 1.6x over budget) and 152 (1.8x) — the skill demands ≥10x.
+- **Vectors that never force the named algorithm [high×2]:**
+  155_tonelli_shanks (only large p is ≡3 mod 4 — the exponent shortcut
+  suffices; brute force passes everything) and 159_ntt_convolution (max
+  case 30×30, expected.txt itself generated by a naive double loop — a
+  5-line O(n²) loop earns hard×6-variant credit). Same family as 137.
+- **Lint bait [high×2]:** 150_concurrent_queue and 158_karatsuba_bytes
+  (+ 151 [med]) — specs name the forbidden strings verbatim, validations
+  substring-grep them; compliance comments fail correct code.
+- **S1 false-pass vectors [high]:** 148, 155, 158, 159 all lack
+  pre_validate with agent-writable expected.txt/check.py (155/159's
+  check.py is the sole verdict source — `print('OK')` is a guaranteed
+  pass).
+- **158_karatsuba [med]** — the Zig reference is SCHOOLBOOK, not
+  Karatsuba (its own comment admits it): the ref violates the spec it
+  certifies; with ≤80-byte inputs, "implement Karatsuba" is unenforced
+  in all 6 variants. Rust variant also carries no forbidden-shortcut
+  constraint while python/go/cpp do — cross-language scoring unfairness.
+- **143_uov [med]** — verify() is agent-written, so a shared-secret stub
+  passes without any UOV math; validation must evaluate the public polys
+  itself. **141_asian_call [med]** — a constant `return 6.0` passes.
+  **144_dsp [med]** — "implement the DFT yourself" unenforced
+  (numpy.fft passes).
+- **S6 instances:** 148, 155, 158, 159 (Rust/Zig dangling "see siblings"
+  contract). **S5 instances:** refs Zig-only for 148/155/158 pipelines.
+- **[low]:** 142/154 difficulty labels, 145's inverted-range perf loop,
+  147's 2s-spec vs 3s-gate mismatch, 157's over-enumerated sign combos,
+  159's unchecked empty-input promise.
+- **OK:** 149_suffix_automaton, 153_coroutine_scheduler,
+  156_berlekamp_massey. (154's spec/validation otherwise called
+  exemplary — every return value promised and tested.)
+
+---
+
+*Note: 121_quorum_kv was independently reviewed by two slices; their
+findings agree (read repair unverifiable through the current API).*
