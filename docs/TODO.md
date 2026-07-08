@@ -129,7 +129,20 @@ Load-bearing conditions that must ALL hold, or the agent architecture fails:
   matters; fix prompt/routing first.
 - **R-endpoint:** spawned agents (`runner.py`) reach a serving endpoint — same
   box (`:8080`) or a worker box over the tailnet. `AGENT_WORKDIR` / model URL
-  must be wired per target.
+  must be wired per target. **CONCRETE GAP (verified 2026-07-08):** the agent
+  runs where `runner.py` runs, and its filesystem ops act on THAT box's FS —
+  so to have agents touch the MAIN (5090) filesystem while thinking via the
+  2x3090Ti worker fleet, run `runner.py` ON THE 5090 pointed at the worker's
+  `--base-url`. `agent.sh`/`runner.py` support `--base-url` TODAY
+  (`./agent.sh --base-url http://<worker>:8080/v1 -w ~/project "task"`). BUT
+  `mcp_server.start_agent()` does NOT expose a model URL (only task/workdir/
+  max_iter/context) — so orchestrator-spawned agents use the LOCAL model.
+  FIX (~10 lines): add a `base_url` param to `start_agent`, thread it to the
+  runner spawn exactly like `workdir` already is; default to local. This is
+  the load-bearing change that lets the 5090 be the execution host while the
+  3090Ti box provides parallel inference. Caveat: remote inference sends read
+  file contents to the worker box as context — fine on-tailnet (still your
+  hardware), but "no data leaves your machine" becomes "your machines".
 - **R-serialize:** MTP endpoints are `-np 1` → any agents sharing an MTP model
   serialize; true parallelism REQUIRES a non-MTP high-`-np` endpoint.
 - **R-context:** shared `-np 1` slot reprocesses context on conversation switch;
