@@ -53,6 +53,15 @@ work (see docs/SKILLS_PLAN.md pruning + PRODUCTION_ROADMAP §B).
    under Why OpenBeast) — maximize intelligence per hardware, no compromise;
    entry point to win + upgrade ladder up, never downsize.
 
+ - **FEATURE (planned, opt-in, don't lose it): configurable main->worker
+   agent split.** Let users run agents that EXECUTE on their main box (local
+   files) while INFERENCE is served by a separate worker box. Off by default
+   (avg user is single-box), but ~1/3 of users want it — a great way to get
+   real work done. Full design, config UX (`AGENT_INFERENCE_URL`), the
+   ~10-line `start_agent` base_url change, phased plan, and caveats:
+   **docs/DISTRIBUTED_AGENTS_PLAN.md**. Phase 1 is ~half a day. Gated on
+   STEP 3 (orchestrator must reliably spawn).
+
 ## 🔭 INVESTIGATION — multi-node orchestrator + parallel worker fleet
 
 Max's architecture (2026-07-08), = the parked "Mark of the Beast" direction:
