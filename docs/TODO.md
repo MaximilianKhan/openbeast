@@ -1,5 +1,27 @@
 # TODO
 
+## ⏳ READY — MTP throughput profiling (run after the MTP sweep finishes)
+
+Find the peak tok/s DEPLOYMENT config for each MTP model by brute-forcing
+the lossless speculation knobs (safe — MTP verifies every drafted token, so
+these change speed not output; confirmed 35B-A3B MTP 93.76 vs non-MTP 93.74).
+
+- Harness: `evals/profile_mtp.py` (built, syntax-clean, refuses to run while
+  `openbeast-mtp-sweep` is active). Plan + config ledger:
+  `docs/MTP_PROFILING_PLAN.md`.
+- Sweeps ONLY `--spec-draft-n-max` / `--spec-draft-p-min`; HOLDS FIXED the
+  lossy knobs (weights, KV `q4_0`, context, ngl, np) at each model's
+  leaderboard config. ~11 configs/model, ~1h total.
+- Run (GPU must be free — after the sweep):
+      systemd-run --user --unit=openbeast-mtp-profile --collect \
+        -p MemoryMax=92G -p MemorySwapMax=8G -p WorkingDirectory="$PWD" \
+        bash -lc 'python3 -u evals/profile_mtp.py > .run/mtp-profile.log 2>&1'
+- After: create `serve-*-mtp-fast.sh` deployment variants (do NOT overwrite
+  the benchmark serve scripts — the leaderboard configs must stay
+  reproducible). Optional full v4 confirm run at the winner.
+- Leaderboard (benchmark) configs are recorded in MTP_PROFILING_PLAN.md so
+  the published scores are never confused with the deployment configs.
+
 ## ✅ RESOLVED 2026-07-07: healthcheck --restart vs the supervisor
 
 Was: killing llama-server (crash or `healthcheck.sh --restart`) made the
