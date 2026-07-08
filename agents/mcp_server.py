@@ -209,11 +209,18 @@ def _format_elapsed(start: datetime) -> str:
     return f"{hours}h {mins}m {secs}s"
 
 
-def _classify_agent_status(alive: bool, events: list[dict], returncode: int | None = None) -> str:
+def _classify_agent_status(
+    alive: bool, events: list[dict], returncode: int | None = None,
+    orphaned: bool = False,
+) -> str:
     """Determine agent status string from liveness and log events.
 
     Shared by _agent_status_report, _orphaned_log_report, and list_agents
     to avoid duplicating the classification logic.
+
+    `orphaned` marks records we no longer track (server restarted): without a
+    done/max_iterations event their fate is genuinely unknown — they may have
+    been SIGKILLed mid-run — so we say so rather than claiming a clean "exited".
     """
     has_done = any(e.get("type") == "done" for e in events)
     has_max_iter = any(e.get("type") == "max_iterations" for e in events)
@@ -221,6 +228,8 @@ def _classify_agent_status(alive: bool, events: list[dict], returncode: int | No
         return "completed"
     if has_max_iter:
         return "max_iterations_reached"
+    if orphaned:
+        return "unknown (server restarted)"
     if not alive:
         return f"exited (code {returncode})" if returncode is not None else "exited"
     return "running"
@@ -302,7 +311,7 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
     iteration_events = [e for e in events if e.get("type") == "iteration"]
 
     task = start_event.get("task", "?")[:300] if start_event else "?"
-    status = _classify_agent_status(alive=False, events=events)
+    status = _classify_agent_status(alive=False, events=events, orphaned=True)
 
     lines = [
         f"Agent: {agent_id} (from previous session — no process control)",
