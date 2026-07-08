@@ -108,21 +108,45 @@ Sweeping the lossless speculation knobs to find peak tok/s per model
 (evals/profile_mtp.py; plan docs/MTP_PROFILING_PLAN.md). HOLDS FIXED the lossy
 knobs at each model's leaderboard config.
 
-**Qwen 27B MTP — DONE. Already optimal.** Peak = n_max=8, p_min=0.0 at
-**167.5 tok/s**, which is exactly its benchmark config. Deeper drafting (n12
-125.9, n16 lower) and any acceptance gate (p_min 0.1→160.6, 0.25→152.9,
-0.5→142.7) are all slower. No deployment change needed — confirms the
-serve-script's empirical tuning. Full curve:
+**RESULT: all three MTP models are already at their optimal config — the
+sweep found NO free speedup.** A valuable negative result: the serve scripts
+were tuned correctly. For every model, deeper drafting (n12/n16) is slower and
+any acceptance gate (p_min > 0) is slower; peak is always the benchmark config.
 
-| n_max @ p0 | 2 | 4 | 6 | 8 | 12 | 16 |
+| Model | Optimal (= benchmark) | Peak tok/s | Gain vs benchmark |
+|---|---|---:|---:|
+| Qwen 27B MTP | n_max=8, p_min=0.0 | 167.5 | 0% |
+| Qwen 35B-A3B MTP (MoE) | n_max=4, p_min=0.0 | 385.3 | 0% |
+| Qwopus 27B v2 MTP | n_max=4, p_min=0.0 | 148.7 | 0% |
+
+Full curves (tok/s, generation, on the fixed workload):
+
+| depth @ p0 | n2 | n4 | n6 | n8 | n12 | n16 |
 |---|---:|---:|---:|---:|---:|---:|
-| tok/s | 134.0 | 148.4 | 143.3 | **167.5** | 144.8 | 125.9 |
+| 27B MTP | 134.0 | 148.4 | 143.3 | **167.5** | 144.8 | 125.9 |
+| 35B-A3B MTP | 335.1 | **385.3** | 352.0 | 256.5 | 230.8 | 212.1 |
+| Qwopus MTP | 132.6 | **148.7** | 131.4 | 127.2 | 115.2 | (OOM) |
 
-**Qwen 35B-A3B MTP — in progress.** Early: n_max=2 measured **335 tok/s** (MoE
-is much faster than the dense 27B). Watching whether n_max=2 beats its
-benchmark n_max=4 — if so, a free deployment speedup. [UPDATE PENDING]
+p_min gate (at each model's best depth) monotonically LOWERS throughput:
+- 27B @ n8: p0 **167.5** → p0.1 160.6 → p0.25 152.9 → p0.5 142.7
+- MoE @ n4: p0 **385.3** → p0.1 382.5 → p0.25 339.3 → p0.5 322.4
 
-**Qwopus 27B v2 MTP — pending.** [UPDATE PENDING]
+**METHOD NOTE / correction:** mid-run I briefly reported the MoE's
+`n4/p0.1 = 382.5` as a speedup — that was premature, before the `n4/p0 = 385.3`
+baseline was measured. The gate is a tiny LOSS, not a gain. Lesson: don't call
+an optimum before the baseline config is in hand. The MoE's per-token speed
+(385 tok/s peak, ~2× the dense 27B) reflects its smaller active-parameter
+count, not a tuning win.
+
+**Two tooling findings from the run:**
+- **n16 draft buffers can OOM at tight context.** Qwopus at c=344064 (336K,
+  ~2.5 GB headroom) crashed llama-server on load at n16 — the deep draft
+  buffers exceeded VRAM. The 27B survived n16 at 288K. n16 is never optimal
+  anyway, so no deployment impact, but the profiler now skips a failed config
+  and continues instead of aborting the whole run (fixed 2026-07-08).
+- The sweep is worth running per-model even when the answer is "no change":
+  each model has a DIFFERENT optimal depth (27B→n8, MoE/Qwopus→n4), so a
+  one-size config would have left the 27B ~13% slower (n4 148 vs n8 167).
 
 ## Suite provenance note
 

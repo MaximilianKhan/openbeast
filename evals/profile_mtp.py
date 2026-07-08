@@ -163,12 +163,19 @@ def _one(prompt):
 def run_config(m, weight, context, n_max, p_min):
     print(f"  config n_max={n_max} p_min={p_min} ... ", end="", flush=True)
     stop_server()
-    proc = start_server(weight, context, n_max, p_min)
+    res = None
     try:
-        wait_health(proc)
-        res = measure()
-    finally:
-        stop_server()
+        proc = start_server(weight, context, n_max, p_min)
+        try:
+            wait_health(proc)
+            res = measure()
+        finally:
+            stop_server()
+    except Exception as e:
+        # A single bad config (e.g. n16 draft buffers OOM at a tight context)
+        # must NOT kill the whole run — record it as skipped and continue.
+        print(f"skipped ({type(e).__name__}: {e})")
+        return {"n_max": n_max, "p_min": p_min, "skipped": str(e)}
     if res:
         print(f"{res['gen_tok_s_mean']} tok/s (gen)")
     else:
@@ -215,15 +222,18 @@ def main():
 
     RESULTS.mkdir(exist_ok=True)
     slugs = args.models.split(",") if args.models else list(MODELS)
+    stamp = os.environ.get("OPENBEAST_STAMP", str(int(os.path.getmtime(__file__))))
+    path = RESULTS / f"mtp_profile_{stamp}.json"
     out = []
     for slug in slugs:
         if slug not in MODELS:
             print(f"unknown model {slug}", file=sys.stderr); continue
-        out.append(profile_model(slug, MODELS[slug]))
-
-    stamp = os.environ.get("OPENBEAST_STAMP", str(int(os.path.getmtime(__file__))))
-    path = RESULTS / f"mtp_profile_{stamp}.json"
-    json.dump(out, open(path, "w"), indent=2)
+        try:
+            out.append(profile_model(slug, MODELS[slug]))
+        except Exception as e:
+            print(f"  {slug}: profiling aborted ({type(e).__name__}: {e})", file=sys.stderr)
+        # Persist after EACH model so a late failure never loses earlier data.
+        json.dump(out, open(path, "w"), indent=2)
 
     print("\n" + "=" * 66)
     print(f"{'model':<24}{'baseline':>12}{'optimal':>12}{'best cfg':>16}")
