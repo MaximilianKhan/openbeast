@@ -1,6 +1,37 @@
 # TODO
 
-## ⏳ READY — MTP throughput profiling (run after the MTP sweep finishes)
+## ⏳ POST-SWEEP STEP 1 — leaderboard provenance (do BEFORE profiling)
+
+The eval engine (llama.cpp build/commit/source_head/compiler) and GPU are
+logged per row, but the **eval SUITE VERSION is not** — and v3.5 + v4 rows
+now coexist in `evals/leaderboard.json` with nothing distinguishing them.
+The 3 MTP rows we just generated ran on v4 but say nothing about it. Fix +
+backfill before anything else touches the leaderboard.
+
+Do (safe to edit `run_eval.py` mid-sweep — Python won't reload it; but DO
+the backfill only after the sweep has fully finished writing):
+1. `evals/run_eval.py`: add a `capture_suite_version()` that reads
+   `evals/SUITE_VERSION` (currently `v4`), and a `capture_runtime_info()`
+   returning `{python: sys.version.split()[0], openai: <pkg ver>,
+   mcp: <pkg ver>, platform: ...}` (each best-effort, empty on failure —
+   same pattern as `capture_inference_engine_info`). Fold both into the
+   results dict so `scoring.py` persists them per entry.
+2. `evals/scoring.py`: carry `suite_version` + `runtime` through into the
+   leaderboard entry (like it already does `inference_engine`). Show
+   `suite_version` in the printed leaderboard header/rows so v3.5 vs v4 is
+   visible at a glance.
+3. Optional: capture the served GGUF sha256 (or size+mtime if hashing 20GB
+   is too slow) so a weight is identifiable beyond its alias.
+4. **Backfill** the 3 existing v4 rows (qwen-27b-mtp-q5-k-xl,
+   qwen-35b-a3b-mtp-moe-q4-k-m, qwopus-27b-v2-mtp-q5-k-m) with
+   `suite_version: "v4"` — they demonstrably ran on v4. Leave the older
+   v3.5 rows tagged `v3.5` (or `unknown` → then labeled v3.5, since the
+   suite marker didn't exist when they ran).
+5. Verify `scoring.py --rebuild` still works and the header shows versions.
+
+Then proceed to profiling (step 2, below).
+
+## ⏳ POST-SWEEP STEP 2 — MTP throughput profiling (after step 1)
 
 Find the peak tok/s DEPLOYMENT config for each MTP model by brute-forcing
 the lossless speculation knobs (safe — MTP verifies every drafted token, so
