@@ -31,23 +31,21 @@ Usage:
 
 import argparse
 import atexit
-import html as html_module
 import json
 import os
-import re
-import shlex
 import signal
 import subprocess
 import sys
-import glob as glob_module
-import urllib.error
-import urllib.parse
-import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
+
+# Shared tool implementations (single source of truth, incl. process-group
+# reaping, rlimits, output capping, and protected-path write guards).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tools as _tools
 
 # ---------------------------------------------------------------------------
 # Server
@@ -67,95 +65,32 @@ mcp = FastMCP(
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr. Use for building, testing,
     git operations, installing packages, or any system task."""
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += result.stderr
-        if not output.strip():
-            output = f"(exit code {result.returncode})"
-        return output[:50_000]
-    except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {timeout}s"
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.bash(command, timeout)
 
 
 @mcp.tool()
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file. Returns numbered lines."""
-    try:
-        path = os.path.expanduser(path)
-        with open(path, "r") as f:
-            lines = f.readlines()
-        total = len(lines)
-        selected = lines[offset : offset + limit]
-        numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(selected)]
-        header = f"[{path}] lines {offset + 1}-{offset + len(selected)} of {total}\n"
-        return header + "".join(numbered)
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.read_file(path, offset, limit)
 
 
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
     """Write content to a file. Creates directories if needed. Overwrites existing files."""
-    try:
-        path = os.path.expanduser(path)
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(content)
-        return f"Wrote {len(content)} bytes to {path}"
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.write_file(path, content)
 
 
 @mcp.tool()
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern in a directory."""
-    try:
-        directory = os.path.expanduser(directory)
-        matches = sorted(glob_module.glob(os.path.join(directory, pattern), recursive=True))
-        files = [m for m in matches if os.path.isfile(m)]
-        if not files:
-            return f"No files matching '{pattern}' in {directory}"
-        result = "\n".join(files[:200])
-        if len(files) > 200:
-            result += f"\n... and {len(files) - 200} more"
-        return result
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.list_files(directory, pattern)
 
 
 @mcp.tool()
 def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
     """Search file contents for a regex pattern. Returns matching lines with
     file paths and line numbers."""
-    try:
-        cmd = f"grep -rn --include='*' -E {shlex.quote(pattern)} {shlex.quote(path)}"
-        if file_glob:
-            cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = result.stdout or "(no matches)"
-        return output[:50_000]
-    except subprocess.TimeoutExpired:
-        return "Error: grep timed out"
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.grep(pattern, path, file_glob)
 
 
 @mcp.tool()
@@ -175,62 +110,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         new_string: The replacement text.
         replace_all: Replace all occurrences instead of requiring uniqueness.
     """
-    try:
-        path = os.path.expanduser(path)
-        if not os.path.isfile(path):
-            return f"Error: file not found: {path}"
-
-        with open(path, "r") as f:
-            content = f.read()
-
-        if not old_string:
-            return "Error: old_string must not be empty"
-
-        if old_string == new_string:
-            return "Error: old_string and new_string are identical — nothing to change"
-
-        count = content.count(old_string)
-        if count == 0:
-            # Help the model debug: show nearby lines if the string is close
-            lines = old_string.split("\n")
-            if len(lines) > 1 and content.find(lines[0]) != -1:
-                return (
-                    f"Error: exact match not found in {path}. "
-                    f"The first line was found but the full multi-line string didn't match. "
-                    f"Check whitespace and indentation."
-                )
-            return f"Error: old_string not found in {path}"
-
-        if count > 1 and not replace_all:
-            return (
-                f"Error: old_string appears {count} times in {path}. "
-                f"Include more surrounding context to make it unique, "
-                f"or set replace_all=true to replace all occurrences."
-            )
-
-        if replace_all:
-            new_content = content.replace(old_string, new_string)
-        else:
-            new_content = content.replace(old_string, new_string, 1)
-
-        with open(path, "w") as f:
-            f.write(new_content)
-
-        # Report what changed
-        change_line = content[:content.index(old_string)].count("\n") + 1
-        old_lines = old_string.count("\n") + 1
-        new_lines = new_string.count("\n") + 1
-
-        if replace_all and count > 1:
-            return f"Replaced {count} occurrences in {path} ({len(old_string)} → {len(new_string)} chars each)"
-        else:
-            return (
-                f"Edited {path} at line {change_line}: "
-                f"replaced {old_lines} line{'s' if old_lines != 1 else ''} "
-                f"with {new_lines} line{'s' if new_lines != 1 else ''}"
-            )
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.edit_file(path, old_string, new_string, replace_all)
 
 
 @mcp.tool()
@@ -245,53 +125,7 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         url: The URL to fetch (http or https).
         max_length: Maximum characters to return (default 50000).
     """
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; local-agent/1.0)",
-                "Accept": "text/html,application/json,text/plain,*/*",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            charset = "utf-8"
-            if "charset=" in content_type:
-                charset = content_type.split("charset=")[-1].split(";")[0].strip()
-            raw_bytes = resp.read(max_length * 4)  # read extra to account for tag stripping
-            text = raw_bytes.decode(charset, errors="replace")
-
-        # Strip HTML to readable text if the response is HTML
-        if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
-            # Remove script/style blocks entirely
-            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            # Convert block elements to newlines for readability
-            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
-            # Strip remaining tags
-            text = re.sub(r"<[^>]+>", " ", text)
-            # Decode HTML entities
-            text = html_module.unescape(text)
-            # Collapse whitespace (preserve newlines)
-            text = re.sub(r"[^\S\n]+", " ", text)
-            text = re.sub(r"\n{3,}", "\n\n", text)
-            text = text.strip()
-
-        if len(text) > max_length:
-            text = text[:max_length] + f"\n\n[truncated at {max_length} chars — {len(raw_bytes)} bytes fetched]"
-
-        return text if text else "(empty response)"
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read(2000).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
-    except urllib.error.URLError as e:
-        return f"URL error: {e.reason}"
-    except Exception as e:
-        return f"Error: {e}"
+    return _tools.fetch(url, max_length)
 
 
 # ---------------------------------------------------------------------------
@@ -879,46 +713,7 @@ def web_search(query: str, max_results: int = 10) -> str:
         query: Search query string.
         max_results: Maximum number of results to return (default 10).
     """
-    searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
-
-    try:
-        params = urllib.parse.urlencode({
-            "q": query,
-            "format": "json",
-            "categories": "general",
-        })
-        url = f"{searxng_url}/search?{params}"
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "local-agent/1.0", "Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError:
-        return (
-            "Error: SearXNG is not running. Start it with:\n"
-            "  docker run -d -p 8888:8080 -e SEARXNG_BASE_URL=http://localhost:8888/ searxng/searxng\n"
-            "Or set SEARXNG_URL env var if running on a different port."
-        )
-    except Exception as e:
-        return f"Error: {e}"
-
-    results = data.get("results", [])[:max_results]
-    if not results:
-        return f"No results for: {query}"
-
-    lines = [f"Web search: {query}\n"]
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "(no title)")
-        url = r.get("url", "")
-        snippet = r.get("content", "")[:200]
-        lines.append(f"{i}. {title}")
-        lines.append(f"   {url}")
-        if snippet:
-            lines.append(f"   {snippet}")
-        lines.append("")
-
-    return "\n".join(lines)
+    return _tools.web_search(query, max_results)
 
 
 # ---------------------------------------------------------------------------

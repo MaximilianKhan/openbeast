@@ -308,10 +308,88 @@ class TestFetch(unittest.TestCase):
 
 class TestWebSearch(unittest.TestCase):
     def test_searxng_not_running(self):
-        # SearXNG is not running in test env — should get a helpful error
-        result = web_search("test query")
+        # Point at a dead port so the result doesn't depend on whether the
+        # real SearXNG happens to be up on this box.
+        old = os.environ.get("SEARXNG_URL")
+        os.environ["SEARXNG_URL"] = "http://127.0.0.1:9"
+        try:
+            result = web_search("test query")
+        finally:
+            if old is None:
+                os.environ.pop("SEARXNG_URL", None)
+            else:
+                os.environ["SEARXNG_URL"] = old
         self.assertIn("SearXNG", result)
         self.assertIn("not running", result.lower())
+
+
+class TestWriteGuards(unittest.TestCase):
+    """Protected-path guard on write_file / edit_file (credential stores,
+    shell rc files, /etc, git configs)."""
+
+    def test_write_refuses_ssh_dir(self):
+        result = write_file("~/.ssh/test_guard_probe", "x")
+        self.assertIn("refusing", result.lower())
+        self.assertFalse(
+            os.path.exists(os.path.expanduser("~/.ssh/test_guard_probe")))
+
+    def test_write_refuses_bashrc(self):
+        result = write_file("~/.bashrc", "x")
+        self.assertIn("refusing", result.lower())
+
+    def test_write_refuses_etc(self):
+        result = write_file("/etc/test_guard_probe", "x")
+        self.assertIn("refusing", result.lower())
+
+    def test_write_refuses_git_config(self):
+        result = write_file("/tmp/somerepo/.git/config", "x")
+        self.assertIn("refusing", result.lower())
+
+    def test_edit_refuses_protected_path(self):
+        result = edit_file("~/.bashrc", "a", "b")
+        self.assertIn("refusing", result.lower())
+
+    def test_symlink_cannot_dodge_guard(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            link = os.path.join(tmpdir, "innocent.txt")
+            os.symlink(os.path.expanduser("~/.ssh"), os.path.join(tmpdir, "s"))
+            link = os.path.join(tmpdir, "s", "probe")
+            result = write_file(link, "x")
+            self.assertIn("refusing", result.lower())
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_normal_writes_still_work(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result = write_file(os.path.join(tmpdir, "ok.txt"), "hello")
+            self.assertIn("Wrote", result)
+        finally:
+            shutil.rmtree(tmpdir)
+
+
+class TestResourceCaps(unittest.TestCase):
+    """Output/read caps that keep a runaway child from OOMing the runner."""
+
+    def test_read_file_refuses_device_file(self):
+        result = read_file("/dev/zero")
+        self.assertIn("not a regular file", result)
+
+    def test_run_reaped_caps_retained_output(self):
+        from tools import run_reaped, _MAX_CAPTURE_BYTES
+        # Child emits 2x the cap; parent must retain <= cap + truncation note.
+        rc, out = run_reaped(
+            f"head -c {2 * _MAX_CAPTURE_BYTES} /dev/zero | tr '\\0' 'a'", 60)
+        self.assertEqual(rc, 0)
+        self.assertLessEqual(len(out), _MAX_CAPTURE_BYTES + 200)
+        self.assertIn("truncated", out)
+
+    def test_run_reaped_binary_output_no_crash(self):
+        from tools import run_reaped
+        rc, out = run_reaped("head -c 1024 /dev/urandom", 30)
+        self.assertEqual(rc, 0)
+        self.assertIsInstance(out, str)
 
 
 class TestTaskDone(unittest.TestCase):

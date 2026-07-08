@@ -13,11 +13,23 @@ import re
 import resource
 import shlex
 import signal
+import stat as stat_module
 import subprocess
+import threading
 import glob as glob_module
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Largest slice of a child's output we retain in the PARENT process. The
+# RLIMIT_AS below caps the child's own memory, but `cat /dev/zero` streams
+# unboundedly *into the parent's* pipe buffer — which has no rlimit — so we
+# must cap what the parent keeps too, or the box OOMs anyway. We keep
+# draining past this (to avoid a pipe-full deadlock) but discard the excess.
+_MAX_CAPTURE_BYTES = 4 * 1024 * 1024
+# Largest file read_file will slurp; also refuses non-regular files so a
+# read of /dev/zero / a FIFO can't hang or OOM the in-process runner.
+_MAX_READ_BYTES = 64 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -36,14 +48,33 @@ def _child_preexec():
     resource.setrlimit(resource.RLIMIT_AS, (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
 
 
-def run_reaped(command, timeout, **popen_kw):
-    """subprocess.run(shell=True)-alike that kills the WHOLE process group on
-    timeout. Plain subprocess.run kills only the direct child (/bin/sh),
-    orphaning whatever the shell spawned — and then blocks in communicate()
-    on the pipe the orphan still holds. start_new_session puts the tree in
-    its own group so SIGKILL reaches every descendant.
+def _killpg(proc):
+    """SIGKILL the whole process group, then reap the leader."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.kill()  # belt-and-suspenders if the leader left its group
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
-    Returns (returncode, stdout_str) — stderr is folded into stdout.
+
+def run_reaped(command, timeout, **popen_kw):
+    """subprocess.run(shell=True)-alike that (a) kills the WHOLE process group
+    on timeout and (b) bounds how much output the PARENT buffers.
+
+    Plain subprocess.run kills only the direct child (/bin/sh) on timeout,
+    orphaning whatever the shell spawned; and communicate() buffers the
+    child's entire stdout in the parent, so `cat /dev/zero` OOMs the runner
+    even though the child is rlimited. start_new_session puts the tree in its
+    own group for a group SIGKILL, and a reader thread drains the pipe while
+    retaining at most _MAX_CAPTURE_BYTES (discarding the rest to avoid a
+    pipe-full deadlock). Output is decoded errors="replace" so binary bytes
+    don't crash the call.
+
+    Returns (returncode, output_str) — stderr folded into stdout.
     Raises subprocess.TimeoutExpired after reaping on timeout.
     """
     proc = subprocess.Popen(
@@ -51,25 +82,39 @@ def run_reaped(command, timeout, **popen_kw):
         shell=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
         start_new_session=True,
         preexec_fn=_child_preexec,
         **popen_kw,
     )
+    kept = bytearray()
+    total = [0]
+
+    def _drain():
+        while True:
+            chunk = proc.stdout.read(65536)
+            if not chunk:
+                break
+            total[0] += len(chunk)
+            if len(kept) < _MAX_CAPTURE_BYTES:
+                kept.extend(chunk[: _MAX_CAPTURE_BYTES - len(kept)])
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
     try:
-        out, _ = proc.communicate(timeout=timeout)
-        return proc.returncode, out or ""
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.kill()  # belt-and-suspenders if the leader left its group
-        try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        _killpg(proc)
         raise
+    finally:
+        reader.join(timeout=5)
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    out = kept.decode("utf-8", errors="replace")
+    if total[0] > len(kept):
+        out += f"\n[output truncated — {total[0]} bytes produced, kept {len(kept)}]"
+    return proc.returncode, out
 
 
 def bash(command: str, timeout: int = 120) -> str:
@@ -89,11 +134,46 @@ def bash(command: str, timeout: int = 120) -> str:
         return f"Error: {e}"
 
 
+# Credential / persistence locations model-written file ops must never touch.
+# Realpath-resolved (so symlinks can't dodge it). Defense-in-depth: the
+# authoritative sandbox is Arsenal Phase 1 (Sandlock); this closes the
+# obvious exfil/persistence vectors today without constraining normal coding.
+_PROTECTED_DIRS = (".ssh", ".gnupg", ".aws")
+_PROTECTED_BASENAMES = {
+    ".netrc", ".git-credentials", ".npmrc", ".pypirc",
+    ".bashrc", ".bash_profile", ".zshrc", ".profile", "authorized_keys",
+}
+
+
+def _guard_write_path(path: str):
+    """Return an error string if `path` is a protected credential/persistence
+    target, else None. Applied to write_file / edit_file only — reads stay
+    open (an agent may legitimately read config)."""
+    rp = os.path.realpath(os.path.expanduser(path))
+    parts = rp.split(os.sep)
+    base = os.path.basename(rp)
+    if base in _PROTECTED_BASENAMES:
+        return f"Error: refusing to write protected file {rp}"
+    if any(seg in parts for seg in _PROTECTED_DIRS):
+        return f"Error: refusing to write inside a credential store ({rp})"
+    if rp == "/etc" or rp.startswith("/etc/"):
+        return f"Error: refusing to write under /etc ({rp})"
+    if rp.endswith(f"{os.sep}.git{os.sep}config"):
+        return f"Error: refusing to write a git config ({rp})"
+    return None
+
+
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file."""
     try:
         path = os.path.expanduser(path)
-        with open(path, "r") as f:
+        st = os.stat(path)
+        if not stat_module.S_ISREG(st.st_mode):
+            return f"Error: not a regular file (refusing to read {path})"
+        if st.st_size > _MAX_READ_BYTES:
+            return (f"Error: file too large ({st.st_size} bytes > "
+                    f"{_MAX_READ_BYTES}); read a slice with bash instead")
+        with open(path, "r", errors="replace") as f:
             lines = f.readlines()
         total = len(lines)
         selected = lines[offset : offset + limit]
@@ -107,6 +187,9 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
+        blocked = _guard_write_path(path)
+        if blocked:
+            return blocked
         path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
@@ -138,16 +221,10 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
         cmd = f"grep -rn --include='*' -E {shlex.quote(pattern)} {shlex.quote(path)}"
         if file_glob:
             cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=os.environ.get("AGENT_WORKDIR", os.getcwd()),
+        _, output = run_reaped(
+            cmd, 30, cwd=os.environ.get("AGENT_WORKDIR", os.getcwd()),
         )
-        output = result.stdout or "(no matches)"
-        return output[:50_000]
+        return (output or "(no matches)")[:50_000]
     except subprocess.TimeoutExpired:
         return "Error: grep timed out"
     except Exception as e:
@@ -157,6 +234,9 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Replace an exact string in a file with new content."""
     try:
+        blocked = _guard_write_path(path)
+        if blocked:
+            return blocked
         path = os.path.expanduser(path)
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
