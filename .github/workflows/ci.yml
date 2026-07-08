@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -q -U pip pytest
+          python -m pip install -q -r agents/requirements.txt
+
+      - name: Script structure tests
+        run: bash tests/test_scripts.sh
+
+      - name: Tool unit tests
+        env:
+          # No outbound network assumptions in CI (httpbin flakiness);
+          # SearXNG/llama-server are likewise not required by these tests.
+          OPENBEAST_SKIP_NETWORK_TESTS: "1"
+        run: python -m pytest tests/test_tools.py -q
+
+      - name: Process hygiene tests
+        run: python tests/test_proc_hygiene.py
+
+      - name: Eval cache tests
+        run: python tests/test_cache.py
+
+      - name: Health recovery tests
+        run: python tests/test_health_recovery.py
+
+      - name: Tool efficiency tests
+        run: python tests/test_tool_efficiency.py
+
+      - name: Shell syntax sweep
+        run: |
+          rc=0
+          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh; do
+            bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
+          done
+          exit $rc

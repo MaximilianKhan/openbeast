@@ -281,6 +281,8 @@ class TestGrep(unittest.TestCase):
         self.assertNotIn("notes.txt", result)
 
 
+@unittest.skipIf(os.environ.get("OPENBEAST_SKIP_NETWORK_TESTS") == "1",
+                 "network tests disabled (OPENBEAST_SKIP_NETWORK_TESTS=1)")
 class TestFetch(unittest.TestCase):
     def test_fetch_json(self):
         result = fetch("https://httpbin.org/get")
