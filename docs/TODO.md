@@ -1,6 +1,6 @@
 # TODO
 
-## ⏳ POST-SWEEP STEP 1 — leaderboard provenance (do BEFORE profiling)
+## ✅ POST-SWEEP STEP 1 — leaderboard provenance (DONE 2026-07-08)
 
 The eval engine (llama.cpp build/commit/source_head/compiler) and GPU are
 logged per row, but the **eval SUITE VERSION is not** — and v3.5 + v4 rows

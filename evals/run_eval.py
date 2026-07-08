@@ -156,6 +156,32 @@ def capture_inference_engine_info() -> dict:
     return info
 
 
+def capture_suite_version() -> str:
+    """The eval-suite version from evals/SUITE_VERSION (e.g. 'v4').
+
+    Records WHICH benchmark a row ran against so v3.5 and v4 scores are never
+    confused on the leaderboard. Returns 'unknown' if the marker is absent."""
+    marker = Path(__file__).resolve().parent / "SUITE_VERSION"
+    try:
+        return marker.read_text().strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def capture_runtime_info() -> dict:
+    """Agent-runtime provenance: the Python + client-library versions that
+    drove the model. Each field best-effort; empty on failure."""
+    import platform
+    info = {"python": platform.python_version(), "platform": platform.platform()}
+    for pkg in ("openai", "mcp"):
+        try:
+            from importlib.metadata import version
+            info[pkg] = version(pkg)
+        except Exception:
+            pass
+    return info
+
+
 def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     """Load task definitions from JSON files.
 
@@ -430,8 +456,10 @@ def run_eval(
         "model": model_name,
         "model_slug": model_slug,
         "base_url": base_url,
+        "suite_version": capture_suite_version(),
         "gpu": gpu_info,
         "inference_engine": engine_info,
+        "runtime": capture_runtime_info(),
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }

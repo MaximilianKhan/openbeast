@@ -220,8 +220,10 @@ def score_run(results: dict) -> dict:
         "model": results.get("model", "unknown"),
         "model_slug": results.get("model_slug", "unknown"),
         "timestamp": results.get("timestamp"),
+        "suite_version": results.get("suite_version", "unknown"),
         "gpu": results.get("gpu", {}),
         "inference_engine": results.get("inference_engine", {}),
+        "runtime": results.get("runtime", {}),
         "accuracy": accuracy,
         "speed": speed,
         "composite": composite,
@@ -303,13 +305,14 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         return "(leaderboard is empty)"
 
     if show_host:
-        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
+        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'SUITE':>5}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
     else:
-        header = f"{'#':>2}  {'MODEL':<32}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
+        header = f"{'#':>2}  {'MODEL':<32}  {'SUITE':>5}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
     sep = "-" * len(header)
     lines = [header, sep]
     for i, e in enumerate(entries, 1):
         model = e.get("model", "?")[:32]
+        suite = str(e.get("suite_version", "?"))[:5]
         accuracy = f"{e['accuracy']:.1f}"
         speed = f"{e['speed']:.1f}"
         comp = f"{e['composite']:.1f}"
@@ -319,9 +322,9 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         toks = _fmt_tokens(e.get("tokens_total", 0))
         if show_host:
             host = entry_host_id(e)[:22]
-            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
+            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {suite:>5}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
         else:
-            lines.append(f"{i:>2}  {model:<32}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
+            lines.append(f"{i:>2}  {model:<32}  {suite:>5}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
     return "\n".join(lines)
 
 
