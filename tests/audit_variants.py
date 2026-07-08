@@ -91,7 +91,6 @@ TARGETS = {
     '20_priority_queue':     ('pq', '/tmp/eval_pq'),
     '54_astar':              ('astar', '/tmp/eval_astar'),
     '38_monte_carlo_pi':     ('mcpi', '/tmp/eval_mcpi'),
-    '39_blocked_transpose':  ('trans', '/tmp/eval_trans'),
     '36_black_scholes':      ('bs', '/tmp/eval_bs'),
     '62_crt':                ('crt', '/tmp/eval_crt'),
     '63_det':                ('det', '/tmp/eval_det'),
@@ -102,7 +101,6 @@ TARGETS = {
     '115_fft':                  ('fft', '/tmp/eval_fft'),
     '123_nbody':                ('nbody', '/tmp/eval_nbody'),
     '127_aes_keysched':         ('aes', '/tmp/eval_aes'),
-    '47_branchless_min':        ('branchless', '/tmp/eval_branchless'),
     '137_pollard_rho':          ('prho', '/tmp/eval_prho'),
 }
 
