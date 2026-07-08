@@ -279,3 +279,35 @@ thinking-off router call does NOT contaminate subsequent normal calls — the
 toggle is stateless/per-request. So normal usage keeps thinking ON (default,
 no config change) while the router opts itself out for its one classification
 call. One model, one server. Confirms: no CPU model required.
+
+## 11. Router: final design, ready to build (2026-07-08)
+
+Consolidated conclusion of §8–10. The agent-spawn router is fully specified
+and proven; only implementation remains.
+
+**Design (zero new model components):**
+1. Pre-flight, per user turn: one grammar-constrained call to the MAIN 27B with
+   `chat_template_kwargs: {enable_thinking: false}` and a json_schema forcing
+   `{spawn: bool, task: str, workdir: str}`. ~500ms, 16/16 accuracy.
+2. If `spawn == true`: call `start_agent(task, workdir)` directly (deterministic
+   — bypasses the model's unreliable tool-choice judgment) and return
+   "started agent <id>", keeping the conversation going.
+3. If `spawn == false`: proceed with the normal turn (thinking ON, default).
+
+**Where it lives:** a thin proxy in front of llama-server `/v1/chat/completions`
+(WebUI/OpenCode point at it). One interception point, both frontends.
+
+**Proven facts backing it:**
+- tool_choice forcing is unreliable in llama.cpp (1/5) — do NOT use it.
+- grammar/json_schema IS enforced at the sampler — reliable structure.
+- enable_thinking is per-request and isolated — normal turns keep thinking;
+  the router call opts itself out; neither affects the other.
+- start_agent won't fire on model judgment (0/5→1/5) — hence force via the
+  deterministic direct call, not via asking the model.
+
+**Not needed:** a CPU classifier model. Reserve option only (unsloth/
+Qwen3.5-0.8B-GGUF) if we later want the router fully off-GPU or high-throughput.
+
+**Remaining work:** build the proxy + the forced-spawn UX; then re-run
+tests/verify_agent_spawn.py through the proxy to confirm end-to-end. This
+unlocks the distributed-agents feature (docs/DISTRIBUTED_AGENTS_PLAN.md).

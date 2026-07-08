@@ -11,6 +11,12 @@ stack: an OpenAI-compatible model server, an autonomous agent with a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
 
+Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
+WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
+curated, opinionated, batteries-included distribution that wires them into a
+workstation that just works — measured-VRAM configs, speculative decoding, a
+reproducible eval leaderboard, and secure remote access, out of the box.
+
 ## Install (one command)
 
 ```bash
@@ -124,6 +130,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - 6 parallel request slots with unified KV cache and continuous batching
 - 9 pre-configured models: 5 measured + benchmarked (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it) and 4 VRAM-measured 2026-07-07, awaiting first benchmark sweep (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2, Qwopus 27B v2 MTP)
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
+- **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is enabled out of the box for maximum answer quality on your normal chats and coding. Thinking is a *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), stateless and isolated, so automated sub-calls (e.g. a structured JSON classification or routing step) can opt out for speed and clean output without changing your deployment or affecting any other request. You keep thinking on where it matters; the plumbing opts itself out where it doesn't.
 
 **Tool Suite (17 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
