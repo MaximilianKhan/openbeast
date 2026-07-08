@@ -14,11 +14,12 @@ services:
     environment:
       - OPENAI_API_BASE_URL=http://localhost:8080/v1
       - OPENAI_API_KEY=${OPENBEAST_API_KEY:-not-needed}
-      # Auth on: first signup becomes admin. Required now that the WebUI is
-      # reachable from the whole tailnet (scripts/setup-tailscale.sh), not
-      # just this machine. Set OPENBEAST_WEBUI_AUTH=false for the old
-      # localhost-trusting behavior.
-      - WEBUI_AUTH=${OPENBEAST_WEBUI_AUTH:-true}
+      # Auth OFF by default: local-only single-user installs get no login
+      # wall and configure-webui.sh auto-configures via the default admin
+      # account. scripts/setup-tailscale.sh flips this to true (persisted in
+      # openbeast.conf) when the WebUI goes tailnet-wide — that's when a
+      # per-user login boundary matters. Resolved by scripts/lib/conf.sh.
+      - WEBUI_AUTH=${OPENBEAST_WEBUI_AUTH:-false}
       # Loopback-only by default; Tailscale Serve proxies remote devices in.
       - HOST=${OPENBEAST_BIND:-127.0.0.1}
       - PORT=3000

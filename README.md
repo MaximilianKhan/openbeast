@@ -85,9 +85,13 @@ Assuming NVIDIA driver, CUDA, Docker, and Python 3.10+ are installed:
 # 1. Clone and enter the repo
 git clone <repo-url> openbeast && cd openbeast
 
-# 2. Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
+# 2. Build llama.cpp with CUDA. CUDA_ARCH is auto-detected from your GPU
+#    (5090=120, 4090=89, 3090=86). nvcc lives in /opt/cuda/bin on Arch —
+#    add it to PATH so CMake finds it.
+export PATH="/opt/cuda/bin:$PATH"
+CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
 git clone https://github.com/ggml-org/llama.cpp.git
-(cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 \
+(cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH:-120}" \
                  && cmake --build build --config Release -j$(nproc))
 
 # 3. Install Python deps + Hugging Face CLI

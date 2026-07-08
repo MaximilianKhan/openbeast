@@ -39,8 +39,15 @@ WEIGHTS_DIR=../weights
 # other users.
 #LLAMA_API_KEY=
 
+# Open WebUI login. Default OFF for local-only single-user installs (no
+# login wall; configure-webui.sh auto-configures via the default admin
+# account). scripts/setup-tailscale.sh sets this to true automatically when
+# the WebUI goes tailnet-wide — that's when a per-user login + the RBAC
+# tiers (docs/RBAC_PLAN.md) start to matter.
+#WEBUI_AUTH=false
+
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
-# tool-server + native function-calling config now that WEBUI_AUTH is on.
+# tool-server + native function-calling config when WEBUI_AUTH is on.
 # Create the account in the browser on first visit, then mirror it here.
 #WEBUI_ADMIN_EMAIL=
 #WEBUI_ADMIN_PASSWORD=

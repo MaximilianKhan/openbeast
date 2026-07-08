@@ -163,6 +163,17 @@ Defense in depth:
 - Row-level chat privacy hardening inside Open WebUI — upstream's job;
   accounts already have separate histories.
 
+## Known dependencies / caveats (verified 2026-07-07)
+- **Relies on `BYPASS_ADMIN_ACCESS_CONTROL=True`** (Open WebUI default): the
+  privileged connection is admin-only via *empty* `access_grants`, which
+  works because admins bypass grant checks. If that env is set `False`,
+  admins are also denied the privileged tools (no explicit admin grant
+  exists). Don't flip it without adding an admin group grant first.
+- Enforcement is at tool-resolution in `utils/tools.py` — confirmed the
+  model-`toolIds` path calls `has_connection_access` and skips denied
+  connections before the function filter. A denied tool is *absent* from the
+  schema, not "permission denied".
+
 ## Open questions for Max
 1. Should guests get `fetch` at all, or web_search only? (fetch can reach
    internal URLs — mitigated in Phase 2 by sandbox + scheme filtering.)

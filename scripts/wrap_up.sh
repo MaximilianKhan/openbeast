@@ -13,7 +13,7 @@
 
 set -uo pipefail   # NOT -e: we want to push and shutdown even if some step fails
 
-REPO="/home/max/Documents/models"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BENCHMARK_PID=466968
 LOG="$REPO/evals/results/wrap-up-$(date +%Y%m%d-%H%M%S).log"
 
@@ -43,7 +43,7 @@ cd "$REPO"
   echo ">>> [3/6] backfilling inference_engine on leaderboard entries lacking it"
   python3 - <<'PY'
 import json
-LB = "/home/max/Documents/models/evals/leaderboard.json"
+LB = "os.path.join(os.environ.get("REPO", "."), "evals/leaderboard.json")"
 ENGINE = {
     "name": "llama.cpp",
     "binary": "/home/max/Documents/models/llama.cpp/build/bin/llama-server",

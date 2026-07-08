@@ -26,7 +26,7 @@ A skill in this stack is:
 
 | Path | Purpose | Versioned | Sync mechanism |
 |---|---|---|---|
-| `/home/max/Documents/models/skills/` | Project-local skills (eval helpers, this stack's quirks) | yes (git) | clone the repo |
+| `<repo>/skills/` | Project-local skills (eval helpers, this stack's quirks) | yes (git) | clone the repo |
 | `~/.local/share/local-llm-skills/` | Global skills (universal expertise) | optional (separate git) | manual or separate repo |
 
 `scripts/install-skills.sh` creates the global dir and (optionally) symlinks

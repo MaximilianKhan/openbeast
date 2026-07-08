@@ -10,7 +10,7 @@
 
 set -uo pipefail   # NOT -e: we want to push and shutdown even if some step fails
 
-REPO="/home/max/Documents/models"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BENCHMARK_PID=8959
 LOG="$REPO/evals/results/wrap-up-rerun-$(date +%Y%m%d-%H%M%S).log"
 

@@ -905,6 +905,29 @@ deterministic-validation pattern and need a separate harness path.
 
 ## Future Horizon
 
+### Production roadmap → community pillar (2026-07-07)
+Full review + prioritized plan in [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md).
+Highest impact-to-effort, in order: **(1) add LICENSE** (absent — legal
+blocker; Max picks MIT/Apache-2.0), **(2) `bootstrap.sh` one-command install**,
+**(3) "Tier 0: just chat" minimal path**, (4) README hook + "vs Ollama/LM
+Studio" value prop, (5) reconcile contradictory eval numbers, (6) `.github/`
+CI + templates, (7) publish repo + v1.0 tag. Fixed this session: WEBUI_AUTH
+fresh-install regression (now defaults false, tailscale flips true), stale
+`/home/max/Documents/models` rename paths, README CUDA-PATH/arch trap.
+Also: **process-supervision gap** — llama-server + mcpo run bare; add systemd
+units so they restart on crash/boot like the docker services do.
+
+### Skills ↔ tools surface simplification (2026-07-07)
+Max flagged confusion; analysis confirms it's structural — 9 of 17 tools are
+meta-machinery (5 agent + 4 skills), and skills fire ~0% on local models due
+to blind `list_skills`→`load_skill` indirection. Plan (PRODUCTION_ROADMAP §B):
+inject a compact skill *index* into system-prompt-tools.md (1 `load_skill`
+tool + visible menu, not 4 blind-discovery tools); use the RBAC connections
+to expose a lean core tool profile by default + advanced behind a second
+connection; prune/merge overlapping skills (14→leaner); collapse the 5
+agent-mgmt tools to fewer verbs; sharpen the tool-vs-skill framing in the
+prompt. Endgame = the deferred SKILLS_PLAN Phase-5 auto-router.
+
 ### RBAC — multi-user tool lockdown (Phase 0+1 DONE 2026-07-07)
 Full design + UX in [RBAC_PLAN.md](RBAC_PLAN.md). **Live and verified against
 the real Open WebUI access-control code**: `user`-role (guest/family) = only

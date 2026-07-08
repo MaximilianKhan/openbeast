@@ -43,7 +43,14 @@ BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
 LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
+# WEBUI_AUTH default is FALSE (local-only single user — no login wall, and
+# configure-webui.sh can auto-configure via the default admin account). It
+# is flipped to true by scripts/setup-tailscale.sh when the WebUI becomes
+# reachable from the whole tailnet (that's when a login boundary matters).
+# docker-compose reads this via OPENBEAST_WEBUI_AUTH.
+WEBUI_AUTH="${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || echo false)}"
 export BIND_HOST WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
+export OPENBEAST_WEBUI_AUTH="$WEBUI_AUTH"
 # Export the key only when real: llama-server reads the LLAMA_API_KEY env
 # var natively, and an exported empty string still counts as "set" to it.
 if [[ -n "$LLAMA_API_KEY" ]]; then

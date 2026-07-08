@@ -90,6 +90,20 @@ sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
 
+# --- 3b. Turn on the WebUI login boundary now that it's tailnet-wide --------
+# Local-only installs run WEBUI_AUTH=false (no login wall). Going remote is
+# exactly when per-user auth + RBAC start to matter, so persist it in
+# openbeast.conf (idempotent). The stack restart below picks it up.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CONF="$REPO_DIR/openbeast.conf"
+touch "$CONF"
+if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
+  printf '\n# Remote access enabled — require a WebUI login (RBAC tiers apply).\nWEBUI_AUTH=true\n' >> "$CONF"
+  echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
+else
+  echo "      WEBUI_AUTH already set in openbeast.conf — leaving as-is."
+fi
+
 # --- 4. Report ---------------------------------------------------------------
 FQDN=$(tailscale status --json | python3 -c "import sys,json; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")
 echo ""

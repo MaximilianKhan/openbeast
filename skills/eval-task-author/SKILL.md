@@ -47,7 +47,7 @@ setup/task/validation/cleanup. See `skills/eval-variant-porter` for that pattern
 4. **Try a wrong impl.** Pick the most obvious incorrect interpretation a model
    might write. Confirm the validation REJECTS it. If it accepts, your
    validation is too loose.
-5. **Test syntax.** `bash /home/max/Documents/models/tests/test_scripts.sh` —
+5. **Test syntax.** `bash tests/test_scripts.sh` —
    parses every task JSON and checks validation scripts compile.
 6. **Document the discrimination signal.** In the WORK_PLAN or a comment, note
    what "wrong" answer this task catches that simpler tasks don't.
