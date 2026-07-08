@@ -1,5 +1,45 @@
 # TODO
 
+## ⏳ LATER — per-conversation (or per-user) file isolation for chat tools
+
+**Context / what shipped now (2026-07-08):** the chat model's direct file tools
+(`write_file`/`read_file`/`edit_file`/`list_files`/`bash`/`grep`) used to have
+NO working-directory binding — the model picked its own path and defaulted to a
+world-readable, reboot-wiped `/tmp` (e.g. it dropped a report at
+`/tmp/weimar_conditions_2026.md`). The quick fix (shipped): `_base_dir()` in
+`agents/tools.py` anchors relative paths to `OPENBEAST_FILES_DIR`
+(default `~/openbeast-files`, created `0700` by start.sh), and a system-prompt
+line tells the model to use relative paths, never `/tmp`. Spawned agents keep
+their own `AGENT_WORKDIR`.
+
+**What's still missing:** all direct-tool writes share ONE flat namespace. There
+is no per-conversation isolation and no index — conversation A can read/overwrite
+conversation B's files, and the model only "knows" a file exists if its name is
+already in context. The structural reason: the OpenAPI tool call from WebUI →
+MCPO → mcp_server is **stateless** — it carries only the model-generated
+arguments, no chat id, no user id. So the tool is blind to which conversation
+(or which RBAC user) it serves.
+
+**Options (pick one when we tackle this):**
+1. **Per-user workspace (pragmatic, pairs with RBAC).** Shard `OPENBEAST_FILES_DIR`
+   by the authenticated WebUI user. Needs the user identity to reach the tool
+   call — investigate whether Open WebUI forwards user context (header / injected
+   arg) to an external OpenAPI tool server. If it does, `_base_dir()` appends the
+   user id. Good enough for the multi-user / tailnet case; closes the cross-user
+   read hole the guard doesn't cover.
+2. **Per-conversation subdir (full isolation).** Requires WebUI to inject
+   `chat_id` into the tool call. Check whether native function-calling metadata
+   (`__metadata__` / `__chat_id__`) is available to external tool servers or only
+   to WebUI's internal Python tools — likely the latter, which is why this is the
+   hard path.
+3. **Session index + retention.** Regardless of sharding, add a lightweight
+   manifest (what was written, when, by which turn/user) + a retention/GC policy
+   so the workspace doesn't grow unbounded. Lets a future turn answer "what files
+   have I made?" instead of relying on names being in context.
+
+Recommended: (1) + (3). Ship per-user isolation with a manifest; leave true
+per-conversation scoping (2) until we confirm WebUI can pass a chat id.
+
 ## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4
 
 5 leaderboard rows are still v3.5 (Qwen 27B Q5_K_XL, Qwen 27B Uncensored,

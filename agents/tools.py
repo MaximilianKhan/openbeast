@@ -137,6 +137,30 @@ def run_reaped(command, timeout, **popen_kw):
     return proc.returncode, out
 
 
+def _base_dir() -> str:
+    """Directory that relative, model-supplied paths resolve against.
+
+    A spawned background agent gets AGENT_WORKDIR (its task's working dir). A
+    direct tool call from a chat turn gets OPENBEAST_FILES_DIR — a persistent,
+    private (0700) workspace — so generated files (reports, charts) land
+    somewhere durable and NOT world-readable in /tmp, and every conversation
+    shares one predictable home instead of the model's ad-hoc default. Falls
+    back to the process cwd only if neither is set (e.g. bare `python tools.py`).
+    """
+    return (os.environ.get("AGENT_WORKDIR")
+            or os.environ.get("OPENBEAST_FILES_DIR")
+            or os.getcwd())
+
+
+def _resolve(path: str) -> str:
+    """Expand ~, anchor a relative path to _base_dir(), then realpath it.
+    Absolute paths the model supplies are honored as-given (post-realpath)."""
+    p = os.path.expanduser(path)
+    if not os.path.isabs(p):
+        p = os.path.join(_base_dir(), p)
+    return os.path.realpath(p)
+
+
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr.
 
@@ -155,7 +179,7 @@ def bash(command: str, timeout: int = 120) -> str:
         returncode, output = run_reaped(
             command,
             timeout,
-            cwd=os.environ.get("AGENT_WORKDIR", os.getcwd()),
+            cwd=_base_dir(),
         )
         if not output.strip():
             output = f"(exit code {returncode})"
@@ -201,7 +225,7 @@ def _guard_write_path(path: str):
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file."""
     try:
-        path = os.path.expanduser(path)
+        path = _resolve(path)
         # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
         # regular-file check and the read see the same inode.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
@@ -228,12 +252,13 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
+        # Resolve first (anchors relative paths to the private workspace), then
+        # guard and write the SAME path — a symlink swapped in after the check
+        # can't redirect the write.
+        path = _resolve(path)
         blocked = _guard_write_path(path)
         if blocked:
             return blocked
-        # Write the path the guard actually vetted, not the raw one — a
-        # symlink swapped in after the check can't redirect the write.
-        path = os.path.realpath(os.path.expanduser(path))
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
             f.write(content)
@@ -245,7 +270,7 @@ def write_file(path: str, content: str) -> str:
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
-        directory = os.path.expanduser(directory)
+        directory = _resolve(directory)
         matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
         files = [m for m in matches if os.path.isfile(m)]
         if not files:
@@ -265,7 +290,7 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
         if file_glob:
             cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
         _, output = run_reaped(
-            cmd, 30, cwd=os.environ.get("AGENT_WORKDIR", os.getcwd()),
+            cmd, 30, cwd=_base_dir(),
         )
         return (output or "(no matches)")[:50_000]
     except subprocess.TimeoutExpired:
@@ -277,11 +302,11 @@ def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Replace an exact string in a file with new content."""
     try:
+        # Resolve first, then guard/operate on the SAME path (see write_file).
+        path = _resolve(path)
         blocked = _guard_write_path(path)
         if blocked:
             return blocked
-        # Operate on the path the guard vetted (see write_file).
-        path = os.path.realpath(os.path.expanduser(path))
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
 

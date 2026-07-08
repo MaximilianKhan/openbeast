@@ -244,6 +244,11 @@ fi
 echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
 command -v mcpo >/dev/null 2>&1 \
   || { echo "Error: mcpo not found on PATH (pip install --user mcpo puts it in ~/.local/bin)" >&2; exit 1; }
+# Private, persistent workspace for files the chat model writes via the direct
+# tools (conf.sh exports OPENBEAST_FILES_DIR; mcp_server inherits it). 0700 so
+# generated reports/charts aren't world-readable the way the old /tmp default
+# was — matters on a multi-user / tailnet-exposed box.
+mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
 mcpo --port 3001 --host "$BIND_HOST" -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
 MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"

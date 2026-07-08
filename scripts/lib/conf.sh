@@ -68,6 +68,14 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# Where files the CHAT model writes/reads via the direct tools land. A direct
+# tool call carries no conversation or user id (the OpenAPI tool server is
+# stateless), so without this the model picks its own path and defaults to a
+# world-readable, reboot-wiped /tmp. Anchor those ops to a persistent, private
+# (0700) workspace instead. Spawned agents keep using their own AGENT_WORKDIR.
+# start.sh creates the dir with the right mode; mcp_server inherits this env.
+OPENBEAST_FILES_DIR="${OPENBEAST_FILES_DIR:-$(_ob_conf_value FILES_DIR || echo "$HOME/openbeast-files")}"
+export OPENBEAST_FILES_DIR
 # WEBUI_AUTH default is FALSE (local-only single user — no login wall, and
 # configure-webui.sh can auto-configure via the default admin account). It
 # is flipped to true by scripts/setup-tailscale.sh when the WebUI becomes
