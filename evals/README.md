@@ -6,7 +6,8 @@
 > [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/EVAL_REVIEW_2026-07-07.md`](../docs/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
-> (three MTP models on v4 + five non-MTP models still on legacy v3.5), see the
+> (four models on v4 — three MTP builds + the dense Qwen 27B Q5_K_XL — and four
+> non-MTP models still on legacy v3.5, pending the in-progress re-run), see the
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
 > v3.5 and v4 scores are **not directly comparable** (different task sets).
 

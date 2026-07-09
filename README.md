@@ -85,10 +85,12 @@ Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
 **35B-A3B MoE** variants run 30–50 % faster per token. Each swaps in with one
 argument to `start.sh`. Nine models are pre-configured and eight are
-benchmarked: the three MTP builds on the current **v4 suite** (137 base
-tasks, 291 effective units), five non-MTP models carrying **legacy v3.5**
-scores pending a v4 re-run, and the non-MTP Qwopus still awaiting its first
-sweep. See [`docs/RESULTS.md`](docs/RESULTS.md) and
+benchmarked: four on the current **v4 suite** (137 base tasks, 291 effective
+units) — the three MTP builds plus the dense **Qwen3.6-27B Q5_K_XL**, which
+landed on v4 at **96.62%** (271/291), a statistical tie with its MTP twin —
+four non-MTP models carrying **legacy v3.5** scores pending a v4 re-run (in
+progress now), and the non-MTP Qwopus getting its first-ever sweep alongside
+them. See [`docs/RESULTS.md`](docs/RESULTS.md) and
 [`evals/README.md`](evals/README.md).
 
 ## Architecture
@@ -308,12 +310,12 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
-| **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **350K** | **~29.5 GB** | **Top accuracy** on v3.5 (97.85%, benchmarked at 416K); slower per-token than the MoEs |
+| **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **350K** | **~29.5 GB** | **Top accuracy**: 97.85% on v3.5, **96.62% on v4** (271/291, landed 2026-07-09) — a statistical tie with its MTP twin (see leaderboard). Slower per-token than the MoEs. |
 | Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 350K | ~30.0 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 (benchmarked at 380K) |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
-| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots, no `--mmproj`). 2.5 GB headroom at the tuned config. **95.63% on v4** (273/291) — tops the v4 leaderboard. |
+| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots, no `--mmproj`). 2.5 GB headroom at the tuned config. **95.63% on v4** (273/291) — a statistical tie with the non-MTP Qwen 27B (96.62%) at **2.75× the token throughput**; lossless speedup, exactly as MTP promises. |
 | Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). 93.76% on v4 (254/291). |
 | Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 416K | 29.3 GB | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. 2.6 GB headroom measured. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
 | Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). 93.00% on v4 (260/291). |
@@ -422,23 +424,38 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 > **The suite is now v4** (137 base tasks / 291 units), hardened so a correct
 > solution passes and every documented cheat is empirically rejected
 > (see [`evals/CHANGELOG.md`](evals/CHANGELOG.md) and
-> [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). The first
-> v4 results — the three MTP models — are in; the five non-MTP models below are
-> still their **legacy v3.5** scores, pending a v4 re-run. Suite version is
+> [`docs/EVAL_REVIEW_2026-07-07.md`](docs/EVAL_REVIEW_2026-07-07.md)). Four
+> models are on v4 — the three MTP builds plus the dense **Qwen 27B Q5_K_XL**
+> (landed 2026-07-09); the remaining four non-MTP models below still carry their
+> **legacy v3.5** scores, pending the in-progress v4 re-run. Suite version is
 > stamped per row.
 
-**v4 leaderboard** (RTX 5090 ×1, 291 units, 2026-07-08 — the MTP models; full
-analysis in [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)):
+**v4 leaderboard** (RTX 5090 ×1, 291 units, 2026-07-08→09; full analysis in
+[`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)):
 
 | # | Model | Acc | Speed | Pass | Hard | Wall |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B MTP Q5_K_XL** | **95.63** | 73.0 | 273/291 | 98/104 | 3.8h |
-| 2 | Qwen 35B-A3B MTP MoE Q4_K_M | 93.76 | **83.0** | 254/291 | 85/104 | 4.3h |
-| 3 | Qwopus 27B v2 MTP Q5_K_M | 93.00 | 75.3 | 260/291 | 89/104 | 4.6h |
+| 1 | **Qwen 27B Q5_K_XL** | **96.62** | 53.26 | 271/291 | 93/104 | 5.9h† |
+| 2 | Qwen 27B MTP Q5_K_XL | 95.63 | 73.0 | **273/291** | **98/104** | 3.8h |
+| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 93.76 | **83.0** | 254/291 | 85/104 | 4.3h |
+| 4 | Qwopus 27B v2 MTP Q5_K_M | 93.00 | 75.3 | 260/291 | 89/104 | 4.6h |
 
-**Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; these five
-non-MTP models await a v4 re-run — see [`docs/RESULTS.md`](docs/RESULTS.md)).
-v3.5 and v4 numbers are **not directly comparable** (different suites):
+> **† Qwen 27B Q5_K_XL (non-MTP) vs Qwen 27B MTP are the same weights.** The
+> ~1-point accuracy spread (96.62 vs 95.63) is run-to-run noise — MTP is
+> mathematically lossless — and MTP actually passed 2 more units / 5 more hard
+> tasks. The real gap is **speed**: MTP sustains 73 tok/s in-suite vs 53 (2.75×
+> in isolated decode) at identical quality. Caveats on that 5.9h wall: 100 of
+> the base run's 291 units resumed from cache (aborted 07-08 run), so it is not
+> a pure-live figure; and non-MTP rows run `-np 6` (tasks parallelized) while
+> MTP forces `-np 1` (serial), so per-token **speed**, not wall-clock, is the
+> comparable axis across that boundary. Verdict: **ship MTP** — same brain, <½
+> the latency.
+
+**Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; kept intact
+until the whole board is v4). Qwen 27B Q5_K_XL has since re-run on v4 (above),
+but its v3.5 row stays here for now; the other four await their v4 re-run — see
+[`docs/RESULTS.md`](docs/RESULTS.md). v3.5 and v4 numbers are **not directly
+comparable** (different suites):
 
 | # | Model | Acc | Speed | Pass | Hard | Tokens | Cost ≈ | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|
