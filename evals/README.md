@@ -1,11 +1,14 @@
 # Eval suite
 
 > **Suite version: v4 (current).** 137 base tasks / 291 effective units,
-> hardened so a correct solution passes and the documented cheat fails —
-> see [`CHANGELOG.md`](CHANGELOG.md), [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md),
-> and the review that drove it, [`../docs/EVAL_REVIEW_2026-07-07.md`](../docs/EVAL_REVIEW_2026-07-07.md).
-> The v3.5 counts and leaderboard below are retained as the "before" and are
-> **not comparable** to v4.
+> hardened so a correct solution passes and every documented cheat is
+> empirically rejected — see [`CHANGELOG.md`](CHANGELOG.md),
+> [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md), and the review that
+> drove it, [`../docs/EVAL_REVIEW_2026-07-07.md`](../docs/EVAL_REVIEW_2026-07-07.md).
+> The distribution tables below describe **v4**. For the model **leaderboard**
+> (three MTP models on v4 + five non-MTP models still on legacy v3.5), see the
+> [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
+> v3.5 and v4 scores are **not directly comparable** (different task sets).
 
 137 self-contained coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
 deterministic validation script that returns exit 0 on success, non-zero on
@@ -41,16 +44,23 @@ durability verified by `tests/test_cache.py` (cross-process round-trip,
 atomic writes, corrupt-file safety).
 
 Invalidates automatically when (a) any task spec changes (setup, task,
-validation, cleanup, max_iter), (b) the model changes, or (c) the agent
-runtime context changes — namely `system-prompt.md`,
-`system-prompt-tools.md`, or `opencode.json`. Timeouts (`agent_exit_code
+validation, cleanup, max_iter — keys starting with `_`, like the
+runtime-injected `_path`, are stripped before hashing, so relocating the repo
+does NOT bust the cache), (b) the model changes, (c) the **effective iteration
+budget** changes (a `--max-iter 5` smoke run is a different experiment from the
+default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
+(e) the agent runtime context changes — `system-prompt.md`,
+`system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
+(`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
+behavior changes what a "cached result" means). Timeouts (`agent_exit_code
 == -1`) are NOT cached: those are environmental, not deterministic.
 
 `--cache-only` mode is the fast-path for "rebuild the leaderboard from
 prior runs" — no server start, no live calls, cache misses are recorded
 as `skipped_cache_miss` for visibility.
 
-Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}.{ctx_hash}.json`.
+Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}[.mi{N}].{ctx_hash}.json`
+(the `.mi{N}` segment carries the effective max-iter when a run threads one).
 Tiny (<1 KB each), atomically written via `tmp+rename`, gitignored.
 
 ## Tool-selection efficiency (per-model)
@@ -66,7 +76,7 @@ writes, no new measurement needed.
 | `tools/T` | Mean tool invocations per task. Higher might indicate thrashing. |
 | `edit:wr` | `edit_file:write_file` ratio. Higher = more targeted; <1 = wasteful overwrites. |
 | `bash/T` | Bash calls per task. Lower = more targeted use of dedicated tools. |
-| `rd_dup` | `read_file` calls / unique paths read. 1.0 = no rereads; >3.0 = thrashing. |
+| `rd_dup` | Per-log average of (`read_file` calls / unique paths read). 1.0 = no rereads within a task; >2.0 = thrashing. |
 | `agent` | `start_agent` / `start_skill_agent` / `skill` calls (plus legacy `list_skills`/`load_skill` in pre-2026-07-08 logs). |
 
 Aggregates across every `agents/logs/agent-*.jsonl` (top-level + sub-agent
@@ -78,66 +88,39 @@ cross-model comparison.
 
 ## Distribution
 
-> **Note:** the tables below document the **v3.5** rollout (159 base / 323
-> units). v4 pruned 25 tasks and added 3 DSP (→ 137 base / 291 units); some
-> variant tasks listed here (e.g. 39_blocked_transpose, 47_branchless_min) were
-> removed. See [`CHANGELOG.md`](CHANGELOG.md) and [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md)
-> for the v4 delta; this section is retained as rollout history.
-
-**Base totals (v3.5):** 40 easy · 53 medium · 66 hard base tasks · 12 categories · 159 base task IDs
-
-**Effective totals after v3.5 variant rollout (2026-05-07):** 323 test
-units = 126 single-variant legacy + 197 variant entries across **33 base
-tasks** with multi-language variants (py/go/c/cpp/rust/zig). Total weighted
-points preserved (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 —
-same as a hard single-variant task).
+**Base totals (v4):** 24 easy · 58 medium · 55 hard = **137 base task IDs**
+across 12 categories. Flattening multi-language variants gives **291 effective
+test units**: 106 single-variant tasks + 185 variant units from 31 variant
+base tasks.
 
 Difficulty weights (used in accuracy scoring): easy=1, medium=1.5, hard=2 — for
-multi-variant tasks, divided by variant count.
+multi-variant tasks, divided by variant count. Total weighted points are
+preserved (a hard task with 6 variants scores 6 × (2.0/6) = 2.0 — same as a
+hard single-variant task).
 Time budgets (used in speed scoring): easy=30s, medium=90s, hard=300s.
 
 ### Multi-language variants
 
-33 of the 159 base tasks (v3.5; in v4 it's 31 of 137) have language
-variants. Each variant is its own scored test unit; the leaderboard reports
-per-language accuracy via `scoring.py --by-language`.
+**31 of the 137 base tasks** have language variants (v4). Each variant is its
+own scored test unit; the leaderboard reports per-language accuracy via
+`scoring.py --by-language`.
 
 **Supported languages:** Python (`a`), Go (`b`), C (`c`), C++ (`d`),
-Rust (`e`), Zig (`f`). Full 6-language coverage on most variant tasks.
+Rust (`e`), Zig (`f`). Full 6-language coverage on 30 of the 31 variant tasks;
+`122_gemm_blocked` is perf-flavored with no Python variant (Go / C / C++ /
+Rust / Zig only).
 
 **Variant ID convention:** stable letter suffix per language so adding new
-languages doesn't renumber existing variants. (Exception: `122_gemm_blocked`
-has no Python variant — perf-flavored task — so its IDs are a=Go, b=C,
-c=C++, d=Rust, e=Zig.)
+languages doesn't renumber existing variants.
 
-**Phase 4/4.5 rollout (2026-05-06) — 13 base tasks (77 variant entries):**
-
-| Task | Variants | Languages |
-|---|---:|---|
-| 19_three_way_quicksort | 6 | Py / Go / C / C++ / Rust / Zig |
-| 31_is_power_of_two | 6 | Py / Go / C / C++ / Rust / Zig |
-| 51_toposort | 6 | Py / Go / C / C++ / Rust / Zig |
-| 52_unionfind | 6 | Py / Go / C / C++ / Rust / Zig |
-| 61_extgcd | 6 | Py / Go / C / C++ / Rust / Zig |
-| 65_miller_rabin | 6 | Py / Go / C / C++ / Rust / Zig |
-| 73_count_vowels | 6 | Py / Go / C / C++ / Rust / Zig |
-| 74_palindrome | 6 | Py / Go / C / C++ / Rust / Zig |
-| 122_gemm_blocked | 5 | Go / C / C++ / Rust / Zig (no Python — perf-flavored) |
-| 148_convex_hull | 6 | Py / Go / C / C++ / Rust / Zig |
-| 155_tonelli_shanks | 6 | Py / Go / C / C++ / Rust / Zig |
-| 158_karatsuba_bytes | 6 | Py / Go / C / C++ / Rust / Zig |
-| 159_ntt_convolution | 6 | Py / Go / C / C++ / Rust / Zig |
-
-**Phase 5 rollout (v3.5, 2026-05-07) — 20 new variant base tasks (120 entries):**
-
-| Tier | Tasks |
+| Tier | Variant base tasks |
 |---|---|
-| Easy (5) | 32_dot_product · 71_reverse_list · 82_sigmoid · 92_popcount · 100_constant_time_compare |
-| Medium (9) | 11_bst · 20_priority_queue · 54_astar · 38_monte_carlo_pi · 39_blocked_transpose · 36_black_scholes · 62_crt · 63_det · 136_gf256 |
-| Hard (6) | 27_brainfuck_interpreter · 115_fft · 123_nbody · 127_aes_keysched · 47_branchless_min · 137_pollard_rho |
+| Easy (8) | 31_is_power_of_two · 32_dot_product · 71_reverse_list · 73_count_vowels · 74_palindrome · 82_sigmoid · 92_popcount · 100_constant_time_compare |
+| Medium (13) | 11_bst · 19_three_way_quicksort · 20_priority_queue · 36_black_scholes · 38_monte_carlo_pi · 51_toposort · 52_unionfind · 54_astar · 61_extgcd · 62_crt · 63_det · 65_miller_rabin · 136_gf256 |
+| Hard (10) | 27_brainfuck_interpreter · 115_fft · 122_gemm_blocked *(5-lang)* · 123_nbody · 127_aes_keysched · 137_pollard_rho · 148_convex_hull · 155_tonelli_shanks · 158_karatsuba_bytes · 159_ntt_convolution |
 
-All 20 new tasks: full 6-lang coverage, 120/120 audited end-to-end via
-`python3 tests/audit_variants.py`. Reference impls in `evals/refs/`.
+All variant tasks are audited end-to-end via `python3 tests/audit_variants.py`;
+reference impls live in `evals/refs/`.
 
 **Build commands per language:**
 
@@ -160,131 +143,133 @@ All 20 new tasks: full 6-lang coverage, 120/120 audited end-to-end via
 > - Compile time: ~7-8s per file (cold). Acceptable for the audit; counts
 >   in elapsed time during model runs.
 
-### Category × difficulty
+### Category × difficulty (v4)
 
 | Category | Easy | Medium | Hard | Total |
 |---|---:|---:|---:|---:|
-| Algorithms & DS | 4 | 11 | 7 | **22** |
-| Concurrency & Systems | 4 | 4 | 8 | **16** |
-| Distributed / SysDesign | 4 | 4 | 4 | **12** |
-| LLM / ML | 4 | 2 | 3 | **9** |
-| Mathematical Finance | 4 | 5 | 7 | **16** |
-| Performance & HW Opt | 4 | 2 | 5 | **11** |
-| Physics | 4 | 3 | 5 | **12** |
-| Probability & Stats | 3 | 3 | 4 | **10** |
-| Pure & Abstract Math | 3 | 7 | 12 | **22** |
-| SWE / DevOps | 2 | 7 | 6 | **15** |
-| Security | 4 | 4 | 5 | **13** |
-| Signal Processing & DSP | 0 | 1 | 0 | **1** |
-| **Totals** | **40** | **53** | **66** | **159** |
+| Algorithms & DS | 3 | 11 | 7 | **21** |
+| Concurrency & Systems | 1 | 5 | 7 | **13** |
+| Distributed / SysDesign | 3 | 4 | 4 | **11** |
+| LLM / ML | 3 | 2 | 2 | **7** |
+| Mathematical Finance | 2 | 5 | 6 | **13** |
+| Performance & HW Opt | 2 | 2 | 2 | **6** |
+| Physics | 1 | 3 | 5 | **9** |
+| Probability & Stats | 1 | 4 | 3 | **8** |
+| Pure & Abstract Math | 2 | 7 | 11 | **20** |
+| SWE / DevOps | 3 | 9 | 2 | **14** |
+| Security | 3 | 3 | 5 | **11** |
+| Signal Processing & DSP | 0 | 3 | 1 | **4** |
+| **Totals** | **24** | **58** | **55** | **137** |
 
-### Subcategory drilldown
+### Subcategory drilldown (v4)
 
-#### Algorithms & DS (22)
-- **Computational geometry** (1) — `148_convex_hull` *(hard)*
-- **Graph algorithms** (3) — toposort, union-find, A* *(all medium)*
-- **Hashing structures** (2) — LRU cache, bloom filter
-- **Linear data structures** (3) — reverse list, find max, priority queue
-- **Parsing** (1) — `14_expression_parser`
-- **Recursion / interpretation** (2) — flatten JSON, brainfuck interpreter
-- **Regex** (1) — `26_ipv4_regex` *(hard)*
-- **Sorting** (1) — `19_three_way_quicksort`
-- **String algorithms** (4) — count vowels, palindrome, **Aho-Corasick**, **suffix automaton**
-- **Trees** (4) — BST, trie, **segment tree (lazy)**, **persistent BST**
+Task slugs below are the id stems under `evals/tasks/` (integer prefix orders
+execution). This section is generated from the task files — the authoritative
+per-category counts also come from `scoring.py --by-category` after a run.
 
-#### Concurrency & Systems (16)
-- **Async patterns** (4) — retry, debouncer, single-flight, **coroutine scheduler**
-- **Concurrent data structures** (4) — threadsafe LRU, bounded queue, **MS-style FIFO**, **Chase-Lev deque**
-- **Networking / state machines** (1) — TCP state machine
-- **Race condition fixes** (1) — concurrent counter
-- **Synchronization primitives** (4) — thread-safe counter, reentrant lock, **RW-lock writer-pref**, **lease mutex**
-- **Systems APIs** (2) — env var, file SHA-256
+#### Algorithms & DS (21)
+- **Computational geometry** (1) — convex_hull
+- **Graph algorithms** (3) — toposort, unionfind, astar
+- **Hashing structures** (2) — lru_cache, bloom
+- **Linear data structures** (2) — priority_queue, reverse_list
+- **Parsing** (1) — expression_parser
+- **Recursion / interpretation** (2) — flatten_json, brainfuck_interpreter
+- **Regex** (1) — ipv4_regex
+- **Sorting** (1) — three_way_quicksort
+- **String algorithms** (4) — count_vowels, palindrome, aho_corasick, suffix_automaton
+- **Trees** (4) — bst, trie_autocomplete, segment_tree_lazy, persistent_bst
 
-#### Distributed / SysDesign (12)
-- **Causal ordering** (1) — vector clock
-- **Consistent hashing** (1)
-- **Cryptographic primitives** (1) — SHA-256
-- **Distributed coordination** (2) — distributed lock, two-phase commit
+#### Concurrency & Systems (13)
+- **Async patterns** (4) — retry, debouncer, singleflight, coroutine_scheduler
+- **Concurrent data structures** (4) — threadsafe_lru, bounded_queue, concurrent_queue, chase_lev_deque
+- **Networking / state machines** (1) — tcp_state_machine
+- **Race condition fixes** (1) — race_condition
+- **Synchronization primitives** (3) — reentrant_lock, rwlock_writer_pref, lease_mutex
+
+#### Distributed / SysDesign (11)
+- **Causal ordering** (1) — vector_clock
+- **Consistent hashing** (1) — consistent_hash
+- **Cryptographic primitives** (1) — sha256
+- **Distributed coordination** (2) — distributed_lock, 2pc
 - **Encoding & serialization** (1) — base64
-- **Identifiers** (1) — UUID4
-- **Rate limiting** (2) — token bucket, sliding window
-- **Replication & consistency** (1) — quorum KV (Dynamo-style)
-- **Service patterns** (2) — circuit breaker, exponential backoff
+- **Rate limiting** (2) — rate_limiter, sliding_window
+- **Replication & consistency** (1) — quorum_kv
+- **Service patterns** (2) — circuit_breaker, backoff
 
-#### LLM / ML (9)
-- **Activations** (3) — softmax (stable), ReLU, sigmoid
-- **Attention** (1) — scaled dot-product
-- **Caching** (1) — KV cache *(hard)*
-- **Norms** (1) — RMSNorm *(hard)*
-- **Position embeddings** (1) — RoPE *(hard)*
-- **Similarity metrics** (2) — cosine, Manhattan
+#### LLM / ML (7)
+- **Activations** (2) — softmax_stable, sigmoid
+- **Attention** (1) — attention
+- **Caching** (1) — kv_cache
+- **Norms** (1) — rmsnorm
+- **Position embeddings** (1) — rope
+- **Similarity metrics** (1) — cosine_similarity
 
-#### Mathematical Finance (16)
-- **Credit risk** (1) — CDS hazard rate
-- **Exotic derivatives** (1) — Asian call (MC)
-- **Fixed income** (2) — bond pricing, yield curve
-- **Option pricing** (3) — Black-Scholes, binomial, American option
-- **Risk metrics** (3) — min-variance portfolio, **VaR/CVaR**, Sharpe/Sortino *(all hard)*
-- **Term structure models** (1) — Vasicek
-- **Time value of money** (5) — compound interest, IRR, simple interest, FV annuity, APR/APY
+#### Mathematical Finance (13)
+- **Credit risk** (1) — cds_hazard
+- **Exotic derivatives** (1) — asian_call
+- **Fixed income** (2) — bond, yield_curve
+- **Option pricing** (3) — black_scholes, binomial, american_option
+- **Risk metrics** (3) — min_variance_portfolio, value_at_risk, sharpe_sortino
+- **Term structure models** (1) — vasicek
+- **Time value of money** (2) — compound_interest, irr
 
-#### Performance & HW Opt (11)
-- **Asymptotic refactoring** (1) — quadratic → log-linear
-- **Bit-twiddling** (3) — branchless min, popcount, XOR swap
-- **Cache locality** (2) — blocked transpose, **blocked GEMM**
-- **Loop optimization** (1) — Horner's method
-- **RISC-V assembly** (3) — array sum, factorial, bit-reverse
-- **Vectorization** (1) — SAXPY
+#### Performance & HW Opt (6)
+- **Asymptotic refactoring** (1) — optimize_quadratic
+- **Bit-twiddling** (1) — popcount
+- **Cache locality** (1) — gemm_blocked
+- **Loop optimization** (1) — horner
+- **RISC-V assembly** (2) — riscv_array_sum, riscv_bitrev
 
-#### Physics (12)
-- **3D rotation / geometry** (1) — Rodrigues
-- **Classical mechanics** (4) — projectile, damped oscillator, KE, Hooke's law
-- **N-body / orbital mechanics** (1)
-- **ODE numerical integration** (1) — RKF45
-- **PDE / wave propagation** (1) — FDTD wave
-- **Quantum mechanics** (1) — superposition
-- **Solid-state physics** (1) — vdW ferroelectric
-- **Thermodynamics** (2) — temperature conversion, Wien's law
+#### Physics (9)
+- **3D rotation / geometry** (1) — rodrigues
+- **Classical mechanics** (2) — projectile, damped
+- **N-body / orbital mechanics** (1) — nbody
+- **ODE numerical integration** (1) — rkf45
+- **PDE / wave propagation** (1) — wave_fdtd
+- **Quantum mechanics** (1) — quantum_superposition
+- **Solid-state physics** (1) — vdw_ferroelectric
+- **Thermodynamics** (1) — wien
 
-#### Probability & Stats (10)
-- **Combinatorial probability** (1) — birthday paradox
-- **Descriptive statistics** (3) — z-score, descriptive, sample variance
-- **Inference** (1) — Bayesian A/B
-- **Monte Carlo simulation** (1) — π estimation
-- **Optimal stopping** (1) — secretary problem
-- **Psychometrics** (2) — Cronbach's α, d'
-- **Stochastic processes** (1) — Markov steady-state
+#### Probability & Stats (8)
+- **Combinatorial probability** (1) — birthday_paradox
+- **Descriptive statistics** (1) — descriptive_stats
+- **Inference** (1) — bayesian_ab
+- **Monte Carlo simulation** (1) — monte_carlo_pi
+- **Optimal stopping** (1) — secretary_problem
+- **Psychometrics** (2) — cronbach, dprime
+- **Stochastic processes** (1) — markov_steady_state
 
-#### Pure & Abstract Math (22)
-- **Bit operations** (1) — power-of-two detection
-- **Iterative numerical methods** (3) — Newton-Raphson, iterative refinement, conjugate gradient
-- **Linear algebra** (5) — dot product, det, power iteration, SVD, **2D Gauss reduction**
-- **Number theory** (8) — extgcd, CRT, Miller-Rabin, factorial, GF(2⁸), Pollard rho, BSGS, **Tonelli-Shanks**
-- **Polynomial algebra** (5) — FFT, Durand-Kerner, **Berlekamp-Massey**, **Karatsuba (bytes)**, **NTT**
+#### Pure & Abstract Math (20)
+- **Bit operations (math)** (1) — is_power_of_two
+- **Iterative numerical methods** (2) — iter_refinement, newton_raphson
+- **Linear algebra** (5) — dot_product, det, power_iter, svd, gauss_reduction
+- **Number theory** (7) — extgcd, crt, miller_rabin, gf256, pollard_rho, bsgs, tonelli_shanks
+- **Polynomial algebra** (5) — fft, durand_kerner, berlekamp_massey, karatsuba_bytes, ntt_convolution
 
-#### SWE / DevOps (15)
-- **APIs / web** (2) — todo endpoint, API versioning
-- **Bash / scripting** (2) — bash script, deploy with rollback
-- **CLI tools** (1)
-- **Data engineering** (3) — transform, CSV→SQLite, schema migration
-- **Debugging** (3) — grep & fix, runtime error, memory leak
-- **File operations** (2) — create, edit
-- **Refactoring** (1) — multi-file refactor
-- **Testing** (1) — write tests
+#### SWE / DevOps (14)
+- **APIs / web** (1) — api_endpoint
+- **Bash / scripting** (2) — bash_script, deploy_rollback
+- **CLI tools** (1) — cli_tool
+- **Data engineering** (3) — data_transform, csv_to_sqlite, db_migration
+- **Debugging** (3) — grep_and_fix, debug_runtime_error, memory_leak
+- **File operations** (2) — create_file, edit_file
+- **Refactoring** (1) — multi_file_refactor
+- **Testing** (1) — write_tests
 
-#### Security (13)
-- **Auth & access control** (1) — login rate limit
-- **Cipher implementation** (3) — AES key schedule, RSA, UOV
-- **Cryptographic primitives** (3) — PBKDF2, HMAC verify (timing-safe), HMAC from scratch
-- **Input validation** (1) — email regex
-- **Side-channel safety** (1) — constant-time compare
-- **Token management** (3) — secrets token, JWT, password reset
-- **Vulnerability remediation** (1) — SQL injection patches
+#### Security (11)
+- **Auth & access control** (1) — login_ratelimit
+- **Cipher implementation** (3) — aes_keysched, rsa, uov
+- **Cryptographic primitives** (3) — pbkdf2, hmac_verify, hmac_scratch
+- **Input validation** (1) — email_regex
+- **Side-channel safety** (1) — constant_time_compare
+- **Token management** (1) — jwt
+- **Vulnerability remediation** (1) — sql_injection
 
-#### Signal Processing & DSP (1)
-- **Frequency-domain analysis** (1) — FFT-based analysis
-
-> **Bold** = added in the post-2026-05-06 hardening pass (tasks 145–159).
+#### Signal Processing & DSP (4)
+- **FIR filter design** (1) — fir_lowpass
+- **Frequency-domain analysis** (1) — dsp_freq_analysis
+- **IIR / recursive filters** (1) — biquad_iir
+- **Tone detection (Goertzel)** (1) — goertzel
 
 ## Task JSON schema
 
@@ -508,7 +493,10 @@ Each run produces `evals/results/eval-{model_slug}-{timestamp}.json` with:
 {
   "timestamp": "...",
   "model": "...", "model_slug": "...", "base_url": "...",
+  "suite_version": "v4",
   "gpu": {"name": "...", "host_id": "...", "gpu_count": 1, "gpus": [...]},
+  "inference_engine": {"name": "llama.cpp", "build": "...", "commit": "...", "compiler": "...", "source_head": "..."},
+  "runtime": {"python": "3.13.x", "platform": "...", "openai": "...", "mcp": "..."},
   "tasks": [
     {
       "id": "145_segment_tree_lazy",
@@ -532,7 +520,13 @@ Each run produces `evals/results/eval-{model_slug}-{timestamp}.json` with:
 
 `base_id`, `variant_id`, `language`, `variant_count` are present only for
 flattened variant entries. Token fields are 0 if the model server didn't
-return a `usage` block (some legacy llama.cpp builds).
+return a `usage` block (some legacy llama.cpp builds). `suite_version`,
+`inference_engine`, and `runtime` are the provenance stamped on every row so
+v3.5 and v4 scores never get confused and a result is traceable to the exact
+llama.cpp build that produced it. Results are written incrementally
+(`tmp`+`rename` after each task), so a crashed sweep keeps every completed
+task. `--cache-only` runs record `gpu`/`inference_engine` as `{}` (no live
+probe).
 
 ## Adding a task
 
