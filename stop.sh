@@ -9,9 +9,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$SCRIPT_DIR/.run"
 
-_pid_alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
+_pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
+  # Identity-checked liveness: never TERM an unrelated process that recycled
+  # a stale pidfile's PID. Unreadable /proc cmdline → plain kill -0 result.
+  local pat="${2:-start\.sh|llama|mcpo|router}" pid cmd
+  [[ -f "$1" ]] || return 1
+  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
+    [[ "$cmd" =~ $pat ]] || return 1
+  fi
+  return 0
+}
 
-if _pid_alive "$RUN_DIR/supervisor.pid"; then
+if _pid_alive "$RUN_DIR/supervisor.pid" 'start\.sh'; then
   SUP_PID=$(cat "$RUN_DIR/supervisor.pid")
   echo "Stopping supervisor (pid $SUP_PID) gracefully..."
   kill -TERM "$SUP_PID" 2>/dev/null || true
@@ -44,7 +55,7 @@ echo "Stopping agent router..."
 pkill -f "agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping MCPO proxy..."
-pkill -f "mcpo" 2>/dev/null && echo "MCPO proxy stopped." || echo "MCPO proxy was not running."
+pkill -f "mcpo --port 3001" 2>/dev/null && echo "MCPO proxy stopped." || echo "MCPO proxy was not running."
 
 echo "Stopping llama.cpp server..."
 pkill -f "llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."

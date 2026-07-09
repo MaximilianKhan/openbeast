@@ -151,11 +151,13 @@ TOOL_REFS='["server:1","server:2"]'
 # ("server:<id>") — that's what attaches the tools to every chat by default
 # instead of requiring the per-conversation ＋-menu toggle.
 # --- 2. Set native function calling for all models ---
-# Wait briefly for Open WebUI to detect models from llama.cpp
-sleep 3
-
-MODELS=$(curl -s -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
-  | python3 -c "
+# Poll until Open WebUI has detected models from llama.cpp (bounded: up to
+# 30s, 1s interval, proceed on the first non-empty list). A blind sleep
+# either wasted time or — on a slow first scan — missed the models entirely.
+MODELS=""
+for _i in $(seq 1 30); do
+  MODELS=$(curl -s -m 5 -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
+    | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for m in data.get('data', []):
@@ -166,6 +168,9 @@ for m in data.get('data', []):
         fc = params.get('function_calling', '')
         print(f'{mid}|{fc}')
 " 2>/dev/null || true)
+  [[ -n "$MODELS" ]] && break
+  sleep 1
+done
 
 if [[ -z "$MODELS" ]]; then
   echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
@@ -175,7 +180,7 @@ else
   if [[ -n "$SYSTEM_PROMPT" ]]; then
     PROMPT_FILE=$(mktemp)
     echo "$SYSTEM_PROMPT" > "$PROMPT_FILE"
-    docker cp "$PROMPT_FILE" open-webui:/tmp/system-prompt.txt > /dev/null 2>&1
+    docker cp "$PROMPT_FILE" open-webui:/tmp/system-prompt.txt > /dev/null 2>&1 || true
     rm -f "$PROMPT_FILE"
   fi
 
@@ -242,7 +247,8 @@ else:
     )
     db.commit()
     print('    Created model entry (native FC + system prompt + default tools).')
-" 2>/dev/null
+" 2>/dev/null \
+      || echo "    Warning: failed to configure model '$model_id' (docker exec error) — re-run ./scripts/configure-webui.sh" >&2
   done <<< "$MODELS"
 fi
 

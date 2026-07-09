@@ -37,17 +37,35 @@ for arg in "$@"; do
     *)             SERVE_SCRIPT="$arg" ;;
   esac
 done
-SERVE_SCRIPT="${SERVE_SCRIPT:-serve-qwen-27b-uncensored-q5.sh}"
-
-_pid_alive() { # _pid_alive <pidfile>
-  [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null
+_pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
+  # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
+  # unrelated process must not count as "running". If /proc/<pid>/cmdline is
+  # unreadable (exotic /proc, zombie) fall back to the plain liveness check.
+  local pat="${2:-start\.sh|llama|mcpo|router}" pid cmd
+  [[ -f "$1" ]] || return 1
+  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
+    [[ "$cmd" =~ $pat ]] || return 1
+  fi
+  return 0
+}
+# Expected cmdline marker per pidfile (bash ERE).
+_pid_pattern() {
+  case "$1" in
+    supervisor) echo 'start\.sh' ;;
+    llama)      echo 'llama-server' ;;
+    mcpo)       echo 'mcpo' ;;
+    router)     echo 'router\.py' ;;
+    *)          echo 'start\.sh|llama|mcpo|router' ;;
+  esac
 }
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
   for name in supervisor llama mcpo router; do
     f="$RUN_DIR/$name.pid"
-    if _pid_alive "$f"; then
+    if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"
     else
       echo "  $name: not running"
@@ -60,18 +78,28 @@ fi
 
 # BIND_HOST (default 127.0.0.1 — loopback-only; remote devices come in via
 # Tailscale Serve, see scripts/setup-tailscale.sh). lib/conf.sh also exports
-# OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation.
+# OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation, and
+# resolves DEFAULT_SERVE_SCRIPT (conf SERVE_SCRIPT / env OPENBEAST_SERVE_SCRIPT).
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
+SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
   exit 1
 fi
 
+# Probe where services actually listen: loopback answers for loopback and
+# wildcard binds; a specific LAN/tailnet address must be probed directly.
+# Used by the daemon launcher's readiness probes AND the supervisor below.
+case "$BIND_HOST" in
+  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
+  *)                   HEALTH_HOST="$BIND_HOST" ;;
+esac
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
-  if _pid_alive "$SUP_PID_FILE"; then
+  if _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
     echo "Stack already running (supervisor pid $(cat "$SUP_PID_FILE"))." >&2
     echo "Check ./start.sh --status, or ./stop.sh first." >&2
     exit 1
@@ -93,8 +121,24 @@ if [[ $DAEMON -eq 1 ]]; then
     MEM_MAX_BYTES=$(( MEM_TOTAL_KB * 1024 / 100 * MEM_LIMIT_PCT ))
     MEM_MAX_GB=$(( MEM_MAX_BYTES / 1024 / 1024 / 1024 ))
     systemctl --user reset-failed openbeast-stack 2>/dev/null || true
+    # Forward the caller's OPENBEAST_* overrides (plus WebUI admin creds) into
+    # the transient unit — systemd-run starts from a CLEAN environment, so
+    # without this `OPENBEAST_BIND=... ./start.sh -d` silently reverts to
+    # conf/defaults inside the daemon.
+    SETENV_ARGS=()
+    while IFS= read -r _var; do
+      if [[ -n "$_var" ]]; then
+        SETENV_ARGS+=(--setenv="${_var}=${!_var}")
+      fi
+    done < <(compgen -e | grep '^OPENBEAST_' || true)
+    for _var in WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD; do
+      if [[ -n "${!_var:-}" ]]; then
+        SETENV_ARGS+=(--setenv="${_var}=${!_var}")
+      fi
+    done
     systemd-run --user --quiet --collect --unit=openbeast-stack \
       -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
+      ${SETENV_ARGS[@]+"${SETENV_ARGS[@]}"} \
       "$SCRIPT_DIR/start.sh" --_daemonized "$SERVE_SCRIPT"
     echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G)"
   else
@@ -105,17 +149,29 @@ if [[ $DAEMON -eq 1 ]]; then
 
   echo "Waiting for the model to load (log: .run/stack.log)..."
   for i in $(seq 1 300); do
-    if curl -s "http://127.0.0.1:8080/health" >/dev/null 2>&1 \
-       && curl -s -m 2 "http://127.0.0.1:3001/openapi.json" >/dev/null 2>&1; then
+    # Readiness = llama + MCPO (+ router when enabled; it hard-binds
+    # 127.0.0.1 — see agents/router.py — so probe it there like the
+    # supervisor does). Without the router term "Stack is up" would print
+    # before the supervisor's router gate has passed.
+    ROUTER_READY=1
+    if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
+      curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 || ROUTER_READY=0
+    fi
+    if curl -s -m 2 "http://$HEALTH_HOST:8080/health" >/dev/null 2>&1 \
+       && curl -s -m 2 "http://$HEALTH_HOST:3001/openapi.json" >/dev/null 2>&1 \
+       && [[ $ROUTER_READY -eq 1 ]]; then
       echo ""
       echo "Stack is up:"
       echo "  Model server:  http://localhost:8080"
       echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
       echo "  Open WebUI:    http://localhost:3000"
+      if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
+        echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
+      fi
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
     fi
-    if [[ $i -gt 10 ]] && ! _pid_alive "$SUP_PID_FILE"; then
+    if [[ $i -gt 10 ]] && ! _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
       echo "Error: supervisor exited during startup. Last log lines:" >&2
       tail -20 "$RUN_DIR/stack.log" 2>/dev/null >&2 || true
       exit 1
@@ -128,6 +184,14 @@ fi
 
 # ---- supervisor (foreground, or detached when --_daemonized) ---------------
 mkdir -p "$RUN_DIR"
+# A plain foreground `./start.sh` while a daemon stack is live would clobber
+# its pidfiles and fight it for ports/VRAM. (The internal --_daemonized
+# re-exec IS the supervisor being started, so it skips the guard.)
+if [[ $DAEMONIZED -eq 0 ]] && _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
+  echo "Stack already running (supervisor pid $(cat "$SUP_PID_FILE"))." >&2
+  echo "Check ./start.sh --status, or ./stop.sh first." >&2
+  exit 1
+fi
 if [[ $DAEMONIZED -eq 1 ]]; then
   exec >>"$RUN_DIR/stack.log" 2>&1
   echo "=== OpenBeast supervisor start: $(date '+%Y-%m-%d %H:%M:%S') ($SERVE_SCRIPT) ==="
@@ -136,6 +200,9 @@ fi
 # ~/.local/bin, where pip --user puts mcpo. Harmless everywhere else.
 export PATH="$HOME/.local/bin:$PATH"
 echo $$ > "$SUP_PID_FILE"
+# Record which serve script this stack runs so healthcheck.sh --restart can
+# relaunch the SAME model instead of assuming the default.
+echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
 
 # Fail fast on docker container-name conflicts BEFORE the multi-minute model
 # load. Containers named ours but owned by another compose project (e.g.
@@ -181,13 +248,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
 
-# Probe where llama-server actually listens: loopback answers for loopback
-# and wildcard binds; a specific LAN/tailnet address must be probed directly.
-case "$BIND_HOST" in
-  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
-  *)                   HEALTH_HOST="$BIND_HOST" ;;
-esac
-
 launch_llama() {
   echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
   "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
@@ -210,6 +270,12 @@ if ! wait_llama_health; then
   exit 1
 fi
 echo "llama.cpp server ready on http://localhost:8080"
+
+# Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
+# later) regenerates it too, and warming against the pre-regen text would
+# prime a prefix that diverges from the prompt WebUI actually stores.
+# Non-fatal — a broken generator must not block startup.
+python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
 
 # Warm the KV cache with the WebUI system prompt so the user's FIRST chat
 # doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
@@ -245,10 +311,19 @@ echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
 command -v mcpo >/dev/null 2>&1 \
   || { echo "Error: mcpo not found on PATH (pip install --user mcpo puts it in ~/.local/bin)" >&2; exit 1; }
 # Private, persistent workspace for files the chat model writes via the direct
-# tools (conf.sh exports OPENBEAST_FILES_DIR; mcp_server inherits it). 0700 so
-# generated reports/charts aren't world-readable the way the old /tmp default
-# was — matters on a multi-user / tailnet-exposed box.
-mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
+# tools (conf.sh exports OPENBEAST_FILES_DIR; mcp_server inherits it). Created
+# 0700 so generated reports/charts aren't world-readable the way the old /tmp
+# default was — matters on a multi-user / tailnet-exposed box. An EXISTING
+# dir's mode is the user's choice: leave it alone, just warn if it's open.
+if [[ ! -d "$OPENBEAST_FILES_DIR" ]]; then
+  mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
+else
+  _files_mode="$(stat -c '%a' "$OPENBEAST_FILES_DIR" 2>/dev/null || echo '')"
+  if [[ -n "$_files_mode" && "${_files_mode: -2}" != "00" ]]; then
+    echo "Warning: $OPENBEAST_FILES_DIR is group/world-accessible (mode $_files_mode);" >&2
+    echo "         chmod 700 it if the model's files should stay private." >&2
+  fi
+fi
 mcpo --port 3001 --host "$BIND_HOST" -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
 MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"

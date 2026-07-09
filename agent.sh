@@ -20,7 +20,7 @@ if ! python3 -c "import openai" 2>/dev/null; then
   if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
     PIP_FLAGS="--break-system-packages"
   fi
-  pip install --user $PIP_FLAGS -q -r "$REPO_DIR/agents/requirements.txt"
+  python3 -m pip install --user $PIP_FLAGS -q -r "$REPO_DIR/agents/requirements.txt"
 fi
 
 exec python3 "$REPO_DIR/agents/runner.py" "$@"

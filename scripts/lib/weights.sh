@@ -74,13 +74,24 @@ export WEIGHTS_DIR
 # Friendly guard: if the resolved dir is missing, tell the user exactly how to
 # point OpenBeast at their weights instead of failing later with a cryptic
 # "model not found" from llama.cpp.
+#
+# Escape hatch for bootstrap.sh (whose JOB is to create the dir on a fresh
+# machine): with OPENBEAST_WEIGHTS_MKDIR=1 the missing dir is created instead
+# of being fatal — this file is sourced, so `exit 1` would kill the caller.
 if [[ ! -d "$WEIGHTS_DIR" ]]; then
-  echo "Error: weights directory not found: $WEIGHTS_DIR" >&2
-  echo "" >&2
-  echo "Point OpenBeast at your weights in one of these ways:" >&2
-  echo "  • export OPENBEAST_WEIGHTS_DIR=/path/to/weights" >&2
-  echo "  • set WEIGHTS_DIR=/path/to/weights in $REPO_DIR/openbeast.conf" >&2
-  echo "    (copy openbeast.conf.example to get started)" >&2
-  echo "  • create the default sibling folder: $REPO_DIR/../weights" >&2
-  exit 1
+  if [[ "${OPENBEAST_WEIGHTS_MKDIR:-0}" == "1" ]]; then
+    mkdir -p "$WEIGHTS_DIR" || {
+      echo "Error: could not create weights directory: $WEIGHTS_DIR" >&2
+      exit 1
+    }
+  else
+    echo "Error: weights directory not found: $WEIGHTS_DIR" >&2
+    echo "" >&2
+    echo "Point OpenBeast at your weights in one of these ways:" >&2
+    echo "  • export OPENBEAST_WEIGHTS_DIR=/path/to/weights" >&2
+    echo "  • set WEIGHTS_DIR=/path/to/weights in $REPO_DIR/openbeast.conf" >&2
+    echo "    (copy openbeast.conf.example to get started)" >&2
+    echo "  • create the default sibling folder: $REPO_DIR/../weights" >&2
+    exit 1
+  fi
 fi

@@ -18,8 +18,10 @@
 #   WEIGHTS_DIR=~/models/gguf
 #   WEIGHTS_DIR=/run/media/max/USB-SSD/weights
 #   WEIGHTS_DIR=/mnt/nas/ai/weights
-
-WEIGHTS_DIR=../weights
+#
+# Leave commented to use the default resolution above (an existing ./weights
+# inside the repo, else ../weights next to it — bootstrap.sh creates it).
+#WEIGHTS_DIR=../weights
 
 # ---------------------------------------------------------------------------
 # Build  (see docs/HARDWARE_PROFILES.md)
@@ -41,6 +43,16 @@ WEIGHTS_DIR=../weights
 # scope is additionally capped at 8G regardless of this setting.
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
+
+# Serve script start.sh launches when none is given on the command line
+# (also used by healthcheck.sh --restart when no supervisor is running).
+# Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
+#SERVE_SCRIPT=serve-qwen-27b-uncensored-q5.sh
+
+# Private workspace for files the CHAT model reads/writes via the direct
+# tools (created 0700 by start.sh; spawned agents use their own workdir).
+# Env override: $OPENBEAST_FILES_DIR.
+#FILES_DIR=~/openbeast-files
 
 # ---------------------------------------------------------------------------
 # Network / remote access  (see docs/REMOTE_ACCESS_PLAN.md and

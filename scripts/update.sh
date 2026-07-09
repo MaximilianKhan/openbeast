@@ -85,8 +85,10 @@ update_llama() {
   # A build dir configured under an old repo path (the repo was moved or
   # renamed) has a stale CMake cache and every rebuild fails confusingly.
   # Detect and wipe rather than let cmake error out.
+  # -xF: literal whole-line match — a repo path containing regex chars
+  # (dots, brackets) must not silently change what this matches.
   if [[ -f "$build/CMakeCache.txt" ]] \
-     && ! grep -q "CMAKE_HOME_DIRECTORY:INTERNAL=$src\$" "$build/CMakeCache.txt"; then
+     && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$build/CMakeCache.txt"; then
     warn "build/ was configured under a different path — wiping for a clean reconfigure"
     rm -rf "$build"
   fi

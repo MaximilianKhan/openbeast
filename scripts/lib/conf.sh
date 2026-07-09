@@ -49,6 +49,10 @@ LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
 GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)}"
+# Serve script launched when start.sh gets no positional arg — also what
+# healthcheck.sh --restart falls back to when no supervisor (and no
+# .run/serve-script record) exists. Conf key SERVE_SCRIPT.
+DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT || echo serve-qwen-27b-uncensored-q5.sh)}"
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of

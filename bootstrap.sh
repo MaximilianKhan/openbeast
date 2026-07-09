@@ -45,12 +45,26 @@ if [[ -r /etc/os-release ]]; then
     *fedora*|*rhel*) DISTRO="fedora" ;;
   esac
 fi
-pkg_install_hint() { # $1 = generic package concept
+pkg_install_hint() { # $1 = package concept: git|cmake|curl|toolchain|python|pip|...
+  # Map the concept to the distro's real package name(s) first — a Debian
+  # user must never be told to install Arch's base-devel (and vice versa).
+  local pkg="$1"
+  case "$DISTRO:$1" in
+    arch:toolchain)   pkg="base-devel" ;;
+    debian:toolchain) pkg="build-essential" ;;
+    fedora:toolchain) pkg="gcc gcc-c++ make" ;;
+    arch:python)      pkg="python" ;;
+    debian:python)    pkg="python3" ;;
+    fedora:python)    pkg="python3" ;;
+    arch:pip)         pkg="python-pip" ;;
+    debian:pip)       pkg="python3-pip" ;;
+    fedora:pip)       pkg="python3-pip" ;;
+  esac
   case "$DISTRO" in
-    arch)   echo "sudo pacman -S --needed $1" ;;
-    debian) echo "sudo apt-get install -y $1" ;;
-    fedora) echo "sudo dnf install -y $1" ;;
-    *)      echo "install '$1' with your package manager" ;;
+    arch)   echo "sudo pacman -S --needed $pkg" ;;
+    debian) echo "sudo apt-get install -y $pkg" ;;
+    fedora) echo "sudo dnf install -y $pkg" ;;
+    *)      echo "install '$pkg' with your package manager" ;;
   esac
 }
 
@@ -62,10 +76,20 @@ need() { # need <cmd> <concept-for-hint> <why>
     warn "$1 missing — $3"; echo "      → $(pkg_install_hint "$2")"; MISSING=1
   fi
 }
-need git   git             "needed to fetch llama.cpp"
-need cmake  cmake          "needed to build llama.cpp"
-need gcc    "gcc base-devel" "C/C++ toolchain for the build"
-need python3 python        "runs the MCP tool server + eval harness"
+need git    git       "needed to fetch llama.cpp"
+need cmake  cmake     "needed to build llama.cpp"
+need make   toolchain "drives the llama.cpp build"
+need gcc    toolchain "C/C++ toolchain for the build"
+need curl   curl      "health probes + installers use it"
+need python3 python   "runs the MCP tool server + eval harness"
+# pip as a module — some distros ship python3 without it.
+if python3 -m pip --version >/dev/null 2>&1; then
+  ok "python3 -m pip present"
+else
+  warn "python3 -m pip missing — needed to install the Python deps"
+  echo "      → $(pkg_install_hint pip)"
+  MISSING=1
+fi
 
 # GPU + driver — detect vendor/VRAM, print the profile recommendation, and
 # resolve the llama.cpp build backend (GPU_BACKEND in openbeast.conf, or
@@ -106,6 +130,16 @@ fi
 if [[ $MINIMAL -eq 0 ]]; then
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     ok "Docker daemon reachable"
+    if docker compose version >/dev/null 2>&1; then
+      ok "docker compose (v2 plugin) present"
+    else
+      warn "'docker compose' not working — the compose v2 PLUGIN is required"
+      echo "      → install the docker-compose-plugin package (Debian/Ubuntu:"
+      echo "        docker-compose-plugin; Arch: docker-compose; Fedora:"
+      echo "        docker-compose-plugin). The legacy python docker-compose"
+      echo "        v1 binary is NOT enough."
+      MISSING=1
+    fi
   else
     warn "Docker not usable — needed for Open WebUI + SearXNG (skip with --minimal)."
     echo "      → install Docker, 'sudo systemctl enable --now docker', and add"
@@ -176,16 +210,15 @@ command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
 
 # ---- 4. default model weight (skip if present) -----------------------------
 step "Default model weight (~21 GB — the one big download)"
-# Pre-create the default weights dir BEFORE sourcing the resolver: on a
-# fresh clone no weights dir exists anywhere and weights.sh hard-exits with
+# Resolve the weights dir the same way the serve scripts do. On a fresh
+# machine no weights dir exists anywhere and weights.sh would hard-exit with
 # its "point OpenBeast at your weights" guidance — correct for serve scripts,
-# fatal for the bootstrapper whose job is to create it. If the user already
-# configured a custom dir (env/conf), the resolver prefers that as usual.
-mkdir -p "$REPO_DIR/weights"
-# Resolve the weights dir the same way the serve scripts do.
+# fatal for the bootstrapper whose job is to create it. OPENBEAST_WEIGHTS_MKDIR
+# tells the resolver to mkdir the RESOLVED dir instead (custom env/conf paths
+# are still preferred as usual).
+export OPENBEAST_WEIGHTS_MKDIR=1
 source "$REPO_DIR/scripts/lib/weights.sh"
-: "${WEIGHTS_DIR:=$REPO_DIR/weights}"
-mkdir -p "$WEIGHTS_DIR"
+unset OPENBEAST_WEIGHTS_MKDIR
 WEIGHT_FILE="Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
 HF_REPO="HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive"
 if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
@@ -214,8 +247,10 @@ fi
 
 # ---- 5. Docker images for the frontends ------------------------------------
 step "Frontend images (Open WebUI + SearXNG)"
-docker pull -q ghcr.io/open-webui/open-webui:main >/dev/null && ok "open-webui image ready"
-docker pull -q searxng/searxng:latest             >/dev/null && ok "searxng image ready"
+docker pull -q ghcr.io/open-webui/open-webui:main >/dev/null && ok "open-webui image ready" \
+  || warn "open-webui image pull FAILED (network/registry?) — ./start.sh will retry the pull"
+docker pull -q searxng/searxng:latest             >/dev/null && ok "searxng image ready" \
+  || warn "searxng image pull FAILED (network/registry?) — ./start.sh will retry the pull"
 
 # ---- OpenCode (optional terminal frontend) ---------------------------------
 if ! command -v opencode >/dev/null 2>&1; then

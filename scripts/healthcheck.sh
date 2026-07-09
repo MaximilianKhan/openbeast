@@ -21,6 +21,13 @@ MCPO_URL="${MCPO_URL:-http://localhost:3001}"
 WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
 SEARXNG_URL="${SEARXNG_URL:-http://localhost:8888}"
 
+# Where restarted services actually answer (same mapping start.sh uses):
+# loopback for loopback/wildcard binds, the address itself otherwise.
+case "$BIND_HOST" in
+  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
+  *)                   HEALTH_HOST="$BIND_HOST" ;;
+esac
+
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
 
@@ -68,7 +75,17 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
         pkill -f "llama-server" 2>/dev/null || true
         sleep 2
       fi
-      "$SCRIPT_DIR/serve-qwen-27b-uncensored-q5.sh" &
+      # Relaunch the serve script the stack was STARTED with (.run/serve-script,
+      # recorded by start.sh); fall back to the configured default.
+      SERVE_SCRIPT_NAME="$DEFAULT_SERVE_SCRIPT"
+      if [[ -f "$REPO_DIR/.run/serve-script" ]]; then
+        _recorded="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || true)"
+        if [[ -n "$_recorded" && -x "$SCRIPT_DIR/$_recorded" ]]; then
+          SERVE_SCRIPT_NAME="$_recorded"
+        fi
+      fi
+      echo "       → launching $SERVE_SCRIPT_NAME"
+      "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
       echo "       → started (waiting for health...)"
       for i in $(seq 1 180); do
         if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
@@ -85,11 +102,31 @@ fi
 if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi"; then
   if $RESTART; then
     echo "       → restarting MCPO..."
-    pkill -f "mcpo" 2>/dev/null || true
+    pkill -f "mcpo --port 3001" 2>/dev/null || true
     sleep 1
+    # Mirror start.sh: the chat model's file workspace must exist and be
+    # private before mcp_server (spawned by mcpo) starts using it.
+    if [[ ! -d "$OPENBEAST_FILES_DIR" ]]; then
+      mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
+    fi
     mcpo --port 3001 --host "$BIND_HOST" -- python3 "$REPO_DIR/agents/mcp_server.py" &
-    sleep 3
-    echo "       → restarted"
+    MCPO_NEW_PID=$!
+    MCPO_OK=0
+    for _i in $(seq 1 15); do
+      if curl -s --max-time 2 "http://$HEALTH_HOST:3001/openapi.json" 2>/dev/null | grep -qi openapi; then
+        MCPO_OK=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ $MCPO_OK -eq 1 ]]; then
+      # Keep the pidfile honest so start.sh --status / stop.sh see this pid.
+      mkdir -p "$REPO_DIR/.run"
+      echo "$MCPO_NEW_PID" > "$REPO_DIR/.run/mcpo.pid"
+      echo "       → restarted (pid $MCPO_NEW_PID)"
+    else
+      echo "       → restart FAILED: MCPO not serving after 15s (check its output above)"
+    fi
   fi
 fi
 
@@ -128,9 +165,15 @@ except Exception: print('no')
     echo "  DOWN Tailscale (remote access)"
     UNHEALTHY=$((UNHEALTHY + 1))
     if $RESTART; then
-      echo "       → restarting tailscaled..."
-      sudo systemctl restart tailscaled
-      sleep 3
+      # -n: never hang an unattended healthcheck on a sudo password prompt.
+      if sudo -n true 2>/dev/null; then
+        echo "       → restarting tailscaled..."
+        sudo -n systemctl restart tailscaled
+        sleep 3
+      else
+        echo "       → skipping tailscaled restart (needs passwordless sudo);"
+        echo "         run manually: sudo systemctl restart tailscaled"
+      fi
     fi
   fi
 fi
@@ -140,7 +183,8 @@ echo ""
 if command -v nvidia-smi &>/dev/null; then
   VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
   VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
-  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 ]]; then
+  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
+        || -z "$VRAM_USED" || ! "$VRAM_USED" =~ ^[0-9]+$ ]]; then
     echo "  GPU VRAM: unavailable (nvidia-smi returned no data)"
     VRAM_PCT=0
   else
