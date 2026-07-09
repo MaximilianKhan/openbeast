@@ -17,6 +17,9 @@ curated, opinionated, batteries-included distribution that wires them into a
 workstation that just works — measured-VRAM configs, speculative decoding, a
 reproducible eval leaderboard, and secure remote access, out of the box.
 
+<!-- TODO(max): hero screenshot or GIF here — WebUI chat with a tool call in
+     flight is the money shot. `docs/assets/` is the intended home. -->
+
 ## Install (one command)
 
 ```bash
@@ -176,45 +179,17 @@ them. See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
 
-## Manual install (the long way)
+## Manual install
 
-`./bootstrap.sh` (above) automates all of this. These are the same steps by
-hand, if you'd rather run them yourself or adapt them. Assumes NVIDIA driver,
-CUDA, Docker, and Python 3.10+ are installed:
+`./bootstrap.sh` (above) automates everything: GPU detection, the llama.cpp
+build, Python deps, the default model download, and frontend images — each
+step idempotent, so a failed run resumes where it left off. If you'd rather
+run (or adapt) the steps by hand, the complete walkthrough lives in one
+place: **[docs/INSTALL.md](docs/INSTALL.md)** — prerequisites, per-distro
+toolchain setup, GPU/driver notes, every model variant, and troubleshooting.
 
-```bash
-# 1. Clone and enter the repo
-git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
+## Using the stack
 
-# 2. Build llama.cpp with CUDA. CUDA_ARCH is auto-detected from your GPU
-#    (5090=120, 4090=89, 3090=86). nvcc lives in /opt/cuda/bin on Arch —
-#    add it to PATH so CMake finds it.
-export PATH="/opt/cuda/bin:$PATH"
-CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
-git clone https://github.com/ggml-org/llama.cpp.git
-(cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH:-120}" \
-                 && cmake --build build --config Release -j$(nproc))
-
-# 3. Install Python deps + Hugging Face CLI
-pip install --user --break-system-packages huggingface-hub -r agents/requirements.txt
-
-# 4. Download the default model (or pick another from docs/INSTALL.md)
-#    --local-dir can be anywhere — see "Model weights location" below.
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
-
-# 5. Install OpenCode (terminal frontend)
-curl -fsSL https://opencode.ai/install | bash
-
-# 6. Pull Open WebUI image (browser frontend)
-docker pull ghcr.io/open-webui/open-webui:main
-
-# 7. Launch the full stack
-chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
-./start.sh
-```
-
-Then:
 ```bash
 # Browser chat
 xdg-open http://localhost:3000
@@ -225,8 +200,6 @@ opencode
 # Autonomous background agent
 ./agent.sh "add tests for auth.py"
 ```
-
-See **[docs/INSTALL.md](docs/INSTALL.md)** for prerequisites, GPU/driver setup, alternate models, and troubleshooting.
 
 ## Remote access (Tailscale)
 

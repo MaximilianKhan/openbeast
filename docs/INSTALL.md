@@ -43,6 +43,8 @@ export PATH=/opt/cuda/bin:$PATH
 
 # Python deps + Hugging Face CLI
 pip install --user --break-system-packages huggingface-hub -r agents/requirements.txt
+# pip installs the `hf` CLI to ~/.local/bin — make sure it's on PATH:
+export PATH="$HOME/.local/bin:$PATH"   # add to your shell rc to persist
 
 # Default model — uncensored 27B fine-tune (#2 on the v3.5 leaderboard, 96.16%)
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
@@ -51,7 +53,7 @@ hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
 # Frontends
 curl -fsSL https://opencode.ai/install | bash
 docker pull ghcr.io/open-webui/open-webui:main
-docker pull searxng/searxng
+docker pull searxng/searxng:latest
 
 # Make scripts executable (in case clone didn't preserve the bit)
 chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
@@ -142,10 +144,12 @@ Install the Hugging Face CLI if you don't have it:
 
 ```bash
 pip install --user --break-system-packages huggingface-hub
+export PATH="$HOME/.local/bin:$PATH"   # pip puts `hf` here — persist in your shell rc
 ```
 
 (The `--break-system-packages` flag is Arch-specific; on Debian/Ubuntu use a
-venv or `pipx` instead.)
+venv or `pipx` instead. If you later see `hf: command not found`, the PATH
+line above is what's missing.)
 
 Weights do not have to live inside the repo. OpenBeast resolves the weights
 directory (env var → `openbeast.conf` → `./weights` → `../weights`) — see
@@ -324,7 +328,7 @@ Available at http://localhost:3000 once the stack is running.
 ### SearXNG (private web search backend)
 
 ```bash
-docker pull searxng/searxng
+docker pull searxng/searxng:latest
 ```
 
 Used by the `web_search` MCP tool. Our `docker-compose.yml` mounts
@@ -566,7 +570,9 @@ using the GPU, or the context length is too high. Override with a smaller contex
 See `REFERENCE.md` for measured VRAM at different context lengths. The OS/desktop
 compositor uses ~2GB of GPU VRAM — always leave at least 2GB headroom.
 
-**`hf: command not found`** — install the Hugging Face CLI (step 2 above).
+**`hf: command not found`** — two causes: the CLI isn't installed (step 2
+above), or — most common — pip installed it to `~/.local/bin`, which isn't on
+your PATH. Fix: `export PATH="$HOME/.local/bin:$PATH"` (add to your shell rc).
 Note: `huggingface-cli` is deprecated, use `hf` instead.
 
 **`permission denied: ./start.sh`** — clone didn't preserve the executable bit.

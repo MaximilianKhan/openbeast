@@ -30,17 +30,18 @@ jobs:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: python -m pytest tests/test_tools.py -q
 
-      - name: Process hygiene tests
-        run: python tests/test_proc_hygiene.py
+      - name: Full pytest suite
+        env:
+          OPENBEAST_SKIP_NETWORK_TESTS: "1"
+        run: python -m pytest tests/ -q
 
-      - name: Eval cache tests
-        run: python tests/test_cache.py
+      # Docs must cite the generated suite counts — kills the hand-written
+      # "313 / 323 / 223 units" drift class at the PR gate.
+      - name: Doc-drift check (suite counts)
+        run: python evals/suite_stats.py --check
 
-      - name: Health recovery tests
-        run: python tests/test_health_recovery.py
-
-      - name: Tool efficiency tests
-        run: python tests/test_tool_efficiency.py
+      - name: Variant spec audit
+        run: python tests/audit_variants.py
 
       - name: Shell syntax sweep
         run: |
