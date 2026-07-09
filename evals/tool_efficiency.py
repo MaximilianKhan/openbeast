@@ -132,7 +132,9 @@ def compute_metrics(per_log: list[dict]) -> dict:
                 if p:
                     unique_paths.add(p)
                     log_paths.add(p)
-            elif name in ("start_agent", "start_skill_agent", "list_skills", "load_skill"):
+            # "skill" is the current tool; list_skills/load_skill kept so
+            # historical logs (pre-2026-07-08 collapse) still classify.
+            elif name in ("start_agent", "start_skill_agent", "skill", "list_skills", "load_skill"):
                 agent_count += 1
             else:
                 other_count += 1
@@ -223,7 +225,7 @@ def print_table(per_model_metrics: dict[str, dict]) -> None:
     print("Legend: edit:wr = edit_file/write_file ratio (higher = more targeted)")
     print("        bash/T = bash calls per task (lower = more targeted)")
     print("        rd_dup = per-log avg of read_file calls / unique paths read (1.0 = no rereads within any task)")
-    print("        agent  = total start_agent / list_skills / load_skill / start_skill_agent calls")
+    print("        agent  = total start_agent / skill / start_skill_agent calls")
 
 
 def print_drilldown(slug: str, entries: list[dict]) -> None:

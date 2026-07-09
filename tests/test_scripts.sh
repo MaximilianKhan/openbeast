@@ -383,7 +383,56 @@ if [[ "$ROUTER_URL" == "http://localhost:8088/v1" ]]; then
 else
   fail "AGENT_ROUTER=true didn't route OPENBEAST_MODEL_URL (got: ${ROUTER_URL:-empty})"
 fi
+
+# Distributed agents Phase 1 (docs/DISTRIBUTED_AGENTS_PLAN.md):
+# OPENBEAST_AGENT_INFERENCE_URL must be ABSENT (not exported empty) when
+# unset, and exported when set via the conf key.
+AIU_UNSET=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s' \"\${OPENBEAST_AGENT_INFERENCE_URL-ABSENT}\"") || AIU_UNSET="(source failed)"
+if [[ "$AIU_UNSET" == "ABSENT" ]]; then
+  pass "conf.sh leaves OPENBEAST_AGENT_INFERENCE_URL unset by default (no empty export)"
+else
+  fail "conf.sh exported OPENBEAST_AGENT_INFERENCE_URL without config (got: '${AIU_UNSET}')"
+fi
+printf 'AGENT_INFERENCE_URL=https://worker.tail.ts.net:8443/v1\n' > "$CONF_SCRATCH/openbeast.conf"
+AIU_SET=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s' \"\${OPENBEAST_AGENT_INFERENCE_URL-ABSENT}\"") || AIU_SET="(source failed)"
+if [[ "$AIU_SET" == "https://worker.tail.ts.net:8443/v1" ]]; then
+  pass "conf.sh exports OPENBEAST_AGENT_INFERENCE_URL from the AGENT_INFERENCE_URL conf key"
+else
+  fail "conf.sh didn't export AGENT_INFERENCE_URL from conf (got: '${AIU_SET}')"
+fi
+rm -f "$CONF_SCRATCH/openbeast.conf"
+if grep -qE '^#?AGENT_INFERENCE_URL=' "$REPO_DIR/openbeast.conf.example"; then
+  pass "openbeast.conf.example documents AGENT_INFERENCE_URL"
+else
+  fail "openbeast.conf.example doesn't document AGENT_INFERENCE_URL"
+fi
+# agent.sh must default --base-url from the exported worker endpoint.
+if grep -q 'OPENBEAST_AGENT_INFERENCE_URL' "$REPO_DIR/agent.sh" \
+   && grep -q -- '--base-url' "$REPO_DIR/agent.sh"; then
+  pass "agent.sh defaults --base-url from OPENBEAST_AGENT_INFERENCE_URL"
+else
+  fail "agent.sh doesn't honor OPENBEAST_AGENT_INFERENCE_URL"
+fi
 rm -rf "$CONF_SCRATCH"
+
+# --- 11. Collapsed skill tool surface (PRODUCTION_ROADMAP §B, 2026-07-08) ---
+# list_skills/load_skill/reload_skills were folded into the single `skill`
+# tool; no stale references may survive in the model-facing prompt.
+echo ""
+echo "Skill tool surface:"
+if ! grep -qE 'list_skills|load_skill|reload_skills' "$REPO_DIR/system-prompt-tools.md"; then
+  pass "system-prompt-tools.md has no stale list_skills/load_skill/reload_skills references"
+else
+  fail "system-prompt-tools.md still references collapsed skill tools"
+fi
+if ! grep -qE 'def (list_skills|load_skill|reload_skills)' "$REPO_DIR/agents/mcp_server.py" \
+   && grep -q 'def skill(' "$REPO_DIR/agents/mcp_server.py"; then
+  pass "mcp_server.py exposes the unified skill() tool (old trio removed)"
+else
+  fail "mcp_server.py skill tool collapse incomplete"
+fi
 
 # --- Summary ---
 echo ""

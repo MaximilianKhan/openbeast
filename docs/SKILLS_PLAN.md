@@ -16,8 +16,10 @@ disclosure via MCP tools.
 A skill in this stack is:
 1. A folder with `SKILL.md` (YAML-ish frontmatter + markdown instructions) and
    optional resources (checklists, formulas, examples)
-2. Discoverable via the MCP server (`list_skills()`)
-3. Loadable on-demand by the model (`load_skill(name)`)
+2. Discoverable via the MCP server (`skill()` — index; historically
+   `list_skills`/`load_skill`/`reload_skills`, collapsed into one
+   `skill(name?)` tool 2026-07-08)
+3. Loadable on-demand by the model (`skill(name)`)
 4. Composable with long-running agents (`start_skill_agent(skill, task, ...)`)
 
 ## Where they live

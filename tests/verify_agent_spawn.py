@@ -5,7 +5,7 @@ the meta-tools (start_agent, skills) when it should?
 Faithful to production: uses the real system prompt (system-prompt.md +
 system-prompt-tools.md, incl. the injected skill index) and a realistic
 OpenAI-format tool menu (base file/shell tools + start_agent/check_agent +
-list_skills/load_skill), then checks the model's tool_calls on prompts that
+skill), then checks the model's tool_calls on prompts that
 SHOULD trigger a background agent, SHOULD trigger a skill, or should do NEITHER
 (controls). Talks straight to llama-server /v1 — the same decision the model
 makes behind MCPO/WebUI.
@@ -41,12 +41,9 @@ MCP_TOOLS = [
     {"type": "function", "function": {"name": "check_agent",
         "description": "Check a background agent's progress by its ID.",
         "parameters": {"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]}}},
-    {"type": "function", "function": {"name": "list_skills",
-        "description": "List curated expertise skills (name + description).",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "load_skill",
-        "description": "Load the full instructions for one skill by name, then follow them.",
-        "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "skill",
+        "description": "Curated expertise skills. Call with no name for the index of every skill; call with a name to load that skill's full instructions, then follow them.",
+        "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}},
 ]
 # Base tools minus task_done (which is runner-internal, not a WebUI tool).
 BASE = [t for t in TOOL_SCHEMAS if t["function"]["name"] != "task_done"]
@@ -66,7 +63,7 @@ CASES = [
     ("Read /etc/hostname and tell me the machine name.", "none"),
 ]
 
-SKILL_TOOLS = {"list_skills", "load_skill", "start_skill_agent"}
+SKILL_TOOLS = {"skill", "start_skill_agent"}
 
 
 def ask(prompt):

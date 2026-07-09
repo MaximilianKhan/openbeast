@@ -53,7 +53,7 @@ question, one small edit, reading a file, a single command.
 **Tools are actions — do a thing now. Skills are methodologies — how to
 approach a whole class of problem.** At the START of any open-ended task
 (a review, an audit, a debugging session, authoring an eval task), scan
-this menu. If one matches, call `load_skill(name)` FIRST and follow it —
+this menu. If one matches, call `skill(name)` FIRST and follow it —
 skills encode hard-won lessons; don't reinvent them. For a quick factual
 question or a one-file edit, skip skills entirely.
 
@@ -76,9 +76,8 @@ Your skills:
 - **`test-driven-development`** — Test-driven development discipline — red, green, refactor. Activate when the user asks to TDD a feature, when adding non-trivial functionality to a codebase that has tests, or when the user explicitly wants test-first.
 <!-- SKILL_INDEX_END -->
 
-- **`load_skill(name)`** — Pull the full instructions for one skill from the menu above, then follow them.
+- **`skill(name)`** — Pull the full instructions for one skill from the menu above, then follow them. Call with no name to re-list the library (it re-scans disk, so it's also the way to see skills edited after this prompt was built).
 - **`start_skill_agent(skill, task)`** — Spawn a sub-agent with the skill pre-activated as authoritative guidance. Use for specialized long-running work — parallel multi-pass review, deep-counsel on intractable problems, eval task authoring.
-- **`list_skills`** / **`reload_skills`** — Re-list or re-scan the skill library; only needed if skills were edited after this prompt was built.
 
 ### Tool-Use Principles
 1. **Explore before you edit.** Read the code, grep for patterns, understand the structure. Then make changes.
@@ -86,4 +85,4 @@ Your skills:
 3. **Verify your work.** After editing, run tests or build commands to confirm nothing broke.
 4. **Search when unsure.** If you don't know a library API or error message, use `web_search` + `fetch` before guessing.
 5. **Delegate heavy work.** If a task has independent subtasks, spawn agents with `start_agent` and work in parallel.
-6. **Use skills when they fit.** The skill menu is printed above — no discovery call needed. Open-ended task → check the menu → `load_skill(name)` before diving in, or `start_skill_agent(skill, task)` to delegate the whole job to a specialized sub-agent.
+6. **Use skills when they fit.** The skill menu is printed above — no discovery call needed. Open-ended task → check the menu → `skill(name)` before diving in, or `start_skill_agent(skill, task)` to delegate the whole job to a specialized sub-agent.

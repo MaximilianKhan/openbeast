@@ -47,8 +47,8 @@ The model discovers them via MCP and loads them on demand. See
 From any MCP-aware client (OpenCode, Open WebUI):
 
 ```
-list_skills()                       → see what's available + descriptions
-load_skill("code-review")           → read the full instructions inline
+skill()                             → see what's available + descriptions
+skill("code-review")                → read the full instructions inline
 start_skill_agent("code-review",    → spawn a sub-agent with the skill activated
                   "review /tmp/changes.patch")
 ```
@@ -61,7 +61,8 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
 1. `mkdir -p skills/my-skill/`
 2. Write `skills/my-skill/SKILL.md` with frontmatter + body (see schema below)
 3. Run `./scripts/install-skills.sh` to verify it's discoverable
-4. Restart the MCP server (or call `reload_skills()` from a client)
+4. It's live immediately — `skill()` rescans the skills directory on every
+   index call (no restart needed)
 
 `tests/test_scripts.sh` validates that every `SKILL.md` parses cleanly and
 has the required frontmatter fields.

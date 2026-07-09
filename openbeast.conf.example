@@ -87,6 +87,18 @@
 #WEBUI_ADMIN_PASSWORD=
 
 # ---------------------------------------------------------------------------
+# Distributed agents  (see docs/DISTRIBUTED_AGENTS_PLAN.md)
+# ---------------------------------------------------------------------------
+
+# Opt-in main→worker split: a worker box on your tailnet serves the model
+# inference for spawned agents, while the agents still execute (files, shell)
+# on THIS machine — tokens flow over your tailnet, file contents the agents
+# read go along as model context, nothing leaves your machines. Empty or
+# commented (the default) = agents use the local model server.
+# Env override: $OPENBEAST_AGENT_INFERENCE_URL.
+#AGENT_INFERENCE_URL=https://worker.tailnet.ts.net:8443/v1
+
+# ---------------------------------------------------------------------------
 # Agent-spawn router  (see docs/RESEARCH_FINDINGS.md §8-11)
 # ---------------------------------------------------------------------------
 
@@ -101,3 +113,21 @@
 # pass through untouched (thinking stays ON). Default: false.
 #AGENT_ROUTER=false
 #ROUTER_PORT=8088
+
+# The router only spawns agents for admin turns (Open WebUI forwards
+# X-OpenWebUI-User-Role; guests pass through untouched). When true, an ABSENT
+# role header also blocks spawning (fail-closed) — set on hardened multi-user
+# installs where header forwarding might be disabled. Default: false
+# (single-user installs send no headers and should keep working).
+# Env override: $OPENBEAST_ROUTER_REQUIRE_IDENTITY. See docs/RBAC_PLAN.md.
+#ROUTER_REQUIRE_IDENTITY=false
+
+# ---------------------------------------------------------------------------
+# Sandboxed execution  (see docs/SANDBOXING.md)
+# ---------------------------------------------------------------------------
+
+# Kernel-level confinement (Landlock + seccomp) wrapped around every model
+# bash command. Install with scripts/setup-sandlock.sh, then uncomment.
+# Opt-in until the eval suite is validated green under confinement.
+# Env override: $OPENBEAST_BASH_WRAPPER.
+#BASH_WRAPPER=sandlock run -p openbeast -w "$PWD" --

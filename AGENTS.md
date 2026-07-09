@@ -10,13 +10,13 @@ start of a session.
 
 ## Use skills first
 
-You have access to **14 curated skills** via three MCP tools:
+You have access to **14 curated skills** via two MCP tools:
 
-- `list_skills()` — see all available skills (one line each)
-- `load_skill(name)` — read the full skill body inline
+- `skill()` — see all available skills (one line each; rescans disk every call)
+- `skill(name)` — read the full skill body inline
 - `start_skill_agent(skill, task, ...)` — spawn a sub-agent with the skill activated
 
-**Before approaching any non-trivial task, call `list_skills`** and check
+**Before approaching any non-trivial task, call `skill()`** and check
 whether one matches. Skills encode hard-won lessons — don't reinvent them.
 
 ## Task → skill mapping
@@ -81,7 +81,8 @@ are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 - Repo skills: `skills/<name>/SKILL.md` (this directory)
 - Global skills: `~/.local/share/local-llm-skills/<name>/SKILL.md`
 - Repo wins on name collision
-- After editing a skill: call `reload_skills()` (no need to restart MCP)
+- After editing a skill: just call `skill()` — the index rescans disk on
+  every call (no need to restart MCP)
 
 ### Commit and PR style
 
@@ -99,10 +100,9 @@ are overhead. Use them when the task involves design choices, multi-step
 reasoning, or domain-specific discipline. The bar: would loading the skill
 prevent a real failure mode? If yes, load it. If no, just do the task.
 
-## Tool surface (17 MCP tools)
+## Tool surface (15 MCP tools)
 
-Beyond skills (`list_skills`, `load_skill`, `start_skill_agent`,
-`reload_skills`), you have:
+Beyond skills (`skill`, `start_skill_agent`), you have:
 - File / code: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - Shell: `bash`
 - Web: `fetch`, `web_search` (via local SearXNG)

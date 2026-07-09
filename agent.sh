@@ -12,6 +12,10 @@
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Resolve stack config (exports OPENBEAST_AGENT_INFERENCE_URL when the
+# distributed-agents worker endpoint is set via env or openbeast.conf).
+source "$REPO_DIR/scripts/lib/conf.sh"
+
 # Install deps if needed. --break-system-packages only where PEP-668
 # requires it (Arch, newer Debian) — older pip errors on the unknown flag.
 if ! python3 -c "import openai" 2>/dev/null; then
@@ -23,4 +27,18 @@ if ! python3 -c "import openai" 2>/dev/null; then
   python3 -m pip install --user $PIP_FLAGS -q -r "$REPO_DIR/agents/requirements.txt"
 fi
 
-exec python3 "$REPO_DIR/agents/runner.py" "$@"
+# Distributed agents (opt-in): default --base-url to the configured worker
+# endpoint when set and the caller didn't pass one explicitly (explicit
+# --base-url always wins). Local files, remote brains.
+ARGS=("$@")
+if [[ -n "${OPENBEAST_AGENT_INFERENCE_URL:-}" ]]; then
+  has_base_url=false
+  for arg in "$@"; do
+    [[ "$arg" == "--base-url" || "$arg" == --base-url=* ]] && has_base_url=true
+  done
+  if [[ "$has_base_url" == false ]]; then
+    ARGS+=(--base-url "$OPENBEAST_AGENT_INFERENCE_URL")
+  fi
+fi
+
+exec python3 "$REPO_DIR/agents/runner.py" ${ARGS[@]+"${ARGS[@]}"}

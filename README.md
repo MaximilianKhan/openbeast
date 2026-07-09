@@ -7,7 +7,7 @@
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
-17-tool arsenal (shell, file editing, web search, background sub-agents), a
+15-tool arsenal (shell, file editing, web search, background sub-agents), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
 
@@ -23,6 +23,10 @@ reproducible eval leaderboard, and secure remote access, out of the box.
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ./bootstrap.sh
 ```
+
+Not sure your box is ready? `./bootstrap.sh --preflight` runs every
+prerequisite check read-only and prints a ✓/✗ report — nothing installed,
+nothing written.
 
 `bootstrap.sh` detects your GPU, builds llama.cpp, installs dependencies,
 downloads the default model, and launches the full stack with **all tools
@@ -51,7 +55,7 @@ rebuilds it), container images, and Python deps in one shot. Details in
 | **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial |
 | **Terminal coding agent** (OpenCode) | ✅ | — | — | — |
 | **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — |
-| **Multi-user roles / RBAC** (family-safe: guests get web, not your files) | ✅ | — | — | — |
+| **Multi-user roles / RBAC** (family-safe: guests get web search + guarded fetch, not your files) | ✅ | — | — | — |
 | **Speculative decoding** (MTP, 1.46–2.75× tok/s measured) | ✅ | partial | partial | partial |
 | **VRAM-measured context tuning** + reproducible eval leaderboard | ✅ | — | — | — |
 
@@ -111,7 +115,7 @@ sweep. See [`docs/RESULTS.md`](docs/RESULTS.md) and
    │       bash · read · write · edit · grep · list_files                    │ │
    │       fetch · web_search                                                │ │
    │       start_agent · check_agent · tail_agent · list_agents · stop_agent │ │
-   │       list_skills · load_skill · start_skill_agent · reload_skills      │ │
+   │       skill · start_skill_agent                                         │ │
    └─────────────────────────────────────┬───────────────────────────────────┘ │
                                          │             ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┴╌╌╌╌╌┐
                                          │             ┆  Agent Router (port 8088)   ┆
@@ -139,13 +143,13 @@ sweep. See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is enabled out of the box for maximum answer quality on your normal chats and coding. Thinking is a *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), stateless and isolated, so automated sub-calls (e.g. a structured JSON classification or routing step) can opt out for speed and clean output without changing your deployment or affecting any other request. You keep thinking on where it matters; the plumbing opts itself out where it doesn't.
 
-**Tool Suite (17 MCP tools)**
+**Tool Suite (15 MCP tools)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
 - Code search: `grep` (regex), `list_files` (glob)
 - Shell: `bash` with timeout and output capture
 - Web: `fetch` (URL → readable text), `web_search` (via local SearXNG)
 - Agent management: `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
-- Skills (curated expertise packages): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
+- Skills (curated expertise packages): `skill` (one tool: index + load, rescans on every call), `start_skill_agent`
 - Private workspace: files the chat model writes via these tools land in `~/openbeast-files` (created `0700` by `start.sh`; configurable via `FILES_DIR` in `openbeast.conf`) — persistent and private, never world-readable `/tmp`
 
 **Autonomous Agents**
@@ -262,6 +266,16 @@ not humans.
 - Optional API key for the llama-server: set `LLAMA_API_KEY` in
   `openbeast.conf` (off by default; the tailnet is the boundary).
 
+**Distributed agents (opt-in).** Got a second GPU box? Set
+`AGENT_INFERENCE_URL=https://worker.<tailnet>.ts.net:8443/v1` in
+`openbeast.conf` and every spawned agent (`start_agent`, `./agent.sh`) sends
+its *inference* to the worker while still executing — files, shell — on this
+machine. Local files, remote brains; tokens (and the file contents agents
+read) flow over your tailnet only, so the promise becomes "nothing leaves
+your machines." Empty (the default) keeps everything single-box. A per-spawn
+`base_url` argument overrides the config. Details and the worker-fleet
+roadmap: **[docs/DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md)**.
+
 Design rationale, alternatives considered (Headscale, NetBird, plain
 WireGuard), and the verification checklist live in
 **[docs/REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md)**.
@@ -321,7 +335,7 @@ scripts/                     # Server, chat, and ops scripts
   healthcheck.sh             # Service health monitor (--restart to auto-recover)
 
 agents/                      # Agent framework + MCP tool server
-  mcp_server.py              # MCP tool server (17 tools, stdio + HTTP transports)
+  mcp_server.py              # MCP tool server (15 tools, stdio + HTTP transports)
   runner.py                  # Autonomous agent loop (LLM + tool use)
   router.py                  # Agent-spawn router on :8088 (opt-in via AGENT_ROUTER=true)
   tools.py                   # Tool schemas/handlers for the standalone runner

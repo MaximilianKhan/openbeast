@@ -4,7 +4,7 @@ The single source of truth for **every tool a model can call in OpenBeast**:
 what it does, where the code lives, what external software powers it, and
 which surfaces can see it.
 
-TL;DR: **all 17 MCP tools are custom OpenBeast code** — there is no
+TL;DR: **all 15 MCP tools are custom OpenBeast code** — there is no
 third-party tool plugin in the chain. The open source projects we pull in
 (llama.cpp, Open WebUI, SearXNG, MCPO, OpenCode) provide *serving,
 frontends, search, and transport*; the tools themselves live in this repo.
@@ -13,11 +13,11 @@ frontends, search, and transport*; the tools themselves live in this repo.
 
 | Surface | Transport | Tools visible |
 |---|---|---|
-| **Open WebUI** (browser chat) | MCPO proxy → OpenAPI (`localhost:3001`) | 17 (admin) / 1 (guest — see RBAC) |
-| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | 17 from us, *plus OpenCode's own built-in tools* (see below) |
+| **Open WebUI** (browser chat) | MCPO proxy → OpenAPI (`localhost:3001`) | 15 (admin) / 1 (guest — see RBAC) |
+| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | 15 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | 9 |
 
-## The 17 MCP tools
+## The 15 MCP tools
 
 All implemented in this repo. `agents/tools.py` holds the hardened
 implementations; `agents/mcp_server.py` registers them with MCP and adds the
@@ -46,12 +46,23 @@ agent-management and skills layers on top.
 `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent` —
 spawn and supervise autonomous background agents (`agents/runner.py`). All
 custom; agents log to `agents/logs/agent-{id}.jsonl`.
+`start_agent(task, workdir, max_iter, context, base_url)` — the `base_url`
+parameter (opt-in, distributed agents Phase 1) routes the spawned agent's
+*inference* to a worker box on your tailnet while it keeps executing on this
+machine; empty defaults to `OPENBEAST_AGENT_INFERENCE_URL`, else the local
+server. See `docs/DISTRIBUTED_AGENTS_PLAN.md`.
 
-### Skills (4) — `agents/mcp_server.py`
+### Skills (2) — `agents/mcp_server.py`
 
-`list_skills`, `load_skill`, `start_skill_agent`, `reload_skills` —
-progressive-disclosure access to the markdown skill library in `skills/`.
-All custom.
+`skill`, `start_skill_agent` — progressive-disclosure access to the markdown
+skill library in `skills/`. `skill()` with no name returns the index (fresh
+disk re-scan every time, so no reload tool is needed); `skill(name)` loads
+one skill's full body, with fuzzy-match suggestions on a miss.
+`start_skill_agent(skill, task, ...)` spawns a background agent with the
+skill pre-activated (also accepts `base_url`). All custom. The former
+`list_skills` / `load_skill` / `reload_skills` trio was collapsed into
+`skill` (PRODUCTION_ROADMAP §B — fewer always-on meta-tools in a local
+model's context).
 
 ## The autonomous runner's 9 tools
 
@@ -69,7 +80,7 @@ get agent-management or skills tools; no recursive agent spawning.
 | **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via MCPO |
 | **MCPO** | Transport only: wraps our MCP server as OpenAPI for WebUI | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
-| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 17 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
+| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 15 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
 ## RBAC visibility (who sees what)
@@ -77,24 +88,27 @@ get agent-management or skills tools; no recursive agent spawning.
 Two MCPO connections are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 17 tools.
-- **Guest** (WebUI user role): `web_search` only. No filesystem, no shell.
+- **Admin** (WebUI admin role): all 15 tools.
+- **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
+  shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
+  link-local targets refused, redirects re-validated per hop (the guard
+  applies to all users — defense in depth).
 
-> ⚠️ **WARNING — `AGENT_ROUTER=true` bypasses this RBAC on multi-user
-> instances.** The opt-in agent-spawn router (`agents/router.py`, port
-> 8088) classifies **every** chat turn — including guest users' — and on a
-> detected spawn request calls MCPO `start_agent` **directly**, below the
-> WebUI connection-level RBAC described above. A guest who phrases a spawn
-> request gets a full-filesystem background agent, tool filters
-> notwithstanding. Until the router is identity-aware, **do not enable
-> `AGENT_ROUTER` on a multi-user instance** (see `docs/RBAC_PLAN.md`
-> Phase 2 and `docs/TODO.md` security section).
+> ✅ **Router is identity-aware (2026-07-08).** Open WebUI forwards
+> `X-OpenWebUI-User-Role` (`ENABLE_FORWARD_USER_INFO_HEADERS=true` in
+> docker-compose), and the agent-spawn router only runs its spawn path for
+> `admin` turns — guest turns pass through untouched (and skip the classify
+> entirely, so guests add zero latency). For hardened multi-user installs,
+> set `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` to fail closed when the
+> role header is absent (e.g. header forwarding disabled). Details:
+> `docs/RBAC_PLAN.md`.
 
-## Why 17 and not more
+## Why 15 and not more
 
 Deliberate. The production review (`docs/PRODUCTION_ROADMAP.md` §B) found
 the current pain is *too much always-on meta-machinery for a local model's
-context* (9 of 17 tools are agent-mgmt/skills plumbing), not missing
+context* — which is why the skill-discovery trio was collapsed to one tool
+(17 → 15; 7 of 15 tools remain agent-mgmt/skills plumbing) — not missing
 capabilities. Expansion is planned and researched — sandboxed execution
 (Sandlock), semantic code search (ChunkHound), and a Playwright browsing
 *skill* — in `docs/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1

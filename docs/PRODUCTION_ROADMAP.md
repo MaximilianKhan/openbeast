@@ -62,10 +62,11 @@ afford blind multi-step discovery; ours can't. That's the confusion.
    DONE** — `scripts/generate-skill-index.py` injects the compact skill
    index (name + one-line + trigger) into `system-prompt-tools.md`, run by
    `configure-webui.sh`, with a staleness check in `tests/test_scripts.sh`
-   (CI). **Still open:** collapsing the 4 blind-discovery tools down to ONE
-   `load_skill` tool + the visible menu. (The endgame is the deferred
-   SKILLS_PLAN Phase-5 auto-router: a pre-flight classifier picks the
-   skill; the model never has to.)
+   (CI). ✅ **Collapse DONE (2026-07-08):** `list_skills`/`load_skill`/
+   `reload_skills` are now ONE `skill(name?)` tool + the visible menu
+   (tool surface 17 → 15; `start_skill_agent` kept). (The endgame is the
+   deferred SKILLS_PLAN Phase-5 auto-router: a pre-flight classifier picks
+   the skill; the model never has to.)
 3. **Sharpen the tool-vs-skill mental model** in the prompt: *tools = actions
    (do a thing now); skills = methodologies (how to approach a class of
    problem, invoked at the START of an open-ended task).*

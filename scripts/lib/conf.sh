@@ -60,6 +60,20 @@ DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT ||
 # evals and spawned agents keep hitting 8080 directly (never routed).
 AGENT_ROUTER="${OPENBEAST_AGENT_ROUTER:-$(_ob_conf_value AGENT_ROUTER || echo false)}"
 ROUTER_PORT="${OPENBEAST_ROUTER_PORT:-$(_ob_conf_value ROUTER_PORT || echo 8088)}"
+# Router spawn-gate identity policy (docs/RBAC_PLAN.md): the router only runs
+# its spawn path for X-OpenWebUI-User-Role: admin turns. When this is true and
+# the role header is ABSENT (e.g. header forwarding disabled), the router
+# fails CLOSED (no spawn) instead of open — set true on hardened multi-user
+# installs. Exported so start.sh's router process inherits it.
+ROUTER_REQUIRE_IDENTITY="${OPENBEAST_ROUTER_REQUIRE_IDENTITY:-$(_ob_conf_value ROUTER_REQUIRE_IDENTITY || echo false)}"
+export OPENBEAST_ROUTER_REQUIRE_IDENTITY="$ROUTER_REQUIRE_IDENTITY"
+# Kernel-level sandbox wrapper for the model's bash tool (docs/SANDBOXING.md).
+# agents/tools.py reads OPENBEAST_BASH_WRAPPER per-call; forward the conf key
+# only when non-empty (an exported empty string would still count as "set").
+_BASH_WRAPPER="${OPENBEAST_BASH_WRAPPER:-$(_ob_conf_value BASH_WRAPPER || true)}"
+if [[ -n "$_BASH_WRAPPER" ]]; then
+  export OPENBEAST_BASH_WRAPPER="$_BASH_WRAPPER"
+fi
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else
@@ -102,4 +116,15 @@ export OPENBEAST_BIND="$BIND_HOST"
 if [[ -n "$LLAMA_API_KEY" ]]; then
   export LLAMA_API_KEY
   export OPENBEAST_API_KEY="$LLAMA_API_KEY"
+fi
+# Distributed agents Phase 1 (docs/DISTRIBUTED_AGENTS_PLAN.md): route spawned
+# agents' INFERENCE to a worker box while they keep executing (files, shell)
+# on THIS machine. Empty (the default) = local model server, single-box
+# behavior unchanged. Same export discipline as LLAMA_API_KEY above: only
+# export when non-empty — an exported empty string still counts as "set" to
+# downstream resolvers (mcp_server.py, agent.sh) and would look like a
+# configured-but-blank endpoint instead of "use the local default".
+AGENT_INFERENCE_URL="${OPENBEAST_AGENT_INFERENCE_URL:-$(_ob_conf_value AGENT_INFERENCE_URL || true)}"
+if [[ -n "$AGENT_INFERENCE_URL" ]]; then
+  export OPENBEAST_AGENT_INFERENCE_URL="$AGENT_INFERENCE_URL"
 fi

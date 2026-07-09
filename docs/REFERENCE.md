@@ -96,6 +96,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
+| `AGENT_INFERENCE_URL` | `OPENBEAST_AGENT_INFERENCE_URL` | empty (local) | Distributed agents Phase 1 (opt-in): OpenAI-compatible endpoint a worker box serves — spawned agents (`start_agent`, `agent.sh`) send their *inference* there while still executing files/shell on this machine. Tokens (and the file contents agents read) flow over your tailnet. Empty = local model server. See `docs/DISTRIBUTED_AGENTS_PLAN.md` |
 
 **`FILES_DIR` / `OPENBEAST_FILES_DIR` — the chat model's private workspace.**
 A direct tool call from Open WebUI carries no conversation or user id (the
@@ -464,14 +465,14 @@ with `./start.sh`). Changes take effect on the next new chat.
 
 ### MCP tool server + MCPO proxy
 
-Exposes 17 tools to any MCP-compatible client, in four groups:
+Exposes 15 tools to any MCP-compatible client, in four groups:
 
 - **Code & files** (5): `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - **Shell + web** (3): `bash`, `fetch`, `web_search`
 - **Long-running agent management** (5): `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
-- **Skills** (4): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
+- **Skills** (2): `skill`, `start_skill_agent`
 
-All 17 are custom OpenBeast code — full inventory, provenance, hardening
+All 15 are custom OpenBeast code — full inventory, provenance, hardening
 notes, and RBAC visibility in [`docs/TOOLS.md`](TOOLS.md).
 
 Transports:
@@ -487,8 +488,11 @@ The MCP server can spawn autonomous background agents that iterate independently
 using `runner.py`. The model in a chat session can dispatch complex tasks to an
 agent, continue the conversation, and check back for results later.
 
-- **`start_agent(task, workdir, max_iter, context)`** — spawn a background agent
-  with optional context briefing, returns an agent ID immediately (non-blocking)
+- **`start_agent(task, workdir, max_iter, context, base_url)`** — spawn a
+  background agent with optional context briefing, returns an agent ID
+  immediately (non-blocking). `base_url` (opt-in, advanced) points the agent's
+  inference at a worker box while it executes locally — defaults to the
+  configured `AGENT_INFERENCE_URL`, else the local server
 - **`check_agent(agent_id)`** — returns status, iteration count, recent tool calls,
   last model reasoning, and the final summary if complete
 - **`tail_agent(agent_id, lines)`** — raw JSONL log tail for detailed debugging
@@ -511,22 +515,23 @@ on disk (no live process control, but full history is available).
 Skills are curated expertise packages — markdown files with frontmatter that
 encode hard-won lessons for specific kinds of work (code review, security
 audit, eval-task authoring, deep counsel, debugging methodology, etc.). They
-exist outside the MCP system as files on disk; the MCP exposes them via four
+exist outside the MCP system as files on disk; the MCP exposes them via two
 tools:
 
-- **`list_skills()`** — returns name + description for every skill, repo and
-  global combined. Cheap; pay only for the index.
-- **`load_skill(name)`** — returns the full SKILL.md body for one skill.
-  Used after `list_skills` identifies a relevant one. Frontmatter stripped.
+- **`skill(name="")`** — with no name, returns the index (name + description
+  for every skill, repo and global combined; cheap — pay only for the index).
+  With a name, returns that skill's full SKILL.md body (frontmatter
+  stripped), with fuzzy-match suggestions on a miss. Index calls re-scan the
+  directories, so an edited or newly added SKILL.md shows up without
+  restarting the MCP server. (Collapsed from the former `list_skills` /
+  `load_skill` / `reload_skills` trio — PRODUCTION_ROADMAP §B.)
 - **`start_skill_agent(skill, task, ...)`** — spawn a sub-agent with the
   skill activated as authoritative context. The runner inherits the soul
   file + agent instructions + the activated skill body + the user task.
   Returns an agent_id usable with `check_agent`.
-- **`reload_skills()`** — re-scan the skills directories without restarting
-  the MCP server (useful after editing a SKILL.md).
 
 **Discovery order:** repo `skills/` first, then `~/.local/share/local-llm-skills/`.
-Repo wins on name collision. Cached at first call; refresh via `reload_skills()`.
+Repo wins on name collision. The index re-scans on every `skill()` call.
 
 **Currently shipped (14 skills):** see `skills/README.md` for the full table.
 Tier 1 (universal): codebase-onboarding, spec-extraction, git-discipline,
@@ -536,14 +541,14 @@ code-review, security-audit, debugging-methodology, deep-counsel,
 eval-task-author, eval-variant-porter.
 
 **Adding a skill:** create `skills/<name>/SKILL.md` with required frontmatter
-(`name`, `description`); call `reload_skills()`. Test via
-`bash tests/test_scripts.sh` — the validator checks every SKILL.md parses
-cleanly. See `docs/SKILLS_PLAN.md` for the full design rationale and the
-deferred Phase 5 (auto-routing layer).
+(`name`, `description`); the next `skill()` call picks it up (the index
+re-scans disk). Test via `bash tests/test_scripts.sh` — the validator checks
+every SKILL.md parses cleanly. See `docs/SKILLS_PLAN.md` for the full design
+rationale and the deferred Phase 5 (auto-routing layer).
 
 **AGENTS.md** (project root) is the project-wide instructions file
 auto-loaded by OpenCode. It contains the task→skill mapping that nudges the
-model to invoke `list_skills` for non-trivial work.
+model to invoke `skill(name)` for non-trivial work.
 
 ## 5. Run
 

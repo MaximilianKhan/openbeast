@@ -15,10 +15,15 @@ Tools:
 
 Agent management (long-running autonomous agents):
   - start_agent: spawn a background agent with optional context briefing
+    (base_url routes its inference to a worker box for multi-box setups)
   - check_agent: monitor progress, view recent activity and results
   - tail_agent: raw log tail for detailed debugging
   - list_agents: see all tracked agents and their status
   - stop_agent: terminate a running agent
+
+Skills (progressive disclosure):
+  - skill: skill() returns the index of every skill; skill(name) loads one
+  - start_skill_agent: spawn a background agent with a skill activated
 
 Transports:
   stdio:           opencode local MCP (default)
@@ -31,6 +36,7 @@ Usage:
 
 import argparse
 import atexit
+import difflib
 import json
 import os
 import signal
@@ -135,6 +141,43 @@ def fetch(url: str, max_length: int = 50_000) -> str:
 _RUNNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
 _LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
+# Must match runner.py's DEFAULT_BASE_URL — when the resolved endpoint equals
+# this, we omit --base-url so local spawns stay byte-identical to before the
+# distributed-agents feature existed.
+_DEFAULT_AGENT_BASE_URL = "http://localhost:8080/v1"
+
+
+def _resolve_agent_base_url(explicit: str = "") -> str:
+    """Inference endpoint for a spawned agent: explicit arg →
+    OPENBEAST_AGENT_INFERENCE_URL env (set by scripts/lib/conf.sh from
+    openbeast.conf) → the runner's own local default."""
+    return (
+        explicit.strip()
+        or os.environ.get("OPENBEAST_AGENT_INFERENCE_URL", "").strip()
+        or _DEFAULT_AGENT_BASE_URL
+    )
+
+
+def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
+                      context_budget: int, context: str = "",
+                      base_url: str = "") -> list[str]:
+    """Argv for a runner.py spawn. --base-url is appended only when the
+    resolved URL differs from the runner's default (distributed agents:
+    tokens come from a worker box, execution stays on this machine)."""
+    cmd = [
+        sys.executable, _RUNNER_PATH,
+        "--log-file", log_path,
+        "--max-iter", str(max_iter),
+        "--workdir", workdir,
+        "--context-budget", str(context_budget),
+    ]
+    if base_url and base_url != _DEFAULT_AGENT_BASE_URL:
+        cmd.extend(["--base-url", base_url])
+    if context:
+        cmd.extend(["--context", context])
+    cmd.append(task)
+    return cmd
+
 
 @dataclass
 class _AgentRecord:
@@ -147,6 +190,7 @@ class _AgentRecord:
     workdir: str
     max_iter: int
     started_at: datetime
+    base_url: str = _DEFAULT_AGENT_BASE_URL
 
 
 # In-memory registry of agents spawned during this server session.
@@ -250,11 +294,16 @@ def _agent_status_report(record: _AgentRecord) -> str:
     current_iter = len(iteration_events)
     elapsed = _format_elapsed(record.started_at)
 
+    base_url = record.base_url or _DEFAULT_AGENT_BASE_URL
+    inference = base_url + (
+        " (REMOTE worker)" if base_url != _DEFAULT_AGENT_BASE_URL else " (local)")
+
     lines = [
         f"Agent: {record.agent_id}",
         f"Status: {status}",
         f"Task: {record.task[:300]}",
         f"Workdir: {record.workdir}",
+        f"Inference: {inference}",
         f"Iteration: {current_iter}/{record.max_iter}",
         f"Runtime: {elapsed}",
         f"PID: {record.pid}",
@@ -307,10 +356,15 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
         return f"Agent {agent_id}: log file exists but is empty.\nLog: {log_path}"
 
     start_event = next((e for e in events if e.get("type") == "start"), None)
+    spawn_event = next((e for e in events if e.get("type") == "spawn"), None)
     done_event = next((e for e in events if e.get("type") == "done"), None)
     iteration_events = [e for e in events if e.get("type") == "iteration"]
 
-    task = start_event.get("task", "?")[:300] if start_event else "?"
+    task = "?"
+    for source in (start_event, spawn_event):
+        if source and source.get("task"):
+            task = source["task"][:300]
+            break
     status = _classify_agent_status(alive=False, events=events, orphaned=True)
 
     lines = [
@@ -319,6 +373,13 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
         f"Status: {status}",
         f"Iterations: {len(iteration_events)}",
     ]
+
+    # Spawn metadata survives server restarts in the log itself — surface a
+    # remote inference endpoint so distributed agents stay visibly remote.
+    if spawn_event and spawn_event.get("base_url"):
+        bu = spawn_event["base_url"]
+        lines.append(f"Inference: {bu}" + (
+            " (REMOTE worker)" if bu != _DEFAULT_AGENT_BASE_URL else " (local)"))
 
     if done_event:
         lines.append(f"Summary: {done_event.get('summary', '(none)')}")
@@ -407,66 +468,66 @@ def _resolve_skill(name: str) -> dict | None:
 
 
 @mcp.tool()
-def list_skills() -> str:
-    """List every available skill — name, description, source.
+def skill(name: str = "") -> str:
+    """Skill library — browse the index, or load one skill's full instructions.
 
     A skill is a curated package of instructions for a specific kind of work
     (code review, security audit, eval-task authoring, deep counsel, etc).
-    The full skill body is NOT returned here — call load_skill(name) when one
-    matches the task at hand. This keeps the system prompt small and only
-    pays for the content you need.
-    """
-    skills = _discover_skills()
-    if not skills:
-        return (
-            "No skills installed. Repo skills go in /home/max/Documents/models/skills/; "
-            "global skills go in ~/.local/share/local-llm-skills/. "
-            "Each skill is a folder with a SKILL.md file."
-        )
-    lines = [f"{len(skills)} skill(s) available:", ""]
-    for name in sorted(skills):
-        s = skills[name]
-        src_tag = f"[{s['source']}]"
-        lines.append(f"  {name:30s} {src_tag:>9}  {s['description']}")
-    lines.append("")
-    lines.append("Call load_skill(name) to read the full skill body.")
-    lines.append("Call start_skill_agent(skill, task) to spawn a sub-agent with the skill activated.")
-    return "\n".join(lines)
+    Call with NO name to get the index (name + description for every skill);
+    call with a name to get that skill's full body, then apply those
+    instructions to the work at hand. This keeps the system prompt small and
+    only pays for the content you need.
 
-
-@mcp.tool()
-def load_skill(name: str) -> str:
-    """Return the full body of a skill (markdown instructions, checklists,
-    examples). Use after list_skills() identifies a relevant skill.
+    Index calls re-scan the skills directories, so a newly added or edited
+    SKILL.md shows up without restarting the server.
 
     Args:
-        name: The skill identifier from list_skills() (e.g. 'code-review').
+        name: Skill identifier from the index (e.g. 'code-review').
+              Empty (the default) returns the index.
 
     Returns:
-        The skill's instructional content (frontmatter stripped). Apply these
-        instructions to the work at hand.
+        The skill index, or one skill's instructional content (frontmatter
+        stripped).
     """
-    skill = _resolve_skill(name)
-    if skill is None:
-        available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
-        return f"Error: skill '{name}' not found. Available: {available}"
-    header = f"=== SKILL: {name} ({skill['source']}) ===\n\n"
-    return header + skill["body"]
+    name = name.strip()
+    if not name:
+        skills = _discover_skills(force=True)
+        if not skills:
+            return (
+                "No skills installed. Repo skills go in skills/ at the repo root; "
+                "global skills go in ~/.local/share/local-llm-skills/. "
+                "Each skill is a folder with a SKILL.md file."
+            )
+        lines = [f"{len(skills)} skill(s) available:", ""]
+        for skill_name in sorted(skills):
+            s = skills[skill_name]
+            src_tag = f"[{s['source']}]"
+            lines.append(f"  {skill_name:30s} {src_tag:>9}  {s['description']}")
+        lines.append("")
+        lines.append("Call skill(name) to read the full skill body.")
+        lines.append("Call start_skill_agent(skill, task) to spawn a sub-agent with the skill activated.")
+        return "\n".join(lines)
 
-
-@mcp.tool()
-def reload_skills() -> str:
-    """Re-scan the skills directories and refresh the cache. Use after adding
-    or editing a skill file without restarting the MCP server."""
-    skills = _discover_skills(force=True)
-    return f"Reloaded {len(skills)} skill(s) from repo and global directories."
+    record = _resolve_skill(name)
+    if record is None:
+        # The cache may predate a newly added skill — re-scan once before failing.
+        record = _discover_skills(force=True).get(name)
+    if record is None:
+        available = sorted(_discover_skills().keys())
+        close = difflib.get_close_matches(name, available, n=3, cutoff=0.5)
+        hint = f" Did you mean: {', '.join(close)}?" if close else ""
+        listing = ", ".join(available) or "(none)"
+        return f"Error: skill '{name}' not found.{hint} Available: {listing}"
+    header = f"=== SKILL: {name} ({record['source']}) ===\n\n"
+    return header + record["body"]
 
 
 # --- Agent MCP tools ---
 
 
 @mcp.tool()
-def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "") -> str:
+def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "",
+                base_url: str = "") -> str:
     """Delegate a task to a background agent that runs it autonomously and in parallel.
 
     MANDATORY USAGE: if the user asks to 'spawn', 'launch', 'kick off', or 'start'
@@ -486,6 +547,12 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         max_iter: Maximum iterations before the agent stops (default 200).
         context: Background context to brief the agent (what you know, what you've
                  tried, relevant files). Helps the agent work more effectively.
+        base_url: OpenAI-compatible endpoint the agent's MODEL calls go to.
+                  Advanced multi-box setups only: a worker machine on your
+                  tailnet serves the tokens while the agent still executes
+                  files/shell on THIS machine. Leave empty (default) for the
+                  local model — empty falls back to the configured
+                  OPENBEAST_AGENT_INFERENCE_URL, else http://localhost:8080/v1.
 
     Returns:
         Agent ID for use with check_agent, list_agents, and stop_agent.
@@ -504,16 +571,30 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     # Estimate per-slot context budget (~85K tokens at 512K/6 slots, rough)
     context_budget = 85_000
 
-    cmd = [
-        sys.executable, _RUNNER_PATH,
-        "--log-file", log_path,
-        "--max-iter", str(max_iter),
-        "--workdir", workdir,
-        "--context-budget", str(context_budget),
-    ]
-    if context:
-        cmd.extend(["--context", context])
-    cmd.append(task)
+    resolved_base_url = _resolve_agent_base_url(base_url)
+    remote = resolved_base_url != _DEFAULT_AGENT_BASE_URL
+
+    cmd = _build_runner_cmd(
+        task=task, log_path=log_path, max_iter=max_iter, workdir=workdir,
+        context_budget=context_budget, context=context,
+        base_url=resolved_base_url,
+    )
+
+    # Record the spawn (incl. the inference endpoint) as the log's first
+    # event — runner.py appends its own "start" event right after. This keeps
+    # base_url visible in check_agent even across an MCP server restart.
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps({
+                "type": "spawn",
+                "agent_id": agent_id,
+                "task": task,
+                "workdir": workdir,
+                "base_url": resolved_base_url,
+                "timestamp": datetime.now().isoformat(),
+            }) + "\n")
+    except OSError:
+        pass  # log dir problems surface via the Popen below
 
     try:
         process = subprocess.Popen(
@@ -534,6 +615,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         workdir=workdir,
         max_iter=max_iter,
         started_at=datetime.now(),
+        base_url=resolved_base_url,
     )
     _agents[agent_id] = record
 
@@ -543,6 +625,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         f"PID: {process.pid}\n"
         f"Task: {task[:300]}\n"
         f"Workdir: {workdir}\n"
+        f"Inference: {resolved_base_url}"
+        + (" (REMOTE worker — executes locally, thinks remotely)" if remote else " (local)") + "\n"
         f"Max iterations: {max_iter}\n"
         f"Log: {log_path}\n"
         f"\nUse check_agent('{agent_id}') to monitor progress."
@@ -550,7 +634,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
 
 
 @mcp.tool()
-def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int = 200, extra_context: str = "") -> str:
+def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int = 200,
+                      extra_context: str = "", base_url: str = "") -> str:
     """Spawn a long-running sub-agent with a specific skill activated.
 
     The skill's instructions are loaded and framed as the sub-agent's primary
@@ -560,17 +645,22 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
     eval-task-author, deep-counsel, etc.).
 
     Args:
-        skill: Name of the skill to activate (see list_skills()).
+        skill: Name of the skill to activate (see the skill() index).
         task: What the sub-agent should accomplish, framed in terms of the skill.
         workdir: Working directory for file and shell operations.
         max_iter: Maximum iterations before the agent stops (default 200).
         extra_context: Additional context to brief the sub-agent (what you've
                        tried, relevant files, partial findings).
+        base_url: OpenAI-compatible inference endpoint for advanced multi-box
+                  setups (worker box serves tokens; the sub-agent executes on
+                  THIS machine). Leave empty (default) for the local model.
 
     Returns:
         Agent ID for use with check_agent, list_agents, and stop_agent.
     """
     skill_record = _resolve_skill(skill)
+    if skill_record is None:
+        skill_record = _discover_skills(force=True).get(skill)
     if skill_record is None:
         available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
         return f"Error: skill '{skill}' not found. Available: {available}"
@@ -586,7 +676,8 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
     if extra_context.strip():
         framed += f"\n\n=== EXTRA CONTEXT FROM CALLER ===\n{extra_context}\n=== END EXTRA CONTEXT ==="
 
-    return start_agent(task=task, workdir=workdir, max_iter=max_iter, context=framed)
+    return start_agent(task=task, workdir=workdir, max_iter=max_iter, context=framed,
+                       base_url=base_url)
 
 
 @mcp.tool()

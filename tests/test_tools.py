@@ -563,18 +563,115 @@ class TestMCPServerTools(unittest.TestCase):
             # Fallback: check via the public API
             pass
 
+        # The full 15-tool surface (PRODUCTION_ROADMAP §B collapsed
+        # list_skills/load_skill/reload_skills into the single `skill` tool).
         expected = {
             "bash", "read_file", "write_file", "edit_file",
             "list_files", "grep", "fetch", "web_search",
             "start_agent", "check_agent", "tail_agent",
             "list_agents", "stop_agent",
+            "skill", "start_skill_agent",
         }
         # Introspection failure must be a test failure, not a silent pass —
         # otherwise a FastMCP internals change would soft-pass this test
         # while registering zero tools.
         self.assertTrue(registered, "could not introspect any registered tools")
-        missing = expected - registered
-        self.assertEqual(missing, set(), f"MCP server missing tools: {missing}")
+        # Exact match both ways: a missing tool is a regression, an extra one
+        # is an undocumented count bump (docs/TOOLS.md pins 15).
+        self.assertEqual(registered, expected,
+                         f"MCP tool surface drifted: missing={expected - registered}, "
+                         f"extra={registered - expected}")
+
+    def test_collapsed_skill_tools_are_gone(self):
+        """list_skills/load_skill/reload_skills were collapsed into skill()."""
+        import mcp_server
+        registered = set(mcp_server.mcp._tool_manager._tools.keys())
+        stale = {"list_skills", "load_skill", "reload_skills"} & registered
+        self.assertEqual(stale, set(), f"collapsed skill tools re-appeared: {stale}")
+
+
+class TestSkillTool(unittest.TestCase):
+    """The unified skill() tool: index, load, fuzzy-miss errors."""
+
+    def test_empty_name_returns_index(self):
+        import mcp_server
+        out = mcp_server.skill("")
+        self.assertIn("skill(s) available", out)
+        self.assertIn("code-review", out)
+        # Usage hints must reference the NEW tool surface only.
+        self.assertIn("skill(name)", out)
+        self.assertIn("start_skill_agent", out)
+        self.assertNotIn("load_skill", out)
+        self.assertNotIn("list_skills", out)
+
+    def test_named_skill_returns_body(self):
+        import mcp_server
+        out = mcp_server.skill("code-review")
+        self.assertIn("=== SKILL: code-review", out)
+        self.assertNotIn("Error", out.split("\n")[0])
+
+    def test_miss_lists_available_with_fuzzy_hint(self):
+        import mcp_server
+        out = mcp_server.skill("code-reviw")  # typo
+        self.assertIn("not found", out)
+        self.assertIn("code-review", out)  # fuzzy suggestion or listing
+        self.assertIn("Did you mean", out)
+
+
+class TestBuildRunnerCmd(unittest.TestCase):
+    """start_agent argv construction — base_url threading for distributed
+    agents (docs/DISTRIBUTED_AGENTS_PLAN.md Phase 1). Introspects
+    _build_runner_cmd/_resolve_agent_base_url; nothing is spawned."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("OPENBEAST_AGENT_INFERENCE_URL", None)
+
+    def tearDown(self):
+        if self._saved is not None:
+            os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = self._saved
+        else:
+            os.environ.pop("OPENBEAST_AGENT_INFERENCE_URL", None)
+
+    def _cmd(self, base_url=""):
+        import mcp_server
+        resolved = mcp_server._resolve_agent_base_url(base_url)
+        return mcp_server._build_runner_cmd(
+            task="do things", log_path="/tmp/x.jsonl", max_iter=10,
+            workdir="/tmp", context_budget=1000, base_url=resolved)
+
+    def test_no_env_no_arg_omits_base_url(self):
+        cmd = self._cmd()
+        self.assertNotIn("--base-url", cmd)
+
+    def test_env_set_appends_base_url(self):
+        os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = "https://worker.ts.net:8443/v1"
+        cmd = self._cmd()
+        i = cmd.index("--base-url")
+        self.assertEqual(cmd[i + 1], "https://worker.ts.net:8443/v1")
+
+    def test_explicit_arg_beats_env(self):
+        os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = "https://worker.ts.net:8443/v1"
+        cmd = self._cmd(base_url="http://other:9090/v1")
+        i = cmd.index("--base-url")
+        self.assertEqual(cmd[i + 1], "http://other:9090/v1")
+
+    def test_default_url_is_treated_as_local(self):
+        # Explicitly passing the runner's own default must not add the flag —
+        # local spawns stay byte-identical to pre-feature argv.
+        import mcp_server
+        cmd = self._cmd(base_url=mcp_server._DEFAULT_AGENT_BASE_URL)
+        self.assertNotIn("--base-url", cmd)
+
+    def test_task_is_last_arg_after_context(self):
+        # --context and the positional task keep their ordering contract.
+        import mcp_server
+        cmd = mcp_server._build_runner_cmd(
+            task="the task", log_path="/tmp/x.jsonl", max_iter=10,
+            workdir="/tmp", context_budget=1000, context="briefing",
+            base_url="https://worker:8443/v1")
+        self.assertEqual(cmd[-1], "the task")
+        self.assertIn("--context", cmd)
+        self.assertIn("--base-url", cmd)
 
 
 if __name__ == "__main__":

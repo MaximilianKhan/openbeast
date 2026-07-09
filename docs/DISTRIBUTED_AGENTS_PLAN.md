@@ -1,8 +1,8 @@
 # Distributed agents — main box executes, worker box thinks
 
-**Status: the agent-spawn ROUTER is BUILT + wired (2026-07-08, opt-in `AGENT_ROUTER`); the main->worker DISTRIBUTED split remains planned.**
+**Status: Phase 1 ✅ SHIPPED (2026-07-08) — single worker endpoint live via `AGENT_INFERENCE_URL` / `start_agent(base_url=...)`. The agent-spawn ROUTER is BUILT + wired (2026-07-08, opt-in `AGENT_ROUTER`). Phases 2–3 (worker fleet, per-role routing) remain planned.**
 
-> Router shipped: `agents/router.py` + start.sh integration + conf toggle. It solves the STEP-3 blocker (models won't self-spawn). The remaining work below is the multi-node main-executes/worker-thinks split.
+> Router shipped: `agents/router.py` + start.sh integration + conf toggle. It solves the STEP-3 blocker (models won't self-spawn). Phase 1 below shipped the multi-node main-executes/worker-thinks split for a single worker endpoint.
 
 **The feature (Max, 2026-07-08):** let a user run OpenBeast's agents so that
 the **filesystem work happens on their MAIN machine** (where their code lives,
@@ -39,10 +39,13 @@ multi-node vision.
   this TODAY: `./agent.sh --base-url http://<worker>:8080/v1 -w ~/project "task"`.
 - ✅ Remote-access layer already publishes llama-server over the tailnet
   (`setup-tailscale.sh` → `https://<host>.<tailnet>.ts.net:8443/v1`).
-- ❌ `mcp_server.start_agent()` does NOT expose a model URL (only task/workdir/
-  max_iter/context), so agents spawned from the WebUI/chat use the LOCAL model.
-- ❌ No config knob to declare a worker endpoint once and have all spawned
-  agents use it.
+- ✅ (Phase 1, 2026-07-08) `mcp_server.start_agent()` / `start_skill_agent()`
+  expose a `base_url` param; resolution: explicit arg →
+  `OPENBEAST_AGENT_INFERENCE_URL` → local default. The endpoint is recorded in
+  the agent record + the log's spawn event and surfaced by `check_agent`.
+- ✅ (Phase 1, 2026-07-08) `AGENT_INFERENCE_URL` conf key resolved by
+  `scripts/lib/conf.sh` (exported only when non-empty); `agent.sh` defaults
+  `--base-url` from it (explicit `--base-url` still wins).
 
 ## Config UX (the opt-in)
 
@@ -60,7 +63,7 @@ Env override: `OPENBEAST_AGENT_INFERENCE_URL`.
 
 ## Implementation plan
 
-### Phase 1 — single worker endpoint (~½ day)
+### Phase 1 — single worker endpoint ✅ SHIPPED 2026-07-08
 1. `scripts/lib/conf.sh`: resolve `AGENT_INFERENCE_URL` (env →
    `openbeast.conf` → empty). Export `OPENBEAST_AGENT_INFERENCE_URL`.
 2. `agents/mcp_server.py` `start_agent()` / `start_skill_agent()`: add a
@@ -76,6 +79,16 @@ Env override: `OPENBEAST_AGENT_INFERENCE_URL`.
 6. Verify: worker box serving a model on the tailnet; `start_agent` from the
    5090 chat spawns an agent that reads/writes 5090 files but whose tokens come
    from the worker (check `agents/logs/` shows the remote base_url).
+
+> Shipped scope notes (2026-07-08): steps 1–5 landed (conf.sh resolver,
+> `base_url` on both spawn tools threaded into the runner argv, agent.sh
+> defaulting, conf example + REFERENCE/TOOLS/README docs). The spawn event at
+> the top of each agent log records `base_url`, so `check_agent` reports the
+> inference endpoint even across MCP restarts; argv construction is pinned by
+> `tests/test_tools.py::TestBuildRunnerCmd` and the conf contract by
+> `tests/test_scripts.sh`. Step 6 (live two-box verification) awaits worker
+> hardware on the tailnet — the interface is a single OpenAI-compatible HTTP
+> call already exercised by `runner.py --base-url`.
 
 ### Phase 2 — worker fleet + load balancing (later)
 - Accept multiple worker endpoints; a small least-loaded/round-robin router in

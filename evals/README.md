@@ -67,7 +67,7 @@ writes, no new measurement needed.
 | `edit:wr` | `edit_file:write_file` ratio. Higher = more targeted; <1 = wasteful overwrites. |
 | `bash/T` | Bash calls per task. Lower = more targeted use of dedicated tools. |
 | `rd_dup` | `read_file` calls / unique paths read. 1.0 = no rereads; >3.0 = thrashing. |
-| `agent` | `start_agent` / `start_skill_agent` / `list_skills` / `load_skill` calls. |
+| `agent` | `start_agent` / `start_skill_agent` / `skill` calls (plus legacy `list_skills`/`load_skill` in pre-2026-07-08 logs). |
 
 Aggregates across every `agents/logs/agent-*.jsonl` (top-level + sub-agent
 runs). The model identifier is whatever the `start` record stored —

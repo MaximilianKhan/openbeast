@@ -2,7 +2,7 @@
 
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 17 tools for file I/O, shell, web search, agent management,
+server providing 15 tools for file I/O, shell, web search, agent management,
 and a curated skills system (14 specialized expertise packages loaded on
 demand).
 
@@ -12,8 +12,17 @@ SearXNG settings) lives in the repo and is portable across Linux boxes.
 
 ## TL;DR — Fresh box bootstrap
 
-`./bootstrap.sh` automates everything in this TL;DR (recommended); the steps
-below are the manual equivalent.
+After cloning, start with the read-only environment check — it runs every
+prerequisite probe (compiler toolchain, GPU + CUDA, Docker, disk space for
+weights), prints a ✓/✗ report with per-distro install hints, and installs,
+builds, downloads and writes **nothing**:
+
+```bash
+./bootstrap.sh --preflight   # exit 0 = ready, exit 1 = missing prereqs
+```
+
+Then `./bootstrap.sh` automates everything in this TL;DR (recommended); the
+steps below are the manual equivalent.
 
 For a working stack on a fresh Linux machine with NVIDIA + Docker:
 
@@ -380,7 +389,7 @@ To stop everything:
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 17 tools)
+- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 15 tools)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
