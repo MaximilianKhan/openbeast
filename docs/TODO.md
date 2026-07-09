@@ -23,32 +23,30 @@ processes eating the free space.
    per-call audit trail (.run/tool-audit.jsonl, digests not contents).
    Live-verified; tests/test_identity_server.py (10). mcp_server.py stays
    for OpenCode/MCP. mcpo dropped from requirements (fastapi+uvicorn in).
-2. **Hardware profiles Phase 2** (docs/HARDWARE_PROFILES.md) — per
-   (GPU-class, model) context/VRAM profiles so serve scripts adapt instead
-   of OOMing on sub-24GB cards; bootstrap offers tier-appropriate models.
-   **Unblocks ~90 % of real-world GPUs** — the single biggest adoption gap.
-   Pairs with: Intel Arc VRAM detection (S), multi-GPU --tensor-split
-   profiles (L, needs 2-GPU measurement time).
+2. ✅ **Hardware profiles Phase 2 (DONE 2026-07-09).** serve.sh auto-scales
+   -c to the detected card's KV budget (ob_scale_context); reference cards
+   unchanged, sub-32GB scaled down, weights-don't-fit → smaller-quant warn.
+   The sub-32GB OOM blocker is closed. REMAINING refinements: Intel Arc VRAM
+   detection (S), community measured per-card profiles, multi-GPU
+   --tensor-split (L).
 3. **CI build matrix** — GitHub Actions job building llama.cpp cuda/hip/
    sycl/cpu so the AMD/Intel paths stop being faith-based. (`pip-audit` is
    ✅ DONE — pr-quality.yml; caught 4 PyJWT CVEs on day one → 2.12.1→2.13.0.)
 4. **Weight checksum verification** (M) — download + verify sha256
    sidecars in bootstrap/update; silent GGUF corruption today fails as
-   mystery gibberish.
+   mystery gibberish. **NEXT UP — the clear next security/correctness win.**
 5. **macOS/Metal + Docker Desktop** (M) — Darwin branch in bootstrap
    (system_profiler GPU detect, Metal build flags); compose bridge-network
    variant (host networking doesn't exist on Docker Desktop). WSL2: likely
    works, needs a documented test pass.
-6. **fetch() DNS-rebinding pin** (S/M) — resolve once, connect to the
-   vetted IP (custom opener), not the hostname; today a malicious DNS
-   server can flip A records between guard and request. Documented
-   limitation until then.
-7. **read_file hazard mounts** (S) — refuse /proc, /sys, /dev and FUSE/
-   network mounts (infinite or side-effecting "regular" files can hang the
-   reader).
-8. **Docker image digest pinning** (S, workflow decision) — :main/:latest
-   float today; pinning by digest interacts with update.sh --images (same
-   pin-bump pattern as requirements.txt would work). Decide + implement.
+6. ✅ **fetch() DNS-rebinding pin (DONE 2026-07-09)** — _resolve_vetted +
+   _PinnedHTTP(S)Connection dial the vetted IP; TLS keeps real-host SNI/cert.
+   Proven: zero connect-time re-resolution; connect-flip to loopback refused.
+7. ✅ **read_file hazard mounts (DONE 2026-07-09)** — refuses /proc,/sys,
+   /dev (post-realpath, so symlinks too) + bounds the read regardless of
+   stat'd size.
+8. ✅ **Docker image digest pinning (DONE 2026-07-09)** — open-webui +
+   searxng pinned by @sha256; update.sh --images bumps the digests.
 9. **Log rotation + WebUI volume backup** (S) — .run/stack.log grows
    unbounded; document/automate `docker volume` backup for chat data.
 10. **mTLS / cert-based auth: assessed, deferred** — Tailscale already
@@ -127,10 +125,10 @@ the choke point where identity, quotas, audit, and metering all attach.
   queue in the router could enforce per-user concurrency caps.
 
 ### Deployment & fleet provisioning
-- **`openbeast doctor` (S/M).** One command validating conf keys, ports,
-  file modes, pinned versions, GPU floor, docker state — prints a
-  fix-list. Half of it exists as bootstrap --preflight; doctor covers the
-  RUNNING stack.
+- ✅ **`openbeast doctor` (DONE 2026-07-09).** ./start.sh doctor —
+  validates conf/secret hygiene, file modes, pinned-dep drift, digest pins,
+  GPU floor + headroom, docker, and per-service health with fix hints
+  (exit 1 on FAIL). scripts/doctor.sh.
 - **Air-gapped bundle (M/L).** Offline installer: weights + images +
   wheels + repo tarball with checksums; enterprise networks often can't
   pull from PyPI/DockerHub/HF.
