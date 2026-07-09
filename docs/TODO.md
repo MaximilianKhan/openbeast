@@ -47,8 +47,9 @@ processes eating the free space.
    stat'd size.
 8. ✅ **Docker image digest pinning (DONE 2026-07-09)** — open-webui +
    searxng pinned by @sha256; update.sh --images bumps the digests.
-9. **Log rotation + WebUI volume backup** (S) — .run/stack.log grows
-   unbounded; document/automate `docker volume` backup for chat data.
+9. **WebUI volume backup** (S) — log rotation ✅ DONE (logrotate-openbeast
+   .conf); REMAINING: automate `docker volume` backup for chat data (folds
+   into the enterprise Backup/restore CLI).
 10. **mTLS / cert-based auth: assessed, deferred** — Tailscale already
     provides identity + encrypted transport equivalent to mTLS for the
     home-lab threat model. Revisit only if OpenBeast ever fronts a network
@@ -85,8 +86,8 @@ the choke point where identity, quotas, audit, and metering all attach.
 - **Tamper-evident audit v2 (M).** Hash-chain the tool-audit entries
   (each row carries prev-row hash) + logrotate policy + retention knob.
   Today's audit is append-only JSONL; chaining makes deletion detectable.
-- **SECURITY.md + threat model + disclosure policy (S).** Table stakes for
-  org adoption; we have the material in RBAC_PLAN/SANDBOXING already.
+- ✅ **SECURITY.md + threat model + disclosure policy (DONE 2026-07-09).**
+  Private-disclosure policy, scoped attack surfaces, brief threat model.
 - **SBOM + scanning in CI (S/M).** ✅ pip-audit DONE (pr-quality.yml).
   REMAINING: syft SBOM artifact per release; trivy image scan. Pairs with
   the digest-pinning item.
