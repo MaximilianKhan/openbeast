@@ -22,8 +22,8 @@ Flow for POST /v1/chat/completions:
 All other paths (/v1/models, /health, GET, non-chat POST) forward transparently.
 
 Env:
-  OPENBEAST_ROUTER_PORT      listen port (default 8080)
-  OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8081)
+  OPENBEAST_ROUTER_PORT      listen port (default 8088)
+  OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_MCPO_URL         MCPO base for start_agent (default http://127.0.0.1:3001)
 """
 from __future__ import annotations

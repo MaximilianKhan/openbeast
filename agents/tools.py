@@ -146,6 +146,11 @@ def _base_dir() -> str:
     somewhere durable and NOT world-readable in /tmp, and every conversation
     shares one predictable home instead of the model's ad-hoc default. Falls
     back to the process cwd only if neither is set (e.g. bare `python tools.py`).
+
+    NOT a confinement boundary: `..` and absolute paths leave it freely by
+    design (agents do legitimate work anywhere the denylist allows). Writes
+    are protected only by _guard_write_path's denylist; kernel-level
+    confinement is Arsenal Phase 1 (Sandlock).
     """
     return (os.environ.get("AGENT_WORKDIR")
             or os.environ.get("OPENBEAST_FILES_DIR")

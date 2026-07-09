@@ -316,7 +316,18 @@ def run_agent(
                 result = f"Error: unknown tool '{fn_name}'"
             else:
                 print(f"  > {fn_name}: {_tool_summary(fn_name, fn_args)}")
-                result = handler(**fn_args)
+                # Local models routinely emit imperfect tool calls (missing
+                # required args, hallucinated kwargs, non-dict arguments). A
+                # bad call must become a correctable error TURN, not kill the
+                # whole run (stderr is DEVNULL under mcp_server — the run
+                # would die silently with no done event).
+                try:
+                    if not isinstance(fn_args, dict):
+                        raise TypeError(
+                            f"arguments must be an object, got {type(fn_args).__name__}")
+                    result = handler(**fn_args)
+                except Exception as e:
+                    result = f"Error: bad tool call to {fn_name}: {e}"
 
             log_event({
                 "type": "tool_call",

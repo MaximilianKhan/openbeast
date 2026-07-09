@@ -237,9 +237,11 @@ def score_run(results: dict) -> dict:
         "model_slug": results.get("model_slug", "unknown"),
         "timestamp": results.get("timestamp"),
         "suite_version": _suite_version(results),
-        "gpu": results.get("gpu", {}),
-        "inference_engine": results.get("inference_engine", {}),
-        "runtime": results.get("runtime", {}),
+        # `or {}` (not .get default): a cache-only result file may store an
+        # explicit null, and .get returns that None instead of the default.
+        "gpu": results.get("gpu") or {},
+        "inference_engine": results.get("inference_engine") or {},
+        "runtime": results.get("runtime") or {},
         "accuracy": accuracy,
         "speed": speed,
         "composite": composite,
@@ -272,7 +274,7 @@ def entry_host_id(entry: dict) -> str:
     """Return the host_id of an entry. Falls back to `gpu.name` for legacy
     entries that predate multi-host support, or 'unknown-host' if no GPU
     info."""
-    gpu = entry.get("gpu", {})
+    gpu = entry.get("gpu") or {}  # `or {}`: tolerate an explicit null
     return gpu.get("host_id") or gpu.get("name") or "unknown-host"
 
 

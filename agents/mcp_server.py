@@ -621,7 +621,9 @@ def list_agents() -> str:
     lines.append(f"{'ID':<36}  {'STATUS':<22}  {'ITER':>6}  {'RUNTIME':>9}  TASK")
     lines.append("-" * 110)
 
-    for agent_id, record in _agents.items():
+    # Snapshot: FastMCP serves tools on worker threads, so a concurrent
+    # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
+    for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
         events = _parse_agent_log(record.log_path)
         iters = sum(1 for e in events if e.get("type") == "iteration")
