@@ -198,7 +198,25 @@ if command -v nvidia-smi &>/dev/null; then
   else
     VRAM_PCT=$((VRAM_USED * 100 / VRAM_TOTAL))
     echo "  GPU VRAM: ${VRAM_USED}/${VRAM_TOTAL} MiB (${VRAM_PCT}%)"
-    if [[ $VRAM_PCT -gt 95 ]]; then
+    # Absolute headroom is what actually matters (the 2 GB rule): serve
+    # contexts are measured against a ~1.3 GB desktop baseline, and the
+    # documented sustained-load crash zone starts around 2.1 GB free.
+    # llama-server's allocation is static after startup — when headroom
+    # shrinks, it's the DESKTOP (browser/terminal/compositor) that grew,
+    # so name the graphics processes eating it.
+    VRAM_FREE=$((VRAM_TOTAL - VRAM_USED))
+    if [[ $VRAM_FREE -lt 2048 ]]; then
+      echo "  WARNING: only ${VRAM_FREE} MiB VRAM headroom (<2048 MiB rule;"
+      echo "           sustained-load crashes were measured near 2100 MiB free)."
+      echo "           llama-server pre-allocates and does not grow — the usual"
+      echo "           culprit is desktop growth. Current graphics processes:"
+      nvidia-smi 2>/dev/null | awk '/Processes:/{p=1} p && / G /{print $5, $(NF-1)}' \
+        | while read -r _gpid _gmem; do
+            _gname=$(ps -o comm= -p "$_gpid" 2>/dev/null || echo "?")
+            echo "             ${_gname} (pid ${_gpid}): ${_gmem}"
+          done | head -6 || true
+      echo "           Free it: close GPU-heavy apps, or restart heavy terminals/browsers."
+    elif [[ $VRAM_PCT -gt 95 ]]; then
       echo "  WARNING: VRAM usage above 95% — risk of OOM"
     fi
   fi

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path

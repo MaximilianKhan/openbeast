@@ -8,6 +8,13 @@ Quick wins from the same audit already shipped (compose cap_drop/NNP,
 secrets off the systemd unit env, BIND_HOST=0.0.0.0 warning, .kube/.docker
 write guard, pinned pip deps + update.sh pin-bump path, Ubuntu CUDA paths,
 disk-space healthcheck guard, scripts/openbeast.service boot unit).
+PR-quality CI (ShellCheck+Ruff+pip-audit), dependabot, CODEOWNERS,
+SECURITY.md, CODE_OF_CONDUCT.md, and a VRAM-headroom healthcheck warning
+shipped 2026-07-09.
+Also shipped 2026-07-09: PR-quality CI (ShellCheck + Ruff + pip-audit),
+dependabot, CODEOWNERS, SECURITY.md, CODE_OF_CONDUCT.md, and a
+VRAM-headroom (<2 GB) healthcheck warning that names the graphics
+processes eating the free space.
 
 1. ✅ **Identity tool server (DONE 2026-07-09).** agents/openapi_tools.py
    replaced mcpo for the WebUI connection: per-user workspace sharding
@@ -23,8 +30,8 @@ disk-space healthcheck guard, scripts/openbeast.service boot unit).
    Pairs with: Intel Arc VRAM detection (S), multi-GPU --tensor-split
    profiles (L, needs 2-GPU measurement time).
 3. **CI build matrix** — GitHub Actions job building llama.cpp cuda/hip/
-   sycl/cpu so the AMD/Intel paths stop being faith-based. Add `pip-audit`
-   to the same workflow (supply-chain check on the now-pinned deps).
+   sycl/cpu so the AMD/Intel paths stop being faith-based. (`pip-audit` is
+   ✅ DONE — pr-quality.yml; caught 4 PyJWT CVEs on day one → 2.12.1→2.13.0.)
 4. **Weight checksum verification** (M) — download + verify sha256
    sidecars in bootstrap/update; silent GGUF corruption today fails as
    mystery gibberish.
@@ -82,9 +89,9 @@ the choke point where identity, quotas, audit, and metering all attach.
   Today's audit is append-only JSONL; chaining makes deletion detectable.
 - **SECURITY.md + threat model + disclosure policy (S).** Table stakes for
   org adoption; we have the material in RBAC_PLAN/SANDBOXING already.
-- **SBOM + scanning in CI (S/M).** syft SBOM artifact per release; trivy
-  (images) + pip-audit (pinned deps) as CI gates. Pairs with the digest-
-  pinning campaign item.
+- **SBOM + scanning in CI (S/M).** ✅ pip-audit DONE (pr-quality.yml).
+  REMAINING: syft SBOM artifact per release; trivy image scan. Pairs with
+  the digest-pinning item.
 - **Data governance (M).** Per-user workspace export + delete (the shards
   make this trivial now); FILES_RETENTION_DAYS GC; document what data
   lives where (WebUI volume, shards, audit, eval results).

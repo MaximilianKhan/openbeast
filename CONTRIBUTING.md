@@ -1,8 +1,14 @@
 # Contributing to OpenBeast
 
-OpenBeast is a self-hosted AI workstation: llama.cpp serving, a 17-tool MCP
-agent arsenal, browser + terminal frontends, RBAC, and a 291-unit (v4) eval
-suite. Contributions welcome — here's how to land one cleanly.
+OpenBeast is a self-hosted AI workstation: llama.cpp serving, a 15-tool
+agent arsenal (two surfaces — the identity tool server for the browser, the
+MCP server for the terminal), browser + terminal frontends, RBAC, and a
+137-task / 291-unit (v4) eval suite. Contributions welcome — here's how to
+land one cleanly.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Found a security issue? Do **not** open a public issue — see
+[SECURITY.md](SECURITY.md).
 
 ## Dev setup
 
@@ -15,14 +21,30 @@ Most development doesn't need a GPU at all: the test suite is CPU-only.
 
 ## Before you open a PR
 
+Run what CI runs, so nothing surprises you in review:
+
 ```bash
+# Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # structure checks + tool unit tests
-python3 tests/test_proc_hygiene.py   # process/OOM hardening invariants
-python3 tests/test_cache.py          # eval cache durability
+python3 -m pytest tests/ -q          # full suite (174 tests, CPU-only)
+
+# Quality gates (the CI 'PR quality' jobs) — install once:
+#   pip install --user ruff pip-audit shellcheck-py
+ruff check agents/*.py evals/*.py tests/*.py --select E9,F   # syntax + undefined names
+shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
+pip-audit -r agents/requirements.txt --disable-pip --no-deps  # dependency CVEs
+python3 evals/suite_stats.py --check  # docs cite the generated eval counts
 ```
 
-CI (`.github/workflows/ci.yml`) runs all of these plus a repo-wide
-`bash -n` sweep on every push and PR — green CI is required.
+Two workflows gate every PR (green is required):
+
+- **`ci.yml`** — the full pytest + structure suite, the doc-count check,
+  the variant-spec audit, and a repo-wide `bash -n` sweep.
+- **`pr-quality.yml`** — ShellCheck (error severity), Ruff (E9,F), and
+  pip-audit against the pinned deps.
+
+Dependabot opens weekly PRs for dependency bumps; CI + pip-audit validate
+them before a human merges.
 
 House rules the suite enforces (so you don't discover them in review):
 

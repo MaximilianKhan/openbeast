@@ -10,7 +10,6 @@ Run: python -m pytest tests/test_tools.py -v
   or: ./tests/run_tests.sh
 """
 
-import json
 import os
 import sys
 import tempfile

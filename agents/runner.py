@@ -18,7 +18,6 @@ The server must be running (e.g. ./serve-qwen-27b-q5.sh) before launching.
 import argparse
 import json
 import os
-import sys
 import time
 from datetime import datetime
 from pathlib import Path

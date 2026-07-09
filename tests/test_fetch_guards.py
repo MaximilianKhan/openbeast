@@ -24,7 +24,6 @@ import urllib.error
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agents"))
 
-import tools
 from tools import fetch, _fetch_url_blocked, _FetchRedirectHandler
 
 

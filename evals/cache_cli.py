@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -33,7 +32,7 @@ def cmd_stats(args):
     print(f"Entries:          {s['entries']}")
     print(f"Total size:       {s['size_bytes']:,} bytes")
     print(f"Context hash:     {cache.context_hash()}")
-    print(f"Context files:")
+    print("Context files:")
     for p in cache.CONTEXT_FILES:
         mark = "[ok]" if p.exists() else "[missing]"
         print(f"  {mark} {p}")

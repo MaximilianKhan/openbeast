@@ -178,7 +178,7 @@ def main():
         cfg["_dir"] = cfg["dir"]
         # Determine next IDs
         next_letters = "abcdefghijk"
-        used = sorted(existing_ids)
+        sorted(existing_ids)
         next_id_iter = (l for l in next_letters if l not in existing_ids)
 
         added = []

@@ -532,7 +532,7 @@ def run_eval(
             results["tasks"].append(result)
             results["summary"]["failed"] += 1
             cache_misses_skipped += 1
-            print(f"  SKIPPED (cache miss; --cache-only mode)")
+            print("  SKIPPED (cache miss; --cache-only mode)")
             _write_results(results_path, results)
             continue
 
@@ -574,12 +574,12 @@ def run_eval(
                 result["variant_count"] = task["variant_count"]
             results["tasks"].append(result)
             results["summary"]["failed"] += 1
-            print(f"  FAIL (setup failed)")
+            print("  FAIL (setup failed)")
             _write_results(results_path, results)
             continue
 
         # Run agent
-        print(f"  Running agent...")
+        print("  Running agent...")
         agent_result = run_agent(task, base_url, max_iter_override)
         print(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 

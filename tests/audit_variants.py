@@ -8,7 +8,7 @@ v3 sweep surfaced: spec teaches API X, reference impl uses API Y, audit
 passes (because ref impl is correct), models score 0/13 (because they
 follow the spec). The fix is to require the spec to mention the same
 load-bearing tokens the ref impl actually uses."""
-import json, subprocess, sys, shutil, os, time
+import subprocess, sys, shutil, os, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent

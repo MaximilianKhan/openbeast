@@ -2,7 +2,6 @@
 """Pytest fixtures shared across the test suite."""
 
 import pytest
-from pathlib import Path
 
 
 @pytest.fixture

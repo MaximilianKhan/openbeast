@@ -1,0 +1,65 @@
+name: PR quality
+
+# Contributor-facing quality gates — fast, deterministic, no GPU.
+# Kept separate from ci.yml (tests) so a red lint doesn't hide green tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: ShellCheck (error severity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Error severity only, deliberately: the codebase is clean at this
+      # level today, so the gate starts green and stays meaningful.
+      # Tightening to warning-level is tracked in docs/TODO.md.
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh \
+            scripts/*.sh scripts/lib/*.sh tests/*.sh
+
+  ruff:
+    name: Ruff (syntax + undefined names)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # E9 (syntax errors) + F (undefined names, unused imports, broken
+      # f-strings) — the "this is actually wrong" tier, not style opinions.
+      - name: ruff
+        run: |
+          python3 -m pip install -q ruff
+          ruff check agents/*.py evals/*.py tests/*.py --select E9,F
+
+  pip-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The pins in agents/requirements.txt are the supply chain — audit
+      # them against the PyPI advisory DB on every change. (This gate found
+      # 4 PyJWT CVEs the day it was written.)
+      - name: pip-audit
+        run: |
+          python3 -m pip install -q pip-audit
+          pip-audit -r agents/requirements.txt --disable-pip --no-deps
