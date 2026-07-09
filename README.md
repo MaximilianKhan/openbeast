@@ -430,8 +430,21 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 > **legacy v3.5** scores, pending the in-progress v4 re-run. Suite version is
 > stamped per row.
 
-**v4 leaderboard** (RTX 5090 ×1, 291 units, 2026-07-08→09; full analysis in
-[`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)):
+**v4 leaderboard** — RTX 5090 ×1, 291 units, 2026-07-08→09 (full analysis in
+[`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)).
+
+> **Scope & method.** These scores come from **RTX 5090 (×1) runs exclusively**
+> — the board is keyed by `(host_id, model_slug)`, so runs on other hardware
+> coexist rather than overwrite. But the numbers characterize the **specific
+> model + quantization, not the card**: the same GGUF at the same quant should
+> land in the same neighborhood on any adequate GPU, so read each row as
+> representative of that model/quant as a whole. Difficulty weights are the
+> standard **easy=1 / med=1.5 / hard=2**, and the six language variants are
+> weighted **equally** — each language counts the same — so the per-language
+> table below reflects the true, unskewed distribution of ability. Every score
+> here is a **single run**; there is real run-to-run mean-variance we do not yet
+> capture (multi-run averaging is acknowledged future work, not yet budgeted), so
+> treat sub-~1-point gaps as noise, not ranking.
 
 | # | Model | Acc | Speed | Pass | Hard | Wall |
 |---:|---|---:|---:|---:|---:|---:|
@@ -450,6 +463,38 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 > MTP forces `-np 1` (serial), so per-token **speed**, not wall-clock, is the
 > comparable axis across that boundary. Verdict: **ship MTP** — same brain, <½
 > the latency.
+
+**v4 per-language accuracy** (difficulty-weighted % over the 31 variant tasks +
+the Python-bucketed single-language tasks; same methodology as the v3.5 table
+below, so the two are comparable. Bold = top, italic = floor per column):
+
+| Model | Python | C | C++ | Go | Rust | Zig | Best at |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen 27B Q5_K_XL | **98.6** | 92.7 | _87.7_ | **97.9** | **100.0** | 60.5 | Python, Go, Rust |
+| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | **96.9** | 96.9 | 96.9 | **66.6** | C, C++, Zig |
+| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | _85.4_ | _87.7_ | _85.4_ | _95.8_ | _34.5_ | — |
+| Qwopus 27B v2 MTP Q5_K_M | _95.2_ | _84.5_ | 91.9 | 96.9 | 96.9 | 44.7 | — |
+
+Raw pass counts (difficulty-blind, `passed/count`) tell the plainer story:
+
+| Model | Python | C | C++ | Go | Rust | Zig |
+|---|---:|---:|---:|---:|---:|---:|
+| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | **31/31** | 20/31 |
+| Qwen 27B MTP Q5_K_XL | 133/136 | 30/31 | 30/31 | 30/31 | 30/31 | 20/31 |
+| Qwen 35B-A3B MTP MoE Q4_K_M | 131/136 | 27/31 | 28/31 | 27/31 | 30/31 | 11/31 |
+| Qwopus 27B v2 MTP Q5_K_M | 130/136 | 27/31 | 29/31 | 30/31 | 30/31 | 14/31 |
+
+Two things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
+on Python (133/136) and Zig (20/31), never more than 2 units apart anywhere —
+confirming MTP is lossless; the weighted table's cpp/rust swings are single-task
+noise amplified by difficulty weighting. **(2) Zig is the real discriminator.**
+Every model clears 84–100 % on the five mainstream languages, so those columns
+barely separate the field — but Zig fans out from **34.5 % to 66.6 %**. Nearly
+all the signal that distinguishes these models lives in Zig (and, correspondingly,
+in the hard-difficulty tasks), yet the headline weighted Acc compresses everyone
+into a 93–97 band. That is the case for re-weighting: if the board is meant to
+*rank*, the current easy=1 / med=1.5 / hard=2 ratio is drowning the discriminating
+tasks in a sea of near-universally-passed easy ones.
 
 **Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; kept intact
 until the whole board is v4). Qwen 27B Q5_K_XL has since re-run on v4 (above),
