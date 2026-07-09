@@ -2,12 +2,22 @@
 
 ## ⚠️ SECURITY
 
-- **Router is not identity-aware** — with `AGENT_ROUTER=true` the router
-  (`agents/router.py`) classifies every chat turn (guests included) and
-  calls MCPO `start_agent` directly, bypassing the WebUI connection-level
-  RBAC. Gate or identity-scope the spawn path before multi-user and
-  `AGENT_ROUTER` coexist (part of RBAC Phase 2 — see `docs/RBAC_PLAN.md`
-  and the warning in `docs/TOOLS.md`).
+- ✅ **Router IS identity-aware (DONE 2026-07-08).** WebUI forwards
+  `X-OpenWebUI-User-Role` (`ENABLE_FORWARD_USER_INFO_HEADERS=true`); the
+  router only runs its spawn path for `admin` turns, guests pass through
+  untouched. `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` fails closed when the
+  header is absent. Live-verified. The RBAC-bypass gap is closed.
+- ✅ **Guest `fetch` SSRF-guarded (DONE 2026-07-08)** — http/https only,
+  loopback/private/link-local refused, redirects re-validated per hop.
+- **Remaining RBAC Phase 2 hardening:**
+  - **Sandlock → default-on.** Shipped opt-in this session (`setup-sandlock.sh`,
+    profile, `docs/SANDBOXING.md`). Next concrete step: run the eval suite with
+    `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` set; if
+    green, flip default-on in `conf.sh`. Re-verify the setpgid/killpg
+    interaction on every sandlock version bump.
+  - **Per-profile MCPO keys** — below-app enforcement so a guest can't reach
+    admin tools even if they bypass the WebUI layer (defense in depth beyond
+    the connection filter).
 
 ## ⏳ LATER — per-conversation (or per-user) file isolation for chat tools
 
