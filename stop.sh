@@ -12,7 +12,7 @@ RUN_DIR="$SCRIPT_DIR/.run"
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Identity-checked liveness: never TERM an unrelated process that recycled
   # a stale pidfile's PID. Unreadable /proc cmdline → plain kill -0 result.
-  local pat="${2:-start\.sh|llama|mcpo|router}" pid cmd
+  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router}" pid cmd
   [[ -f "$1" ]] || return 1
   pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
@@ -54,10 +54,10 @@ fi
 echo "Stopping agent router..."
 pkill -f "agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
-echo "Stopping MCPO proxy..."
-# Matches every instance: the admin proxy on 3001 AND the guest instance on
-# MCPO_GUEST_PORT when RBAC Phase 2 keys are active.
-pkill -f "mcpo --port" 2>/dev/null && echo "MCPO proxy stopped." || echo "MCPO proxy was not running."
+echo "Stopping tool server..."
+pkill -f "agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
+# Legacy mcpo instances (pre-identity-server stacks)
+pkill -f "mcpo --port" 2>/dev/null || true
 
 echo "Stopping llama.cpp server..."
 pkill -f "llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."

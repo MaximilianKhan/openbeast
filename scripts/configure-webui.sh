@@ -126,23 +126,21 @@ fi
 # exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
 echo "  Reconciling RBAC tool-server connections..."
-# RBAC Phase 2 (opt-in): when BOTH per-profile keys are exported (conf.sh),
-# connection 1 authenticates to the keyed admin instance and connection 2
-# points at the guest instance (web tools only, its own key) — the WebUI
-# grant filter is then no longer the only wall. Keys absent = Phase 1,
-# byte-for-byte the previous single-instance shape.
-MCPO_GUEST_URL="${MCPO_GUEST_URL:-http://localhost:${MCPO_GUEST_PORT:-3002}}"
+# Both connections target the ONE identity tool server (:3001,
+# agents/openapi_tools.py). RBAC Phase 2 keys (conf.sh) differentiate them:
+# connection 1 carries the admin key (all tools), connection 2 the guest key
+# (server enforces web_search/fetch only for it). Keys absent = both
+# connections keyless, server open — Phase-1 single-user behavior.
 curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
-  | MCPO_URL="$MCPO_URL" MCPO_GUEST_URL="$MCPO_GUEST_URL" python3 -c "
+  | MCPO_URL="$MCPO_URL" python3 -c "
 import sys, os, json
 MCPO = os.environ['MCPO_URL']
-GUEST_URL = os.environ['MCPO_GUEST_URL']
 ADMIN_KEY = os.environ.get('OPENBEAST_MCPO_ADMIN_KEY', '').strip()
 GUEST_KEY = os.environ.get('OPENBEAST_MCPO_GUEST_KEY', '').strip()
 keyed = bool(ADMIN_KEY and GUEST_KEY)
 data = json.load(sys.stdin)
 conns = [c for c in data.get('TOOL_SERVER_CONNECTIONS', [])
-         if not (c.get('url') in (MCPO, GUEST_URL) and c.get('info', {}).get('id') in ('1', '2', 'local-tools'))]
+         if not (c.get('info', {}).get('id') in ('1', '2', 'local-tools'))]
 priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
         'auth_type': 'bearer' if keyed else 'none',
         'headers': None, 'key': ADMIN_KEY if keyed else '',
@@ -150,7 +148,7 @@ priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
         'spec_type': 'url', 'spec': '',
         'info': {'id': '1', 'name': 'Local Tools (privileged)',
                  'description': 'bash, file r/w/edit, grep, agents, skills — admin-only'}}
-web = {'url': GUEST_URL if keyed else MCPO, 'path': 'openapi.json', 'type': 'openapi',
+web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
        'auth_type': 'bearer' if keyed else 'none',
        'headers': None, 'key': GUEST_KEY if keyed else '',
        'config': {'enable': True, 'function_name_filter_list': 'web_search,fetch',
@@ -162,9 +160,9 @@ print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
 " | curl -s -H "$AUTH" -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
-  echo "  Tool servers configured (Phase 2: keyed admin :3001 + keyed guest :${MCPO_GUEST_PORT:-3002})."
+  echo "  Tool server configured (Phase 2: admin + guest profiles keyed, one server :3001)."
 else
-  echo "  Tool servers configured (privileged=admin-only, web_search+fetch=all users)."
+  echo "  Tool server configured (privileged=admin-only, web_search+fetch=all users)."
 fi
 
 # Model tool wiring uses these two connection ids.

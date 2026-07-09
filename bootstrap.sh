@@ -135,6 +135,12 @@ run_preflight() {
     none)   warn "no supported GPU detected" ;;
   esac
   ob_profile_advice
+  # Opinionated floor: detected GPUs under 11 GB VRAM are not supported —
+  # see ob_vram_floor_check in scripts/lib/hardware.sh for the reasoning
+  # and the OPENBEAST_FORCE_VRAM=1 escape hatch.
+  if ! ob_vram_floor_check; then
+    hard_fail
+  fi
   ok "llama.cpp build backend: $OB_BACKEND (GPU_BACKEND=$GPU_BACKEND)"
   case "$OB_BACKEND" in
     hip|sycl) warn "the '$OB_BACKEND' backend is UNTESTED by OpenBeast — reference profile is CUDA/5090." ;;

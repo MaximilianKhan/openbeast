@@ -146,6 +146,9 @@ fi
 MCPO_ADMIN_KEY="${OPENBEAST_MCPO_ADMIN_KEY:-$(_ob_conf_value MCPO_ADMIN_KEY || true)}"
 MCPO_GUEST_KEY="${OPENBEAST_MCPO_GUEST_KEY:-$(_ob_conf_value MCPO_GUEST_KEY || true)}"
 MCPO_GUEST_PORT="${OPENBEAST_MCPO_GUEST_PORT:-$(_ob_conf_value MCPO_GUEST_PORT || echo 3002)}"
+# Workspace sharding mode for the identity tool server (off|user|chat).
+FILES_SHARDING="${OPENBEAST_FILES_SHARDING:-$(_ob_conf_value FILES_SHARDING || echo user)}"
+export OPENBEAST_FILES_SHARDING="$FILES_SHARDING"
 if [[ -n "$MCPO_ADMIN_KEY" ]]; then
   export OPENBEAST_MCPO_ADMIN_KEY="$MCPO_ADMIN_KEY"
 fi

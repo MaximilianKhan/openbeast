@@ -556,7 +556,7 @@ including the per-category drilldown.
 
 ## Requirements
 
-- NVIDIA GPU with CUDA (tested on RTX 5090; works on 3090/4090 — `bootstrap.sh` auto-detects the CUDA arch and prints a per-tier config recommendation; see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md))
+- NVIDIA GPU with CUDA and **at least 11 GB VRAM** (1080 Ti / 2080 Ti class or better — bootstrap enforces this floor; OpenBeast ships the largest models that earn their VRAM, not survival configs for smaller cards). Tested on RTX 5090; works on 3090/4090 — `bootstrap.sh` auto-detects the CUDA arch and prints a per-tier config recommendation; see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md)
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model. Each model adds 16–21 GB.
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults

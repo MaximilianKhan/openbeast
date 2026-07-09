@@ -23,6 +23,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -140,22 +141,42 @@ def run_reaped(command, timeout, **popen_kw):
     return proc.returncode, out
 
 
+# Per-request workspace override. The identity tool server
+# (agents/openapi_tools.py) serves many users from ONE process, so an env
+# var can't carry the per-user shard — a ContextVar can: it is scoped to
+# the request's thread/task, set before the tool call and reset after.
+_BASE_DIR_OVERRIDE: ContextVar = ContextVar("openbeast_base_dir", default=None)
+
+
+def set_base_dir_override(path: str):
+    """Point relative tool paths (and the manifest) at `path` for the
+    current context. Returns a token for reset_base_dir_override()."""
+    return _BASE_DIR_OVERRIDE.set(path)
+
+
+def reset_base_dir_override(token) -> None:
+    _BASE_DIR_OVERRIDE.reset(token)
+
+
 def _base_dir() -> str:
     """Directory that relative, model-supplied paths resolve against.
 
-    A spawned background agent gets AGENT_WORKDIR (its task's working dir). A
-    direct tool call from a chat turn gets OPENBEAST_FILES_DIR — a persistent,
-    private (0700) workspace — so generated files (reports, charts) land
-    somewhere durable and NOT world-readable in /tmp, and every conversation
-    shares one predictable home instead of the model's ad-hoc default. Falls
-    back to the process cwd only if neither is set (e.g. bare `python tools.py`).
+    The identity server sets a per-request override (the caller's workspace
+    shard). A spawned background agent gets AGENT_WORKDIR (its task's
+    working dir). A direct tool call from a chat turn gets
+    OPENBEAST_FILES_DIR — a persistent, private (0700) workspace — so
+    generated files (reports, charts) land somewhere durable and NOT
+    world-readable in /tmp, and every conversation shares one predictable
+    home instead of the model's ad-hoc default. Falls back to the process
+    cwd only if none is set (e.g. bare `python tools.py`).
 
     NOT a confinement boundary: `..` and absolute paths leave it freely by
     design (agents do legitimate work anywhere the denylist allows). Writes
     are protected only by _guard_write_path's denylist; kernel-level
     confinement is Arsenal Phase 1 (Sandlock).
     """
-    return (os.environ.get("AGENT_WORKDIR")
+    return (_BASE_DIR_OVERRIDE.get()
+            or os.environ.get("AGENT_WORKDIR")
             or os.environ.get("OPENBEAST_FILES_DIR")
             or os.getcwd())
 
@@ -269,7 +290,9 @@ def _manifest_log(action: str, path: str, nbytes: int) -> None:
     a manifest problem must never break the write it describes.
     """
     try:
-        base = os.environ.get("OPENBEAST_FILES_DIR")
+        # Shard-aware: under the identity server, the manifest lives at the
+        # caller's shard root (each user indexes only their own files).
+        base = _BASE_DIR_OVERRIDE.get() or os.environ.get("OPENBEAST_FILES_DIR")
         if not base:
             return
         base = os.path.realpath(os.path.expanduser(base))

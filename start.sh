@@ -41,7 +41,7 @@ _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
   # unrelated process must not count as "running". If /proc/<pid>/cmdline is
   # unreadable (exotic /proc, zombie) fall back to the plain liveness check.
-  local pat="${2:-start\.sh|llama|mcpo|router}" pid cmd
+  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router}" pid cmd
   [[ -f "$1" ]] || return 1
   pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
@@ -55,9 +55,9 @@ _pid_pattern() {
   case "$1" in
     supervisor) echo 'start\.sh' ;;
     llama)      echo 'llama-server' ;;
-    mcpo)       echo 'mcpo' ;;
+    mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
-    *)          echo 'start\.sh|llama|mcpo|router' ;;
+    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router' ;;
   esac
 }
 
@@ -160,11 +160,8 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
       curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 || ROUTER_READY=0
     fi
-    # Keyed MCPO (RBAC Phase 2) requires the bearer token even for openapi.json.
-    _STATUS_MCPO_AUTH=()
-    [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" ]] && _STATUS_MCPO_AUTH=(-H "Authorization: Bearer $OPENBEAST_MCPO_ADMIN_KEY")
     if curl -s -m 2 "http://$HEALTH_HOST:8080/health" >/dev/null 2>&1 \
-       && curl -s -m 2 "${_STATUS_MCPO_AUTH[@]}" "http://$HEALTH_HOST:3001/openapi.json" >/dev/null 2>&1 \
+       && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
        && [[ $ROUTER_READY -eq 1 ]]; then
       echo ""
       echo "Stack is up:"
@@ -313,14 +310,15 @@ WARM
     echo "  (KV cache warmed with the system prompt)" ) &
 fi
 
-echo "Starting MCPO proxy (MCP tools → OpenAPI) on http://localhost:3001..."
-command -v mcpo >/dev/null 2>&1 \
-  || { echo "Error: mcpo not found on PATH (pip install --user mcpo puts it in ~/.local/bin)" >&2; exit 1; }
+echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
+python3 -c 'import fastapi, uvicorn' 2>/dev/null \
+  || { echo "Error: fastapi/uvicorn missing (pip install --user -r agents/requirements.txt)" >&2; exit 1; }
 # Private, persistent workspace for files the chat model writes via the direct
-# tools (conf.sh exports OPENBEAST_FILES_DIR; mcp_server inherits it). Created
-# 0700 so generated reports/charts aren't world-readable the way the old /tmp
-# default was — matters on a multi-user / tailnet-exposed box. An EXISTING
-# dir's mode is the user's choice: leave it alone, just warn if it's open.
+# tools (conf.sh exports OPENBEAST_FILES_DIR; the tool server shards it per
+# user when identity headers are present). Created 0700 so generated
+# reports/charts aren't world-readable the way the old /tmp default was —
+# matters on a multi-user / tailnet-exposed box. An EXISTING dir's mode is
+# the user's choice: leave it alone, just warn if it's open.
 if [[ ! -d "$OPENBEAST_FILES_DIR" ]]; then
   mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
 else
@@ -330,57 +328,29 @@ else
     echo "         chmod 700 it if the model's files should stay private." >&2
   fi
 fi
-# RBAC Phase 2 (docs/RBAC_PLAN.md): when BOTH per-profile keys are configured
-# (scripts/setup-mcpo-keys.sh), the admin instance is key-protected and a
-# second, guest instance serves ONLY web_search+fetch on MCPO_GUEST_PORT with
-# its own key. Either key missing = Phase 1: one keyless instance, unchanged.
-MCPO_KEYED=0
-MCPO_ADMIN_ARGS=()
-MCPO_CURL_AUTH=()
+# agents/openapi_tools.py replaced mcpo here (docs/IDENTITY_TOOLS_PLAN.md):
+# it reads the WebUI identity headers mcpo dropped (per-user workspace
+# sharding + audit log), and enforces BOTH RBAC Phase 2 keys in one process
+# — admin key = all tools, guest key = web_search/fetch only, no keys = open
+# Phase-1 behavior. Keys come from conf.sh env (scripts/setup-mcpo-keys.sh).
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
-  MCPO_KEYED=1
-  MCPO_ADMIN_ARGS=(--api-key "$OPENBEAST_MCPO_ADMIN_KEY")
-  MCPO_CURL_AUTH=(-H "Authorization: Bearer $OPENBEAST_MCPO_ADMIN_KEY")
-  echo "  (RBAC Phase 2 keys active: admin :3001, guest :${MCPO_GUEST_PORT:-3002})"
+  echo "  (RBAC Phase 2 keys active: admin + guest profiles on :3001)"
 fi
-mcpo --port 3001 --host "$BIND_HOST" "${MCPO_ADMIN_ARGS[@]}" -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
+python3 "$SCRIPT_DIR/agents/openapi_tools.py" &
 MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"
-# Verify it actually serves — a blind sleep once masked a dead MCPO.
+# Verify it actually serves — a blind sleep once masked a dead tool server.
 MCPO_UP=0
 for _i in $(seq 1 30); do
   if ! kill -0 "$MCPO_PID" 2>/dev/null; then
-    echo "Error: MCPO exited during startup — see output above" >&2
+    echo "Error: tool server exited during startup — see output above" >&2
     exit 1
   fi
-  curl -s -m 2 "${MCPO_CURL_AUTH[@]}" "http://$HEALTH_HOST:3001/openapi.json" >/dev/null 2>&1 && { MCPO_UP=1; break; }
+  curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 && { MCPO_UP=1; break; }
   sleep 1
 done
-[[ $MCPO_UP -eq 1 ]] || { echo "Error: MCPO not serving after 30s" >&2; exit 1; }
-echo "MCPO proxy ready on http://localhost:3001"
-
-if [[ $MCPO_KEYED -eq 1 ]]; then
-  echo "Starting guest MCPO (web_search+fetch only) on http://localhost:${MCPO_GUEST_PORT:-3002}..."
-  OPENBEAST_MCP_TOOLS="web_search,fetch" \
-    mcpo --port "${MCPO_GUEST_PORT:-3002}" --host "$BIND_HOST" \
-         --api-key "$OPENBEAST_MCPO_GUEST_KEY" \
-         -- python3 "$SCRIPT_DIR/agents/mcp_server.py" &
-  MCPO_GUEST_PID=$!
-  echo "$MCPO_GUEST_PID" > "$RUN_DIR/mcpo-guest.pid"
-  MCPO_GUEST_UP=0
-  for _i in $(seq 1 30); do
-    if ! kill -0 "$MCPO_GUEST_PID" 2>/dev/null; then
-      echo "Error: guest MCPO exited during startup — see output above" >&2
-      exit 1
-    fi
-    curl -s -m 2 -H "Authorization: Bearer $OPENBEAST_MCPO_GUEST_KEY" \
-      "http://$HEALTH_HOST:${MCPO_GUEST_PORT:-3002}/openapi.json" >/dev/null 2>&1 \
-      && { MCPO_GUEST_UP=1; break; }
-    sleep 1
-  done
-  [[ $MCPO_GUEST_UP -eq 1 ]] || { echo "Error: guest MCPO not serving after 30s" >&2; exit 1; }
-  echo "Guest MCPO ready on http://localhost:${MCPO_GUEST_PORT:-3002}"
-fi
+[[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
+echo "Tool server ready on http://localhost:3001"
 
 # Agent-spawn router (opt-in, AGENT_ROUTER=true). Sits on ROUTER_PORT in front
 # of llama-server (8080); frontends point at it via OPENBEAST_MODEL_URL. Needs

@@ -70,7 +70,9 @@ The detailed walkthrough below explains each step and lists alternate models.
 ## Prerequisites
 
 ### Core
-- NVIDIA GPU with CUDA support (tested on RTX 5090, Blackwell SM 120)
+- NVIDIA GPU with CUDA support and **≥ 11 GB VRAM** — the enforced floor
+  (1080 Ti / 2080 Ti class; see docs/HARDWARE_PROFILES.md). Tested on RTX
+  5090 (Blackwell SM 120)
 - NVIDIA driver installed (`nvidia-smi` should work)
 - `cuda` and `cmake` installed
 - `gcc`/`g++` installed

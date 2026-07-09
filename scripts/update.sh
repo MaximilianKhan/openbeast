@@ -140,10 +140,10 @@ update_images() {
 
 # ---- Python deps: mcpo, mcp SDK, openai, huggingface_hub -------------------
 update_python() {
-  step "Python packages (mcpo, mcp, openai, huggingface_hub)"
+  step "Python packages (mcp, openai, fastapi, uvicorn, huggingface_hub)"
   if [[ $CHECK_ONLY -eq 1 ]]; then
     python3 -m pip list --user --outdated 2>/dev/null \
-      | grep -Ei 'mcpo|^mcp |openai|huggingface' || ok "all current"
+      | grep -Ei '^mcp |openai|fastapi|uvicorn|huggingface' || ok "all current"
     return 0
   fi
   # PEP-668 "externally managed" environments (Arch, newer Debian) reject a
@@ -157,12 +157,12 @@ update_python() {
   # `-U -r` would just reinstall the pins. --python is the SANCTIONED bump
   # path: upgrade the packages themselves, then rewrite the pins to match
   # what's now installed, so the next fresh install gets what we validated.
-  python3 -m pip install --user $pip_flags -q -U huggingface_hub openai mcp mcpo
+  python3 -m pip install --user $pip_flags -q -U huggingface_hub openai mcp fastapi uvicorn
   {
     echo "# Pinned to the exact versions validated on the reference box (supply-chain"
     echo "# anchoring: an unpinned install would pull whatever PyPI has newest,"
     echo "# including a compromised release). scripts/update.sh --python bumps these."
-    for _pkg in openai mcp mcpo; do
+    for _pkg in openai mcp fastapi uvicorn; do
       _ver=$(python3 -m pip show "$_pkg" 2>/dev/null | awk '/^Version:/{print $2}')
       [[ -n "$_ver" ]] && echo "${_pkg}==${_ver}"
     done

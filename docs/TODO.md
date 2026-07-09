@@ -9,10 +9,13 @@ secrets off the systemd unit env, BIND_HOST=0.0.0.0 warning, .kube/.docker
 write guard, pinned pip deps + update.sh pin-bump path, Ubuntu CUDA paths,
 disk-space healthcheck guard, scripts/openbeast.service boot unit).
 
-1. **Identity tool server (Option B)** — docs/IDENTITY_TOOLS_PLAN.md. Own
-   thin FastAPI tool server for the WebUI connection; unlocks per-user +
-   per-chat workspace sharding (WebUI already sends user id + chat_id
-   headers; mcpo drops them). ~200 lines. THE multi-user unlock.
+1. ✅ **Identity tool server (DONE 2026-07-09).** agents/openapi_tools.py
+   replaced mcpo for the WebUI connection: per-user workspace sharding
+   (FILES_SHARDING=user default, per-chat optional), both RBAC keys
+   enforced in one process (admin=all, guest=web-only-404-elsewhere),
+   per-call audit trail (.run/tool-audit.jsonl, digests not contents).
+   Live-verified; tests/test_identity_server.py (10). mcp_server.py stays
+   for OpenCode/MCP. mcpo dropped from requirements (fastapi+uvicorn in).
 2. **Hardware profiles Phase 2** (docs/HARDWARE_PROFILES.md) — per
    (GPU-class, model) context/VRAM profiles so serve scripts adapt instead
    of OOMing on sub-24GB cards; bootstrap offers tier-appropriate models.
@@ -45,6 +48,94 @@ disk-space healthcheck guard, scripts/openbeast.service boot unit).
     provides identity + encrypted transport equivalent to mTLS for the
     home-lab threat model. Revisit only if OpenBeast ever fronts a network
     Tailscale doesn't own end-to-end.
+
+Also enforced 2026-07-09: **the 11 GB VRAM floor** (Max's call) —
+bootstrap hard-fails on detected GPUs under the 1080 Ti / 2080 Ti class
+(`ob_vram_floor_check`, `OPENBEAST_FORCE_VRAM=1` escape hatch, tiers in
+docs/HARDWARE_PROFILES.md).
+
+## 🏢 ENTERPRISE HORIZON — brainstorm 2026-07-09 (Max: "real enterprise-grade possibility")
+
+Everything below turns OpenBeast from a hardened home rig into something a
+small org could run with a straight face. Grouped by pillar, each item
+S/M/L effort. The identity tool server (shipped) is the foundation — it is
+the choke point where identity, quotas, audit, and metering all attach.
+
+### Identity & access
+- **Signed identity (S/M, HIGH-VALUE NEXT).** Open WebUI can mint a signed
+  JWT per request (`FORWARD_USER_INFO_HEADER_JWT_SECRET`) instead of plain
+  X-OpenWebUI-User-* headers. openapi_tools.py verifies the signature →
+  header forgery dies. Natural v2 of the identity server; discovered in
+  the 2026-07-09 container source read.
+- **SSO / OIDC recipe (M).** Open WebUI supports OAuth (Google / Entra /
+  Keycloak / Authentik). Document + script the wiring so org logins map to
+  WebUI roles → our RBAC tiers. Zero code on our side, pure recipe.
+- **Scoped, expiring tool keys (M).** setup-mcpo-keys.sh v2: per-user keys
+  with TTL + tool-scope, revocation list the server hot-reloads. Replaces
+  the two static profile keys when >2 trust tiers exist.
+- **mTLS (deferred, above)** — becomes relevant here only off-tailnet.
+
+### Auditability & compliance
+- **Tamper-evident audit v2 (M).** Hash-chain the tool-audit entries
+  (each row carries prev-row hash) + logrotate policy + retention knob.
+  Today's audit is append-only JSONL; chaining makes deletion detectable.
+- **SECURITY.md + threat model + disclosure policy (S).** Table stakes for
+  org adoption; we have the material in RBAC_PLAN/SANDBOXING already.
+- **SBOM + scanning in CI (S/M).** syft SBOM artifact per release; trivy
+  (images) + pip-audit (pinned deps) as CI gates. Pairs with the digest-
+  pinning campaign item.
+- **Data governance (M).** Per-user workspace export + delete (the shards
+  make this trivial now); FILES_RETENTION_DAYS GC; document what data
+  lives where (WebUI volume, shards, audit, eval results).
+
+### Reliability & operations
+- **/metrics (M, HIGH-VALUE).** Prometheus endpoint on openapi_tools
+  (call counts/latency/error rate per tool per user) + llama-server's
+  built-in metrics + a shipped Grafana dashboard JSON. The ops story in
+  one screen.
+- **Structured logging + rotation (S).** JSON log option for the tool
+  server + logrotate config for .run/*.log (stack.log grows unbounded).
+- **Backup/restore CLI (M).** scripts/backup.sh: WebUI volume + conf +
+  workspaces + leaderboard → one tarball; restore path TESTED (an
+  untested backup is a wish, not a backup).
+- **Watchdog timer recipe (S).** systemd timer unit running
+  healthcheck --restart every 5 min; pairs with openbeast.service.
+- **HA / fleet (L, "Mark of the Beast").** Active-passive on two boxes
+  over tailnet (weights rsync + conf sync + WebUI volume replication),
+  then the clustered-nodes idea. Distributed agents Phase 1 already
+  points spawned-agent inference at a worker box.
+
+### Multi-tenancy & fairness
+- **Per-user rate limits + disk quotas (M).** Token-bucket per user-id in
+  openapi_tools (it sees identity on every call); du-based shard quota
+  with a friendly refusal. Prevents one user starving the box.
+- **Usage metering (M).** Per-user prompt/completion token tallies (the
+  audit row already has the hook) → monthly usage report; the "who used
+  what" question every shared deployment eventually asks.
+- **Slot fairness (L).** llama-server -np slots are first-come; a small
+  queue in the router could enforce per-user concurrency caps.
+
+### Deployment & fleet provisioning
+- **`openbeast doctor` (S/M).** One command validating conf keys, ports,
+  file modes, pinned versions, GPU floor, docker state — prints a
+  fix-list. Half of it exists as bootstrap --preflight; doctor covers the
+  RUNNING stack.
+- **Air-gapped bundle (M/L).** Offline installer: weights + images +
+  wheels + repo tarball with checksums; enterprise networks often can't
+  pull from PyPI/DockerHub/HF.
+- **Signed releases (M).** cosign-signed tags + CHANGELOG discipline +
+  stable/edge channels once public.
+- **Ansible/Terraform recipe (M).** Fleet-provision N boxes from bare
+  metal to healthy stack; builds on bootstrap's idempotency.
+
+### Model governance
+- **Model registry + verification (M).** sha256 manifest of approved
+  GGUFs (ties into the checksum campaign item); serve.sh refuses
+  unlisted/mismatched weights unless overridden. Supply-chain for models,
+  not just code.
+- **Eval quality gate (S).** Refuse to flip the default model unless the
+  candidate has a full-suite leaderboard row on this host — promotion by
+  evidence, which the eval harness already makes possible.
 
 ## ⚠️ SECURITY
 

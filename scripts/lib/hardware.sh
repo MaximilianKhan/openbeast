@@ -121,6 +121,34 @@ ob_profile_advice() {
   esac
 }
 
+# The opinionated VRAM floor: 11 GB — the 1080 Ti / 2080 Ti class. OpenBeast
+# exists to run the LARGEST models your hardware holds ("max intelligence,
+# no compromise"); below 11 GB every shipped model needs quants/contexts so
+# degraded the result isn't the product we test or stand behind. Cards at or
+# above the floor are cheap and plentiful secondhand. Returns 1 (and prints
+# the verdict) when a detected GPU with KNOWN VRAM is under the floor;
+# unknown VRAM (0) and CPU-only setups pass through to their own warnings.
+# Escape hatch for people who accept an unsupported setup:
+# OPENBEAST_FORCE_VRAM=1.
+OB_VRAM_FLOOR_MB=11000
+
+ob_vram_floor_check() {
+  [[ "${OPENBEAST_FORCE_VRAM:-0}" == "1" ]] && return 0
+  [[ "$OB_GPU_VENDOR" == "none" ]] && return 0
+  [[ "${OB_VRAM_MB:-0}" -eq 0 ]] && return 0   # unknown VRAM: warn elsewhere
+  if [[ "$OB_VRAM_MB" -lt "$OB_VRAM_FLOOR_MB" ]]; then
+    echo "  ${OB_GPU_NAME:-GPU} has ${OB_VRAM_MB} MiB VRAM — below OpenBeast's"
+    echo "  11 GB floor (1080 Ti / 2080 Ti class). This is an opinionated"
+    echo "  distribution: we ship and test the largest models that earn their"
+    echo "  VRAM, not survival configs for small cards. It IS possible to run"
+    echo "  llama.cpp on less — that path just isn't OpenBeast, and we won't"
+    echo "  pretend to support it. 11 GB+ cards are cheap and plentiful used."
+    echo "  To proceed anyway, unsupported: OPENBEAST_FORCE_VRAM=1 ./bootstrap.sh"
+    return 1
+  fi
+  return 0
+}
+
 # Map GPU_BACKEND (lib/conf.sh; auto | cuda | hip | sycl | cpu) plus the
 # detected vendor to a concrete build backend in OB_BACKEND. A non-auto
 # GPU_BACKEND always wins over detection. Call ob_detect_gpu first.

@@ -1,16 +1,15 @@
 #!/bin/bash
-# Enable RBAC Phase 2: per-profile MCPO API keys (docs/RBAC_PLAN.md).
+# Enable RBAC Phase 2: per-profile tool-server keys (docs/RBAC_PLAN.md).
 #
 # Generates two random keys and persists them in openbeast.conf:
-#   MCPO_ADMIN_KEY — the admin MCPO instance (:3001, all tools)
-#   MCPO_GUEST_KEY — the guest MCPO instance (:MCPO_GUEST_PORT, default 3002,
-#                    serving ONLY web_search + fetch via the
-#                    OPENBEAST_MCP_TOOLS registration allowlist)
+#   MCPO_ADMIN_KEY — admin profile: all 15 tools
+#   MCPO_GUEST_KEY — guest profile: web_search + fetch ONLY (anything else
+#                    answers 404 for this key)
 #
-# With both keys set, start.sh launches the two keyed instances and
-# configure-webui.sh binds each WebUI connection to its instance with a
-# Bearer key — so a guest can't reach admin tools even if they bypass the
-# WebUI's grant filter (below-app enforcement, defense in depth).
+# The identity tool server (agents/openapi_tools.py, :3001) checks the
+# Bearer key on every call, and configure-webui.sh binds each WebUI
+# connection to its profile key — so a guest can't reach admin tools even
+# if they bypass the WebUI's grant filter (below-app enforcement).
 #
 # Idempotent: existing keys are left untouched (use --rotate to replace).
 #
@@ -62,5 +61,6 @@ echo "Done. Restart the stack to activate:"
 echo "  ./stop.sh && ./start.sh -d"
 echo ""
 echo "Verify after restart:"
-echo "  curl -s http://localhost:3001/openapi.json                # expect 401/403 (keyed)"
-echo "  ./scripts/healthcheck.sh                                  # both instances OK"
+echo "  curl -s -X POST http://localhost:3001/bash -H 'Content-Type: application/json' \\"
+echo "       -d '{\"command\":\"true\"}' -o /dev/null -w '%{http_code}'   # expect 401 (keyed)"
+echo "  ./scripts/healthcheck.sh                                  # tool server OK"

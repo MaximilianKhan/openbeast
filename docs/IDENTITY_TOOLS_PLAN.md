@@ -1,6 +1,10 @@
 # Identity-aware chat tools — per-user / per-conversation file isolation
 
-**Status: investigation complete (2026-07-09), implementation decision pending.**
+**Status: ✅ SHIPPED 2026-07-09 — Option B implemented as `agents/openapi_tools.py`.**
+Per-user sharding (default), per-chat optional (`FILES_SHARDING`), both RBAC
+keys enforced in one process, per-call audit trail. mcpo dropped from the
+serving path (and from requirements); mcp_server.py remains the MCP surface
+for OpenCode. Tests: tests/test_identity_server.py. Original plan follows.
 Companion to `docs/RBAC_PLAN.md` (Phase 2) and the "per-conversation file
 isolation" item in `docs/TODO.md`.
 

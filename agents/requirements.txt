@@ -3,4 +3,5 @@
 # including a compromised release). scripts/update.sh --python bumps these.
 openai==2.44.0
 mcp==1.28.1
-mcpo==0.0.20
+fastapi==0.136.1
+uvicorn==0.46.0
