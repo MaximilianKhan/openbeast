@@ -32,7 +32,7 @@ echo ""
 echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh setup-tailscale.sh
-  update.sh
+  update.sh doctor.sh setup-mcpo-keys.sh
   serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-35b-a3b-uncensored-q4.sh
@@ -128,6 +128,18 @@ if grep -q -- '--daemon' "$REPO_DIR/start.sh" && grep -q -- '--status' "$REPO_DI
   pass "start.sh supports --daemon and --status"
 else
   fail "start.sh missing --daemon/--status support"
+fi
+if grep -q 'doctor)' "$REPO_DIR/start.sh"; then
+  pass "start.sh dispatches the doctor subcommand"
+else
+  fail "start.sh missing 'doctor' subcommand"
+fi
+# doctor runs to completion and prints its verdict (WARN/FAIL allowed when
+# nothing is up — we only assert it doesn't crash and reaches the summary).
+if bash "$REPO_DIR/scripts/doctor.sh" --quiet 2>&1 | grep -q '^doctor: '; then
+  pass "doctor.sh runs and reports a verdict"
+else
+  fail "doctor.sh did not reach its summary line"
 fi
 if grep -q 'supervisor.pid' "$REPO_DIR/start.sh" && grep -q 'supervisor.pid' "$REPO_DIR/stop.sh"; then
   pass "start.sh and stop.sh share the supervisor pidfile"

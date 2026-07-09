@@ -10,6 +10,8 @@
 #                                  #   stack keeps running; stop with ./stop.sh
 #   ./start.sh --status            # what's running (pids); health details via
 #                                  #   ./scripts/healthcheck.sh
+#   ./start.sh doctor              # diagnose config/security/service health
+#                                  #   (fix-list; also ./scripts/doctor.sh)
 #   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d)
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
@@ -31,6 +33,7 @@ for arg in "$@"; do
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
     --status)      STATUS=1 ;;
+    doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
     --_daemonized) DAEMONIZED=1 ;;   # internal: this process IS the detached supervisor
     -h|--help)     sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)            echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;

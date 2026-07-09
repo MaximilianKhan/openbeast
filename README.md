@@ -194,6 +194,7 @@ land in its own `users/<id>/` shard with a per-shard write index.
 **Operations**
 - Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up, and `./stop.sh` shuts everything down gracefully any time
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)
+- **`./start.sh doctor`** — one-shot diagnosis of a configured/running stack: GPU floor + VRAM headroom, disk, file modes and secret hygiene, pinned dependency drift, digest-pinned images, and per-service health, each with a fix hint (exit 1 on any failure). Where `bootstrap --preflight` checks "can I install here", doctor checks "is what I installed healthy and secure"
 - End-to-end smoke test (`tests/test_smoke.sh`)
 - **291-unit eval suite** (137 base tasks, 31 with multi-language variants across 6 languages; hardened v4) with automated validation; full distribution in [`evals/README.md`](evals/README.md)
 - **Multi-model benchmark** runner (`evals/benchmark_all.py`) that sweeps every model and produces an accuracy-ranked leaderboard
