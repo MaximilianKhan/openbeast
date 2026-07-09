@@ -9,8 +9,9 @@
 
 Cache invalidates automatically when (a) the task spec changes or (b) the
 agent runtime context (system-prompt.md, system-prompt-tools.md,
-opencode.json) changes — the hash key includes both. This CLI exists for
-manual cleanup / inspection."""
+opencode.json, agents/runner.py, agents/tools.py, evals/SUITE_VERSION)
+changes — the hash key includes both. This CLI exists for manual cleanup /
+inspection."""
 
 from __future__ import annotations
 
@@ -38,12 +39,34 @@ def cmd_stats(args):
         print(f"  {mark} {p}")
 
 
+def _distinct_model_slugs() -> list[str]:
+    """Distinct model slugs present in the cache dir. The slug is the first
+    dot-separated component of the key (slugify never emits dots)."""
+    if not cache.CACHE_DIR.exists():
+        return []
+    return sorted({p.stem.split(".", 1)[0] for p in cache.CACHE_DIR.glob("*.json")})
+
+
+def _warn_no_match(model: str) -> None:
+    slugs = _distinct_model_slugs()
+    print(f"WARNING: no cache entries match model {model!r}.")
+    if slugs:
+        print("Model slugs present in the cache:")
+        for s in slugs:
+            print(f"  {s}")
+    else:
+        print("The cache is empty.")
+
+
 def cmd_list(args):
     if not cache.CACHE_DIR.exists():
         return
     paths = sorted(cache.CACHE_DIR.glob("*.json"))
     if args.model:
         paths = [p for p in paths if p.stem.startswith(f"{args.model}.")]
+        if not paths:
+            _warn_no_match(args.model)
+            return
     for p in paths:
         try:
             with open(p) as f:
@@ -57,6 +80,9 @@ def cmd_list(args):
 def cmd_clear(args):
     if args.model:
         n = cache.cache_invalidate_model(args.model)
+        if n == 0:
+            _warn_no_match(args.model)
+            return
         print(f"Removed {n} entries for model {args.model!r}.")
     else:
         n = cache.cache_clear()

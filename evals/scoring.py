@@ -67,7 +67,10 @@ def _entry_weight(t: dict) -> float:
     / variant_count. Legacy entries with no variant_count default to 1, so the
     math is unchanged for the existing 144 single-variant tasks."""
     diff = t.get("difficulty", "medium")
-    base = DIFFICULTY_WEIGHTS.get(diff, 3)
+    # Unknown difficulty falls back to the medium weight (1.5). The old
+    # fallback of 3 made a mislabeled task count HEAVIER than hard=2, which
+    # silently skewed accuracy.
+    base = DIFFICULTY_WEIGHTS.get(diff, 1.5)
     vc = t.get("variant_count") or 1
     return base / max(1, vc)
 
@@ -199,6 +202,20 @@ def compute_composite(accuracy: float, speed: float) -> float:
     return round(ACCURACY_WEIGHT * accuracy + SPEED_WEIGHT * speed, 2)
 
 
+def current_suite_version() -> str:
+    """The suite version this checkout runs (from evals/SUITE_VERSION)."""
+    try:
+        with open(os.path.join(EVALS_DIR, "SUITE_VERSION")) as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+# Expected effective-unit counts per suite version. Entries whose suite has
+# no expected count here (legacy runs) are treated as full.
+SUITE_EXPECTED_UNITS = {"v4": 291, "v3.5": 323}
+
+
 def _suite_version(results: dict) -> str:
     """Suite version for a run. Prefer the recorded field (new runs write it);
     otherwise infer from the effective-unit count so `--rebuild` from older
@@ -292,17 +309,43 @@ def load_leaderboard(path: str = LEADERBOARD_PATH) -> list[dict]:
     return data.get("entries", []) if isinstance(data, dict) else []
 
 
-def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH) -> list[dict]:
+def _atomic_write_json(path: str, payload: dict) -> None:
+    """tmp + os.replace so a crash mid-write never leaves a torn file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
+
+
+def is_full_suite(entry: dict) -> bool:
+    """True if a score entry covers its suite's full task set. Suites with
+    no expected count (legacy) are treated as full."""
+    expected = SUITE_EXPECTED_UNITS.get(entry.get("suite_version"))
+    return expected is None or entry.get("tasks_total") == expected
+
+
+def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH,
+                       force: bool = False) -> list[dict]:
     """Insert or replace the entry for this (host_id, model_slug). Returns sorted list.
-    Multi-host: results from different machines coexist in the same leaderboard."""
+    Multi-host: results from different machines coexist in the same leaderboard.
+
+    Partial-run guard: a v4 entry that doesn't cover the full 291 effective
+    units is REFUSED (aborted/smoke runs would otherwise enter with accuracy
+    computed over the subset that happened to complete). Pass force=True to
+    override deliberately."""
+    if (not force and score_entry.get("suite_version") == "v4"
+            and score_entry.get("tasks_total") not in (291,)):
+        print(f"REFUSED leaderboard update for {score_entry.get('model', '?')}: "
+              f"v4 entry covers {score_entry.get('tasks_total')} tasks, expected 291. "
+              f"Partial/aborted runs must not enter the leaderboard "
+              f"(use force=True to override). Existing leaderboard unchanged.")
+        return load_leaderboard(path)
     entries = load_leaderboard(path)
     target = entry_dedup_key(score_entry)
     entries = [e for e in entries if entry_dedup_key(e) != target]
     entries.append(score_entry)
     entries.sort(key=rank_key)
-    payload = {"updated_at": datetime.now().isoformat(), "entries": entries}
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
+    _atomic_write_json(path, {"updated_at": datetime.now().isoformat(), "entries": entries})
     return entries
 
 
@@ -318,7 +361,13 @@ def _fmt_tokens(n: int) -> str:
 
 
 def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
-    """Pretty-print as a table. If show_host is True, include the host column."""
+    """Pretty-print as a table. If show_host is True, include the host column.
+
+    Rows are partitioned by suite version: entries from the CURRENT suite
+    (evals/SUITE_VERSION) form the main ranked table; entries from older
+    suites follow under a clearly labeled legacy section (their task sets
+    differ, so their scores are not comparable to current rows). Within each
+    partition, rank_key (accuracy-primary) ordering applies."""
     if not entries:
         return "(leaderboard is empty)"
 
@@ -327,8 +376,8 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     else:
         header = f"{'#':>2}  {'MODEL':<32}  {'SUITE':>5}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
     sep = "-" * len(header)
-    lines = [header, sep]
-    for i, e in enumerate(entries, 1):
+
+    def _row(i: int, e: dict) -> str:
         model = e.get("model", "?")[:32]
         suite = str(e.get("suite_version", "?"))[:5]
         accuracy = f"{e['accuracy']:.1f}"
@@ -340,9 +389,23 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         toks = _fmt_tokens(e.get("tokens_total", 0))
         if show_host:
             host = entry_host_id(e)[:22]
-            lines.append(f"{i:>2}  {host:<22}  {model:<32}  {suite:>5}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
-        else:
-            lines.append(f"{i:>2}  {model:<32}  {suite:>5}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}")
+            return f"{i:>2}  {host:<22}  {model:<32}  {suite:>5}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}"
+        return f"{i:>2}  {model:<32}  {suite:>5}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}"
+
+    cur = current_suite_version()
+    current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
+    legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
+
+    lines = [header, sep]
+    for i, e in enumerate(current_rows, 1):
+        lines.append(_row(i, e))
+    if legacy_rows:
+        if current_rows:
+            lines.append("")
+        lines.append(f"LEGACY SUITES (task sets differ — not comparable to {cur} rows above)")
+        lines.append(sep)
+        for i, e in enumerate(legacy_rows, 1):
+            lines.append(_row(i, e))
     return "\n".join(lines)
 
 
@@ -461,8 +524,13 @@ def main():
         return
 
     if args.rebuild:
-        # Latest result per (host_id, model_slug) wins — keeps results from
-        # different machines side by side.
+        # Best result per (host_id, model_slug) wins — keeps results from
+        # different machines side by side. Preference order: full-suite runs
+        # beat partials regardless of recency (a recent 5-task smoke run must
+        # NOT replace a full 291-task row), then latest timestamp.
+        def _preference(e: dict) -> tuple:
+            return (is_full_suite(e), e.get("timestamp") or "")
+
         by_key: dict[tuple, dict] = {}
         for path in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
             if not path.startswith("eval-") or not path.endswith(".json"):
@@ -471,12 +539,11 @@ def main():
             entry = score_results_file(full)
             key = entry_dedup_key(entry)
             existing = by_key.get(key)
-            if not existing or entry.get("timestamp", "") > existing.get("timestamp", ""):
+            if not existing or _preference(entry) > _preference(existing):
                 by_key[key] = entry
         entries = sorted(by_key.values(), key=rank_key)
-        payload = {"updated_at": datetime.now().isoformat(), "entries": entries}
-        with open(LEADERBOARD_PATH, "w") as f:
-            json.dump(payload, f, indent=2)
+        _atomic_write_json(LEADERBOARD_PATH,
+                           {"updated_at": datetime.now().isoformat(), "entries": entries})
         n_hosts = len({entry_host_id(e) for e in entries})
         print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s).")
 

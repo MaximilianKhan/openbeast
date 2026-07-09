@@ -98,9 +98,9 @@ Time budgets (used in speed scoring): easy=30s, medium=90s, hard=300s.
 
 ### Multi-language variants
 
-33 of the 159 base tasks have language variants. Each variant is its own
-scored test unit; the leaderboard reports per-language accuracy via
-`scoring.py --by-language`.
+33 of the 159 base tasks (v3.5; in v4 it's 31 of 137) have language
+variants. Each variant is its own scored test unit; the leaderboard reports
+per-language accuracy via `scoring.py --by-language`.
 
 **Supported languages:** Python (`a`), Go (`b`), C (`c`), C++ (`d`),
 Rust (`e`), Zig (`f`). Full 6-language coverage on most variant tasks.
@@ -288,7 +288,7 @@ All 20 new tasks: full 6-lang coverage, 120/120 audited end-to-end via
 
 ## Task JSON schema
 
-Single-variant (legacy form, used by 144 of 159 tasks):
+Single-variant (legacy form, used by 106 of the 137 v4 tasks):
 
 ```json
 {
@@ -358,10 +358,11 @@ speed          = 100 × mean(speed_factor)            # separate signal, not fol
 Ranking is by **accuracy** first, then total pass count, then hard pass count,
 then speed. Tokens (prompt + completion) and API-equivalent cost are tracked
 separately so a chatty path to the same answer is visible — they are not part
-of the rank. There is intentionally **no composite score**: speed and accuracy
-trade off in opposite directions on this suite (the MoE 35B variants are
-faster but trail the dense 27B models on accuracy), and a weighted average
-hides that signal.
+of the rank. `scoring.py` does compute a composite (`compute_composite`) as a
+derived reference column, but it deliberately **never drives the ranking**:
+speed and accuracy trade off in opposite directions on this suite (the MoE
+35B variants are faster but trail the dense 27B models on accuracy), and a
+weighted average hides that signal.
 
 ## How token tracking works
 
@@ -525,7 +526,7 @@ Each run produces `evals/results/eval-{model_slug}-{timestamp}.json` with:
       "variant_count": 4
     }
   ],
-  "summary": {"total": 159, "passed": 152, "failed": 7}
+  "summary": {"total": 291, "passed": 273, "failed": 18}
 }
 ```
 
@@ -535,7 +536,7 @@ return a `usage` block (some legacy llama.cpp builds).
 
 ## Adding a task
 
-1. Pick the next free integer id (currently 160+).
+1. Pick the next free integer id (currently 163+).
 2. Create `evals/tasks/{id}_{slug}.json` following the schema above.
 3. Solve the task yourself with a reference implementation. Run the validation
    against your reference. Confirm it passes — and confirm an OBVIOUSLY WRONG

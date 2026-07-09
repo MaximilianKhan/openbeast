@@ -17,9 +17,13 @@ Metrics (per model, aggregated across all that model's logs):
   bash/task        — bash calls per task. Lower is more targeted (each bash
                      call has lower information density than a dedicated
                      read_file/edit_file)
-  read_redundancy  — read_file calls / unique paths read. 1.0 = every read
-                     was a fresh path; 2.0 = re-read each path once on
-                     average; >3.0 starts to indicate thrashing
+  read_redundancy  — per-log average of (read_file calls / unique paths
+                     read in that log). 1.0 = every read within a task was
+                     a fresh path; 2.0 = each path re-read once on average
+                     within a task; >2.0 indicates thrashing. Computed
+                     per-log (not across a global path set) so two tasks
+                     that each read the same file once don't count as a
+                     re-read.
   agent_calls      — start_agent / start_skill_agent invocations. Currently
                      near-zero in eval sweeps (see WEAK_SPOT axis 3 and
                      the skills-don't-fire-spontaneously TODO note)
@@ -107,8 +111,12 @@ def compute_metrics(per_log: list[dict]) -> dict:
     agent_count = 0
     other_count = 0
 
+    read_ratios = []  # per-log (reads / unique paths); only logs that read
+
     for entry in per_log:
         iters_total += entry["iters"]
+        log_reads = 0
+        log_paths: set[str] = set()
         for name, args in entry["tool_calls"]:
             tool_call_total += 1
             if name == "edit_file":
@@ -119,13 +127,17 @@ def compute_metrics(per_log: list[dict]) -> dict:
                 bash_count += 1
             elif name == "read_file":
                 read_count += 1
+                log_reads += 1
                 p = (args or {}).get("path") or (args or {}).get("file_path")
                 if p:
                     unique_paths.add(p)
+                    log_paths.add(p)
             elif name in ("start_agent", "start_skill_agent", "list_skills", "load_skill"):
                 agent_count += 1
             else:
                 other_count += 1
+        if log_paths:
+            read_ratios.append(log_reads / len(log_paths))
 
     # edit:write ratio — guard against div by zero
     if write_count == 0:
@@ -133,9 +145,12 @@ def compute_metrics(per_log: list[dict]) -> dict:
     else:
         edit_write = edit_count / write_count
 
-    # read redundancy — total reads / unique paths read
-    if unique_paths:
-        read_redundancy = read_count / len(unique_paths)
+    # read redundancy — averaged PER LOG (reads in log / unique paths in
+    # log), not across a global path set. A global set structurally inflated
+    # the metric: N tasks each reading the same fixture once looked like
+    # N reads / 1 path = N× "redundancy" despite zero actual re-reads.
+    if read_ratios:
+        read_redundancy = sum(read_ratios) / len(read_ratios)
     else:
         read_redundancy = 0.0
 
@@ -207,7 +222,7 @@ def print_table(per_model_metrics: dict[str, dict]) -> None:
     print()
     print("Legend: edit:wr = edit_file/write_file ratio (higher = more targeted)")
     print("        bash/T = bash calls per task (lower = more targeted)")
-    print("        rd_dup = read_file calls / unique paths read (1.0 = no rereads)")
+    print("        rd_dup = per-log avg of read_file calls / unique paths read (1.0 = no rereads within any task)")
     print("        agent  = total start_agent / list_skills / load_skill / start_skill_agent calls")
 
 

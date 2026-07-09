@@ -142,6 +142,9 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         cwd=REPO_DIR,
         start_new_session=True,
     )
+    # The child inherited the fd via Popen; the parent's copy is no longer
+    # needed and would otherwise leak one fd per (re)start.
+    log_fp.close()
     return proc, log_path
 
 
@@ -308,8 +311,22 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
                 "reason": outcome["error"],
             })
         else:
-            entry = scoring.score_run(outcome["results"])
-            if update_leaderboard:
+            results = outcome["results"]
+            entry = scoring.score_run(results)
+            # Partial-run guard: an aborted run (e.g. server died mid-sweep)
+            # has fewer recorded tasks than the suite total, and its accuracy
+            # is computed only over the tasks that ran — inflated garbage.
+            # Keep the results file, keep the sweep score for visibility, but
+            # NEVER let it into the leaderboard.
+            n_recorded = len(results.get("tasks", []))
+            n_expected = (results.get("summary") or {}).get("total", 0)
+            if n_recorded < n_expected:
+                print(f"\n>>> ERROR: {model['name']} run is PARTIAL "
+                      f"({n_recorded}/{n_expected} tasks recorded) — leaderboard "
+                      f"NOT updated. Results file kept for inspection; its "
+                      f"accuracy covers only the tasks that completed.")
+                entry["partial_run"] = True
+            elif update_leaderboard:
                 scoring.update_leaderboard(entry)
             else:
                 print("  (--no-leaderboard: score not recorded in leaderboard.json)")
@@ -318,7 +335,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
             print(f"\n>>> {model['name']}: accuracy {entry['accuracy']} "
                   f"speed {entry['speed']} composite {entry['composite']}")
 
-        if i < len(models):
+        if i < len(models) and not cache_only:
+            # No thermal load in cache-only mode — skip the cool-off.
             print(f"\nCool-off for {COOLOFF_SECONDS}s before next model...")
             time.sleep(COOLOFF_SECONDS)
 

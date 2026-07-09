@@ -238,7 +238,11 @@ def main():
         except Exception as e:
             print(f"  {slug}: profiling aborted ({type(e).__name__}: {e})", file=sys.stderr)
         # Persist after EACH model so a late failure never loses earlier data.
-        json.dump(out, open(path, "w"), indent=2)
+        # tmp + os.replace: never leave a torn JSON if killed mid-write.
+        tmp = Path(str(path) + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(out, f, indent=2)
+        os.replace(tmp, path)
 
     print("\n" + "=" * 66)
     print(f"{'model':<24}{'baseline':>12}{'optimal':>12}{'best cfg':>16}")
@@ -248,7 +252,9 @@ def main():
         o = r["optimal"]
         oc = f"n{o['n_max']}/p{o['p_min']}" if o else "?"
         ov = o["gen_tok_s_mean"] if o else "?"
-        gain = f"(+{round((ov-b)/b*100)}%)" if isinstance(b,(int,float)) and isinstance(ov,(int,float)) and b else ""
+        # {:+.0f} prints an explicit sign either way — a regression shows as
+        # (-12%), not the old mangled (+-12%).
+        gain = f"({(ov-b)/b*100:+.0f}%)" if isinstance(b,(int,float)) and isinstance(ov,(int,float)) and b else ""
         print(f"{r['slug']:<24}{str(b):>12}{str(ov):>12}{oc+' '+gain:>16}")
     print("=" * 66)
     print(f"\nFull results: {path}")

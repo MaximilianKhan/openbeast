@@ -5,9 +5,16 @@ Hash key components:
 2. task["id"] — the task+variant identifier
 3. task spec hash — sha256 of canonical-encoded task dict (setup, task,
    validation, cleanup, max_iter, etc.). Any spec change → cache miss.
-4. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
-   and opencode.json (which pins the available tools/transport). Changes to
-   the agent's runtime context → cache miss.
+   Keys starting with "_" (e.g. the runtime-injected `_path`) are stripped
+   before hashing so keys are independent of repo location.
+4. effective max_iter (optional) — the iteration budget the agent actually
+   ran with (task default or --max-iter override). A different budget can
+   change the outcome, so it is part of the key when supplied.
+5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
+   opencode.json (which pins the available tools/transport), the agent
+   runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
+   marker (evals/SUITE_VERSION). Changes to the agent's runtime context →
+   cache miss.
 
 Cached payload mirrors the per-task entry written to results JSON: passed,
 elapsed_seconds, agent_exit_code, validation_output, token counts, and any
@@ -38,6 +45,12 @@ CONTEXT_FILES = [
     REPO_ROOT / "system-prompt.md",
     REPO_ROOT / "system-prompt-tools.md",
     REPO_ROOT / "opencode.json",
+    # The agent runtime itself: a change to the loop or the tool
+    # implementations changes what a "cached result" means.
+    REPO_ROOT / "agents" / "runner.py",
+    REPO_ROOT / "agents" / "tools.py",
+    # The suite marker: a suite bump means the task set was redefined.
+    EVALS_DIR / "SUITE_VERSION",
 ]
 
 
@@ -70,16 +83,27 @@ def _context_hash_cached() -> str:
 def task_hash(task: dict[str, Any]) -> str:
     """Hash the task spec. Variant metadata (base_id, variant_id, language,
     variant_count) is INCLUDED — different variants of the same task hash
-    differently because their specs differ. Internal-only fields like
-    'index' or runtime state are not in the dict by the time we cache."""
-    payload = json.dumps(task, sort_keys=True, separators=(",", ":")).encode()
+    differently because their specs differ. ALL keys starting with "_"
+    (e.g. the runtime-injected `_path`, which embeds the absolute repo
+    location) are stripped before hashing so cache keys survive a repo
+    move/clone."""
+    clean = {k: v for k, v in task.items() if not k.startswith("_")}
+    payload = json.dumps(clean, sort_keys=True, separators=(",", ":")).encode()
     return _short_hash(payload)
 
 
-def cache_key(task: dict[str, Any], model_slug: str) -> str:
+def cache_key(task: dict[str, Any], model_slug: str,
+              max_iter: int | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
-    agent runtime context."""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}.{_context_hash_cached()}"
+    agent runtime context.
+
+    max_iter: the EFFECTIVE iteration budget the agent runs with (task
+    default or CLI override). When provided it becomes part of the key —
+    a run capped at 5 iterations is not the same experiment as one allowed
+    15. None (the default) omits the segment, preserving legacy key shape
+    for callers that don't thread a budget."""
+    mi = f".mi{max_iter}" if max_iter is not None else ""
+    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}.{_context_hash_cached()}"
 
 
 def cache_path(key: str) -> Path:

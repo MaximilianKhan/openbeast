@@ -255,11 +255,20 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
 
 
 def run_setup(task: dict) -> bool:
-    """Run task setup command. Returns True on success."""
+    """Run task setup command. Returns True on success. Timeouts and
+    unexpected errors are recorded as failures, not crashes — a single bad
+    fixture must not abort the whole sweep (mirrors run_validation)."""
     setup = task.get("setup")
     if not setup:
         return True
-    returncode, output = _run_reaped(setup, timeout=30, shell=True)
+    try:
+        returncode, output = _run_reaped(setup, timeout=30, shell=True)
+    except subprocess.TimeoutExpired:
+        print("  Setup timed out")
+        return False
+    except Exception as e:
+        print(f"  Setup error: {e}")
+        return False
     if returncode != 0:
         print(f"  Setup failed: {output[:200]}")
         return False
@@ -344,7 +353,12 @@ def run_pre_validate(task: dict):
     cmd = task.get("pre_validate")
     if not cmd:
         return
-    _run_reaped(cmd, timeout=30, shell=True)
+    try:
+        _run_reaped(cmd, timeout=30, shell=True)
+    except subprocess.TimeoutExpired:
+        print("  (pre_validate timed out — continuing to validation)")
+    except Exception as e:
+        print(f"  (pre_validate error: {e} — continuing to validation)")
 
 
 def run_validation(task: dict) -> tuple[bool, str]:
@@ -372,10 +386,27 @@ def run_validation(task: dict) -> tuple[bool, str]:
 
 
 def run_cleanup(task: dict):
-    """Run cleanup command."""
+    """Run cleanup command. Failures are logged, never fatal — leftover /tmp
+    fixtures are annoying, a crashed sweep is worse."""
     cleanup = task.get("cleanup")
-    if cleanup:
+    if not cleanup:
+        return
+    try:
         _run_reaped(cleanup, timeout=30, shell=True)
+    except subprocess.TimeoutExpired:
+        print("  (cleanup timed out)")
+    except Exception as e:
+        print(f"  (cleanup error: {e})")
+
+
+def _write_results(results_path: str, results: dict) -> None:
+    """Atomically persist the results dict (tmp + os.replace). Called after
+    every task so a crash mid-sweep leaves a readable partial results file
+    instead of nothing."""
+    tmp = results_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(results, f, indent=2)
+    os.replace(tmp, results_path)
 
 
 def run_eval(
@@ -458,11 +489,17 @@ def run_eval(
         print(f"\n[{i}/{len(tasks)}] {task_name} ({difficulty})")
         print(f"  Task: {task['task'][:80]}...")
 
-        # Cache check — same task spec + same model + same agent context = same answer.
-        # Saves the agent run and the validation step. Setup/cleanup still run on the
-        # live path so /tmp fixtures land for any downstream inspection.
+        # The iteration budget the agent will actually run with — part of
+        # the cache key (a 5-iter capped run is a different experiment from
+        # a 15-iter one).
+        effective_max_iter = max_iter_override or task.get("max_iter", 15)
+
+        # Cache check — same task spec + same model + same max_iter + same
+        # agent context = same answer. Saves the agent run and the validation
+        # step. Setup/cleanup still run on the live path so /tmp fixtures
+        # land for any downstream inspection.
         if use_cache:
-            ck = cache.cache_key(task, model_slug)
+            ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
@@ -475,6 +512,7 @@ def run_eval(
                 cache_hits += 1
                 tag = "PASS" if cached.get("passed") else "FAIL"
                 print(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
+                _write_results(results_path, results)
                 continue
 
         # cache_only: never invoke the agent. Record a skipped placeholder.
@@ -495,6 +533,7 @@ def run_eval(
             results["summary"]["failed"] += 1
             cache_misses_skipped += 1
             print(f"  SKIPPED (cache miss; --cache-only mode)")
+            _write_results(results_path, results)
             continue
 
         # Health check + recovery before each live task. If the server is
@@ -517,6 +556,7 @@ def run_eval(
                     result["variant_count"] = task["variant_count"]
                 results["tasks"].append(result)
                 results["summary"]["failed"] += 1
+                _write_results(results_path, results)
                 print(f"  ABORT: server unreachable; remaining {len(tasks)-i} tasks skipped")
                 break
 
@@ -535,6 +575,7 @@ def run_eval(
             results["tasks"].append(result)
             results["summary"]["failed"] += 1
             print(f"  FAIL (setup failed)")
+            _write_results(results_path, results)
             continue
 
         # Run agent
@@ -578,6 +619,10 @@ def run_eval(
             results["summary"]["failed"] += 1
             print(f"  FAIL: {validation_output[:100]}")
 
+        # Incremental persist — a crash later in the sweep must not lose
+        # the tasks already completed.
+        _write_results(results_path, results)
+
         # Cache the result for future reruns. We cache both PASS and
         # deterministic FAIL — replaying a known fail is replay-safe.
         # We do NOT cache timeouts (agent_exit_code == -1): those are
@@ -591,9 +636,8 @@ def run_eval(
         # Cleanup
         run_cleanup(task)
 
-    # Save results
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+    # Final save (atomic; also covers the zero-task edge case)
+    _write_results(results_path, results)
 
     # Print summary
     s = results["summary"]

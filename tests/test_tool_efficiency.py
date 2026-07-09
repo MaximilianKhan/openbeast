@@ -30,6 +30,9 @@ def check(label: str, cond: bool, detail: str = ""):
     else:
         FAILED += 1
         print(f"  [FAIL] {label}  {detail}")
+    # Also assert so failures propagate properly under pytest (the print
+    # counters alone would let pytest report a silent pass).
+    assert cond, f"{label}  {detail}"
 
 
 def make_log(path: Path, model: str, tool_calls: list[tuple[str, dict]],
@@ -87,7 +90,9 @@ def test_basic_aggregation():
         check("model-a: 2 tasks", m_a["tasks"] == 2)
         check("model-a: 4 edits + 1 write → ratio 4.0",
               abs(m_a["edit_write_ratio"] - 4.0) < 1e-9, str(m_a["edit_write_ratio"]))
-        check("model-a: read_redundancy = 3 reads / 2 unique = 1.5",
+        # Per-log semantics: only log 001 reads (3 reads / 2 unique = 1.5);
+        # log 002 has no reads and is excluded from the average → 1.5.
+        check("model-a: read_redundancy = per-log avg = 1.5",
               abs(m_a["read_redundancy"] - 1.5) < 1e-9, str(m_a["read_redundancy"]))
         check("model-a: bash/task = 1/2 = 0.5",
               abs(m_a["bash_per_task"] - 0.5) < 1e-9, str(m_a["bash_per_task"]))
@@ -136,6 +141,30 @@ def test_zero_writes_edge_case():
               m["edit_write_ratio"] == 0.0)
 
 
+def test_read_redundancy_is_per_log():
+    """Two logs each reading the SAME path once must NOT count as a re-read.
+    The old global-set computation gave 2 reads / 1 unique = 2.0 here; the
+    corrected per-log average gives 1.0."""
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        make_log(td / "agent-001.jsonl", "model-e", [("read_file", {"path": "/tmp/shared"})])
+        make_log(td / "agent-002.jsonl", "model-e", [("read_file", {"path": "/tmp/shared"})])
+        # A third log that genuinely re-reads: 4 reads over 2 paths = 2.0
+        make_log(td / "agent-003.jsonl", "model-e", [
+            ("read_file", {"path": "/tmp/a"}),
+            ("read_file", {"path": "/tmp/a"}),
+            ("read_file", {"path": "/tmp/b"}),
+            ("read_file", {"path": "/tmp/b"}),
+        ])
+        by_model = tool_efficiency.collect(td)
+        m = tool_efficiency.compute_metrics(by_model["model-e"])
+        # avg(1.0, 1.0, 2.0) = 4/3
+        check("shared-path reads across logs are not re-reads (per-log avg = 4/3)",
+              abs(m["read_redundancy"] - 4.0 / 3.0) < 1e-9, str(m["read_redundancy"]))
+        check("total read count still aggregated globally", m["read_count"] == 6,
+              str(m["read_count"]))
+
+
 def test_incomplete_log_ignored():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -156,6 +185,8 @@ def main():
     test_filters()
     print("\ntest_zero_writes_edge_case:")
     test_zero_writes_edge_case()
+    print("\ntest_read_redundancy_is_per_log:")
+    test_read_redundancy_is_per_log()
     print("\ntest_incomplete_log_ignored:")
     test_incomplete_log_ignored()
 
