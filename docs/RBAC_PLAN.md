@@ -7,6 +7,16 @@ Open WebUI access-control code.** A `user`-role account resolves
 installs land RBAC'd. Phase 2 (below-app enforcement via per-profile MCPO
 keys + Sandlock) is the remaining hardening.
 
+> ⚠️ **WARNING — the agent-spawn router bypasses these tiers.** With
+> `AGENT_ROUTER=true` (opt-in, default off), `agents/router.py` sits in
+> front of llama-server and classifies **every** chat turn — guest turns
+> included — and on a detected spawn request calls MCPO `start_agent`
+> **directly**, skipping the WebUI connection-level grants this plan is
+> built on. A guest phrasing a spawn request ("do this in the background")
+> gets a full-filesystem background agent. The router is not yet
+> identity-aware; until it is (part of Phase 2), **do not run
+> `AGENT_ROUTER=true` and multi-user accounts on the same instance.**
+
 ## How to give someone access (the whole UX)
 
 1. **Admin Panel → Users → Add User** (or let them sign up — new signups

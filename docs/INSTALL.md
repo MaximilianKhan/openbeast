@@ -33,7 +33,7 @@ export PATH=/opt/cuda/bin:$PATH
                  && cmake --build build --config Release -j$(nproc))
 
 # Python deps + Hugging Face CLI
-pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
+pip install --user --break-system-packages huggingface-hub -r agents/requirements.txt
 
 # Default model — uncensored 27B fine-tune (#2 on the v3.5 leaderboard, 96.16%)
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
@@ -65,10 +65,11 @@ The detailed walkthrough below explains each step and lists alternate models.
 
 ### Compiler toolchains for the eval suite (multi-language variants)
 
-The 159-task eval suite includes 33 base tasks with multi-language variants
-(Python / Go / C / C++ / Rust / Zig — 197 variant entries; suite now 323
-effective test units total). To run those variants, all six toolchains need
-to be available:
+The eval suite (v4: 137 base tasks / 291 effective test units — see
+[`evals/README.md`](../evals/README.md) for the current distribution)
+includes multi-language variant tasks
+(Python / Go / C / C++ / Rust / Zig). To run those variants, all six
+toolchains need to be available:
 
 | Language | Used for | Install (Arch) |
 |---|---|---|
@@ -131,7 +132,7 @@ ls llama.cpp/build/bin/llama-cli llama.cpp/build/bin/llama-server
 Install the Hugging Face CLI if you don't have it:
 
 ```bash
-pip install --user --break-system-packages huggingface-hub[cli]
+pip install --user --break-system-packages huggingface-hub
 ```
 
 (The `--break-system-packages` flag is Arch-specific; on Debian/Ubuntu use a
@@ -182,7 +183,9 @@ hf download unsloth/gemma-4-31B-it-GGUF gemma-4-31B-it-UD-Q5_K_XL.gguf --local-d
 ### Qwen3.6-27B **MTP** -- Q5_K_XL (~20.4GB)
 
 Builds with Multi-Token Prediction (MTP) draft heads baked in. Pairs with
-llama.cpp's `--spec-type draft-mtp` for ~1.5–2× faster inference (per unsloth).
+llama.cpp's `--spec-type draft-mtp` for faster inference — unsloth claims
+~1.5–2×; we measured 1.46–2.75× depending on the model (up to 2.75× on this
+dense 27B; see `docs/REFERENCE.md` "MTP variants").
 Slightly heavier than the non-MTP build because of the embedded MTP head tensors.
 
 ```bash
@@ -347,6 +350,12 @@ This launches:
 4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
 5. **configure-webui.sh** (auto-configures tool server + native function calling
    + system prompt for every detected model)
+6. *(opt-in)* **agent-spawn router** on port 8088 — only when `AGENT_ROUTER=true`
+   in `openbeast.conf`; the frontends then send chat through it
+
+`start.sh` also creates `~/openbeast-files` (mode `0700`) — the private
+workspace where files the chat model writes via the direct tools land
+(configurable via `FILES_DIR` in `openbeast.conf`).
 
 On first run, `configure-webui.sh` populates Open WebUI with:
 - The MCPO tool server registered as an OpenAPI endpoint
@@ -379,7 +388,7 @@ To stop everything:
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
-- **Eval harness:** `python3 evals/run_eval.py` (159-task suite; see evals/README.md)
+- **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
 
 ## 7. Remote access (optional, recommended)
 

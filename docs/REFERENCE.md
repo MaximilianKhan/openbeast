@@ -17,7 +17,7 @@ openbeast/
 │   ├── Qwopus3.6-27B-v2-Q5_K_M.gguf             # Jackrong SFT fine-tune
 │   ├── Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf         # Jackrong SFT + MTP heads
 │   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
-├── start.sh                # launch full stack (server + MCPO + Open WebUI)
+├── start.sh                # launch full stack (server + MCPO + Open WebUI; + agent router when AGENT_ROUTER=true)
 ├── stop.sh                 # stop full stack
 ├── agent.sh                # run a local agent against a task
 ├── scripts/                # server, chat, and config scripts
@@ -46,6 +46,7 @@ openbeast/
 │   ├── runner.py           # standalone agent loop (LLM + tool use)
 │   ├── tools.py            # tool definitions for standalone agent
 │   ├── mcp_server.py       # MCP server (tools + long-running agent management)
+│   ├── router.py           # agent-spawn router proxy on :8088 (opt-in, AGENT_ROUTER=true)
 │   ├── requirements.txt
 │   └── logs/               # agent run logs (JSONL) [gitignored]
 ├── tests/                  # test suite
@@ -63,13 +64,8 @@ openbeast/
 ├── docker-compose.yml      # Open WebUI container config
 ├── README.md               # project overview (start here)
 ├── skills/                 # curated expertise packages — discovered via MCP
-│   ├── README.md           # skill schema + how to add new ones
-│   ├── code-review/SKILL.md
-│   ├── security-audit/SKILL.md
-│   ├── debugging-methodology/SKILL.md
-│   ├── deep-counsel/SKILL.md
-│   ├── eval-task-author/SKILL.md
-│   └── eval-variant-porter/SKILL.md
+│   ├── README.md           # skill schema + full table of all 14 shipped skills
+│   └── <name>/SKILL.md     # 14 skills (code-review, security-audit, deep-counsel, …)
 └── docs/
     ├── INSTALL.md          # step-by-step installation guide
     ├── REFERENCE.md        # this file — technical reference
@@ -78,6 +74,37 @@ openbeast/
     ├── WORK_PLAN.md        # active work plan / save state for eval suite work
     └── TODO.md             # roadmap and completed work
 ```
+
+## Configuration reference (`openbeast.conf`)
+
+All stack-wide settings live in `openbeast.conf` (repo root, gitignored —
+copy `openbeast.conf.example` to create it). Each key resolves as
+**env var → `openbeast.conf` → default** via `scripts/lib/conf.sh`
+(weights use their own resolver, `scripts/lib/weights.sh`). `conf.sh` must
+be sourced before any `docker compose up` so containers get the real values.
+
+| Key | Env override | Default | What it does |
+|---|---|---|---|
+| `WEIGHTS_DIR` | `OPENBEAST_WEIGHTS_DIR` | `./weights` if present, else `../weights` | Where the `.gguf` model weights live (NVMe / USB / NAS; `~` and relative paths OK) |
+| `GPU_BACKEND` | `OPENBEAST_GPU_BACKEND` | `auto` | llama.cpp build backend: `auto` \| `cuda` \| `hip` \| `sycl` \| `cpu`. `auto` maps the detected GPU vendor (NVIDIA→cuda, AMD→hip, Intel→sycl, none→cpu). Only cuda is measured; `bootstrap.sh` persists the resolved value |
+| `MEM_LIMIT_PCT` | `OPENBEAST_MEM_LIMIT_PCT` | `75` | Daemon-mode (`./start.sh -d`) memory cap as a percent of physical RAM, recomputed at every launch — a runaway process OOMs the stack's scope, never the box. Swap inside the scope is additionally capped at 8G |
+| `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen-27b-uncensored-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
+| `FILES_DIR` | `OPENBEAST_FILES_DIR` | `~/openbeast-files` | Private workspace for files the **chat** model reads/writes via the direct tools — see below |
+| `BIND_HOST` | `OPENBEAST_BIND` | `127.0.0.1` | Address the services bind to. Loopback-only by default (remote access comes through Tailscale Serve); `0.0.0.0` restores the legacy LAN-open behavior |
+| `LLAMA_API_KEY` | `OPENBEAST_API_KEY` | empty (off) | When set, llama-server requires `Authorization: Bearer <key>`. Note the eval harness / agent runner don't send a key |
+| `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
+| `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
+| `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
+| `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
+
+**`FILES_DIR` / `OPENBEAST_FILES_DIR` — the chat model's private workspace.**
+A direct tool call from Open WebUI carries no conversation or user id (the
+OpenAPI tool server is stateless), so without an anchor the model picks its
+own paths and tends to default to world-readable, reboot-wiped `/tmp`.
+`FILES_DIR` (default `~/openbeast-files`, created `0700` by `start.sh`)
+anchors all relative-path reads/writes from direct chat tool calls to a
+persistent, private directory instead. It applies to the chat surface only —
+spawned background agents keep using their own `AGENT_WORKDIR`.
 
 ## VRAM estimates (RTX 5090 — 32GB)
 
@@ -277,7 +304,7 @@ See [INSTALL.md § Where weights live](INSTALL.md#where-weights-live). The
 substitute your directory if different.
 
 ```bash
-pip install --user --break-system-packages huggingface-hub[cli]
+pip install --user --break-system-packages huggingface-hub
 ```
 
 ### Qwen3.6-27B (hybrid DeltaNet + attention)
@@ -366,23 +393,33 @@ prompt are already set per model by `configure-webui.sh`; if a model ever
 shows up without them (e.g. a brand-new alias), re-run
 `./scripts/configure-webui.sh` — it's idempotent.
 
-### Open WebUI login & accounts (since the 2026-07-07 Tailscale rollout)
+### Open WebUI login & accounts
 
-**How to log in.** `WEBUI_AUTH=true` is the default now that the WebUI is
-reachable from the whole tailnet — the login screen appears everywhere,
-localhost included. The admin account is `admin@localhost`; its password
-lives in the gitignored `openbeast.conf` (`WEBUI_ADMIN_EMAIL` /
-`WEBUI_ADMIN_PASSWORD`). You log in once per device/browser; a session
-token persists after that. If you change the password in the UI
-(Settings → Account), update `openbeast.conf` to match — that's what
-`configure-webui.sh` uses to re-apply tool config on restarts.
+**Default: no login wall.** `WEBUI_AUTH` defaults to **`false`** — a fresh
+local-only install is single-user with zero login friction, and
+`configure-webui.sh` can auto-configure tools via the default admin
+account. This is the right mode as long as the WebUI is only reachable on
+`127.0.0.1`.
 
-**How to turn auth off.** Set `OPENBEAST_WEBUI_AUTH=false` in the
-environment before `./start.sh` (or edit the default in
-`docker-compose.yml`). This restores the old zero-login single-user mode.
-Trade-off: anyone holding any device on your tailnet — including a lost
-phone — gets the full admin UI. Layered defense says leave it on; the cost
-is one login per device.
+**Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
+`WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
+whole tailnet — that's when a per-user login boundary (and the RBAC tiers
+in `docs/RBAC_PLAN.md`) starts to matter. On an auth-enabled fresh install,
+**the first account to sign up becomes admin** — create yours immediately
+after enabling auth, then mirror the credentials into the gitignored
+`openbeast.conf` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so
+`configure-webui.sh` can keep re-applying tool config on restarts. You log
+in once per device/browser; a session token persists after that. If you
+change the password in the UI (Settings → Account), update
+`openbeast.conf` to match. (Example: a box upgraded from the pre-auth era
+may carry a legacy `admin@localhost` account in its database — treat it as
+that install's admin, not a universal default.)
+
+**Turning auth back off.** Set `WEBUI_AUTH=false` in `openbeast.conf` (or
+`OPENBEAST_WEBUI_AUTH=false` in the environment) before `./start.sh`.
+Trade-off on a tailnet-exposed install: anyone holding any device on your
+tailnet — including a lost phone — gets the full admin UI. Layered defense
+says leave it on there; the cost is one login per device.
 
 **Accounts and history — it's real multi-user, not one shared login:**
 - Every account has its **own separate chat history**, settings, and
@@ -619,9 +656,10 @@ active slot count. With `--restart`, automatically restarts any service that's d
 
 ### Eval harness
 
-159 tasks across three difficulty tiers (40/53/66 base tasks: easy/medium/hard)
-and 12 categories. Full distribution table, schema, and scoring methodology in
-[**evals/README.md**](evals/README.md) — start there for anything eval-related.
+137 base tasks (v4) across three difficulty tiers and 12 categories — 291
+effective test units with multi-language variants. Full distribution table,
+schema, and scoring methodology in
+[**evals/README.md**](../evals/README.md) — start there for anything eval-related.
 This section covers operational details specific to the multi-model sweep and
 cross-host comparison.
 
@@ -640,9 +678,10 @@ python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime: the 5 models benchmarked so far took **~16–20 hours** on the
-v3.5 suite; a sweep of all 9 configured models will run longer — budget
-roughly a day. Plan to run overnight. Sweep summaries are saved to
+Total runtime: 8 of the 9 configured models are benchmarked (5 on legacy
+v3.5, 3 MTP models on v4; only the non-MTP Qwopus is pending). The 5 v3.5
+models took **~16–20 hours**; the 3 MTP models took ~4–5 h each on v4. A
+sweep of all 9 — budget roughly a day. Plan to run overnight. Sweep summaries are saved to
 `evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
 7h 21m wall-clock (26,489 s) on the prior 144-task suite — see
 [RESULTS.md](RESULTS.md).
@@ -653,10 +692,11 @@ Ranking is **accuracy-primary** (tie-break: pass count → hard pass count →
 speed). **Tokens** (prompt + completion) and **API-equivalent cost** (Sonnet
 4.6 pricing as a sense-of-scale baseline: $3/M input, $15/M output) are
 tracked per task and summed per run, surfaced as separate columns so you can
-see how chatty a model is on the way to the same answer. There is
-intentionally no composite score — speed and accuracy trade off in opposite
-directions on this suite, and a weighted average hides the signal. See
-`evals/scoring.py`:
+see how chatty a model is on the way to the same answer. `scoring.py` does
+derive a composite column (`compute_composite`) for reference, but it never
+drives the ranking — speed and accuracy trade off in opposite directions on
+this suite, and a weighted average hides the signal, so ranking stays
+accuracy-primary. See `evals/scoring.py`:
 
 ```
 accuracy    = 100 × Σ(weight × passed) / Σ(weight)
@@ -673,8 +713,8 @@ tokens      = Σ(prompt + completion) across all task runs
 with subcategory drilldown.
 
 `scoring.py --by-language` produces a per-language accuracy table across the
-33 base tasks that have multi-language variants (Python / Go / C / C++ / Rust /
-Zig — 197 total variant entries; one task, `122_gemm_blocked`, has 5
+31 base tasks (v4) that have multi-language variants (Python / Go / C / C++ /
+Rust / Zig — 185 total variant entries; one task, `122_gemm_blocked`, has 5
 variants without a Python entry since it's perf-flavored). Use this view to
 surface cross-language failure modes the Python-only suite cannot.
 

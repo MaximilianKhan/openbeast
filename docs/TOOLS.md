@@ -80,6 +80,16 @@ Two MCPO connections are configured by `scripts/configure-webui.sh`
 - **Admin** (WebUI admin role): all 17 tools.
 - **Guest** (WebUI user role): `web_search` only. No filesystem, no shell.
 
+> ⚠️ **WARNING — `AGENT_ROUTER=true` bypasses this RBAC on multi-user
+> instances.** The opt-in agent-spawn router (`agents/router.py`, port
+> 8088) classifies **every** chat turn — including guest users' — and on a
+> detected spawn request calls MCPO `start_agent` **directly**, below the
+> WebUI connection-level RBAC described above. A guest who phrases a spawn
+> request gets a full-filesystem background agent, tool filters
+> notwithstanding. Until the router is identity-aware, **do not enable
+> `AGENT_ROUTER` on a multi-user instance** (see `docs/RBAC_PLAN.md`
+> Phase 2 and `docs/TODO.md` security section).
+
 ## Why 17 and not more
 
 Deliberate. The production review (`docs/PRODUCTION_ROADMAP.md` §B) found

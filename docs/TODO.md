@@ -1,5 +1,14 @@
 # TODO
 
+## ⚠️ SECURITY
+
+- **Router is not identity-aware** — with `AGENT_ROUTER=true` the router
+  (`agents/router.py`) classifies every chat turn (guests included) and
+  calls MCPO `start_agent` directly, bypassing the WebUI connection-level
+  RBAC. Gate or identity-scope the spawn path before multi-user and
+  `AGENT_ROUTER` coexist (part of RBAC Phase 2 — see `docs/RBAC_PLAN.md`
+  and the warning in `docs/TOOLS.md`).
+
 ## ⏳ LATER — per-conversation (or per-user) file isolation for chat tools
 
 **Context / what shipped now (2026-07-08):** the chat model's direct file tools
@@ -1095,7 +1104,12 @@ any device) over a private encrypted mesh — no port forwarding or static IP ne
 works from any network. Free for personal use (up to 100 devices). No router
 config, no dynamic DNS, no exposed ports.
 
-### Speculative decoding — MTP variants scaffolded 2026-05-22, benchmark pending
+### Speculative decoding — MTP variants scaffolded 2026-05-22, benchmarked 2026-07-08
+
+**Benchmarked 2026-07-08** on the v4 suite at the measured context ceilings
+(27B MTP 288K / 35B-A3B MTP 512K / Qwopus MTP 336K) — results in
+`docs/RESEARCH_FINDINGS.md` §3 and `evals/leaderboard.json`. The narrative
+below is the original scaffolding/tuning history.
 
 **Status:** the separate-draft-model approach (originally planned with a small
 0.6B Qwen) is **superseded** by MTP (Multi-Token Prediction). Unsloth shipped

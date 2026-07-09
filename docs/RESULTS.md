@@ -2,14 +2,19 @@
 
 Cross-system benchmark results. Each section below is one host system. Models
 are **ranked by accuracy** — speed and token cost are reported as separate
-columns, not folded into a composite score.
+columns (`scoring.py` derives a composite column for reference, but ranking
+never uses it).
 
-> **Suite version.** Live results below are from the **v3.5 suite — 323
+> **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
 > 197 variant entries replacing 33 base entries). Difficulty split:
 > 80 easy · 123 medium · 120 hard. Token tracking on every task; result
-> cache at `evals/cache/` for retryable sweeps. Distribution table and
-> methodology: [`evals/README.md`](../evals/README.md).
+> cache at `evals/cache/` for retryable sweeps.
+> **The current suite is v4** (137 base tasks / 291 units) — distribution in
+> [`evals/README.md`](../evals/README.md); the first v4 results (the three
+> MTP models, 2026-07-08) live in `evals/leaderboard.json` and
+> [`RESEARCH_FINDINGS.md`](RESEARCH_FINDINGS.md) §3. v3.5 and v4 numbers are
+> not comparable.
 
 ```bash
 python3 evals/scoring.py --compare-hosts                   # side-by-side per-model across systems
@@ -155,7 +160,7 @@ variants split a single base task's weight, not multiply it.
 
 Each variant is its own scored test unit. The leaderboard reports per-language
 accuracy via `python3 evals/scoring.py --by-language`. For full schema /
-methodology / pitfalls, see [`evals/README.md`](evals/README.md).
+methodology / pitfalls, see [`evals/README.md`](../evals/README.md).
 
 Effective test units after the v3.5 rollout: **323** (126 single-variant base
 tasks + 197 variant entries; one variant task, `122_gemm_blocked`, ships 5
@@ -166,8 +171,8 @@ implementations (`python3 tests/audit_variants.py`).
 
 ## Host: NVIDIA GeForce RTX 5090 ×1
 
-**Status:** 4 of 5 models complete (v3.5 sweep ran 2026-05-08 04:13 → 21:42 PT;
-Gemma 4 31B-it currently re-running after the original Gemma slot was killed
+**Status:** all 5 v3.5 models complete (sweep ran 2026-05-08 04:13 → 21:42 PT;
+Gemma 4 31B-it finished in a re-run after the original Gemma slot was killed
 mid-run at task 8/323).
 
 ### System fingerprint

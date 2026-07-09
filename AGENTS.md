@@ -2,8 +2,8 @@
 
 You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
 serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
-a 159-task eval suite (40 easy / 53 medium / 66 hard across 12 categories),
-and 14 curated skills for specialized work.
+a 137-task eval suite (v4 — 291 effective units with multi-language variants,
+across 12 categories), and 14 curated skills for specialized work.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -36,7 +36,7 @@ whether one matches. Skills encode hard-won lessons — don't reinvent them.
 | Hard debugging — obvious fix didn't work | `debugging-methodology` |
 | Intractable problem, exhausted obvious paths, "consult the council" | `deep-counsel` |
 | User wants to add a new eval task to the suite | `eval-task-author` |
-| User wants multi-language variants (Py/Go/C/C++) on an existing task | `eval-variant-porter` |
+| User wants multi-language variants (Py/Go/C/C++/Rust/Zig) on an existing task | `eval-variant-porter` |
 
 When multiple skills could apply, pick the one most-specific to the task.
 You can also chain — e.g., `codebase-onboarding` → `spec-extraction` →
@@ -60,19 +60,19 @@ are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 | What | Where |
 |---|---|
 | Source: model serving, agents, MCP tools | `agents/`, `scripts/`, `start.sh`, `stop.sh` |
-| Eval suite (159 tasks across 12 categories) | `evals/` — see `evals/README.md` |
+| Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
-| Tests | `tests/test_scripts.sh`, `tests/test_smoke.sh` |
+| Tests | `tests/run_tests.sh` (runs all), `tests/test_tools.py`, `tests/test_scripts.sh`, `tests/test_smoke.sh`, `tests/test_cache.py`, `tests/test_proc_hygiene.py` |
 | Documentation (technical) | `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/RESULTS.md`, `docs/SKILLS_PLAN.md`, `docs/TODO.md`, `docs/WORK_PLAN.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite
 
-- 159 base tasks; 13 of them have multi-language variants (223 effective
-  test units across Python / Go / C / C++ / Rust / Zig)
+- 137 base tasks (v4); 31 of them have multi-language variants (291
+  effective test units across Python / Go / C / C++ / Rust / Zig)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
-- Full sweep (5 models): `python3 evals/benchmark_all.py` (~10–12 hours
-  overnight on the 5090)
+- Full sweep (9 models): `python3 evals/benchmark_all.py` (budget roughly
+  a day on the 5090)
 - Score: `python3 evals/scoring.py --show` (with TOKENS column)
 - Distribution + methodology: `evals/README.md`
 

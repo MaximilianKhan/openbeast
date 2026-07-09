@@ -18,7 +18,7 @@ would have produced alone.
 **Consequence:** the speculation knobs (`--spec-draft-n-max`,
 `--spec-draft-p-min`) can be brute-forced for throughput with **zero accuracy
 risk** and no eval suite — only the lossy knobs (weight quant, KV-cache quant,
-context) change accuracy. This underpins the profiling work (§5).
+context) change accuracy. This underpins the profiling work (§7).
 
 ## 2. MTP delivers a large single-stream speedup (2026-07-08)
 
@@ -281,6 +281,15 @@ no config change) while the router opts itself out for its one classification
 call. One model, one server. Confirms: no CPU model required.
 
 ## 11. Router: final design, ready to build (2026-07-08)
+
+**Status: SHIPPED 2026-07-08 as `agents/router.py`** (launched by `start.sh`
+when `AGENT_ROUTER=true` in `openbeast.conf`; default off). The shipped
+router adds one refinement over the design below: a precision-tuned keyword
+prefilter on the last user turn that skips the ~500ms classify call for
+obviously-non-spawn turns — deliberately trading away keyword-free
+*implicit* spawns ("handle this huge thing while I grab coffee") to keep
+every normal chat turn at zero added latency; explicit requests all still
+fire.
 
 Consolidated conclusion of §8–10. The agent-spawn router is fully specified
 and proven; only implementation remains.

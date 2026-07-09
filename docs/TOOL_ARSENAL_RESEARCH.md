@@ -64,7 +64,7 @@ review before integration per our gate.
 Fargate, Fly.io, E2B). The right tier for running *fetched/untrusted* code,
 but integration is heavy (rootfs build, vsock plumbing, snapshots — 1–2
 weeks). Phase 2 at the earliest; Sandlock covers the common case.
-- https://github.com/firecracker-microvm/firecracker/blob/main/docs/SPECIFICATION.md
+- https://github.com/firecracker-microvm/firecracker/blob/main/SPECIFICATION.md
 
 ### 5–6. Browser automation — Playwright CLI as a skill, NOT the MCP server (HIGH, 6× 3-0)
 Playwright MCP works text-only (accessibility tree, no vision needed) but

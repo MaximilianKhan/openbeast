@@ -1,7 +1,7 @@
 # Contributing to OpenBeast
 
 OpenBeast is a self-hosted AI workstation: llama.cpp serving, a 17-tool MCP
-agent arsenal, browser + terminal frontends, RBAC, and a 323-unit eval
+agent arsenal, browser + terminal frontends, RBAC, and a 291-unit (v4) eval
 suite. Contributions welcome — here's how to land one cleanly.
 
 ## Dev setup

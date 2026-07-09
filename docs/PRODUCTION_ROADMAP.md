@@ -58,12 +58,14 @@ afford blind multi-step discovery; ours can't. That's the confusion.
    and put agent-mgmt + skills behind an *advanced* connection the model
    only sees when needed. The two-connection RBAC machinery already exists —
    this reuses it for cognitive-load reduction, not just security.
-2. **Make skills discoverable without a tool round-trip.** Inject a compact
-   skill *index* (name + one-line + trigger) into `system-prompt-tools.md`
-   so the model knows what exists upfront, and keep ONE `load_skill` tool to
-   pull a body on demand. Replaces 4 blind-discovery tools with 1 tool + a
-   visible menu. (The endgame is the deferred SKILLS_PLAN Phase-5 auto-router:
-   a pre-flight classifier picks the skill; the model never has to.)
+2. **Make skills discoverable without a tool round-trip.** ✅ **Index half
+   DONE** — `scripts/generate-skill-index.py` injects the compact skill
+   index (name + one-line + trigger) into `system-prompt-tools.md`, run by
+   `configure-webui.sh`, with a staleness check in `tests/test_scripts.sh`
+   (CI). **Still open:** collapsing the 4 blind-discovery tools down to ONE
+   `load_skill` tool + the visible menu. (The endgame is the deferred
+   SKILLS_PLAN Phase-5 auto-router: a pre-flight classifier picks the
+   skill; the model never has to.)
 3. **Sharpen the tool-vs-skill mental model** in the prompt: *tools = actions
    (do a thing now); skills = methodologies (how to approach a class of
    problem, invoked at the START of an open-ended task).*
@@ -96,9 +98,11 @@ Highest impact-to-effort, ordered:
    table featuring the real differentiators: measured-VRAM-tuned contexts,
    a 300+-unit multi-language eval leaderboard, one-command secure remote
    access (Tailscale), family RBAC, and the agent+skills arsenal.
-6. **Reconcile contradictory eval numbers** (M/med) — effective units cited
-   as 313 / 323 / 223; variants 33 vs 13; difficulty splits differ; models
-   "5" vs "9". Generate from the suite, don't hand-write.
+6. **Reconcile contradictory eval numbers** (M/med) — ✅ swept 2026-07-08:
+   current-state docs now cite v4 (137 base / 291 units, 31 variant'd);
+   was: effective units cited as 313 / 323 / 223; variants 33 vs 13;
+   difficulty splits differ; models "5" vs "9". Still open: generate the
+   counts from the suite, don't hand-write.
 7. **`.github/` — CI + templates + CONTRIBUTING** (M/med). Tests exist
    (`tests/run_tests.sh`); wire them to run on push. Add issue/PR templates.
 8. **Publish the repo + `v1.0` tag** (S/med) — replace `<repo-url>`

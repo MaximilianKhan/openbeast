@@ -91,9 +91,11 @@ Env override: `OPENBEAST_AGENT_INFERENCE_URL`.
 
 ## Prerequisites & caveats
 
-- **GATE:** the orchestrator must reliably CALL `start_agent` in the first place
-  (docs/TODO.md POST-SWEEP STEP 3 — still unverified). No point routing agents
-  that never spawn.
+- **GATE: ✅ SATISFIED (2026-07-08).** The orchestrator must reliably spawn
+  agents in the first place — solved by the shipped agent-spawn router
+  (`agents/router.py`, opt-in `AGENT_ROUTER=true`), which detects spawn
+  intent deterministically instead of trusting model tool-choice (see
+  docs/RESEARCH_FINDINGS.md §8–11 and the header above).
 - **Data flow:** remote inference sends the file contents the agent READS to the
   worker box as context (the model must see the data to reason about it). On the
   user's own tailnet this is still their hardware, but the promise shifts from

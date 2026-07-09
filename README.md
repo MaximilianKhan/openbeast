@@ -52,7 +52,7 @@ rebuilds it), container images, and Python deps in one shot. Details in
 | **Terminal coding agent** (OpenCode) | ✅ | — | — | — |
 | **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — |
 | **Multi-user roles / RBAC** (family-safe: guests get web, not your files) | ✅ | — | — | — |
-| **Speculative decoding** (MTP, 1.5–2.75× tok/s) | ✅ | partial | partial | partial |
+| **Speculative decoding** (MTP, 1.46–2.75× tok/s measured) | ✅ | partial | partial | partial |
 | **VRAM-measured context tuning** + reproducible eval leaderboard | ✅ | — | — | — |
 
 Ollama and LM Studio are excellent *model runners*. OpenBeast is a *workstation*
@@ -80,9 +80,11 @@ Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 **Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
 **35B-A3B MoE** variants run 30–50 % faster per token. Each swaps in with one
-argument to `start.sh`. Nine models are pre-configured, benchmarked against a
-v3.5 eval suite of 159 base tasks (33 with multi-language variants, 323
-effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
+argument to `start.sh`. Nine models are pre-configured and eight are
+benchmarked: the three MTP builds on the current **v4 suite** (137 base
+tasks, 291 effective units), five non-MTP models carrying **legacy v3.5**
+scores pending a v4 re-run, and the non-MTP Qwopus still awaiting its first
+sweep. See [`docs/RESULTS.md`](docs/RESULTS.md) and
 [`evals/README.md`](evals/README.md).
 
 ## Architecture
@@ -91,29 +93,34 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
                              ┌────────────────────┐
                              │     Open WebUI     │
                              │     (port 3000)    │
-                             └──────────┬─────────┘
-                                        │
-                                        ▼
-   ┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐
-   │      OpenCode      │    │     MCPO Proxy     │    │      SearXNG       │
-   │     (terminal)     │    │     (port 3001)    │    │     (port 8888)    │
-   └──────────┬─────────┘    └──────────┬─────────┘    └──────────┬─────────┘
-              │                         │                         │
-              │ stdio                   │ HTTP                    │ web_search
-              ▼                         ▼                         ▼
-   ┌─────────────────────────────────────────────────────────────────────────┐
-   │                            MCP Tool Server                              │
-   │                         (agents/mcp_server.py)                          │
-   │                                                                         │
-   │       bash · read · write · edit · grep · list_files                    │
-   │       fetch · web_search                                                │
-   │       start_agent · check_agent · tail_agent · list_agents · stop_agent │
-   │       list_skills · load_skill · start_skill_agent · reload_skills      │
-   └─────────────────────────────────────┬───────────────────────────────────┘
-                                         │
-                                         ▼
-                          ┌────────────────────────────┐
-                          │      llama.cpp Server      │
+                             └─────┬────────┬─────┘
+                             tools │        │ chat
+                                   │        └──────────────────────────────────┐
+                                   ▼                                           │
+   ┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐  │
+   │      OpenCode      │    │     MCPO Proxy     │    │      SearXNG       │  │
+   │     (terminal)     │    │     (port 3001)    │    │     (port 8888)    │  │
+   └──────────┬─────────┘    └──────────┬─────────┘    └──────────┬─────────┘  │
+              │                         │                         │            │
+              │ stdio                   │ HTTP                    │ web_search │
+              ▼                         ▼                         ▼            │
+   ┌─────────────────────────────────────────────────────────────────────────┐ │
+   │                            MCP Tool Server                              │ │
+   │                         (agents/mcp_server.py)                          │ │
+   │                                                                         │ │
+   │       bash · read · write · edit · grep · list_files                    │ │
+   │       fetch · web_search                                                │ │
+   │       start_agent · check_agent · tail_agent · list_agents · stop_agent │ │
+   │       list_skills · load_skill · start_skill_agent · reload_skills      │ │
+   └─────────────────────────────────────┬───────────────────────────────────┘ │
+                                         │             ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┴╌╌╌╌╌┐
+                                         │             ┆  Agent Router (port 8088)   ┆
+                                         │             ┆  opt-in: AGENT_ROUTER=true  ┆
+                                         │             └╌╌╌╌╌╌╌╌╌╌╌╌┬╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
+                                         │                          │ (router off: chat
+                                         ▼                          │  goes to :8080 direct)
+                          ┌────────────────────────────┐            │
+                          │      llama.cpp Server      │◀───────────┘
                           │        (port 8080)         │
                           │      6 parallel slots      │
                           │      unified KV cache      │
@@ -139,6 +146,7 @@ effective test units). See [`docs/RESULTS.md`](docs/RESULTS.md) and
 - Web: `fetch` (URL → readable text), `web_search` (via local SearXNG)
 - Agent management: `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
 - Skills (curated expertise packages): `list_skills`, `load_skill`, `start_skill_agent`, `reload_skills`
+- Private workspace: files the chat model writes via these tools land in `~/openbeast-files` (created `0700` by `start.sh`; configurable via `FILES_DIR` in `openbeast.conf`) — persistent and private, never world-readable `/tmp`
 
 **Autonomous Agents**
 - **Agent-spawn router** (opt-in, `AGENT_ROUTER=true`): local models rarely call the "spawn a background agent" tool on their own judgment, so a grammar-constrained pre-flight classifier detects delegation requests ("do this in the background while we keep talking") and spawns the agent *deterministically*. Normal chat passes through untouched with thinking on. See [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §8-11.
@@ -182,7 +190,7 @@ git clone https://github.com/ggml-org/llama.cpp.git
                  && cmake --build build --config Release -j$(nproc))
 
 # 3. Install Python deps + Hugging Face CLI
-pip install --user --break-system-packages huggingface-hub[cli] -r agents/requirements.txt
+pip install --user --break-system-packages huggingface-hub -r agents/requirements.txt
 
 # 4. Download the default model (or pick another from docs/INSTALL.md)
 #    --local-dir can be anywhere — see "Model weights location" below.
@@ -291,12 +299,12 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
 | Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
-| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots, no `--mmproj`). 2.5 GB headroom at the tuned config. Not yet benchmarked. |
-| Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). Not yet benchmarked. |
+| Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots, no `--mmproj`). 2.5 GB headroom at the tuned config. **95.63% on v4** (273/291) — tops the v4 leaderboard. |
+| Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). 93.76% on v4 (254/291). |
 | Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 416K | 29.3 GB | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. 2.6 GB headroom measured. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
-| Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). Not yet benchmarked. |
+| Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). 93.00% on v4 (260/291). |
 
-All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/TODO.md`](docs/TODO.md) "Speculative decoding, MTP variants" for the benchmark plan.
+All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
 
 ## Project Structure
 
@@ -315,6 +323,7 @@ scripts/                     # Server, chat, and ops scripts
 agents/                      # Agent framework + MCP tool server
   mcp_server.py              # MCP tool server (17 tools, stdio + HTTP transports)
   runner.py                  # Autonomous agent loop (LLM + tool use)
+  router.py                  # Agent-spawn router on :8088 (opt-in via AGENT_ROUTER=true)
   tools.py                   # Tool schemas/handlers for the standalone runner
   requirements.txt           # openai, mcp, mcpo
   logs/                      # Agent run logs (JSONL) [gitignored]
@@ -439,7 +448,7 @@ Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output), a
 
 The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board, so pick a smaller, faster model if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
 
-**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns rather than collapsed into a composite, since they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
+**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns (`scoring.py` also derives a composite column for reference, but it never drives the ranking), since they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
 - **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
 - **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
 - **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown; see `evals/scoring.py --by-category`
@@ -452,8 +461,8 @@ python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 
 # Multi-model sweep — stops/starts each serve script in turn. Covers all 9
-# configured models (5 benchmarked so far; those 5 take ~16-20h on the v3.5
-# suite — budget roughly a day for all 9)
+# configured models (8 of 9 benchmarked: 5 on v3.5, 3 on v4; only the
+# non-MTP Qwopus is pending — budget roughly a day for all 9)
 python3 evals/benchmark_all.py                     # full sweep
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --list              # show configured models
