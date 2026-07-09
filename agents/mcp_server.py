@@ -63,43 +63,61 @@ mcp = FastMCP(
     port=3001,
 )
 
+# RBAC Phase 2 (docs/RBAC_PLAN.md): OPENBEAST_MCP_TOOLS, when set, is a
+# comma-separated allowlist — only the named tools REGISTER at all. The guest
+# MCPO instance runs with OPENBEAST_MCP_TOOLS="web_search,fetch", so even a
+# caller holding the guest API key cannot reach bash/file/agent tools: they
+# don't exist on that server. Unset (the default) = every tool registers.
+_ALLOWED_TOOLS = {
+    t.strip() for t in os.environ.get("OPENBEAST_MCP_TOOLS", "").split(",") if t.strip()
+}
+
+
+def _tool(*args, **kwargs):
+    """mcp.tool() that honors the OPENBEAST_MCP_TOOLS allowlist."""
+    def decorate(fn):
+        if _ALLOWED_TOOLS and fn.__name__ not in _ALLOWED_TOOLS:
+            return fn  # not registered — invisible to this instance
+        return mcp.tool(*args, **kwargs)(fn)
+    return decorate
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@_tool()
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr. Use for building, testing,
     git operations, installing packages, or any system task."""
     return _tools.bash(command, timeout)
 
 
-@mcp.tool()
+@_tool()
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file. Returns numbered lines."""
     return _tools.read_file(path, offset, limit)
 
 
-@mcp.tool()
+@_tool()
 def write_file(path: str, content: str) -> str:
     """Write content to a file. Creates directories if needed. Overwrites existing files."""
     return _tools.write_file(path, content)
 
 
-@mcp.tool()
+@_tool()
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern in a directory."""
     return _tools.list_files(directory, pattern)
 
 
-@mcp.tool()
+@_tool()
 def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
     """Search file contents for a regex pattern. Returns matching lines with
     file paths and line numbers."""
     return _tools.grep(pattern, path, file_glob)
 
 
-@mcp.tool()
+@_tool()
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Replace an exact string in a file with new content.
 
@@ -119,7 +137,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
     return _tools.edit_file(path, old_string, new_string, replace_all)
 
 
-@mcp.tool()
+@_tool()
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return it as text.
 
@@ -467,7 +485,7 @@ def _resolve_skill(name: str) -> dict | None:
     return _discover_skills().get(name)
 
 
-@mcp.tool()
+@_tool()
 def skill(name: str = "") -> str:
     """Skill library — browse the index, or load one skill's full instructions.
 
@@ -525,7 +543,7 @@ def skill(name: str = "") -> str:
 # --- Agent MCP tools ---
 
 
-@mcp.tool()
+@_tool()
 def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "",
                 base_url: str = "") -> str:
     """Delegate a task to a background agent that runs it autonomously and in parallel.
@@ -633,7 +651,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     )
 
 
-@mcp.tool()
+@_tool()
 def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int = 200,
                       extra_context: str = "", base_url: str = "") -> str:
     """Spawn a long-running sub-agent with a specific skill activated.
@@ -680,7 +698,7 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
                        base_url=base_url)
 
 
-@mcp.tool()
+@_tool()
 def check_agent(agent_id: str) -> str:
     """Check the status of a running or completed agent.
 
@@ -702,7 +720,7 @@ def check_agent(agent_id: str) -> str:
     return f"Error: unknown agent '{agent_id}'. Use list_agents() to see tracked agents."
 
 
-@mcp.tool()
+@_tool()
 def list_agents() -> str:
     """List all agents spawned during this server session with their current status."""
     if not _agents:
@@ -730,7 +748,7 @@ def list_agents() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 def stop_agent(agent_id: str) -> str:
     """Stop a running agent. Sends SIGTERM for graceful shutdown, escalates to
     SIGKILL after 10 seconds if the process doesn't exit.
@@ -768,7 +786,7 @@ def stop_agent(agent_id: str) -> str:
             return f"Agent {agent_id}: escalated to SIGKILL but cleanup failed: {e}"
 
 
-@mcp.tool()
+@_tool()
 def tail_agent(agent_id: str, lines: int = 30) -> str:
     """Stream the raw tail of an agent's log — recent events in JSONL format.
 
@@ -804,7 +822,7 @@ def tail_agent(agent_id: str, lines: int = 30) -> str:
     return header + output
 
 
-@mcp.tool()
+@_tool()
 def web_search(query: str, max_results: int = 10) -> str:
     """Search the web using the local SearXNG instance.
 

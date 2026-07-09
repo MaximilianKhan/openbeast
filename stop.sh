@@ -55,9 +55,12 @@ echo "Stopping agent router..."
 pkill -f "agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping MCPO proxy..."
-pkill -f "mcpo --port 3001" 2>/dev/null && echo "MCPO proxy stopped." || echo "MCPO proxy was not running."
+# Matches every instance: the admin proxy on 3001 AND the guest instance on
+# MCPO_GUEST_PORT when RBAC Phase 2 keys are active.
+pkill -f "mcpo --port" 2>/dev/null && echo "MCPO proxy stopped." || echo "MCPO proxy was not running."
 
 echo "Stopping llama.cpp server..."
 pkill -f "llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
 
-rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" "$RUN_DIR/router.pid" 2>/dev/null || true
+rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+      "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" 2>/dev/null || true

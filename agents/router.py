@@ -63,6 +63,11 @@ from starlette.routing import Route
 PORT = int(os.environ.get("OPENBEAST_ROUTER_PORT", "8088"))
 UPSTREAM = os.environ.get("OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 MCPO = os.environ.get("OPENBEAST_MCPO_URL", "http://127.0.0.1:3001").rstrip("/")
+# RBAC Phase 2: when the admin MCPO instance is key-protected
+# (OPENBEAST_MCPO_ADMIN_KEY set), spawn calls must present the key as a
+# Bearer token. Empty (Phase 1 keyless MCPO) = no header sent.
+_MCPO_KEY = os.environ.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
+MCPO_HEADERS = {"Authorization": f"Bearer {_MCPO_KEY}"} if _MCPO_KEY else {}
 # Identity gate hardening: when "true", a request WITHOUT an
 # X-OpenWebUI-User-Role header may never spawn (fail-closed). Default "false"
 # keeps single-user/no-auth setups working (WebUI sends no identity headers
@@ -178,7 +183,8 @@ async def _spawn(client, task, workdir):
     """Spawn via the real MCPO start_agent tool. Returns (agent_id, error)."""
     try:
         r = await client.post(f"{MCPO}/start_agent",
-                              json={"task": task, "workdir": workdir}, timeout=30)
+                              json={"task": task, "workdir": workdir},
+                              headers=MCPO_HEADERS, timeout=30)
         txt = r.text
         try:
             data = r.json()

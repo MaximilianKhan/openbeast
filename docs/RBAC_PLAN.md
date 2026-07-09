@@ -163,10 +163,22 @@ Defense in depth:
    resolution includes loopback/private/link-local/reserved addresses, with
    per-hop redirect re-validation. Guest connection filter widened to
    `web_search,fetch`. Tests: `tests/test_fetch_guards.py`.
-1. Split MCPO into two instances with distinct `--api-key`s
-   (`arsenal-full` on :3001, `arsenal-guest` on :3002); keys live in
-   `openbeast.conf` and per-connection headers in WebUI. Now possession of
-   the full-profile key — not UI policy — gates the dangerous tools.
+1. ✅ **DONE 2026-07-09 — per-profile MCPO keys (opt-in).** Enable with
+   `scripts/setup-mcpo-keys.sh` (writes `MCPO_ADMIN_KEY`/`MCPO_GUEST_KEY` to
+   `openbeast.conf`; `--rotate` to replace). With both keys set, start.sh
+   launches TWO instances: admin (:3001, all 15 tools, admin key) and guest
+   (:`MCPO_GUEST_PORT`, default 3002, guest key) — and the guest instance
+   runs with `OPENBEAST_MCP_TOOLS="web_search,fetch"`, a REGISTRATION
+   allowlist in `agents/mcp_server.py`: denied tools don't exist on that
+   server (a guest-key holder probing `/bash` gets 404 — there is no tool to
+   authorize). configure-webui.sh binds each WebUI connection to its
+   instance with a Bearer key; the router presents the admin key for
+   `start_agent`; healthcheck.sh watches and restarts both instances keyed.
+   Verified live: tool endpoints answer 401 (no key) / 403 (wrong key) /
+   200 (right key). Note `--api-key` leaves `openapi.json` public (spec
+   disclosure only, never privilege); add mcpo's `--strict-auth` to
+   `start.sh` if that matters on your network. Keys absent = Phase 1
+   behavior, byte-for-byte. Tests: `tests/test_mcp_allowlist.py`.
 2. Wrap guest-profile tool execution in the **Sandlock** sandbox from
    [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md): read-only
    filesystem view, network allowed, no exec outside the tool. One policy

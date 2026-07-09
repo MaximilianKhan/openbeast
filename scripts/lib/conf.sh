@@ -128,3 +128,21 @@ AGENT_INFERENCE_URL="${OPENBEAST_AGENT_INFERENCE_URL:-$(_ob_conf_value AGENT_INF
 if [[ -n "$AGENT_INFERENCE_URL" ]]; then
   export OPENBEAST_AGENT_INFERENCE_URL="$AGENT_INFERENCE_URL"
 fi
+# RBAC Phase 2 — per-profile MCPO API keys (docs/RBAC_PLAN.md). BOTH keys set
+# = hard enforcement: start.sh launches TWO MCPO instances — admin (:3001, all
+# tools, admin key) and guest (:3002, web_search+fetch ONLY via the
+# OPENBEAST_MCP_TOOLS allowlist, guest key) — and configure-webui.sh binds
+# each WebUI connection to its instance with a Bearer key. Either key empty =
+# Phase 1 behavior unchanged (one keyless instance on :3001; WebUI grants are
+# the only enforcement). Generate keys with scripts/setup-mcpo-keys.sh.
+# Same export discipline as LLAMA_API_KEY: only export when non-empty.
+MCPO_ADMIN_KEY="${OPENBEAST_MCPO_ADMIN_KEY:-$(_ob_conf_value MCPO_ADMIN_KEY || true)}"
+MCPO_GUEST_KEY="${OPENBEAST_MCPO_GUEST_KEY:-$(_ob_conf_value MCPO_GUEST_KEY || true)}"
+MCPO_GUEST_PORT="${OPENBEAST_MCPO_GUEST_PORT:-$(_ob_conf_value MCPO_GUEST_PORT || echo 3002)}"
+if [[ -n "$MCPO_ADMIN_KEY" ]]; then
+  export OPENBEAST_MCPO_ADMIN_KEY="$MCPO_ADMIN_KEY"
+fi
+if [[ -n "$MCPO_GUEST_KEY" ]]; then
+  export OPENBEAST_MCPO_GUEST_KEY="$MCPO_GUEST_KEY"
+fi
+export MCPO_GUEST_PORT

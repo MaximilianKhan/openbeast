@@ -15,9 +15,13 @@
     `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` set; if
     green, flip default-on in `conf.sh`. Re-verify the setpgid/killpg
     interaction on every sandlock version bump.
-  - **Per-profile MCPO keys** — below-app enforcement so a guest can't reach
-    admin tools even if they bypass the WebUI layer (defense in depth beyond
-    the connection filter).
+  - ✅ **Per-profile MCPO keys (DONE 2026-07-09, opt-in).** Enable with
+    `scripts/setup-mcpo-keys.sh` → two keyed MCPO instances (admin :3001 all
+    tools, guest :3002 web_search+fetch ONLY via the `OPENBEAST_MCP_TOOLS`
+    registration allowlist). Guest can't reach admin tools even bypassing
+    the WebUI layer — the tools don't exist on the guest server. Verified
+    401/403/200 live; tests `tests/test_mcp_allowlist.py`. Details in
+    docs/RBAC_PLAN.md Phase 2 item 1.
 
 ## ⏳ LATER — per-conversation (or per-user) file isolation for chat tools
 

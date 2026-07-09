@@ -35,8 +35,12 @@ HEALTHY=0
 UNHEALTHY=0
 
 check() {
-  local name="$1" url="$2" match="$3"
-  if curl -s --max-time 5 "$url" 2>/dev/null | grep -qi "$match"; then
+  # check <name> <url> <match> [bearer-key] — key adds an Authorization
+  # header (keyed MCPO instances answer 401 without it, RBAC Phase 2).
+  local name="$1" url="$2" match="$3" key="${4:-}"
+  local auth=()
+  [[ -n "$key" ]] && auth=(-H "Authorization: Bearer $key")
+  if curl -s --max-time 5 "${auth[@]}" "$url" 2>/dev/null | grep -qi "$match"; then
     echo "  OK   $name"
     HEALTHY=$((HEALTHY + 1))
     return 0
@@ -98,8 +102,10 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
   fi
 fi
 
-# MCPO proxy
-if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi"; then
+# MCPO proxy — keyed when RBAC Phase 2 is active (conf.sh exports the keys)
+MCPO_KEYED=0
+[[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]] && MCPO_KEYED=1
+if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi" "${OPENBEAST_MCPO_ADMIN_KEY:-}"; then
   if $RESTART; then
     echo "       → restarting MCPO..."
     pkill -f "mcpo --port 3001" 2>/dev/null || true
@@ -109,11 +115,15 @@ if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi"; then
     if [[ ! -d "$OPENBEAST_FILES_DIR" ]]; then
       mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
     fi
-    mcpo --port 3001 --host "$BIND_HOST" -- python3 "$REPO_DIR/agents/mcp_server.py" &
+    MCPO_RESTART_ARGS=()
+    [[ $MCPO_KEYED -eq 1 ]] && MCPO_RESTART_ARGS=(--api-key "$OPENBEAST_MCPO_ADMIN_KEY")
+    MCPO_AUTH_CURL=()
+    [[ $MCPO_KEYED -eq 1 ]] && MCPO_AUTH_CURL=(-H "Authorization: Bearer $OPENBEAST_MCPO_ADMIN_KEY")
+    mcpo --port 3001 --host "$BIND_HOST" "${MCPO_RESTART_ARGS[@]}" -- python3 "$REPO_DIR/agents/mcp_server.py" &
     MCPO_NEW_PID=$!
     MCPO_OK=0
     for _i in $(seq 1 15); do
-      if curl -s --max-time 2 "http://$HEALTH_HOST:3001/openapi.json" 2>/dev/null | grep -qi openapi; then
+      if curl -s --max-time 2 "${MCPO_AUTH_CURL[@]}" "http://$HEALTH_HOST:3001/openapi.json" 2>/dev/null | grep -qi openapi; then
         MCPO_OK=1
         break
       fi
@@ -126,6 +136,39 @@ if ! check "MCPO proxy" "$MCPO_URL/openapi.json" "openapi"; then
       echo "       → restarted (pid $MCPO_NEW_PID)"
     else
       echo "       → restart FAILED: MCPO not serving after 15s (check its output above)"
+    fi
+  fi
+fi
+
+# Guest MCPO instance (only exists when RBAC Phase 2 keys are active)
+if [[ $MCPO_KEYED -eq 1 ]]; then
+  GUEST_URL="http://$HEALTH_HOST:${MCPO_GUEST_PORT:-3002}"
+  if ! check "MCPO guest" "$GUEST_URL/openapi.json" "openapi" "$OPENBEAST_MCPO_GUEST_KEY"; then
+    if $RESTART; then
+      echo "       → restarting guest MCPO..."
+      pkill -f "mcpo --port ${MCPO_GUEST_PORT:-3002}" 2>/dev/null || true
+      sleep 1
+      OPENBEAST_MCP_TOOLS="web_search,fetch" \
+        mcpo --port "${MCPO_GUEST_PORT:-3002}" --host "$BIND_HOST" \
+             --api-key "$OPENBEAST_MCPO_GUEST_KEY" \
+             -- python3 "$REPO_DIR/agents/mcp_server.py" &
+      GUEST_NEW_PID=$!
+      GUEST_OK=0
+      for _i in $(seq 1 15); do
+        if curl -s --max-time 2 -H "Authorization: Bearer $OPENBEAST_MCPO_GUEST_KEY" \
+             "$GUEST_URL/openapi.json" 2>/dev/null | grep -qi openapi; then
+          GUEST_OK=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ $GUEST_OK -eq 1 ]]; then
+        mkdir -p "$REPO_DIR/.run"
+        echo "$GUEST_NEW_PID" > "$REPO_DIR/.run/mcpo-guest.pid"
+        echo "       → restarted (pid $GUEST_NEW_PID)"
+      else
+        echo "       → restart FAILED: guest MCPO not serving after 15s"
+      fi
     fi
   fi
 fi
