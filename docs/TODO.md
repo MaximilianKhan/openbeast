@@ -94,7 +94,20 @@ docs/RESEARCH_FINDINGS §8. Applied: aggressive start_agent docstring
 (mcp_server.py, 0→1 lift) + directive prompt guidance (system-prompt-tools.md).
 Per Max's gate, we do NOT profile other models' spawn behavior until fixed.
 
-## ⏳ BLOCKER FIX — pre-flight intent router for agent-spawning (the real fix)
+## ✅ BLOCKER FIX — pre-flight intent router (DONE 2026-07-08)
+
+Built and shipped as `agents/router.py` (Starlette+httpx proxy on :8088):
+keyword prefilter → grammar-constrained classify (`enable_thinking=false`,
+json_schema `{spawn,task,workdir}`, 16/16 in validation) → spawns via MCPO
+`start_agent` on a hit, transparent passthrough otherwise. Wired into the stack
+(`AGENT_ROUTER=true` in conf.sh, WebUI points at :8088), double-passed for
+correctness + speed (router adds ~1ms/normal turn, ~0ms streaming; no KV thrash
+on the -np 1 slot). This REPLACES the model-judgment approach — start_agent no
+longer depends on the weak local model choosing to call it. Documented in
+docs/RESEARCH_FINDINGS §8-11. **Unblocks** the distributed-agents feature and
+the multi-node orchestrator investigation below.
+
+<details><summary>original blocker writeup (kept for context)</summary>
 
 start_agent won't fire via model judgment (STEP 3). Robust fix = don't rely on
 judgment; DETECT the spawn intent and FORCE the call:
@@ -123,6 +136,7 @@ refactor X while we keep talking"), watch whether it calls `start_agent` and
 the agent actually runs (check `agents/logs/`, `check_agent`). Repeat for a
 skill-triggering prompt. Record hit-rate; if ~0%, the fix is prompt/routing
 work (see docs/SKILLS_PLAN.md pruning + PRODUCTION_ROADMAP §B).
+</details>
 
  - ✅ DONE 2026-07-08: OpenBeast's ethos stated in the README ("Our opinion"
    under Why OpenBeast) — maximize intelligence per hardware, no compromise;
