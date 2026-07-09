@@ -484,17 +484,40 @@ Raw pass counts (difficulty-blind, `passed/count`) tell the plainer story:
 | Qwen 35B-A3B MTP MoE Q4_K_M | 131/136 | 27/31 | 28/31 | 27/31 | 30/31 | 11/31 |
 | Qwopus 27B v2 MTP Q5_K_M | 130/136 | 27/31 | 29/31 | 30/31 | 30/31 | 14/31 |
 
-Two things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
+Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
 on Python (133/136) and Zig (20/31), never more than 2 units apart anywhere —
 confirming MTP is lossless; the weighted table's cpp/rust swings are single-task
-noise amplified by difficulty weighting. **(2) Zig is the real discriminator.**
-Every model clears 84–100 % on the five mainstream languages, so those columns
-barely separate the field — but Zig fans out from **34.5 % to 66.6 %**. Nearly
-all the signal that distinguishes these models lives in Zig (and, correspondingly,
-in the hard-difficulty tasks), yet the headline weighted Acc compresses everyone
-into a 93–97 band. That is the case for re-weighting: if the board is meant to
-*rank*, the current easy=1 / med=1.5 / hard=2 ratio is drowning the discriminating
-tasks in a sea of near-universally-passed easy ones.
+noise amplified by difficulty weighting. **(2) Zig is the discriminator.** Every
+model clears 84–100 % on the five mainstream languages, so those columns barely
+separate the field — but Zig fans out from **34.5 % to 66.6 %**.
+
+**(3) ⚠️ The headline Acc is ~82 % a Python contest — mind the aggregation.** The
+Python bucket (106 single-language tasks at full weight + Python's 1/6 share of
+the 31 variants) carries **~82 % of the total weighted score**; the other five
+languages *share the remaining ~18 %*. So the per-language table's six visually-
+equal columns are nothing like equal in the leaderboard Acc, and **the table does
+not proxy the ranking.** Concretely, for base vs. MTP the aggregations disagree:
+
+| Aggregation | Base | MTP | Winner |
+|---|---:|---:|:--|
+| Overall Acc (leaderboard, Python-dominated) | 96.62 | 95.63 | Base +0.99 |
+| Equal-language average (6 langs, equal) | 89.56 | 91.80 | **MTP +2.23** |
+| Raw total pass | 271 | 273 | **MTP +2** |
+
+Base holds #1 **only** on the Python-dominated overall metric — and there the two
+*tie* on raw Python count (133/136 each); base merely cleared marginally harder
+Python tasks. By the equal-language view (which is how we weight languages *within*
+the per-language table) and by raw pass count, **MTP leads.** We are leaving the
+ordering as-is for now, but the "base is #1" claim is an artifact of Python's
+weight share, not a real quality edge — they are the same lossless weights.
+
+The deeper lesson: difficulty re-weighting was tested (1-2-3) and is a **dead
+lever** — every model's pass rate is flat across easy/medium/hard, so no ratio
+reorders the board. Language variants are kept **equally weighted on purpose** to
+show the true distribution of ability. The honest fix for the ~1-point spreads
+here is **multi-run averaging with mean-variance** — a single run has real
+run-to-run noise, and a 3× run would very likely put base and MTP inside each
+other's error bars. That is acknowledged future work, not yet budgeted.
 
 **Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; kept intact
 until the whole board is v4). Qwen 27B Q5_K_XL has since re-run on v4 (above),
