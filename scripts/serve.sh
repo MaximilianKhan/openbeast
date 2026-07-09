@@ -55,6 +55,36 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
+# --- Adaptive context (Hardware Profiles Phase 2) --------------------------
+# The shipped -c values are MEASURED on the 32 GB reference card (RTX 5090).
+# On a smaller card that context would OOM, so scale it to the card's KV
+# budget: weights are a fixed cost (≈ the GGUF file size), and with
+# --kv-unified the KV cache scales with context and is shared across slots.
+# We only ever scale DOWN — the measured value stands on reference-class
+# cards, so behavior is byte-identical there. Overrides:
+#   OPENBEAST_CONTEXT=<n>     force an exact context (skip scaling)
+#   OPENBEAST_VRAM_MIB=<n>    tell us the card's VRAM (when detection is wrong,
+#                             e.g. Intel Arc / headless AMD)
+#   OPENBEAST_AUTO_CONTEXT=0  disable scaling entirely
+if [[ -n "${OPENBEAST_CONTEXT:-}" ]]; then
+  CONTEXT="$OPENBEAST_CONTEXT"
+  echo "Context: $CONTEXT (forced via OPENBEAST_CONTEXT)"
+elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
+  source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
+  command -v ob_detect_gpu >/dev/null 2>&1 && ob_detect_gpu 2>/dev/null || true
+  vram="${OPENBEAST_VRAM_MIB:-${OB_VRAM_MB:-0}}"
+  weights_mib=0
+  [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -c '%s' "$MODEL") + 1048575) / 1048576 ))
+  scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib"); rc=$?
+  if [[ $rc -eq 2 ]]; then
+    echo "Warning: a ${vram} MiB card can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
+    CONTEXT="$scaled"
+  elif [[ "$scaled" -lt "$CONTEXT" ]]; then
+    echo "Context: $CONTEXT -> $scaled (auto-scaled for ${vram} MiB card; weights ~${weights_mib} MiB, 2 GB headroom). Override: OPENBEAST_CONTEXT=<n>."
+    CONTEXT="$scaled"
+  fi
+fi
+
 ALIAS_ARGS=()
 if [[ -n "$ALIAS" ]]; then
   ALIAS_ARGS=(-a "$ALIAS")

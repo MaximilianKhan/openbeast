@@ -356,6 +356,27 @@ else
   fail "conf.sh doesn't resolve GPU_BACKEND"
 fi
 
+# Adaptive context (Hardware Profiles Phase 2): ob_scale_context must keep
+# reference-class cards at the measured value and scale smaller cards DOWN,
+# monotonically, never above the reference.
+if ( source "$REPO_DIR/scripts/lib/hardware.sh"
+     ref=262144; w=13000
+     [[ "$(ob_scale_context $ref 32607 $w)" == "$ref" ]] || exit 1   # 5090: unchanged
+     [[ "$(ob_scale_context $ref 0 $w)"     == "$ref" ]] || exit 1   # unknown: unchanged
+     small=$(ob_scale_context $ref 20480 $w)
+     [[ "$small" -lt "$ref" && "$small" -ge 8192 ]] || exit 1        # 20GB: scaled down
+     mid=$(ob_scale_context $ref 24564 $w)
+     [[ "$mid" -gt "$small" && "$mid" -lt "$ref" ]] || exit 1 );then # monotonic
+  pass "ob_scale_context: reference unchanged, smaller cards scale down monotonically"
+else
+  fail "ob_scale_context scaling is wrong"
+fi
+if grep -q 'ob_scale_context' "$REPO_DIR/scripts/serve.sh"; then
+  pass "serve.sh applies adaptive context via ob_scale_context"
+else
+  fail "serve.sh doesn't call ob_scale_context"
+fi
+
 # --- 9. Entry-point shell syntax ---
 echo ""
 echo "Shell syntax:"

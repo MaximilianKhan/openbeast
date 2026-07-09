@@ -58,19 +58,35 @@ hip and sycl builds print a clear "UNTESTED by OpenBeast — reference
 profile is CUDA/5090" warning; cpu warns about the 10-50x slowdown. HIP
 auto-detects the `AMDGPU_TARGETS` gfx target via `rocminfo` when available.
 
-## Phase 2 — measured profiles per tier
+## Phase 2 — adaptive context (✅ SHIPPED 2026-07-09)
 
-The 5090 numbers came from `scripts/measure-vram.sh` sweeps. The same
-harness generalizes:
+`serve.sh` now scales the shipped `-c` value to the detected card's KV
+budget instead of assuming 32 GB — the OOM-on-smaller-cards blocker is
+closed. `ob_scale_context` (`scripts/lib/hardware.sh`, unit-tested):
 
-- A `profiles/` dir with one file per (GPU-class, model) pair: max measured
-  context, headroom, and the serve arguments. The 32 GB tables in
-  `docs/REFERENCE.md` seed the first profile.
-- `serve.sh` resolves `-c` from the active profile instead of the hardcoded
-  per-script values; per-script values become the 5090 profile.
-- Community-contributed profiles (a 4090 owner runs `measure-vram.sh`, gets
-  a PR-able profile file) — this is the path to real coverage we can't
-  measure ourselves.
+- **Reference-class (≥ ~31.6 GB) or unknown VRAM → the measured value is
+  used unchanged.** Behavior on the 5090 is byte-identical.
+- **Smaller card → scale down proportionally.** Weights are a fixed cost
+  (≈ the GGUF size), and with `--kv-unified` the KV cache scales with
+  context and is shared across slots, so
+  `new_ctx = ref_ctx × (card_KV_budget / ref_KV_budget)`, floored to a 4K
+  multiple, where `KV_budget = VRAM − weights − 2 GB headroom − ~1.5 GB
+  desktop`. Conservative on purpose: it under-allocates rather than risk an
+  OOM.
+- **Weights don't fit → warn "use a smaller quant" and fall back to
+  `-c 8192`** so the user gets a clear message, not a cryptic CUDA OOM.
+- Overrides: `OPENBEAST_CONTEXT=<n>` (exact), `OPENBEAST_VRAM_MIB=<n>` (when
+  detection is wrong — Intel Arc / headless AMD), `OPENBEAST_AUTO_CONTEXT=0`
+  (off). `bootstrap.sh` advice reflects the auto-scaling per tier.
+
+This is *estimation*, not per-card measurement — the safe-and-shipping
+version. The measured-profile refinement is still worth doing:
+
+- A `profiles/` dir with one file per (GPU-class, model) pair: max MEASURED
+  context + headroom, seeded by the 32 GB `docs/REFERENCE.md` tables.
+- Community-contributed profiles (a 4090 owner runs `measure-vram.sh` and
+  PRs the result) — real coverage we can't measure ourselves; `serve.sh`
+  would prefer a measured profile over the estimate when one exists.
 - Multi-GPU: measure `--tensor-split` on 2-card rigs; VRAM sums but KV
   locality doesn't, so measured > assumed.
 

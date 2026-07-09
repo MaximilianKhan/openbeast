@@ -89,15 +89,15 @@ ob_profile_advice() {
         echo "  ${OB_VRAM_MB} MiB VRAM — 5090-class (reference profile)."
         echo "  All shipped serve scripts apply as-is; contexts are measured."
       elif [[ $OB_VRAM_MB -ge 22000 ]]; then
-        echo "  ${OB_VRAM_MB} MiB VRAM (3090/4090-class) — the shipped 27B"
-        echo "  contexts are tuned for 32 GB and WILL OOM here. Unmeasured"
-        echo "  starting point: the default model with '-c 131072' (128K),"
-        echo "  or a Q4 quant. Watch 'nvidia-smi' and keep ~2 GB headroom"
-        echo "  (VRAM tables: docs/REFERENCE.md)."
+        echo "  ${OB_VRAM_MB} MiB VRAM (3090/4090-class). serve.sh AUTO-SCALES"
+        echo "  the shipped 27B context down to your card's KV budget (Phase 2)"
+        echo "  — no OOM, no hand-tuning. The 27B Q5 (~21 GB) leaves little KV"
+        echo "  room here, so a Q4 quant will give you far more context. Watch"
+        echo "  'nvidia-smi'; override with OPENBEAST_CONTEXT=<n>."
       elif [[ $OB_VRAM_MB -ge 15000 ]]; then
         echo "  ${OB_VRAM_MB} MiB VRAM (16 GB-class) — the 27B Q5 default"
         echo "  (~21 GB weights) does not fit. Use a Q4/Q3 quant of a ~14B"
-        echo "  model or partial offload (-ngl). No measured profile yet."
+        echo "  model; serve.sh will auto-scale its context to fit (Phase 2)."
       else
         echo "  ${OB_VRAM_MB} MiB VRAM — below the supported floor for the"
         echo "  shipped models. Small quants + short contexts only."
@@ -131,6 +131,31 @@ ob_profile_advice() {
 # Escape hatch for people who accept an unsupported setup:
 # OPENBEAST_FORCE_VRAM=1.
 OB_VRAM_FLOOR_MB=11000
+
+# Scale a reference-card context down to a smaller card's KV budget.
+# Args: <ref_context> <card_vram_mib> <weights_mib>. Echoes the context to
+# use — == ref_context on reference-class (or unknown-VRAM) cards, so the
+# measured values stand there. Pure integer math, no I/O, so it's unit-
+# testable. Return codes: 0 = ok, 2 = weights don't even fit (echoes the 8192
+# floor so the caller can warn and still attempt a launch).
+OB_REF_VRAM_MIB=32607   # the card the shipped -c values were tuned on
+ob_scale_context() {
+  local ref_ctx="$1" vram="$2" weights="$3"
+  local headroom=2048 desktop=1500
+  if ! [[ "$vram" =~ ^[0-9]+$ ]] || [[ "$vram" -le 0 || "$vram" -ge $((OB_REF_VRAM_MIB - 1000)) ]]; then
+    echo "$ref_ctx"; return 0            # reference-class or unknown: unchanged
+  fi
+  local kv_ref=$(( OB_REF_VRAM_MIB - headroom - desktop - weights ))
+  local kv_here=$(( vram - headroom - desktop - weights ))
+  if [[ $kv_ref -le 0 || $kv_here -le 0 ]]; then
+    echo 8192; return 2                  # weights don't fit the card
+  fi
+  local n=$(( ref_ctx * kv_here / kv_ref ))
+  n=$(( (n / 4096) * 4096 ))             # floor to a 4K multiple
+  [[ $n -lt 8192 ]] && n=8192
+  [[ $n -gt $ref_ctx ]] && n="$ref_ctx"
+  echo "$n"
+}
 
 ob_vram_floor_check() {
   [[ "${OPENBEAST_FORCE_VRAM:-0}" == "1" ]] && return 0

@@ -166,3 +166,15 @@
 # WITHOUT a token stay anonymous (shared workspace); a PRESENT-but-invalid
 # token is rejected 401. Env override: $OPENBEAST_IDENTITY_JWT_SECRET.
 #IDENTITY_JWT_SECRET=
+
+# ---------------------------------------------------------------------------
+# Adaptive context  (Hardware Profiles Phase 2 — see docs/HARDWARE_PROFILES.md)
+# ---------------------------------------------------------------------------
+
+# serve.sh auto-scales the shipped -c (context) down to your card's KV budget
+# on sub-32GB GPUs — no OOM, no hand-tuning; reference-class cards are
+# untouched. These are the escape hatches (all env-only, no conf key needed
+# for the default behavior):
+#   OPENBEAST_CONTEXT=<n>      force an exact context, skip scaling
+#   OPENBEAST_VRAM_MIB=<n>     override detected VRAM (Intel Arc / headless AMD)
+#   OPENBEAST_AUTO_CONTEXT=0   disable scaling (use the shipped 32GB value as-is)
