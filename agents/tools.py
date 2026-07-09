@@ -23,6 +23,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 # Largest slice of a child's output we retain in the PARENT process. The
@@ -256,6 +257,39 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         return f"Error: {e}"
 
 
+def _manifest_log(action: str, path: str, nbytes: int) -> None:
+    """Append a write record to the workspace manifest (.manifest.jsonl).
+
+    The chat workspace (OPENBEAST_FILES_DIR) is a flat namespace shared by
+    every conversation; the model only "knows" a file exists if its name is
+    in context. The manifest is the durable index — a later turn (or user)
+    can answer "what files have I made?" by reading it. Only writes that
+    LAND inside the workspace are recorded (agent workdirs and absolute
+    paths elsewhere are not workspace artifacts). Fail-soft by contract:
+    a manifest problem must never break the write it describes.
+    """
+    try:
+        base = os.environ.get("OPENBEAST_FILES_DIR")
+        if not base:
+            return
+        base = os.path.realpath(os.path.expanduser(base))
+        real = os.path.realpath(path)
+        if os.path.commonpath([base, real]) != base:
+            return  # not a workspace file
+        if os.path.basename(real) == ".manifest.jsonl":
+            return  # never index the index
+        entry = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "action": action,
+            "path": os.path.relpath(real, base),
+            "bytes": nbytes,
+        }
+        with open(os.path.join(base, ".manifest.jsonl"), "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
@@ -269,6 +303,7 @@ def write_file(path: str, content: str) -> str:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
             f.write(content)
+        _manifest_log("write", path, len(content))
         return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -351,6 +386,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
         with open(path, "w") as f:
             f.write(new_content)
+        _manifest_log("edit", path, len(new_content))
 
         change_line = content[:content.index(old_string)].count("\n") + 1
         old_lines = old_string.count("\n") + 1

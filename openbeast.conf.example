@@ -131,3 +131,19 @@
 # Opt-in until the eval suite is validated green under confinement.
 # Env override: $OPENBEAST_BASH_WRAPPER.
 #BASH_WRAPPER=sandlock run -p openbeast -w "$PWD" --
+
+# ---------------------------------------------------------------------------
+# RBAC Phase 2 — per-profile MCPO API keys  (see docs/RBAC_PLAN.md)
+# ---------------------------------------------------------------------------
+
+# Below-app tool enforcement: with BOTH keys set, start.sh runs TWO MCPO
+# instances — admin (:3001, all tools, admin key) and guest (:MCPO_GUEST_PORT,
+# guest key) — and the guest instance registers ONLY web_search + fetch, so a
+# guest can't reach admin tools even bypassing the WebUI layer. Generate with
+# scripts/setup-mcpo-keys.sh (don't hand-write; --rotate to replace). Either
+# key missing = one keyless instance on :3001 (WebUI grants only).
+# Env overrides: $OPENBEAST_MCPO_ADMIN_KEY / $OPENBEAST_MCPO_GUEST_KEY /
+# $OPENBEAST_MCPO_GUEST_PORT.
+#MCPO_ADMIN_KEY=
+#MCPO_GUEST_KEY=
+#MCPO_GUEST_PORT=3002

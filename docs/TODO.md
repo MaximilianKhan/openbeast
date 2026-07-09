@@ -23,7 +23,18 @@
     401/403/200 live; tests `tests/test_mcp_allowlist.py`. Details in
     docs/RBAC_PLAN.md Phase 2 item 1.
 
-## ⏳ LATER — per-conversation (or per-user) file isolation for chat tools
+## ⏳ READY TO BUILD — per-user/per-chat file isolation (investigated 2026-07-09)
+
+**Investigation DONE — see docs/IDENTITY_TOOLS_PLAN.md.** WebUI forwards
+X-OpenWebUI-User-* AND chat_id headers to tool servers; mcpo (0.0.20) drops
+them at the MCP boundary (verified in source: meta built, never passed).
+Manifest (option 3) SHIPPED 2026-07-09 (`_manifest_log` in agents/tools.py,
+tests/test_manifest.py, system-prompt note). Remaining: Option B — own thin
+FastAPI tool server for the WebUI connection (~200 lines), which unlocks
+per-user + per-chat sharding and simplifies the Phase 2 two-instance setup.
+
+<details><summary>Original context (pre-investigation)</summary>
+
 
 **Context / what shipped now (2026-07-08):** the chat model's direct file tools
 (`write_file`/`read_file`/`edit_file`/`list_files`/`bash`/`grep`) used to have
@@ -62,6 +73,8 @@ arguments, no chat id, no user id. So the tool is blind to which conversation
 
 Recommended: (1) + (3). Ship per-user isolation with a manifest; leave true
 per-conversation scoping (2) until we confirm WebUI can pass a chat id.
+
+</details>
 
 ## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4
 
