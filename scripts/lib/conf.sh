@@ -149,6 +149,15 @@ MCPO_GUEST_PORT="${OPENBEAST_MCPO_GUEST_PORT:-$(_ob_conf_value MCPO_GUEST_PORT |
 # Workspace sharding mode for the identity tool server (off|user|chat).
 FILES_SHARDING="${OPENBEAST_FILES_SHARDING:-$(_ob_conf_value FILES_SHARDING || echo user)}"
 export OPENBEAST_FILES_SHARDING="$FILES_SHARDING"
+# Signed identity (enterprise): one shared secret. Open WebUI mints an HS256
+# JWT per tool call (FORWARD_USER_INFO_HEADER_JWT_SECRET, wired in
+# docker-compose.yml) and the identity tool server verifies it — header
+# forgery dies. Generate with scripts/setup-mcpo-keys.sh --with-jwt.
+# Same export discipline: only when non-empty (empty = plain-header mode).
+IDENTITY_JWT_SECRET="${OPENBEAST_IDENTITY_JWT_SECRET:-$(_ob_conf_value IDENTITY_JWT_SECRET || true)}"
+if [[ -n "$IDENTITY_JWT_SECRET" ]]; then
+  export OPENBEAST_IDENTITY_JWT_SECRET="$IDENTITY_JWT_SECRET"
+fi
 if [[ -n "$MCPO_ADMIN_KEY" ]]; then
   export OPENBEAST_MCPO_ADMIN_KEY="$MCPO_ADMIN_KEY"
 fi

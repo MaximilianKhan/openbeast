@@ -11,11 +11,17 @@
 # connection to its profile key — so a guest can't reach admin tools even
 # if they bypass the WebUI's grant filter (below-app enforcement).
 #
+# With --with-jwt, additionally generates IDENTITY_JWT_SECRET: Open WebUI
+# then signs every tool call's identity as an HS256 JWT (via
+# FORWARD_USER_INFO_HEADER_JWT_SECRET in docker-compose) and the tool server
+# verifies it — identity headers can no longer be forged (enterprise).
+#
 # Idempotent: existing keys are left untouched (use --rotate to replace).
 #
 # Usage:
-#   ./scripts/setup-mcpo-keys.sh            # generate if absent
-#   ./scripts/setup-mcpo-keys.sh --rotate   # replace existing keys
+#   ./scripts/setup-mcpo-keys.sh              # generate profile keys if absent
+#   ./scripts/setup-mcpo-keys.sh --with-jwt   # also enable signed identity
+#   ./scripts/setup-mcpo-keys.sh --rotate     # replace existing keys
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +29,13 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF="$REPO_DIR/openbeast.conf"
 
 ROTATE=false
-[[ "${1:-}" == "--rotate" ]] && ROTATE=true
+WITH_JWT=false
+for _arg in "$@"; do
+  case "$_arg" in
+    --rotate)   ROTATE=true ;;
+    --with-jwt) WITH_JWT=true ;;
+  esac
+done
 
 genkey() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
@@ -52,6 +64,9 @@ if ! grep -qE '^[[:space:]]*MCPO_(ADMIN|GUEST)_KEY' "$CONF" && ! $ROTATE; then
 fi
 set_key MCPO_ADMIN_KEY
 set_key MCPO_GUEST_KEY
+if $WITH_JWT; then
+  set_key IDENTITY_JWT_SECRET
+fi
 
 # Keys never printed — they live in openbeast.conf (gitignored).
 chmod 600 "$CONF" 2>/dev/null || true

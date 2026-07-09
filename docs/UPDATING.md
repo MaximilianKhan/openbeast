@@ -12,8 +12,8 @@ fresh is worth doing periodically.
 ```
 
 That updates everything: llama.cpp (git pull + CUDA rebuild), the Open WebUI
-and SearXNG container images, the Python layer (MCPO, MCP SDK, openai,
-huggingface_hub), and OpenCode. Then restart to pick it all up:
+and SearXNG container images, the Python layer (MCP SDK, openai, fastapi,
+uvicorn, huggingface_hub), and OpenCode. Then restart to pick it all up:
 
 ```bash
 ./stop.sh && ./start.sh
@@ -30,7 +30,7 @@ Update a single component (flags compose):
 ```bash
 ./scripts/update.sh --llama       # just llama.cpp — the usual reason to update
 ./scripts/update.sh --images      # just Open WebUI + SearXNG images
-./scripts/update.sh --python      # just mcpo / mcp / openai / huggingface_hub
+./scripts/update.sh --python      # just mcp / openai / fastapi / uvicorn / huggingface_hub
 ./scripts/update.sh --opencode    # just OpenCode
 ```
 
@@ -41,7 +41,7 @@ Update a single component (flags compose):
 | **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server` with the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
 | **Open WebUI** | `docker compose pull` (`ghcr.io/open-webui/open-webui:main`) | Running containers are recreated on the new image; your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped |
 | **SearXNG** | `docker compose pull` (`searxng/searxng:latest`) | Same recreate semantics. Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates |
-| **MCPO / MCP SDK / openai** | `pip install --user -U -r agents/requirements.txt` | PEP-668 (Arch/newer Debian) handled automatically with `--break-system-packages` (touches `~/.local` only) |
+| **MCP SDK / openai / fastapi / uvicorn** | `pip install --user -U -r agents/requirements.txt` | PEP-668 (Arch/newer Debian) handled automatically with `--break-system-packages` (touches `~/.local` only) |
 | **huggingface_hub (`hf` CLI)** | same pip upgrade | |
 | **OpenCode** | `opencode upgrade` | Falls back to telling you the reinstall one-liner if the self-upgrader fails |
 

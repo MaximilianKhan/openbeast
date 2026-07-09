@@ -62,11 +62,12 @@ S/M/L effort. The identity tool server (shipped) is the foundation — it is
 the choke point where identity, quotas, audit, and metering all attach.
 
 ### Identity & access
-- **Signed identity (S/M, HIGH-VALUE NEXT).** Open WebUI can mint a signed
-  JWT per request (`FORWARD_USER_INFO_HEADER_JWT_SECRET`) instead of plain
-  X-OpenWebUI-User-* headers. openapi_tools.py verifies the signature →
-  header forgery dies. Natural v2 of the identity server; discovered in
-  the 2026-07-09 container source read.
+- ✅ **Signed identity (DONE 2026-07-09).** `setup-mcpo-keys.sh --with-jwt`
+  generates IDENTITY_JWT_SECRET; docker-compose hands it to WebUI
+  (FORWARD_USER_INFO_HEADER_JWT_SECRET) which then mints an HS256 JWT per
+  tool call; openapi_tools.py verifies (sub drives sharding, plain headers
+  ignored, forged/expired → 401, absent → anonymous). Live-verified;
+  tests/test_identity_jwt.py. PyJWT pinned.
 - **SSO / OIDC recipe (M).** Open WebUI supports OAuth (Google / Entra /
   Keycloak / Authentik). Document + script the wiring so org logins map to
   WebUI roles → our RBAC tiers. Zero code on our side, pure recipe.
@@ -89,17 +90,20 @@ the choke point where identity, quotas, audit, and metering all attach.
   lives where (WebUI volume, shards, audit, eval results).
 
 ### Reliability & operations
-- **/metrics (M, HIGH-VALUE).** Prometheus endpoint on openapi_tools
-  (call counts/latency/error rate per tool per user) + llama-server's
-  built-in metrics + a shipped Grafana dashboard JSON. The ops story in
-  one screen.
-- **Structured logging + rotation (S).** JSON log option for the tool
-  server + logrotate config for .run/*.log (stack.log grows unbounded).
+- ✅ **/metrics (SHIPPED 2026-07-09, phase 1).** Prometheus text endpoint
+  on openapi_tools: per-tool call counts by profile/outcome + cumulative
+  latency (no user labels — cardinality/privacy; per-user detail is the
+  audit log). REMAINING: llama-server metrics scrape config + Grafana
+  dashboard JSON.
+- ✅ **Rotation (DONE 2026-07-09):** scripts/logrotate-openbeast.conf
+  covers stack.log / tool-audit.jsonl / sweep logs (weekly or 50M, 8 kept).
+  REMAINING: structured JSON log option for the tool server.
 - **Backup/restore CLI (M).** scripts/backup.sh: WebUI volume + conf +
   workspaces + leaderboard → one tarball; restore path TESTED (an
   untested backup is a wish, not a backup).
-- **Watchdog timer recipe (S).** systemd timer unit running
-  healthcheck --restart every 5 min; pairs with openbeast.service.
+- ✅ **Watchdog timer (DONE 2026-07-09):** scripts/openbeast-watchdog
+  .timer/.service — healthcheck --restart every 5 min; install steps in
+  the timer's header.
 - **HA / fleet (L, "Mark of the Beast").** Active-passive on two boxes
   over tailnet (weights rsync + conf sync + WebUI volume replication),
   then the clustered-nodes idea. Distributed agents Phase 1 already

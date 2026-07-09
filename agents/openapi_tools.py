@@ -46,10 +46,14 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from collections import defaultdict
 from datetime import datetime
 
+import jwt as pyjwt
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import create_model
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +76,7 @@ GUEST_TOOLS = {"web_search", "fetch"}
 _HDR_USER = "x-openwebui-user-id"
 _HDR_ROLE = "x-openwebui-user-role"
 _HDR_CHAT = "x-openwebui-chat-id"
+_HDR_JWT = "x-openwebui-user-jwt"
 
 # Shard path components come from headers — sanitize hard.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -92,6 +97,46 @@ def create_app() -> FastAPI:
         sharding = "user"
     files_dir = os.environ.get("OPENBEAST_FILES_DIR", "")
     audit_path = os.path.join(REPO_DIR, ".run", "tool-audit.jsonl")
+    # Signed identity (enterprise): when this secret is set — the SAME value
+    # given to Open WebUI as FORWARD_USER_INFO_HEADER_JWT_SECRET — WebUI
+    # stops sending plain X-OpenWebUI-User-* headers and instead mints an
+    # HS256 JWT (sub/role/iss=open-webui/exp≈300s) per call. We verify it,
+    # which kills header forgery: a caller can no longer claim to be another
+    # user by typing a header. Absent JWT = anonymous (router/CLI callers);
+    # PRESENT but invalid/expired/forged = 401.
+    jwt_secret = os.environ.get("OPENBEAST_IDENTITY_JWT_SECRET", "").strip()
+
+    # /metrics counters (Prometheus text format, hand-rolled — no client dep)
+    metrics_lock = threading.Lock()
+    calls = defaultdict(int)     # (tool, profile, outcome) -> count
+    latency_ms = defaultdict(float)  # (tool,) -> total ms
+
+    def identity_from(request: Request) -> tuple:
+        """Resolve (user_id, role, chat_id) for this call.
+
+        JWT mode (secret set): identity comes ONLY from the verified token —
+        plain identity headers are ignored (they'd be forgeable).
+        Header mode (no secret): the legacy X-OpenWebUI-User-* headers,
+        trusted as sent (loopback threat model; see module docstring).
+        """
+        chat = request.headers.get(_HDR_CHAT, "").strip() or None
+        if jwt_secret:
+            token = request.headers.get(_HDR_JWT, "").strip()
+            if not token:
+                return None, None, chat  # anonymous caller (router, curl)
+            try:
+                claims = pyjwt.decode(
+                    token, jwt_secret, algorithms=["HS256"],
+                    issuer="open-webui",
+                    options={"require": ["exp", "sub"]},
+                )
+            except pyjwt.PyJWTError as e:
+                raise HTTPException(status_code=401,
+                                    detail=f"invalid identity token: {e}")
+            return str(claims["sub"]), claims.get("role"), chat
+        user = request.headers.get(_HDR_USER, "").strip() or None
+        role = request.headers.get(_HDR_ROLE, "").strip() or None
+        return user, role, chat
 
     app = FastAPI(
         title="OpenBeast local tools",
@@ -117,23 +162,18 @@ def create_app() -> FastAPI:
             return "guest"
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    def shard_for(request: Request) -> str | None:
+    def shard_for(user: str | None, chat: str | None) -> str | None:
         """Workspace shard for this caller, or None for the shared root."""
-        if not files_dir or sharding == "off":
-            return None
-        user = request.headers.get(_HDR_USER, "").strip()
-        if not user:
+        if not files_dir or sharding == "off" or not user:
             return None  # single-user / no-auth install: shared root
         parts = [os.path.expanduser(files_dir), "users", _sanitize(user)]
-        if sharding == "chat":
-            chat = request.headers.get(_HDR_CHAT, "").strip()
-            if chat:
-                parts += ["chats", _sanitize(chat)]
+        if sharding == "chat" and chat:
+            parts += ["chats", _sanitize(chat)]
         shard = os.path.join(*parts)
         os.makedirs(shard, mode=0o700, exist_ok=True)
         return shard
 
-    def audit(request: Request, tool: str, profile: str, ok: bool,
+    def audit(user, role, chat, tool: str, profile: str, ok: bool,
               ms: int, args: dict, err: str = "") -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
         only a digest and size, so the audit trail can't leak chats."""
@@ -141,15 +181,16 @@ def create_app() -> FastAPI:
             blob = json.dumps(args, sort_keys=True, default=str).encode()
             entry = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
-                "user": request.headers.get(_HDR_USER, "") or None,
-                "role": request.headers.get(_HDR_ROLE, "") or None,
-                "chat": request.headers.get(_HDR_CHAT, "") or None,
+                "user": user,
+                "role": role,
+                "chat": chat,
                 "profile": profile,
                 "tool": tool,
                 "ok": ok,
                 "ms": ms,
                 "args_sha256": hashlib.sha256(blob).hexdigest()[:16],
                 "args_bytes": len(blob),
+                "identity": "jwt" if jwt_secret else "header",
             }
             if err:
                 entry["error"] = err[:200]
@@ -174,8 +215,9 @@ def create_app() -> FastAPI:
         # override is naturally scoped to this request's thread.
         def endpoint(request: Request, args: ArgsModel):  # type: ignore[valid-type]
             profile = check_auth(request, name)
+            user, role, chat = identity_from(request)
             kwargs = args.model_dump()
-            shard = shard_for(request)
+            shard = shard_for(user, chat)
             token = _tools.set_base_dir_override(shard) if shard else None
             t0 = time.monotonic()
             ok, err = True, ""
@@ -187,8 +229,11 @@ def create_app() -> FastAPI:
             finally:
                 if token is not None:
                     _tools.reset_base_dir_override(token)
-                audit(request, name, profile, ok,
-                      int((time.monotonic() - t0) * 1000), kwargs, err)
+                elapsed = int((time.monotonic() - t0) * 1000)
+                audit(user, role, chat, name, profile, ok, elapsed, kwargs, err)
+                with metrics_lock:
+                    calls[(name, profile, "ok" if ok else "error")] += 1
+                    latency_ms[(name,)] += elapsed
             return result
 
         app.post(
@@ -204,7 +249,32 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health():  # liveness for start.sh / healthcheck.sh
         return {"status": "ok", "tools": len(TOOL_NAMES),
-                "auth": "keyed" if keyed else "open", "sharding": sharding}
+                "auth": "keyed" if keyed else "open", "sharding": sharding,
+                "identity": "jwt" if jwt_secret else "header"}
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics():
+        """Prometheus text exposition — per-tool call counts + latency.
+        Loopback-only like everything else; scrape with a local Prometheus.
+        No user labels here (cardinality + privacy) — per-user detail lives
+        in the audit log."""
+        lines = [
+            "# HELP openbeast_tool_calls_total Tool calls by tool/profile/outcome",
+            "# TYPE openbeast_tool_calls_total counter",
+        ]
+        with metrics_lock:
+            for (tool, profile, outcome), n in sorted(calls.items()):
+                lines.append(
+                    f'openbeast_tool_calls_total{{tool="{tool}",'
+                    f'profile="{profile}",outcome="{outcome}"}} {n}'
+                )
+            lines += [
+                "# HELP openbeast_tool_latency_ms_total Cumulative tool wall-clock ms",
+                "# TYPE openbeast_tool_latency_ms_total counter",
+            ]
+            for (tool,), ms in sorted(latency_ms.items()):
+                lines.append(f'openbeast_tool_latency_ms_total{{tool="{tool}"}} {ms:.0f}')
+        return "\n".join(lines) + "\n"
 
     return app
 

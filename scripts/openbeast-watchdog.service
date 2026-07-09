@@ -1,0 +1,11 @@
+# Service half of the OpenBeast watchdog timer — see
+# scripts/openbeast-watchdog.timer for install instructions.
+
+[Unit]
+Description=OpenBeast healthcheck --restart
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/scripts/healthcheck.sh --restart
+TimeoutStartSec=300

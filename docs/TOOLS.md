@@ -6,14 +6,15 @@ which surfaces can see it.
 
 TL;DR: **all 15 MCP tools are custom OpenBeast code** — there is no
 third-party tool plugin in the chain. The open source projects we pull in
-(llama.cpp, Open WebUI, SearXNG, MCPO, OpenCode) provide *serving,
-frontends, search, and transport*; the tools themselves live in this repo.
+(llama.cpp, Open WebUI, SearXNG, OpenCode) provide *serving, frontends,
+and search*; the transport is our own identity tool server
+(`agents/openapi_tools.py`); the tools themselves live in this repo.
 
 ## The three tool surfaces
 
 | Surface | Transport | Tools visible |
 |---|---|---|
-| **Open WebUI** (browser chat) | MCPO proxy → OpenAPI (`localhost:3001`) | 15 (admin) / 1 (guest — see RBAC) |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | 15 (admin) / 2 (guest — see RBAC) |
 | **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | 15 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | 9 |
 
@@ -77,15 +78,15 @@ get agent-management or skills tools; no recursive agent spawning.
 | Project | Contributes | Does NOT contribute tools |
 |---|---|---|
 | **llama.cpp** | Model serving (`llama-server`, OpenAI-compatible API) | — |
-| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via MCPO |
-| **MCPO** | Transport only: wraps our MCP server as OpenAPI for WebUI | — |
+| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server |
+| **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
 | **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 15 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
 ## RBAC visibility (who sees what)
 
-Two MCPO connections are configured by `scripts/configure-webui.sh`
+Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
 - **Admin** (WebUI admin role): all 15 tools.
@@ -117,7 +118,7 @@ so new power arrives together with stronger sandboxing.
 ## Verifying the live surface
 
 ```bash
-# What MCPO is actually exposing right now:
+# What the identity tool server is actually exposing right now:
 curl -s http://localhost:3001/openapi.json | python3 -c \
   "import json,sys; [print(p) for p in json.load(sys.stdin)['paths']]"
 

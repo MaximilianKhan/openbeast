@@ -17,7 +17,7 @@ openbeast/
 │   ├── Qwopus3.6-27B-v2-Q5_K_M.gguf             # Jackrong SFT fine-tune
 │   ├── Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf         # Jackrong SFT + MTP heads
 │   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
-├── start.sh                # launch full stack (server + MCPO + Open WebUI; + agent router when AGENT_ROUTER=true)
+├── start.sh                # launch full stack (server + identity tool server + Open WebUI; + agent router when AGENT_ROUTER=true)
 ├── stop.sh                 # stop full stack
 ├── agent.sh                # run a local agent against a task
 ├── scripts/                # server, chat, and config scripts
@@ -371,22 +371,26 @@ Run `opencode` in any project directory while the server is running.
 Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
 Connects to the llama.cpp server on port 8080 via `localhost`.
 
-Tools are exposed via **MCPO** (MCP-to-OpenAPI proxy) on port 3001. Open WebUI's
-native MCP (Streamable HTTP) support has a known bug, so we use MCPO to wrap
-our MCP server as OpenAPI endpoints that Open WebUI consumes natively.
+Tools are exposed via the **identity tool server** (`agents/openapi_tools.py`)
+on port 3001, which serves the 15 tools as OpenAPI endpoints that Open WebUI
+consumes natively (Open WebUI's native MCP Streamable HTTP support has a known
+bug, which is why an OpenAPI surface is used at all). It replaced the generic
+MCPO proxy (v1.1, 2026-07-09) because MCPO dropped the identity headers Open
+WebUI forwards — our server uses them for per-user file shards, RBAC profile
+keys, and an audit trail (`.run/tool-audit.jsonl`).
 
 **Setup:** Automatic — `./start.sh` runs `configure-webui.sh` which registers the
-MCPO tool server and sets native function calling for all detected models.
+identity tool server and sets native function calling for all detected models.
 On a fresh install, the first `./start.sh` handles everything.
 
 - Persistent conversation history (Docker named volume, survives stop/start)
 - File upload and RAG
 - Web search (configurable)
-- Tool use via MCPO (bash, file I/O, edit, grep, fetch, agent management)
+- Tool use via the identity tool server (bash, file I/O, edit, grep, fetch, agent management)
 
 **Enabling tools in a chat:** tool access is per-conversation by design —
 click the **＋ (integrations) icon in the message input** and toggle on the
-**local-mcp / Local Tools (MCPO)** tool server, then ask something that
+**local-mcp / Local Tools** tool server, then ask something that
 needs a tool ("search the web for…"). Without the toggle the model chats
 bare, which is why a fresh conversation can't search the web even though
 the server is configured. Native function calling + the soul-file system
@@ -463,9 +467,9 @@ descriptions into OpenCode's prompt would create confusion and redundancy.
 (tool guidance) and re-run `./scripts/configure-webui.sh` (or restart the stack
 with `./start.sh`). Changes take effect on the next new chat.
 
-### MCP tool server + MCPO proxy
+### Tool surfaces: MCP server + identity tool server
 
-Exposes 15 tools to any MCP-compatible client, in four groups:
+Two surfaces expose the same 15 tools, in four groups:
 
 - **Code & files** (5): `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - **Shell + web** (3): `bash`, `fetch`, `web_search`
@@ -475,12 +479,17 @@ Exposes 15 tools to any MCP-compatible client, in four groups:
 All 15 are custom OpenBeast code — full inventory, provenance, hardening
 notes, and RBAC visibility in [`docs/TOOLS.md`](TOOLS.md).
 
-Transports:
+Surfaces:
 
-- **stdio** — used by OpenCode (launched automatically via `opencode.json`)
-- **MCPO** — used by Open WebUI (`http://localhost:3001`, started by `./start.sh`).
-  MCPO wraps the MCP server (via stdio) as OpenAPI endpoints. This works around
-  Open WebUI's broken native MCP Streamable HTTP support.
+- **MCP server** (`agents/mcp_server.py`) — stdio MCP, used by OpenCode
+  (launched automatically via `opencode.json`) and any MCP-compatible client.
+- **Identity tool server** (`agents/openapi_tools.py`) — used by Open WebUI
+  (`http://localhost:3001`, started by `./start.sh`). Serves the tools as
+  OpenAPI endpoints (works around Open WebUI's broken native MCP Streamable
+  HTTP support), reads the `X-OpenWebUI-User-Id`/`-Chat-Id` headers WebUI
+  forwards, shards each user's files into `$OPENBEAST_FILES_DIR/users/<id>/`,
+  enforces the RBAC profile keys, and writes the audit trail. It imports the
+  same 15 tool functions from the MCP server, so the two surfaces can't drift.
 
 #### Long-running agents via MCP
 
@@ -656,7 +665,7 @@ Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
 ./scripts/healthcheck.sh --restart    # check and auto-restart failed services
 ```
 
-Reports status of llama.cpp, MCPO, Open WebUI, SearXNG, GPU VRAM utilization, and
+Reports status of llama.cpp, the identity tool server, Open WebUI, SearXNG, GPU VRAM utilization, and
 active slot count. With `--restart`, automatically restarts any service that's down.
 
 ### Eval harness
@@ -748,7 +757,7 @@ Requires the full stack running (`./start.sh`):
 ./tests/test_smoke.sh
 ```
 
-Validates: llama.cpp health, parallel slots, MCPO tool exposure, Open WebUI,
+Validates: llama.cpp health, parallel slots, identity-tool-server tool exposure, Open WebUI,
 SearXNG, chat completion, native function calling, and direct tool invocation.
 
 ## Adding a new model

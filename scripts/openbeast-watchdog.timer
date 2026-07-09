@@ -1,0 +1,21 @@
+# OpenBeast watchdog — runs healthcheck --restart every 5 minutes so a
+# crashed service comes back without human eyes on it.
+#
+# Install (pairs with openbeast-watchdog.service):
+#   mkdir -p ~/.config/systemd/user
+#   sed "s|@REPO@|$(pwd)|" scripts/openbeast-watchdog.service > ~/.config/systemd/user/openbeast-watchdog.service
+#   cp scripts/openbeast-watchdog.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openbeast-watchdog.timer
+#   journalctl --user -u openbeast-watchdog   # watchdog history
+
+[Unit]
+Description=OpenBeast health watchdog (every 5 min)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

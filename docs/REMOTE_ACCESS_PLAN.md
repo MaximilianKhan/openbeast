@@ -67,7 +67,7 @@ Headscale migration path, this is the pragmatic open-adjacent choice.
                                                        → llama-server :8080 (API)
   Services rebind 0.0.0.0 → 127.0.0.1; the ONLY ways in are
   localhost and `tailscale serve` (TLS, tailnet-only, per-device identity).
-  SearXNG + MCPO stay localhost-only (they serve the model, not humans).
+  SearXNG + the identity tool server (:3001) stay localhost-only (they serve the model, not humans).
 ```
 
 - `tailscale serve` terminates TLS with automatic certs on the machine's
@@ -89,7 +89,7 @@ New `scripts/setup-tailscale.sh` (idempotent):
 New `scripts/tailscale-serve.sh` (idempotent, uses `--bg` persistent config):
 - `tailscale serve --bg --https=443  http://127.0.0.1:3000`   (WebUI)
 - `tailscale serve --bg --https=8443 http://127.0.0.1:8080`   (LLM API)
-- MCPO/SearXNG: NOT exposed (model-internal plumbing).
+- Tool server (:3001)/SearXNG: NOT exposed (model-internal plumbing).
 
 ### Phase 3 — shrink the bind surface (~1–2 h, the real work)
 This is the breaking-change phase: LAN devices reach the stack via the
@@ -98,7 +98,9 @@ tailnet after this, not via raw LAN IPs.
   restore old LAN-open behavior). Read via a small `scripts/lib/conf.sh`
   following the `weights.sh` resolver pattern.
 - `scripts/serve.sh`: `HOST` default ← `BIND_HOST`.
-- `start.sh`: `mcpo --host 127.0.0.1`.
+- `start.sh`: the :3001 tool server binds `127.0.0.1` (was `mcpo --host
+  127.0.0.1`; since 2026-07-09 the identity tool server
+  `agents/openapi_tools.py` fills that slot).
 - `docker-compose.yml`: `GRANIAN_HOST=127.0.0.1`; WebUI `HOST=127.0.0.1`,
   `WEBUI_AUTH=true` (first signup becomes admin — do it immediately).
 - Optional defense-in-depth: `LLAMA_API_KEY` in conf → serve.sh appends

@@ -295,8 +295,10 @@ resolved directory is missing, the launch scripts tell you exactly how to set it
 pip install --user --break-system-packages -r agents/requirements.txt
 ```
 
-Installs `openai`, `mcp`, and `mcpo` — needed by the agent runner, the MCP
-server (including long-running agent management), and Open WebUI tool integration.
+Installs `openai`, `mcp`, `fastapi`, and `uvicorn` (all pinned) — needed by
+the agent runner, the MCP server (including long-running agent management),
+and the identity tool server (`agents/openapi_tools.py`) that backs Open
+WebUI tool integration.
 
 ## 4. Install frontends
 
@@ -354,7 +356,7 @@ another model with a single arg (below): the dense 27B Q5 for top accuracy, or a
 35B-A3B MoE when interactive speed matters more.
 
 ```bash
-./start.sh                                       # default model (27B Uncensored Q5) + MCPO + Open WebUI + SearXNG
+./start.sh                                       # default model (27B Uncensored Q5) + identity tool server + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top accuracy (97.85%)
 ./start.sh serve-qwen-35b-a3b.sh                 # standard 35B-A3B MoE (30–50% faster tokens)
 ./start.sh serve-qwen-35b-a3b-uncensored-q4.sh   # 35B-A3B Uncensored MoE (fastest wall-clock)
@@ -363,7 +365,9 @@ another model with a single arg (below): the dense 27B Q5 for top accuracy, or a
 
 This launches:
 1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
-2. **MCPO proxy** on port 3001 (wraps MCP tools as OpenAPI for Open WebUI)
+2. **Identity tool server** on port 3001 (`agents/openapi_tools.py` — serves the
+   15 tools as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
+   and an audit trail)
 3. **Open WebUI** on port 3000 (Docker container)
 4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
 5. **configure-webui.sh** (auto-configures tool server + native function calling
@@ -376,7 +380,7 @@ workspace where files the chat model writes via the direct tools land
 (configurable via `FILES_DIR` in `openbeast.conf`).
 
 On first run, `configure-webui.sh` populates Open WebUI with:
-- The MCPO tool server registered as an OpenAPI endpoint
+- The identity tool server registered as an OpenAPI endpoint
 - Native function calling mode for every model (required for Qwen tool use —
   the prompt-based default breaks with `<think>` tags)
 - The system prompt (`system-prompt.md` + `system-prompt-tools.md`) written
@@ -398,11 +402,11 @@ To stop everything:
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **MCPO tools:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 15 tools)
+- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 15 tools; `curl http://localhost:3001/health` for liveness)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
-- **Tool use:** in Open WebUI, click the wrench icon in the chat input and toggle on "Local Tools (MCPO)"
+- **Tool use:** in Open WebUI, click the wrench icon in the chat input and toggle on "Local Tools (privileged)"
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
@@ -480,13 +484,17 @@ out of scope) and the README "Remote access" section for day-to-day usage.
 
 ## Architecture notes
 
-### Why MCPO instead of direct MCP?
+### Why an OpenAPI tool server instead of direct MCP?
 
 Open WebUI (as of v0.9.x) has native MCP Streamable HTTP support, but it has a
-known bug — it sends incorrect HTTP requests to MCP endpoints. MCPO is the
-officially recommended workaround from the Open WebUI team. It wraps our MCP
-server (launched via stdio) as standard OpenAPI endpoints, which Open WebUI
-consumes natively as "External Tools."
+known bug — it sends incorrect HTTP requests to MCP endpoints — so tools must
+be offered as standard OpenAPI endpoints, which Open WebUI consumes natively
+as "External Tools." Our **identity tool server** (`agents/openapi_tools.py`,
+port 3001) does that job. It replaced the generic MCPO proxy (v1.1,
+2026-07-09) because MCPO dropped the identity headers Open WebUI forwards;
+our server reads them to shard each user's files into their own workspace,
+enforce the RBAC profile keys, and write an audit trail. It imports the same
+15 tool functions as `agents/mcp_server.py`, so the two surfaces can't drift.
 
 ### Why native function calling?
 
@@ -529,19 +537,20 @@ To change the prompt, edit `system-prompt.md` and/or `system-prompt-tools.md`
 and re-run `./scripts/configure-webui.sh` (or restart the stack). Changes take
 effect on the next new chat.
 
-### Why OpenCode uses stdio, not MCPO
+### Why OpenCode uses stdio, not the identity tool server
 
 OpenCode runs locally and launches the MCP server as a child process via stdio
-(configured in `opencode.json`). This is simpler and faster than HTTP — no proxy
-needed. MCPO only exists to bridge the gap for Open WebUI's HTTP-based tool
-server integration.
+(configured in `opencode.json`). This is simpler and faster than HTTP — no
+intermediary needed. The identity tool server only exists to bridge the gap for
+Open WebUI's HTTP-based tool server integration (and to add the per-user
+identity layer WebUI accounts need).
 
 ## Troubleshooting
 
 **Renamed the repo directory → `start.sh` dies with `Conflict. The container
 name "/open-webui" is already in use`** — Docker Compose derives its project
 name from the directory, so containers created under the old name conflict
-with the new project (and `start.sh`'s cleanup then stops llama/MCPO too,
+with the new project (and `start.sh`'s cleanup then stops llama/the tool server too,
 leaving only the old container running). The compose file now pins
 `name: openbeast`, so this can't recur — but if you're recovering from a
 rename that predates the pin:
@@ -588,9 +597,11 @@ first (`./start.sh` handles this automatically). The Docker container uses host
 network mode, so it reaches llama.cpp via `localhost:8080`.
 
 **Tools don't work in Open WebUI** — check these in order:
-1. Is MCPO running? `curl http://localhost:3001/openapi.json` should return JSON.
+1. Is the identity tool server running? `curl http://localhost:3001/openapi.json`
+   should return JSON (`curl http://localhost:3001/health` for liveness).
 2. Is the tool server configured? Admin Settings > External Tools should show
-   "Local Tools (MCPO)" with URL `http://localhost:3001`.
+   "Local Tools (privileged)" and "Web Search (all users)" with URL
+   `http://localhost:3001`.
 3. Is native function calling enabled? Admin Settings > Models > [your model] >
    Advanced > Function Calling should be set to "Native."
 4. Did you enable tools in the chat? Click the wrench icon in the chat input

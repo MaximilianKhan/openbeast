@@ -158,3 +158,11 @@
 # can still use absolute paths; kernel-level jail is Sandlock (opt-in).
 # Env override: $OPENBEAST_FILES_SHARDING.
 #FILES_SHARDING=user
+
+# Signed identity (enterprise, opt-in). One shared secret: Open WebUI mints
+# a short-lived HS256 JWT per tool call (instead of forgeable plain
+# identity headers) and the identity tool server verifies it. Generate via
+# scripts/setup-mcpo-keys.sh --with-jwt; restart the stack after. Requests
+# WITHOUT a token stay anonymous (shared workspace); a PRESENT-but-invalid
+# token is rejected 401. Env override: $OPENBEAST_IDENTITY_JWT_SECRET.
+#IDENTITY_JWT_SECRET=

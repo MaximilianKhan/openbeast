@@ -32,6 +32,13 @@ services:
       # Without this, the router sees anonymous turns and (by default)
       # fails open. See docs/RBAC_PLAN.md Phase 2.
       - ENABLE_FORWARD_USER_INFO_HEADERS=true
+      # Signed identity (enterprise, opt-in): when the secret is set (conf.sh
+      # exports it from openbeast.conf; scripts/setup-mcpo-keys.sh --with-jwt
+      # generates it), WebUI replaces the plain identity headers with a
+      # per-call HS256 JWT (X-OpenWebUI-User-Jwt) that the identity tool
+      # server verifies — identity headers can no longer be forged. Empty =
+      # feature off (WebUI treats an empty secret as unset).
+      - FORWARD_USER_INFO_HEADER_JWT_SECRET=${OPENBEAST_IDENTITY_JWT_SECRET:-}
     volumes:
       - open-webui-data:/app/backend/data
     # Hardening: a compromised WebUI process can't gain privileges via
