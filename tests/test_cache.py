@@ -53,6 +53,10 @@ def check(label: str, cond: bool, detail: str = ""):
     else:
         FAILED += 1
         print(f"  [FAIL] {label}  {detail}")
+    # Make failures REAL under pytest (a failed check must fail the test,
+    # not just print). The counters + __main__ sys.exit path stay for
+    # standalone `python3 tests/test_cache.py` use.
+    assert cond, f"{label}  {detail}".rstrip()
 
 
 def test_put_get_roundtrip(cache_dir):
@@ -179,18 +183,109 @@ def test_clear(cache_dir):
     check("cache empty after clear", cache.cache_stats()["entries"] == 0)
 
 
+def test_key_invalidation_on_max_iter_change(cache_dir):
+    """The effective iteration budget is part of the key: a 5-iter capped
+    run is a different experiment from a 15-iter one."""
+    cache = fresh_cache_module(cache_dir)
+    t = {"id": "t_a", "task": "x", "setup": "s", "validation": {}, "cleanup": "c"}
+    k5 = cache.cache_key(t, "m1", max_iter=5)
+    k15 = cache.cache_key(t, "m1", max_iter=15)
+    k_legacy = cache.cache_key(t, "m1")
+    check("max_iter change → key change", k5 != k15)
+    check("max_iter=None keeps the legacy key shape (no .mi segment)",
+          ".mi" not in k_legacy)
+
+
+def test_suite_version_in_cache_key(cache_dir):
+    """SUITE_VERSION is part of the agent context: bumping the suite marker
+    must invalidate every cached result (the task set was redefined)."""
+    cache = fresh_cache_module(cache_dir)
+    # Non-tautological half: the module's OWN default CONTEXT_FILES must
+    # include evals/SUITE_VERSION (and the agent runtime files).
+    names = {p.name for p in cache.CONTEXT_FILES}
+    check("SUITE_VERSION is in the default CONTEXT_FILES",
+          "SUITE_VERSION" in names, str(sorted(names)))
+    check("agent runtime (runner.py + tools.py) is in the default CONTEXT_FILES",
+          {"runner.py", "tools.py"} <= names, str(sorted(names)))
+    # Behavioral half: changing the SUITE_VERSION content changes the key.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        sv = td / "SUITE_VERSION"
+        sv.write_text("v4\n")
+        cache.CONTEXT_FILES = [
+            (sv if p.name == "SUITE_VERSION" else p) for p in cache.CONTEXT_FILES
+        ]
+        cache._context_cache.clear()
+        t = {"id": "t_a", "task": "x", "setup": "s", "validation": {}, "cleanup": "c"}
+        k1 = cache.cache_key(t, "m1")
+        sv.write_text("v5\n")  # suite bump
+        cache._context_cache.clear()
+        k2 = cache.cache_key(t, "m1")
+        check("SUITE_VERSION change → key change", k1 != k2)
+
+
 def test_run_eval_skips_timeout_cache():
-    """Read run_eval.py source and verify the timeout-skip guard is present."""
+    """Read run_eval.py source and verify the timeout-skip guard is present.
+
+    Source-grep is intentionally kept alongside the behavioral test below:
+    it pins the exact guard expression so a refactor that renames the field
+    (silently disabling the behavioral path) still trips something."""
     text = (ROOT / "evals" / "run_eval.py").read_text()
     check("run_eval guards against caching timeouts (agent_exit_code != -1)",
           "agent_exit_code\") != -1" in text or "agent_exit_code') != -1" in text)
 
 
+def test_run_eval_timeout_not_cached_behavioral(td):
+    """Behavioral twin of the source-grep above: run run_eval with a fake
+    agent that 'times out' (exit_code == -1) and assert nothing lands in
+    the cache directory."""
+    cache_dir = td / "cache"; cache_dir.mkdir()
+    results_dir = td / "results"; results_dir.mkdir()
+    tasks_dir = td / "tasks"; tasks_dir.mkdir()
+    (tasks_dir / "01_timeout.json").write_text(json.dumps({
+        "id": "01_timeout", "name": "01_timeout", "difficulty": "easy",
+        "task": "noop", "setup": "true",
+        "validation": {"type": "bash", "script": "true"},
+        "cleanup": "true", "max_iter": 1,
+    }))
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = cache_dir
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    run_eval.RESULTS_DIR = str(results_dir)
+    run_eval.TASKS_DIR = str(tasks_dir)
+    run_eval.run_agent = lambda *a, **kw: {
+        "exit_code": -1,  # timeout marker
+        "elapsed_seconds": 0.1, "stdout": "", "stderr": "",
+        "tokens": {"prompt": 0, "completion": 0, "total": 0},
+    }
+    results = run_eval.run_eval(model_name="fake-model", use_cache=True)
+    check("timeout run recorded with agent_exit_code == -1",
+          results["tasks"][0].get("agent_exit_code") == -1,
+          str(results["tasks"][:1]))
+    cached_files = list(cache_dir.glob("*.json"))
+    check("timeout result NOT written to cache",
+          len(cached_files) == 0, f"found {len(cached_files)} cache files")
+
+
 def test_cache_dir_is_local_filesystem():
-    """Sanity: cache_dir resolves under repo root, not /tmp or similar."""
-    cache = fresh_cache_module(ROOT / "evals" / "cache")
-    check("default cache dir is under repo (not /tmp)",
-          str(cache.CACHE_DIR).startswith(str(ROOT)))
+    """Sanity: the MODULE DEFAULT cache dir resolves under the repo root,
+    not /tmp or similar. Imported fresh WITHOUT the fixture's CACHE_DIR
+    patch so we assert the real default, not a value we injected."""
+    sys.modules.pop("cache", None)
+    cache = importlib.import_module("cache")
+    try:
+        default_dir = Path(cache.CACHE_DIR).resolve()
+        check("default cache dir is under repo (not /tmp)",
+              str(default_dir).startswith(str(ROOT)), str(default_dir))
+        check("default cache dir is evals/cache",
+              default_dir == (ROOT / "evals" / "cache").resolve(), str(default_dir))
+    finally:
+        # Don't leak the unpatched module (pointing at the REAL repo cache)
+        # into later tests — they must re-import via fresh_cache_module.
+        sys.modules.pop("cache", None)
 
 
 def main():
@@ -208,6 +303,8 @@ def main():
             test_corrupt_file_safety,
             test_invalidate_model,
             test_clear,
+            test_key_invalidation_on_max_iter_change,
+            test_suite_version_in_cache_key,
         ]:
             # Reset cache dir between tests.
             for p in cd.glob("*"):
@@ -221,10 +318,19 @@ def main():
                 print(f"  [CRASH] {fn.__name__}: {e}")
 
     # Tests that don't need an isolated cache dir
-    print(f"\ntest_run_eval_skips_timeout_cache:")
-    test_run_eval_skips_timeout_cache()
-    print(f"\ntest_cache_dir_is_local_filesystem:")
-    test_cache_dir_is_local_filesystem()
+    def _standalone(fn, *args):
+        global FAILED
+        print(f"\n{fn.__name__}:")
+        try:
+            fn(*args)
+        except Exception as e:
+            FAILED += 1
+            print(f"  [CRASH] {fn.__name__}: {e}")
+
+    _standalone(test_run_eval_skips_timeout_cache)
+    with tempfile.TemporaryDirectory() as t:
+        _standalone(test_run_eval_timeout_not_cached_behavioral, Path(t))
+    _standalone(test_cache_dir_is_local_filesystem)
 
     print(f"\n{'='*40}")
     print(f"Cache tests: {PASSED} passed, {FAILED} failed")

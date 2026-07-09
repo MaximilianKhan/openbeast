@@ -394,6 +394,101 @@ class TestWriteGuards(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
+class TestPathAnchoring(unittest.TestCase):
+    """Relative-path anchoring for model-supplied paths (_base_dir/_resolve):
+    AGENT_WORKDIR (spawned agents) > OPENBEAST_FILES_DIR (chat tools) > cwd.
+    Also pins resolve-then-guard ordering: anchoring happens FIRST, so a
+    relative path that lands on a protected target is refused."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k)
+                       for k in ("HOME", "AGENT_WORKDIR", "OPENBEAST_FILES_DIR")}
+        os.environ.pop("AGENT_WORKDIR", None)
+        os.environ.pop("OPENBEAST_FILES_DIR", None)
+        self.files_dir = tempfile.mkdtemp(prefix="obfiles_")
+        self.workdir = tempfile.mkdtemp(prefix="obwork_")
+        # Sandbox HOME (same pattern as TestWriteGuards) so guard checks
+        # can never touch the real dotfiles.
+        self.home = tempfile.mkdtemp(prefix="fakehome_")
+        os.environ["HOME"] = self.home
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        for d in (self.files_dir, self.workdir, self.home):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_relative_write_lands_in_files_dir(self):
+        os.environ["OPENBEAST_FILES_DIR"] = self.files_dir
+        result = write_file("report.txt", "x")
+        self.assertIn("Wrote", result)
+        self.assertTrue(os.path.isfile(os.path.join(self.files_dir, "report.txt")))
+
+    def test_agent_workdir_wins_over_files_dir(self):
+        os.environ["OPENBEAST_FILES_DIR"] = self.files_dir
+        os.environ["AGENT_WORKDIR"] = self.workdir
+        result = write_file("out.txt", "x")
+        self.assertIn("Wrote", result)
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "out.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.files_dir, "out.txt")))
+
+    def test_absolute_path_honored(self):
+        os.environ["OPENBEAST_FILES_DIR"] = self.files_dir
+        target = os.path.join(self.workdir, "abs.txt")
+        result = write_file(target, "x")
+        self.assertIn("Wrote", result)
+        self.assertTrue(os.path.isfile(target))
+        self.assertFalse(os.path.exists(os.path.join(self.files_dir, "abs.txt")))
+
+    def test_relative_path_into_protected_dir_refused(self):
+        # Workdir IS the (fake) home: a relative ".ssh/..." anchors to it and
+        # must hit the guard AFTER resolution (resolve-then-guard ordering).
+        os.environ["AGENT_WORKDIR"] = self.home
+        result = write_file(".ssh/authorized_keys", "x")
+        self.assertIn("refusing", result.lower())
+        self.assertFalse(
+            os.path.exists(os.path.join(self.home, ".ssh", "authorized_keys")))
+
+    def test_dotdot_escape_into_protected_dir_refused(self):
+        # From a subdir workdir, "../.ssh/..." resolves back into ~ and must
+        # still be refused — the guard sees the post-realpath target.
+        sub = os.path.join(self.home, "project")
+        os.makedirs(sub)
+        os.environ["AGENT_WORKDIR"] = sub
+        result = write_file("../.ssh/authorized_keys", "x")
+        self.assertIn("refusing", result.lower())
+        self.assertFalse(
+            os.path.exists(os.path.join(self.home, ".ssh", "authorized_keys")))
+
+    def test_symlink_in_workdir_to_protected_dir_refused(self):
+        # A symlink INSIDE the workdir pointing at ~/.ssh can't dodge the
+        # guard: _resolve realpaths before guarding.
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        os.environ["AGENT_WORKDIR"] = self.workdir
+        os.symlink(os.path.join(self.home, ".ssh"),
+                   os.path.join(self.workdir, "innocent"))
+        result = write_file("innocent/probe", "x")
+        self.assertIn("refusing", result.lower())
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".ssh", "probe")))
+
+    def test_dotdot_escape_to_unprotected_location_is_allowed(self):
+        # DESIGN NOTE: the base dir is an ANCHOR, not a containment boundary.
+        # `..` and absolute paths leave it freely; only _guard_write_path's
+        # denylist blocks writes (kernel confinement is Arsenal Phase 1 /
+        # Sandlock). This test asserts the CURRENT allow-by-default behavior
+        # so any future move to real containment is a conscious change that
+        # has to update this test.
+        sub = os.path.join(self.workdir, "sub")
+        os.makedirs(sub)
+        os.environ["AGENT_WORKDIR"] = sub
+        result = write_file("../escape.txt", "x")
+        self.assertIn("Wrote", result)
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "escape.txt")))
+
+
 class TestResourceCaps(unittest.TestCase):
     """Output/read caps that keep a runaway child from OOMing the runner."""
 
@@ -474,10 +569,12 @@ class TestMCPServerTools(unittest.TestCase):
             "start_agent", "check_agent", "tail_agent",
             "list_agents", "stop_agent",
         }
-        # Only check if we could inspect the internals
-        if registered:
-            missing = expected - registered
-            self.assertEqual(missing, set(), f"MCP server missing tools: {missing}")
+        # Introspection failure must be a test failure, not a silent pass —
+        # otherwise a FastMCP internals change would soft-pass this test
+        # while registering zero tools.
+        self.assertTrue(registered, "could not introspect any registered tools")
+        missing = expected - registered
+        self.assertEqual(missing, set(), f"MCP server missing tools: {missing}")
 
 
 if __name__ == "__main__":

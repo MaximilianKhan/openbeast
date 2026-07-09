@@ -176,7 +176,7 @@ fi
 # --- 5. Agent infrastructure ---
 echo ""
 echo "Agent infrastructure:"
-for file in agents/runner.py agents/tools.py agents/mcp_server.py agents/requirements.txt; do
+for file in agents/runner.py agents/tools.py agents/mcp_server.py agents/router.py agents/requirements.txt; do
   if [[ -f "$REPO_DIR/$file" ]]; then
     pass "$file exists"
   else
@@ -187,8 +187,9 @@ done
 # --- 6. Python files compile ---
 echo ""
 echo "Python compilation:"
-for pyfile in agents/runner.py agents/tools.py agents/mcp_server.py \
-              evals/run_eval.py evals/scoring.py evals/benchmark_all.py; do
+for pyfile in agents/runner.py agents/tools.py agents/mcp_server.py agents/router.py \
+              evals/run_eval.py evals/scoring.py evals/benchmark_all.py \
+              evals/cache.py evals/tool_efficiency.py; do
   if python3 -c "import py_compile; py_compile.compile('$REPO_DIR/$pyfile', doraise=True)" 2>/dev/null; then
     pass "$pyfile compiles"
   else
@@ -342,6 +343,47 @@ if grep -qE 'GPU_BACKEND=.*_ob_conf_value GPU_BACKEND' "$REPO_DIR/scripts/lib/co
 else
   fail "conf.sh doesn't resolve GPU_BACKEND"
 fi
+
+# --- 9. Entry-point shell syntax ---
+echo ""
+echo "Shell syntax:"
+for f in start.sh stop.sh bootstrap.sh; do
+  if bash -n "$REPO_DIR/$f" 2>/dev/null; then
+    pass "$f passes bash -n"
+  else
+    fail "$f has bash syntax errors"
+  fi
+done
+
+# --- 10. conf.sh contract (agent router + files dir, 2026-07-08) ---
+# Sourced in a clean env with a scratch HOME and a scratch REPO_DIR (so a
+# real openbeast.conf can't leak into the defaults under test).
+echo ""
+echo "conf.sh contract:"
+CONF_SCRATCH=$(mktemp -d)
+CONF_OUT=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s\n%s\n' \"\$OPENBEAST_FILES_DIR\" \"\$OPENBEAST_MODEL_URL\"") || CONF_OUT=""
+CONF_FILES=$(echo "$CONF_OUT" | sed -n 1p)
+CONF_URL=$(echo "$CONF_OUT" | sed -n 2p)
+if [[ "$CONF_FILES" == "$CONF_SCRATCH/openbeast-files" ]]; then
+  pass "conf.sh defaults OPENBEAST_FILES_DIR to \$HOME/openbeast-files"
+else
+  fail "conf.sh OPENBEAST_FILES_DIR default wrong (got: ${CONF_FILES:-empty})"
+fi
+if [[ "$CONF_URL" == "http://localhost:8080/v1" ]]; then
+  pass "conf.sh default OPENBEAST_MODEL_URL is llama-server direct (:8080/v1)"
+else
+  fail "conf.sh default OPENBEAST_MODEL_URL wrong (got: ${CONF_URL:-empty})"
+fi
+ROUTER_URL=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  OPENBEAST_AGENT_ROUTER=true \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s\n' \"\$OPENBEAST_MODEL_URL\"") || ROUTER_URL=""
+if [[ "$ROUTER_URL" == "http://localhost:8088/v1" ]]; then
+  pass "OPENBEAST_AGENT_ROUTER=true flips OPENBEAST_MODEL_URL to the router (:8088/v1)"
+else
+  fail "AGENT_ROUTER=true didn't route OPENBEAST_MODEL_URL (got: ${ROUTER_URL:-empty})"
+fi
+rm -rf "$CONF_SCRATCH"
 
 # --- Summary ---
 echo ""

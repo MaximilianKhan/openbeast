@@ -45,6 +45,10 @@ def check(name: str, ok: bool, detail: str = ""):
     else:
         FAIL += 1
         print(f"  FAIL: {name} {detail}")
+    # Make failures REAL under pytest (a failed check must fail the test,
+    # not just print). The counters + __main__ sys.exit path stay for
+    # standalone `python3 tests/test_proc_hygiene.py` use.
+    assert ok, f"{name} {detail}".rstrip()
 
 
 def _alive(pid: int) -> bool:

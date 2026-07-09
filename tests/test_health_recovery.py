@@ -36,6 +36,10 @@ def check(label: str, cond: bool, detail: str = ""):
     else:
         FAILED += 1
         print(f"  [FAIL] {label}  {detail}")
+    # Make failures REAL under pytest (a failed check must fail the test,
+    # not just print). The counters + __main__ sys.exit path stay for
+    # standalone `python3 tests/test_health_recovery.py` use.
+    assert cond, f"{label}  {detail}".rstrip()
 
 
 def _fresh_run_eval(cache_dir: Path, results_dir: Path):
