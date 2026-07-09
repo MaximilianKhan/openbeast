@@ -34,6 +34,11 @@ services:
       - ENABLE_FORWARD_USER_INFO_HEADERS=true
     volumes:
       - open-webui-data:/app/backend/data
+    # Hardening: a compromised WebUI process can't gain privileges via
+    # setuid binaries. (cap_drop is NOT applied here — the image's startup
+    # chown/setup needs default caps; revisit when upstream ships non-root.)
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   searxng:
@@ -51,6 +56,19 @@ services:
       # Override default settings.yml to enable JSON format (required by web_search
       # MCP tool) and disable the rate limiter for local use.
       - ./searxng/settings.yml:/etc/searxng/settings.yml:rw
+    # Hardening: drop every capability except the four the entrypoint needs
+    # to chown its dirs and drop from root to the searxng user. Root inside
+    # the container can't load modules, ptrace, raw-socket, or mknod even
+    # if compromised.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
 volumes:

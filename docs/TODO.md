@@ -1,5 +1,51 @@
 # TODO
 
+## 🎯 NEXT CAMPAIGNS — ranked (2026-07-09 full-repo audit: docs, code, security, deployability)
+
+What the four-front audit surfaced that is NOT yet done, ranked by
+impact-to-effort for the "comprehensive, configurable, deployable" mandate.
+Quick wins from the same audit already shipped (compose cap_drop/NNP,
+secrets off the systemd unit env, BIND_HOST=0.0.0.0 warning, .kube/.docker
+write guard, pinned pip deps + update.sh pin-bump path, Ubuntu CUDA paths,
+disk-space healthcheck guard, scripts/openbeast.service boot unit).
+
+1. **Identity tool server (Option B)** — docs/IDENTITY_TOOLS_PLAN.md. Own
+   thin FastAPI tool server for the WebUI connection; unlocks per-user +
+   per-chat workspace sharding (WebUI already sends user id + chat_id
+   headers; mcpo drops them). ~200 lines. THE multi-user unlock.
+2. **Hardware profiles Phase 2** (docs/HARDWARE_PROFILES.md) — per
+   (GPU-class, model) context/VRAM profiles so serve scripts adapt instead
+   of OOMing on sub-24GB cards; bootstrap offers tier-appropriate models.
+   **Unblocks ~90 % of real-world GPUs** — the single biggest adoption gap.
+   Pairs with: Intel Arc VRAM detection (S), multi-GPU --tensor-split
+   profiles (L, needs 2-GPU measurement time).
+3. **CI build matrix** — GitHub Actions job building llama.cpp cuda/hip/
+   sycl/cpu so the AMD/Intel paths stop being faith-based. Add `pip-audit`
+   to the same workflow (supply-chain check on the now-pinned deps).
+4. **Weight checksum verification** (M) — download + verify sha256
+   sidecars in bootstrap/update; silent GGUF corruption today fails as
+   mystery gibberish.
+5. **macOS/Metal + Docker Desktop** (M) — Darwin branch in bootstrap
+   (system_profiler GPU detect, Metal build flags); compose bridge-network
+   variant (host networking doesn't exist on Docker Desktop). WSL2: likely
+   works, needs a documented test pass.
+6. **fetch() DNS-rebinding pin** (S/M) — resolve once, connect to the
+   vetted IP (custom opener), not the hostname; today a malicious DNS
+   server can flip A records between guard and request. Documented
+   limitation until then.
+7. **read_file hazard mounts** (S) — refuse /proc, /sys, /dev and FUSE/
+   network mounts (infinite or side-effecting "regular" files can hang the
+   reader).
+8. **Docker image digest pinning** (S, workflow decision) — :main/:latest
+   float today; pinning by digest interacts with update.sh --images (same
+   pin-bump pattern as requirements.txt would work). Decide + implement.
+9. **Log rotation + WebUI volume backup** (S) — .run/stack.log grows
+   unbounded; document/automate `docker volume` backup for chat data.
+10. **mTLS / cert-based auth: assessed, deferred** — Tailscale already
+    provides identity + encrypted transport equivalent to mTLS for the
+    home-lab threat model. Revisit only if OpenBeast ever fronts a network
+    Tailscale doesn't own end-to-end.
+
 ## ⚠️ SECURITY
 
 - ✅ **Router IS identity-aware (DONE 2026-07-08).** WebUI forwards
@@ -1274,7 +1320,7 @@ it becomes the default and validates the SKILLS_PLAN Phase-5 auto-router
 direction. Pairs with the surface-simplification work below.
 
 ### Skills ↔ tools surface simplification (2026-07-07)
-Max flagged confusion; analysis confirms it's structural — 9 of 17 tools are
+Max flagged confusion; analysis confirms it's structural — 9 of 17 tools (now 7 of 15 post-collapse) are
 meta-machinery (5 agent + 4 skills), and skills fire ~0% on local models due
 to blind `list_skills`→`load_skill` indirection. Plan (PRODUCTION_ROADMAP §B):
 inject a compact skill *index* into system-prompt-tools.md (1 `load_skill`

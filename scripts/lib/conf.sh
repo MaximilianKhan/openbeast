@@ -45,6 +45,13 @@ _ob_conf_value() {
 }
 
 BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
+# 0.0.0.0 exposes EVERY service (WebUI, model API, tools, search) to the
+# whole network, unauthenticated by default. Legal but loud — remote access
+# should go through Tailscale (scripts/setup-tailscale.sh) instead.
+if [[ "$BIND_HOST" == "0.0.0.0" || "$BIND_HOST" == "::" ]]; then
+  echo "WARNING: BIND_HOST=$BIND_HOST — the ENTIRE stack is network-reachable" >&2
+  echo "         without auth. Prefer Tailscale (scripts/setup-tailscale.sh)." >&2
+fi
 LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"

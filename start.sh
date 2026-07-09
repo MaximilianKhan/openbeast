@@ -125,17 +125,20 @@ if [[ $DAEMON -eq 1 ]]; then
     # the transient unit — systemd-run starts from a CLEAN environment, so
     # without this `OPENBEAST_BIND=... ./start.sh -d` silently reverts to
     # conf/defaults inside the daemon.
+    # SECRETS ARE FILTERED (any *KEY* / *PASSWORD* var): unit env is readable
+    # via `systemctl --user show -p Environment`, so keys must not travel
+    # this way. The daemonized start.sh re-sources conf.sh, which reads them
+    # from openbeast.conf (mode 600) directly — secret overrides therefore
+    # belong in openbeast.conf, not in per-shell env, when using -d.
     SETENV_ARGS=()
     while IFS= read -r _var; do
-      if [[ -n "$_var" ]]; then
+      if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* ]]; then
         SETENV_ARGS+=(--setenv="${_var}=${!_var}")
       fi
     done < <(compgen -e | grep '^OPENBEAST_' || true)
-    for _var in WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD; do
-      if [[ -n "${!_var:-}" ]]; then
-        SETENV_ARGS+=(--setenv="${_var}=${!_var}")
-      fi
-    done
+    if [[ -n "${WEBUI_ADMIN_EMAIL:-}" ]]; then
+      SETENV_ARGS+=(--setenv="WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}")
+    fi
     systemd-run --user --quiet --collect --unit=openbeast-stack \
       -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
       ${SETENV_ARGS[@]+"${SETENV_ARGS[@]}"} \

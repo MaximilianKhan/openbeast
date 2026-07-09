@@ -153,9 +153,23 @@ update_python() {
   if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
     pip_flags="--break-system-packages"
   fi
-  python3 -m pip install --user $pip_flags -q -U huggingface_hub -r "$REPO_DIR/agents/requirements.txt"
-  ok "upgraded: huggingface_hub $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+  # requirements.txt pins exact versions (supply-chain anchoring); a plain
+  # `-U -r` would just reinstall the pins. --python is the SANCTIONED bump
+  # path: upgrade the packages themselves, then rewrite the pins to match
+  # what's now installed, so the next fresh install gets what we validated.
+  python3 -m pip install --user $pip_flags -q -U huggingface_hub openai mcp mcpo
+  {
+    echo "# Pinned to the exact versions validated on the reference box (supply-chain"
+    echo "# anchoring: an unpinned install would pull whatever PyPI has newest,"
+    echo "# including a compromised release). scripts/update.sh --python bumps these."
+    for _pkg in openai mcp mcpo; do
+      _ver=$(python3 -m pip show "$_pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+      [[ -n "$_ver" ]] && echo "${_pkg}==${_ver}"
+    done
+  } > "$REPO_DIR/agents/requirements.txt"
+  ok "upgraded + pins rewritten: $(grep -v '^#' "$REPO_DIR/agents/requirements.txt" | tr '\n' ' ')"
   warn "a running MCPO/mcp_server keeps old code until restarted"
+  warn "commit the requirements.txt pin bump after verifying the stack"
 }
 
 # ---- OpenCode ---------------------------------------------------------------

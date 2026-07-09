@@ -12,7 +12,7 @@ is the *outer shell* of a public project and some surface simplification.
   applying the function filter. `server:1` reliably maps to the connection
   whose `info.id=="1"` (via its enumerate `idx` → `connections[idx]`).
 - Proven with a throwaway guest account against the live code: guest →
-  `['web_search']`, owner → all 17. Account removed. 69/69 script tests green.
+  `['web_search']`, owner → all 15 (was 17 pre-collapse). Account removed. 69/69 script tests green.
 
 **Two documented caveats (not bugs, but know them):**
 1. **Depends on `BYPASS_ADMIN_ACCESS_CONTROL=True`** (Open WebUI default).
@@ -40,7 +40,7 @@ quick-start now exports the CUDA PATH and auto-detects GPU arch.
 
 ## B. Skills ↔ tools — the confusion is structural (Max's instinct was right)
 
-The MCP surface is **17 tools, and 9 of them (53%) are meta-machinery**:
+The MCP surface is **15 tools (was 17 before the 2026-07-08 skill-tool collapse), and 7 of them are meta-machinery**:
 - 6 core: `bash`, `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - 2 web: `fetch`, `web_search`
 - **5 agent-mgmt**: `start_agent`, `check_agent`, `tail_agent`, `stop_agent`, `list_agents`
@@ -91,10 +91,12 @@ Highest impact-to-effort, ordered:
 3. **"Tier 0: just chat" minimal path** (S/high) — ✅ DONE 2026-07-07 (commit 5fb14e6, `./bootstrap.sh --minimal`) — `llama-server` + one
    weight + `curl localhost:8080`, no Docker/MCPO/auth. Let a newcomer
    succeed in 10 minutes; the full stack becomes the opt-in upgrade.
-4. **Fix the front-door quick-start** (S/high) — done for CUDA PATH + arch;
-   still: collapse the duplicate README/INSTALL quick-starts to one source,
-   add the `hf` PATH note and the searxng pull.
-5. **README hook + value prop** (M/high) — lead with a one-line pitch, a
+4. **Fix the front-door quick-start** (S/high) — ✅ DONE 2026-07-09: README
+   manual walkthrough collapsed to a pointer at INSTALL.md (single source),
+   `hf` PATH note added (install + troubleshooting), searxng pull tagged.
+5. **README hook + value prop** (M/high) — ✅ mostly DONE (pitch + honest
+   comparison table live); remaining: hero screenshot/GIF (Max — slot is
+   marked in README). Was: lead with a one-line pitch, a
    screenshot/GIF, and a "vs Ollama / LM Studio / text-generation-webui"
    table featuring the real differentiators: measured-VRAM-tuned contexts,
    a 300+-unit multi-language eval leaderboard, one-command secure remote
@@ -102,12 +104,14 @@ Highest impact-to-effort, ordered:
 6. **Reconcile contradictory eval numbers** (M/med) — ✅ swept 2026-07-08:
    current-state docs now cite v4 (137 base / 291 units, 31 variant'd);
    was: effective units cited as 313 / 323 / 223; variants 33 vs 13;
-   difficulty splits differ; models "5" vs "9". Still open: generate the
-   counts from the suite, don't hand-write.
-7. **`.github/` — CI + templates + CONTRIBUTING** (M/med). Tests exist
-   (`tests/run_tests.sh`); wire them to run on push. Add issue/PR templates.
-8. **Publish the repo + `v1.0` tag** (S/med) — replace `<repo-url>`
-   (now github.com/MaximilianKhan/openbeast), cut a version.
+   difficulty splits differ; models "5" vs "9". ✅ CLOSED 2026-07-09:
+   evals/suite_stats.py generates the counts and `--check` gates README +
+   evals/README in CI — the drift class is dead.
+7. **`.github/` — CI + templates + CONTRIBUTING** (M/med) — ✅ DONE (CI ran
+   4 files, upgraded 2026-07-09 to full pytest sweep + doc-drift gate +
+   variant audit; templates + CONTRIBUTING shipped 2026-07-07).
+8. **Publish the repo + `v1.0` tag** (S/med) — ✅ v1.0 TAGGED 2026-07-09
+   (frozen until Max makes the repo public). Publishing = flip visibility.
 
 ## D. Future horizon — "Mark of the Beast" (clustered nodes)
 

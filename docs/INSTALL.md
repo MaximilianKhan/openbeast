@@ -21,6 +21,9 @@ builds, downloads and writes **nothing**:
 ./bootstrap.sh --preflight   # exit 0 = ready, exit 1 = missing prereqs
 ```
 
+Want the stack to start at boot? `scripts/openbeast.service` is a ready
+systemd user unit — install instructions are in its header comment.
+
 Then `./bootstrap.sh` automates everything in this TL;DR (recommended); the
 steps below are the manual equivalent.
 

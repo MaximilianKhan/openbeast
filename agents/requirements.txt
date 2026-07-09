@@ -1,3 +1,6 @@
-openai>=1.0.0
-mcp
-mcpo
+# Pinned to the exact versions validated on the reference box (supply-chain
+# anchoring: an unpinned install would pull whatever PyPI has newest,
+# including a compromised release). scripts/update.sh --python bumps these.
+openai==2.44.0
+mcp==1.28.1
+mcpo==0.0.20

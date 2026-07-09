@@ -150,9 +150,11 @@ ob_backend_preflight() {
         echo "      → install the proprietary NVIDIA driver for your distro"
         missing=1
       fi
-      # CUDA toolkit (nvcc). Arch keeps it in /opt/cuda/bin, off PATH by default.
+      # CUDA toolkit (nvcc), off PATH by default on most distros:
+      # Arch /opt/cuda, NVIDIA-installer /usr/local/cuda, Ubuntu/Debian
+      # nvidia-cuda-toolkit /usr/lib/cuda, some vendor repos /opt/nvidia/cuda.
       if ! command -v nvcc >/dev/null 2>&1; then
-        for d in /opt/cuda/bin /usr/local/cuda/bin; do
+        for d in /opt/cuda/bin /usr/local/cuda/bin /usr/lib/cuda/bin /opt/nvidia/cuda/bin; do
           [[ -x "$d/nvcc" ]] && export PATH="$d:$PATH"
         done
       fi

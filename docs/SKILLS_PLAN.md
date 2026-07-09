@@ -219,6 +219,6 @@ Candidates if routing is still noisy:
   WebUI chats; candidate for global-skills (installed, not repo-default).
 
 **R1 (lean core connection) and R5 (collapse agent-mgmt verbs) remain open**
-— both change the MCP surface (docs/TOOLS.md "17 tools" everywhere) and R1
+— both change the MCP surface (docs/TOOLS.md tool counts — 15 today) and R1
 needs the RBAC connection layout touched; schedule after the sweep, as their
 own change with docs updated in the same commit.

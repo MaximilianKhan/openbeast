@@ -92,14 +92,14 @@ COOLOFF_SECONDS = 600  # 10-min thermal break between models
 
 def stop_llama_server():
     """Kill any running llama-server. Tolerant — pkill returns 1 if no match."""
-    subprocess.run(["pkill", "-TERM", "-f", "llama-server"], check=False)
+    subprocess.run(["pkill", "-TERM", "-f", "llama-server"], check=False, timeout=5)
     # Wait briefly for graceful shutdown
     for _ in range(10):
         if not _port_in_use(LLAMA_PORT):
             return
         time.sleep(0.5)
     # Escalate
-    subprocess.run(["pkill", "-KILL", "-f", "llama-server"], check=False)
+    subprocess.run(["pkill", "-KILL", "-f", "llama-server"], check=False, timeout=5)
     time.sleep(1)
 
 
@@ -135,16 +135,19 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     log_path = _server_log_path(slug)
     log_fp = open(log_path, "wb", buffering=0)
     print(f"  Server log: {log_path}")
-    proc = subprocess.Popen(
-        ["bash", full_path],
-        stdout=log_fp,
-        stderr=subprocess.STDOUT,
-        cwd=REPO_DIR,
-        start_new_session=True,
-    )
-    # The child inherited the fd via Popen; the parent's copy is no longer
-    # needed and would otherwise leak one fd per (re)start.
-    log_fp.close()
+    try:
+        proc = subprocess.Popen(
+            ["bash", full_path],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            cwd=REPO_DIR,
+            start_new_session=True,
+        )
+    finally:
+        # The child inherited the fd via Popen (when it succeeded); the
+        # parent's copy is not needed either way and would otherwise leak
+        # one fd per (re)start — including when Popen itself raises.
+        log_fp.close()
     return proc, log_path
 
 

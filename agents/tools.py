@@ -203,7 +203,7 @@ def bash(command: str, timeout: int = 120) -> str:
 # a project-local .npmrc or a dotfiles repo's copy of .bashrc is legitimate
 # coding work; only the live copies under ~ are persistence/exfil targets.
 # Defense-in-depth: the authoritative sandbox is Arsenal Phase 1 (Sandlock).
-_PROTECTED_DIRS = (".ssh", ".gnupg", ".aws")
+_PROTECTED_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".docker")
 _PROTECTED_BASENAMES = {
     ".netrc", ".git-credentials", ".npmrc", ".pypirc",
     ".bashrc", ".bash_profile", ".zshrc", ".profile",

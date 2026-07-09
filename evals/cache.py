@@ -119,7 +119,10 @@ def cache_get(key: str) -> dict[str, Any] | None:
         with open(p) as f:
             cached = json.load(f)
         return cached
-    except Exception:
+    except (json.JSONDecodeError, OSError) as e:
+        # Corrupt or unreadable entry = cache miss, but say so — a silent
+        # None here makes real disk problems look like cold caches.
+        print(f"  [cache] unreadable entry {p.name}: {e} — treating as miss")
         return None
 
 

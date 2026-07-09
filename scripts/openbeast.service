@@ -1,0 +1,31 @@
+# OpenBeast boot-start unit (user service).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   sed "s|@REPO@|$(pwd)|" scripts/openbeast.service > ~/.config/systemd/user/openbeast.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openbeast
+#   loginctl enable-linger $USER   # start at BOOT, not just at login
+#
+# Notes:
+# - start.sh -d already runs the stack inside its own memory-capped
+#   transient scope (openbeast-stack); this unit just triggers it at boot
+#   and tears it down via stop.sh. RemainAfterExit tracks the pair.
+# - Secrets stay in openbeast.conf (mode 600) — nothing passes through the
+#   unit environment.
+
+[Unit]
+Description=OpenBeast local AI stack
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/start.sh -d
+ExecStop=@REPO@/stop.sh
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

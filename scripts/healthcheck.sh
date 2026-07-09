@@ -239,6 +239,20 @@ if command -v nvidia-smi &>/dev/null; then
   fi
 fi
 
+# Disk space — the two mounts that fill up in practice: the weights dir
+# (model downloads) and the repo dir (logs, eval results, WebUI volume on
+# the docker root). Warn below 10 GB free — one more quant download or a
+# long sweep can eat that.
+_weights_dir=$( (source "$SCRIPT_DIR/lib/weights.sh" >/dev/null 2>&1 && echo "$WEIGHTS_DIR") || echo "$REPO_DIR/weights" )
+for _mount_label in "weights:$_weights_dir" "repo:$REPO_DIR"; do
+  _label="${_mount_label%%:*}"; _dir="${_mount_label#*:}"
+  [[ -d "$_dir" ]] || continue
+  _free_gb=$(df -BG --output=avail "$_dir" 2>/dev/null | tail -1 | tr -dc '0-9' || echo "")
+  if [[ -n "$_free_gb" && "$_free_gb" -lt 10 ]]; then
+    echo "  WARNING: ${_free_gb}G free on the $_label mount ($_dir) — downloads/sweeps may fail"
+  fi
+done
+
 # Slot utilization
 SLOTS_JSON=$(curl -s --max-time 3 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 ACTIVE_SLOTS=$(echo "$SLOTS_JSON" | python3 -c "
