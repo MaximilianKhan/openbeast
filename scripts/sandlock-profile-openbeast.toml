@@ -1,0 +1,47 @@
+# OpenBeast agent bash sandbox — kernel-level FS/network confinement for
+# model-written shell commands (Landlock + seccomp, no root, no containers).
+#
+# Installed by scripts/setup-sandlock.sh to ~/.config/sandlock/profiles/
+# and referenced by the OPENBEAST_BASH_WRAPPER hook in agents/tools.py:
+#
+#   OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'
+#
+# Policy model: ALLOWLIST. Anything not listed below is invisible/denied at
+# the kernel — including ~/.ssh, ~/.gnupg, ~/.aws, and the rest of $HOME.
+# The per-call agent workdir (AGENT_WORKDIR or OPENBEAST_FILES_DIR — bash()
+# runs with cwd set to it) is granted at runtime by the wrapper's -w "$PWD";
+# it is deliberately NOT hardcoded here.
+#
+# Validated against sandlock v0.8.4, commit 1cd6ba6518f614bf4db469f1b2d0416bc2f1cd54
+# (see docs/SANDBOXING.md for the validation matrix).
+
+[filesystem]
+# Read-only: toolchain + system config a build/test workflow needs.
+# /run/systemd/resolve lets the stub-resolver config resolve DNS names.
+read = [
+  "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt",
+  "/proc", "/sys", "/run/systemd/resolve",
+]
+# Writable: scratch space + device sinks. Note: without /dev/null here,
+# any `>/dev/null` redirect fails with EACCES — a surprisingly common
+# breakage mode, so keep the /dev entries.
+write = [
+  "/tmp", "/var/tmp", "/dev/null", "/dev/zero",
+  "/dev/urandom", "/dev/random", "/dev/tty", "/dev/shm",
+]
+
+[network]
+# Outbound OPEN by default: agents legitimately pip-install, git-clone, and
+# curl, and OpenBeast's guest tier is already gated upstream by RBAC.
+# For stricter deployments replace with an endpoint allowlist, e.g.:
+#   allow = ["pypi.org:443", "files.pythonhosted.org:443",
+#            "github.com:22,443", "udp://*:53"]
+# An EMPTY allow list ( allow = [] ) denies all outbound — that
+# configuration was validated too (curl fails at DNS resolution).
+allow = ["*", "udp://*"]
+
+[limits]
+# Memory/CPU stay the tools.py rlimit layer's job (RLIMIT_AS + killpg on
+# timeout) — sandlock composes with, not replaces, that layer. The process
+# cap is only a second fence against fork bombs.
+processes = 256

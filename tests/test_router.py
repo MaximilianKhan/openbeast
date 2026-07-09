@@ -5,7 +5,8 @@ Unit tests for the agent-spawn router (agents/router.py) — no server needed.
 Covers the pure/deterministic surface: the _HINTS prefilter (precision AND
 recall lists), last-user-turn extraction across content shapes, the
 synthetic OpenAI-shaped replies (non-stream + stream), classify fail-safe
-behavior, and the grammar schema contract.
+behavior, the grammar schema contract, and the identity spawn gate
+(_spawn_allowed — RBAC Phase 2).
 
 Run: python -m pytest tests/test_router.py -v
   or: python3 tests/test_router.py
@@ -131,6 +132,57 @@ class TestClassifyFailSafe(unittest.TestCase):
 
         result = asyncio.run(router._classify(BoomClient(), "spawn an agent please"))
         self.assertEqual(result, (False, "", "."))
+
+
+class TestSpawnGate(unittest.TestCase):
+    """Identity gate (_spawn_allowed): only admin-role turns may reach the
+    classify/spawn path; guests pass through untouched; absent identity is
+    fail-open unless OPENBEAST_ROUTER_REQUIRE_IDENTITY hardens it."""
+
+    ROLE = "X-OpenWebUI-User-Role"
+
+    def test_admin_allowed(self):
+        self.assertTrue(router._spawn_allowed({self.ROLE: "admin"}, require_identity=False))
+        self.assertTrue(router._spawn_allowed({self.ROLE: "admin"}, require_identity=True))
+
+    def test_non_admin_roles_denied(self):
+        for role in ("user", "pending", ""):
+            for require in (False, True):
+                self.assertFalse(
+                    router._spawn_allowed({self.ROLE: role}, require_identity=require),
+                    f"role {role!r} (require_identity={require}) must not spawn")
+
+    def test_absent_header_fail_open_by_default(self):
+        self.assertTrue(router._spawn_allowed({}, require_identity=False))
+
+    def test_absent_header_fail_closed_when_required(self):
+        self.assertFalse(router._spawn_allowed({}, require_identity=True))
+
+    def test_header_name_case_insensitive(self):
+        self.assertTrue(router._spawn_allowed(
+            {"x-openwebui-user-role": "admin"}, require_identity=True))
+        self.assertFalse(router._spawn_allowed(
+            {"X-OPENWEBUI-USER-ROLE": "user"}, require_identity=False))
+
+    def test_role_value_case_insensitive_and_trimmed(self):
+        self.assertTrue(router._spawn_allowed({self.ROLE: "Admin"}, require_identity=True))
+        self.assertTrue(router._spawn_allowed({self.ROLE: " ADMIN "}, require_identity=True))
+
+    def test_unrelated_headers_ignored(self):
+        hdrs = {"Content-Type": "application/json", "X-OpenWebUI-User-Id": "abc"}
+        self.assertTrue(router._spawn_allowed(hdrs, require_identity=False))
+        self.assertFalse(router._spawn_allowed(hdrs, require_identity=True))
+
+    def test_default_follows_module_env(self):
+        # require_identity=None defers to router.REQUIRE_IDENTITY (env-derived).
+        old = router.REQUIRE_IDENTITY
+        try:
+            router.REQUIRE_IDENTITY = True
+            self.assertFalse(router._spawn_allowed({}))
+            router.REQUIRE_IDENTITY = False
+            self.assertTrue(router._spawn_allowed({}))
+        finally:
+            router.REQUIRE_IDENTITY = old
 
 
 class TestSchema(unittest.TestCase):

@@ -1269,6 +1269,17 @@ can't reach the dangerous tools), then guest `fetch` once SSRF/scheme-
 filtered, then per-tool-call audit log. Converges with Arsenal Phase 1a.
 
 ### Arsenal — KICK OFF Phase 1 (recon done, both GO — 2026-07-07)
+
+**Sandlock SHIPPED opt-in (2026-07-08):** security review passed (pinned
+v0.8.4), installed to ~/.local/bin, validated (FS/net deny, exit codes,
+killpg compat, ~1.2ms overhead); `scripts/setup-sandlock.sh` +
+`scripts/sandlock-profile-openbeast.toml` + `docs/SANDBOXING.md`; conf key
+BASH_WRAPPER forwards to the bash tool. **Next: run the eval suite with
+OPENBEAST_BASH_WRAPPER set (profile `openbeast`); if green, flip to
+default-on in conf.sh. Until then: opt-in only.** Re-verify the
+setpgid/killpg interaction on every sandlock version bump (child leaves the
+wrapper's group; teardown still catches it today — see docs/SANDBOXING.md).
+
 Recon prototypes built and verified on this box (see
 [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md) "Prototype recon"):
 **Sandlock** GO (builds, 8/8 isolation tests held on Landlock ABI 8) and

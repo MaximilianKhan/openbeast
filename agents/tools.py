@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import glob
 import html
+import ipaddress
 import json
 import os
 import re
 import resource
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import threading
@@ -366,8 +368,70 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         return f"Error: {e}"
 
 
+def _fetch_url_blocked(url: str) -> str | None:
+    """SSRF guard for fetch(): return a human-readable refusal reason, or
+    None if the URL is safe to request.
+
+    Two checks, both BEFORE any network request:
+      1. Scheme allowlist — http/https only (file:// reads the disk,
+         ftp/gopher/etc. are classic SSRF pivots).
+      2. Resolve the hostname (ALL getaddrinfo results, v4+v6) and refuse if
+         ANY resolved address is loopback (127/8, ::1), private (10/8,
+         172.16/12, 192.168/16, fc00::/7), link-local (169.254/16, fe80::/10),
+         unspecified, multicast, or otherwise reserved. This blocks
+         http://127.0.0.1:3001 (MCPO admin tools), http://169.254.169.254
+         (cloud metadata), and public DNS names that resolve privately.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        return f"scheme '{parsed.scheme}' not allowed (http/https only)"
+    host = parsed.hostname
+    if not host:
+        return "URL has no hostname"
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        return f"could not resolve host '{host}': {e}"
+    if not infos:
+        return f"host '{host}' resolved to no addresses"
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])  # strip v6 zone id
+        except ValueError:
+            return f"host '{host}' resolved to unparseable address '{addr}'"
+        if (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
+            return f"host '{host}' resolves to non-public address {ip}"
+    return None
+
+
+class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate EVERY redirect hop with the same SSRF guard, so a public
+    URL can't 302 the fetch into localhost / private ranges / file://."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        reason = _fetch_url_blocked(newurl)
+        if reason:
+            raise urllib.error.URLError(f"fetch blocked: redirect to {newurl}: {reason}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_fetch_opener = urllib.request.build_opener(_FetchRedirectHandler)
+
+
 def fetch(url: str, max_length: int = 50_000) -> str:
-    """Fetch content from a URL and return as text."""
+    """Fetch content from a URL and return as text.
+
+    Deliberately refuses local/private targets for EVERYONE (admin included —
+    defense in depth, see docs/RBAC_PLAN.md): http/https schemes only, and any
+    hostname resolving to loopback/private/link-local/reserved space is
+    blocked, at request time and again on every redirect hop.
+    """
+    reason = _fetch_url_blocked(url)
+    if reason:
+        return f"Error: fetch blocked: {reason}"
     try:
         req = urllib.request.Request(
             url,
@@ -376,7 +440,7 @@ def fetch(url: str, max_length: int = 50_000) -> str:
                 "Accept": "text/html,application/json,text/plain,*/*",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _fetch_opener.open(req, timeout=30) as resp:
             content_type = resp.headers.get("Content-Type", "")
             charset = "utf-8"
             if "charset=" in content_type:

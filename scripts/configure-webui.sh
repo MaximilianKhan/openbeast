@@ -110,13 +110,20 @@ fi
 
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
 # See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
-#   id=1 "privileged"  filter !web_search (16 OS-touching tools), admin-only
-#                      (empty access_grants → non-admins denied; admins bypass)
-#   id=2 "web"         filter web_search only, public (everyone incl. guests)
+#   id=1 "privileged"  filter !web_search,!fetch (15 OS-touching tools),
+#                      admin-only (empty access_grants → non-admins denied;
+#                      admins bypass)
+#   id=2 "web"         filter web_search,fetch — public (everyone incl.
+#                      guests). fetch is guest-safe since RBAC Phase 2: it
+#                      refuses non-http(s) schemes and any host resolving to
+#                      loopback/private/link-local space (SSRF-guarded in
+#                      agents/tools.py), so it can't reach MCPO, metadata
+#                      services, or the local disk.
 # Models reference both (meta.toolIds). Open WebUI enforces per-connection
 # access at tool-resolution time, so a `user`-role (family/guest) account
-# resolves web_search ONLY — never bash/file/agent tools. `admin` accounts
-# get all 17 via BYPASS_ADMIN_ACCESS_CONTROL. Idempotent: reconciles to this
+# resolves web_search + fetch ONLY — never bash/file/agent tools. `admin`
+# accounts get all 15 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
+# exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
 echo "  Reconciling RBAC tool-server connections..."
 curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
@@ -128,21 +135,21 @@ conns = [c for c in data.get('TOOL_SERVER_CONNECTIONS', [])
          if not (c.get('url') == MCPO and c.get('info', {}).get('id') in ('1', '2', 'local-tools'))]
 priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi', 'auth_type': 'none',
         'headers': None, 'key': '',
-        'config': {'enable': True, 'function_name_filter_list': '!web_search', 'access_grants': []},
+        'config': {'enable': True, 'function_name_filter_list': '!web_search,!fetch', 'access_grants': []},
         'spec_type': 'url', 'spec': '',
         'info': {'id': '1', 'name': 'Local Tools (privileged)',
-                 'description': 'bash, file r/w/edit, grep, fetch, agents, skills — admin-only'}}
+                 'description': 'bash, file r/w/edit, grep, agents, skills — admin-only'}}
 web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi', 'auth_type': 'none',
        'headers': None, 'key': '',
-       'config': {'enable': True, 'function_name_filter_list': 'web_search',
+       'config': {'enable': True, 'function_name_filter_list': 'web_search,fetch',
                   'access_grants': [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]},
        'spec_type': 'url', 'spec': '',
        'info': {'id': '2', 'name': 'Web Search (all users)',
-                'description': 'web_search via SearXNG — safe for guest accounts'}}
+                'description': 'web_search via SearXNG + SSRF-guarded fetch — safe for guest accounts'}}
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
 " | curl -s -H "$AUTH" -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
-echo "  Tool servers configured (privileged=admin-only, web=all users)."
+echo "  Tool servers configured (privileged=admin-only, web_search+fetch=all users)."
 
 # Model tool wiring uses these two connection ids.
 TOOL_REFS='["server:1","server:2"]'

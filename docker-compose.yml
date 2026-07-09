@@ -26,6 +26,12 @@ services:
       # Loopback-only by default; Tailscale Serve proxies remote devices in.
       - HOST=${OPENBEAST_BIND:-127.0.0.1}
       - PORT=3000
+      # Forward X-OpenWebUI-User-{Id,Name,Email,Role} on outbound model
+      # requests so the agent-spawn router (agents/router.py) can gate its
+      # spawn path by role — only admins may trigger background agents.
+      # Without this, the router sees anonymous turns and (by default)
+      # fails open. See docs/RBAC_PLAN.md Phase 2.
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true
     volumes:
       - open-webui-data:/app/backend/data
     restart: unless-stopped

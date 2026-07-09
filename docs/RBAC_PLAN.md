@@ -1,28 +1,37 @@
 # RBAC Plan — multi-user OpenBeast without handing out the filesystem
 
-**Status: Phase 0 + Phase 1 LIVE (2026-07-07) — verified with the real
-Open WebUI access-control code.** A `user`-role account resolves
-`web_search` ONLY (bash/file/agent tools denied at the connection layer); an
-`admin` account gets all 17. Baked into `configure-webui.sh` so fresh
-installs land RBAC'd. Phase 2 (below-app enforcement via per-profile MCPO
-keys + Sandlock) is the remaining hardening.
+**Status: Phase 0 + Phase 1 LIVE (2026-07-07); Phase 2 router-identity +
+guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
+access-control code.** A `user`-role account resolves `web_search` +
+`fetch` (SSRF-guarded) ONLY (bash/file/agent tools denied at the connection
+layer); an `admin` account gets all 15. Baked into `configure-webui.sh` so
+fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
+keys + Sandlock (below-app enforcement).
 
-> ⚠️ **WARNING — the agent-spawn router bypasses these tiers.** With
-> `AGENT_ROUTER=true` (opt-in, default off), `agents/router.py` sits in
-> front of llama-server and classifies **every** chat turn — guest turns
-> included — and on a detected spawn request calls MCPO `start_agent`
-> **directly**, skipping the WebUI connection-level grants this plan is
-> built on. A guest phrasing a spawn request ("do this in the background")
-> gets a full-filesystem background agent. The router is not yet
-> identity-aware; until it is (part of Phase 2), **do not run
-> `AGENT_ROUTER=true` and multi-user accounts on the same instance.**
+> ✅ **FIXED (2026-07-08) — the agent-spawn router is now identity-aware.**
+> Previously, with `AGENT_ROUTER=true`, `agents/router.py` classified
+> **every** chat turn — guest turns included — and could spawn a
+> full-filesystem agent via MCPO directly, bypassing the WebUI
+> connection-level grants. Now `docker-compose.yml` sets
+> `ENABLE_FORWARD_USER_INFO_HEADERS=true` so Open WebUI forwards
+> `X-OpenWebUI-User-Role` on every model request, and the router gates its
+> spawn path on it: `admin` → spawn allowed; any other role → prefilter +
+> classify skipped entirely (zero added latency, no spawn path); header
+> absent → allowed by default (single-user/no-auth installs send no
+> headers), or denied when `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`
+> (recommended for hardened multi-user installs).
+> **Remaining caveat:** a stack started before 2026-07-08 runs the old
+> router code until its next restart, and disabling WebUI header
+> forwarding re-opens the fail-open default — set
+> `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` if in doubt.
 
 ## How to give someone access (the whole UX)
 
 1. **Admin Panel → Users → Add User** (or let them sign up — new signups
    land as `pending`, no access, until you act).
-2. Set their **role**: `user` = guest (web search only), `admin` = full
-   arsenal. **That role dropdown IS the RBAC tier.** Nothing else to touch.
+2. Set their **role**: `user` = guest (web search + guarded fetch), `admin`
+   = full arsenal. **That role dropdown IS the RBAC tier.** Nothing else to
+   touch.
 3. They log in from any device on the tailnet and chat. Guests literally do
    not have `bash`/`edit_file` in their model's tool schema — not "denied,"
    *absent*.
@@ -78,29 +87,36 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 
 | Tier | WebUI role | Tools they get | How |
 |---|---|---|---|
-| **Owner** | `admin` | all 17 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
-| **Guest** (family) | `user` | **`web_search` only** | public grant on a filtered connection |
+| **Owner** | `admin` | all 15 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
+| **Guest** (family) | `user` | **`web_search` + `fetch`** (scheme-filtered, private-network-blocked) | public grant on a filtered connection |
 | *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
 
-**Why guest = web_search only (not fetch, not file reads).** Max's rule:
+**Why guest = web_search + guarded fetch (not file reads).** Max's rule:
 "search the web and anything that can't harm the OS; no local filesystem."
 - `web_search` → SearXNG, no local access. **Safe. In.**
-- `fetch` → can hit `file://` and internal URLs (SSRF). **Out of v1**;
-  revisit in Phase 2 once it's scheme-filtered + sandboxed.
+- `fetch` → **In since 2026-07-08**, now that it's SSRF-guarded in
+  `agents/tools.py`: http/https schemes only, every hostname resolved
+  (all A/AAAA records) and refused if ANY address is
+  loopback/private/link-local/reserved, and every redirect hop re-validated.
+  `file://`, `http://127.0.0.1:3001` (MCPO), `http://169.254.169.254`
+  (metadata) are all refused. The guard applies to admins too —
+  defense in depth.
 - `read_file`/`list_files`/`grep` → read the local FS (private data). Max
   said no filesystem — **out.**
 - `bash` / `write_file` / `edit_file` → mutate the OS. **Out.**
 - agent mgmt / skills → privilege amplification + context injection. **Out.**
 
 ### Two-connection wiring (implemented by `configure-webui.sh`)
-- **`local-mcp`** (privileged): `function_name_filter_list = "!web_search"`
-  (all 16 other tools), `access_grants = []` → admin-only.
-- **`local-mcp-web`** (public): `function_name_filter_list = "web_search"`,
-  `access_grants = [{user:*}]` → everyone.
+- **`local-mcp`** (privileged): `function_name_filter_list =
+  "!web_search,!fetch"` (all 15 other tools), `access_grants = []` →
+  admin-only.
+- **`local-mcp-web`** (public): `function_name_filter_list =
+  "web_search,fetch"`, `access_grants = [{user:*}]` → everyone.
 - Every model's `meta.toolIds = ["server:<priv>","server:<web>"]`.
-  - Admin resolves both → 16 + web_search = all 17, **no duplicate**
-    (web_search lives only on the public connection).
-  - Guest resolves only the public one → **web_search, nothing else.**
+  - Admin resolves both → 13 + web_search + fetch = all 15, **no duplicate**
+    (web_search and fetch live only on the public connection).
+  - Guest resolves only the public one → **web_search + fetch, nothing
+    else.**
 
 Future middle tier ("trusted", e.g. an older kid): add a WebUI group, a
 third connection filtered to read-only `read_file`/`list_files`/`grep`
@@ -117,7 +133,8 @@ this" gate. One config PUT via `configure-webui.sh`-style API call; make
 `configure-webui.sh` assert it thereafter (idempotent).
 
 ### Phase 1 — guest profile (~half day)
-**As-built differs:** guest got `web_search` only (no `fetch`); see the wiring section above.
+**As-built differs:** guest got `web_search` only at first; `fetch` joined
+the guest tier 2026-07-08 once SSRF-guarded — see the wiring section above.
 1. Add a second tool-server connection to the same MCPO URL:
    `arsenal-guest`, `function_name_filter_list: web_search,fetch`,
    `access_grants: []` (everyone).
@@ -135,6 +152,17 @@ this" gate. One config PUT via `configure-webui.sh`-style API call; make
 The WebUI checks are policy, not enforcement — a bug or a second frontend
 (OpenCode config on a guest laptop, direct `:8443` API use) bypasses them.
 Defense in depth:
+0. ✅ **DONE 2026-07-08 — router identity gate.** `docker-compose.yml` sets
+   `ENABLE_FORWARD_USER_INFO_HEADERS=true`; `agents/router.py` reads
+   `X-OpenWebUI-User-Role` and only spawns for `admin` (non-admin turns skip
+   classification entirely; absent header is fail-open unless
+   `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`). Unit-tested in
+   `tests/test_router.py` (`_spawn_allowed`).
+0b. ✅ **DONE 2026-07-08 — fetch SSRF guard + guest fetch.** `fetch()` in
+   `agents/tools.py` refuses non-http(s) schemes and any host whose
+   resolution includes loopback/private/link-local/reserved addresses, with
+   per-hop redirect re-validation. Guest connection filter widened to
+   `web_search,fetch`. Tests: `tests/test_fetch_guards.py`.
 1. Split MCPO into two instances with distinct `--api-key`s
    (`arsenal-full` on :3001, `arsenal-guest` on :3002); keys live in
    `openbeast.conf` and per-connection headers in WebUI. Now possession of
@@ -162,8 +190,10 @@ Defense in depth:
    denied" — the tool must not exist in its schema).
 2. Same prompt as admin → works.
 3. Direct `curl :3001/bash` with no/guest key → 401 (Phase 2).
-4. Guest `fetch` of `file:///etc/passwd` → blocked by sandbox policy
-   (Phase 2; fetch tool should also refuse non-http schemes at app level).
+4. ✅ Guest `fetch` of `file:///etc/passwd` → refused at app level
+   ("Error: fetch blocked: scheme 'file' not allowed"); same for
+   `http://127.0.0.1:...` and private/link-local targets. Sandlock adds a
+   second layer later in Phase 2.
 5. Config-drift check green in `./scripts/healthcheck.sh` (Phase 3).
 
 ## Out of scope (deliberately)
@@ -186,8 +216,9 @@ Defense in depth:
   schema, not "permission denied".
 
 ## Open questions for Max
-1. Should guests get `fetch` at all, or web_search only? (fetch can reach
-   internal URLs — mitigated in Phase 2 by sandbox + scheme filtering.)
+1. ~~Should guests get `fetch` at all, or web_search only?~~ **Resolved
+   2026-07-08:** guests get `fetch` now that it's scheme-filtered and
+   private-network-blocked at app level.
 2. Kids vs adults: one `family` group or two tiers (e.g. teens also get
    read-only `read_file` on a shared folder)?
 3. Phase 2 timing: land with Phase 1, or after Sandlock ships in Arsenal

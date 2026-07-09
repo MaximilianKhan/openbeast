@@ -9,6 +9,17 @@ DIRECTLY — then tells the user. Everything else passes through untouched, with
 the model's normal thinking-on behavior.
 
 Flow for POST /v1/chat/completions:
+  0. Identity gate (docs/RBAC_PLAN.md Phase 2). Open WebUI forwards the
+     caller's role in X-OpenWebUI-User-Role when
+     ENABLE_FORWARD_USER_INFO_HEADERS=true (set in docker-compose.yml):
+       - role == "admin"            -> spawn path enabled (steps 1-3 below).
+       - role present, != "admin"   -> prefilter+classify SKIPPED entirely:
+         guest turns get zero added latency and can never spawn; the request
+         passes through transparently (step 4).
+       - role header ABSENT         -> spawn allowed (fail-open) because
+         single-user / no-auth setups send no identity headers. Hardened
+         multi-user installs set OPENBEAST_ROUTER_REQUIRE_IDENTITY=true to
+         fail CLOSED (absent header -> no spawn).
   1. Recall-oriented keyword prefilter on the last user turn (cheap; skips the
      classify for obviously-non-spawn turns so normal chat stays fast).
   2. If it passes, a grammar-constrained pre-flight call to the SAME upstream
@@ -21,10 +32,15 @@ Flow for POST /v1/chat/completions:
      (streaming or not), model behaves exactly as if the router weren't there.
 All other paths (/v1/models, /health, GET, non-chat POST) forward transparently.
 
+All forwarded X-OpenWebUI-User-* headers also travel UPSTREAM on proxied
+requests (they're ordinary non-hop-by-hop headers, relayed by _proxy_through).
+
 Env:
   OPENBEAST_ROUTER_PORT      listen port (default 8088)
   OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_MCPO_URL         MCPO base for start_agent (default http://127.0.0.1:3001)
+  OPENBEAST_ROUTER_REQUIRE_IDENTITY  "true" = no role header, no spawn
+                             (default "false": fail-open for single-user installs)
 """
 from __future__ import annotations
 
@@ -47,6 +63,18 @@ from starlette.routing import Route
 PORT = int(os.environ.get("OPENBEAST_ROUTER_PORT", "8088"))
 UPSTREAM = os.environ.get("OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 MCPO = os.environ.get("OPENBEAST_MCPO_URL", "http://127.0.0.1:3001").rstrip("/")
+# Identity gate hardening: when "true", a request WITHOUT an
+# X-OpenWebUI-User-Role header may never spawn (fail-closed). Default "false"
+# keeps single-user/no-auth setups working (WebUI sends no identity headers
+# until ENABLE_FORWARD_USER_INFO_HEADERS is on and a user is signed in).
+REQUIRE_IDENTITY = (
+    os.environ.get("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "false").strip().lower() == "true"
+)
+
+# Role header Open WebUI forwards when ENABLE_FORWARD_USER_INFO_HEADERS=true
+# (verified in open-webui 0.10.2: env.py FORWARD_USER_INFO_HEADER_USER_ROLE
+# defaults to "X-OpenWebUI-User-Role"; utils/headers.py sends the raw role).
+_ROLE_HEADER = "x-openwebui-user-role"
 
 # Prefilter: if the last user turn contains NONE of these, skip the classify
 # call and pass straight through (normal chat = zero added latency). Tuned for
@@ -81,6 +109,29 @@ _CLASSIFIER_SYS = (
     "clear complete task description for the agent and the working directory "
     "(default '.'). Output only JSON."
 )
+
+
+def _spawn_allowed(headers, require_identity=None):
+    """Identity gate for the spawn path (docs/RBAC_PLAN.md Phase 2).
+
+    Pure decision function over a headers mapping (Starlette's Headers or a
+    plain dict — lookup is case-insensitive either way):
+      role == "admin" (any case)  -> True
+      role present, != "admin"    -> False  (guests/pending can never spawn)
+      role header absent          -> not require_identity
+        (fail-open by default for single-user installs that send no identity
+         headers; OPENBEAST_ROUTER_REQUIRE_IDENTITY=true flips to fail-closed)
+    """
+    if require_identity is None:
+        require_identity = REQUIRE_IDENTITY
+    role = None
+    for k, v in headers.items():
+        if k.lower() == _ROLE_HEADER:
+            role = v
+            break
+    if role is None:
+        return not require_identity
+    return role.strip().lower() == "admin"
 
 
 def _last_user_text(messages):
@@ -212,8 +263,11 @@ async def chat_completions(request: Request):
     model = body.get("model", "local")
     user_text = _last_user_text(messages)
 
+    # Identity gate FIRST (docs/RBAC_PLAN.md Phase 2): non-admin turns skip
+    # prefilter + classify entirely — zero added latency, and no path to
+    # start_agent regardless of phrasing. See _spawn_allowed for the rules.
     # Route only genuine user turns that clear the recall prefilter.
-    if user_text and _HINTS.search(user_text):
+    if user_text and _spawn_allowed(request.headers) and _HINTS.search(user_text):
         spawn, task, workdir = await _classify(client, user_text)
         if spawn and len(task) <= 8:
             # Detected a delegation request but couldn't extract a usable task —
