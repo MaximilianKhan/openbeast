@@ -143,7 +143,7 @@ update_python() {
   step "Python packages (mcp, openai, fastapi, uvicorn, huggingface_hub)"
   if [[ $CHECK_ONLY -eq 1 ]]; then
     python3 -m pip list --user --outdated 2>/dev/null \
-      | grep -Ei '^mcp |openai|fastapi|uvicorn|huggingface' || ok "all current"
+      | grep -Ei '^mcp |openai|fastapi|uvicorn|pyjwt|huggingface' || ok "all current"
     return 0
   fi
   # PEP-668 "externally managed" environments (Arch, newer Debian) reject a

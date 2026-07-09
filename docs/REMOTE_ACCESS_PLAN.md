@@ -61,10 +61,10 @@ Headscale migration path, this is the pragmatic open-adjacent choice.
 ## Target architecture
 
 ```
-  phone (cellular) ──┐                        ┌─ https://beast.<tailnet>.ts.net
-  laptop (cafe wifi) ─┤── tailnet (WireGuard) ─┤       → Open WebUI :3000
-  desktop (home LAN) ─┘                        └─ https://beast.<tailnet>.ts.net:8443
-                                                       → llama-server :8080 (API)
+  phone (cellular)  ──┐                         ┌── https://beast.<tailnet>.ts.net
+  laptop (cafe wifi) ─┼── tailnet (WireGuard) ──┤     → Open WebUI :3000
+  desktop (home LAN) ─┘                         └── https://beast.<tailnet>.ts.net:8443
+                                                      → llama-server :8080 (API)
   Services rebind 0.0.0.0 → 127.0.0.1; the ONLY ways in are
   localhost and `tailscale serve` (TLS, tailnet-only, per-device identity).
   SearXNG + the identity tool server (:3001) stay localhost-only (they serve the model, not humans).

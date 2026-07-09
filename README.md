@@ -109,46 +109,47 @@ identity server imports them from the MCP server, so the two surfaces
 cannot drift.
 
 ```
-                            ┌──────────────────────┐
-                            │      Open WebUI      │
-                            │      (port 3000)     │
-                            └──────┬───────────┬───┘
-          tools + identity headers │           │ chat
-          (X-OpenWebUI-User/Chat)  │           └───────────────────────────┐
-                                   ▼                                       │
+                           ┌──────────────────────┐
+                           │      Open WebUI      │
+                           │      (port 3000)     │
+                           └─────────┬──────────┬─┘
+               tools + identity hdrs │          │ chat
+              (X-OpenWebUI-User/Chat)│          └──────────────────────────┐
+                                     ▼                                     │
  ┌──────────────────┐   ┌──────────────────────────┐   ┌────────────────┐  │
  │     OpenCode     │   │   Identity Tool Server   │   │    SearXNG     │  │
  │    (terminal)    │   │       (port 3001)        │   │  (port 8888)   │  │
  └────────┬─────────┘   │  RBAC profile keys       │   └───────▲────────┘  │
           │             │  per-user file shards    │           │           │
-          │ stdio (MCP) │  audit trail             │ web_search│           │
+          │ stdio (MCP) │  audit trail · /metrics  │ web_search│           │
           ▼             └────────────┬─────────────┘           │           │
  ┌──────────────────┐                │                         │           │
- │  MCP Tool Server │   same 15 tool │ functions               │           │
- │ (mcp_server.py)  ├────────────────┤ (imported — can't drift)│           │
+ │  MCP Tool Server │  same 15 tool  │  functions —            │           │
+ │ (mcp_server.py)  ├────────────────┤  imported, can't drift  │           │
  └──────────────────┘                ▼                         │           │
- ┌─────────────────────────────────────────────────────────────┴─────────┐ │
- │                     Tool Arsenal (agents/tools.py)                    │ │
- │      bash · read_file · write_file · edit_file · grep · list_files   │ │
- │      fetch (SSRF-guarded) · web_search                               │ │
- │      start_agent · check/tail/list/stop_agent · skill · skill_agent  │ │
- │                                                                       │ │
- │   workspace: ~/openbeast-files/users/<user>/ (+ .manifest.jsonl)     │ │
- └───────────────────────────────────┬───────────────────────────────────┘ │
-                                     │              ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┴╌╌╌╌╌╌┐
-                                     │ spawned      ┆   Agent Router (port 8088)   ┆
-                                     │ agents'      ┆   opt-in: AGENT_ROUTER=true  ┆
-                                     │ inference    └╌╌╌╌╌╌╌╌╌╌╌╌┬╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
-                                     ▼                           │ (router off: chat
-                      ┌────────────────────────────┐             │  goes to :8080 direct)
-                      │      llama.cpp Server      │◀────────────┘
-                      │        (port 8080)         │
-                      │      6 parallel slots      │
-                      │      unified KV cache      │
-                      │     continuous batching    │
-                      ├────────────────────────────┤
-                      │   RTX 5090 · 32 GB GDDR7   │
-                      └────────────────────────────┘
+ ┌─────────────────────────────────────────────────────────────┴────────┐  │
+ │                    Tool Arsenal (agents/tools.py)                    │  │
+ │    bash · read_file · write_file · edit_file · grep · list_files     │  │
+ │    fetch (SSRF-guarded) · web_search                                 │  │
+ │    start_agent · check/tail/list/stop_agent · skill · skill_agent    │  │
+ │                                                                      │  │
+ │    workspace: ~/openbeast-files/users/<user>/ (+ .manifest.jsonl)    │  │
+ └───────────────────────────────────┬──────────────────────────────────┘  │
+                                     │                                     │
+                      spawned agents'│        ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┴╌┐
+                           inference │        ┆  Agent Router (port 8088)    ┆
+                                     │        ┆  opt-in: AGENT_ROUTER=true   ┆
+                                     │        └╌╌╌╌╌╌╌╌╌┬╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
+                                     ▼                  │ (router off: chat
+                       ┌────────────────────────────┐   │  goes to :8080 direct)
+                       │      llama.cpp Server      │◀──┘
+                       │        (port 8080)         │
+                       │      6 parallel slots      │
+                       │      unified KV cache      │
+                       │     continuous batching    │
+                       ├────────────────────────────┤
+                       │   RTX 5090 · 32 GB GDDR7   │
+                       └────────────────────────────┘
 ```
 
 Everything binds to `127.0.0.1` by default; remote devices come in through

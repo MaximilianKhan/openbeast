@@ -60,7 +60,7 @@ set_key() { # set_key <NAME>
 
 echo "RBAC Phase 2 — per-profile MCPO keys"
 if ! grep -qE '^[[:space:]]*MCPO_(ADMIN|GUEST)_KEY' "$CONF" && ! $ROTATE; then
-  printf '\n# RBAC Phase 2 — per-profile MCPO keys (scripts/setup-mcpo-keys.sh).\n# Both set => keyed admin MCPO on :3001 + guest instance (web tools only)\n# on :MCPO_GUEST_PORT (default 3002). Delete both lines to fall back to\n# Phase 1 (single keyless instance).\n' >> "$CONF"
+  printf '\n# RBAC Phase 2 — per-profile tool-server keys (scripts/setup-mcpo-keys.sh).\n# Both set => the identity tool server (:3001) checks a Bearer key per call:\n# admin key = all tools, guest key = web_search+fetch only. Delete both\n# lines to fall back to the open single-user default.\n' >> "$CONF"
 fi
 set_key MCPO_ADMIN_KEY
 set_key MCPO_GUEST_KEY

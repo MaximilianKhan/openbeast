@@ -156,13 +156,16 @@ the choke point where identity, quotas, audit, and metering all attach.
     `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` set; if
     green, flip default-on in `conf.sh`. Re-verify the setpgid/killpg
     interaction on every sandlock version bump.
-  - ✅ **Per-profile MCPO keys (DONE 2026-07-09, opt-in).** Enable with
-    `scripts/setup-mcpo-keys.sh` → two keyed MCPO instances (admin :3001 all
-    tools, guest :3002 web_search+fetch ONLY via the `OPENBEAST_MCP_TOOLS`
-    registration allowlist). Guest can't reach admin tools even bypassing
-    the WebUI layer — the tools don't exist on the guest server. Verified
-    401/403/200 live; tests `tests/test_mcp_allowlist.py`. Details in
-    docs/RBAC_PLAN.md Phase 2 item 1.
+  - ✅ **Per-profile tool-server keys (DONE 2026-07-09, opt-in).** Enable
+    with `scripts/setup-mcpo-keys.sh` → the identity tool server (:3001,
+    agents/openapi_tools.py) checks a Bearer key per call: admin key = all
+    15 tools, guest key = web_search+fetch only (denied tools 404). Guest
+    can't reach admin tools even bypassing the WebUI layer. Verified
+    401/403/404/200 live; tests `tests/test_identity_server.py`. (First
+    shipped that morning as TWO keyed mcpo instances — superseded the same
+    day by the single identity server; the `OPENBEAST_MCP_TOOLS`
+    registration allowlist lives on in mcp_server.py,
+    tests/test_mcp_allowlist.py. History: docs/RBAC_PLAN.md Phase 2.)
 
 ## ⏳ READY TO BUILD — per-user/per-chat file isolation (investigated 2026-07-09)
 

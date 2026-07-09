@@ -117,6 +117,11 @@ if ! check "Tool server" "$MCPO_URL/health" "ok"; then
     fi
     python3 "$REPO_DIR/agents/openapi_tools.py" &
     MCPO_NEW_PID=$!
+    # Record the pid IMMEDIATELY — it's the live process either way, and a
+    # slow-but-alive start must not leave the OLD pid on record (start.sh
+    # --status would lie about what's running).
+    mkdir -p "$REPO_DIR/.run"
+    echo "$MCPO_NEW_PID" > "$REPO_DIR/.run/mcpo.pid"
     MCPO_OK=0
     for _i in $(seq 1 15); do
       if curl -s --max-time 2 "http://$HEALTH_HOST:3001/health" 2>/dev/null | grep -qi ok; then
@@ -126,9 +131,6 @@ if ! check "Tool server" "$MCPO_URL/health" "ok"; then
       sleep 1
     done
     if [[ $MCPO_OK -eq 1 ]]; then
-      # Keep the pidfile honest so start.sh --status / stop.sh see this pid.
-      mkdir -p "$REPO_DIR/.run"
-      echo "$MCPO_NEW_PID" > "$REPO_DIR/.run/mcpo.pid"
       echo "       → restarted (pid $MCPO_NEW_PID)"
     else
       echo "       → restart FAILED: tool server not serving after 15s (check its output above)"

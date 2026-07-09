@@ -65,7 +65,7 @@ def test_valid_jwt_sub_drives_sharding(workspace):
     r = c.post("/write_file", json={"path": "j.md", "content": "x"},
                headers={"X-OpenWebUI-User-Jwt": mint(sub="alice")})
     assert r.status_code == 200
-    assert (workspace / "users" / "alice" / "j.md").exists()
+    assert (workspace / "users" / openapi_tools._sanitize("alice") / "j.md").exists()
 
 
 def test_plain_headers_ignored_in_jwt_mode(workspace):
@@ -113,3 +113,20 @@ def test_metrics_exposition(workspace):
     assert "# TYPE openbeast_tool_calls_total counter" in body
     assert 'openbeast_tool_calls_total{tool="write_file",profile="open",outcome="ok"} 1' in body
     assert 'openbeast_tool_latency_ms_total{tool="write_file"}' in body
+
+
+def test_alg_tampering_rejected(workspace):
+    """Tokens signed with a different alg (or alg=none) must 401 — guards the
+    algorithms=["HS256"] pin against refactors (review test-gap #2)."""
+    c = client()
+    now = int(time.time())
+    payload = {"sub": "evil", "role": "admin", "iss": "open-webui",
+               "iat": now, "exp": now + 300}
+    hs512 = pyjwt.encode(payload, SECRET, algorithm="HS512")
+    r = c.post("/write_file", json={"path": "x.md", "content": "x"},
+               headers={"X-OpenWebUI-User-Jwt": hs512})
+    assert r.status_code == 401
+    none_tok = pyjwt.encode(payload, key=None, algorithm="none")
+    r = c.post("/write_file", json={"path": "x.md", "content": "x"},
+               headers={"X-OpenWebUI-User-Jwt": none_tok})
+    assert r.status_code == 401

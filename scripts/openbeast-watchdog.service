@@ -8,4 +8,12 @@ Description=OpenBeast healthcheck --restart
 Type=oneshot
 WorkingDirectory=@REPO@
 ExecStart=@REPO@/scripts/healthcheck.sh --restart
-TimeoutStartSec=300
+# healthcheck --restart launches replacement services as plain background
+# children. Default KillMode=control-group would reap them the moment the
+# oneshot exits — the watchdog would "restart" a service and then kill it
+# seconds later, forever. KillMode=process kills only the healthcheck
+# itself on timeout; restarted services live on.
+KillMode=process
+# The llama restart path alone waits up to 180s before the model load even
+# begins; give the whole pass room.
+TimeoutStartSec=600

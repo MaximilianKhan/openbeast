@@ -125,14 +125,14 @@ if [[ $DAEMON -eq 1 ]]; then
     # the transient unit — systemd-run starts from a CLEAN environment, so
     # without this `OPENBEAST_BIND=... ./start.sh -d` silently reverts to
     # conf/defaults inside the daemon.
-    # SECRETS ARE FILTERED (any *KEY* / *PASSWORD* var): unit env is readable
-    # via `systemctl --user show -p Environment`, so keys must not travel
-    # this way. The daemonized start.sh re-sources conf.sh, which reads them
-    # from openbeast.conf (mode 600) directly — secret overrides therefore
-    # belong in openbeast.conf, not in per-shell env, when using -d.
+    # SECRETS ARE FILTERED (any *KEY* / *PASSWORD* / *SECRET* var): unit env
+    # is readable via `systemctl --user show -p Environment`, so keys must
+    # not travel this way. The daemonized start.sh re-sources conf.sh, which
+    # reads them from openbeast.conf (mode 600) directly — secret overrides
+    # therefore belong in openbeast.conf, not per-shell env, when using -d.
     SETENV_ARGS=()
     while IFS= read -r _var; do
-      if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* ]]; then
+      if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* && "$_var" != *SECRET* ]]; then
         SETENV_ARGS+=(--setenv="${_var}=${!_var}")
       fi
     done < <(compgen -e | grep '^OPENBEAST_' || true)
@@ -377,6 +377,17 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
 fi
 
 echo "Starting Open WebUI..."
+# Boot race: as a user unit, openbeast.service can't order itself after the
+# SYSTEM docker.service (user managers ignore system-unit deps), so at boot
+# we may get here — with the model already loaded — before dockerd is up.
+# Failing under set -e would tear the whole loaded stack down; wait instead.
+if ! docker info >/dev/null 2>&1; then
+  echo "  (docker daemon not ready — waiting up to 60s)"
+  for _i in $(seq 1 30); do
+    docker info >/dev/null 2>&1 && break
+    sleep 2
+  done
+fi
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
 
 # Configure Open WebUI (tool server + native function calling) in background

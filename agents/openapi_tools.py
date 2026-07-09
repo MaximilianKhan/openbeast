@@ -26,7 +26,9 @@ real MCP client; this module imports and serves the same 15 tool functions,
 so the two surfaces cannot drift.
 
 Env:
-  OPENBEAST_TOOLS_PORT        listen port          (default 3001)
+  OPENBEAST_TOOLS_PORT        listen port (default 3001 — note start.sh and
+                              healthcheck.sh probe 3001; changing this is
+                              for standalone runs only)
   OPENBEAST_BIND              bind address         (default 127.0.0.1)
   OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (both set => auth on)
   OPENBEAST_MCPO_GUEST_KEY    guest profile key
@@ -83,8 +85,13 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _sanitize(component: str) -> str:
-    s = _UNSAFE.sub("_", component)[:64].strip("._")
-    return s or "anonymous"
+    """Filesystem-safe AND injective: two distinct raw ids can never map to
+    the same shard. The readable prefix keeps `ls` friendly; the digest of
+    the RAW id guarantees uniqueness ("max!" vs "max?", all-unicode ids,
+    >64-char ids all collide on the prefix alone)."""
+    s = _UNSAFE.sub("_", component)[:48].strip("._") or "u"
+    digest = hashlib.sha256(component.encode()).hexdigest()[:8]
+    return f"{s}-{digest}"
 
 
 def create_app() -> FastAPI:
@@ -119,6 +126,10 @@ def create_app() -> FastAPI:
         Header mode (no secret): the legacy X-OpenWebUI-User-* headers,
         trusted as sent (loopback threat model; see module docstring).
         """
+        # chat_id stays a plain header even in JWT mode (WebUI doesn't put
+        # it in the token). Forgeable — but it only selects a subdirectory
+        # INSIDE the verified caller's own shard, so the blast radius is
+        # self-inflicted.
         chat = request.headers.get(_HDR_CHAT, "").strip() or None
         if jwt_secret:
             token = request.headers.get(_HDR_JWT, "").strip()
@@ -214,10 +225,31 @@ def create_app() -> FastAPI:
         # blocking tools don't stall the event loop AND the ContextVar
         # override is naturally scoped to this request's thread.
         def endpoint(request: Request, args: ArgsModel):  # type: ignore[valid-type]
-            profile = check_auth(request, name)
-            user, role, chat = identity_from(request)
+            # Denials MUST reach the audit trail and metrics — a guest
+            # probing /bash, a wrong-key brute force, or forged JWTs are
+            # exactly the events an audit log exists for.
+            try:
+                profile = check_auth(request, name)
+                user, role, chat = identity_from(request)
+            except HTTPException as e:
+                audit(request.headers.get(_HDR_USER) or None,
+                      request.headers.get(_HDR_ROLE) or None,
+                      request.headers.get(_HDR_CHAT) or None,
+                      name, "denied", False, 0, {},
+                      f"http {e.status_code}: {e.detail}")
+                with metrics_lock:
+                    calls[(name, "denied", "error")] += 1
+                raise
             kwargs = args.model_dump()
+            # A spawned agent's workdir must not silently escape the
+            # caller's shard: mcp_server resolves a RELATIVE workdir against
+            # the server process CWD (the repo!), which the ContextVar can't
+            # reach across the subprocess boundary. Anchor it here instead.
             shard = shard_for(user, chat)
+            if (shard and name in ("start_agent", "start_skill_agent")
+                    and not os.path.isabs(kwargs.get("workdir", "."))):
+                kwargs["workdir"] = os.path.normpath(
+                    os.path.join(shard, kwargs.get("workdir", ".")))
             token = _tools.set_base_dir_override(shard) if shard else None
             t0 = time.monotonic()
             ok, err = True, ""

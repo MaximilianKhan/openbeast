@@ -100,9 +100,10 @@ def test_per_user_sharding(workspace):
     hdr = {"X-OpenWebUI-User-Id": "alice"}
     r = c.post("/write_file", json={"path": "report.md", "content": "hi"}, headers=hdr)
     assert r.status_code == 200
-    assert (workspace / "users" / "alice" / "report.md").exists()
+    shard = workspace / "users" / openapi_tools._sanitize("alice")
+    assert (shard / "report.md").exists()
     # alice's manifest lives in HER shard, not the root
-    assert [e["path"] for e in manifest(workspace / "users" / "alice")] == ["report.md"]
+    assert [e["path"] for e in manifest(shard)] == ["report.md"]
     assert manifest(workspace) == []
 
 
@@ -127,7 +128,8 @@ def test_per_chat_sharding(workspace):
     c = client(sharding="chat")
     hdr = {"X-OpenWebUI-User-Id": "alice", "X-OpenWebUI-Chat-Id": "chat-42"}
     c.post("/write_file", json={"path": "n.md", "content": "x"}, headers=hdr)
-    assert (workspace / "users" / "alice" / "chats" / "chat-42" / "n.md").exists()
+    assert (workspace / "users" / openapi_tools._sanitize("alice") / "chats"
+            / openapi_tools._sanitize("chat-42") / "n.md").exists()
 
 
 def test_sharding_off(workspace):
@@ -164,3 +166,49 @@ def test_audit_log_written_without_raw_args(workspace):
     entry = json.loads(tail.strip().splitlines()[-1])
     assert entry["tool"] == "write_file" and entry["user"] == "alice"
     assert entry["ok"] is True and "args_sha256" in entry
+
+
+# --- perfection-pass regressions (2026-07-09 adversarial review) --------------
+
+def test_sanitize_is_injective():
+    """Distinct raw ids must NEVER share a shard (review bug #3)."""
+    ids = ["max", "max!", "max?", "日本語", "中文", "a" * 100, "a" * 101]
+    shards = [openapi_tools._sanitize(i) for i in ids]
+    assert len(set(shards)) == len(ids), shards
+    assert all("/" not in s and ".." not in s for s in shards)
+
+
+def test_denied_calls_reach_audit_and_metrics(workspace):
+    """401/403/404 must be visible in the audit trail (review bug #4)."""
+    audit = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    before = os.path.getsize(audit) if os.path.exists(audit) else 0
+    c = client(keyed=True)
+    c.post("/bash", json={"command": "true"},
+           headers={"Authorization": "Bearer test-guest-key",
+                    "X-OpenWebUI-User-Id": "prober"})   # guest on admin tool: 404
+    with open(audit) as f:
+        f.seek(before)
+        entries = [json.loads(x) for x in f.read().splitlines() if x.strip()]
+    denied = [e for e in entries if e["profile"] == "denied"]
+    assert denied and denied[-1]["tool"] == "bash" and "404" in denied[-1]["error"]
+    assert 'profile="denied"' in c.get("/metrics").text
+
+
+def test_spawn_workdir_anchored_to_shard(workspace, monkeypatch):
+    """A relative start_agent workdir must resolve inside the caller's shard,
+    not the server CWD (review bug #5). Stub the spawn (signature-preserving —
+    the endpoint factory introspects it) and capture what it receives."""
+    captured = {}
+
+    def stub(task: str, workdir: str = ".", max_iter: int = 200,
+             context: str = "", base_url: str = "") -> str:
+        captured.update(task=task, workdir=workdir)
+        return "agent stub"
+
+    monkeypatch.setattr(openapi_tools.impl, "start_agent", stub)
+    c = TestClient(openapi_tools.create_app())   # endpoint closes over the stub
+    r = c.post("/start_agent", json={"task": "t", "workdir": "proj"},
+               headers={"X-OpenWebUI-User-Id": "alice"})
+    assert r.status_code == 200
+    shard = str(workspace / "users" / openapi_tools._sanitize("alice"))
+    assert captured["workdir"] == os.path.join(shard, "proj"), captured
