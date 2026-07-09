@@ -126,10 +126,36 @@ update_images() {
       | grep -E 'open-webui|searxng' || warn "images not pulled yet"
     return 0
   fi
-  docker compose pull
-  ok "images pulled"
-  # Recreate only containers that are actually running on an old image;
-  # a stopped stack stays stopped.
+  # docker-compose.yml pins each image by digest. A plain `compose pull`
+  # would just re-fetch the pinned digest, so --images is the SANCTIONED
+  # bump: pull the moving TAG, read its new digest, rewrite the pin (same
+  # pattern as requirements.txt). Repo:tag pairs, keep in sync with compose.
+  local compose="$REPO_DIR/docker-compose.yml"
+  local bumped=0
+  for _spec in \
+    "ghcr.io/open-webui/open-webui:main" \
+    "searxng/searxng:latest"; do
+    docker pull -q "$_spec" >/dev/null 2>&1 || { warn "pull failed: $_spec"; continue; }
+    local _repo="${_spec%%:*}"
+    local _newdigest
+    _newdigest=$(docker inspect --format '{{index .RepoDigests 0}}' "$_spec" 2>/dev/null | sed 's/.*@//')
+    [[ -n "$_newdigest" ]] || { warn "no digest for $_spec"; continue; }
+    # Replace the "<repo>...@sha256:..." occurrence with the fresh digest.
+    if grep -q "${_repo}[^[:space:]]*@sha256:" "$compose"; then
+      local _old
+      _old=$(grep -oE "${_repo}[^[:space:]]*@sha256:[a-f0-9]+" "$compose" | head -1)
+      local _new="${_spec}@${_newdigest}"
+      if [[ "$_old" != "$_new" ]]; then
+        sed -i "s|${_old}|${_new}|" "$compose"
+        ok "pinned $_spec -> ${_newdigest:0:19}…"
+        bumped=1
+      else
+        ok "$_spec already at latest digest"
+      fi
+    fi
+  done
+  [[ $bumped -eq 1 ]] && warn "commit the docker-compose.yml digest bump after verifying the stack"
+  # Recreate only containers actually running; a stopped stack stays stopped.
   if docker compose ps --status running --quiet 2>/dev/null | grep -q .; then
     docker compose up -d
     ok "running containers recreated on the new images"

@@ -8,7 +8,11 @@ name: openbeast
 
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    # Pinned by digest (supply-chain anchoring): the :main tag moves, so a
+    # rebuild months later could pull a different — possibly compromised —
+    # image. The digest is the exact image validated on the reference box.
+    # `scripts/update.sh --images` bumps BOTH the tag-follow and this digest.
+    image: ghcr.io/open-webui/open-webui:main@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0
     container_name: open-webui
     network_mode: host
     environment:
@@ -49,7 +53,8 @@ services:
     restart: unless-stopped
 
   searxng:
-    image: searxng/searxng
+    # Digest-pinned — see the open-webui note above.
+    image: searxng/searxng:latest@sha256:02aa607ecc87165ebe6212476a176b8984d891c01a2d130ad03a58109d13db77
     container_name: searxng
     network_mode: host
     environment:

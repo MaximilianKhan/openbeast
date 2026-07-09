@@ -492,8 +492,10 @@ class TestResourceCaps(unittest.TestCase):
     """Output/read caps that keep a runaway child from OOMing the runner."""
 
     def test_read_file_refuses_device_file(self):
+        # /dev/zero is now caught by the pseudo-filesystem guard (which runs
+        # before the regular-file check) — a device file under /dev.
         result = read_file("/dev/zero")
-        self.assertIn("not a regular file", result)
+        self.assertIn("pseudo-filesystem", result)
 
     def test_run_reaped_caps_retained_output(self):
         from tools import run_reaped, _MAX_CAPTURE_BYTES

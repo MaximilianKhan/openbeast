@@ -145,3 +145,62 @@ class TestPublicUrlAllowed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDNSRebindingPin(unittest.TestCase):
+    """The IP the guard vets must be the IP the socket dials — no separate
+    connect-time resolution a rebinding DNS server could flip."""
+
+    def setUp(self):
+        self._gai = socket.getaddrinfo
+        self._cc = socket.create_connection
+
+    def tearDown(self):
+        socket.getaddrinfo = self._gai
+        socket.create_connection = self._cc
+
+    def test_socket_dials_vetted_ip_no_reresolution_at_connect(self):
+        dialed = {}
+        socket.getaddrinfo = lambda h, p, *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p or 80))]
+
+        def cc(addr, *a, **k):
+            dialed["ip"] = addr[0]
+            raise OSError("stub dial")
+        socket.create_connection = cc
+        fetch("http://pin.example/")
+        self.assertEqual(dialed["ip"], "93.184.216.34")
+
+    def test_connect_time_flip_to_loopback_is_refused(self):
+        n = {"i": 0}
+
+        def flip(h, p, *a, **k):
+            n["i"] += 1
+            ip = "93.184.216.34" if n["i"] == 1 else "127.0.0.1"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, p or 80))]
+        socket.getaddrinfo = flip
+        out = fetch("http://rebind.example/")
+        self.assertIn("non-public address", out)
+
+
+class TestReadFileHazardMounts(unittest.TestCase):
+    """read_file must refuse pseudo-filesystems (procfs/sysfs/devfs) — they
+    look regular but can be infinite/side-effecting."""
+
+    def test_proc_refused(self):
+        from tools import read_file
+        self.assertIn("pseudo-filesystem", read_file("/proc/self/stat"))
+
+    def test_dev_zero_refused(self):
+        from tools import read_file
+        self.assertIn("pseudo-filesystem", read_file("/dev/zero"))
+
+    def test_normal_file_still_reads(self, ):
+        import tempfile
+        from tools import read_file
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("a\nb\nc\n")
+            name = f.name
+        out = read_file(name)
+        self.assertIn("a\n", out)
+        os.unlink(name)

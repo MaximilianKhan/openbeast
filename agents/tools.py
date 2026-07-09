@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import html
+import http.client
 import ipaddress
 import json
 import os
@@ -230,6 +231,15 @@ _PROTECTED_BASENAMES = {
     ".bashrc", ".bash_profile", ".zshrc", ".profile",
 }
 
+# Pseudo-filesystems that read_file refuses: regular-file-shaped but can be
+# infinite (/proc/kcore), streaming (a 0-size /proc file), or side-effecting.
+_HAZARD_PREFIXES = ("/proc", "/sys", "/dev")
+
+
+def _hazard_path(rp: str) -> bool:
+    """True if the (already-realpath'd) path lives in a pseudo-filesystem."""
+    return any(rp == p or rp.startswith(p + os.sep) for p in _HAZARD_PREFIXES)
+
 
 def _guard_write_path(path: str):
     """Return an error string if `path` is a protected credential/persistence
@@ -255,6 +265,13 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read lines from a file."""
     try:
         path = _resolve(path)
+        # Pseudo-filesystems (procfs/sysfs/devfs) present as regular files but
+        # can be infinite, blocking, or side-effecting to read — e.g. a 0-size
+        # /proc file that streams unbounded content, or /dev/zero. _resolve
+        # already realpath'd, so a symlink into them is caught here too.
+        if _hazard_path(path):
+            return (f"Error: refusing to read {path} — pseudo-filesystem paths "
+                    f"(/proc, /sys, /dev) can be infinite or side-effecting")
         # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
         # regular-file check and the read see the same inode.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
@@ -268,11 +285,17 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
                     f"{_MAX_READ_BYTES}); read a slice with bash instead")
         os.set_blocking(fd, True)
         with os.fdopen(fd, "r", errors="replace") as f:
-            lines = f.readlines()
+            # Bound the read regardless of the stat'd size: a pseudo-file (or a
+            # file growing under us) can report size 0 yet stream forever. One
+            # byte past the cap tells us it was truncated.
+            data = f.read(_MAX_READ_BYTES + 1)
+        truncated = len(data) > _MAX_READ_BYTES
+        lines = data[:_MAX_READ_BYTES].splitlines(keepends=True)
         total = len(lines)
         selected = lines[offset : offset + limit]
         numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(selected)]
-        header = f"[{path}] lines {offset + 1}-{offset + len(selected)} of {total}\n"
+        note = f" (+ more; read capped at {_MAX_READ_BYTES} bytes)" if truncated else ""
+        header = f"[{path}] lines {offset + 1}-{offset + len(selected)} of {total}{note}\n"
         return header + "".join(numbered)
     except Exception as e:
         return f"Error: {e}"
@@ -427,57 +450,129 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         return f"Error: {e}"
 
 
-def _fetch_url_blocked(url: str) -> str | None:
-    """SSRF guard for fetch(): return a human-readable refusal reason, or
-    None if the URL is safe to request.
-
-    Two checks, both BEFORE any network request:
-      1. Scheme allowlist — http/https only (file:// reads the disk,
-         ftp/gopher/etc. are classic SSRF pivots).
-      2. Resolve the hostname (ALL getaddrinfo results, v4+v6) and refuse if
-         ANY resolved address is loopback (127/8, ::1), private (10/8,
-         172.16/12, 192.168/16, fc00::/7), link-local (169.254/16, fe80::/10),
-         unspecified, multicast, or otherwise reserved. This blocks
-         http://127.0.0.1:3001 (MCPO admin tools), http://169.254.169.254
-         (cloud metadata), and public DNS names that resolve privately.
-    """
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() not in ("http", "https"):
-        return f"scheme '{parsed.scheme}' not allowed (http/https only)"
-    host = parsed.hostname
-    if not host:
-        return "URL has no hostname"
+def _vet_addr(addr: str) -> str | None:
+    """Refusal reason if `addr` is a non-public IP, else None."""
     try:
-        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
-                                   proto=socket.IPPROTO_TCP)
-    except socket.gaierror as e:
-        return f"could not resolve host '{host}': {e}"
-    if not infos:
-        return f"host '{host}' resolved to no addresses"
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr.split("%")[0])  # strip v6 zone id
-        except ValueError:
-            return f"host '{host}' resolved to unparseable address '{addr}'"
-        if (ip.is_loopback or ip.is_private or ip.is_link_local
-                or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
-            return f"host '{host}' resolves to non-public address {ip}"
+        ip = ipaddress.ip_address(addr.split("%")[0])  # strip v6 zone id
+    except ValueError:
+        return f"unparseable address '{addr}'"
+    if (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
+        return f"non-public address {ip}"
     return None
 
 
-class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-validate EVERY redirect hop with the same SSRF guard, so a public
-    URL can't 302 the fetch into localhost / private ranges / file://."""
+def _resolve_vetted(host: str, port, scheme: str):
+    """Resolve `host` and vet EVERY result. Returns (vetted_ips, None) when
+    all resolved addresses are public, else (None, reason). Returning the
+    exact IPs it validated is what lets the caller CONNECT to one of them —
+    closing the DNS-rebinding window where a second resolution could hand
+    back 127.0.0.1 after the guard saw a public address."""
+    try:
+        infos = socket.getaddrinfo(
+            host, port or (443 if scheme == "https" else 80),
+            proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        return None, f"could not resolve host '{host}': {e}"
+    if not infos:
+        return None, f"host '{host}' resolved to no addresses"
+    ips = []
+    for info in infos:
+        addr = info[4][0]
+        reason = _vet_addr(addr)
+        if reason:
+            return None, f"host '{host}' resolves to {reason}"
+        ips.append(addr)
+    return ips, None
 
+
+def _fetch_url_blocked(url: str) -> str | None:
+    """SSRF guard for fetch(): return a human-readable refusal reason, or
+    None if the URL is safe. Scheme allowlist (http/https only) + resolve
+    the hostname and refuse if ANY address is loopback/private/link-local/
+    reserved. Blocks http://127.0.0.1:3001, http://169.254.169.254, and
+    public names that resolve privately. The authoritative check is repeated
+    atomically at connect time (see _PinnedHTTP*Handler) so a DNS flip
+    between this call and the socket can't sneak through — this is the
+    early, friendly-error copy."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        return f"scheme '{parsed.scheme}' not allowed (http/https only)"
+    if not parsed.hostname:
+        return "URL has no hostname"
+    _, reason = _resolve_vetted(parsed.hostname, parsed.port, parsed.scheme.lower())
+    return reason
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
+    hostname — the IP the SSRF guard approved is the exact IP we connect to."""
+    def __init__(self, *a, pinned_ip=None, **kw):
+        super().__init__(*a, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Same pin for TLS. Crucially keeps server_hostname = the ORIGINAL host
+    so SNI and certificate validation still check the real name, not the IP."""
+    def __init__(self, *a, pinned_ip=None, **kw):
+        super().__init__(*a, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _pinned_open(handler, req, conn_class, scheme):
+    """Resolve + vet + pin, atomically, for THIS request (initial or any
+    redirect hop — urllib re-enters the handler per hop, so every hop is
+    independently vetted against the address it actually dials)."""
+    parsed = urllib.parse.urlparse(req.full_url)
+    ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
+    if reason:
+        raise urllib.error.URLError(f"fetch blocked: {reason}")
+    return handler.do_open(conn_class, req, pinned_ip=ips[0])
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return _pinned_open(self, req, _PinnedHTTPConnection, "http")
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return _pinned_open(self, req, _PinnedHTTPSConnection, "https")
+
+
+class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject a bad redirect target EARLY with a clear message (defense in
+    depth + friendly error). The atomic resolve-vet-pin still runs in the
+    pinned handlers when urllib re-opens the redirected request, so this
+    early check being one resolution ahead can't be exploited."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         reason = _fetch_url_blocked(newurl)
         if reason:
-            raise urllib.error.URLError(f"fetch blocked: redirect to {newurl}: {reason}")
+            raise urllib.error.URLError(
+                f"fetch blocked: redirect to {newurl}: {reason}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_fetch_opener = urllib.request.build_opener(_FetchRedirectHandler)
+# Default HTTP/HTTPS handlers replaced by the pinned variants (build_opener
+# swaps same-type handlers), so no request path re-resolves post-guard.
+_fetch_opener = urllib.request.build_opener(
+    _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _FetchRedirectHandler)
 
 
 def fetch(url: str, max_length: int = 50_000) -> str:
