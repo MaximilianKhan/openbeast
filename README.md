@@ -98,73 +98,87 @@ them. See [`docs/RESULTS.md`](docs/RESULTS.md) and
 
 ## Architecture
 
-Two frontends, one tool arsenal, two ways in. The browser path goes through
-the **identity tool server** (`agents/openapi_tools.py`, which replaced the
-generic MCPO proxy in v1.1): it reads the identity headers Open WebUI
-forwards on every tool call, shards each user's files into their own
-workspace, enforces the per-profile RBAC keys, and writes an audit trail.
-The terminal path (OpenCode) speaks MCP over stdio to
-`agents/mcp_server.py`. **Both serve the same 15 tool functions** — the
-identity server imports them from the MCP server, so the two surfaces
+```mermaid
+flowchart TB
+    dev["📱 Your devices — phone · laptop · desktop"]
+    dev -->|"Tailscale · WireGuard + auto-HTTPS<br/>authenticated, tailnet-only"| edge
+    edge{{"Ingress — loopback 127.0.0.1 by default<br/>remote only via Tailscale Serve"}}
+
+    subgraph FE["Frontends"]
+        direction LR
+        webui["🌐 Open WebUI · :3000<br/>browser chat · accounts · RBAC roles"]
+        opencode["⌨️ OpenCode<br/>terminal coding agent"]
+        agentsh["🔁 agent.sh<br/>headless autonomous agent"]
+    end
+    edge --> webui
+
+    subgraph TOOLS["Tool layer — ONE arsenal, TWO surfaces (imported → can't drift)"]
+        direction TB
+        its["🔑 Identity Tool Server · :3001<br/><b>agents/openapi_tools.py</b><br/>RBAC profile keys · per-user file shards<br/>audit trail + Prometheus /metrics<br/>signed-JWT or header identity"]
+        mcp["🔌 MCP Server (stdio)<br/><b>agents/mcp_server.py</b>"]
+        arsenal["⚙️ <b>Tool Arsenal — agents/tools.py</b> · 15 tools<br/>bash · read/write/edit_file · grep · list_files<br/>fetch (SSRF-guarded) · web_search<br/>start / check / tail / list / stop_agent · skill · skill_agent<br/>workspace → ~/openbeast-files/users/USER/"]
+        its --> arsenal
+        mcp --> arsenal
+    end
+
+    webui -->|"tool calls + identity headers<br/>X-OpenWebUI-User / Chat / JWT"| its
+    opencode -->|"MCP over stdio"| mcp
+    agentsh --> arsenal
+
+    router["🧭 Agent Router · :8088 <i>(opt-in)</i><br/>grammar-constrained spawn-intent<br/>+ admin-only identity gate"]
+    webui -->|"chat completions"| router
+    router -->|"no spawn → pass through"| llama
+    router -.->|"spawn intent → start_agent"| its
+
+    arsenal -->|"web_search"| searxng
+    arsenal -.->|"spawned agents' inference"| llama
+
+    searxng["🔎 SearXNG · :8888<br/>private metasearch (no tracking)"]
+    llama["🧠 llama.cpp Server · :8080<br/>OpenAI-compatible API<br/>6 parallel slots · unified KV cache<br/>continuous batching · MTP spec-decode"]
+    gpu["🎮 GPU — RTX 5090 · 32 GB (reference)<br/>context auto-scaled to card VRAM · 11 GB floor"]
+    llama --> gpu
+
+    classDef fe fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
+    classDef tool fill:#ede9fe,stroke:#7c3aed,color:#2a1150;
+    classDef inf fill:#dcfce7,stroke:#16a34a,color:#0b2417;
+    classDef sec fill:#fef3c7,stroke:#d97706,color:#3a2503;
+    class webui,opencode,agentsh fe;
+    class its,mcp,arsenal tool;
+    class llama,gpu,searxng inf;
+    class edge,router sec;
+```
+
+**How to read it.** Two frontends, one tool arsenal, two ways into it. The
+**browser path** (Open WebUI) calls the **identity tool server**
+(`agents/openapi_tools.py`, which replaced the generic MCPO proxy in v1.1):
+it reads the identity headers Open WebUI forwards on every tool call —
+plain `X-OpenWebUI-User/Chat` or, in enterprise mode, a signed JWT — then
+enforces the per-profile RBAC keys, shards each user's files into their own
+`users/<id>/` workspace, and writes an audit trail. The **terminal path**
+(OpenCode) speaks MCP over stdio to `agents/mcp_server.py`. Both import the
+**same 15 tool functions** from `agents/tools.py`, so the two surfaces
 cannot drift.
 
-```
-                           ┌──────────────────────┐
-                           │      Open WebUI      │
-                           │      (port 3000)     │
-                           └─────────┬──────────┬─┘
-               tools + identity hdrs │          │ chat
-              (X-OpenWebUI-User/Chat)│          └──────────────────────────┐
-                                     ▼                                     │
- ┌──────────────────┐   ┌──────────────────────────┐   ┌────────────────┐  │
- │     OpenCode     │   │   Identity Tool Server   │   │    SearXNG     │  │
- │    (terminal)    │   │       (port 3001)        │   │  (port 8888)   │  │
- └────────┬─────────┘   │  RBAC profile keys       │   └───────▲────────┘  │
-          │             │  per-user file shards    │           │           │
-          │ stdio (MCP) │  audit trail · /metrics  │ web_search│           │
-          ▼             └────────────┬─────────────┘           │           │
- ┌──────────────────┐                │                         │           │
- │  MCP Tool Server │  same 15 tool  │  functions —            │           │
- │ (mcp_server.py)  ├────────────────┤  imported, can't drift  │           │
- └──────────────────┘                ▼                         │           │
- ┌─────────────────────────────────────────────────────────────┴────────┐  │
- │                    Tool Arsenal (agents/tools.py)                    │  │
- │    bash · read_file · write_file · edit_file · grep · list_files     │  │
- │    fetch (SSRF-guarded) · web_search                                 │  │
- │    start_agent · check/tail/list/stop_agent · skill · skill_agent    │  │
- │                                                                      │  │
- │    workspace: ~/openbeast-files/users/<user>/ (+ .manifest.jsonl)    │  │
- └───────────────────────────────────┬──────────────────────────────────┘  │
-                                     │                                     │
-                      spawned agents'│        ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┴╌┐
-                           inference │        ┆  Agent Router (port 8088)    ┆
-                                     │        ┆  opt-in: AGENT_ROUTER=true   ┆
-                                     │        └╌╌╌╌╌╌╌╌╌┬╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
-                                     ▼                  │ (router off: chat
-                       ┌────────────────────────────┐   │  goes to :8080 direct)
-                       │      llama.cpp Server      │◀──┘
-                       │        (port 8080)         │
-                       │      6 parallel slots      │
-                       │      unified KV cache      │
-                       │     continuous batching    │
-                       ├────────────────────────────┤
-                       │   RTX 5090 · 32 GB GDDR7   │
-                       └────────────────────────────┘
-```
-
-Everything binds to `127.0.0.1` by default; remote devices come in through
-Tailscale's authenticated HTTPS proxy (see [Remote access](#remote-access-tailscale)).
-With RBAC Phase 2 keys enabled (`scripts/setup-mcpo-keys.sh`), every tool
-call to :3001 must present a profile key — admin reaches all 15 tools,
-guest reaches `web_search`+`fetch` only — and each WebUI account's files
-land in its own `users/<id>/` shard with a per-shard write index.
+- **Solid arrows** are the request path; **dashed arrows** are opt-in or
+  conditional (the agent router only runs when `AGENT_ROUTER=true`; spawned
+  background agents route their *inference* to llama-server while still
+  executing files/shell locally).
+- **Security boundaries (amber):** everything binds `127.0.0.1`; remote
+  devices arrive only through Tailscale's authenticated HTTPS proxy (see
+  [Remote access](#remote-access-tailscale)). With RBAC Phase 2 keys
+  (`scripts/setup-mcpo-keys.sh`), every :3001 tool call must present a
+  profile key — **admin** reaches all 15 tools, **guest** reaches
+  `web_search` + `fetch` only (anything else 404s).
+- **Inference (green):** llama.cpp serves an OpenAI-compatible API with
+  MTP speculative decoding; `serve.sh` auto-scales context to the card's
+  VRAM, and bootstrap refuses GPUs under the 11 GB floor.
 
 ## Features
 
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models: 5 non-MTP benchmarked on v3.5 (Qwen 27B dense Q5_K_XL, **Qwen 27B uncensored Q5_K_P** as default, Qwen 35B-A3B MoE, Qwen 35B-A3B uncensored, Gemma 4 31B-it), 3 MTP benchmarked on the hardened v4 suite 2026-07-08 (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2 MTP), and Qwopus 27B v2 (non-MTP) VRAM-measured, awaiting its sweep
+- 9 pre-configured models. **Four on the hardened v4 suite**: the three MTP builds (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2 MTP) plus the dense Qwen 27B Q5_K_XL. **Four still on legacy v3.5**, pending their v4 re-run: **Qwen 27B Uncensored Q5_K_P** (the default), Qwen 35B-A3B MoE, Qwen 35B-A3B Uncensored, Gemma 4 31B-it. **One never benchmarked**: Qwopus 27B v2 (non-MTP), VRAM-measured only
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is enabled out of the box for maximum answer quality on your normal chats and coding. Thinking is a *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), stateless and isolated, so automated sub-calls (e.g. a structured JSON classification or routing step) can opt out for speed and clean output without changing your deployment or affecting any other request. You keep thinking on where it matters; the plumbing opts itself out where it doesn't.
 
