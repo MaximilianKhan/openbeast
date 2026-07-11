@@ -87,14 +87,12 @@ Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
 **Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
 the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
 **35B-A3B MoE** variants run 30–50 % faster per token. Each swaps in with one
-argument to `start.sh`. Nine models are pre-configured and eight are
-benchmarked: four on the current **v4 suite** (137 base tasks, 291 effective
-units) — the three MTP builds plus the dense **Qwen3.6-27B Q5_K_XL**, which
-landed on v4 at **96.62%** (271/291), a statistical tie with its MTP twin —
-four non-MTP models carrying **legacy v3.5** scores pending a v4 re-run (in
-progress now), and the non-MTP Qwopus getting its first-ever sweep alongside
-them. See [`docs/RESULTS.md`](docs/RESULTS.md) and
-[`evals/README.md`](evals/README.md).
+argument to `start.sh`. Models are ranked by a **capability score** on the
+hardened **v4 suite** (137 base tasks / 291 units) — five ranked so far (the
+three MTP builds, the dense **Qwen3.6-27B Q5_K_XL**, and **Qwen 27B NVFP4**),
+with a 35B NVFP4 run in progress; four older non-MTP models still carry
+**legacy v3.5** scores pending their v4 re-run. See the leaderboard below,
+[`docs/RESULTS.md`](docs/RESULTS.md), and [`evals/README.md`](evals/README.md).
 
 ## Architecture
 
@@ -446,21 +444,13 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 **v4 leaderboard** — RTX 5090 ×1, 291 units, 2026-07-08→09 (full analysis in
 [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)).
 
-> **Ranked by CAPABILITY (scoring v2, 2026-07-10).** The ranking key is
-> **SCORE = CAPABILITY = 0.75 · SOLVE + 0.25 · LANG** — a problem-solving-led
-> split of the old accuracy metric. **SOLVE** (problem-solving) = % of base
-> problems solved in **≥1 language** — the scarce skill; **LANG** (language
-> breadth) = % of the 6 language ports passed *among solved problems* — weighted
-> lighter because porting a working solution across languages is increasingly
-> *automatable* (LSP feedback, MCP language servers, in-context translation).
-> **ACC** is the legacy difficulty-weighted pass rate, retained as a column;
-> **EASY/MED/HARD** are raw per-tier pass % (visual); **SPD** is effective decode
-> throughput (completion tokens ÷ wall-clock). Difficulty weights (easy 1 / med
-> 1.5 / hard 2) and equal language weighting are unchanged. Scores are single
-> RTX 5090 (×1) runs — the board is keyed by `(host_id, model_slug)` so other
-> hardware coexists, and each row characterizes the model/quant, not the card;
-> real run-to-run variance is uncaptured, so treat sub-~1-point Score gaps as
-> noise. Full rationale + changelog: [`docs/RESULTS.md`](docs/RESULTS.md) "Scoring v2".
+**Ranked by capability** — `SCORE = 0.75·SOLVE + 0.25·LANG`:
+
+- **SOLVE** — % of base problems solved in **≥1 language** (problem-solving, the scarce skill).
+- **LANG** — % of the 6 language ports passed *among solved problems* (breadth, weighted lighter: porting a working solution is increasingly automatable via LSP / MCP / in-context translation).
+- **ACC** legacy difficulty-weighted pass rate · **EASY/MED/HARD** raw per-tier pass % · **SPD** effective tok/s · **WALL** total run time.
+
+Single RTX 5090 runs, board keyed by `(host, model)` (other hardware coexists); sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](evals/README.md); rationale/changelog → [`docs/RESULTS.md`](docs/RESULTS.md) "Scoring v2".
 
 | # | Model | Easy | Med | Hard | Acc | Solve | Lang | **Score** | Spd t/s | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -470,71 +460,14 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 | 4 | Qwopus 27B v2 MTP Q5_K_M | 94 | 90 | 86 | 93.0 | 96.4 | 96.5 | **96.4** | 106 | 4h36m |
 | 5 | Qwen 27B NVFP4 MTP | **97** | 93 | 90 | 93.1 | 94.8 | 98.2 | **95.7** | 94 | 5h24m |
 
-> **† Qwen 27B Q5_K_XL (non-MTP)** ran at `-np 6` (tasks parallelized) with 100/291
-> units resumed from cache, so its Spd/Wall are not directly comparable to the
-> serial `-np 1` MTP rows — per-token speed, not wall-clock, is the fair axis
-> across that boundary. It shares weights with row 2 (MTP is lossless), so the
-> Score gap is run-to-run noise; MTP delivers the same brain at ~2.7× the
-> throughput → **ship MTP**. **NVFP4 27B ranks last**: capability-equivalent but
-> the weakest problem-solver (Solve 94.8) coasting on language breadth (Lang
-> 98.2) — it wins *only* on batched `-np 8` throughput (see docs/RESULTS.md
-> "NVFP4"). *(A 5th v4 model, Qwen 35B-A3B NVFP4, is benchmarking now and will be
-> added on the next rebuild.)*
+**Takeaways.**
 
-**v4 per-language accuracy** (difficulty-weighted % over the 31 variant tasks +
-the Python-bucketed single-language tasks; same methodology as the v3.5 table
-below, so the two are comparable. Bold = top, italic = floor per column):
+- **Qwen 27B Q5_K_XL leads (98.7)** — the strongest problem-solver on the suite.
+- **Non-MTP and MTP Q5_K_XL are the same weights** (MTP is lossless): the Score gap is run-to-run noise, but MTP runs **~2.7× faster** → **ship MTP**.
+- **NVFP4 27B ranks last** — capability-equivalent but the weakest problem-solver (Solve 94.8), coasting on language breadth; it wins *only* on batched `-np 8` throughput ([details](docs/RESULTS.md)).
 
-| Model | Python | C | C++ | Go | Rust | Zig | Best at |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Qwen 27B Q5_K_XL | **98.6** | 92.7 | _87.7_ | **97.9** | **100.0** | 60.5 | Python, Go, Rust |
-| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | **96.9** | 96.9 | 96.9 | **66.6** | C, C++, Zig |
-| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | _85.4_ | _87.7_ | _85.4_ | _95.8_ | _34.5_ | — |
-| Qwopus 27B v2 MTP Q5_K_M | _95.2_ | _84.5_ | 91.9 | 96.9 | 96.9 | 44.7 | — |
+> † *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Spd/Wall aren't comparable to the serial `-np 1` MTP rows.* Per-language breakdowns, the Python-aggregation caveat, and the base-vs-MTP analysis live in [`evals/README.md`](evals/README.md). *(Qwen 35B-A3B NVFP4 is benchmarking now — added on the next rebuild.)*
 
-Raw pass counts (difficulty-blind, `passed/count`) tell the plainer story:
-
-| Model | Python | C | C++ | Go | Rust | Zig |
-|---|---:|---:|---:|---:|---:|---:|
-| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | **31/31** | 20/31 |
-| Qwen 27B MTP Q5_K_XL | 133/136 | 30/31 | 30/31 | 30/31 | 30/31 | 20/31 |
-| Qwen 35B-A3B MTP MoE Q4_K_M | 131/136 | 27/31 | 28/31 | 27/31 | 30/31 | 11/31 |
-| Qwopus 27B v2 MTP Q5_K_M | 130/136 | 27/31 | 29/31 | 30/31 | 30/31 | 14/31 |
-
-Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
-on Python (133/136) and Zig (20/31), never more than 2 units apart anywhere —
-confirming MTP is lossless; the weighted table's cpp/rust swings are single-task
-noise amplified by difficulty weighting. **(2) Zig is the discriminator.** Every
-model clears 84–100 % on the five mainstream languages, so those columns barely
-separate the field — but Zig fans out from **34.5 % to 66.6 %**.
-
-**(3) ⚠️ The headline Acc is ~82 % a Python contest — mind the aggregation.** The
-Python bucket (106 single-language tasks at full weight + Python's 1/6 share of
-the 31 variants) carries **~82 % of the total weighted score**; the other five
-languages *share the remaining ~18 %*. So the per-language table's six visually-
-equal columns are nothing like equal in the leaderboard Acc, and **the table does
-not proxy the ranking.** Concretely, for base vs. MTP the aggregations disagree:
-
-| Aggregation | Base | MTP | Winner |
-|---|---:|---:|:--|
-| Overall Acc (leaderboard, Python-dominated) | 96.62 | 95.63 | Base +0.99 |
-| Equal-language average (6 langs, equal) | 89.56 | 91.80 | **MTP +2.23** |
-| Raw total pass | 271 | 273 | **MTP +2** |
-
-Base holds #1 **only** on the Python-dominated overall metric — and there the two
-*tie* on raw Python count (133/136 each); base merely cleared marginally harder
-Python tasks. By the equal-language view (which is how we weight languages *within*
-the per-language table) and by raw pass count, **MTP leads.** We are leaving the
-ordering as-is for now, but the "base is #1" claim is an artifact of Python's
-weight share, not a real quality edge — they are the same lossless weights.
-
-The deeper lesson: difficulty re-weighting was tested (1-2-3) and is a **dead
-lever** — every model's pass rate is flat across easy/medium/hard, so no ratio
-reorders the board. Language variants are kept **equally weighted on purpose** to
-show the true distribution of ability. The honest fix for the ~1-point spreads
-here is **multi-run averaging with mean-variance** — a single run has real
-run-to-run noise, and a 3× run would very likely put base and MTP inside each
-other's error bars. That is acknowledged future work, not yet budgeted.
 
 **Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; kept intact
 until the whole board is v4). Qwen 27B Q5_K_XL has since re-run on v4 (above),
@@ -552,23 +485,7 @@ comparable** (different suites):
 
 Cost is the API-equivalent on Anthropic Sonnet 4.6 ($3/M input, $15/M output), a sense-of-scale figure only; these all ran locally on the 5090.
 
-**At-a-glance: per-language accuracy** (variant tasks, % accuracy; bold = top, italic = floor):
-
-| Model | Python | C | C++ | Go | Rust | Zig | Best at |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Qwen 27B Q5_K_XL | **99.9** | **93.2** | 90.3 | 93.2 | **96.1** | **66.9** | Python, C, Rust, Zig |
-| Qwen 27B Uncensored Q5_K_P | 98.3 | 90.3 | **93.2** | **96.1** | 93.2 | 55.2 | C++, Go |
-| Qwen 35B-A3B MoE Q4_K_M | 97.8 | _82.5_ | _83.5_ | 80.5 | _83.5_ | 40.9 | — |
-| Gemma 4 31B-it Q5_K_XL | 94.3 | 88.3 | 86.4 | 94.2 | 91.2 | 54.5 | — |
-| Qwen 35B-A3B Uncensored Q4_K_M | _94.2_ | _82.5_ | 85.4 | _78.6_ | **96.1** | _15.6_ | Rust |
-
-The **Zig spread is enormous** (66.9 → 15.6) and the strongest discriminator on the suite. Python is saturated across the board, so pick a smaller, faster model if you only ship Python. **Use 27B Q5_K_XL for Python, C, and Zig**; **27B Uncensored for Go and C++**; the MoE variants are useful when raw speed matters more than top-end accuracy.
-
-**Ranking: accuracy is primary.** Tie-breakers: total pass count → hard-pass count → speed. Speed and tokens are surfaced as separate columns (`scoring.py` also derives a composite column for reference, but it never drives the ranking), since they reveal a real tradeoff (the MoE 35B variants are 30–50% faster but trail the dense 27B models by 4–7 accuracy points).
-- **Accuracy**: difficulty-weighted pass rate (easy=1, medium=1.5, hard=2)
-- **Speed**: average speed factor on passed tasks (budget 30s/90s/300s by difficulty)
-- **Per-category breakdown**: every score is also reported per-category (Algorithms & DS, SWE / DevOps, Math Finance, Probability & Stats, Pure & Abstract Math, LLM / ML, Distributed / SysDesign, Concurrency & Systems, Physics, Performance & HW Opt, Security, Signal Processing & DSP) with subcategory drilldown; see `evals/scoring.py --by-category`
-- **Multi-host comparison**: leaderboard is keyed by `(host_id, model_slug)`, so the same model run on different machines (e.g. RTX 5090 vs. 2×3090 Ti) coexist. See `evals/scoring.py --compare-hosts`.
+Every score is also reported **per-category** (12 categories + subcategory drilldown, `scoring.py --by-category`) and **per-host** — the board is keyed by `(host_id, model_slug)` so the same model on different machines coexists (`scoring.py --compare-hosts`).
 
 ```bash
 # Single-model eval (server must already be running)
@@ -576,9 +493,9 @@ python3 evals/run_eval.py                          # all tasks (v4: 291 units)
 python3 evals/run_eval.py --tasks 21,22,23         # subset
 python3 evals/run_eval.py --model-name custom-name # override auto-detected name
 
-# Multi-model sweep — stops/starts each serve script in turn. Covers all 9
-# configured models (8 of 9 benchmarked: 5 on v3.5, 3 on v4; only the
-# non-MTP Qwopus is pending — budget roughly a day for all 9)
+# Multi-model sweep — stops/starts each serve script in turn, scoring and
+# ranking every configured model (see --list). Budget roughly a day for a full
+# sweep; partial re-runs replay from the eval cache.
 python3 evals/benchmark_all.py                     # full sweep
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --list              # show configured models
