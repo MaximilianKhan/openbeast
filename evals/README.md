@@ -372,6 +372,28 @@ the rank). Leaderboard readout columns: SOLVE / LANG / SCORE (all shown as %)
 legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 `accuracy`/`breakdown` + `scoring.py --by-category`, not the at-a-glance readout.)
 
+### Reading the leaderboard columns (detailed notes)
+
+*(Relocated verbatim from the primary README to keep it lean.)*
+
+**On SPD (sustained decode tok/s):** this is the model's *real* generation speed with MTP — measured from the server's per-token timing — **not** completion-tokens÷wall-clock. The latter is ~70% tool-execution (compiling/running code) + prefill, which made a 315 tok/s model read as "95"; it's a workload number, and WALL already captures total agentic time honestly.
+
+**Why the `~` estimates:** the four `~` rows ran *before* we captured in-suite decode logs (added 2026-07-08), so their decode rate is taken from **isolated decode benchmarks** — real fixed-prompt measurements at each model's serve config, slightly optimistic vs in-suite (no tool-exec interleaving). Re-running any of them with logging replaces the `~` with a measured value automatically. (We rejected extrapolating from the logged runs: the decode-to-throughput ratio isn't transferable — 1.36 for the dense 27B vs 3.32 for the MoE — so it would overstate the faster models.)
+
+**†** *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
+
+### NVFP4 — real target use case (why it ranks low but is NOT useless to benchmark)
+
+NVFP4 is a COMPUTE-optimized, BATCHED-SERVING quant. Its win condition is concurrent / multi-request inference (`-np >= 4`, MTP off) and prefill, where Blackwell's native FP4 tensor cores dominate. Its intended home is datacenter serving (vLLM / TensorRT-LLM on B100/B200) handling many users at once. We measured the crossover directly: NVFP4-27B BEATS the K-quant by +22% at `-np 8` (its lead peaks ~np8 and converges by np16).
+
+It LOSES the single-user, single-stream case (`-np 1`, chat/agent) because that regime is memory-BANDWIDTH-bound, not compute-bound — and this NVFP4 build is a LARGER file than the K-quant (only the FFN/expert weights are 4-bit; attention stays 8-bit FP8→Q8_0), so it reads more bytes per token and decodes slightly slower than a leaner Q4/Q5. This is physics, not misconfiguration: the 5090's FP4 cores ARE engaged (`BLACKWELL_NATIVE_FP4=1`, full ~307 tok/s decode); no driver/CUDA/flag change alters bandwidth-bound decode.
+
+**Decision rule for OpenBeast:**
+- Single-user local rig (this repo's default target): **K-quant MTP (Q5/Q4)**.
+- Concurrent agent/worker FLEET endpoint (`docs/TODO.md` multi-node, non-MTP high `-np`): **NVFP4** is the candidate quant.
+
+We still benchmark NVFP4 to (a) confirm it's capability-equivalent (so the fleet role doesn't cost quality) and (b) size that role — NOT because it's the interactive pick. Full analysis: [`docs/RESULTS.md`](../docs/RESULTS.md) "NVFP4".
+
 
 ## v4 leaderboard — per-language & aggregation analysis
 
