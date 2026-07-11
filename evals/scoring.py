@@ -48,10 +48,11 @@ v2 (2026-07-10, Max's call): split into PROBLEM_SOLVING + LANGUAGE_BREADTH and
    secondary. Difficulty weights (1/1.5/2) and the per-base-task normalization
    are unchanged; singletons and full-6-language solves score identically to
    v1 — only the partial-language cases rebalance toward problem-solving.
-   Applies to BOTH v4 and v3.5 rows (both carry variant metadata). The readout
-   leads with per-tier % completed (EASY/MED/HARD, visual only), then ACC /
-   SOLVE / LANG, then SCORE. Split started at 0.7/0.3, refined to 0.75/0.25 the
-   same day (Max: weight solving a touch harder).
+   Applies to BOTH v4 and v3.5 rows (both carry variant metadata). Readout
+   columns: ACC / SOLVE / LANG / SCORE (all %) -> SPD (tok/s) -> WALL -> PASS.
+   Split started at 0.7/0.3, refined to 0.75/0.25 the same day (Max: weight
+   solving a touch harder). Per-tier pass rates dropped from the readout
+   2026-07-10 (too dense for an at-a-glance table; still in the JSON breakdown).
 ──────────────────────────────────────────────────────────────────────────────
 """
 
@@ -468,24 +469,20 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     if not entries:
         return "(leaderboard is empty)"
 
-    # Column flow (v2, per Max 2026-07-10): per-difficulty % completed (EASY/
-    # MED/HARD — visual only) -> ACC (legacy weighted accuracy) + SOLVE
-    # (problem-solving "true accuracy") + LANG (language breadth) -> SCORE
-    # (capability = 0.75*SOLVE + 0.25*LANG, the end score) -> SPD (effective
-    # decode tok/s) -> WALL (total wall-clock) -> PASS.
+    # Column flow (v2): ACC (legacy weighted accuracy) + SOLVE (problem-solving)
+    # + LANG (language breadth) -> SCORE (capability = 0.75*SOLVE + 0.25*LANG,
+    # the ranking key) -> SPD (effective decode tok/s) -> WALL (total wall-clock)
+    # -> PASS. ACC/SOLVE/LANG/SCORE are percentages (shown with %). Per-tier
+    # pass rates still live in each entry's `breakdown` (scoring.py --by-category
+    # and the JSON) — just not in this at-a-glance readout.
     if show_host:
-        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'EASY':>5}  {'MED':>5}  {'HARD':>5}  {'ACC':>6}  {'SOLVE':>6}  {'LANG':>6}  {'SCORE':>6}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'ACC':>7}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
     else:
-        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'EASY':>5}  {'MED':>5}  {'HARD':>5}  {'ACC':>6}  {'SOLVE':>6}  {'LANG':>6}  {'SCORE':>6}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'ACC':>7}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
     sep = "-" * len(header)
 
-    def _f(v):  # format a possibly-missing 0-100 metric
-        return f"{v:.1f}" if isinstance(v, (int, float)) else "—"
-
-    def _tier(e: dict, tier: str) -> str:  # raw % completed for a difficulty tier
-        b = (e.get("breakdown") or {}).get(tier) or {}
-        c = b.get("count")
-        return f"{100 * b['passed'] / c:.0f}" if c else "—"
+    def _f(v):  # format a possibly-missing 0-100 percentage metric (with %)
+        return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
 
     def _toks(e: dict) -> str:  # effective decode throughput, tok/s
         tc = e.get("toks_per_sec")
@@ -505,7 +502,6 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     def _row(i: int, e: dict) -> str:
         model = e.get("model", "?")[:28]
         suite = str(e.get("suite_version", "?"))[:4]
-        easy, med, hard = _tier(e, "easy"), _tier(e, "medium"), _tier(e, "hard")
         accuracy = _f(e.get("accuracy"))         # v1 legacy weighted accuracy
         solve = _f(e.get("problem_solving"))     # problem-solving ("true accuracy")
         lang = _f(e.get("language_breadth"))
@@ -515,8 +511,8 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
         if show_host:
             host = entry_host_id(e)[:18]
-            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {easy:>5}  {med:>5}  {hard:>5}  {accuracy:>6}  {solve:>6}  {lang:>6}  {score:>6}  {spd:>6}  {wall:>7}  {passed:>7}"
-        return f"{i:>2}  {model:<28}  {suite:>4}  {easy:>5}  {med:>5}  {hard:>5}  {accuracy:>6}  {solve:>6}  {lang:>6}  {score:>6}  {spd:>6}  {wall:>7}  {passed:>7}"
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {accuracy:>7}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {wall:>7}  {passed:>7}"
+        return f"{i:>2}  {model:<28}  {suite:>4}  {accuracy:>7}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {wall:>7}  {passed:>7}"
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -533,8 +529,8 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         for i, e in enumerate(legacy_rows, 1):
             lines.append(_row(i, e))
     lines.append("")
-    lines.append("EASY/MED/HARD = % tasks passed per tier (visual).  "
-                 "SOLVE = % base problems solved in >=1 lang.  LANG = % of language ports passed.")
+    lines.append("ACC = difficulty-weighted pass rate.  SOLVE = % base problems solved in >=1 language.  "
+                 "LANG = % of language ports passed among solved.")
     lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
                  "SPD = effective tok/s (completion tokens / wall-clock).  WALL = total run time.")
     return "\n".join(lines)

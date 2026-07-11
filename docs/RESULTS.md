@@ -17,11 +17,12 @@ token cost are reported as separate columns.
 >   languages?").
 > - **CAPABILITY = 0.75 · problem_solving + 0.25 · language_breadth** ← the ranking key (shown as SCORE).
 >
-> **Readout layout (v4 & v3.5).** Columns flow: per-difficulty **% completed**
-> (EASY / MED / HARD — raw pass rate, visual only) → **ACC** (legacy weighted
+> **Readout layout (v4 & v3.5).** Columns flow: **ACC** (legacy weighted
 > accuracy) · **SOLVE** (problem-solving) · **LANG** (language breadth) →
 > **SCORE** (the 75/25 end score) → **SPD** (effective tok/s = completion
-> tokens ÷ wall-clock) → **WALL** (total run time) → PASS.
+> tokens ÷ wall-clock) → **WALL** (total run time) → PASS. ACC/SOLVE/LANG/SCORE
+> are shown as percentages. (Per-tier pass rates were dropped from the at-a-glance
+> readout 2026-07-10 — too dense — but remain in each entry's JSON `breakdown`.)
 >
 > **Why (the v1 flaw).** v1 fused two different capabilities into one number and
 > weighted them equally: a hard problem ported to 6 languages required passing
@@ -51,11 +52,11 @@ token cost are reported as separate columns.
 >
 > | # | Model | **SCORE** | Solve | Lang | Acc (v1) | v1 rank |
 > |---:|---|---:|---:|---:|---:|---:|
-> | 1 | Qwen 27B Q5_K_XL | **98.7** | 99.1 | 97.5 | 96.6 | 1 |
-> | 2 | Qwen 27B MTP Q5_K_XL | **97.5** | 97.3 | 98.3 | 95.6 | 2 |
-> | 3 | Qwen 35B-A3B MTP Q4_K_M | **97.5** | 98.2 | 95.5 | 93.8 | 3 |
-> | 4 | Qwopus 27B v2 MTP Q5 | **96.4** | 96.4 | 96.5 | 93.0 | 5 ↑ |
-> | 5 | Qwen 27B NVFP4 MTP | **95.7** | 94.8 | 98.2 | 93.1 | 4 ↓ |
+> | 1 | Qwen 27B Q5_K_XL | **98.7%** | 99.1% | 97.5% | 96.6% | 1 |
+> | 2 | Qwen 27B MTP Q5_K_XL | **97.5%** | 97.3% | 98.3% | 95.6% | 2 |
+> | 3 | Qwen 35B-A3B MTP Q4_K_M | **97.5%** | 98.2% | 95.5% | 93.8% | 3 |
+> | 4 | Qwopus 27B v2 MTP Q5 | **96.4%** | 96.4% | 96.5% | 93.0% | 5 ↑ |
+> | 5 | Qwen 27B NVFP4 MTP | **95.7%** | 94.8% | 98.2% | 93.1% | 4 ↓ |
 >
 > (SCORE at 75/25; #2 and #3 tie at 97.5 to one decimal — Q5-MTP edges ahead on
 > the raw capability, then problem-solving is the tie-breaker.)

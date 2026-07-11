@@ -363,8 +363,9 @@ narrated in [`docs/RESULTS.md`](../docs/RESULTS.md) "Scoring v2".
 
 Ranking is by **capability** first, then problem_solving, then hard pass count,
 then speed. Tokens and API-equivalent cost are tracked separately (not part of
-the rank). Leaderboard readout columns: per-tier % completed (EASY/MED/HARD,
-visual) → ACC / SOLVE / LANG → SCORE → SPD (tok/s) → WALL → PASS.
+the rank). Leaderboard readout columns: ACC / SOLVE / LANG / SCORE (all shown
+as %) → SPD (tok/s) → WALL → PASS. (Per-tier pass rates live in each entry's
+JSON `breakdown` + `scoring.py --by-category`, not the at-a-glance readout.)
 
 
 ## v4 leaderboard — per-language & aggregation analysis
