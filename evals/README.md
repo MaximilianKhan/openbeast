@@ -378,7 +378,7 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 
 **On SPD (sustained decode tok/s):** this is the model's *real* generation speed with MTP — measured from the server's per-token timing — **not** completion-tokens÷wall-clock. The latter is ~70% tool-execution (compiling/running code) + prefill, which made a 315 tok/s model read as "95"; it's a workload number, and WALL already captures total agentic time honestly.
 
-**Why the `~` estimates:** the four `~` rows ran *before* we captured in-suite decode logs (added 2026-07-08), so their decode rate is taken from **isolated decode benchmarks** — real fixed-prompt measurements at each model's serve config, slightly optimistic vs in-suite (no tool-exec interleaving). Re-running any of them with logging replaces the `~` with a measured value automatically. (We rejected extrapolating from the logged runs: the decode-to-throughput ratio isn't transferable — 1.36 for the dense 27B vs 3.32 for the MoE — so it would overstate the faster models.)
+**Why the `~` estimates (fallback, currently unused):** decode is matched to each run's tee'd server log by timestamp (`decode_from_server_log`), which finds a real log for **every** v4 run — so all current rows are server-measured. If a run ever has no decode log, its SPD falls back to an isolated-benchmark estimate shown with a leading `~` (or `—` if none is defined). Re-running with logging always replaces it with a measured value.
 
 **†** *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
 

@@ -119,24 +119,53 @@ SCORING_VERSION = "v2-solve-breadth"
 # measured value automatically. (Extrapolating from the logged runs was rejected:
 # the decode/effective ratio is not transferable — 1.36 for the dense 27B vs 3.32
 # for the MoE 35B — so it would overstate faster models.)
-DECODE_ESTIMATES = {
-    "qwen-27b-q5-k-xl": 64,            # non-MTP single-stream
-    "qwen-27b-mtp-q5-k-xl": 140,       # MTP n8
-    "qwopus-27b-v2-mtp-q5-k-m": 147,   # MTP n4
-    "qwen-35b-a3b-mtp-moe-q4-k-m": 340,  # MoE MTP n4
-}
+# Fallback estimates for slugs with no server log at all. Currently EMPTY: the
+# timestamp-matched log lookup (decode_from_server_log) finds a real log for
+# every v4 run — including the 2026-07-08 runs, whose logs are named by the
+# server's registry slug, not the results' name-slug. A model with genuinely no
+# log shows "—" (honest unknown) rather than a hardcoded guess.
+DECODE_ESTIMATES: dict[str, float] = {}
 
 
-def decode_from_server_log(slug: str) -> float | None:
-    """Token-weighted sustained decode tok/s from the tee'd llama-server log's
-    `print_timing` eval lines. This is the model's real generation rate (MTP
-    included), independent of tool-execution/prefill overhead. Returns None if no
-    server log exists for the slug (pre-2026-07-08 runs)."""
-    logs = sorted(glob.glob(os.path.join(RESULTS_DIR, f"server-{slug}-*.log")))
-    if not logs:
+def _parse_log_ts(s: str):
+    """Parse a YYYYMMDD-HHMMSS (or ISO) timestamp to datetime, else None."""
+    digits = re.sub(r"\D", "", s or "")[:14]
+    if len(digits) != 14:
+        return None
+    try:
+        return datetime.strptime(digits, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def decode_from_server_log(run_ts: str | None) -> float | None:
+    """Token-weighted sustained decode tok/s from THIS run's tee'd server log.
+
+    Matched by TIMESTAMP, not slug: the log is written as
+    `server-<slug>-<ts>.log` a few seconds BEFORE the results file, and the
+    server's registry slug differs from the results' name-derived slug (e.g.
+    `qwen-35b-a3b` vs `qwen-35b-a3b-moe-q4-k-m`), so a slug glob misses it. We
+    take the server log whose timestamp is the latest that is <= the run
+    timestamp and within a 10-minute window (runs are hours apart, so this is
+    unambiguous). Returns None if none (pre-2026-07-08 runs have no log)."""
+    rdt = _parse_log_ts(run_ts)
+    if rdt is None:
+        return None
+    best = None  # (log_datetime, path)
+    for p in glob.glob(os.path.join(RESULTS_DIR, "server-*.log")):
+        m = re.search(r"-(\d{8}-\d{6})\.log$", p)
+        if not m:
+            continue
+        ldt = _parse_log_ts(m.group(1))
+        if ldt is None:
+            continue
+        gap = (rdt - ldt).total_seconds()
+        if 0 <= gap <= 600 and (best is None or ldt > best[0]):
+            best = (ldt, p)
+    if best is None:
         return None
     tok = tim = 0.0
-    for line in open(logs[-1], errors="ignore"):
+    for line in open(best[1], errors="ignore"):
         if "print_timing" not in line or "prompt eval time" in line:
             continue
         m = re.search(r"eval time =\s+([\d.]+) ms /\s+(\d+) tokens", line)
@@ -380,7 +409,7 @@ def score_run(results: dict) -> dict:
     slug = results.get("model_slug", "unknown")
     decode = results.get("decode_toks_per_sec")
     if decode is None:
-        decode = decode_from_server_log(slug)
+        decode = decode_from_server_log(results.get("timestamp"))
     decode_estimated = False
     if decode is None and slug in DECODE_ESTIMATES:
         decode = DECODE_ESTIMATES[slug]
