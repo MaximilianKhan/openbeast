@@ -346,7 +346,11 @@ CAPABILITY       = 0.75 × problem_solving + 0.25 × language_breadth   # ← ra
 
 # retained columns
 accuracy    = 100 × Σ(d/k × passed) / Σ(d/k)   # legacy v1 metric (per-entry weighted pass rate)
-spd (tok/s) = tokens_completion / elapsed_total_seconds   # effective decode throughput
+spd (tok/s) = sustained DECODE rate, token-weighted from the server log's
+              print_timing (the model's true generation speed, MTP included) —
+              NOT tokens/wall, which is ~70% tool-exec + prefill. `~` prefix =
+              isolated-benchmark estimate for runs that predate decode logging
+              (2026-07-08); see DECODE_ESTIMATES + decode_from_server_log().
 speed       = 100 × mean(max(0, 1 − elapsed/time_budget)) over passed tasks  # legacy factor
 ```
 
@@ -364,7 +368,7 @@ narrated in [`docs/RESULTS.md`](../docs/RESULTS.md) "Scoring v2".
 Ranking is by **capability** first, then problem_solving, then hard pass count,
 then speed. Tokens and API-equivalent cost are tracked separately (not part of
 the rank). Leaderboard readout columns: SOLVE / LANG / SCORE (all shown as %)
-→ SPD (tok/s) → TOKENS (total prompt+completion consumed) → WALL → PASS. (The
+→ SPD (sustained decode tok/s; ~ = estimate) → TOKENS (total prompt+completion) → WALL → PASS. (The
 legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 `accuracy`/`breakdown` + `scoring.py --by-category`, not the at-a-glance readout.)
 

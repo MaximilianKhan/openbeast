@@ -448,17 +448,17 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 
 - **SOLVE** — % of base problems solved in **≥1 language** (problem-solving, the scarce skill).
 - **LANG** — % of the 6 language ports passed *among solved problems* (breadth, weighted lighter: porting a working solution is increasingly automatable via LSP / MCP / in-context translation).
-- **SPD** effective tok/s · **TOKENS** total prompt+completion consumed · **WALL** total run time · **PASS** tasks passed. *(SOLVE / LANG / SCORE are percentages; legacy accuracy is retained in the JSON but no longer shown.)*
+- **SPD** *sustained decode tok/s* — the model's true generation rate (server-log measured; **~** = estimate, see below) · **TOKENS** total prompt+completion · **WALL** total run time · **PASS** tasks passed. *(SOLVE / LANG / SCORE are percentages.)*
 
 Single RTX 5090 runs, board keyed by `(host, model)` (other hardware coexists); sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](evals/README.md); rationale/changelog → [`docs/RESULTS.md`](docs/RESULTS.md) "Scoring v2".
 
 | # | Model | Solve | Lang | **Score** | Spd t/s | Tokens | Wall |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | 48† | 14.0M | 8h14m† |
-| 2 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | 127 | 13.3M | 3h49m |
-| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **144** | 20.6M | 4h16m |
-| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | 106 | 15.4M | 4h36m |
-| 5 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 94 | 16.1M | 5h24m |
+| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | ~64 | 14.0M | 8h14m† |
+| 2 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | ~140 | 13.3M | 3h49m |
+| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **~340** | 20.6M | 4h16m |
+| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | ~147 | 15.4M | 4h36m |
+| 5 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 128 | 16.1M | 5h24m |
 
 **Takeaways.**
 
@@ -466,7 +466,9 @@ Single RTX 5090 runs, board keyed by `(host, model)` (other hardware coexists); 
 - **Non-MTP and MTP Q5_K_XL are the same weights** (MTP is lossless): the Score gap is run-to-run noise, but MTP runs **~2.7× faster** → **ship MTP**.
 - **NVFP4 27B ranks last** — capability-equivalent but the weakest problem-solver (Solve 94.8), coasting on language breadth; it wins *only* on batched `-np 8` throughput ([details](docs/RESULTS.md)).
 
-> † *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Spd/Wall aren't comparable to the serial `-np 1` MTP rows.* Per-language breakdowns, the Python-aggregation caveat, and the base-vs-MTP analysis live in [`evals/README.md`](evals/README.md). *(Qwen 35B-A3B NVFP4 is benchmarking now — added on the next rebuild.)*
+> **On SPD (sustained decode tok/s):** this is the model's *real* generation speed with MTP — measured from the server's per-token timing — **not** completion-tokens÷wall-clock. The latter is ~70% tool-execution (compiling/running code) + prefill, which made a 315 tok/s model read as "95"; it's a workload number, and WALL already captures total agentic time honestly.
+> **Why the `~` estimates:** the four `~` rows ran *before* we captured in-suite decode logs (added 2026-07-08), so their decode rate is taken from **isolated decode benchmarks** — real fixed-prompt measurements at each model's serve config, slightly optimistic vs in-suite (no tool-exec interleaving). Re-running any of them with logging replaces the `~` with a measured value automatically. (We rejected extrapolating from the logged runs: the decode-to-throughput ratio isn't transferable — 1.36 for the dense 27B vs 3.32 for the MoE — so it would overstate the faster models.)
+> **†** *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.* Per-language breakdowns and the base-vs-MTP analysis live in [`evals/README.md`](evals/README.md). *(Qwen 35B-A3B NVFP4 is benchmarking now — its measured decode + row land on the next rebuild.)*
 
 
 **Legacy v3.5 leaderboard** (RTX 5090 ×1, 323 units, 2026-05-08; kept intact

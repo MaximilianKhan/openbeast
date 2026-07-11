@@ -58,8 +58,10 @@ v2 (2026-07-10, Max's call): split into PROBLEM_SOLVING + LANGUAGE_BREADTH and
 ──────────────────────────────────────────────────────────────────────────────
 """
 
+import glob
 import json
 import os
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -105,6 +107,43 @@ SPEED_WEIGHT = 0.25
 SOLVE_WEIGHT = 0.75
 LANG_WEIGHT = 0.25
 SCORING_VERSION = "v2-solve-breadth"
+
+# SPD column = TRUE sustained decode tok/s (token-weighted from the server log's
+# print_timing), NOT completion/wall — the latter is dominated by tool-execution
+# and prefill (a 315 tok/s model can read as "95"). See decode_from_server_log.
+#
+# Models run BEFORE in-suite decode logging was added (2026-07-08) have no server
+# log, so their sustained decode is ESTIMATED from isolated decode benchmarks
+# (fixed-prompt, at the same serve config) — real measurements, shown with a
+# leading '~'. Re-running any of them with logging replaces the estimate with a
+# measured value automatically. (Extrapolating from the logged runs was rejected:
+# the decode/effective ratio is not transferable — 1.36 for the dense 27B vs 3.32
+# for the MoE 35B — so it would overstate faster models.)
+DECODE_ESTIMATES = {
+    "qwen-27b-q5-k-xl": 64,            # non-MTP single-stream
+    "qwen-27b-mtp-q5-k-xl": 140,       # MTP n8
+    "qwopus-27b-v2-mtp-q5-k-m": 147,   # MTP n4
+    "qwen-35b-a3b-mtp-moe-q4-k-m": 340,  # MoE MTP n4
+}
+
+
+def decode_from_server_log(slug: str) -> float | None:
+    """Token-weighted sustained decode tok/s from the tee'd llama-server log's
+    `print_timing` eval lines. This is the model's real generation rate (MTP
+    included), independent of tool-execution/prefill overhead. Returns None if no
+    server log exists for the slug (pre-2026-07-08 runs)."""
+    logs = sorted(glob.glob(os.path.join(RESULTS_DIR, f"server-{slug}-*.log")))
+    if not logs:
+        return None
+    tok = tim = 0.0
+    for line in open(logs[-1], errors="ignore"):
+        if "print_timing" not in line or "prompt eval time" in line:
+            continue
+        m = re.search(r"eval time =\s+([\d.]+) ms /\s+(\d+) tokens", line)
+        if m:
+            tim += float(m.group(1))
+            tok += int(m.group(2))
+    return round(tok / (tim / 1000), 1) if tim else None
 
 
 def _entry_weight(t: dict) -> float:
@@ -334,6 +373,18 @@ def score_run(results: dict) -> dict:
     passed = sum(1 for t in tasks if t.get("passed"))
     hard_passed = sum(1 for t in tasks if t.get("passed") and t.get("difficulty") == "hard")
     elapsed_total = sum(t.get("elapsed_seconds", 0) for t in tasks)
+
+    # Sustained decode tok/s (SPD column). Preference: value already in results
+    # (a future harness could inject it) -> parse the tee'd server log ->
+    # isolated-benchmark estimate for pre-logging runs (marked with ~).
+    slug = results.get("model_slug", "unknown")
+    decode = results.get("decode_toks_per_sec")
+    if decode is None:
+        decode = decode_from_server_log(slug)
+    decode_estimated = False
+    if decode is None and slug in DECODE_ESTIMATES:
+        decode = DECODE_ESTIMATES[slug]
+        decode_estimated = True
     tokens_total = sum(t.get("tokens_total", 0) for t in tasks)
     tokens_prompt = sum(t.get("tokens_prompt", 0) for t in tasks)
     tokens_completion = sum(t.get("tokens_completion", 0) for t in tasks)
@@ -356,8 +407,12 @@ def score_run(results: dict) -> dict:
         # v1 legacy metric, retained as a column (no longer the ranking key)
         "accuracy": accuracy,
         "speed": speed,
-        # effective decode throughput over the whole run (completion tokens /
-        # wall-clock). Shown as the SPD (tok/s) column.
+        # SPD column: TRUE sustained decode tok/s (server-log measured, or ~
+        # isolated estimate). decode_toks_per_sec=None -> shown as "—".
+        "decode_toks_per_sec": decode,
+        "decode_estimated": decode_estimated,
+        # effective throughput (completion / wall) — kept for reference only; it
+        # conflates decode with tool-exec/prefill, so it is NOT the SPD column.
         "toks_per_sec": round(tokens_completion / elapsed_total, 1) if elapsed_total else 0.0,
         "composite": composite,
         "tasks_total": len(tasks),
@@ -473,10 +528,10 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
 
     # Column flow (v2): SOLVE (problem-solving) + LANG (language breadth) ->
     # SCORE (capability = 0.75*SOLVE + 0.25*LANG, the ranking key) -> SPD
-    # (effective decode tok/s) -> TOKENS (total prompt+completion consumed) ->
-    # WALL (total wall-clock) -> PASS. SOLVE/LANG/SCORE are percentages (shown
-    # with %). The legacy v1 accuracy and per-tier pass rates stay in each
-    # entry's JSON (accuracy field / breakdown; also scoring.py --by-category).
+    # (sustained decode tok/s — server-log measured, or ~estimated for pre-log
+    # runs) -> TOKENS (total prompt+completion) -> WALL (total wall-clock) ->
+    # PASS. SOLVE/LANG/SCORE are percentages (shown with %). The legacy v1
+    # accuracy and per-tier pass rates stay in each entry's JSON.
     if show_host:
         header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
     else:
@@ -486,13 +541,11 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     def _f(v):  # format a possibly-missing 0-100 percentage metric (with %)
         return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
 
-    def _toks(e: dict) -> str:  # effective decode throughput, tok/s
-        tc = e.get("toks_per_sec")
-        if isinstance(tc, (int, float)):
-            return f"{tc:.0f}"
-        tcomp = e.get("tokens_completion") or 0  # fall back for pre-v2 rows
-        el = e.get("elapsed_total_seconds") or 0
-        return f"{tcomp / el:.0f}" if el else "—"
+    def _decode(e: dict) -> str:  # sustained decode tok/s ('~' if estimated)
+        d = e.get("decode_toks_per_sec")
+        if not isinstance(d, (int, float)):
+            return "—"
+        return f"~{d:.0f}" if e.get("decode_estimated") else f"{d:.0f}"
 
     def _wall(e: dict) -> str:  # total wall-clock, Hh MMm
         s = e.get("elapsed_total_seconds") or 0
@@ -507,7 +560,7 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         solve = _f(e.get("problem_solving"))     # problem-solving
         lang = _f(e.get("language_breadth"))
         score = _f(e.get("capability"))          # end score (v2 primary)
-        spd = _toks(e)                           # effective tok/s
+        spd = _decode(e)                         # sustained decode tok/s
         toks = _fmt_tokens(e.get("tokens_total", 0))  # total tokens consumed
         wall = _wall(e)                          # total wall-clock
         passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
@@ -533,8 +586,9 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     lines.append("")
     lines.append("SOLVE = % of base problems solved in >=1 language.  "
                  "LANG = % of language ports passed among solved problems.")
-    lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  SPD = effective tok/s.  "
-                 "TOKENS = total prompt+completion consumed.  WALL = total run time.")
+    lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
+                 "SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, "
+                 "pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.")
     return "\n".join(lines)
 
 
