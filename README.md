@@ -448,17 +448,17 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 
 - **SOLVE** — % of base problems solved in **≥1 language** (problem-solving, the scarce skill).
 - **LANG** — % of the 6 language ports passed *among solved problems* (breadth, weighted lighter: porting a working solution is increasingly automatable via LSP / MCP / in-context translation).
-- **ACC** legacy difficulty-weighted pass rate · **SPD** effective tok/s · **WALL** total run time. *(ACC / SOLVE / LANG / SCORE are all percentages.)*
+- **SPD** effective tok/s · **WALL** total run time · **PASS** tasks passed. *(SOLVE / LANG / SCORE are percentages; the legacy accuracy metric is retained in the JSON but no longer shown.)*
 
 Single RTX 5090 runs, board keyed by `(host, model)` (other hardware coexists); sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](evals/README.md); rationale/changelog → [`docs/RESULTS.md`](docs/RESULTS.md) "Scoring v2".
 
-| # | Model | Acc | Solve | Lang | **Score** | Spd t/s | Wall |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | 96.6% | **99.1%** | 97.5% | **98.7%** | 48† | 8h14m† |
-| 2 | Qwen 27B MTP Q5_K_XL | 95.6% | 97.3% | **98.3%** | **97.5%** | 127 | 3h49m |
-| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 93.8% | 98.2% | 95.5% | **97.5%** | **144** | 4h16m |
-| 4 | Qwopus 27B v2 MTP Q5_K_M | 93.0% | 96.4% | 96.5% | **96.4%** | 106 | 4h36m |
-| 5 | Qwen 27B NVFP4 MTP | 93.1% | 94.8% | 98.2% | **95.7%** | 94 | 5h24m |
+| # | Model | Solve | Lang | **Score** | Spd t/s | Wall |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | 48† | 8h14m† |
+| 2 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | 127 | 3h49m |
+| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **144** | 4h16m |
+| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | 106 | 4h36m |
+| 5 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 94 | 5h24m |
 
 **Takeaways.**
 
