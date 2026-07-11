@@ -226,6 +226,34 @@ per-conversation scoping (2) until we confirm WebUI can pass a chat id.
 
 </details>
 
+## ⏳ BENCHMARK QUEUE (Max, 2026-07-10) — NVFP4 MTP models
+
+Two Blackwell-native NVFP4+MTP GGUFs (neko-legends conversions of unsloth's
+NVFP4 checkpoints) downloaded, profiled for throughput, and deployed this
+session. **Both need a full v4 accuracy run** — registered in
+`evals/benchmark_all.py` MODELS, awaiting GPU-hours (Max-triggered).
+
+- `qwen-27b-nvfp4-mtp` — `serve-qwen-27b-nvfp4-mtp.sh` (n=4, c=262144). ✅ registered.
+- `qwen-35b-a3b-nvfp4-mtp` — `serve-qwen-35b-a3b-nvfp4-mtp.sh`. Registered after profiling.
+
+**WHY these need benchmarking (the whole point):** head-to-head speed profiling
+proved NVFP4 **loses** to our K-quant MTP siblings at `-np 1` single-stream
+decode — it's memory-bandwidth-bound and the FP8→Q8_0 attention makes the file
+larger (27B: NVFP4 23.2 GB @ ~115 tok/s vs Q5_K_XL 20.4 GB @ ~141). The ONLY
+axis where NVFP4 could justify itself is **accuracy-per-bit** (QAT 4-bit FFNs
+may preserve quality better than K-quantization). The v4 suite is how we find
+out. If NVFP4 27B matches/beats the Q5_K_XL leaderboard row, it earns a slot
+despite the speed cost; if not, it's a dead end for our single-user use case.
+
+Run (GPU free, stack down — the harness manages its own llama-server):
+```bash
+systemd-run --user --scope --unit=openbeast-sweep -p MemoryMax=92G -p MemorySwapMax=8G \
+  -- python3 evals/benchmark_all.py --models qwen-27b-nvfp4-mtp,qwen-35b-a3b-nvfp4-mtp
+```
+~3-4 h/model on the 5090. Compare the resulting rows against `qwen-27b-mtp-q5`
+and `qwen-35b-a3b-mtp` (`python3 evals/scoring.py --show`). Promotion-by-evidence
+per the eval-quality-gate principle.
+
 ## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4
 
 5 leaderboard rows are still v3.5 (Qwen 27B Q5_K_XL, Qwen 27B Uncensored,

@@ -67,8 +67,8 @@ Tiny (<1 KB each), atomically written via `tmp+rename`, gitignored.
 ## Tool-selection efficiency (per-model)
 
 `evals/tool_efficiency.py` reads `agents/logs/agent-*.jsonl` and reports
-how each model uses its tools. The leaderboard ranks accuracy + speed;
-this view ranks *how* the model gets there. Same data the agent already
+how each model uses its tools. The leaderboard ranks capability (problem-
+solving + language breadth); this view ranks *how* the model gets there. Same data the agent already
 writes, no new measurement needed.
 
 | Metric | What it means |
@@ -332,23 +332,39 @@ num_variants`. Hard task with 6 variants → each is worth ~0.333 (= 2.0 / 6).
 Variant fields override the base. Filtering by base id selects all variants;
 filtering by effective id selects one.
 
-## Scoring
+## Scoring (v2 — capability, since 2026-07-10)
+
+The ranking metric is **CAPABILITY**, a problem-solving-led split of the old
+fused accuracy. Base problems are grouped by `base_id`; a base problem of
+difficulty weight `d` with `k` language variants of which `p` passed contributes:
 
 ```
-weight(task)   = DIFFICULTY_WEIGHTS[diff] / max(1, variant_count)
-accuracy       = 100 × Σ(weight × passed) / Σ(weight)
-speed_factor   = max(0, 1 − elapsed / time_budget)   # per passed task
-speed          = 100 × mean(speed_factor)            # separate signal, not folded in
+# per BASE problem (d = DIFFICULTY_WEIGHTS[diff], k = variant_count, p = passed langs)
+problem_solving  = 100 × Σ d·[p ≥ 1]      / Σ d               # solved in ≥1 language
+language_breadth = 100 × Σ_{p≥1} d·(p/k)  / Σ_{p≥1} d         # ports passed, among solved
+CAPABILITY       = 0.75 × problem_solving + 0.25 × language_breadth   # ← ranking key (SCORE)
+
+# retained columns
+accuracy    = 100 × Σ(d/k × passed) / Σ(d/k)   # legacy v1 metric (per-entry weighted pass rate)
+spd (tok/s) = tokens_completion / elapsed_total_seconds   # effective decode throughput
+speed       = 100 × mean(max(0, 1 − elapsed/time_budget)) over passed tasks  # legacy factor
 ```
 
-Ranking is by **accuracy** first, then total pass count, then hard pass count,
-then speed. Tokens (prompt + completion) and API-equivalent cost are tracked
-separately so a chatty path to the same answer is visible — they are not part
-of the rank. `scoring.py` does compute a composite (`compute_composite`) as a
-derived reference column, but it deliberately **never drives the ranking**:
-speed and accuracy trade off in opposite directions on this suite (the MoE
-35B variants are faster but trail the dense 27B models on accuracy), and a
-weighted average hides that signal.
+**Why capability, not accuracy.** v1 required passing all 6 language ports for
+full credit, so *solving* a problem in one language earned only 1/6 — fusing
+problem-solving with language-porting and weighting them equally. **Porting a
+working solution across languages is increasingly automatable** (LSP feedback,
+MCP language servers, in-context translation), so v2 weights *solving* heavily
+(0.75) and breadth lightly (0.25). Difficulty weights (1/1.5/2) and equal
+language weighting are unchanged; singletons and full-6-language solves score
+identically to v1 — only partial-language cases rebalance. v1 `accuracy` is kept
+as a column. Full changelog in `scoring.py`'s module docstring; the switch is
+narrated in [`docs/RESULTS.md`](../docs/RESULTS.md) "Scoring v2".
+
+Ranking is by **capability** first, then problem_solving, then hard pass count,
+then speed. Tokens and API-equivalent cost are tracked separately (not part of
+the rank). Leaderboard readout columns: per-tier % completed (EASY/MED/HARD,
+visual) → ACC / SOLVE / LANG → SCORE → SPD (tok/s) → WALL → PASS.
 
 ## How token tracking works
 

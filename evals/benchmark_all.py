@@ -78,6 +78,17 @@ MODELS = [
     {"slug": "qwopus-27b-v2-mtp-q5",
      "name": "Qwopus 27B v2 MTP Q5_K_M",
      "serve": "scripts/serve-qwopus-27b-v2-mtp-q5.sh"},
+    # NVFP4 + MTP rows added 2026-07-10 (neko-legends native llama.cpp
+    # conversions of unsloth's NVFP4 checkpoints; Blackwell-native FP4 FFNs,
+    # FP8->Q8_0 attention, bundled MTP). Configs tuned on the 5090 — see the
+    # serve scripts. Speed loses to Q5 MTP at -np 1 (bandwidth-bound); the open
+    # question these rows answer is accuracy-per-bit vs the K-quant siblings.
+    {"slug": "qwen-27b-nvfp4-mtp",
+     "name": "Qwen 27B NVFP4 MTP",
+     "serve": "scripts/serve-qwen-27b-nvfp4-mtp.sh"},
+    {"slug": "qwen-35b-a3b-nvfp4-mtp",
+     "name": "Qwen 35B-A3B NVFP4 MTP",
+     "serve": "scripts/serve-qwen-35b-a3b-nvfp4-mtp.sh"},
 ]
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
@@ -335,8 +346,9 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
                 print("  (--no-leaderboard: score not recorded in leaderboard.json)")
             sweep_summary["scores"].append(entry)
             sweep_summary["models_succeeded"] += 1
-            print(f"\n>>> {model['name']}: accuracy {entry['accuracy']} "
-                  f"speed {entry['speed']} composite {entry['composite']}")
+            print(f"\n>>> {model['name']}: capability {entry.get('capability')} "
+                  f"(solve {entry.get('problem_solving')} / lang {entry.get('language_breadth')}) "
+                  f"| accuracy {entry['accuracy']} speed {entry['speed']}")
 
         if i < len(models) and not cache_only:
             # No thermal load in cache-only mode — skip the cool-off.

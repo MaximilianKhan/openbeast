@@ -211,7 +211,7 @@ cannot drift.
 - **`./start.sh doctor`** — one-shot diagnosis of a configured/running stack: GPU floor + VRAM headroom, disk, file modes and secret hygiene, pinned dependency drift, digest-pinned images, and per-service health, each with a fix hint (exit 1 on any failure). Where `bootstrap --preflight` checks "can I install here", doctor checks "is what I installed healthy and secure"
 - End-to-end smoke test (`tests/test_smoke.sh`)
 - **291-unit eval suite** (137 base tasks, 31 with multi-language variants across 6 languages; hardened v4) with automated validation; full distribution in [`evals/README.md`](evals/README.md)
-- **Multi-model benchmark** runner (`evals/benchmark_all.py`) that sweeps every model and produces an accuracy-ranked leaderboard
+- **Multi-model benchmark** runner (`evals/benchmark_all.py`) that sweeps every model and produces a **capability-ranked** leaderboard (scoring v2: problem-solving + language breadth)
 - Per-task tracking of accuracy, speed, prompt/completion tokens, and API-equivalent cost (`evals/scoring.py`)
 - Multi-language variant support: a single task can have Python / Go / C / C++ / Rust / Zig versions (6 languages), scored fractionally
 - Test suite covering scripts, tools, MCP server, and eval tasks (`tests/run_tests.sh`)
@@ -446,36 +446,40 @@ deterministic checks. **Distribution table, schema, and scoring methodology in
 **v4 leaderboard** — RTX 5090 ×1, 291 units, 2026-07-08→09 (full analysis in
 [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md)).
 
-> **Scope & method.** These scores come from **RTX 5090 (×1) runs exclusively**
-> — the board is keyed by `(host_id, model_slug)`, so runs on other hardware
-> coexist rather than overwrite. But the numbers characterize the **specific
-> model + quantization, not the card**: the same GGUF at the same quant should
-> land in the same neighborhood on any adequate GPU, so read each row as
-> representative of that model/quant as a whole. Difficulty weights are the
-> standard **easy=1 / med=1.5 / hard=2**, and the six language variants are
-> weighted **equally** — each language counts the same — so the per-language
-> table below reflects the true, unskewed distribution of ability. Every score
-> here is a **single run**; there is real run-to-run mean-variance we do not yet
-> capture (multi-run averaging is acknowledged future work, not yet budgeted), so
-> treat sub-~1-point gaps as noise, not ranking.
+> **Ranked by CAPABILITY (scoring v2, 2026-07-10).** The ranking key is
+> **SCORE = CAPABILITY = 0.75 · SOLVE + 0.25 · LANG** — a problem-solving-led
+> split of the old accuracy metric. **SOLVE** (problem-solving) = % of base
+> problems solved in **≥1 language** — the scarce skill; **LANG** (language
+> breadth) = % of the 6 language ports passed *among solved problems* — weighted
+> lighter because porting a working solution across languages is increasingly
+> *automatable* (LSP feedback, MCP language servers, in-context translation).
+> **ACC** is the legacy difficulty-weighted pass rate, retained as a column;
+> **EASY/MED/HARD** are raw per-tier pass % (visual); **SPD** is effective decode
+> throughput (completion tokens ÷ wall-clock). Difficulty weights (easy 1 / med
+> 1.5 / hard 2) and equal language weighting are unchanged. Scores are single
+> RTX 5090 (×1) runs — the board is keyed by `(host_id, model_slug)` so other
+> hardware coexists, and each row characterizes the model/quant, not the card;
+> real run-to-run variance is uncaptured, so treat sub-~1-point Score gaps as
+> noise. Full rationale + changelog: [`docs/RESULTS.md`](docs/RESULTS.md) "Scoring v2".
 
-| # | Model | Acc | Speed | Pass | Hard | Wall |
-|---:|---|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | **96.62** | 53.26 | 271/291 | 93/104 | 5.9h† |
-| 2 | Qwen 27B MTP Q5_K_XL | 95.63 | 73.0 | **273/291** | **98/104** | 3.8h |
-| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 93.76 | **83.0** | 254/291 | 85/104 | 4.3h |
-| 4 | Qwopus 27B v2 MTP Q5_K_M | 93.00 | 75.3 | 260/291 | 89/104 | 4.6h |
+| # | Model | Easy | Med | Hard | Acc | Solve | Lang | **Score** | Spd t/s | Wall |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | 95 | 95 | 89 | 96.6 | **99.1** | 97.5 | **98.7** | 48† | 8h14m† |
+| 2 | Qwen 27B MTP Q5_K_XL | 94 | 93 | 94 | 95.6 | 97.3 | **98.3** | **97.5** | 127 | 3h49m |
+| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 91 | 90 | 82 | 93.8 | 98.2 | 95.5 | **97.5** | **144** | 4h16m |
+| 4 | Qwopus 27B v2 MTP Q5_K_M | 94 | 90 | 86 | 93.0 | 96.4 | 96.5 | **96.4** | 106 | 4h36m |
+| 5 | Qwen 27B NVFP4 MTP | **97** | 93 | 90 | 93.1 | 94.8 | 98.2 | **95.7** | 94 | 5h24m |
 
-> **† Qwen 27B Q5_K_XL (non-MTP) vs Qwen 27B MTP are the same weights.** The
-> ~1-point accuracy spread (96.62 vs 95.63) is run-to-run noise — MTP is
-> mathematically lossless — and MTP actually passed 2 more units / 5 more hard
-> tasks. The real gap is **speed**: MTP sustains 73 tok/s in-suite vs 53 (2.75×
-> in isolated decode) at identical quality. Caveats on that 5.9h wall: 100 of
-> the base run's 291 units resumed from cache (aborted 07-08 run), so it is not
-> a pure-live figure; and non-MTP rows run `-np 6` (tasks parallelized) while
-> MTP forces `-np 1` (serial), so per-token **speed**, not wall-clock, is the
-> comparable axis across that boundary. Verdict: **ship MTP** — same brain, <½
-> the latency.
+> **† Qwen 27B Q5_K_XL (non-MTP)** ran at `-np 6` (tasks parallelized) with 100/291
+> units resumed from cache, so its Spd/Wall are not directly comparable to the
+> serial `-np 1` MTP rows — per-token speed, not wall-clock, is the fair axis
+> across that boundary. It shares weights with row 2 (MTP is lossless), so the
+> Score gap is run-to-run noise; MTP delivers the same brain at ~2.7× the
+> throughput → **ship MTP**. **NVFP4 27B ranks last**: capability-equivalent but
+> the weakest problem-solver (Solve 94.8) coasting on language breadth (Lang
+> 98.2) — it wins *only* on batched `-np 8` throughput (see docs/RESULTS.md
+> "NVFP4"). *(A 5th v4 model, Qwen 35B-A3B NVFP4, is benchmarking now and will be
+> added on the next rebuild.)*
 
 **v4 per-language accuracy** (difficulty-weighted % over the 31 variant tasks +
 the Python-bucketed single-language tasks; same methodology as the v3.5 table

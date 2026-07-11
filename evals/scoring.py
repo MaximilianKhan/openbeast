@@ -2,21 +2,57 @@
 """
 Scoring + leaderboard for the eval harness.
 
-Two SEPARATE metrics — accuracy is primary, speed is secondary informational:
+PRIMARY metric is CAPABILITY (scoring v2, 2026-07-10) — a problem-solving-led
+decomposition of the old fused accuracy score:
 
-  ACCURACY     — difficulty-weighted pass rate (0-100)
-                 weights: easy=1, medium=1.5, hard=2
+  PROBLEM_SOLVING   — difficulty-weighted fraction of BASE problems solved in
+                      >=1 language. "Can the model crack the problem at all?"
 
-  SPEED        — average speed factor on PASSED tasks (0-100)
-                 factor = max(0, 1 - elapsed / time_budget)
-                 budgets: easy=30s, medium=90s, hard=300s
-                 (failed tasks don't drag speed; they're already 0 in accuracy)
+  LANGUAGE_BREADTH  — among solved base problems, difficulty-weighted average
+                      fraction of language variants passed. "Can it carry the
+                      solution across languages?"
 
-  COMPOSITE    — 0.75 * accuracy + 0.25 * speed (kept for backwards compat,
-                 shown as a derived column but NOT the ranking key)
+  CAPABILITY        — 0.75 * problem_solving + 0.25 * language_breadth (PRIMARY,
+                      the ranking key). Problem-solving-led on purpose. Shown as
+                      the SCORE column in the leaderboard readout.
 
-Ranking: accuracy first (this is what discriminates models), speed as
-tie-breaker, then hard pass count, then total elapsed.
+  ACCURACY          — legacy v1 metric: difficulty-weighted pass rate over all
+                      variant ENTRIES (weights easy=1, med=1.5, hard=2, each
+                      variant = difficulty/variant_count). Retained as a column
+                      for continuity; NO LONGER the ranking key.
+
+  SPEED             — avg speed factor on PASSED tasks (0-100);
+                      factor = max(0, 1 - elapsed / time_budget)
+                      budgets: easy=30s, medium=90s, hard=300s.
+
+  COMPOSITE         — 0.75*accuracy + 0.25*speed (legacy derived column).
+
+Ranking: capability first, then problem_solving, then hard pass count, speed.
+
+── SCORING CHANGELOG ────────────────────────────────────────────────────────
+v1 (thru 2026-07-09): ranked by ACCURACY = difficulty-weighted pass rate over
+   every language-variant entry. A base problem ported to 6 languages required
+   passing all 6 for full credit; solving it in one language earned only 1/6.
+   This FUSED two capabilities (problem-solving + language-porting) into one
+   number and weighted them equally — so a model that was language-robust but
+   solved fewer distinct problems could outrank a stronger problem-solver.
+   (Concretely: NVFP4-27B, worst problem-solver / near-best polyglot, ranked
+   ABOVE Qwopus on v1 purely on language redundancy.)
+
+v2 (2026-07-10, Max's call): split into PROBLEM_SOLVING + LANGUAGE_BREADTH and
+   rank by CAPABILITY = 0.75*solve + 0.25*breadth. Rationale — cracking a problem
+   ONCE, in any language, is the scarce capability; porting that working
+   solution across languages is an increasingly *automatable* problem (LSP
+   feedback loops, MCP language servers, in-context translation). So we reward
+   the model for genuinely SOLVING, and treat language breadth as real-but-
+   secondary. Difficulty weights (1/1.5/2) and the per-base-task normalization
+   are unchanged; singletons and full-6-language solves score identically to
+   v1 — only the partial-language cases rebalance toward problem-solving.
+   Applies to BOTH v4 and v3.5 rows (both carry variant metadata). The readout
+   leads with per-tier % completed (EASY/MED/HARD, visual only), then ACC /
+   SOLVE / LANG, then SCORE. Split started at 0.7/0.3, refined to 0.75/0.25 the
+   same day (Max: weight solving a touch harder).
+──────────────────────────────────────────────────────────────────────────────
 """
 
 import json
@@ -60,6 +96,13 @@ TIME_BUDGETS = {"easy": 30, "medium": 90, "hard": 300}
 ACCURACY_WEIGHT = 0.75
 SPEED_WEIGHT = 0.25
 
+# Scoring v2 (2026-07-10): capability = SOLVE_WEIGHT*problem_solving
+# + LANG_WEIGHT*language_breadth. Problem-solving-led (0.75/0.25 as of the
+# 2026-07-10 refinement). See the scoring changelog in the module docstring.
+SOLVE_WEIGHT = 0.75
+LANG_WEIGHT = 0.25
+SCORING_VERSION = "v2-solve-breadth"
+
 
 def _entry_weight(t: dict) -> float:
     """Difficulty weight for a single task or variant entry. Variants
@@ -93,6 +136,48 @@ def compute_accuracy(tasks: list[dict]) -> tuple[float, dict]:
             by_diff[diff]["passed"] += 1
     score = (earned / total * 100) if total > 0 else 0.0
     return round(score, 2), dict(by_diff)
+
+
+def compute_solve_breadth(tasks: list[dict]) -> tuple[float, float, float]:
+    """Scoring v2 — two-axis capability decomposition. Returns
+    (problem_solving, language_breadth, capability), all 0-100.
+
+    Base problems are grouped by `base_id` (a singleton's base_id is its own id,
+    giving a group of one). For a base problem of difficulty weight d with k
+    language variants of which p passed:
+
+      PROBLEM_SOLVING — d counts toward the earned total iff p >= 1 (solved in
+                        at least one language). Difficulty-weighted.
+      LANGUAGE_BREADTH — among base problems with p >= 1, earns d * (p / k):
+                        the difficulty-weighted fraction of languages covered.
+
+      CAPABILITY = SOLVE_WEIGHT * problem_solving + LANG_WEIGHT * language_breadth
+
+    Singletons (k=1) and full-6-language solves score identically to the v1
+    accuracy metric; only partial-language cases rebalance toward solving.
+    """
+    by_base: dict = defaultdict(list)
+    for t in tasks:
+        by_base[t.get("base_id") or t.get("id")].append(t)
+
+    solve_earned = solve_total = 0.0
+    lang_earned = lang_total = 0.0
+    for ents in by_base.values():
+        d = DIFFICULTY_WEIGHTS.get(ents[0].get("difficulty", "medium"), 1.5)
+        # variant_count is the declared number of language ports; fall back to
+        # the number of entries present so a partial run still divides sanely.
+        k = ents[0].get("variant_count") or len(ents)
+        p = sum(1 for x in ents if x.get("passed"))
+        solve_total += d
+        if p >= 1:
+            solve_earned += d
+            lang_total += d
+            lang_earned += d * (p / max(1, k))
+
+    solve = (solve_earned / solve_total * 100) if solve_total else 0.0
+    lang = (lang_earned / lang_total * 100) if lang_total else 0.0
+    capability = SOLVE_WEIGHT * solve + LANG_WEIGHT * lang
+    return round(solve, 2), round(lang, 2), round(capability, 2)
 
 
 def compute_category_breakdown(tasks: list[dict]) -> dict:
@@ -237,6 +322,7 @@ def score_run(results: dict) -> dict:
     leaderboard."""
     tasks = results.get("tasks", [])
     accuracy, breakdown = compute_accuracy(tasks)
+    problem_solving, language_breadth, capability = compute_solve_breadth(tasks)
     speed = compute_speed(tasks)
     composite = compute_composite(accuracy, speed)
     by_category = compute_category_breakdown(tasks)
@@ -259,8 +345,17 @@ def score_run(results: dict) -> dict:
         "gpu": results.get("gpu") or {},
         "inference_engine": results.get("inference_engine") or {},
         "runtime": results.get("runtime") or {},
+        "scoring_version": SCORING_VERSION,
+        # v2 primary metric + its two axes
+        "capability": capability,
+        "problem_solving": problem_solving,
+        "language_breadth": language_breadth,
+        # v1 legacy metric, retained as a column (no longer the ranking key)
         "accuracy": accuracy,
         "speed": speed,
+        # effective decode throughput over the whole run (completion tokens /
+        # wall-clock). Shown as the SPD (tok/s) column.
+        "toks_per_sec": round(tokens_completion / elapsed_total, 1) if elapsed_total else 0.0,
         "composite": composite,
         "tasks_total": len(tasks),
         "tasks_passed": passed,
@@ -276,14 +371,16 @@ def score_run(results: dict) -> dict:
 
 
 def rank_key(entry: dict) -> tuple:
-    """Sort key for leaderboard (descending). Accuracy is PRIMARY because
-    speeds cluster too tightly to discriminate well. Tie-breakers: raw pass
-    count, hard pass count, then speed (higher = better)."""
+    """Sort key for leaderboard (descending). CAPABILITY is PRIMARY (v2:
+    0.7*problem_solving + 0.3*language_breadth). Legacy rows scored before v2
+    have no `capability`/`problem_solving`; they fall back to `accuracy` (a
+    comparable 0-100 scale) so mixed boards still sort sanely. Tie-breakers:
+    problem_solving, hard pass count, then speed (higher = better)."""
     return (
-        -entry["accuracy"],
-        -entry["tasks_passed"],
-        -entry["tasks_hard_passed"],
-        -entry["speed"],
+        -entry.get("capability", entry.get("accuracy", 0)),
+        -entry.get("problem_solving", entry.get("accuracy", 0)),
+        -entry.get("tasks_hard_passed", 0),
+        -entry.get("speed", 0),
     )
 
 
@@ -371,26 +468,55 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     if not entries:
         return "(leaderboard is empty)"
 
+    # Column flow (v2, per Max 2026-07-10): per-difficulty % completed (EASY/
+    # MED/HARD — visual only) -> ACC (legacy weighted accuracy) + SOLVE
+    # (problem-solving "true accuracy") + LANG (language breadth) -> SCORE
+    # (capability = 0.75*SOLVE + 0.25*LANG, the end score) -> SPD (effective
+    # decode tok/s) -> WALL (total wall-clock) -> PASS.
     if show_host:
-        header = f"{'#':>2}  {'HOST':<22}  {'MODEL':<32}  {'SUITE':>5}  {'ACC':>6}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
+        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'EASY':>5}  {'MED':>5}  {'HARD':>5}  {'ACC':>6}  {'SOLVE':>6}  {'LANG':>6}  {'SCORE':>6}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
     else:
-        header = f"{'#':>2}  {'MODEL':<32}  {'SUITE':>5}  {'ACCURACY':>9}  {'SPEED':>6}  {'COMP':>6}  {'PASS':>7}  {'HARD':>5}  {'TIME':>8}  {'TOKENS':>7}"
+        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'EASY':>5}  {'MED':>5}  {'HARD':>5}  {'ACC':>6}  {'SOLVE':>6}  {'LANG':>6}  {'SCORE':>6}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
     sep = "-" * len(header)
 
+    def _f(v):  # format a possibly-missing 0-100 metric
+        return f"{v:.1f}" if isinstance(v, (int, float)) else "—"
+
+    def _tier(e: dict, tier: str) -> str:  # raw % completed for a difficulty tier
+        b = (e.get("breakdown") or {}).get(tier) or {}
+        c = b.get("count")
+        return f"{100 * b['passed'] / c:.0f}" if c else "—"
+
+    def _toks(e: dict) -> str:  # effective decode throughput, tok/s
+        tc = e.get("toks_per_sec")
+        if isinstance(tc, (int, float)):
+            return f"{tc:.0f}"
+        tcomp = e.get("tokens_completion") or 0  # fall back for pre-v2 rows
+        el = e.get("elapsed_total_seconds") or 0
+        return f"{tcomp / el:.0f}" if el else "—"
+
+    def _wall(e: dict) -> str:  # total wall-clock, Hh MMm
+        s = e.get("elapsed_total_seconds") or 0
+        if not s:
+            return "—"
+        h, m = divmod(int(s) // 60, 60)
+        return f"{h}h{m:02d}m" if h else f"{m}m"
+
     def _row(i: int, e: dict) -> str:
-        model = e.get("model", "?")[:32]
-        suite = str(e.get("suite_version", "?"))[:5]
-        accuracy = f"{e['accuracy']:.1f}"
-        speed = f"{e['speed']:.1f}"
-        comp = f"{e['composite']:.1f}"
-        passed = f"{e['tasks_passed']}/{e['tasks_total']}"
-        hard = str(e["tasks_hard_passed"])
-        elapsed = f"{e['elapsed_total_seconds']:.0f}s"
-        toks = _fmt_tokens(e.get("tokens_total", 0))
+        model = e.get("model", "?")[:28]
+        suite = str(e.get("suite_version", "?"))[:4]
+        easy, med, hard = _tier(e, "easy"), _tier(e, "medium"), _tier(e, "hard")
+        accuracy = _f(e.get("accuracy"))         # v1 legacy weighted accuracy
+        solve = _f(e.get("problem_solving"))     # problem-solving ("true accuracy")
+        lang = _f(e.get("language_breadth"))
+        score = _f(e.get("capability"))          # end score (v2 primary)
+        spd = _toks(e)                           # effective tok/s
+        wall = _wall(e)                          # total wall-clock
+        passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
         if show_host:
-            host = entry_host_id(e)[:22]
-            return f"{i:>2}  {host:<22}  {model:<32}  {suite:>5}  {accuracy:>6}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}"
-        return f"{i:>2}  {model:<32}  {suite:>5}  {accuracy:>9}  {speed:>6}  {comp:>6}  {passed:>7}  {hard:>5}  {elapsed:>8}  {toks:>7}"
+            host = entry_host_id(e)[:18]
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {easy:>5}  {med:>5}  {hard:>5}  {accuracy:>6}  {solve:>6}  {lang:>6}  {score:>6}  {spd:>6}  {wall:>7}  {passed:>7}"
+        return f"{i:>2}  {model:<28}  {suite:>4}  {easy:>5}  {med:>5}  {hard:>5}  {accuracy:>6}  {solve:>6}  {lang:>6}  {score:>6}  {spd:>6}  {wall:>7}  {passed:>7}"
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -406,6 +532,11 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         lines.append(sep)
         for i, e in enumerate(legacy_rows, 1):
             lines.append(_row(i, e))
+    lines.append("")
+    lines.append("EASY/MED/HARD = % tasks passed per tier (visual).  "
+                 "SOLVE = % base problems solved in >=1 lang.  LANG = % of language ports passed.")
+    lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
+                 "SPD = effective tok/s (completion tokens / wall-clock).  WALL = total run time.")
     return "\n".join(lines)
 
 
@@ -428,9 +559,10 @@ def format_host_comparison(entries: list[dict]) -> str:
     short = lambda s: s if len(s) <= 18 else s[:17] + "…"
     header = f"{'MODEL':<32}  " + "  ".join(f"{short(h):>22}" for h in hosts)
     lines = [header, "-" * len(header)]
-    # Sort by best accuracy across any host
+    # Sort by best capability across any host (v2; falls back to accuracy for
+    # legacy rows scored before capability existed).
     def model_rank(slug):
-        return -max(e["accuracy"] for e in by_model[slug].values())
+        return -max(e.get("capability", e.get("accuracy", 0)) for e in by_model[slug].values())
     for slug in sorted(by_model, key=model_rank):
         first_entry = next(iter(by_model[slug].values()))
         name = first_entry.get("model", slug)[:32]

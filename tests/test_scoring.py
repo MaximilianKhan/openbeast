@@ -14,7 +14,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "evals"))
 
-from scoring import _suite_version, score_run, entry_dedup_key, entry_host_id
+from scoring import (_suite_version, score_run, entry_dedup_key, entry_host_id,
+                     compute_solve_breadth, SOLVE_WEIGHT, LANG_WEIGHT)
 
 
 class TestSuiteVersion(unittest.TestCase):
@@ -75,6 +76,48 @@ class TestDedupKey(unittest.TestCase):
         a = {"gpu": {"host_id": "h1"}, "model_slug": "m"}
         b = {"gpu": {"host_id": "h2"}, "model_slug": "m"}
         self.assertNotEqual(entry_dedup_key(a), entry_dedup_key(b))
+
+
+class TestSolveBreadth(unittest.TestCase):
+    """Scoring v2 — capability = 0.7*problem_solving + 0.3*language_breadth."""
+
+    def test_singleton_solved_is_100(self):
+        solve, lang, cap = compute_solve_breadth(
+            [{"id": "x", "difficulty": "hard", "passed": True}])
+        self.assertEqual((solve, lang, cap), (100.0, 100.0, 100.0))
+
+    def test_variant_partial_solves_full_problem_credit(self):
+        # A hard base task ported to 6 languages, 3 pass: problem is SOLVED
+        # (>=1 lang) so solve=100; language breadth = 3/6 = 50.
+        tasks = [{"id": f"b_{i}", "base_id": "b", "difficulty": "hard",
+                  "variant_count": 6, "passed": i < 3} for i in range(6)]
+        solve, lang, cap = compute_solve_breadth(tasks)
+        self.assertEqual(solve, 100.0)
+        self.assertEqual(lang, 50.0)
+        self.assertAlmostEqual(cap, SOLVE_WEIGHT * 100 + LANG_WEIGHT * 50, places=2)
+
+    def test_variant_unsolved_earns_nothing(self):
+        tasks = [{"id": f"b_{i}", "base_id": "b", "difficulty": "hard",
+                  "variant_count": 6, "passed": False} for i in range(6)]
+        solve, lang, cap = compute_solve_breadth(tasks)
+        self.assertEqual((solve, lang, cap), (0.0, 0.0, 0.0))
+
+    def test_language_breadth_denominator_is_solved_problems_only(self):
+        # solved hard singleton + entirely-unsolved hard 6-variant.
+        tasks = [{"id": "s", "difficulty": "hard", "passed": True}]
+        tasks += [{"id": f"b_{i}", "base_id": "b", "difficulty": "hard",
+                   "variant_count": 6, "passed": False} for i in range(6)]
+        solve, lang, cap = compute_solve_breadth(tasks)
+        self.assertEqual(solve, 50.0)   # 1 of 2 base problems solved (equal wt)
+        self.assertEqual(lang, 100.0)   # among solved, the singleton = 6/6-equiv
+        self.assertAlmostEqual(cap, SOLVE_WEIGHT * 50 + LANG_WEIGHT * 100, places=2)
+
+    def test_score_run_exposes_v2_fields(self):
+        entry = score_run({"suite_version": "v4", "tasks": [
+            {"id": "x", "difficulty": "easy", "passed": True}]})
+        for k in ("capability", "problem_solving", "language_breadth",
+                  "scoring_version"):
+            self.assertIn(k, entry)
 
 
 if __name__ == "__main__":

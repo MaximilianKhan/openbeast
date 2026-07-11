@@ -1,9 +1,68 @@
 # Eval Suite Results
 
 Cross-system benchmark results. Each section below is one host system. Models
-are **ranked by accuracy** — speed and token cost are reported as separate
-columns (`scoring.py` derives a composite column for reference, but ranking
-never uses it).
+are **ranked by CAPABILITY** (scoring v2, see below) — accuracy, speed, and
+token cost are reported as separate columns.
+
+> ## ⚖️ Scoring v2 — "capability" (problem-solving-led), switched 2026-07-10
+>
+> **What changed.** We moved the leaderboard's ranking metric from the v1
+> **accuracy** (difficulty-weighted pass rate over every language-variant entry)
+> to a two-axis **capability** score:
+>
+> - **PROBLEM_SOLVING** — difficulty-weighted fraction of *base problems* solved
+>   in **≥1 language** ("can the model crack it at all?").
+> - **LANGUAGE_BREADTH** — among solved problems, difficulty-weighted average
+>   fraction of the 6 language ports passed ("can it carry the solution across
+>   languages?").
+> - **CAPABILITY = 0.75 · problem_solving + 0.25 · language_breadth** ← the ranking key (shown as SCORE).
+>
+> **Readout layout (v4 & v3.5).** Columns flow: per-difficulty **% completed**
+> (EASY / MED / HARD — raw pass rate, visual only) → **ACC** (legacy weighted
+> accuracy) · **SOLVE** (problem-solving) · **LANG** (language breadth) →
+> **SCORE** (the 75/25 end score) → **SPD** (effective tok/s = completion
+> tokens ÷ wall-clock) → **WALL** (total run time) → PASS.
+>
+> **Why (the v1 flaw).** v1 fused two different capabilities into one number and
+> weighted them equally: a hard problem ported to 6 languages required passing
+> all 6 for full credit, so *solving the problem* in one language earned only
+> 1/6. This let a model that was **language-robust but a weaker problem-solver
+> outrank a stronger one** — concretely, NVFP4-27B (worst problem-solver /
+> near-best polyglot on this host) ranked **above** Qwopus purely on language
+> redundancy. Under v2 it correctly drops to last.
+>
+> **The rationale for 0.75/0.25 (Max, 2026-07-10).** Cracking a problem *once*, in
+> any language, is the **scarce** capability. Porting a working solution across
+> languages is an increasingly **automatable** problem — in-context translation,
+> LSP feedback loops, and MCP language servers can carry a correct solution into
+> any target language. So we reward genuine problem-solving heavily and treat
+> language breadth as real-but-secondary. As models saturate breadth (→100%),
+> the two axes converge and capability collapses back to problem-solving — the
+> metric self-corrects for that future.
+>
+> **What did NOT change.** Difficulty weights (easy=1, med=1.5, hard=2) and the
+> per-base-task normalization are identical. Singletons and full-6-language
+> solves score exactly as in v1 — **only partial-language cases rebalance**
+> toward solving. v1 `accuracy` is retained as a leaderboard column for
+> continuity. Implementation: `scoring.compute_solve_breadth`,
+> `scoring_version="v2-solve-breadth"`; tests in `tests/test_scoring.py`.
+>
+> **v1 → v2 ranking shift on the RTX 5090 (v4 suite):**
+>
+> | # | Model | **SCORE** | Solve | Lang | Acc (v1) | v1 rank |
+> |---:|---|---:|---:|---:|---:|---:|
+> | 1 | Qwen 27B Q5_K_XL | **98.7** | 99.1 | 97.5 | 96.6 | 1 |
+> | 2 | Qwen 27B MTP Q5_K_XL | **97.5** | 97.3 | 98.3 | 95.6 | 2 |
+> | 3 | Qwen 35B-A3B MTP Q4_K_M | **97.5** | 98.2 | 95.5 | 93.8 | 3 |
+> | 4 | Qwopus 27B v2 MTP Q5 | **96.4** | 96.4 | 96.5 | 93.0 | 5 ↑ |
+> | 5 | Qwen 27B NVFP4 MTP | **95.7** | 94.8 | 98.2 | 93.1 | 4 ↓ |
+>
+> (SCORE at 75/25; #2 and #3 tie at 97.5 to one decimal — Q5-MTP edges ahead on
+> the raw capability, then problem-solving is the tie-breaker.)
+>
+> The two axes make model *character* visible: the 35B is a strong solver but the
+> weakest polyglot (98.2 / 95.5); NVFP4 is the mirror (94.8 / 98.2). v1's single
+> number couldn't tell them apart.
 
 > **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
@@ -272,6 +331,94 @@ Qwen 35B-A3B Uncensored Q4_K_M    94.2  82.5  85.4  78.6  96.1  15.6
    accuracy-leader 27B Q5_K_XL) but loses 4 hard tasks vs Q5_K_XL — the
    uncensored fine-tune is slightly more confident on small problems and
    slightly less reliable on the hardest ones.
+
+---
+
+## NVFP4 (Blackwell FP4) — v4 quality + throughput findings (2026-07-10)
+
+Two `neko-legends` native-llama.cpp conversions of unsloth's **NVFP4** checkpoints
+(4-bit QAT expert/FFN weights on Blackwell FP4 tensor cores, FP8→Q8_0 attention,
+bundled MTP) were profiled and benchmarked on the RTX 5090 vs our shipping
+K-quant siblings. Serve scripts: `serve-qwen-27b-nvfp4-mtp.sh` (n=4, c=262144),
+`serve-qwen-35b-a3b-nvfp4-mtp.sh` (n=2, c=262144). Registered in
+`benchmark_all.py` as `qwen-27b-nvfp4-mtp` / `qwen-35b-a3b-nvfp4-mtp`.
+
+### Accuracy — NVFP4 27B is NOT smarter (v4 suite, 291 tasks)
+
+Difficulty-weighted **accuracy** (leaderboard's primary metric; easy=1, med=1.5,
+hard=2) and raw pass rate both put NVFP4 at/below the K-quants:
+
+| Model (v4) | Accuracy (weighted) | Raw pass | Hard (104) | Rank |
+|---|---:|---:|---:|---:|
+| Qwen 27B Q5_K_XL | 96.62 | 271/291 | 93 | 1 |
+| Qwen 27B **MTP** Q5_K_XL | 95.63 | 273/291 | 98 | 2 |
+| Qwen 35B-A3B MTP Q4_K_M | 93.76 | 254/291 | 85 | 3 |
+| **Qwen 27B NVFP4 MTP** | **93.10** | **271/291** | **94** | **4** |
+| Qwopus 27B v2 MTP Q5_K_M | 93.00 | — | — | 5 |
+
+Head-to-head vs `qwen-27b-mtp-q5` on the identical 291 tasks: NVFP4 **93.1%** vs
+Q5 **93.8%** raw (−0.7 pt, −2 tasks = noise). Tier split (raw pass rate): NVFP4
+**edges easy** (97 vs 94), **ties medium** (93/93), **Q5 wins hard** (94 vs 90).
+**The online "NVFP4 is better" claims (accuracy-retention vs BF16 / naive-4bit /
+FP8 on MMLU-class benchmarks) do NOT translate to a capability win on our code
+suite.** (35B NVFP4 accuracy pending — sweep in progress.)
+
+**Reconciling the weighted ranking (raw pass COUNT ≠ rank).** The leaderboard
+ranks by difficulty-*weighted* accuracy with variant-fractional weights:
+`weight = difficulty_weight / variant_count`. A **hard singleton** task = 2.0 pts;
+a **hard language-variant** (one of 6 ports of a base task) = 2/6 ≈ 0.33 pts —
+this keeps each *base* task worth its difficulty regardless of how many language
+ports it has, so variant-heavy tasks can't dominate by count. Consequence: a
+model can pass **more** tasks yet rank **lower**. Concrete example on this host:
+`qwen-35b-a3b-mtp` (93.76) outranks `qwen-27b-nvfp4-mtp` (93.10) *despite* the
+35B passing fewer total (254 vs 271) and fewer hard (85 vs 94). Reason — the 35B
+passed **4 high-value hard singletons** NVFP4 failed (`117_iter_refinement`,
+`121_quorum_kv`, `124_rkf45`, `133_quantum_superposition` = 8.00 wt), while
+NVFP4's 13 hard wins were almost all **low-value language variants** (6.13 wt,
+only `128_rsa` a singleton) → net −1.87 weighted hard pts. So the accurate read
+of NVFP4's hard-tier profile is **not** "worse on hard" but: *competitive-to-
+stronger on hard language-variant breadth (FFT/nbody/AES/karatsuba/etc. across
+6 langs), weaker on a few hard singleton problems (distributed-systems,
+adaptive-numerics, physics).* Scoring verified self-consistent (both rows
+recompute to the decimal; 0 data anomalies; `variant_count` identical across
+runs; same engine b9690 + suite v4). Minor comparability caveat: the K-quant
+baselines ran 2026-07-08, before the 07-09 system-prompt-tools change.
+
+### Speed — the two regimes split cleanly (measured, greedy, same harness)
+
+| Metric (27B) | NVFP4 (n4) | Q5_K_XL | winner |
+|---|---:|---:|---|
+| Single-stream decode, MTP on (`-np 1`) | 115 tok/s | **141** | Q5 (+23%) |
+| **Batched aggregate, MTP off (`-np 8`)** | **244** | 200 | **NVFP4 (+22%)** |
+
+**★ The `-np 8` boost — why NVFP4 flips from loser to winner.** In single-stream
+MTP mode, decode is **memory-bandwidth-bound**: throughput ∝ bytes-of-weights read
+per token, and NVFP4's file is *larger* (23.2 GB vs 20.4 GB — because only FFNs
+are 4-bit, attention is 8-bit) → it reads more per token → it loses to Q5. At
+`-np 8` the server processes 8 sequences per weight-read, so the workload becomes
+**compute-bound** — and *that* is where Blackwell's native FP4 tensor cores
+(`BLACKWELL_NATIVE_FP4=1`) engage. NVFP4 then scales better (1→8 slots: 3.9× vs
+Q5's 3.1×) and overtakes Q5 by **+22%**. The lead **peaks at ~np8** and converges
+by np16 (both ~340 tok/s aggregate) as the GPU saturates. So the "large boost at
+np=8" is exactly the crossover from bandwidth-bound (Q5 wins) to compute-bound
+(NVFP4 wins) — NVFP4's *entire* advantage lives in that batched regime.
+
+np-scaling (27B, MTP off, aggregate tok/s): np1 62/64 · np2 95/111 · np4 160/169
+· **np8 241/195** · np16 338/343 (NVFP4/Q5).
+
+### Ideal purpose (decision guide)
+
+| Job | Best 27B | Why |
+|---|---|---|
+| Interactive / single user | **Q5_K_XL MTP** | faster single-stream (141) + better on hard |
+| Concurrent agent/worker fleet (~np8) | **NVFP4 27B** | +22% batched throughput; FP4 tensor cores |
+
+**NVFP4 27B is a batched worker-fleet throughput specialist and nothing more** —
+capability-equivalent to Q5 (slight hard-tier deficit), slower for one user,
+faster only under concurrency. It slots directly into the non-MTP high-`-np`
+worker role in the multi-node design (see TODO.md). NVFP4 35B-A3B (MoE) showed no
+speed niche (Q4_K_M ties/beats it both modes with less VRAM); its accuracy row is
+pending. VRAM (both, at c=262144): ~30 GB single-stream; ~24-27 GB at np8/c=32K.
 
 ---
 
