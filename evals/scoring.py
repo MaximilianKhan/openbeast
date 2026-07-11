@@ -49,8 +49,9 @@ v2 (2026-07-10, Max's call): split into PROBLEM_SOLVING + LANGUAGE_BREADTH and
    are unchanged; singletons and full-6-language solves score identically to
    v1 — only the partial-language cases rebalance toward problem-solving.
    Applies to BOTH v4 and v3.5 rows (both carry variant metadata). Readout
-   columns: SOLVE / LANG / SCORE (all %) -> SPD (tok/s) -> WALL -> PASS. The
-   legacy v1 accuracy stays in the entry JSON but is no longer a readout column.
+   columns: SOLVE / LANG / SCORE (all %) -> SPD (tok/s) -> TOKENS (total
+   prompt+completion) -> WALL -> PASS. The legacy v1 accuracy stays in the entry
+   JSON but is no longer a readout column.
    Split started at 0.7/0.3, refined to 0.75/0.25 the same day (Max: weight
    solving a touch harder). Per-tier pass rates dropped from the readout
    2026-07-10 (too dense for an at-a-glance table; still in the JSON breakdown).
@@ -472,14 +473,14 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
 
     # Column flow (v2): SOLVE (problem-solving) + LANG (language breadth) ->
     # SCORE (capability = 0.75*SOLVE + 0.25*LANG, the ranking key) -> SPD
-    # (effective decode tok/s) -> WALL (total wall-clock) -> PASS. SOLVE/LANG/
-    # SCORE are percentages (shown with %). The legacy v1 accuracy and per-tier
-    # pass rates stay in each entry's JSON (accuracy field / breakdown; also
-    # scoring.py --by-category) — dropped from this at-a-glance readout.
+    # (effective decode tok/s) -> TOKENS (total prompt+completion consumed) ->
+    # WALL (total wall-clock) -> PASS. SOLVE/LANG/SCORE are percentages (shown
+    # with %). The legacy v1 accuracy and per-tier pass rates stay in each
+    # entry's JSON (accuracy field / breakdown; also scoring.py --by-category).
     if show_host:
-        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
     else:
-        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
     sep = "-" * len(header)
 
     def _f(v):  # format a possibly-missing 0-100 percentage metric (with %)
@@ -507,12 +508,13 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         lang = _f(e.get("language_breadth"))
         score = _f(e.get("capability"))          # end score (v2 primary)
         spd = _toks(e)                           # effective tok/s
+        toks = _fmt_tokens(e.get("tokens_total", 0))  # total tokens consumed
         wall = _wall(e)                          # total wall-clock
         passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
         if show_host:
             host = entry_host_id(e)[:18]
-            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {wall:>7}  {passed:>7}"
-        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {wall:>7}  {passed:>7}"
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
+        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -531,8 +533,8 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     lines.append("")
     lines.append("SOLVE = % of base problems solved in >=1 language.  "
                  "LANG = % of language ports passed among solved problems.")
-    lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
-                 "SPD = effective tok/s (completion tokens / wall-clock).  WALL = total run time.")
+    lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  SPD = effective tok/s.  "
+                 "TOKENS = total prompt+completion consumed.  WALL = total run time.")
     return "\n".join(lines)
 
 
