@@ -39,6 +39,15 @@ processes eating the free space.
    (system_profiler GPU detect, Metal build flags); compose bridge-network
    variant (host networking doesn't exist on Docker Desktop). WSL2: likely
    works, needs a documented test pass.
+   *(Distinct from client mode below — this ports the SERVER to Mac; that runs
+   NO model on the Mac.)*
+5b. **OpenBeast client mode** (S/M) — [`docs/MAC_CLIENT_PLAN.md`](MAC_CLIENT_PLAN.md).
+   Thin laptop client: local tools + stdio MCP, model + web search served by the
+   rig over the tailnet. Two deliverables — `scripts/setup-mac-client.sh`
+   (laptop) + a `--publish-searxng` opt-in flag on `setup-tailscale.sh` (rig,
+   the one real gap — SearXNG is currently loopback-only). Client-side companion
+   to the shipped distributed-agents split; "local files, remote brains" with
+   the laptop as the local. No blockers.
 6. ✅ **fetch() DNS-rebinding pin (DONE 2026-07-09)** — _resolve_vetted +
    _PinnedHTTP(S)Connection dial the vetted IP; TLS keeps real-host SNI/cert.
    Proven: zero connect-time re-resolution; connect-flip to loopback refused.
