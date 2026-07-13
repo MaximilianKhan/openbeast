@@ -51,20 +51,38 @@ rebuilds it), container images, and Python deps in one shot. Details in
 
 ## Why OpenBeast
 
-| | OpenBeast | Ollama | LM Studio | text-generation-webui |
-|---|:---:|:---:|:---:|:---:|
-| Fully local, no cloud | ✅ | ✅ | ✅ | ✅ |
-| OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ |
-| **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial |
-| **Terminal coding agent** (OpenCode) | ✅ | — | — | — |
-| **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — |
-| **Multi-user roles / RBAC** (family-safe: guests get web search + guarded fetch, not your files) | ✅ | — | — | — |
-| **Speculative decoding** (MTP, 1.46–2.75× tok/s measured) | ✅ | partial | partial | partial |
-| **VRAM-measured context tuning** + reproducible eval leaderboard | ✅ | — | — | — |
+| | OpenBeast | Ollama | LM Studio | text-generation-webui | Hermes Agent |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **What it is** | Model **workstation** | Model runner | Model runner | Model runner | **Agent runtime** |
+| Runs fully local, no cloud | ✅ | ✅ | ✅ | ✅ | ✅ ¹ |
+| **Hosts / serves the model itself** | ✅ | ✅ | ✅ | ✅ | — ¹ |
+| OpenAI-compatible API | ✅ *(serves)* | ✅ | ✅ | ✅ | *consumes one* |
+| **Speculative decoding** (MTP, 1.46–2.75× measured) | ✅ | partial | partial | partial | n/a |
+| **VRAM-measured tuning** + reproducible eval leaderboard | ✅ | — | — | — | n/a |
+| **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial | ✅ |
+| **Terminal coding agent** | ✅ *(OpenCode)* | — | — | — | ✅ *(own CLI)* |
+| **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — | — |
+| **Multi-user roles / RBAC** (family-safe sharing) | ✅ | — | — | — | — |
+| **Self-improving agent** (cross-session memory + skill learning) | — | — | — | — | ✅ |
 
-Ollama and LM Studio are excellent *model runners*. OpenBeast is a *workstation*
-built around one: it turns a local model into an agent you can actually work
-with, reach from any device, and safely share with your household.
+¹ Hermes Agent runs 100% local — but by *pointing at* a local server you host
+(Ollama, LM Studio, vLLM, llama.cpp), not by serving the model itself. It's an
+*agent runtime*, so it drives a model rather than hosting one — and **OpenBeast is
+exactly the local endpoint it's built to consume.**
+
+These aren't all the same kind of thing. **Ollama** and **LM Studio** are
+excellent *model runners*; OpenBeast is a *workstation* built around one — it
+turns a local model into an agent you can actually work with, reach from any
+device, and safely share with your household. **Hermes Agent** (Nous Research) is
+different again: a *client-side agent runtime* — self-improving memory,
+skill-learning, 20+ chat channels — that **brings its own model *endpoint*, not
+its own model *server***; it points at an OpenAI-compatible backend you host.
+That's the punchline: **OpenBeast *is* that backend.** The two improve on
+orthogonal axes — OpenBeast maximizes the *brain* (a bigger local model on
+hardware you own), Hermes maximizes the *agent* (memory and skills that accrue
+over time) — so the strongest setup is to **stack them: run Hermes on OpenBeast's
+local endpoint** for a self-improving agent whose brain never leaves your GPU.
+OpenBeast isn't a rewrite of Hermes; it's the layer underneath it.
 
 ### Our opinion
 
