@@ -5,6 +5,11 @@ weights/
 # Local machine config (weights location, etc.) — never commit personal paths
 openbeast.conf
 
+# Secrets / environment files — never commit
+.env
+.env.*
+*.env
+
 # Agent logs
 agents/logs/
 
