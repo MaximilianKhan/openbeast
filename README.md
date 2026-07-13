@@ -57,8 +57,6 @@ rebuilds it), container images, and Python deps in one shot. Details in
 | Runs fully local, no cloud | ✅ | ✅ | ✅ | ✅ | ✅ ¹ |
 | **Hosts / serves the model itself** | ✅ | ✅ | ✅ | ✅ | — ¹ |
 | OpenAI-compatible API | ✅ *(serves)* | ✅ | ✅ | ✅ | *consumes one* |
-| **Speculative decoding** (MTP, 1.46–2.75× measured) | ✅ | partial | partial | partial | n/a |
-| **VRAM-measured tuning** + reproducible eval leaderboard | ✅ | — | — | — | n/a |
 | **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial | ✅ |
 | **Terminal coding agent** | ✅ *(OpenCode)* | — | — | — | ✅ *(own CLI)* |
 | **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — | — |
@@ -101,16 +99,13 @@ When you need to scale, you add silicon; you don't downsize the mind. Other
 setups optimize for other things. OpenBeast optimizes for the smartest work
 your machine can do.
 
-Built and tuned on an RTX 5090 (32 GB) running Arch Linux. Default model:
-**Qwen3.6-27B Uncensored Q5_K_P** (#2 on the internal leaderboard, 96.16 %);
-the dense **Qwen3.6-27B Q5_K_XL** tops raw accuracy at 97.85 %, and the
-**35B-A3B MoE** variants run 30–50 % faster per token. Each swaps in with one
-argument to `start.sh`. Models are ranked by a **capability score** on the
-hardened **v4 suite** (137 base tasks / 291 units) — five ranked so far (the
-three MTP builds, the dense **Qwen3.6-27B Q5_K_XL**, and **Qwen 27B NVFP4**),
-with a 35B NVFP4 run in progress; four older non-MTP models still carry
-**legacy v3.5** scores pending their v4 re-run. See the leaderboard below,
-[`docs/RESULTS.md`](docs/RESULTS.md), and [`evals/README.md`](evals/README.md).
+Built and tuned on an RTX 5090 (32 GB) running Arch Linux. The default is
+**Qwen3.6-27B Uncensored Q5_K_P**; the dense **Qwen3.6-27B Q5_K_XL** tops the
+board, and the **35B-A3B MoE** variants trade a little accuracy for 30–50 % more
+speed per token. Every model swaps in with one argument to `start.sh`, and all
+are capability-ranked on the hardened **v4 suite** (137 tasks / 291 units) — see
+the leaderboard below, [`docs/RESULTS.md`](docs/RESULTS.md), and
+[`evals/README.md`](evals/README.md).
 
 ## Architecture
 
@@ -194,9 +189,9 @@ cannot drift.
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models. **Four on the hardened v4 suite**: the three MTP builds (Qwen 27B MTP, Qwen 35B-A3B MTP, Qwopus 27B v2 MTP) plus the dense Qwen 27B Q5_K_XL. **Four still on legacy v3.5**, pending their v4 re-run: **Qwen 27B Uncensored Q5_K_P** (the default), Qwen 35B-A3B MoE, Qwen 35B-A3B Uncensored, Gemma 4 31B-it. **One never benchmarked**: Qwopus 27B v2 (non-MTP), VRAM-measured only
+- 9 pre-configured models, capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
-- **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is enabled out of the box for maximum answer quality on your normal chats and coding. Thinking is a *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), stateless and isolated, so automated sub-calls (e.g. a structured JSON classification or routing step) can opt out for speed and clean output without changing your deployment or affecting any other request. You keep thinking on where it matters; the plumbing opts itself out where it doesn't.
+- **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is on out of the box for maximum answer quality. It's a stateless *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), so automated sub-calls (e.g. a JSON classification or routing step) can opt out for speed and clean output without touching your deployment or any other request.
 
 **Tool Suite (15 tools, two surfaces)**
 - File operations: `read_file`, `write_file`, `edit_file`, `list_files`
