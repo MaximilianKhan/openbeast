@@ -309,34 +309,41 @@ non-MTP quant. Recommended samplers (client-side): thinking `temp 1.0 / top_p
 0.95 / top_k 20 / min_p 0.0`, coding `temp 0.6`, non-thinking `temp 0.7 / top_p
 0.80 / presence 1.5`. Not yet on the eval leaderboard.
 
-### Heretic v2 (llmfan46, added 2026-07-17 — ⚠️ ESTIMATES, not yet measured)
+### Heretic v2 (llmfan46, added + MEASURED 2026-07-17)
 
 Model: [`llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF`](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF).
 Qwen3.6-27B (arch qwen35, 64 layers, hybrid Gated DeltaNet + Attention),
 reasoning ON. Uncensored via Heretic v1.3.0 + Magnitude-Preserving Orthogonal
 Ablation (MPOA): 94% fewer refusals (6/100 vs 92/100). Native context 262144;
-YaRN to ~1M. Two MTP variants prepared (Q5_K_M, Q6_K).
+YaRN to ~1M. Two MTP variants (Q5_K_M, Q6_K).
 
-**NATIVE MTP PRESERVED** is the headline difference from DavidAU's NEO builds:
-all 15 original Qwen3.6 MTP heads are kept intact (KL divergence 0.0021 from
-base — preservation, not retraining). So the draft head should behave like the
-BASE unsloth 27B MTP (which peaked at n8), not like DavidAU's modified NEO head
-(n2). That's the working hypothesis — confirm it, because the NEO builds
-overturned exactly this kind of assumption.
+**NATIVE MTP PRESERVED** — all 15 original Qwen3.6 MTP heads kept intact (KL
+0.0021 from base, not retrained). **Measured on the 5090** (2026-07-17, q4_0 KV,
+greedy temp 0 / seed 42; card total 32,607 MiB):
 
-| Variant | Weights (disk) | Context (est.) | Slots | MTP n-max (est.) |
-|---|---|---|---|---|
-| Q5_K_M MTP | ~19.7 GB | 262144 (native) | 1 | 8 |
-| Q6_K MTP | ~22.8 GB | 229376 | 1 | 8 |
+| Variant | Weights (disk) | Context (shipped) | Slots | VRAM used / free | Decode tok/s | MTP n-max / acceptance |
+|---|---|---|---|---|---|---|
+| Q5_K_M MTP | 19.75 GB | 262144 (native) | 1 | 29,633 / 2,974 MiB | 135.8 | **n8** / 0.39 (len 4.13) |
+| Q6_K MTP | 22.80 GB | 212992 | 1 | 30,360 / 2,247 MiB | 139.3 | **n4** / 0.60 (len 3.41) |
 
-Both are ~1.5 GB lighter than the NEO Q5/Q6 MTP builds, so they hold MORE
-context — Q5 should take full native 262144 comfortably; Q6 (22.8 GB vs the NEO
-Q6 MTP's 24.0 GB that measured 180224) should reach ~229376–245760. Profile with
-`scripts/profile-heretic-v2-mtp.sh {q5,q6}` (n-max sweep) and set the real
-context ceiling with `scripts/measure-vram.sh`. MTP rules: temperature ≤ 1.0,
+**Fastest MTP builds in the lineup** (136–139 tok/s vs the NEO models' 103–108).
+The native-preserved heads accept drafts much better at depth than DavidAU's
+modified NEO head — e.g. Q6 accepts 0.60 at n4 vs the NEO Q6's 0.44. This
+**confirmed the native-MTP hypothesis**: the optimum sits deep (base unsloth 27B
+MTP peaked n8), not shallow like the NEO builds (n2).
+
+**MTP draft depth (measured, `scripts/profile-heretic-v2-mtp.sh`):** the optimum
+differs by quant. Q5 is a flat plateau — n1 109 / n2 134 / n4 135 / n6 120 /
+**n8 138** / n10 133 tok/s (n2–n8 within run noise; n8 the top, shipped since Q5
+has VRAM to spare). Q6 is a sharp peak — n1 99 / n2 128 / **n4 140** / n6 128 /
+n8 124 / n10 119. Re-profile per model.
+
+**Context ceilings:** Q5 (19.75 GB, the lightest MTP build) holds full native
+262144 with 2,974 free. Q6 shipped at 212992 — the ladder above breached the
+2 GB rule (229376 = 1,781 free, 245760 = 1,315, 262144 = 847). Both beat the NEO
+Q6 MTP's 176K ceiling (lighter quants). MTP rules: temperature ≤ 1.0,
 repetition_penalty = 1.0; <50% acceptance → non-MTP quant. Samplers as for the
-other Qwen3.6 tunes (thinking `temp 1.0 / top_p 0.95 / top_k 20`, coding
-`temp 0.6`). Not yet on the eval leaderboard.
+other Qwen3.6 tunes. Not yet on the eval leaderboard.
 
 ## 1. System packages
 

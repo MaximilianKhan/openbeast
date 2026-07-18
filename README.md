@@ -189,7 +189,7 @@ cannot drift.
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 17 pre-configured models (15 VRAM/context-measured on the 5090; the 2 newest await profiling), capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
+- 17 pre-configured models (all VRAM/context-measured on the 5090), capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is on out of the box for maximum answer quality. It's a stateless *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), so automated sub-calls (e.g. a JSON classification or routing step) can opt out for speed and clean output without touching your deployment or any other request.
 
@@ -394,16 +394,16 @@ A community fine-tune family: DavidAU's [Qwen3.6-27B-Fable-Fusion-711-Uncensored
 
 MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draft-n-max 2`** for both MTP builds (this fine-tune's draft head accepts shallow drafts, not deep — profiled with `scripts/profile-fable-fusion-mtp.sh {q5,q6}`). Q6_K also loads at the full 262K but only ~2.1 GB free (crash-zone edge), so it ships one notch down at 240K; Q6_K MTP is the tightest (weights + draft buffers) at 176K. **DavidAU's MTP rules** (in the script headers): keep **temperature ≤ 1.0** and **repetition_penalty = 1.0**, or switch to the non-MTP quant if acceptance drops below 50%. Recommended samplers (client-side): thinking `temp 1.0 / top_p 0.95 / top_k 20`, coding `temp 0.6`. Not yet on the eval leaderboard.
 
-### Heretic v2 (llmfan46) — added 2026-07-17, ⚠️ estimates pending profiling
+### Heretic v2 (llmfan46) — added + profiled 2026-07-17
 
-[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF) — Qwen3.6-27B (dense, reasoning ON), uncensored via Heretic v1.3.0 + MPOA (94% fewer refusals). Two MTP variants, both **Native-MTP-Preserved**: the 15 original Qwen3.6 MTP heads are kept intact (KL 0.0021 vs base, not retrained), so unlike DavidAU's NEO head these should draft like the base unsloth 27B MTP. Both quants are ~1.5 GB lighter than the NEO equivalents, so they hold more context.
+[llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF) — Qwen3.6-27B (dense, reasoning ON), uncensored via Heretic v1.3.0 + MPOA (94% fewer refusals). Two MTP variants, both **Native-MTP-Preserved**: the 15 original Qwen3.6 MTP heads are kept intact (KL 0.0021 vs base, not retrained). **Measured on the RTX 5090** (q4_0 KV, greedy, 2026-07-17):
 
-| Model | Quant | Weights | Context (est.) | n-max (est.) | Serve script |
-|-------|-------|---------|---------------|--------------|--------------|
-| Heretic v2 27B **MTP** | Q5_K_M | ~19.7 GB | 262K (native) | 8 | `serve-heretic-v2-27b-mtp-q5.sh` |
-| Heretic v2 27B **MTP** | Q6_K | ~22.8 GB | 224K | 8 | `serve-heretic-v2-27b-mtp-q6.sh` |
+| Model | Quant | Context | VRAM used / free | Decode (greedy) | Serve script |
+|-------|-------|---------|------------------|-----------------|--------------|
+| Heretic v2 27B **MTP** | Q5_K_M | **262K** (native) | 29.6 GB / 2.97 GB | **~136 tok/s** (n8, 39% acc) | `serve-heretic-v2-27b-mtp-q5.sh` |
+| Heretic v2 27B **MTP** | Q6_K | **208K** | 30.4 GB / 2.25 GB | **~139 tok/s** (n4, 60% acc) | `serve-heretic-v2-27b-mtp-q6.sh` |
 
-**n-max 8 is an estimate** (native-preserved MTP → base-like), but the last profiling run overturned exactly this kind of assumption — **measure**: `scripts/profile-heretic-v2-mtp.sh {q5,q6}` finds the real optimum, `scripts/measure-vram.sh` the real context ceiling. Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard.
+**These are the fastest MTP builds in the lineup** — 136–139 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth. The optimum draft depth differs by quant (Q5 a flat plateau topping at **n8**, Q6 a sharp peak at **n4** — profiled with `scripts/profile-heretic-v2-mtp.sh {q5,q6}`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard.
 
 ## Project Structure
 

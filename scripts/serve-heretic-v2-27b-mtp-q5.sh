@@ -13,10 +13,13 @@
 #   --spec-type draft-mtp / --spec-draft-n-max 8 / --spec-draft-p-min 0.0
 #   -fa on / -ngld 99 / -ctkd q4_0 / -ctvd q4_0
 #
-# ⚠️ n-max 8 IS AN ESTIMATE — chosen because the MTP is NATIVE-PRESERVED
-# (base unsloth 27B MTP peaked at n8). But do NOT trust it: our DavidAU NEO
-# builds surprised us at n2. Run  ./scripts/profile-heretic-v2-mtp.sh q5
-# once downloaded and set the real optimum here.
+# n-max 8 is the MEASURED peak (scripts/profile-heretic-v2-mtp.sh q5,
+# 2026-07-17): decode n1 109 / n2 134 / n4 135 / n6 120 / n8 138 / n10 133
+# tok/s. The native-preserved head accepts drafts well at depth (mean len
+# 4.1 @ n8), so unlike DavidAU's NEO builds (n2) this stays fast deep —
+# n2/n4/n8 are a flat plateau within run-to-run noise; n8 is the top and Q5
+# has the VRAM to spare, so we ship it. (Confirms the native-MTP hypothesis:
+# preserved heads behave like the base unsloth 27B MTP, which also peaked n8.)
 #
 # ⚠️ DavidAU/Qwen MTP REQUIREMENTS: temperature ≤ 1.0, repetition_penalty = 1.0
 # (set client-side), else draft acceptance and speed degrade; if acceptance
@@ -25,10 +28,10 @@
 # CONSTRAINTS (MTP, upstream): -np 1 forced; --mmproj vision unsupported (the
 # repo ships a separate mmproj, incompatible with MTP anyway).
 #
-# ⚠️ CONTEXT/VRAM IS AN ESTIMATE (2026-07-17). Q5_K_M (~19.7 GB — ~1.5 GB
-# lighter than the NEO Q5) should hold the full native 262144 with comfortable
-# headroom (cf. the 21.2 GB fable-fusion Q5 MTP fits 262144 at ~2.7 GB free).
-# Validate/raise with scripts/measure-vram.sh + the profile script.
+# MEASURED on the 5090 (2026-07-17, n-max 8): -c 262144 (native ceiling) uses
+# 29,633 MiB / 2,974 MiB free — safe. Decode ~136 tok/s greedy — the FASTEST
+# MTP build in the lineup (native-preserved heads beat the NEO Q5's ~108).
+# Draft acceptance 0.39 (mean len 4.13) at n8.
 #
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

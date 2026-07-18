@@ -306,13 +306,13 @@ hf download llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF
 rm -rf weights/.cache   # hf leaves a cache subdir behind
 ```
 
-Serve with `serve-heretic-v2-27b-mtp-q5.sh` / `-q6`. **Contexts and MTP draft
-depth are ESTIMATES** (native-preserved MTP → n-max 8 as a starting guess) —
-after downloading, profile with `./scripts/profile-heretic-v2-mtp.sh {q5,q6}`
-and set the context ceiling with `./scripts/measure-vram.sh`. MTP rules: temp
-≤ 1.0, repetition_penalty = 1.0; use a non-MTP quant if draft acceptance stays
-under ~50%. Then replace the two `PENDING` rows in `scripts/weights.registry`
-with real checksums.
+Serve with `serve-heretic-v2-27b-mtp-q5.sh` / `-q6`. **Measured on the 5090**
+(2026-07-17 — see `docs/REFERENCE.md`): Q5 holds native 262K at n-max 8
+(~136 tok/s), Q6 ships at 208K at n-max 4 (~139 tok/s) — the fastest MTP builds
+in the lineup. To re-profile on different hardware: draft depth with
+`./scripts/profile-heretic-v2-mtp.sh {q5,q6}`, context ceiling with
+`./scripts/measure-vram.sh`. MTP rules: temp ≤ 1.0, repetition_penalty = 1.0;
+use a non-MTP quant if draft acceptance stays under ~50%.
 
 You don't need all of these — download whichever models you plan to use.
 
