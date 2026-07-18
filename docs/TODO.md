@@ -8,25 +8,31 @@ are opposite philosophies — ODS bundles everything; OpenBeast maximizes the on
 biggest brain, opinionated, nothing leaves the machine. Max approved absorbing
 these FIVE (build them the OpenBeast way; each stays on-ethos):
 
-1. **Bootstrap fast-first-chat** (S/M) — bring up the tiny `Qwen3-0.6B-Q8_0.gguf`
-   (already on disk, the router's model) on :8080 the instant `start.sh` runs so
-   the user can chat in <1 min, then hot-swap to the configured big-model default
-   once it's health-checked, zero-downtime. Big model still becomes the default —
-   pure startup UX, no compromise on "maximize intelligence." Opt-outable.
-2. **Model load-failure rollback** (M) — if a serve script fails to load (OOM,
-   missing weight), auto-revert to the last-known-good model instead of leaving
-   the stack down. Records last-good in `.run/`. Pairs with the eval quality gate.
-3. **Extension architecture** (M/L) — hot-pluggable optional services via a
-   manifest + compose fragment convention, so extras attach without bloating the
-   opinionated core. This is the SANCTIONED way to add anything optional later;
-   REINFORCES the lean-core ethos rather than diluting it.
+1. ✅ **Bootstrap fast-first-chat (SHIPPED 2026-07-17, 2450d78).** Opt-in
+   FAST_BOOT: serve-bootstrap.sh runs Qwen3-0.6B on :8080 for instant chat, the
+   model-agnostic stack comes up, then start.sh warms the real weights and
+   hot-swaps behind :8080. Default off. Verified end-to-end.
+2. ✅ **Model load-failure rollback (SHIPPED 2026-07-17, 2450d78).**
+   launch_and_wait() records last-good (.run/last-good-serve-script) and reverts
+   on OOM/missing-weight at initial boot, fast-boot swap, and supervisor
+   relaunch. On by default (MODEL_ROLLBACK). Verified with a broken serve script.
+3. ✅ **Extension architecture (SHIPPED 2026-07-17, 940fa28).** extensions/<name>/
+   with manifest + compose.yaml (KIND=compose) or run.sh (KIND=process);
+   scripts/ext.sh enable/disable/list; start.sh/stop.sh merge fragments + launch/
+   reap process extensions. EXTENSIONS conf key. Verified via the dashboard.
 4. **Hardware auto-tiering (multi-vendor)** (M) — extend `lib/hardware.sh` beyond
    the CUDA reference: AMD Strix Halo (unified memory), Apple Silicon (Metal),
    Intel Arc (SYCL) tier detection + config. Overlaps the existing "CI build
    matrix" + "macOS/Metal" items — mine ODS's tier logic when tackling those.
-5. **Status dashboard** (S/M) — a lightweight GPU/model/service view on top of the
-   existing `/metrics` + `doctor`. CLI-and-WebUI-first stays the default; this is
-   an optional read-only surface (candidate for the extension system above).
+   ⏳ REMAINING — the one ODS-absorbed item not yet built (needs the non-CUDA
+   hardware / CI matrix to validate against).
+5. ✅ **Status dashboard (SHIPPED 2026-07-17, 93f6463).** extensions/dashboard/ —
+   stdlib-Python read-only GPU/model/services page + /api/status on :3002 (the
+   first extension). Enable: ./scripts/ext.sh enable dashboard.
+
+Also shipped alongside: **per-model reasoning config** (646bc32) — serve.sh
+REASONING / REASONING_BUDGET; the DavidAU NEO scripts default to
+--reasoning-budget 4096 to tame the 25k-token over-reasoning runaways.
 
 REJECTED from ODS (against the grain — noted so we don't relitigate): voice I/O
 (Whisper/Kokoro), LiteLLM cloud/hybrid fallback (violates "nothing leaves your
