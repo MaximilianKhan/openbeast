@@ -107,7 +107,12 @@ export OPENBEAST_FILES_DIR
 # reachable from the whole tailnet (that's when a login boundary matters).
 # docker-compose reads this via OPENBEAST_WEBUI_AUTH.
 WEBUI_AUTH="${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || echo false)}"
-export BIND_HOST WEBUI_ADMIN_EMAIL WEBUI_ADMIN_PASSWORD
+# WEBUI_ADMIN_PASSWORD is deliberately NOT exported: the only consumer,
+# configure-webui.sh, sources this file itself and reads the variable in
+# its own shell. Exporting it would put the admin password in the
+# environment of every child start.sh launches — including the tool
+# server that runs model-authored shell commands.
+export BIND_HOST WEBUI_ADMIN_EMAIL
 export OPENBEAST_WEBUI_AUTH="$WEBUI_AUTH"
 # docker-compose interpolates OPENBEAST_BIND / OPENBEAST_API_KEY directly.
 # Export them HERE so every caller that later runs `docker compose up`
@@ -135,13 +140,12 @@ AGENT_INFERENCE_URL="${OPENBEAST_AGENT_INFERENCE_URL:-$(_ob_conf_value AGENT_INF
 if [[ -n "$AGENT_INFERENCE_URL" ]]; then
   export OPENBEAST_AGENT_INFERENCE_URL="$AGENT_INFERENCE_URL"
 fi
-# RBAC Phase 2 — per-profile MCPO API keys (docs/RBAC_PLAN.md). BOTH keys set
-# = hard enforcement: start.sh launches TWO MCPO instances — admin (:3001, all
-# tools, admin key) and guest (:3002, web_search+fetch ONLY via the
-# OPENBEAST_MCP_TOOLS allowlist, guest key) — and configure-webui.sh binds
-# each WebUI connection to its instance with a Bearer key. Either key empty =
-# Phase 1 behavior unchanged (one keyless instance on :3001; WebUI grants are
-# the only enforcement). Generate keys with scripts/setup-mcpo-keys.sh.
+# RBAC Phase 2 — per-profile tool-server API keys (docs/RBAC_PLAN.md).
+# EITHER key set = keyed enforcement on the identity tool server (:3001):
+# admin key = all tools, guest key = web_search+fetch only; a missing key
+# disables that profile (fail closed). BOTH keys empty = Phase 1 behavior
+# (open server on loopback; WebUI grants are the only enforcement).
+# Generate keys with scripts/setup-mcpo-keys.sh.
 # Same export discipline as LLAMA_API_KEY: only export when non-empty.
 MCPO_ADMIN_KEY="${OPENBEAST_MCPO_ADMIN_KEY:-$(_ob_conf_value MCPO_ADMIN_KEY || true)}"
 MCPO_GUEST_KEY="${OPENBEAST_MCPO_GUEST_KEY:-$(_ob_conf_value MCPO_GUEST_KEY || true)}"
@@ -163,3 +167,22 @@ fi
 if [[ -n "$MCPO_GUEST_KEY" ]]; then
   export OPENBEAST_MCPO_GUEST_KEY="$MCPO_GUEST_KEY"
 fi
+# SearXNG session-signing secret — per-install, never shipped in the repo
+# (a committed key would be shared by every install on GitHub, and remote
+# access exposes SearXNG beyond loopback). Generated ONCE here and persisted
+# in openbeast.conf (mode 600) so daemon mode — which re-sources this file
+# from a clean systemd environment — and every later restart reuse the same
+# key. docker-compose.yml hard-requires the export (`:?`), so any compose
+# caller must source this file first, which they all already do.
+SEARXNG_SECRET="${OPENBEAST_SEARXNG_SECRET:-$(_ob_conf_value SEARXNG_SECRET || true)}"
+if [[ -z "$SEARXNG_SECRET" ]]; then
+  SEARXNG_SECRET="$(openssl rand -hex 32 2>/dev/null)" \
+    || SEARXNG_SECRET="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+  _ob_conf="$REPO_DIR/openbeast.conf"
+  if [[ ! -f "$_ob_conf" ]]; then
+    ( umask 077; echo "# OpenBeast local config — all keys: openbeast.conf.example" > "$_ob_conf" )
+  fi
+  printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
+  chmod 600 "$_ob_conf" 2>/dev/null || true
+fi
+export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"

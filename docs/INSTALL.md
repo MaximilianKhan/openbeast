@@ -346,7 +346,13 @@ non-default settings:
 - Granian server bound to port 8888 (stock image defaults to 8080, which
   collides with llama.cpp)
 
-No manual config needed — the mounted file handles all of it.
+The session-signing key is NOT in the mounted file — it's a per-install
+random secret that the first `./start.sh` generates into `openbeast.conf`
+(gitignored, mode 600) and injects via the `SEARXNG_SECRET` env var. If you
+run `docker compose up` by hand, source `scripts/lib/conf.sh` first (with
+`REPO_DIR` set to the repo root) or compose will refuse to start SearXNG.
+
+No other manual config needed — the mounted file handles the rest.
 
 ## 5. Start the stack
 

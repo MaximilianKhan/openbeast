@@ -1,8 +1,13 @@
 use_default_settings: true
 
 server:
-  # Localhost-only deployment — this key signs sessions, not user data.
-  secret_key: "921cde7a1b38229ecae4f6857b55395473b6bc3daa2b84d801ebe9ea2449035b"
+  # The real session-signing key is injected per-install via the SEARXNG_SECRET
+  # env var (docker-compose.yml requires it; scripts/lib/conf.sh generates it
+  # into openbeast.conf). This placeholder must never be a usable key — a value
+  # committed here would be shared by every OpenBeast install on GitHub, and
+  # remote-access setups expose SearXNG beyond loopback. "ultrasecretkey" is
+  # upstream's refuse-to-start sentinel, so a missing env fails loudly.
+  secret_key: "ultrasecretkey"
   # Disable rate limiter so the local MCP server can hit the JSON endpoint freely.
   limiter: false
   image_proxy: true

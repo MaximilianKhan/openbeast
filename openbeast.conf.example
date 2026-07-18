@@ -86,6 +86,12 @@
 #WEBUI_ADMIN_EMAIL=
 #WEBUI_ADMIN_PASSWORD=
 
+# SearXNG session-signing key. AUTO-GENERATED — you never need to set this:
+# the first ./start.sh (via scripts/lib/conf.sh) creates a random per-install
+# key and appends it to openbeast.conf. Listed here only so the key name is
+# documented. Env override: $OPENBEAST_SEARXNG_SECRET.
+#SEARXNG_SECRET=
+
 # ---------------------------------------------------------------------------
 # Distributed agents  (see docs/DISTRIBUTED_AGENTS_PLAN.md)
 # ---------------------------------------------------------------------------
@@ -137,13 +143,14 @@
 # agents/openapi_tools.py, the identity-aware tool server on :3001)
 # ---------------------------------------------------------------------------
 
-# Below-app tool enforcement: with BOTH keys set, the tool server checks a
+# Below-app tool enforcement: with EITHER key set, the tool server checks a
 # Bearer key on every call — the admin key reaches all 15 tools, the guest
 # key only web_search + fetch (anything else is 404 for it), so a guest
-# can't reach admin tools even bypassing the WebUI layer. Generate with
-# scripts/setup-mcpo-keys.sh (don't hand-write; --rotate to replace). Either
-# key missing = open server on loopback (WebUI grants only, single-user
-# default). Env overrides: $OPENBEAST_MCPO_ADMIN_KEY / $OPENBEAST_MCPO_GUEST_KEY.
+# can't reach admin tools even bypassing the WebUI layer. A missing key
+# simply disables that profile (fail closed). BOTH keys absent = open
+# server on loopback (WebUI grants only, single-user default). Generate
+# with scripts/setup-mcpo-keys.sh (don't hand-write; --rotate to replace).
+# Env overrides: $OPENBEAST_MCPO_ADMIN_KEY / $OPENBEAST_MCPO_GUEST_KEY.
 #MCPO_ADMIN_KEY=
 #MCPO_GUEST_KEY=
 

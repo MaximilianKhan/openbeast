@@ -64,10 +64,19 @@ services:
       # granian tries to bind 8080 and clashes with llama-server.
       - GRANIAN_PORT=8888
       - GRANIAN_HOST=${OPENBEAST_BIND:-127.0.0.1}
+      # Per-install session-signing key, generated into openbeast.conf by
+      # scripts/lib/conf.sh (every compose caller — start.sh, healthcheck.sh
+      # --restart, update.sh — sources it first). Required, no default: the
+      # tracked settings.yml deliberately holds only upstream's refuse-to-start
+      # sentinel, so a shared key can never ship in the repo.
+      - SEARXNG_SECRET=${OPENBEAST_SEARXNG_SECRET:?run ./start.sh (or source scripts/lib/conf.sh) to generate the per-install SearXNG secret}
     volumes:
       # Override default settings.yml to enable JSON format (required by web_search
-      # MCP tool) and disable the rate limiter for local use.
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:rw
+      # MCP tool) and disable the rate limiter for local use. Mounted read-only:
+      # this file is git-tracked, and older SearXNG entrypoints sed a generated
+      # secret_key into a writable settings.yml — which would dirty the repo
+      # with a real secret. The key comes from SEARXNG_SECRET above instead.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     # Hardening: drop every capability except the four the entrypoint needs
     # to chown its dirs and drop from root to the searxng user. Root inside
     # the container can't load modules, ptrace, raw-socket, or mknod even

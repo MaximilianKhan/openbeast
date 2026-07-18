@@ -8,6 +8,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$SCRIPT_DIR/.run"
+# Resolve user config before `docker compose down` below — compose
+# interpolates docker-compose.yml (including the required
+# OPENBEAST_SEARXNG_SECRET) for EVERY subcommand, down included.
+REPO_DIR="$SCRIPT_DIR"
+source "$SCRIPT_DIR/scripts/lib/conf.sh"
 
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Identity-checked liveness: never TERM an unrelated process that recycled
@@ -50,17 +55,19 @@ else
   echo "Docker not installed — skipping containers."
 fi
 
-# Fallback sweep for anything the supervisor didn't own.
+# Fallback sweep for anything the supervisor didn't own. Patterns are
+# anchored to THIS repo's path so we never kill an unrelated llama-server
+# or router the user runs for another project on the same box.
 echo "Stopping agent router..."
-pkill -f "agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
+pkill -f "$SCRIPT_DIR/agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping tool server..."
-pkill -f "agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
+pkill -f "$SCRIPT_DIR/agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
 # Legacy mcpo instances (pre-identity-server stacks)
 pkill -f "mcpo --port" 2>/dev/null || true
 
 echo "Stopping llama.cpp server..."
-pkill -f "llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+pkill -f "$SCRIPT_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
 
 rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
       "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" 2>/dev/null || true
