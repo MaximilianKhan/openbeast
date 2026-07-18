@@ -16,6 +16,10 @@
 
 [Unit]
 Description=OpenBeast local AI stack
+# NOTE: docker.service here is aspirational only — a USER manager cannot
+# order against SYSTEM units, so this line is ignored at boot. The real
+# boot-race handling is start.sh's docker-info wait loop; don't "fix" a
+# race by editing this ordering.
 After=network-online.target docker.service
 Wants=network-online.target
 

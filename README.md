@@ -189,7 +189,7 @@ cannot drift.
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 9 pre-configured models, capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
+- 11 pre-configured models, capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is on out of the box for maximum answer quality. It's a stateless *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), so automated sub-calls (e.g. a JSON classification or routing step) can opt out for speed and clean output without touching your deployment or any other request.
 
@@ -357,8 +357,10 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 | Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). 93.76% on v4 (254/291). |
 | Qwopus3.6-27B-v2 | Q5_K_M | 19.2 GB | 416K | 29.3 GB | Jackrong SFT fine-tune of Qwen3.6-27B (Trace Inversion from Claude Opus 4.6/4.7); reasoning-enhanced. 2.6 GB headroom measured. YaRN config in this GGUF unverified — back off context if outputs degrade past ~128K. |
 | Qwopus3.6-27B-v2 **MTP** | Q5_K_M | 19.5 GB | 336K | 29.3 GB | Same fine-tune with MTP heads; tuned `n-max 4 / p-min 0.0` measures **147 tok/s vs 68.5 baseline (2.14×)**. Same `-np 1` / no-`mmproj` MTP constraints. 2.5 GB headroom (352K lands at 2,132 MiB — the known sustained-load crash zone). 93.00% on v4 (260/291). |
+| Qwen3.6-27B **NVFP4** MTP | NVFP4 | 21.6 GB | 262K | 30.0 GB | **Blackwell-only** (native FP4 tensor cores, sm_120+; needs a GGML_TYPE_NVFP4 build). Tuned `n-max 4` measures ~115 tok/s decode; 95.7 v4 Score. Slower single-stream than its Q5 K-quant sibling — NVFP4's win is batched `-np 8` serving (see leaderboard notes). |
+| Qwen3.6-35B-A3B **NVFP4** MTP (MoE) | NVFP4 | 24.3 GB | 262K | 29.5 GB | Same Blackwell-only constraint. Tuned `n-max 2` measures ~317 tok/s decode; 96.3 v4 Score. Same story vs its Q4_K_M sibling: K-quant wins single-stream, NVFP4 wins batched worker-fleet serving. |
 
-All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
+All eleven rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07, the two NVFP4 rows 2026-07-10; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
 
 ## Project Structure
 

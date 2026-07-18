@@ -5,10 +5,10 @@ import os
 import sys
 import importlib.util
 
-REPO = "/home/max/Documents/models"
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 # Load the helper from easy_setups.py
-spec = importlib.util.spec_from_file_location("easy", "/home/max/Documents/models/evals/scripts/easy_setups.py")
+spec = importlib.util.spec_from_file_location("easy", os.path.join(REPO, "evals/scripts/easy_setups.py"))
 easy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(easy)
 variant_template = easy.variant_template

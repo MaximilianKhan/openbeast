@@ -8,7 +8,7 @@ commands and forbidden-API lints differ per language."""
 import json
 import os
 
-REPO = "/home/max/Documents/models"
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 # Common Zig idiom block — reused in every Zig variant task field
 ZIG_IDIOMS = (

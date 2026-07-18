@@ -22,17 +22,22 @@ preserved for two reasons:
   task fields in Phase A (replaces the broken pre-`&fr.interface` template
   with the corrected guidance). Already applied; preserved as a record.
 
-## Re-running
+## Re-running — DON'T (against the live tasks)
 
-These are idempotent (writing to the same JSON paths). Safe to re-run if
-you need to regenerate after a manual edit. Always run
-`tests/test_scripts.sh` and `tests/audit_variants.py` afterwards to
-confirm nothing broke.
+> **⚠️ These generators are v3.5-era archives. The committed task JSONs have
+> since been v4-hardened, and two tasks the generators emit were pruned from
+> the suite entirely. Re-running them in the repo would REVERT that hardening
+> and resurrect the pruned tasks** (verified 2026-07-17: 19 of the generated
+> files diverge from the committed v4 versions).
+
+The committed JSONs in `evals/tasks/` are authoritative. To re-derive or
+tweak a task, run the generator into a scratch copy and diff:
 
 ```bash
-python3 evals/scripts/easy_setups.py
-python3 evals/scripts/medium_setups.py
-python3 evals/scripts/hard_setups.py
-bash tests/test_scripts.sh
-python3 tests/audit_variants.py
+mkdir -p /tmp/regen/evals && cp -r evals/scripts evals/tasks /tmp/regen/evals/
+(cd /tmp/regen && python3 evals/scripts/easy_setups.py)   # writes to the copy
+diff -u /tmp/regen/evals/tasks/32_dot_product.json evals/tasks/32_dot_product.json
 ```
+
+Port only the piece you need into the committed JSON, then run
+`bash tests/test_scripts.sh` and `python3 tests/audit_variants.py`.

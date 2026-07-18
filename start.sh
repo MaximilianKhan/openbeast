@@ -391,7 +391,12 @@ if ! docker info >/dev/null 2>&1; then
     sleep 2
   done
 fi
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d
+# NOT fatal: by this point the model is loaded (multi-minute cost) and the
+# tool server is serving. A frontend-only failure (docker wait above expired,
+# registry hiccup on the pinned digest) must not tear the working stack down
+# via set -e.
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d \
+  || echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose -f docker-compose.yml up -d" >&2
 
 # Configure Open WebUI (tool server + native function calling) in background
 "$SCRIPT_DIR/scripts/configure-webui.sh" &
@@ -407,7 +412,8 @@ echo ""
 if [[ $DAEMONIZED -eq 1 ]]; then
   echo "Running detached. Stop with ./stop.sh; status with ./start.sh --status."
 else
-  echo "Press Ctrl+C to stop. Or run './stop.sh' from another terminal."
+  echo "Press Ctrl+C to stop the servers (containers keep running — cheap,"
+  echo "and they auto-reconnect on the next start). Full stop: ./stop.sh."
 fi
 
 # Supervise with bounded self-healing: an unexpected llama-server death

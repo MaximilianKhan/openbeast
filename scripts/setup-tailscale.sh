@@ -89,8 +89,19 @@ if [[ "$(_ts_ready)" != "yes" ]]; then
   echo "           NAMES become public, your services stay tailnet-only)"
   echo ""
   echo -n "      Waiting for the toggles"
+  # Bounded (30 min): an unattended/scripted run must not hang forever on a
+  # browser toggle nobody is going to click.
+  _ts_waited=0
   while [[ "$(_ts_ready)" != "yes" ]]; do
+    if [[ $_ts_waited -ge 1800 ]]; then
+      echo ""
+      echo "      Timed out after 30 min waiting for the admin-console toggles." >&2
+      echo "      Enable MagicDNS + HTTPS Certificates, then re-run this script" >&2
+      echo "      (it is idempotent)." >&2
+      exit 1
+    fi
     sleep 5
+    _ts_waited=$((_ts_waited + 5))
     echo -n "."
   done
   echo " done!"

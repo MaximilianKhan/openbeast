@@ -51,6 +51,12 @@ jobs:
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Advisory, not a merge gate: a new CVE published against a pinned dep
+    # would otherwise turn every open PR red — including external
+    # contributors' unrelated changes — until a maintainer bumps the pin.
+    # The job still runs on every PR and shows red in the checks list;
+    # it just can't block unrelated work.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

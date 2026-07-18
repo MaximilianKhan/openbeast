@@ -75,8 +75,10 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
       echo "       → no supervisor: restarting llama.cpp directly..."
       # pkill handles multiple stale PIDs; || true because "nothing to kill"
       # (or a race with a process exiting) must not abort the healthcheck.
-      if pgrep -f "llama-server" >/dev/null 2>&1; then
-        pkill -f "llama-server" 2>/dev/null || true
+      # Path-anchored: never kill an unrelated llama-server from another
+      # project on the same box.
+      if pgrep -f "$REPO_DIR/llama.cpp/build/bin/llama-server" >/dev/null 2>&1; then
+        pkill -f "$REPO_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null || true
         sleep 2
       fi
       # Relaunch the serve script the stack was STARTED with (.run/serve-script,
@@ -90,6 +92,11 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
       fi
       echo "       → launching $SERVE_SCRIPT_NAME"
       "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
+      # Record the pid (serve.sh execs llama-server, so $! IS the server) —
+      # without it, ./start.sh --status reports llama "not running" after a
+      # watchdog restart. Mirrors the mcpo relaunch below.
+      mkdir -p "$REPO_DIR/.run"
+      echo "$!" > "$REPO_DIR/.run/llama.pid"
       echo "       → started (waiting for health...)"
       for i in $(seq 1 180); do
         if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then

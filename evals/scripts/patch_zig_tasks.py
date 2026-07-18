@@ -5,7 +5,7 @@ import os
 import re
 import sys
 
-REPO = "/home/max/Documents/models"
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 TASKS = [
     "19_three_way_quicksort",
     "31_is_power_of_two",

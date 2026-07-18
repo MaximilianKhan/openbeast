@@ -335,6 +335,11 @@ source "$REPO_DIR/scripts/lib/weights.sh"
 unset OPENBEAST_WEIGHTS_MKDIR
 WEIGHT_FILE="Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
 HF_REPO="HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive"
+# Supply-chain pin for the one mandatory download: the sha256 of the exact
+# file validated on the reference box (same discipline as the digest-pinned
+# container images). A silent swap in the upstream HF repo fails loudly here
+# instead of shipping onto every fresh install.
+WEIGHT_SHA256="9b123d76df5b5af1328c65d963d1450c4279e9bd01d98d7091aa64c4f2cb38d5"
 if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
   ok "already downloaded ($WEIGHTS_DIR/$WEIGHT_FILE)"
 else
@@ -342,7 +347,19 @@ else
   HF_BIN="$(command -v hf || command -v huggingface-cli || true)"
   [[ -n "$HF_BIN" ]] || die "hf CLI not found after install; add ~/.local/bin to PATH and re-run"
   "$HF_BIN" download "$HF_REPO" "$WEIGHT_FILE" --local-dir "$WEIGHTS_DIR"
-  [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] && ok "downloaded to $WEIGHTS_DIR" || die "download failed"
+  [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] || die "download failed"
+  echo "  verifying checksum (~1 min for 21 GB)..."
+  got_sha="$(sha256sum "$WEIGHTS_DIR/$WEIGHT_FILE" | awk '{print $1}')"
+  if [[ "$got_sha" == "$WEIGHT_SHA256" ]]; then
+    ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
+  else
+    die "checksum MISMATCH for $WEIGHT_FILE
+    expected $WEIGHT_SHA256
+    got      $got_sha
+  The upstream file changed since OpenBeast pinned it. Do NOT use it blindly:
+  delete it, then check the HF repo ($HF_REPO) and OpenBeast issues for a
+  vetted update."
+  fi
 fi
 
 # ---- executable bits -------------------------------------------------------
@@ -361,10 +378,14 @@ fi
 
 # ---- 5. Docker images for the frontends ------------------------------------
 step "Frontend images (Open WebUI + SearXNG)"
-docker pull -q ghcr.io/open-webui/open-webui:main >/dev/null && ok "open-webui image ready" \
-  || warn "open-webui image pull FAILED (network/registry?) — ./start.sh will retry the pull"
-docker pull -q searxng/searxng:latest             >/dev/null && ok "searxng image ready" \
-  || warn "searxng image pull FAILED (network/registry?) — ./start.sh will retry the pull"
+# Pull the EXACT digest-pinned refs from docker-compose.yml — pulling the
+# moving :main/:latest tags could report "image ready" for a different image
+# than the one compose actually runs.
+while IFS= read -r image_ref; do
+  short="${image_ref##*/}"; short="${short%%@*}"
+  docker pull -q "$image_ref" >/dev/null && ok "$short image ready" \
+    || warn "$short image pull FAILED (network/registry?) — ./start.sh will retry the pull"
+done < <(grep -E '^\s+image:' "$REPO_DIR/docker-compose.yml" | awk '{print $2}')
 
 # ---- OpenCode (optional terminal frontend) ---------------------------------
 if ! command -v opencode >/dev/null 2>&1; then

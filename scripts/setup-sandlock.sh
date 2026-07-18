@@ -122,18 +122,17 @@ cat <<'EOF'
 
 Sandlock is installed but NOT enabled (opt-in by design).
 
-To sandbox every model-issued bash command, set (note the SINGLE quotes —
+To sandbox every model-issued bash command (note the SINGLE quotes —
 $PWD must reach the runtime shell unexpanded; bash() runs each command with
 cwd set to the agent workdir, so -w "$PWD" grants exactly that directory):
 
-  export OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'
-
-Where to put it:
-  - One-off / testing:  export it in the shell before ./start.sh
-  - Persistent:         add the export line to openbeast.conf (it is a
-                        sourced shell file; conf.sh env-first precedence
-                        applies once conf.sh forwards it — see
-                        docs/SANDBOXING.md "Enabling")
+  - One-off / testing:  export it in the shell before ./start.sh:
+        export OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'
+  - Persistent:         add this line to openbeast.conf (NOT an export —
+                        the conf is a KEY=value file that conf.sh greps,
+                        not a sourced shell script; an `export ...` line
+                        would be silently ignored):
+        BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'
 
 To verify it is active, ask the agent to run:  ls ~/.ssh
   -> confined:  "No such file or directory" (Landlock hides it)

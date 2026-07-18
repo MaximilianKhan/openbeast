@@ -75,7 +75,11 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
   vram="${OPENBEAST_VRAM_MIB:-${OB_VRAM_MB:-0}}"
   weights_mib=0
   [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -c '%s' "$MODEL") + 1048575) / 1048576 ))
-  scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib"); rc=$?
+  # rc=0 capture-then-|| : under `set -e`, a plain `scaled=$(...)` with a
+  # nonzero exit would kill the script HERE — the rc=2 "weights don't fit"
+  # branch below was unreachable and small-card users got a silent exit.
+  rc=0
+  scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib") || rc=$?
   if [[ $rc -eq 2 ]]; then
     echo "Warning: a ${vram} MiB card can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
     CONTEXT="$scaled"

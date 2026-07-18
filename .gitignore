@@ -24,5 +24,6 @@ evals/results/
 .cache/
 .claude/
 .pytest_cache/
+.ruff_cache/
 evals/cache/
 .run/
