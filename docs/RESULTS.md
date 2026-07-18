@@ -65,6 +65,36 @@ token cost are reported as separate columns.
 > weakest polyglot (98.2 / 95.5); NVFP4 is the mirror (94.8 / 98.2). v1's single
 > number couldn't tell them apart.
 
+## v4 leaderboard — RTX 5090 ×1, 291 units (2026-07-08→09)
+
+**Ranked by capability** — `SCORE = 0.75·SOLVE + 0.25·LANG`:
+
+- **SOLVE** — % of base problems solved in **≥1 language** (problem-solving, the scarce skill).
+- **LANG** — % of the 6 language ports passed *among solved problems* (breadth, weighted lighter: porting a working solution is increasingly automatable via LSP / MCP / in-context translation).
+- **SPD** *sustained decode tok/s* — the model's true generation rate (server-log measured; **~** = estimate) · **TOKENS** total prompt+completion · **WALL** total run time · **PASS** tasks passed. *(SOLVE / LANG / SCORE are percentages.)*
+
+Single RTX 5090 runs, board keyed by `(host, model)`; sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](../evals/README.md).
+
+| # | Model | Solve | Lang | **Score** | Spd t/s | Tokens | Wall |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | 60 | 14.0M | 8h14m† |
+| 2 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | 164 | 13.3M | 3h49m |
+| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **359** | 20.6M | 4h16m |
+| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | 152 | 15.4M | 4h36m |
+| 5 | Qwen 35B-A3B NVFP4 MTP | 96.6% | 95.5% | **96.3%** | 302 | 17.8M | 6h35m |
+| 6 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 128 | 16.1M | 5h24m |
+| 7 | Qwen 35B-A3B MoE Q4_K_M (non-MTP) | 94.8% | 95.7% | **95.0%** | 200 | 19.0M | 6h07m |
+
+**Takeaways.**
+
+- **Qwen 27B Q5_K_XL leads (98.7)** — the strongest problem-solver on the suite.
+- **MTP is a free speed-up** — same weights, lossless: the 35B-A3B Q4_K_M decodes **359 tok/s with MTP vs 200 without** (measured, 1.8×), and any Score gap (97.5 vs 95.0) is single-run variance → **always ship MTP**.
+- **Both NVFP4 rows sit at the bottom** — capability-equivalent but weaker problem-solvers than their K-quant siblings, and slower single-stream (302/128 vs 359/164); NVFP4 wins *only* on batched `-np 8` serving (see the NVFP4 section below).
+
+> **Reading the board:** **SPD** = *sustained decode* tok/s — the model's real generation speed, server‑measured (all 7 v4 rows have measured decode; a **~** would flag an isolated‑benchmark estimate). **†** *Qwen 27B Q5_K_XL ran `-np 6` with cache-resumed units, so its Wall isn't comparable to the serial `-np 1` MTP rows.* Detailed column notes, NVFP4's real use case, and per-language breakdowns are in [`evals/README.md`](../evals/README.md).
+
+> **Not yet benchmarked:** the six community models (Fable-Fusion 711 ×4, Heretic v2 ×2, see [`MODELS.md`](MODELS.md)) are VRAM/speed-measured but not capability-ranked — pending a v4 sweep.
+
 > **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
 > 197 variant entries replacing 33 base entries). Difficulty split:

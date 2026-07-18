@@ -144,3 +144,23 @@ Total effort: ~half a day including verification from a phone on cellular.
 2. Hostname: `beast`? (becomes `beast.<tailnet>.ts.net` everywhere)
 3. Should the eval/agent tooling on other machines get API-key auth from day
    one, or is tailnet device identity enough to start?
+
+## ⚠️ Don't run a second VPN at the same time as Tailscale
+
+Tailscale *is* a WireGuard VPN, and a commercial full-tunnel VPN (NordVPN,
+ExpressVPN, Proton, Mullvad, …) will fight it for control of your network
+stack. Those clients seize the system **default route** and usually enable a
+**kill switch** that drops every packet outside their own tunnel — including
+Tailscale's traffic to your tailnet (the `100.64.0.0/10` CGNAT range) and its
+MagicDNS lookups (`<host>.<tailnet>.ts.net`). The result is exactly what it
+sounds like: tailnet connections hang, fail to resolve, or **drop mid-stream**.
+Because it triggers the instant the other VPN (re)connects, a request that was
+working fine can die the moment something like NordVPN auto-starts in the
+background — the stack is healthy the whole time; the tunnel underneath it was
+cut.
+
+**Fix:** run one VPN at a time (quit/disconnect the other while using OpenBeast
+remotely), or configure the commercial VPN's split-tunnel to *exclude*
+`100.64.0.0/10` and turn off its kill switch. Tailscale documents this
+coexistence, but the simplest cure is not running both at once. Purely local
+use (`localhost`) is unaffected — this only bites the remote/tailnet path.
