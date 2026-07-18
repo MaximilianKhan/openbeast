@@ -100,6 +100,46 @@ leaving the machine. Pick ODS for a Swiss-army stack; pick OpenBeast for the
 smartest single brain your hardware can hold — and since ODS runs on a
 llama-server backend, OpenBeast can even *be* that backend.
 
+### What only OpenBeast does
+
+Across the whole field — runners, agent runtimes, kitchen-sink stacks — a
+handful of capabilities are **OpenBeast's alone**. They're the ones that decide a
+serious deployment:
+
+- **Evidence, not vibes.** The only one here that *evaluates the models it
+  serves* — a reproducible, capability-ranked suite (291 units, 12 domains, 6
+  languages) with a per-host leaderboard. You standardize on a model because it
+  earned the top score on *your* hardware, not because a post said so.
+- **Measured, not guessed.** Every model's VRAM and max-safe context is measured
+  on the card and pinned; MTP speculative decoding is profiled to its optimal
+  draft depth per model. No OOM roulette, no catalog approximations.
+- **Multi-tenant by design.** Per-user file shards, per-profile RBAC (admin vs
+  guest), signed-JWT identity, and a per-call audit trail — *who* ran *which*
+  tool, *when*. The others are single-user, or audit the agent, not the person.
+- **Supply chain, end to end.** Every model weight is sha256-pinned and
+  verifiable, every container image digest-pinned, every Python dep pinned and
+  CVE-audited in CI. You know exactly what is running.
+- **Data sovereignty by construction.** There is no cloud code path to enable by
+  accident — data physically cannot leave your machine (or, remote, your
+  tailnet). Not "local by default with a cloud toggle." Local, period.
+- **Real tools *with* real guardrails.** SSRF-pinned fetch, path-guarded file
+  ops, process-group reaping + memory caps, and an optional kernel-level sandbox
+  — an agent that can act, safely.
+
+**Who reads this and knows it's the one:**
+
+- **Home / power user** — one command to the largest model your GPU can hold,
+  secure phone access over Tailscale, and family-safe roles (the kids get web
+  search, not your shell). The best local brain, not a weekend science project.
+- **Organization / team** — per-user roles + audit make a shared GPU box safe to
+  share; the eval leaderboard lets you standardize on a *vetted* model; the
+  supply-chain pins answer "what exactly is running?" in one command
+  (`./start.sh doctor`).
+- **Company / regulated** — no cloud path (data residency by construction),
+  signed identity + a per-call audit trail, a documented threat model
+  ([`SECURITY.md`](SECURITY.md)), and Apache-2.0 (fork it, air-gap it, build a
+  business on it). The compliance story writes itself.
+
 ### Our opinion
 
 OpenBeast is opinionated, and this is the opinion: **maximize the intelligence
