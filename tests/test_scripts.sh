@@ -467,6 +467,42 @@ else
   fail "mcp_server.py skill tool collapse incomplete"
 fi
 
+# --- 12. Weight registry (supply-chain pins for every shipped GGUF) --------
+# Every weight a serve script loads must have a registry row (sha256 + size
+# + HF source), and bootstrap must read its default-model pin FROM the
+# registry — a serve script added without a pin is the drift this catches.
+echo ""
+echo "Weight registry:"
+REGISTRY="$REPO_DIR/scripts/weights.registry"
+if [[ -f "$REGISTRY" && -x "$REPO_DIR/scripts/verify-weights.sh" ]]; then
+  pass "weights.registry + verify-weights.sh present"
+else
+  fail "weights.registry or verify-weights.sh missing/not executable"
+fi
+MISSING_PINS=""
+for f in "$REPO_DIR"/scripts/serve-*.sh; do
+  w="$(grep -oE '\$WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$f" | head -1 | sed 's|.*/||')"
+  [[ -z "$w" ]] && continue
+  grep -qP "\t\Q$w\E\t" "$REGISTRY" 2>/dev/null || MISSING_PINS="$MISSING_PINS $w"
+done
+if [[ -z "$MISSING_PINS" ]]; then
+  pass "every serve-script weight has a registry pin"
+else
+  fail "weights missing registry pins:$MISSING_PINS"
+fi
+while IFS=$'\t' read -r sha bytes fname repo remote; do
+  [[ -z "$sha" || "$sha" == \#* ]] && continue
+  if [[ ! "$sha" =~ ^[0-9a-f]{64}$ || ! "$bytes" =~ ^[0-9]+$ || -z "$fname" || -z "$repo" ]]; then
+    fail "malformed registry row for '${fname:-?}'"
+  fi
+done < "$REGISTRY"
+pass "registry rows well-formed (64-hex sha + numeric size + source)"
+if grep -q 'weights.registry' "$REPO_DIR/bootstrap.sh"; then
+  pass "bootstrap.sh reads the default-model pin from the registry"
+else
+  fail "bootstrap.sh does not read weights.registry"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

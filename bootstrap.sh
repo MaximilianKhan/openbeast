@@ -335,11 +335,13 @@ source "$REPO_DIR/scripts/lib/weights.sh"
 unset OPENBEAST_WEIGHTS_MKDIR
 WEIGHT_FILE="Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
 HF_REPO="HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive"
-# Supply-chain pin for the one mandatory download: the sha256 of the exact
-# file validated on the reference box (same discipline as the digest-pinned
-# container images). A silent swap in the upstream HF repo fails loudly here
-# instead of shipping onto every fresh install.
-WEIGHT_SHA256="9b123d76df5b5af1328c65d963d1450c4279e9bd01d98d7091aa64c4f2cb38d5"
+# Supply-chain pin for the one mandatory download, read from the weight
+# registry (scripts/weights.registry — pins EVERY shipped GGUF, same
+# discipline as the digest-pinned container images). A silent swap in the
+# upstream HF repo fails loudly here instead of shipping onto every fresh
+# install. Other models: scripts/verify-weights.sh after download.
+WEIGHT_SHA256="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
+[[ -n "$WEIGHT_SHA256" ]] || die "scripts/weights.registry has no entry for $WEIGHT_FILE — restore it from git"
 if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
   ok "already downloaded ($WEIGHTS_DIR/$WEIGHT_FILE)"
 else

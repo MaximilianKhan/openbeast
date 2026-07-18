@@ -1,0 +1,21 @@
+# OpenBeast weight registry — the supply-chain pin for every shipped GGUF.
+#
+# Hashes + sizes were computed from the exact files validated on the
+# reference box (RTX 5090, 2026-07-17). bootstrap.sh verifies the default
+# model against this file after download; scripts/verify-weights.sh checks
+# any downloaded weight (size by default, --deep for sha256); doctor runs
+# the quick size check. If an upstream HF repo changes a file, verification
+# fails loudly — re-pin only after vetting the new file.
+#
+# Tab-separated: sha256 <TAB> bytes <TAB> local filename <TAB> HF repo <TAB> remote filename ("-" = same as local)
+ac310abf2895aa397121bad6c0be89466af41f0f1606a21c1131b110eeb19d0e	20038256864	Qwen3.6-27B-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-GGUF	-
+9b123d76df5b5af1328c65d963d1450c4279e9bd01d98d7091aa64c4f2cb38d5	20812953056	Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf	HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive	-
+5a3c61033581754d507ffdcbf0629214cbfbd58a2edbec80d93f6ec2af44d227	20350682240	Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-MTP-GGUF	Qwen3.6-27B-UD-Q5_K_XL.gguf
+ddce600959ed99c16092ef24e8885ae18fd0d0b8a53ef92976be1a395194fbd3	23172466080	Qwen3.6-27B-NVFP4-MTP.gguf	neko-legends/Qwen3.6-27B-NVFP4-MTP-GGUF	qwen3.6-27b-unsloth-nvfp4-mtp-gguf.gguf
+ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61	22134528992	Qwen3.6-35B-A3B-UD-Q4_K_M.gguf	unsloth/Qwen3.6-35B-A3B-GGUF	-
+bbef58c37ce88820be9d98b6437f1cf4bac890c947bd55fc7b68e22098574231	21166758016	Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf	HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive	-
+0b21525e972670ed59e1812e170b27c26355381f0656ecc4e25617ece7dac58b	22663387424	Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf	unsloth/Qwen3.6-35B-A3B-MTP-GGUF	Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+923ab9a153cb21bb78adb5a98c4193c034f940d56d83a90714b3f6881da6fb92	26138950304	Qwen3.6-35B-A3B-NVFP4-MTP.gguf	neko-legends/Qwen3.6-35B-A3B-NVFP4-MTP-GGUF	qwen3.6-35b-a3b-unsloth-nvfp4-mtp-gguf.gguf
+f46afb90494f266cf7f661d98f5dc8d9689d5e1583ee8e8bab02fa4fc8cc50d3	21890427904	gemma-4-31B-it-UD-Q5_K_XL.gguf	unsloth/gemma-4-31B-it-GGUF	-
+2f44edaa2348b82bbf45e8ff26f889db29884509646921ad77d9e6e12fe13bd2	19231098176	Qwopus3.6-27B-v2-Q5_K_M.gguf	Jackrong/Qwopus3.6-27B-v2-GGUF	-
+868fcb416ff674654aa2c2446a970df997ee55f0518c637a3d92982ed8b12f25	19535700192	Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf	Jackrong/Qwopus3.6-27B-v2-MTP-GGUF	-

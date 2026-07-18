@@ -114,6 +114,19 @@ else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi
 
+# ── Weight integrity (quick size check; sha256 is verify-weights.sh --deep) ─
+section "Weight registry"
+if [[ -f "$REPO_DIR/scripts/weights.registry" ]]; then
+  if "$REPO_DIR/scripts/verify-weights.sh" >/dev/null 2>&1; then
+    pass "downloaded weights match their registry byte sizes"
+  else
+    fail "a downloaded weight fails its registry size pin" \
+         "./scripts/verify-weights.sh (then --deep to hash-verify)"
+  fi
+else
+  warn "scripts/weights.registry missing" "restore it from git — it pins every shipped GGUF"
+fi
+
 # ── Pinned dependencies ─────────────────────────────────────────────────────
 section "Pinned dependencies"
 if command -v python3 >/dev/null 2>&1; then
