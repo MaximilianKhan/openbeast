@@ -40,7 +40,7 @@ agent-management and skills layers on top.
 |---|---|
 | `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (e.g. `sandlock --profile openbeast --`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration |
 | `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service |
-| `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking |
+| `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking. The endpoint is `SEARXNG_URL`-indirected, which is how client mode points a laptop's local tool at the rig's search over the tailnet (`docs/MAC_CLIENT_PLAN.md`) |
 
 ### Agent management (5) — `agents/mcp_server.py`
 

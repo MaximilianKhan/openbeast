@@ -1,9 +1,15 @@
 # OpenBeast client mode — thin client on the laptop, big rig does the thinking
 
-**Status: PLANNED (2026-07-13). Two deliverables: `scripts/setup-mac-client.sh`
-(client, macOS/Linux) + a `--publish-searxng` opt-in flag on
-`scripts/setup-tailscale.sh` (rig). No blockers — every load-bearing piece
-already exists; this is wiring + one opt-in expose.**
+**Status: SHIPPED (2026-07-17). Both deliverables landed:
+`scripts/setup-mac-client.sh` (client, macOS/Linux — preflight, slim sparse
+checkout or in-place clone, pinned venv, env file, non-clobbering
+opencode.json merge, `--uninstall`) and
+`scripts/setup-tailscale.sh --publish-searxng` / `--unpublish-searxng`
+(rig, opt-in, tailnet-only :8889). Verified end-to-end on the reference box
+(isolated $HOME/$XDG: install → venv MCP import → uninstall leaves foreign
+config keys untouched). Structure tests: `tests/test_scripts.sh` §13.
+Remaining: a live two-machine run from the actual laptop (the
+three-localities check below).**
 
 > **Not to be confused with TODO §5 "macOS/Metal + Docker Desktop."** That item
 > is about running the *model server* on a Mac (Metal build, Darwin bootstrap

@@ -1,7 +1,7 @@
 #!/bin/bash
 # OpenBeast remote access — one-shot Tailscale setup. Idempotent.
 #
-#   ./scripts/setup-tailscale.sh
+#   ./scripts/setup-tailscale.sh [--publish-searxng | --unpublish-searxng]
 #
 # What it does:
 #   1. Installs tailscale (pacman) and enables tailscaled
@@ -11,12 +11,33 @@
 #        https://<host>.<tailnet>.ts.net:8443  → llama-server API (:8080)
 #   4. Prints the URLs to use from your phone/laptop
 #
-# MCPO (:3001) and SearXNG (:8888) are NOT published — they are internal
-# plumbing for the model, not human-facing services.
+# The identity tool server (:3001) and SearXNG (:8888) are NOT published by
+# default — internal plumbing for the model, not human-facing services.
+#
+# --publish-searxng (client mode, docs/MAC_CLIENT_PLAN.md) additionally
+# publishes SearXNG at :8889 so a thin-client laptop's local web_search tool
+# can use the rig's private metasearch. SECURITY: SearXNG has no auth and
+# its rate limiter is off, so ANY tailnet device can search through it —
+# same trust boundary as the llama endpoint, acceptable on a personal
+# tailnet, never public (this script never funnels). Undo with
+# --unpublish-searxng (standalone; doesn't rerun setup).
 #
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
+
+PUBLISH_SEARXNG=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --publish-searxng)   PUBLISH_SEARXNG=1 ;;
+    --unpublish-searxng)
+      sudo tailscale serve --https=8889 off
+      echo "SearXNG unpublished from the tailnet (:8889 off)."
+      exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
+  esac
+done
 
 # Tailnet machine name — becomes https://beast.<tailnet>.ts.net everywhere.
 # (Chosen 2026-07-07; independent of the system hostname.)
@@ -108,6 +129,13 @@ if [[ "$(_ts_ready)" != "yes" ]]; then
 fi
 sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
 sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
+  # Client mode (docs/MAC_CLIENT_PLAN.md): the laptop's local web_search
+  # tool calls the rig's SearXNG. Tailnet-only like everything else; see
+  # the security note in the header.
+  sudo tailscale serve --bg --https=8889 http://127.0.0.1:8888
+  echo "      SearXNG published for thin clients (tailnet-only, :8889 → :8888)."
+fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
 
@@ -139,6 +167,13 @@ echo "  Laptop: install Tailscale (tailscale.com/download), sign in —"
 echo "          both URLs just work in any browser."
 echo "  Agents: point OpenCode/any OpenAI client at the API:"
 echo "          \"baseURL\": \"https://$FQDN:8443/v1\""
+if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
+  echo ""
+  echo "  Thin clients (scripts/setup-mac-client.sh on the laptop):"
+  echo "          SEARXNG_URL=https://$FQDN:8889"
+  echo "          (any tailnet device can search through this — undo with"
+  echo "           ./scripts/setup-tailscale.sh --unpublish-searxng)"
+fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"
 echo ""

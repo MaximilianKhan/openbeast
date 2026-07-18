@@ -503,6 +503,31 @@ else
   fail "bootstrap.sh does not read weights.registry"
 fi
 
+# --- 13. Client mode (docs/MAC_CLIENT_PLAN.md) ------------------------------
+echo ""
+echo "Client mode:"
+MC="$REPO_DIR/scripts/setup-mac-client.sh"
+if [[ -x "$MC" ]] && grep -q -- '--uninstall' "$MC" && grep -q -- '--no-search' "$MC" \
+   && grep -q -- '--host' "$MC"; then
+  pass "setup-mac-client.sh present with --host/--no-search/--uninstall"
+else
+  fail "setup-mac-client.sh missing or flags incomplete"
+fi
+# Stock macOS ships Bash 3.2 — bash-4+ constructs must not creep in.
+if ! grep -qE '\bmapfile\b|\breadarray\b|declare -A' "$MC" \
+   && head -1 "$MC" | grep -q '/usr/bin/env bash'; then
+  pass "setup-mac-client.sh is Bash 3.2-safe (no mapfile/readarray/declare -A)"
+else
+  fail "setup-mac-client.sh uses bash-4+ constructs (breaks stock macOS)"
+fi
+if grep -q -- '--publish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
+   && grep -q -- '--unpublish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
+   && grep -q 'https=8889' "$REPO_DIR/scripts/setup-tailscale.sh"; then
+  pass "setup-tailscale.sh has the opt-in SearXNG publish/unpublish pair (:8889)"
+else
+  fail "setup-tailscale.sh missing --publish-searxng/--unpublish-searxng"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

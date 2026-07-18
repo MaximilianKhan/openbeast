@@ -306,6 +306,25 @@ they serve the model, not humans.
 > cure is not running both at once. Purely local use (`localhost`) is unaffected —
 > this only bites the remote/tailnet path.
 
+**Client mode — your laptop as a thin client (opt-in).** One script turns
+any laptop (macOS or Linux) into a full OpenBeast coding client: OpenCode
+plus the 15-tool arsenal run **locally** (file edits and shell act on the
+laptop's own projects, via a stdio subprocess that dies when OpenCode
+exits — no daemon), while the **model** and **web search** come from the
+rig over the tailnet:
+
+```bash
+# on the rig (once):   publish search for thin clients, tailnet-only
+./scripts/setup-tailscale.sh --publish-searxng
+# on the laptop:       preflight → pinned venv → OpenCode wiring
+./scripts/setup-mac-client.sh          # auto-detects the rig; --host to pin
+```
+
+File contents the agent reads on the laptop travel to the rig as model
+context — both are your machines, so the promise is "nothing leaves your
+tailnet." `--uninstall` removes everything it added. Design and
+verification: **[docs/MAC_CLIENT_PLAN.md](docs/MAC_CLIENT_PLAN.md)**.
+
 **Distributed agents (opt-in).** Got a second GPU box? Set
 `AGENT_INFERENCE_URL=https://worker.<tailnet>.ts.net:8443/v1` in
 `openbeast.conf` and every spawned agent (`start_agent`, `./agent.sh`) sends
@@ -447,6 +466,7 @@ llama.cpp/                   # Inference engine, built with CUDA [gitignored]
 - **[docs/TOOLS.md](docs/TOOLS.md)**: Every tool a model can call: inventory, provenance (custom vs pulled-in), hardening, RBAC visibility
 - **[docs/UPDATING.md](docs/UPDATING.md)**: Updating every pulled-in component (llama.cpp, images, Python deps) with one command
 - **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)**: GPU detection and recommended configs per hardware tier (5090 is the measured reference; 3090/4090/AMD/Intel advisory)
+- **[docs/MAC_CLIENT_PLAN.md](docs/MAC_CLIENT_PLAN.md)**: Client mode — laptop as a thin client (local tools, rig model + search)
 - **[docs/RESULTS.md](docs/RESULTS.md)**: Eval distribution, sweep results, multi-host comparison
 - **[docs/RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md)**: Consolidated research log (MTP losslessness, speedups, Zig discriminator, profiling, model comparisons)
 - **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)**: Active work plan and save state for ongoing eval suite work
