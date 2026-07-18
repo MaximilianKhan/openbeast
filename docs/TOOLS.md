@@ -106,13 +106,13 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 
 ## Why 15 and not more
 
-Deliberate. The production review (`docs/PRODUCTION_ROADMAP.md` §B) found
+Deliberate. The production review (`docs/archive/PRODUCTION_ROADMAP.md` §B) found
 the current pain is *too much always-on meta-machinery for a local model's
 context* — which is why the skill-discovery trio was collapsed to one tool
 (17 → 15; 7 of 15 tools remain agent-mgmt/skills plumbing) — not missing
 capabilities. Expansion is planned and researched — sandboxed execution
 (Sandlock), semantic code search (ChunkHound), and a Playwright browsing
-*skill* — in `docs/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1
+*skill* — in `docs/archive/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1
 so new power arrives together with stronger sandboxing.
 
 ## Verifying the live surface

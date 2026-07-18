@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # Identity-aware chat tools — per-user / per-conversation file isolation
 
 **Status: ✅ SHIPPED 2026-07-09 — Option B implemented as `agents/openapi_tools.py`.**

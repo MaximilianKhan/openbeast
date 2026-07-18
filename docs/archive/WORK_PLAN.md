@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # Eval suite v3 — fixes, hardening, and multi-language variants
 
 **Status (2026-05-07, post-v3.5):**

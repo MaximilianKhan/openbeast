@@ -3,8 +3,8 @@
 > **Suite version: v4 (current).** 137 base tasks / 291 effective units,
 > hardened so a correct solution passes and every documented cheat is
 > empirically rejected — see [`CHANGELOG.md`](CHANGELOG.md),
-> [`../docs/EVAL_V4_PLAN.md`](../docs/EVAL_V4_PLAN.md), and the review that
-> drove it, [`../docs/EVAL_REVIEW_2026-07-07.md`](../docs/EVAL_REVIEW_2026-07-07.md).
+> [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
+> drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
 > (four models on v4 — three MTP builds + the dense Qwen 27B Q5_K_XL — and four
 > non-MTP models still on legacy v3.5, pending the in-progress re-run), see the

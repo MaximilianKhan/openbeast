@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # Eval suite double-pass review — 2026-07-07
 
 **Charter (Max):** review every eval task one-by-one — spec ↔ validation ↔

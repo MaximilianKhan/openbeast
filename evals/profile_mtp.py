@@ -25,7 +25,7 @@ Peak-tok/s config per model + a table vs the leaderboard baseline, written to
 evals/results/mtp_profile_<stamp>.json. The winning configs are the OPTIMAL
 DEPLOYMENT configs (what to actually serve with); the leaderboard configs are
 what produced the published scores. Keep both distinct — see
-docs/MTP_PROFILING_PLAN.md.
+docs/archive/MTP_PROFILING_PLAN.md.
 
 Run AFTER the benchmark sweep finishes (it needs the GPU exclusively):
     python3 evals/profile_mtp.py                 # all 3 MTP models
@@ -260,7 +260,7 @@ def main():
     print(f"\nFull results: {path}")
     print("These 'optimal' configs are for DEPLOYMENT; the leaderboard scores "
           "used the baseline configs. Update serve scripts only after eyeballing "
-          "the table — see docs/MTP_PROFILING_PLAN.md.")
+          "the table — see docs/archive/MTP_PROFILING_PLAN.md.")
 
 
 if __name__ == "__main__":

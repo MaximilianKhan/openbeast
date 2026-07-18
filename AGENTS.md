@@ -63,7 +63,7 @@ are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 | Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all), `tests/test_tools.py`, `tests/test_scripts.sh`, `tests/test_smoke.sh`, `tests/test_cache.py`, `tests/test_proc_hygiene.py` |
-| Documentation (technical) | `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/RESULTS.md`, `docs/SKILLS_PLAN.md`, `docs/TODO.md`, `docs/WORK_PLAN.md` |
+| Documentation (technical) | `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/RESULTS.md`, `docs/SKILLS_PLAN.md`, `docs/TODO.md`, `docs/archive/WORK_PLAN.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite

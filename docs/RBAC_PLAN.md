@@ -182,13 +182,13 @@ Defense in depth:
    process enforcing both keys (admin=all tools, guest=web-only, denied
    tools 404), plus per-user workspace sharding and a per-call audit
    trail. Same keys, same conf, same WebUI connections. See
-   docs/IDENTITY_TOOLS_PLAN.md; tests/test_identity_server.py.
+   docs/archive/IDENTITY_TOOLS_PLAN.md; tests/test_identity_server.py.
    **Updated 2026-07-17:** keyed mode now engages with EITHER key set — a
    missing key disables that profile (fail closed). Previously BOTH keys
    were required, so configuring only the admin key silently left the
    server fully open. Tests: `test_single_key_fails_closed`.
 2. Wrap guest-profile tool execution in the **Sandlock** sandbox from
-   [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md): read-only
+   [TOOL_ARSENAL_RESEARCH.md](archive/TOOL_ARSENAL_RESEARCH.md): read-only
    filesystem view, network allowed, no exec outside the tool. One policy
    file per profile — the RBAC and Arsenal workstreams converge here.
 3. Note: the llama-server API (`:8443` via tailscale) is chat-only — tools

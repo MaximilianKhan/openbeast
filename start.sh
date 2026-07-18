@@ -397,7 +397,7 @@ else
     echo "         chmod 700 it if the model's files should stay private." >&2
   fi
 fi
-# agents/openapi_tools.py replaced mcpo here (docs/IDENTITY_TOOLS_PLAN.md):
+# agents/openapi_tools.py replaced mcpo here (docs/archive/IDENTITY_TOOLS_PLAN.md):
 # it reads the WebUI identity headers mcpo dropped (per-user workspace
 # sharding + audit log), and enforces BOTH RBAC Phase 2 keys in one process
 # — admin key = all tools, guest key = web_search/fetch only, no keys = open

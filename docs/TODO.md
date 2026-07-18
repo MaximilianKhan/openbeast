@@ -224,7 +224,7 @@ the choke point where identity, quotas, audit, and metering all attach.
 
 ## ⏳ READY TO BUILD — per-user/per-chat file isolation (investigated 2026-07-09)
 
-**Investigation DONE — see docs/IDENTITY_TOOLS_PLAN.md.** WebUI forwards
+**Investigation DONE — see docs/archive/IDENTITY_TOOLS_PLAN.md.** WebUI forwards
 X-OpenWebUI-User-* AND chat_id headers to tool servers; mcpo (0.0.20) drops
 them at the MCP boundary (verified in source: meta built, never passed).
 Manifest (option 3) SHIPPED 2026-07-09 (`_manifest_log` in agents/tools.py,
@@ -524,7 +524,7 @@ these change speed not output; confirmed 35B-A3B MTP 93.76 vs non-MTP 93.74).
 
 - Harness: `evals/profile_mtp.py` (built, syntax-clean, refuses to run while
   `openbeast-mtp-sweep` is active). Plan + config ledger:
-  `docs/MTP_PROFILING_PLAN.md`.
+  `docs/archive/MTP_PROFILING_PLAN.md`.
 - Sweeps ONLY `--spec-draft-n-max` / `--spec-draft-p-min`; HOLDS FIXED the
   lossy knobs (weights, KV `q4_0`, context, ngl, np) at each model's
   leaderboard config. ~11 configs/model, ~1h total.
@@ -1446,7 +1446,7 @@ model.
 
 ### Phase 4 follow-up — variant the 5 deferred tasks
 Phase 4 shipped 13 of 18 originally-planned tasks with multi-language variants
-(see docs/WORK_PLAN.md "Phase 4 deferred items" for full breakdown). Five
+(see docs/archive/WORK_PLAN.md "Phase 4 deferred items" for full breakdown). Five
 tasks remain: 53_bloom (probabilistic test), 145_segment_tree_lazy, 146_aho_corasick,
 152_chase_lev_deque, 153_coroutine_scheduler. Each has a specific reason it
 was held back. Pick up in a focused follow-up session — the audit pattern from
@@ -1461,7 +1461,7 @@ deterministic-validation pattern and need a separate harness path.
 ## Future Horizon
 
 ### Production roadmap → community pillar (2026-07-07)
-Full review + prioritized plan in [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md).
+Full review + prioritized plan in [PRODUCTION_ROADMAP.md](archive/PRODUCTION_ROADMAP.md).
 Highest impact-to-effort, in order: **(1) add LICENSE** (absent — legal
 blocker; Max picks MIT/Apache-2.0), **(2) `bootstrap.sh` one-command install**,
 **(3) "Tier 0: just chat" minimal path**, (4) README hook + "vs Ollama/LM
@@ -1535,7 +1535,7 @@ setpgid/killpg interaction on every sandlock version bump (child leaves the
 wrapper's group; teardown still catches it today — see docs/SANDBOXING.md).
 
 Recon prototypes built and verified on this box (see
-[TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md) "Prototype recon"):
+[TOOL_ARSENAL_RESEARCH.md](archive/TOOL_ARSENAL_RESEARCH.md) "Prototype recon"):
 **Sandlock** GO (builds, 8/8 isolation tests held on Landlock ABI 8) and
 **ChunkHound** GO (working local index, CPU embeddings, zero VRAM). Phase 1
 implementation, ~1 week:
@@ -1555,7 +1555,7 @@ implementation, ~1 week:
    OPS RULE: never `pkill -f llama-server` (kills prod) — target by PID.
 
 ### Arsenal expansion — original research verdicts (2026-07-07)
-Deep-research verdicts in [TOOL_ARSENAL_RESEARCH.md](TOOL_ARSENAL_RESEARCH.md)
+Deep-research verdicts in [TOOL_ARSENAL_RESEARCH.md](archive/TOOL_ARSENAL_RESEARCH.md)
 (9 findings, 25 claims 3-vote-verified). Headlines: ADOPT ChunkHound
 (semantic code search, MIT, llama.cpp embeddings) + Sandlock (unprivileged
 Landlock/seccomp sandboxing — composes with our rlimit layer); wrap

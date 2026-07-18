@@ -4,7 +4,7 @@
 The index makes every skill visible to the model UPFRONT (name + when to
 use it) so discovery costs zero tool round-trips — a 27B local model will
 not spontaneously browse a skill library, but it will follow a menu it can
-see (docs/PRODUCTION_ROADMAP.md §B, recommendation 2). The single `skill`
+see (docs/archive/PRODUCTION_ROADMAP.md §B, recommendation 2). The single `skill`
 MCP tool backs the menu: skill() re-lists (with a fresh disk scan),
 skill(name) pulls one body on demand.
 

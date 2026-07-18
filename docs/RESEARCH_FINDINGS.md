@@ -105,7 +105,7 @@ code/conversation you can hold), not for these results.
 ## 7. MTP throughput profiling — peak deployment configs (2026-07-08)
 
 Sweeping the lossless speculation knobs to find peak tok/s per model
-(evals/profile_mtp.py; plan docs/MTP_PROFILING_PLAN.md). HOLDS FIXED the lossy
+(evals/profile_mtp.py; plan docs/archive/MTP_PROFILING_PLAN.md). HOLDS FIXED the lossy
 knobs at each model's leaderboard config.
 
 **RESULT: all three MTP models are already at their optimal config — the
@@ -159,7 +159,7 @@ Every leaderboard row now records `suite_version` (v3.5 vs v4) + a runtime
 block (python/openai/mcp) + full llama.cpp build/commit/source_head + GPU.
 The v4 rows are the 3 MTP models; the other 5 are still v3.5 pending a rerun.
 The v4 suite itself was rebuilt from a 117-defect review of v3.5 — see
-docs/EVAL_REVIEW_2026-07-07.md and docs/EVAL_V4_PLAN.md.
+docs/archive/EVAL_REVIEW_2026-07-07.md and docs/archive/EVAL_V4_PLAN.md.
 
 ---
 

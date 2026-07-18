@@ -1,6 +1,6 @@
 # Sandboxing the agent bash tool (Sandlock)
 
-Arsenal Phase 1 (docs/TOOL_ARSENAL_RESEARCH.md finding #3, ADOPT 3-0).
+Arsenal Phase 1 (docs/archive/TOOL_ARSENAL_RESEARCH.md finding #3, ADOPT 3-0).
 Kernel-level confinement — Landlock (filesystem/network/IPC) + seccomp-bpf
 (syscall filtering) — for every shell command the model runs through the
 `bash` tool. Unprivileged: no root, no containers, no images.
@@ -133,4 +133,4 @@ section):
 ```
 
 Heavier tier (untrusted *fetched* code, full VM isolation): Firecracker,
-deferred — finding #4 in docs/TOOL_ARSENAL_RESEARCH.md.
+deferred — finding #4 in docs/archive/TOOL_ARSENAL_RESEARCH.md.

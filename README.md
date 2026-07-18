@@ -318,7 +318,8 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 - **[docs/MAC_CLIENT_PLAN.md](docs/MAC_CLIENT_PLAN.md)** · **[docs/DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md)** — thin-client + worker-fleet modes
 - **[docs/RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md)** — consolidated research log (MTP, profiling, model comparisons)
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** · **[skills/README.md](skills/README.md)** — skills system + how to add skills
-- **[docs/WEAK_SPOT_ASSESSMENT.md](docs/WEAK_SPOT_ASSESSMENT.md)** · **[docs/WORK_PLAN.md](docs/WORK_PLAN.md)** · **[docs/TODO.md](docs/TODO.md)** — assessments, active work, roadmap
+- **[docs/TODO.md](docs/TODO.md)** — roadmap and completed work
+- **[docs/archive/](docs/archive/)** — historical design plans, eval reviews, and superseded work-plans (kept for provenance)
 - **[extensions/README.md](extensions/README.md)** — the optional-service extension system
 
 ## Credits — standing on the shoulders of giants

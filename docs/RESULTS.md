@@ -457,7 +457,7 @@ pending. VRAM (both, at c=262144): ~30 GB single-stream; ~24-27 GB at np8/c=32K.
 
 **Status:** ✅ Complete · single-model smoke test on `Qwen 35B-A3B Uncensored Q4_K_M` · 11:27 → 14:54 PT (3h 27m wall-clock) · pre-overnight validation of v3 changes
 
-This was a smoke test of the v3 suite (Phases 1-4 from `docs/WORK_PLAN.md`)
+This was a smoke test of the v3 suite (Phases 1-4 from `docs/archive/WORK_PLAN.md`)
 against the leaderboard winner before kicking off the full 5-model overnight
 sweep. **Five high-value findings emerged**, summarized below.
 

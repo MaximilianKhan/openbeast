@@ -4,11 +4,11 @@
 
 137 base tasks / 291 effective units across all 12 topic categories.
 
-A full adversarial re-review of v3.5 (see `docs/EVAL_REVIEW_2026-07-07.md`)
+A full adversarial re-review of v3.5 (see `docs/archive/EVAL_REVIEW_2026-07-07.md`)
 found 117 of 159 tasks flagged — inflators (empty submissions / naive
 algorithms / dead perf gates passing), deflators (correct code failing on
 broken fixtures or comment-tripping lints), and unverifiable properties.
-v4 is the rebuild (plan: `docs/EVAL_V4_PLAN.md`):
+v4 is the rebuild (plan: `docs/archive/EVAL_V4_PLAN.md`):
 
 - **Pruned 25** overlapping / unverifiable tasks (159 → 134).
 - **Added 3 DSP tasks** (160 FIR, 161 Goertzel, 162 biquad IIR) so Signal

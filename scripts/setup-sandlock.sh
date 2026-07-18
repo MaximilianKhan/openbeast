@@ -1,6 +1,6 @@
 #!/bin/bash
 # OpenBeast — build + install Sandlock, the kernel-level sandbox for the
-# agent bash tool (Arsenal Phase 1, docs/TOOL_ARSENAL_RESEARCH.md finding #3).
+# agent bash tool (Arsenal Phase 1, docs/archive/TOOL_ARSENAL_RESEARCH.md finding #3).
 #
 #   ./scripts/setup-sandlock.sh          # check, build, install, verify
 #   ./scripts/setup-sandlock.sh --check  # only report kernel/toolchain support

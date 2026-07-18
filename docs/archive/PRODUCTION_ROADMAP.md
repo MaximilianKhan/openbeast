@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # Production Roadmap — from personal rig to community pillar
 
 Consolidated from a production review + docs audit + skills/tools analysis

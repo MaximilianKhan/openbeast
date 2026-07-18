@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # Tool Arsenal Research — adopt vs build (2026-07-07)
 
 Deep-research run: 5 search angles, 20 sources fetched, 100 claims extracted,

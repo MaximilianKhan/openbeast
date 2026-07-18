@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED — historical record.** Describes work that has shipped or been
+> superseded; kept for provenance, not current docs. Live state:
+> [archive index](README.md) · [`../TODO.md`](../TODO.md) · [`../REFERENCE.md`](../REFERENCE.md).
+
 # MTP throughput profiling — plan & config ledger
 
 **Goal (Max, 2026-07-08):** since MTP is lossless (verified: 35B-A3B MTP

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OpenBeast identity-aware tool server — the WebUI-facing OpenAPI surface.
 
-Replaces mcpo for the Open WebUI connection (docs/IDENTITY_TOOLS_PLAN.md
+Replaces mcpo for the Open WebUI connection (docs/archive/IDENTITY_TOOLS_PLAN.md
 Option B). mcpo converts MCP→OpenAPI generically but drops the HTTP headers
 Open WebUI forwards (X-OpenWebUI-User-Id/-Role, X-OpenWebUI-Chat-Id) at the
 MCP boundary — so tools could never know WHO was calling. This server owns
