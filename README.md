@@ -189,7 +189,7 @@ cannot drift.
 **Model Serving**
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 11 pre-configured models, capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
+- 11 measured + 4 estimated pre-configured models, capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [Models](#models), scores in the leaderboard below
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is on out of the box for maximum answer quality. It's a stateless *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), so automated sub-calls (e.g. a JSON classification or routing step) can opt out for speed and clean output without touching your deployment or any other request.
 
@@ -380,6 +380,19 @@ OpenBeast at your weights instead of failing with a cryptic "model not found".
 | Qwen3.6-35B-A3B **NVFP4** MTP (MoE) | NVFP4 | 24.3 GB | 262K | 29.5 GB | Same Blackwell-only constraint. Tuned `n-max 2` measures ~317 tok/s decode; 96.3 v4 Score. Same story vs its Q4_K_M sibling: K-quant wins single-stream, NVFP4 wins batched worker-fleet serving. |
 
 All eleven rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07, the two NVFP4 rows 2026-07-10; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`docs/REFERENCE.md`](docs/REFERENCE.md) for per-variant details and [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
+
+### Fable-Fusion 711 (DavidAU) — added 2026-07-17, ⚠️ estimates pending profiling
+
+A community fine-tune family: DavidAU's [Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP](https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF) — Qwen3.6-27B (dense, reasoning ON) with Heretic uncensoring and NEO imatrix quants (output tensor kept full 16-bit). Four variants ship with launch scripts; **contexts and VRAM below are ESTIMATES**, not yet measured on the 5090 — validate with `scripts/measure-vram.sh`, and tune the MTP draft depth with `scripts/profile-fable-fusion-mtp.sh {q5,q6}`.
+
+| Model | Quant | Weights | Context (est.) | Serve script | Notes |
+|-------|-------|---------|---------------|--------------|-------|
+| Fable-Fusion 27B | Q5_K_M | ~20.7 GB | 262K | `serve-fable-fusion-27b-q5.sh` | Native ceiling; 6 slots. Balanced pick. |
+| Fable-Fusion 27B **MTP** | Q5_K_M | ~21.2 GB | 262K | `serve-fable-fusion-27b-mtp-q5.sh` | MTP draft heads; `-np 1`, n-max 8 (est.). |
+| Fable-Fusion 27B | Q6_K | ~24 GB | 224K | `serve-fable-fusion-27b-q6.sh` | Near-lossless; context traded for fidelity. |
+| Fable-Fusion 27B **MTP** | Q6_K | ~24 GB | 192K | `serve-fable-fusion-27b-mtp-q6.sh` | Max fidelity + MTP; tightest on VRAM. |
+
+**DavidAU's MTP guidance** (baked into the script headers): keep **temperature ≤ 1.0** and **repetition_penalty = 1.0** or MTP acceptance degrades; if the server log's draft acceptance stays below ~50%, prefer the non-MTP quant. Recommended samplers (client-side): thinking `temp 1.0 / top_p 0.95 / top_k 20`, coding `temp 0.6`. Not yet on the eval leaderboard.
 
 ## Project Structure
 

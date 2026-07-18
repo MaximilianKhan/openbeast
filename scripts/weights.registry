@@ -8,6 +8,11 @@
 # fails loudly — re-pin only after vetting the new file.
 #
 # Tab-separated: sha256 <TAB> bytes <TAB> local filename <TAB> HF repo <TAB> remote filename ("-" = same as local)
+#
+# A row may use sha256="PENDING" with bytes=0 when a shipped serve script
+# targets a weight not yet downloaded/hashed on the reference box. verify-
+# weights.sh treats PENDING as "nothing to verify yet"; replace it with a real
+# sha256 + byte size (sha256sum + stat -c%s) once the file is in place.
 ac310abf2895aa397121bad6c0be89466af41f0f1606a21c1131b110eeb19d0e	20038256864	Qwen3.6-27B-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-GGUF	-
 9b123d76df5b5af1328c65d963d1450c4279e9bd01d98d7091aa64c4f2cb38d5	20812953056	Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf	HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive	-
 5a3c61033581754d507ffdcbf0629214cbfbd58a2edbec80d93f6ec2af44d227	20350682240	Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-MTP-GGUF	Qwen3.6-27B-UD-Q5_K_XL.gguf
@@ -19,3 +24,7 @@ bbef58c37ce88820be9d98b6437f1cf4bac890c947bd55fc7b68e22098574231	21166758016	Qwe
 f46afb90494f266cf7f661d98f5dc8d9689d5e1583ee8e8bab02fa4fc8cc50d3	21890427904	gemma-4-31B-it-UD-Q5_K_XL.gguf	unsloth/gemma-4-31B-it-GGUF	-
 2f44edaa2348b82bbf45e8ff26f889db29884509646921ad77d9e6e12fe13bd2	19231098176	Qwopus3.6-27B-v2-Q5_K_M.gguf	Jackrong/Qwopus3.6-27B-v2-GGUF	-
 868fcb416ff674654aa2c2446a970df997ee55f0518c637a3d92982ed8b12f25	19535700192	Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf	Jackrong/Qwopus3.6-27B-v2-MTP-GGUF	-
+8b92b4cdd0a0cdd1bb12f6568a41ae12ad4f0d0818d12e89bf89ecb2c0876860	20730954272	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q5_K_M.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-
+c0f73caef72a1f546092f93f0d8db6f4939ad121ac5e6e3665f0829657b86d7d	21182275040	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q5_K_M.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-
+f1e1b337fda4ec8e39974f69a385f970381488e9bb41d039d85959aeb5350457	23582384672	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q6_K.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-
+2e8a9bdb478cad4ad53a3b02568ed6f5a6c7f8f569e8c030e4806438ca49828e	24033705440	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q6_K.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-

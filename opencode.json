@@ -77,6 +77,34 @@
             "context": 262144,
             "output": 32768
           }
+        },
+        "fable-fusion-27b-q5": {
+          "name": "Fable-Fusion 27B Q5_K_M (DavidAU; context est.)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "fable-fusion-27b-mtp-q5": {
+          "name": "Fable-Fusion 27B MTP Q5_K_M (single-slot, speculative; est.)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "fable-fusion-27b-q6": {
+          "name": "Fable-Fusion 27B Q6_K (DavidAU, near-lossless; context est.)",
+          "limit": {
+            "context": 229376,
+            "output": 32768
+          }
+        },
+        "fable-fusion-27b-mtp-q6": {
+          "name": "Fable-Fusion 27B MTP Q6_K (single-slot, speculative; est.)",
+          "limit": {
+            "context": 196608,
+            "output": 32768
+          }
         }
       }
     }

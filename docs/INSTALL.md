@@ -263,6 +263,34 @@ scripts ship at our standard 416K (non-MTP) / 336K (MTP) contexts;
 if outputs degrade past ~128K in practice, back the contexts down to
 something within native limits.
 
+### Fable-Fusion 711 (DavidAU) -- Q5_K_M / Q6_K, regular + MTP (~20.7–24GB each)
+
+Community fine-tune: [DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF](https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF)
+— Qwen3.6-27B dense (reasoning ON), Heretic-uncensored, NEO imatrix quants.
+The serve scripts expect DavidAU's **exact upstream filenames** (don't rename),
+so download straight into `weights/`:
+
+```bash
+# Pick any subset. Regular Q5_K_M and Q6_K + their MTP twins:
+hf download DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF \
+   Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q5_K_M.gguf \
+   Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q5_K_M.gguf \
+   Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q6_K.gguf \
+   Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q6_K.gguf \
+   --local-dir weights/
+rm -rf weights/.cache   # hf leaves a cache subdir behind
+```
+
+Serve with `serve-fable-fusion-27b-q5.sh` / `-mtp-q5` / `-q6` / `-mtp-q6`.
+**Contexts and VRAM in those scripts are ESTIMATES** (not yet profiled on the
+5090) — after downloading, tune the MTP draft depth with
+`./scripts/profile-fable-fusion-mtp.sh {q5,q6}` and set the largest safe
+context with `./scripts/measure-vram.sh`. DavidAU's MTP rules: keep
+temperature ≤ 1.0 and repetition_penalty = 1.0, or switch to the non-MTP quant
+if draft acceptance stays under ~50%. Once downloaded, replace the four
+`PENDING` rows in `scripts/weights.registry` with real checksums (the script
+headers say how).
+
 You don't need all of these — download whichever models you plan to use.
 
 ### Where weights live

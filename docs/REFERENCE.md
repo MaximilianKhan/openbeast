@@ -268,6 +268,38 @@ the unsloth Qwen3.6-27B build.
 > The "1M context safe" claim from the original note is no longer accurate at
 > default slot counts — would need to drop slots to fit.
 
+### Fable-Fusion 711 (DavidAU, added 2026-07-17 — ⚠️ ESTIMATES, not yet measured)
+
+Model: [`DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF`](https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF).
+Qwen3.6-27B dense (arch qwen35, 64 layers), reasoning ON by default. DavidAU
+"NEO" imatrix quants keep the output tensor at full 16-bit precision (claimed
++2–4% accuracy vs plain GGUF); "Heretic" is the uncensoring pass. Native
+context **262144** (n_ctx_train); DavidAU documents YaRN (rope_theta 1e7,
+factor 4.0, mrope_section [11,11,10]) to extend toward ~1M — we ship the native
+ceiling to avoid long-context quality loss.
+
+Four variants ship with serve scripts. **Contexts/VRAM below are ESTIMATES**
+(from the size analogy to our measured 27B builds — Q5_K_M ≈ the NVFP4-MTP's
+21.6 GB footprint, Q6_K ~3 GB heavier). Validate with `scripts/measure-vram.sh`
+and tune MTP draft depth with `scripts/profile-fable-fusion-mtp.sh {q5,q6}`.
+
+| Variant | Weights (on disk) | Context (est.) | Slots | MTP flags |
+|---|---|---|---|---|
+| Q5_K_M | 20.73 GB | 262144 (native) | 6 | — |
+| Q5_K_M MTP | 21.18 GB | 262144 (native) | 1 | `n-max 8` (est.), `p-min 0.0` |
+| Q6_K | 23.58 GB | 229376 | 4 | — |
+| Q6_K MTP | 24.03 GB | 196608 | 1 | `n-max 8` (est.), `p-min 0.0` |
+
+**MTP tuning:** DavidAU ships no recommended `--spec-draft-n-max`; the optimum
+is model-specific (our unsloth 27B MTP peaked at n8, the NVFP4 27B at n4), so
+the profile script sweeps {1,2,4,6,8,10} and reports decode tok/s + draft
+acceptance per config. **DavidAU's MTP requirements:** temperature ≤ 1.0 and
+repetition_penalty = 1.0, else acceptance and speed degrade; if best acceptance
+stays below ~50%, use the non-MTP quant. Recommended samplers (client-side):
+thinking `temp 1.0 / top_p 0.95 / top_k 20 / min_p 0.0`, coding `temp 0.6`,
+non-thinking `temp 0.7 / top_p 0.80 / presence 1.5`. Not yet on the eval
+leaderboard.
+
 ## 1. System packages
 
 ```bash

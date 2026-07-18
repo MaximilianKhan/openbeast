@@ -48,11 +48,23 @@ if [[ ! -d "$WEIGHTS_DIR" ]]; then
   exit 0
 fi
 
-fails=0; checked=0; absent=0
+fails=0; checked=0; absent=0; pending=0
 while IFS=$'\t' read -r sha bytes fname repo remote; do
   [[ -z "$sha" || "$sha" == \#* ]] && continue
   [[ -n "$ONLY" && "$fname" != "$ONLY" ]] && continue
   path="$WEIGHTS_DIR/$fname"
+  # PENDING = a shipped serve script targets this weight, but it isn't hashed
+  # yet (not downloaded on the reference box at authoring time). Not a failure;
+  # once downloaded, replace the PENDING row with a real sha256 + byte size
+  # (sha256sum the file). Until then there's nothing to verify against.
+  if [[ "$sha" == "PENDING" ]]; then
+    pending=$((pending + 1))
+    if [[ -f "$path" ]]; then
+      echo "PENDING  $fname downloaded but not yet pinned — pin it: sha256sum + size into scripts/weights.registry"
+    fi
+    [[ -n "$ONLY" ]] && { echo "PENDING  $fname has no pin yet (nothing to verify)"; exit 0; }
+    continue
+  fi
   if [[ ! -f "$path" ]]; then
     absent=$((absent + 1))
     [[ -n "$ONLY" ]] && { echo "MISSING  $fname (not downloaded — nothing to verify)"; exit 1; }
@@ -86,5 +98,5 @@ while IFS= read -r f; do
 done < <(find "$WEIGHTS_DIR" -maxdepth 1 -name '*.gguf' 2>/dev/null)
 
 echo ""
-echo "Verified $checked file(s), $absent registered model(s) not downloaded, $fails failure(s)."
+echo "Verified $checked file(s), $absent registered model(s) not downloaded, ${pending} awaiting a pin, $fails failure(s)."
 exit $(( fails > 0 ? 1 : 0 ))

@@ -492,11 +492,15 @@ else
 fi
 while IFS=$'\t' read -r sha bytes fname repo remote; do
   [[ -z "$sha" || "$sha" == \#* ]] && continue
-  if [[ ! "$sha" =~ ^[0-9a-f]{64}$ || ! "$bytes" =~ ^[0-9]+$ || -z "$fname" || -z "$repo" ]]; then
+  # A pinned row = 64-hex sha + numeric bytes; a PENDING row (weight shipped
+  # but not yet downloaded/hashed) = literal PENDING + 0. Both are valid.
+  if [[ "$sha" == "PENDING" ]]; then
+    [[ "$bytes" == "0" && -n "$fname" && -n "$repo" ]] || fail "malformed PENDING row for '${fname:-?}'"
+  elif [[ ! "$sha" =~ ^[0-9a-f]{64}$ || ! "$bytes" =~ ^[0-9]+$ || -z "$fname" || -z "$repo" ]]; then
     fail "malformed registry row for '${fname:-?}'"
   fi
 done < "$REGISTRY"
-pass "registry rows well-formed (64-hex sha + numeric size + source)"
+pass "registry rows well-formed (64-hex sha + numeric size, or PENDING)"
 if grep -q 'weights.registry' "$REPO_DIR/bootstrap.sh"; then
   pass "bootstrap.sh reads the default-model pin from the registry"
 else
