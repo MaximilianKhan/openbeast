@@ -48,54 +48,57 @@ toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INST
 
 ## Why OpenBeast
 
-One column per *archetype* — a bare **model runner**, a full **all-in-one
-stack**, and an **agent runtime** — because comparing a workstation to three
-near-identical model runners teaches nothing:
+One column per *archetype* — a bare **model runner**, an **agent runtime**, a
+full **all-in-one stack** — because comparing a workstation to three
+near-identical model runners teaches nothing. Columns run **left → right from
+least to most feature parity** with OpenBeast (the rightmost reference):
 
-| | OpenBeast | Ollama | ODS | Hermes Agent |
+| | Ollama | Hermes Agent | ODS | OpenBeast |
 |---|:---:|:---:|:---:|:---:|
-| **What it is** | Model **workstation** | Model runner | **All-in-one AI stack** | **Agent runtime** |
-| Fully local, no cloud | ✅ | ✅ | ✅ ² | ✅ ¹ |
-| Hosts / serves the model itself | ✅ | ✅ | ✅ | — ¹ |
-| OpenAI-compatible API | ✅ *(serves)* | ✅ | ✅ | *consumes* |
-| **Measured per-model VRAM / context configs** | ✅ | — | ~ ³ | — |
-| **Tuned speculative decoding (MTP)** | ✅ | — | — | — |
-| **Reproducible, capability-ranked model evals** | ✅ | — | — | — |
-| **Agent tool suite** (shell · files · web · sub-agents) | ✅ | — | ✅ ⁴ | ✅ |
-| **Terminal coding agent** | ✅ *(OpenCode)* | — | ✅ ⁴ | ✅ *(own CLI)* |
-| Self-improving agent (memory + skills) | — | — | ✅ ⁴ | ✅ |
-| **Secure remote access** (device-authenticated) | ✅ *(Tailscale)* | — | ~ ⁵ | — |
-| **Per-user RBAC + per-call audit** | ✅ | — | ~ ⁶ | — |
-| Voice · image-gen · workflow automation | — ⁷ | — | ✅ | — |
-| Cloud / hybrid API fallback | — ⁷ | — | ✅ | — |
-| **Design philosophy** | Opinionated: *one biggest brain* | Minimal runner | Kitchen-sink: *every service* | Agent-first |
+| **What it is** | Model runner | **Agent runtime** | **All-in-one AI stack** | Model **workstation** |
+| Fully local, no cloud | ✅ | ✅ ¹ | ✅ ² | ✅ |
+| Hosts / serves the model itself | ✅ | — ¹ | ✅ | ✅ |
+| OpenAI-compatible API | ✅ | *consumes* | ✅ | ✅ *(serves)* |
+| **Measured per-model VRAM / context configs** | — | — | ~ ³ | ✅ |
+| **Tuned speculative decoding (MTP)** | — | — | — | ✅ |
+| **Reproducible, capability-ranked model evals** | — | — | — | ✅ |
+| **Agent tool suite** (shell · files · web · sub-agents) | — | ✅ | ✅ ⁴ | ✅ |
+| **Terminal coding agent** | — | ✅ *(own CLI)* | ✅ ⁴ | ✅ *(OpenCode)* |
+| Self-improving agent (memory + skills) | — | ✅ | ✅ ⁴ | — |
+| **Secure remote access** (device-authenticated) | — | — | ~ ⁵ | ✅ *(Tailscale)* |
+| **Per-user RBAC + per-call audit** | — | — | ~ ⁶ | ✅ |
+| Voice · image-gen · workflow automation | — | — | ✅ | — ⁷ |
+| Cloud / hybrid API fallback | — | — | ✅ | — ⁷ |
+| **Design philosophy** | Minimal runner | Agent-first | Kitchen-sink: *every service* | Opinionated: *one biggest brain* |
 
 ¹ Hermes runs 100% local but *points at* a model server you host — like OpenBeast — rather than serving the model itself.
 ² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast never lets data leave the machine.
-³ ODS auto-picks a model for your detected hardware tier; OpenBeast publishes *measured* VRAM + context per model.
+³ ODS selects from a static tier→model catalog (`model-library.json`) with rough VRAM heuristics ("8 GB → 7B", etc.) and catalog context lengths; OpenBeast *measures* actual VRAM + max safe context per model on the reference card.
 ⁴ ODS's default agent **is** Hermes Agent (bundled) — so its agent rows mirror Hermes'.
 ⁵ ODS uses a magic-link-gated proxy; OpenBeast uses Tailscale (WireGuard device identity + auto-HTTPS).
 ⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
 ⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-**vs. model runners** (Ollama — LM Studio, text-generation-webui, GPT4All are
-the same archetype): OpenBeast *includes* a runner and builds the whole
-workstation on top of it.
+**Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
+a bare model runner — it serves a model and stops there; OpenBeast *includes* a
+runner and builds the whole workstation on top.
 
-**vs. ODS** — the closest peer and the most instructive comparison. Both turn a
-box into a private AI server in one command, but they're opposite philosophies.
-ODS bundles *everything* — voice, image generation, workflow automation, RAG,
-cloud fallback — for maximum breadth. OpenBeast is opinionated: fill the GPU
-with the largest, most-accurate model, measured and tuned (MTP, a reproducible
-eval leaderboard), with nothing ever leaving the machine. Pick ODS for a
-Swiss-army stack; pick OpenBeast for the smartest single brain your hardware can
-hold. They aren't even mutually exclusive — ODS runs on a llama-server backend,
-so OpenBeast can *be* that backend.
+**Hermes Agent** (Nous Research) is a client-side agent runtime — self-improving
+memory and skills — that brings its own model *endpoint*, not its own *server*.
+Orthogonal and stackable: **OpenBeast is exactly the local backend it consumes**,
+so run Hermes on OpenBeast's endpoint for a self-improving agent whose brain
+never leaves your GPU.
 
-**vs. Hermes Agent** (Nous Research) — orthogonal and stackable: Hermes brings
-its own model *endpoint*, not its own *server*, and **OpenBeast is exactly the
-local backend it consumes.** Run Hermes on OpenBeast's endpoint for a
-self-improving agent whose brain never leaves your GPU.
+**ODS** (Osmantic Deployment System) is the closest peer and the most
+instructive comparison — both turn a box into a private AI server in one command,
+but on opposite philosophies. ODS bundles *everything* — voice, image generation,
+workflow automation, RAG, cloud fallback (its default agent is literally Hermes)
+— for maximum breadth. OpenBeast is opinionated: fill the GPU with the largest,
+most-accurate model, *measured and tuned* (per-model VRAM/context, MTP
+speculative decoding, a reproducible capability leaderboard), nothing ever
+leaving the machine. Pick ODS for a Swiss-army stack; pick OpenBeast for the
+smartest single brain your hardware can hold — and since ODS runs on a
+llama-server backend, OpenBeast can even *be* that backend.
 
 ### Our opinion
 
