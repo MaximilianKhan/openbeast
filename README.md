@@ -48,29 +48,54 @@ toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INST
 
 ## Why OpenBeast
 
-| | OpenBeast | Ollama | LM Studio | text-generation-webui | Hermes Agent |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **What it is** | Model **workstation** | Model runner | Model runner | Model runner | **Agent runtime** |
-| Runs fully local, no cloud | ✅ | ✅ | ✅ | ✅ | ✅ ¹ |
-| **Hosts / serves the model itself** | ✅ | ✅ | ✅ | ✅ | — ¹ |
-| OpenAI-compatible API | ✅ *(serves)* | ✅ | ✅ | ✅ | *consumes one* |
-| **Agent tool suite** (shell, files, web, sub-agents) | ✅ | — | — | partial | ✅ |
-| **Terminal coding agent** | ✅ *(OpenCode)* | — | — | — | ✅ *(own CLI)* |
-| **One-command secure remote access** (Tailscale + HTTPS) | ✅ | — | — | — | — |
-| **Multi-user roles / RBAC** (family-safe sharing) | ✅ | — | — | — | — |
-| **Self-improving agent** (cross-session memory + skill learning) | — | — | — | — | ✅ |
+One column per *archetype* — a bare **model runner**, a full **all-in-one
+stack**, and an **agent runtime** — because comparing a workstation to three
+near-identical model runners teaches nothing:
 
-¹ Hermes Agent runs 100% local — but by *pointing at* a local server you host,
-not by serving the model itself.
+| | OpenBeast | Ollama | ODS | Hermes Agent |
+|---|:---:|:---:|:---:|:---:|
+| **What it is** | Model **workstation** | Model runner | **All-in-one AI stack** | **Agent runtime** |
+| Fully local, no cloud | ✅ | ✅ | ✅ ² | ✅ ¹ |
+| Hosts / serves the model itself | ✅ | ✅ | ✅ | — ¹ |
+| OpenAI-compatible API | ✅ *(serves)* | ✅ | ✅ | *consumes* |
+| **Measured per-model VRAM / context configs** | ✅ | — | ~ ³ | — |
+| **Tuned speculative decoding (MTP)** | ✅ | — | — | — |
+| **Reproducible, capability-ranked model evals** | ✅ | — | — | — |
+| **Agent tool suite** (shell · files · web · sub-agents) | ✅ | — | ✅ ⁴ | ✅ |
+| **Terminal coding agent** | ✅ *(OpenCode)* | — | ✅ ⁴ | ✅ *(own CLI)* |
+| Self-improving agent (memory + skills) | — | — | ✅ ⁴ | ✅ |
+| **Secure remote access** (device-authenticated) | ✅ *(Tailscale)* | — | ~ ⁵ | — |
+| **Per-user RBAC + per-call audit** | ✅ | — | ~ ⁶ | — |
+| Voice · image-gen · workflow automation | — ⁷ | — | ✅ | — |
+| Cloud / hybrid API fallback | — ⁷ | — | ✅ | — |
+| **Design philosophy** | Opinionated: *one biggest brain* | Minimal runner | Kitchen-sink: *every service* | Agent-first |
 
-**Ollama** and **LM Studio** are excellent *model runners*; OpenBeast is a
-*workstation* built around one — it turns a local model into an agent you can
-work with, reach from any device, and safely share with your household.
-**Hermes Agent** (Nous Research) is a *client-side agent runtime* that brings
-its own model *endpoint*, not its own model *server* — and **OpenBeast is exactly
-the local backend it's built to consume.** The two improve on orthogonal axes
-(OpenBeast maximizes the *brain*; Hermes maximizes the *agent*), so the strongest
-setup stacks them: **run Hermes on OpenBeast's local endpoint.**
+¹ Hermes runs 100% local but *points at* a model server you host — like OpenBeast — rather than serving the model itself.
+² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast never lets data leave the machine.
+³ ODS auto-picks a model for your detected hardware tier; OpenBeast publishes *measured* VRAM + context per model.
+⁴ ODS's default agent **is** Hermes Agent (bundled) — so its agent rows mirror Hermes'.
+⁵ ODS uses a magic-link-gated proxy; OpenBeast uses Tailscale (WireGuard device identity + auto-HTTPS).
+⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
+⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
+
+**vs. model runners** (Ollama — LM Studio, text-generation-webui, GPT4All are
+the same archetype): OpenBeast *includes* a runner and builds the whole
+workstation on top of it.
+
+**vs. ODS** — the closest peer and the most instructive comparison. Both turn a
+box into a private AI server in one command, but they're opposite philosophies.
+ODS bundles *everything* — voice, image generation, workflow automation, RAG,
+cloud fallback — for maximum breadth. OpenBeast is opinionated: fill the GPU
+with the largest, most-accurate model, measured and tuned (MTP, a reproducible
+eval leaderboard), with nothing ever leaving the machine. Pick ODS for a
+Swiss-army stack; pick OpenBeast for the smartest single brain your hardware can
+hold. They aren't even mutually exclusive — ODS runs on a llama-server backend,
+so OpenBeast can *be* that backend.
+
+**vs. Hermes Agent** (Nous Research) — orthogonal and stackable: Hermes brings
+its own model *endpoint*, not its own *server*, and **OpenBeast is exactly the
+local backend it consumes.** Run Hermes on OpenBeast's endpoint for a
+self-improving agent whose brain never leaves your GPU.
 
 ### Our opinion
 
@@ -111,13 +136,61 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 
 ## Architecture
 
-Two frontends (Open WebUI + OpenCode), **one** 15-tool arsenal exposed through
-two surfaces that import the same code so they can't drift, llama.cpp serving an
-OpenAI-compatible API on `:8080`, private SearXNG for web search, and an opt-in
-agent-spawn router. Everything binds `127.0.0.1`; remote devices arrive only
-through Tailscale's authenticated HTTPS proxy.
+```mermaid
+flowchart TB
+    dev["📱 Your devices — phone · laptop · desktop"]
+    dev -->|"Tailscale · WireGuard + auto-HTTPS<br/>authenticated, tailnet-only"| edge
+    edge{{"Ingress — loopback 127.0.0.1 by default<br/>remote only via Tailscale Serve"}}
 
-**Full diagram + component walkthrough → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).**
+    subgraph FE["Frontends"]
+        direction LR
+        webui["🌐 Open WebUI · :3000<br/>browser chat · accounts · RBAC roles"]
+        opencode["⌨️ OpenCode<br/>terminal coding agent"]
+        agentsh["🔁 agent.sh<br/>headless autonomous agent"]
+    end
+    edge --> webui
+
+    subgraph TOOLS["Tool layer — ONE arsenal, TWO surfaces (imported → can't drift)"]
+        direction TB
+        its["🔑 Identity Tool Server · :3001<br/><b>agents/openapi_tools.py</b><br/>RBAC profile keys · per-user file shards<br/>audit trail + Prometheus /metrics<br/>signed-JWT or header identity"]
+        mcp["🔌 MCP Server (stdio)<br/><b>agents/mcp_server.py</b>"]
+        arsenal["⚙️ <b>Tool Arsenal — agents/tools.py</b> · 15 tools<br/>bash · read/write/edit_file · grep · list_files<br/>fetch (SSRF-guarded) · web_search<br/>start / check / tail / list / stop_agent · skill · skill_agent<br/>workspace → ~/openbeast-files/users/USER/"]
+        its --> arsenal
+        mcp --> arsenal
+    end
+
+    webui -->|"tool calls + identity headers<br/>X-OpenWebUI-User / Chat / JWT"| its
+    opencode -->|"MCP over stdio"| mcp
+    agentsh --> arsenal
+
+    router["🧭 Agent Router · :8088 <i>(opt-in)</i><br/>grammar-constrained spawn-intent<br/>+ admin-only identity gate"]
+    webui -->|"chat completions"| router
+    router -->|"no spawn → pass through"| llama
+    router -.->|"spawn intent → start_agent"| its
+
+    arsenal -->|"web_search"| searxng
+    arsenal -.->|"spawned agents' inference"| llama
+
+    searxng["🔎 SearXNG · :8888<br/>private metasearch (no tracking)"]
+    llama["🧠 llama.cpp Server · :8080<br/>OpenAI-compatible API<br/>6 parallel slots · unified KV cache<br/>continuous batching · MTP spec-decode"]
+    gpu["🎮 GPU — RTX 5090 · 32 GB (reference)<br/>context auto-scaled to card VRAM · 11 GB floor"]
+    llama --> gpu
+
+    classDef fe fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
+    classDef tool fill:#ede9fe,stroke:#7c3aed,color:#2a1150;
+    classDef inf fill:#dcfce7,stroke:#16a34a,color:#0b2417;
+    classDef sec fill:#fef3c7,stroke:#d97706,color:#3a2503;
+    class webui,opencode,agentsh fe;
+    class its,mcp,arsenal tool;
+    class llama,gpu,searxng inf;
+    class edge,router sec;
+```
+
+Two frontends, **one** 15-tool arsenal exposed through two surfaces that import
+the same code so they can't drift, llama.cpp serving an OpenAI-compatible API on
+`:8080`, private SearXNG for web search, and an opt-in agent-spawn router.
+Everything binds `127.0.0.1`; remote devices arrive only through Tailscale's
+authenticated HTTPS proxy. **Full component walkthrough → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).**
 
 ## Remote access (Tailscale)
 
