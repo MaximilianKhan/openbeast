@@ -8,15 +8,16 @@
 # MTP launch flags (same proven pattern as our other Qwen3.6 MTP builds —
 # serve-qwen-27b-nvfp4-mtp.sh):
 #   --spec-type draft-mtp     enable the MTP draft path
-#   --spec-draft-n-max 8      draft 8 tokens ahead per step  ← ESTIMATE
+#   --spec-draft-n-max 2      draft 2 tokens ahead per step  ← MEASURED optimum
 #   --spec-draft-p-min 0.0    draft unconditionally (target verifies every
 #                             draft → zero quality impact)
 #   -fa on / -ngld 99 / -ctkd q4_0 / -ctvd q4_0   flash-attn + draft on GPU
 #
-# ⚠️ n-max 8 IS AN ESTIMATE — the optimum is model-specific (our unsloth Q5
-# MTP peaked at n8, but the NVFP4 27B peaked at n4). Run
-#   ./scripts/profile-fable-fusion-mtp.sh q5
-# once downloaded to find THIS model's optimum, then update -c/-n-max here.
+# n-max 2 is the MEASURED optimum (scripts/profile-fable-fusion-mtp.sh q5,
+# 2026-07-17): decode n1 96 / n2 108 / n4 98 / n8 76 / n10 69 tok/s. This
+# model's draft head accepts shallow drafts well (65% at n2) but deep ones
+# poorly (19% at n10), so the peak is SHALLOW — unlike our unsloth Q5 MTP
+# (n8) and NVFP4 27B (n4). Do NOT copy n from another model; re-profile.
 #
 # ⚠️ DavidAU's MTP REQUIREMENTS (from the model card — breaking these silently
 # degrades MTP acceptance and speed):
@@ -28,10 +29,10 @@
 # CONSTRAINTS (MTP, upstream): -np 1 forced (one slot; concurrent requests
 # serialize); --mmproj vision unsupported.
 #
-# ⚠️ CONTEXT/VRAM IS AN ESTIMATE (2026-07-17). -c 262144 (native ceiling) at
-# Q5_K_M MTP (~21.2 GB) should fit the 32 GB card (cf. 21.6 GB NVFP4-MTP fits
-# 262144 with ~2.5 GB free). Validate with scripts/measure-vram.sh / the
-# profile script once downloaded.
+# MEASURED on the 5090 (2026-07-17): -c 262144 (native ceiling) at n-max 2
+# uses 29,885 MiB / 2,722 MiB free — above the 2 GB rule. Decode ~108 tok/s
+# greedy (1.6× the non-MTP Q5's ~66), draft acceptance 0.65 (mean len 2.30) —
+# well above DavidAU's 50% keep-MTP threshold.
 #
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,7 +44,7 @@ exec "$SCRIPT_DIR/serve.sh" \
   -c 262144 \
   -np 1 \
   --spec-type draft-mtp \
-  --spec-draft-n-max 8 \
+  --spec-draft-n-max 2 \
   --spec-draft-p-min 0.0 \
   -fa on \
   -ngld 99 \

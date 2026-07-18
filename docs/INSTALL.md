@@ -282,14 +282,14 @@ rm -rf weights/.cache   # hf leaves a cache subdir behind
 ```
 
 Serve with `serve-fable-fusion-27b-q5.sh` / `-mtp-q5` / `-q6` / `-mtp-q6`.
-**Contexts and VRAM in those scripts are ESTIMATES** (not yet profiled on the
-5090) — after downloading, tune the MTP draft depth with
-`./scripts/profile-fable-fusion-mtp.sh {q5,q6}` and set the largest safe
-context with `./scripts/measure-vram.sh`. DavidAU's MTP rules: keep
-temperature ≤ 1.0 and repetition_penalty = 1.0, or switch to the non-MTP quant
-if draft acceptance stays under ~50%. Once downloaded, replace the four
-`PENDING` rows in `scripts/weights.registry` with real checksums (the script
-headers say how).
+**Contexts, VRAM, and MTP draft depth are measured on the 5090** (2026-07-17 —
+see `docs/REFERENCE.md`): Q5 both hold native 262K; Q6 ships at 240K, Q6 MTP at
+176K; both MTP builds peak at `--spec-draft-n-max 2` (~108/103 tok/s, a
+1.6–1.8× speedup). To re-profile on different hardware: tune draft depth with
+`./scripts/profile-fable-fusion-mtp.sh {q5,q6}` and find the largest safe
+context with `./scripts/measure-vram.sh`. DavidAU's MTP rules: keep temperature
+≤ 1.0 and repetition_penalty = 1.0, or switch to the non-MTP quant if draft
+acceptance stays under ~50%.
 
 You don't need all of these — download whichever models you plan to use.
 

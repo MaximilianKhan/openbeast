@@ -16,10 +16,11 @@
 #   thinking, coding  : temp 0.6  top_p 0.95 top_k 20 min_p 0.0  rep_pen 1.0
 #   non-thinking      : temp 0.7  top_p 0.80 top_k 20 min_p 0.0  presence 1.5
 #
-# ⚠️ CONTEXT/VRAM IS AN ESTIMATE (2026-07-17) — weights not yet profiled on
-# the 5090. -c 262144 (native ceiling) at Q5_K_M (~20.7 GB) should fit the
-# 32 GB card with headroom (cf. the 21.6 GB NVFP4-MTP build fits 262144 with
-# ~2.5 GB free). Validate/raise with scripts/measure-vram.sh once downloaded.
+# MEASURED on the 5090 (2026-07-17, q4_0 KV): -c 262144 (native ceiling) uses
+# 28,253 MiB / 4,354 MiB free — comfortable. Baseline decode ~66 tok/s
+# (greedy); the MTP twin roughly 1.6× that. Native 262144 is the ceiling
+# (higher needs YaRN); the generous headroom means a smaller card can hold a
+# useful context too.
 #
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

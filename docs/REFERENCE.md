@@ -268,7 +268,7 @@ the unsloth Qwen3.6-27B build.
 > The "1M context safe" claim from the original note is no longer accurate at
 > default slot counts — would need to drop slots to fit.
 
-### Fable-Fusion 711 (DavidAU, added 2026-07-17 — ⚠️ ESTIMATES, not yet measured)
+### Fable-Fusion 711 (DavidAU, added + MEASURED 2026-07-17)
 
 Model: [`DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF`](https://huggingface.co/DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF).
 Qwen3.6-27B dense (arch qwen35, 64 layers), reasoning ON by default. DavidAU
@@ -278,27 +278,36 @@ context **262144** (n_ctx_train); DavidAU documents YaRN (rope_theta 1e7,
 factor 4.0, mrope_section [11,11,10]) to extend toward ~1M — we ship the native
 ceiling to avoid long-context quality loss.
 
-Four variants ship with serve scripts. **Contexts/VRAM below are ESTIMATES**
-(from the size analogy to our measured 27B builds — Q5_K_M ≈ the NVFP4-MTP's
-21.6 GB footprint, Q6_K ~3 GB heavier). Validate with `scripts/measure-vram.sh`
-and tune MTP draft depth with `scripts/profile-fable-fusion-mtp.sh {q5,q6}`.
+**Measured on the 5090** (2026-07-17, q4_0 KV, greedy temp 0 / seed 42; VRAM =
+total GPU used at the shipped context, card total 32,607 MiB):
 
-| Variant | Weights (on disk) | Context (est.) | Slots | MTP flags |
-|---|---|---|---|---|
-| Q5_K_M | 20.73 GB | 262144 (native) | 6 | — |
-| Q5_K_M MTP | 21.18 GB | 262144 (native) | 1 | `n-max 8` (est.), `p-min 0.0` |
-| Q6_K | 23.58 GB | 229376 | 4 | — |
-| Q6_K MTP | 24.03 GB | 196608 | 1 | `n-max 8` (est.), `p-min 0.0` |
+| Variant | Weights (disk) | Context (shipped) | Slots | VRAM used / free | Decode tok/s | MTP n-max / acceptance |
+|---|---|---|---|---|---|---|
+| Q5_K_M | 20.73 GB | 262144 (native) | 6 | 28,253 / 4,354 MiB | 66.2 | — |
+| Q5_K_M MTP | 21.18 GB | 262144 (native) | 1 | 29,885 / 2,722 MiB | 108.3 | **n2** / 0.65 (len 2.30) |
+| Q6_K | 23.58 GB | 245760 | 4 | 30,144 / 2,463 MiB | 56.7 | — |
+| Q6_K MTP | 24.03 GB | 180224 | 1 | 30,116 / 2,491 MiB | 102.6 | **n2** / 0.67 (len 2.33) |
 
-**MTP tuning:** DavidAU ships no recommended `--spec-draft-n-max`; the optimum
-is model-specific (our unsloth 27B MTP peaked at n8, the NVFP4 27B at n4), so
-the profile script sweeps {1,2,4,6,8,10} and reports decode tok/s + draft
-acceptance per config. **DavidAU's MTP requirements:** temperature ≤ 1.0 and
-repetition_penalty = 1.0, else acceptance and speed degrade; if best acceptance
-stays below ~50%, use the non-MTP quant. Recommended samplers (client-side):
-thinking `temp 1.0 / top_p 0.95 / top_k 20 / min_p 0.0`, coding `temp 0.6`,
-non-thinking `temp 0.7 / top_p 0.80 / presence 1.5`. Not yet on the eval
-leaderboard.
+**Context ceilings:** Q5 (both) hold the full native 262144 comfortably. Q6_K
+loads at 262144 too, but at only 2,096 MiB free (the sustained-load crash zone
+— see the Qwopus note above), so it ships one notch down at 245760 (2,463 free).
+Q6_K MTP is the tightest — weights + draft buffers — measured breaching the 2 GB
+rule at every step down to 196608 (2,025 free), so it ships at 180224 (2,491
+free). Push any of these with `OPENBEAST_CONTEXT=` if you accept a thinner margin.
+
+**MTP draft depth (measured, `scripts/profile-fable-fusion-mtp.sh`):** both MTP
+builds peak at **`--spec-draft-n-max 2`**, unlike our unsloth 27B MTP (n8) or
+NVFP4 27B (n4) — DavidAU's draft head accepts shallow drafts (0.65–0.67 at n2)
+but deep drafts poorly (~0.19 at n10), so the peak is shallow. Full Q5 sweep:
+n1 96 / **n2 108** / n4 98 / n6 83 / n8 76 / n10 69 tok/s; Q6: n1 87 / **n2 97** /
+n4 96 / n6 85 / n8 72 / n10 67. MTP is a 1.6–1.8× lossless speedup vs the
+matching non-MTP quant. **Re-profile per model — never copy n across builds.**
+
+**DavidAU's MTP requirements:** temperature ≤ 1.0 and repetition_penalty = 1.0,
+else acceptance and speed degrade; if best acceptance stays below ~50%, use the
+non-MTP quant. Recommended samplers (client-side): thinking `temp 1.0 / top_p
+0.95 / top_k 20 / min_p 0.0`, coding `temp 0.6`, non-thinking `temp 0.7 / top_p
+0.80 / presence 1.5`. Not yet on the eval leaderboard.
 
 ## 1. System packages
 

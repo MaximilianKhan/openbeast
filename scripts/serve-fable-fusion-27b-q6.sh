@@ -11,11 +11,13 @@
 #   thinking, coding  : temp 0.6  top_p 0.95 top_k 20 min_p 0.0  rep_pen 1.0
 #   non-thinking      : temp 0.7  top_p 0.80 top_k 20 min_p 0.0  presence 1.5
 #
-# ⚠️ CONTEXT/VRAM IS AN ESTIMATE (2026-07-17) — not yet profiled on the 5090.
-# Q6_K (~24 GB) is ~3 GB heavier than Q5_K_M, so context is scaled back from
-# the native 262144 ceiling to keep the 2 GB OS-headroom rule: -c 229376
-# (224K) with 4 slots is the conservative starting point. Validate and raise
-# with scripts/measure-vram.sh once downloaded — it may well hold more.
+# MEASURED on the 5090 (2026-07-17, q4_0 KV, 4 slots): -c 245760 uses
+# 30,144 MiB / 2,463 MiB free — safe. The full native -c 262144 also loads
+# (30,511 MiB / 2,096 MiB free) but sits right on the 2 GB line — the
+# sustained-load crash zone (cf. the Qwopus 352K note), so we ship one notch
+# down for real headroom. Set OPENBEAST_CONTEXT=262144 if you want the ceiling
+# and accept the thin margin. Baseline decode ~57 tok/s greedy (Q6 is heavier
+# than Q5; the MTP twin is ~1.8× faster).
 #
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,6 +26,6 @@ source "$SCRIPT_DIR/lib/weights.sh"
 exec "$SCRIPT_DIR/serve.sh" \
   -m "$WEIGHTS_DIR/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q6_K.gguf" \
   -a "Fable-Fusion 27B Q6" \
-  -c 229376 \
+  -c 245760 \
   -np 4 \
   "$@"
