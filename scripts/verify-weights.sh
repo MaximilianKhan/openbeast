@@ -16,7 +16,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REGISTRY="$SCRIPT_DIR/weights.registry"
-source "$SCRIPT_DIR/lib/weights.sh"
+# Resolve the weights dir WITHOUT lib/weights.sh's hard exit-on-missing: a
+# not-yet-downloaded weights dir is "nothing to verify" here, not an error
+# (that hard exit is right for serve scripts, wrong for an integrity check —
+# and letting it propagate made doctor exit nonzero on a fresh/CI checkout,
+# which the doctor test reads via pipefail as a failure). weights.sh exports
+# WEIGHTS_DIR before its existence check, so a guarded subshell captures it.
+WEIGHTS_DIR="$( (source "$SCRIPT_DIR/lib/weights.sh" >/dev/null 2>&1; printf '%s' "${WEIGHTS_DIR:-}") || true )"
+[[ -n "$WEIGHTS_DIR" ]] || WEIGHTS_DIR="$REPO_DIR/weights"
 
 DEEP=0; ONLY=""
 while [[ $# -gt 0 ]]; do
@@ -30,6 +37,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -f "$REGISTRY" ]] || { echo "Error: $REGISTRY missing" >&2; exit 1; }
+
+# No weights directory yet = nothing downloaded = nothing to verify (exit 0).
+# A specific --file request against a missing dir is still an error.
+if [[ ! -d "$WEIGHTS_DIR" ]]; then
+  if [[ -n "$ONLY" ]]; then
+    echo "MISSING  $ONLY (no weights directory at $WEIGHTS_DIR)"; exit 1
+  fi
+  echo "No weights directory yet ($WEIGHTS_DIR) — nothing to verify."
+  exit 0
+fi
 
 fails=0; checked=0; absent=0
 while IFS=$'\t' read -r sha bytes fname repo remote; do

@@ -115,10 +115,16 @@ else
 fi
 
 # ── Weight integrity (quick size check; sha256 is verify-weights.sh --deep) ─
+# verify-weights exits 0 when weights match OR when none are downloaded yet
+# (a fresh/minimal/CI checkout is not a failure), and nonzero ONLY on a real
+# size mismatch — so its exit maps straight onto pass/fail here.
 section "Weight registry"
 if [[ -f "$REPO_DIR/scripts/weights.registry" ]]; then
-  if "$REPO_DIR/scripts/verify-weights.sh" >/dev/null 2>&1; then
-    pass "downloaded weights match their registry byte sizes"
+  if _vw_out="$("$REPO_DIR/scripts/verify-weights.sh" 2>&1)"; then
+    case "$_vw_out" in
+      *"nothing to verify"*) pass "no weights downloaded yet (nothing to verify)" ;;
+      *)                     pass "downloaded weights match their registry byte sizes" ;;
+    esac
   else
     fail "a downloaded weight fails its registry size pin" \
          "./scripts/verify-weights.sh (then --deep to hash-verify)"
