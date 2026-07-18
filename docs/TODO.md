@@ -72,22 +72,24 @@ processes eating the free space.
 3. **CI build matrix** — GitHub Actions job building llama.cpp cuda/hip/
    sycl/cpu so the AMD/Intel paths stop being faith-based. (`pip-audit` is
    ✅ DONE — pr-quality.yml; caught 4 PyJWT CVEs on day one → 2.12.1→2.13.0.)
-4. **Weight checksum verification** (M) — download + verify sha256
-   sidecars in bootstrap/update; silent GGUF corruption today fails as
-   mystery gibberish. **NEXT UP — the clear next security/correctness win.**
+4. ✅ **Weight checksum verification (DONE 2026-07-17).** `scripts/weights.registry`
+   sha256+size-pins every shipped GGUF (17 models); bootstrap verifies the
+   default after download; `scripts/verify-weights.sh` (--deep / --file) checks
+   any download; doctor runs the quick size check; test_scripts §12 blocks an
+   unpinned serve-script weight. Remaining upgrade: model REGISTRY enforcement —
+   serve.sh refusing an unlisted/mismatched weight unless overridden (see Model
+   governance below), + the eval quality gate.
 5. **macOS/Metal + Docker Desktop** (M) — Darwin branch in bootstrap
    (system_profiler GPU detect, Metal build flags); compose bridge-network
    variant (host networking doesn't exist on Docker Desktop). WSL2: likely
    works, needs a documented test pass.
    *(Distinct from client mode below — this ports the SERVER to Mac; that runs
    NO model on the Mac.)*
-5b. **OpenBeast client mode** (S/M) — [`docs/MAC_CLIENT_PLAN.md`](MAC_CLIENT_PLAN.md).
-   Thin laptop client: local tools + stdio MCP, model + web search served by the
-   rig over the tailnet. Two deliverables — `scripts/setup-mac-client.sh`
-   (laptop) + a `--publish-searxng` opt-in flag on `setup-tailscale.sh` (rig,
-   the one real gap — SearXNG is currently loopback-only). Client-side companion
-   to the shipped distributed-agents split; "local files, remote brains" with
-   the laptop as the local. No blockers.
+5b. ✅ **OpenBeast client mode (DONE 2026-07-17).** [`docs/MAC_CLIENT_PLAN.md`](MAC_CLIENT_PLAN.md).
+   `scripts/setup-mac-client.sh` (laptop thin client: pinned venv + non-clobbering
+   opencode.json merge + --uninstall) and `setup-tailscale.sh --publish-searxng`
+   / `--unpublish-searxng` (rig). Verified end-to-end under an isolated HOME;
+   test_scripts §13. Remaining: a live two-machine run from the actual laptop.
 6. ✅ **fetch() DNS-rebinding pin (DONE 2026-07-09)** — _resolve_vetted +
    _PinnedHTTP(S)Connection dial the vetted IP; TLS keeps real-host SNI/cert.
    Proven: zero connect-time re-resolution; connect-flip to loopback refused.
