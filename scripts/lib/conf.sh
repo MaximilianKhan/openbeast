@@ -76,6 +76,18 @@ MODEL_ROLLBACK="${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_ROLLBACK || e
 # fragments / launches their processes. Manage with scripts/ext.sh; empty by
 # default (opinionated core only). Conf key EXTENSIONS.
 EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
+# Reasoning/thinking control (serve.sh applies these to llama-server). OpenBeast
+# keeps reasoning ON by default (per-request toggle preserved); these are the
+# GLOBAL escape hatches, and they OVERRIDE any per-serve-script default:
+#   REASONING          on | off | auto   — force thinking on/off for every model
+#   REASONING_BUDGET   <int>              — cap thinking tokens (0 = none/immediate
+#                                           answer, -1 = unlimited) before the
+#                                           model is forced to answer. Tames the
+#                                           over-reasoning "MAX" tunes.
+# Both empty by default (each model's own default stands). Env overrides:
+# $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
+REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
+REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of

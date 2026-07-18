@@ -66,6 +66,20 @@
 # opinionated core only. Env override: $OPENBEAST_EXTENSIONS.
 #EXTENSIONS="dashboard"
 
+# Reasoning/thinking control (serve.sh → llama-server). OpenBeast keeps
+# reasoning ON by default with a per-request toggle; these are the GLOBAL
+# escape hatches and override any per-model default:
+#   REASONING=off              force thinking off for every model (fastest
+#                              first token; loses chain-of-thought quality)
+#   REASONING_BUDGET=4096      cap thinking tokens, then force the answer —
+#                              tames over-reasoning "MAX" tunes (0 = no
+#                              thinking, -1 = unlimited). The DavidAU NEO serve
+#                              scripts already default to 4096; set this to
+#                              override globally.
+# Env overrides: $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
+#REASONING=
+#REASONING_BUDGET=
+
 # Private workspace for files the CHAT model reads/writes via the direct
 # tools (created 0700 by start.sh; spawned agents use their own workdir).
 # Env override: $OPENBEAST_FILES_DIR.

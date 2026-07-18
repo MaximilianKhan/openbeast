@@ -101,6 +101,20 @@ fi
 
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
 
+# Global reasoning control (lib/conf.sh REASONING / REASONING_BUDGET). Placed
+# AFTER EXTRA_ARGS so an explicit user setting overrides any --reasoning /
+# --reasoning-budget a model-specific serve script baked in (last flag wins in
+# llama-server). Unset = the per-script / model default stands.
+REASONING_ARGS=()
+if [[ -n "${REASONING:-}" ]]; then
+  REASONING_ARGS+=(--reasoning "$REASONING")
+  echo "Reasoning: forced '$REASONING' (global override)"
+fi
+if [[ -n "${REASONING_BUDGET:-}" ]]; then
+  REASONING_ARGS+=(--reasoning-budget "$REASONING_BUDGET")
+  echo "Reasoning budget: $REASONING_BUDGET thinking tokens (global override)"
+fi
+
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
   "${ALIAS_ARGS[@]}" \
@@ -113,4 +127,5 @@ exec "$LLAMA_SERVER" \
   -ctv "$KV_QUANT" \
   --host "$HOST" \
   --port "$PORT" \
-  "${EXTRA_ARGS[@]}"
+  "${EXTRA_ARGS[@]}" \
+  ${REASONING_ARGS[@]+"${REASONING_ARGS[@]}"}

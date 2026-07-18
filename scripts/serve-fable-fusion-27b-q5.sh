@@ -30,4 +30,5 @@ exec "$SCRIPT_DIR/serve.sh" \
   -m "$WEIGHTS_DIR/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q5_K_M.gguf" \
   -a "Fable-Fusion 27B Q5" \
   -c 262144 \
+  --reasoning-budget 4096 \
   "$@"

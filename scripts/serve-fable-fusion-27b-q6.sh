@@ -28,4 +28,5 @@ exec "$SCRIPT_DIR/serve.sh" \
   -a "Fable-Fusion 27B Q6" \
   -c 245760 \
   -np 4 \
+  --reasoning-budget 4096 \
   "$@"

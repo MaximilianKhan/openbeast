@@ -50,4 +50,5 @@ exec "$SCRIPT_DIR/serve.sh" \
   -ngld 99 \
   -ctkd q4_0 \
   -ctvd q4_0 \
+  --reasoning-budget 4096 \
   "$@"
