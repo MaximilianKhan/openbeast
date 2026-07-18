@@ -291,6 +291,29 @@ context with `./scripts/measure-vram.sh`. DavidAU's MTP rules: keep temperature
 ≤ 1.0 and repetition_penalty = 1.0, or switch to the non-MTP quant if draft
 acceptance stays under ~50%.
 
+### Heretic v2 (llmfan46) -- Q5_K_M / Q6_K, both MTP (~19.7 / 22.8GB)
+
+Community fine-tune: [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF)
+— Qwen3.6-27B, uncensored (Heretic v1.3.0 + MPOA), with the native MTP heads
+preserved. Two MTP variants prepared; the serve scripts expect the exact
+upstream filenames:
+
+```bash
+hf download llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF \
+   Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf \
+   Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf \
+   --local-dir weights/
+rm -rf weights/.cache   # hf leaves a cache subdir behind
+```
+
+Serve with `serve-heretic-v2-27b-mtp-q5.sh` / `-q6`. **Contexts and MTP draft
+depth are ESTIMATES** (native-preserved MTP → n-max 8 as a starting guess) —
+after downloading, profile with `./scripts/profile-heretic-v2-mtp.sh {q5,q6}`
+and set the context ceiling with `./scripts/measure-vram.sh`. MTP rules: temp
+≤ 1.0, repetition_penalty = 1.0; use a non-MTP quant if draft acceptance stays
+under ~50%. Then replace the two `PENDING` rows in `scripts/weights.registry`
+with real checksums.
+
 You don't need all of these — download whichever models you plan to use.
 
 ### Where weights live

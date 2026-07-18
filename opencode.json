@@ -105,6 +105,20 @@
             "context": 180224,
             "output": 49152
           }
+        },
+        "heretic-v2-27b-mtp-q5": {
+          "name": "Heretic v2 27B MTP Q5_K_M (single-slot, speculative; est.)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "heretic-v2-27b-mtp-q6": {
+          "name": "Heretic v2 27B MTP Q6_K (single-slot, speculative; est.)",
+          "limit": {
+            "context": 229376,
+            "output": 32768
+          }
         }
       }
     }
