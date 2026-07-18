@@ -1,0 +1,3 @@
+NAME=Status Dashboard
+DESCRIPTION=Read-only GPU / model / services status page (on /metrics + doctor).
+KIND=process
