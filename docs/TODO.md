@@ -1,5 +1,39 @@
 # TODO
 
+## 🔌 ODS ABSORPTION — decided 2026-07-17 (Max)
+
+Reviewed [Osmantic/ODS](https://github.com/Osmantic/ODS) (a kitchen-sink
+one-command local-AI installer) for features worth absorbing. ODS and OpenBeast
+are opposite philosophies — ODS bundles everything; OpenBeast maximizes the one
+biggest brain, opinionated, nothing leaves the machine. Max approved absorbing
+these FIVE (build them the OpenBeast way; each stays on-ethos):
+
+1. **Bootstrap fast-first-chat** (S/M) — bring up the tiny `Qwen3-0.6B-Q8_0.gguf`
+   (already on disk, the router's model) on :8080 the instant `start.sh` runs so
+   the user can chat in <1 min, then hot-swap to the configured big-model default
+   once it's health-checked, zero-downtime. Big model still becomes the default —
+   pure startup UX, no compromise on "maximize intelligence." Opt-outable.
+2. **Model load-failure rollback** (M) — if a serve script fails to load (OOM,
+   missing weight), auto-revert to the last-known-good model instead of leaving
+   the stack down. Records last-good in `.run/`. Pairs with the eval quality gate.
+3. **Extension architecture** (M/L) — hot-pluggable optional services via a
+   manifest + compose fragment convention, so extras attach without bloating the
+   opinionated core. This is the SANCTIONED way to add anything optional later;
+   REINFORCES the lean-core ethos rather than diluting it.
+4. **Hardware auto-tiering (multi-vendor)** (M) — extend `lib/hardware.sh` beyond
+   the CUDA reference: AMD Strix Halo (unified memory), Apple Silicon (Metal),
+   Intel Arc (SYCL) tier detection + config. Overlaps the existing "CI build
+   matrix" + "macOS/Metal" items — mine ODS's tier logic when tackling those.
+5. **Status dashboard** (S/M) — a lightweight GPU/model/service view on top of the
+   existing `/metrics` + `doctor`. CLI-and-WebUI-first stays the default; this is
+   an optional read-only surface (candidate for the extension system above).
+
+REJECTED from ODS (against the grain — noted so we don't relitigate): voice I/O
+(Whisper/Kokoro), LiteLLM cloud/hybrid fallback (violates "nothing leaves your
+machine"), n8n workflow automation, ComfyUI/image generation, Perplexica, the
+Qdrant RAG pipeline (WebUI's built-in RAG suffices), PII-scrub proxy, and the
+magic-link remote proxy (Tailscale is stronger).
+
 ## 🎯 NEXT CAMPAIGNS — ranked (2026-07-09 full-repo audit: docs, code, security, deployability)
 
 What the four-front audit surfaced that is NOT yet done, ranked by
