@@ -4,7 +4,7 @@
 #   ./scripts/update.sh              # update everything (asks nothing)
 #   ./scripts/update.sh --llama      # only llama.cpp (pull + rebuild)
 #   ./scripts/update.sh --images     # only container images (Open WebUI, SearXNG)
-#   ./scripts/update.sh --python     # only Python deps (mcpo, mcp, openai, hf)
+#   ./scripts/update.sh --python     # only Python deps (mcp, openai, fastapi, uvicorn, PyJWT, hf)
 #   ./scripts/update.sh --opencode   # only OpenCode
 #   ./scripts/update.sh --check      # show current vs available, change nothing
 #
@@ -164,7 +164,7 @@ update_images() {
   fi
 }
 
-# ---- Python deps: mcpo, mcp SDK, openai, huggingface_hub -------------------
+# ---- Python deps: mcp SDK, openai, fastapi, uvicorn, PyJWT, huggingface_hub -
 update_python() {
   step "Python packages (mcp, openai, fastapi, uvicorn, huggingface_hub)"
   if [[ $CHECK_ONLY -eq 1 ]]; then

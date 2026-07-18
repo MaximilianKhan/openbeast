@@ -1,8 +1,8 @@
 # Pinned to the exact versions validated on the reference box (supply-chain
 # anchoring: an unpinned install would pull whatever PyPI has newest,
 # including a compromised release). scripts/update.sh --python bumps these.
-openai==2.45.0
+openai==2.46.0
 mcp==1.28.1
-fastapi==0.139.0
+fastapi==0.139.2
 uvicorn==0.51.0
 PyJWT==2.13.0
