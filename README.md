@@ -14,8 +14,7 @@ access, and family-grade multi-user permissions. All self-hosted, all yours.
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
 curated, opinionated, batteries-included distribution that wires them into a
-workstation that just works — measured-VRAM configs, speculative decoding, a
-reproducible eval leaderboard, and secure remote access, out of the box.
+workstation that just works, out of the box.
 
 <!-- TODO(max): hero screenshot or GIF here — WebUI chat with a tool call in
      flight is the money shot. `docs/assets/` is the intended home. -->
@@ -93,12 +92,10 @@ never leaves your GPU.
 instructive comparison — both turn a box into a private AI server in one command,
 but on opposite philosophies. ODS bundles *everything* — voice, image generation,
 workflow automation, RAG, cloud fallback (its default agent is literally Hermes)
-— for maximum breadth. OpenBeast is opinionated: fill the GPU with the largest,
-most-accurate model, *measured and tuned* (per-model VRAM/context, MTP
-speculative decoding, a reproducible capability leaderboard), nothing ever
-leaving the machine. Pick ODS for a Swiss-army stack; pick OpenBeast for the
-smartest single brain your hardware can hold — and since ODS runs on a
-llama-server backend, OpenBeast can even *be* that backend.
+— for maximum breadth. OpenBeast goes the opposite way: one model, made as smart
+and fast as the hardware allows. Pick ODS for a Swiss-army stack; pick OpenBeast
+for the single best model your GPU can run — and since ODS runs on a llama-server
+backend, OpenBeast can even *be* that backend.
 
 ### What only OpenBeast does
 
@@ -107,9 +104,9 @@ handful of capabilities are **OpenBeast's alone**. They're the ones that decide 
 serious deployment:
 
 - **Evidence, not vibes.** The only one here that *evaluates the models it
-  serves* — a reproducible, capability-ranked suite (291 units, 12 domains, 6
-  languages) with a per-host leaderboard. You standardize on a model because it
-  earned the top score on *your* hardware, not because a post said so.
+  serves* — a reproducible, capability-ranked leaderboard, per host. You
+  standardize on a model because it earned the top score on *your* hardware, not
+  because a post said so.
 - **Measured, not guessed.** Every model's VRAM and max-safe context is measured
   on the card and pinned; MTP speculative decoding is profiled to its optimal
   draft depth per model. No OOM roulette, no catalog approximations.
@@ -135,10 +132,10 @@ serious deployment:
   share; the eval leaderboard lets you standardize on a *vetted* model; the
   supply-chain pins answer "what exactly is running?" in one command
   (`./start.sh doctor`).
-- **Company / regulated** — no cloud path (data residency by construction),
-  signed identity + a per-call audit trail, a documented threat model
-  ([`SECURITY.md`](SECURITY.md)), and Apache-2.0 (fork it, air-gap it, build a
-  business on it). The compliance story writes itself.
+- **Company / regulated** — no cloud path at all, signed identity + a per-call
+  audit trail, a documented threat model ([`SECURITY.md`](SECURITY.md)), and
+  Apache-2.0 (fork it, air-gap it, build a business on it). The compliance story
+  writes itself.
 
 ### Our opinion
 
@@ -150,19 +147,6 @@ hardware where it is (detecting your GPU tier, handing you a working
 best-your-card-can-hold config on day one) and gives you a clear ladder to grow
 *up* — one card today, a second NVLinked box tomorrow, a fleet after that, always
 the same top-tier model. Built and tuned on an RTX 5090 (32 GB) running Arch Linux.
-
-## Highlights
-
-- **17 pre-configured models, all VRAM/context-measured on the reference 5090** — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes, and Blackwell NVFP4 builds. Default **Qwen3.6-27B Uncensored Q5_K_P**; swap any in with one argument. → [full lineup](docs/MODELS.md)
-- **MTP speculative decoding** — lossless 1.5–2.75× throughput on the models that ship draft heads, each profiled to its optimal draft depth.
-- **A 15-tool agent arsenal, one code path, two surfaces** — shell, file edit, grep, SSRF-guarded fetch, private web search, and background sub-agents; served identically to Open WebUI (HTTP) and OpenCode (MCP/stdio) so they can't drift.
-- **Identity-aware, family-safe** — per-user file shards, per-profile RBAC (admin = all tools, guest = web-only), optional signed-JWT identity, and a per-call audit trail.
-- **Secure remote access in one command** — Tailscale + automatic HTTPS puts the stack on your phone, tailnet-only, never the public internet.
-- **Reasoning on by default** — thinking models out of the box, with a per-request toggle and a global reasoning budget to tame verbose tunes.
-- **Operations that survive the real world** — daemon mode in a memory-capped scope, health monitor with auto-restart, **fast boot** (chat in seconds while the big model loads), **model load-failure rollback**, a hot-pluggable **extension system**, and `./start.sh doctor` for a one-shot health/security check.
-- **A reproducible, capability-ranked eval suite** — 291 units across 12 domains and 6 languages, with a multi-model leaderboard.
-
-Full breakdown → **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 ## Using the stack
 
@@ -176,6 +160,12 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 `./stop.sh`, `./start.sh doctor`. Pick a specific model with
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
+
+Built for the long haul — the daemon runs in a memory-capped scope with
+health-monitored auto-restart, plus **fast boot** (chat while the big model
+loads), **model-load rollback**, reasoning control (per-request toggle + global
+budget), and a hot-pluggable [extension system](extensions/README.md).
+**Full feature list → [docs/FEATURES.md](docs/FEATURES.md).**
 
 ## Architecture
 
