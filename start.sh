@@ -268,26 +268,41 @@ wait_llama_health() { # returns 1 if the process dies before becoming healthy
   done
 }
 
-launch_llama
-echo "Waiting for llama.cpp server to be ready..."
-if ! wait_llama_health; then
-  echo "Error: llama-server exited during startup — see its output above" >&2
-  echo "       (common causes: missing weight file, VRAM OOM)" >&2
-  exit 1
-fi
-echo "llama.cpp server ready on http://localhost:8080"
+# Record the serve script that just proved healthy, so a future launch that
+# fails can revert to it (model load-failure rollback, conf MODEL_ROLLBACK).
+record_last_good() { printf '%s\n' "$1" > "$RUN_DIR/last-good-serve-script"; }
 
-# Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
-# later) regenerates it too, and warming against the pre-regen text would
-# prime a prefix that diverges from the prompt WebUI actually stores.
-# Non-fatal — a broken generator must not block startup.
-python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
+# Launch the current $SERVE_SCRIPT and wait for health. On failure, if rollback
+# is enabled and a different last-known-good exists, launch THAT instead and
+# update $SERVE_SCRIPT + the restart record. Returns 0 if some model is serving
+# (original or rollback), 1 if everything failed. Records last-good on success.
+launch_and_wait() {
+  launch_llama
+  if wait_llama_health; then record_last_good "$SERVE_SCRIPT"; return 0; fi
+  local failed="$SERVE_SCRIPT" lastgood
+  if [[ "${MODEL_ROLLBACK:-true}" == "true" && -f "$RUN_DIR/last-good-serve-script" ]]; then
+    lastgood="$(head -n1 "$RUN_DIR/last-good-serve-script" 2>/dev/null || true)"
+    if [[ -n "$lastgood" && "$lastgood" != "$failed" && -x "$SCRIPT_DIR/scripts/$lastgood" ]]; then
+      echo "Rollback: '$failed' failed to load — reverting to last-known-good '$lastgood'." >&2
+      SERVE_SCRIPT="$lastgood"
+      echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
+      launch_llama
+      if wait_llama_health; then
+        record_last_good "$SERVE_SCRIPT"
+        echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
 
-# Warm the KV cache with the WebUI system prompt so the user's FIRST chat
-# doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
-# processed from scratch). Best-effort; never blocks startup. The primed
-# prefix is reused by every subsequent same-prompt turn.
-if [[ -f "$REPO_DIR/system-prompt.md" ]]; then
+warm_kv_cache() {
+  # Warm the KV cache with the WebUI system prompt so the user's FIRST chat
+  # doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
+  # processed from scratch). Best-effort; never blocks startup. The primed
+  # prefix is reused by every subsequent same-prompt turn.
+  [[ -f "$REPO_DIR/system-prompt.md" ]] || return 0
   # Build SYS byte-for-byte the way configure-webui.sh stores WebUI's system
   # prompt: $(cat) strips each file's trailing newline, joined by ONE blank
   # line, then .strip() below mirrors configure-webui's storage. This must
@@ -311,7 +326,51 @@ except Exception:
     pass
 WARM
     echo "  (KV cache warmed with the system prompt)" ) &
+}
+
+# Fast boot (opt-in, OPENBEAST_FAST_BOOT / conf FAST_BOOT — resolved by
+# lib/conf.sh): serve the tiny Qwen3-0.6B bridge on :8080 first so chat is
+# live in seconds, then hot-swap to the configured model once the stack is up
+# and its weights are warmed. The tool server / WebUI point at :8080 and are
+# model-agnostic, so only llama-server swaps. Default off = load the real
+# model directly (behavior unchanged).
+BOOTSTRAP_SERVE="serve-bootstrap.sh"
+REAL_SERVE_SCRIPT="$SERVE_SCRIPT"
+FAST_BOOT_ACTIVE=0
+if [[ "${FAST_BOOT:-false}" == "true" && "$SERVE_SCRIPT" != "$BOOTSTRAP_SERVE" \
+      && -x "$SCRIPT_DIR/scripts/$BOOTSTRAP_SERVE" ]]; then
+  FAST_BOOT_ACTIVE=1
+  SERVE_SCRIPT="$BOOTSTRAP_SERVE"
+  echo "Fast boot: bringing up the bootstrap model for instant chat; $REAL_SERVE_SCRIPT loads next."
 fi
+
+echo "Waiting for llama.cpp server to be ready..."
+if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
+  # Phase 1 is the tiny bridge — it IS the fallback, so no rollback/record here.
+  launch_llama
+  if ! wait_llama_health; then
+    echo "Error: bootstrap model failed to load — see output above" >&2
+    exit 1
+  fi
+else
+  # Real model, with load-failure rollback to the last-known-good.
+  if ! launch_and_wait; then
+    echo "Error: llama-server exited during startup — see its output above" >&2
+    echo "       (missing weight file or VRAM OOM; no healthy model to roll back to)" >&2
+    exit 1
+  fi
+fi
+echo "llama.cpp server ready on http://localhost:8080"
+
+# Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
+# later) regenerates it too, and warming against the pre-regen text would
+# prime a prefix that diverges from the prompt WebUI actually stores.
+# Non-fatal — a broken generator must not block startup.
+python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
+
+# Normal boot warms here; fast boot warms after the swap (below) so the primed
+# prefix belongs to the REAL model, not the throwaway bridge.
+[[ $FAST_BOOT_ACTIVE -eq 0 ]] && warm_kv_cache
 
 echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
 python3 -c 'import fastapi, uvicorn' 2>/dev/null \
@@ -416,6 +475,38 @@ else
   echo "and they auto-reconnect on the next start). Full stop: ./stop.sh."
 fi
 
+# ---- fast-boot swap: bridge -> real model -----------------------------------
+# The stack is up on the bootstrap bridge and chat is live. Warm the real
+# model's weights into the page cache (no VRAM cost) so its load is
+# GPU-upload-bound (~30s) rather than disk+GPU (~1-2 min), shrinking the brief
+# chat pause, then swap it in behind the same :8080. The record for
+# healthcheck --restart is rewritten to the REAL script so a later auto-restart
+# never resurrects the bridge.
+if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
+  echo ""
+  echo "Bootstrap model is live — chat now while $REAL_SERVE_SCRIPT loads in the background."
+  ( _wd="$( (source "$SCRIPT_DIR/scripts/lib/weights.sh" >/dev/null 2>&1; printf '%s' "${WEIGHTS_DIR:-}") || true )"
+    _gg="$(grep -oE 'WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$SCRIPT_DIR/scripts/$REAL_SERVE_SCRIPT" | head -1 | sed 's|WEIGHTS_DIR/||')"
+    [[ -n "$_wd" && -n "$_gg" && -f "$_wd/$_gg" ]] && cat "$_wd/$_gg" >/dev/null 2>&1 ) &
+  _WARM_PID=$!
+  for _i in $(seq 1 90); do kill -0 "$_WARM_PID" 2>/dev/null || break; sleep 1; done
+  kill "$_WARM_PID" 2>/dev/null || true; wait "$_WARM_PID" 2>/dev/null || true
+  echo "Swapping in $REAL_SERVE_SCRIPT (chat pauses ~30s during the model handoff)..."
+  SERVE_SCRIPT="$REAL_SERVE_SCRIPT"
+  echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
+  kill "$LLAMA_PID" 2>/dev/null || true; wait "$LLAMA_PID" 2>/dev/null || true
+  # Rollback applies here too: if the real model won't load, revert to
+  # last-known-good rather than leaving the (now bridge-less) stack dead.
+  if ! launch_and_wait; then
+    echo "Error: $REAL_SERVE_SCRIPT failed to load during the fast-boot swap," >&2
+    echo "       and no healthy model to roll back to. The bridge is already gone." >&2
+    exit 1
+  fi
+  echo "Full model live: $SERVE_SCRIPT on http://localhost:8080."
+  warm_kv_cache
+  FAST_BOOT_ACTIVE=0
+fi
+
 # Supervise with bounded self-healing: an unexpected llama-server death
 # (VRAM OOM, crash, a healthcheck --restart kill) gets up to 3 relaunches;
 # staying healthy 5+ minutes refills the budget. ./stop.sh's TERM sets
@@ -434,10 +525,11 @@ while true; do
   RESTARTS=$((RESTARTS + 1))
   echo "llama-server exited unexpectedly (status $rc) — relaunching ($RESTARTS/3) in 5s..."
   sleep 5
-  launch_llama
-  if ! wait_llama_health; then
+  # launch_and_wait rolls back to the last-known-good model if the current one
+  # won't come back (e.g. a weight went missing under it) rather than dying.
+  if ! launch_and_wait; then
     echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
     exit 1
   fi
-  echo "llama-server healthy again after restart $RESTARTS."
+  echo "llama-server healthy again after restart $RESTARTS ($SERVE_SCRIPT)."
 done

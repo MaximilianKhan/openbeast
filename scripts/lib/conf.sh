@@ -60,6 +60,17 @@ GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)
 # healthcheck.sh --restart falls back to when no supervisor (and no
 # .run/serve-script record) exists. Conf key SERVE_SCRIPT.
 DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT || echo serve-qwen-27b-uncensored-q5.sh)}"
+# Fast boot (ODS-absorbed, docs/TODO.md): when true, start.sh serves the tiny
+# Qwen3-0.6B bridge on :8080 for instant chat, brings up the full stack, then
+# hot-swaps to DEFAULT_SERVE_SCRIPT once its weights are warmed. Off by default
+# (a normal launch loads the configured model directly). Conf key FAST_BOOT.
+FAST_BOOT="${OPENBEAST_FAST_BOOT:-$(_ob_conf_value FAST_BOOT || echo false)}"
+# Model load-failure rollback (ODS-absorbed): if the configured model fails to
+# load (OOM, missing/corrupt weight), start.sh reverts to the last model that
+# loaded healthy (recorded in .run/last-good-serve-script) rather than leaving
+# the stack down. On by default — a working stack beats a dead one; a loud
+# warning names what failed. Conf key MODEL_ROLLBACK; set false to hard-fail.
+MODEL_ROLLBACK="${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_ROLLBACK || echo true)}"
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of
