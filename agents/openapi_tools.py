@@ -98,7 +98,18 @@ def create_app() -> FastAPI:
     """App factory — reads config at call time so tests can vary env."""
     admin_key = os.environ.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
     guest_key = os.environ.get("OPENBEAST_MCPO_GUEST_KEY", "").strip()
-    keyed = bool(admin_key and guest_key)
+    # EITHER key present flips the server to keyed mode. It used to require
+    # BOTH, which failed open: an operator setting only the admin key — the
+    # intuitive way to "lock it down" — silently got a fully open server.
+    # Now a missing profile key simply means that profile doesn't exist
+    # (fail closed); setup-mcpo-keys.sh still generates the pair.
+    keyed = bool(admin_key or guest_key)
+    if keyed and not (admin_key and guest_key):
+        missing = "guest" if admin_key else "admin"
+        print(f"WARNING: only one RBAC key configured — the {missing} "
+              f"profile is DISABLED (fail closed). Run "
+              f"scripts/setup-mcpo-keys.sh to generate both.",
+              file=sys.stderr)
     sharding = os.environ.get("OPENBEAST_FILES_SHARDING", "user").strip().lower()
     if sharding not in ("off", "user", "chat"):
         sharding = "user"
@@ -163,9 +174,9 @@ def create_app() -> FastAPI:
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         if not token:
             raise HTTPException(status_code=401, detail="API key required")
-        if hmac.compare_digest(token, admin_key):
+        if admin_key and hmac.compare_digest(token, admin_key):
             return "admin"
-        if hmac.compare_digest(token, guest_key):
+        if guest_key and hmac.compare_digest(token, guest_key):
             if tool not in GUEST_TOOLS:
                 # The guest profile has no such tool — mirror the old guest
                 # instance, where denied tools did not exist at all.
@@ -248,8 +259,20 @@ def create_app() -> FastAPI:
             shard = shard_for(user, chat)
             if (shard and name in ("start_agent", "start_skill_agent")
                     and not os.path.isabs(kwargs.get("workdir", "."))):
-                kwargs["workdir"] = os.path.normpath(
+                # normpath collapses "..", so verify the anchored path is
+                # still INSIDE the shard — a relative workdir of
+                # "../../somewhere" must be an error, not a silent escape.
+                # (An ABSOLUTE workdir stays allowed as-is: spawning is
+                # admin-only, and pointing an agent at a real project dir
+                # is the documented use; the shard anchors relative paths.)
+                anchored = os.path.normpath(
                     os.path.join(shard, kwargs.get("workdir", ".")))
+                if os.path.commonpath([os.path.normpath(shard), anchored]) \
+                        != os.path.normpath(shard):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="relative workdir escapes the caller's workspace")
+                kwargs["workdir"] = anchored
             token = _tools.set_base_dir_override(shard) if shard else None
             t0 = time.monotonic()
             ok, err = True, ""

@@ -56,9 +56,14 @@ _signin() {
   # python step exit 1; under pipefail that would silently kill the whole
   # script at the TOKEN=$(...) assignment instead of reaching the fallback
   # guidance below.
-  curl -s "$WEBUI_URL/api/v1/auths/signin" \
-    -H "Content-Type: application/json" \
-    -d "$(printf '{"email":"%s","password":"%s"}' "$1" "$2")" \
+  # The password travels via env + stdin, never argv: an argv JSON blob is
+  # world-readable in /proc/*/cmdline while curl runs, and printf-splicing
+  # broke on passwords containing '"' or '\'. /proc/<pid>/environ is
+  # owner-only, and python json.dumps escapes correctly.
+  SIGNIN_EMAIL="$1" SIGNIN_PASSWORD="$2" python3 -c \
+    'import json,os; print(json.dumps({"email": os.environ["SIGNIN_EMAIL"], "password": os.environ["SIGNIN_PASSWORD"]}))' \
+    | curl -s "$WEBUI_URL/api/v1/auths/signin" \
+        -H "Content-Type: application/json" -d @- \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null \
     || true
 }

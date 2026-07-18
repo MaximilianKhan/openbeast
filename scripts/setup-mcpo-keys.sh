@@ -39,7 +39,12 @@ done
 
 genkey() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
+# Lock the conf down BEFORE any key lands in it: under the default umask,
+# `touch` creates a 644 file — world-readable exactly while keys are being
+# appended (and forever, if the script dies before the trailing chmod).
+umask 077
 touch "$CONF"
+chmod 600 "$CONF"
 
 set_key() { # set_key <NAME>
   local name="$1"

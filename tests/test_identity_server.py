@@ -212,3 +212,35 @@ def test_spawn_workdir_anchored_to_shard(workspace, monkeypatch):
     assert r.status_code == 200
     shard = str(workspace / "users" / openapi_tools._sanitize("alice"))
     assert captured["workdir"] == os.path.join(shard, "proj"), captured
+
+
+def test_spawn_workdir_dotdot_escape_rejected(workspace, monkeypatch):
+    """A relative workdir that normpath-collapses OUT of the shard must be a
+    400, not a silent escape ("../../x" used to anchor then walk right out)."""
+    def stub(task: str, workdir: str = ".", max_iter: int = 200,
+             context: str = "", base_url: str = "") -> str:
+        return "agent stub"
+
+    monkeypatch.setattr(openapi_tools.impl, "start_agent", stub)
+    c = TestClient(openapi_tools.create_app())
+    r = c.post("/start_agent",
+               json={"task": "t", "workdir": "../../../../etc"},
+               headers={"X-OpenWebUI-User-Id": "alice"})
+    assert r.status_code == 400
+    assert "escapes" in r.json()["detail"]
+
+
+def test_single_key_fails_closed(workspace):
+    """ONE configured key must flip the server to keyed mode. It used to
+    require BOTH keys, so setting only the admin key — the intuitive way to
+    lock down — silently left every tool open."""
+    os.environ["OPENBEAST_MCPO_ADMIN_KEY"] = "test-admin-key"
+    os.environ.pop("OPENBEAST_MCPO_GUEST_KEY", None)
+    c = TestClient(openapi_tools.create_app())
+    body = {"directory": ".", "pattern": "*"}
+    assert c.get("/health").json()["auth"] == "keyed"
+    assert c.post("/list_files", json=body).status_code == 401          # no key
+    assert c.post("/list_files", json=body, headers=ADMIN).status_code == 200
+    # The unconfigured guest profile doesn't exist — its old key is invalid.
+    assert c.post("/fetch", json={"url": "http://example.com"},
+                  headers=GUEST).status_code == 403

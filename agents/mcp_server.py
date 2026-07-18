@@ -57,9 +57,14 @@ import tools as _tools
 # Server
 # ---------------------------------------------------------------------------
 
+# HTTP-transport bind address. This server has NO authentication — it
+# exposes bash/file/agent tools to whoever can reach the port — so it
+# follows the stack-wide bind resolver (OPENBEAST_BIND, default loopback)
+# instead of the old hardcoded 0.0.0.0. doctor.sh can only inspect the env
+# var, not a hardcoded literal, so the safe value must be the default here.
 mcp = FastMCP(
     "local-tools",
-    host="0.0.0.0",
+    host=os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1",
     port=3001,
 )
 
@@ -851,7 +856,12 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         mcp.settings.port = args.port
-        print(f"MCP server starting on http://0.0.0.0:{args.port}/mcp")
+        print(f"MCP server starting on http://{mcp.settings.host}:{args.port}/mcp")
+        if mcp.settings.host not in ("127.0.0.1", "localhost", "::1"):
+            print("WARNING: non-loopback bind and this transport has NO auth — "
+                  "every tool (bash included) is open to that network. Prefer "
+                  "the identity tool server (agents/openapi_tools.py) instead.",
+                  file=sys.stderr)
         mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")

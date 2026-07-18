@@ -7,6 +7,7 @@ Each tool is defined as:
 
 from __future__ import annotations
 
+import codecs
 import glob
 import html
 import http.client
@@ -191,6 +192,25 @@ def _resolve(path: str) -> str:
     return os.path.realpath(p)
 
 
+def _scrubbed_env() -> dict:
+    """Copy of the process env minus the stack's secrets.
+
+    The bash tool runs MODEL-authored commands: a prompt-injected `env`
+    must not hand over the RBAC profile keys, the identity-JWT signing
+    secret (with which the model could mint admin identities), or the
+    WebUI admin password that the server process was launched with.
+    Mirrors start.sh's systemd-setenv secret filter — stack-prefixed
+    names containing KEY/SECRET/PASSWORD are dropped; the user's own
+    unrelated env vars are left alone."""
+    env = dict(os.environ)
+    for name in list(env):
+        up = name.upper()
+        if (up.startswith(("OPENBEAST_", "WEBUI_", "LLAMA_", "SEARXNG_"))
+                and any(t in up for t in ("KEY", "SECRET", "PASSWORD"))):
+            env.pop(name)
+    return env
+
+
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr.
 
@@ -210,6 +230,7 @@ def bash(command: str, timeout: int = 120) -> str:
             command,
             timeout,
             cwd=_base_dir(),
+            env=_scrubbed_env(),
         )
         if not output.strip():
             output = f"(exit code {returncode})"
@@ -586,6 +607,9 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     reason = _fetch_url_blocked(url)
     if reason:
         return f"Error: fetch blocked: {reason}"
+    # max_length is model-controlled; without a ceiling, max_length*4 below
+    # becomes an attempted multi-GB read into memory.
+    max_length = max(1, min(int(max_length), 2_000_000))
     try:
         req = urllib.request.Request(
             url,
@@ -599,6 +623,12 @@ def fetch(url: str, max_length: int = 50_000) -> str:
             charset = "utf-8"
             if "charset=" in content_type:
                 charset = content_type.split("charset=")[-1].split(";")[0].strip()
+                # The header is server-controlled; a bogus charset name would
+                # raise LookupError and fail the whole fetch.
+                try:
+                    codecs.lookup(charset)
+                except LookupError:
+                    charset = "utf-8"
             raw_bytes = resp.read(max_length * 4)
             text = raw_bytes.decode(charset, errors="replace")
 

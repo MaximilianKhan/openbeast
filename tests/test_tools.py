@@ -512,6 +512,30 @@ class TestResourceCaps(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIsInstance(out, str)
 
+    def test_bash_env_scrubs_stack_secrets(self):
+        # Model-authored shell commands must not see the stack's secrets
+        # (RBAC keys, JWT signing secret, WebUI admin password) even though
+        # the server process holds them; non-secret stack vars survive.
+        saved = {k: os.environ.get(k) for k in
+                 ("OPENBEAST_MCPO_ADMIN_KEY", "WEBUI_ADMIN_PASSWORD",
+                  "OPENBEAST_IDENTITY_JWT_SECRET", "OPENBEAST_FILES_SHARDING")}
+        try:
+            os.environ["OPENBEAST_MCPO_ADMIN_KEY"] = "sekrit-admin"
+            os.environ["WEBUI_ADMIN_PASSWORD"] = "hunter2-pw"
+            os.environ["OPENBEAST_IDENTITY_JWT_SECRET"] = "jwt-sekrit"
+            os.environ["OPENBEAST_FILES_SHARDING"] = "user"
+            out = bash("env")
+            self.assertNotIn("sekrit-admin", out)
+            self.assertNotIn("hunter2-pw", out)
+            self.assertNotIn("jwt-sekrit", out)
+            self.assertIn("OPENBEAST_FILES_SHARDING=user", out)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     def test_bash_wrapper_hook(self):
         # The Arsenal Phase 1 sandbox hook: a wrapper prefix must receive
         # the command; unset must run it directly.
