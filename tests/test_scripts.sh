@@ -532,6 +532,37 @@ else
   fail "setup-tailscale.sh missing --publish-searxng/--unpublish-searxng"
 fi
 
+# --- 14. Extension system (ODS-absorbed) ------------------------------------
+echo ""
+echo "Extension system:"
+if [[ -x "$REPO_DIR/scripts/ext.sh" && -f "$REPO_DIR/scripts/lib/extensions.sh" ]]; then
+  pass "ext.sh + lib/extensions.sh present"
+else
+  fail "ext.sh or lib/extensions.sh missing"
+fi
+# start.sh + stop.sh must both source the extension lib and merge compose args.
+if grep -q 'lib/extensions.sh' "$REPO_DIR/start.sh" && grep -q 'lib/extensions.sh' "$REPO_DIR/stop.sh" \
+   && grep -q 'ob_ext_compose_args' "$REPO_DIR/start.sh"; then
+  pass "start.sh + stop.sh wire the extension system"
+else
+  fail "start.sh/stop.sh don't wire the extension system"
+fi
+# Every shipped extension must have a well-formed manifest (NAME/DESCRIPTION/KIND).
+EXT_ERR=""
+for _m in "$REPO_DIR"/extensions/*/manifest; do
+  [[ -e "$_m" ]] || continue
+  for _k in NAME DESCRIPTION KIND; do
+    grep -qE "^${_k}=" "$_m" || EXT_ERR="$EXT_ERR $(basename "$(dirname "$_m")"):$_k"
+  done
+  _kind="$(grep -E '^KIND=' "$_m" | cut -d= -f2)"
+  [[ "$_kind" == compose || "$_kind" == process ]] || EXT_ERR="$EXT_ERR $(basename "$(dirname "$_m")"):bad-KIND"
+done
+if [[ -z "$EXT_ERR" ]]; then
+  pass "all extension manifests well-formed (NAME/DESCRIPTION/KIND)"
+else
+  fail "malformed extension manifests:$EXT_ERR"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

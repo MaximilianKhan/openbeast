@@ -71,6 +71,11 @@ FAST_BOOT="${OPENBEAST_FAST_BOOT:-$(_ob_conf_value FAST_BOOT || echo false)}"
 # the stack down. On by default — a working stack beats a dead one; a loud
 # warning names what failed. Conf key MODEL_ROLLBACK; set false to hard-fail.
 MODEL_ROLLBACK="${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_ROLLBACK || echo true)}"
+# Enabled extensions (ODS-absorbed extension system, scripts/lib/extensions.sh)
+# — space-separated names under extensions/. start.sh merges their compose
+# fragments / launches their processes. Manage with scripts/ext.sh; empty by
+# default (opinionated core only). Conf key EXTENSIONS.
+EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of

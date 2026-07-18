@@ -13,6 +13,7 @@ RUN_DIR="$SCRIPT_DIR/.run"
 # OPENBEAST_SEARXNG_SECRET) for EVERY subcommand, down included.
 REPO_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
+source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Identity-checked liveness: never TERM an unrelated process that recycled
@@ -47,9 +48,20 @@ systemctl --user stop openbeast-stack 2>/dev/null || true
 
 # Keep going even if docker is stopped/absent (--minimal installs) — the
 # whole point of stop.sh is to reach the fallback kills below.
+# Reap any process-kind extensions the supervisor launched (belt-and-braces —
+# the supervisor's own trap also reaps them; this covers a SIGKILLed supervisor).
+for _pf in "$RUN_DIR"/ext-*.pid; do
+  [[ -e "$_pf" ]] || continue
+  kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
+  rm -f "$_pf"
+done
+
 echo "Stopping Open WebUI..."
 if command -v docker >/dev/null 2>&1; then
-  docker compose -f "$SCRIPT_DIR/docker-compose.yml" down \
+  # Include enabled compose-extension fragments so their services come down too.
+  COMPOSE_FILES=(-f "$SCRIPT_DIR/docker-compose.yml")
+  while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(ob_ext_compose_args)
+  docker compose "${COMPOSE_FILES[@]}" down \
     || echo "Warning: docker compose down failed (daemon not running?)"
 else
   echo "Docker not installed — skipping containers."

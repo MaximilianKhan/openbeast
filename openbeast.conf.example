@@ -49,6 +49,23 @@
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
 #SERVE_SCRIPT=serve-qwen-27b-uncensored-q5.sh
 
+# Fast boot: serve the tiny Qwen3-0.6B bridge on :8080 for instant chat, then
+# hot-swap to SERVE_SCRIPT once the stack is up and its weights are warmed.
+# Off by default (a normal launch loads the configured model directly).
+# Env override: $OPENBEAST_FAST_BOOT.
+#FAST_BOOT=false
+
+# Model load-failure rollback: if the configured model fails to load (OOM,
+# missing/corrupt weight), revert to the last model that loaded healthy rather
+# than leaving the stack down. On by default; set false to hard-fail instead.
+# Env override: $OPENBEAST_MODEL_ROLLBACK.
+#MODEL_ROLLBACK=true
+
+# Enabled extensions (optional services — see extensions/README.md). Manage
+# with ./scripts/ext.sh (enable/disable/list). Space-separated; empty = the
+# opinionated core only. Env override: $OPENBEAST_EXTENSIONS.
+#EXTENSIONS="dashboard"
+
 # Private workspace for files the CHAT model reads/writes via the direct
 # tools (created 0700 by start.sh; spawned agents use their own workdir).
 # Env override: $OPENBEAST_FILES_DIR.

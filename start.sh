@@ -84,6 +84,7 @@ fi
 # OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation, and
 # resolves DEFAULT_SERVE_SCRIPT (conf SERVE_SCRIPT / env OPENBEAST_SERVE_SCRIPT).
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
+source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
@@ -249,6 +250,12 @@ cleanup() {
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
   fi
+  # Reap any process-kind extensions we launched.
+  for _pf in "$RUN_DIR"/ext-*.pid; do
+    [[ -e "$_pf" ]] || continue
+    kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
+    rm -f "$_pf"
+  done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" "$RUN_DIR/router.pid"
 }
 trap cleanup EXIT
@@ -454,8 +461,21 @@ fi
 # tool server is serving. A frontend-only failure (docker wait above expired,
 # registry hiccup on the pinned digest) must not tear the working stack down
 # via set -e.
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d \
-  || echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose -f docker-compose.yml up -d" >&2
+# Merge any enabled compose-kind extension fragments (scripts/lib/extensions.sh)
+# alongside the core compose file so optional services come up with the stack.
+COMPOSE_FILES=(-f "$SCRIPT_DIR/docker-compose.yml")
+while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(ob_ext_compose_args)
+docker compose "${COMPOSE_FILES[@]}" up -d \
+  || echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose up -d" >&2
+
+# Launch enabled process-kind extensions (each run.sh execs its server in the
+# foreground; we background + pidfile it, and cleanup() reaps them on exit).
+while IFS= read -r _ext; do
+  [[ -z "$_ext" ]] && continue
+  echo "Starting extension: $_ext"
+  "$REPO_DIR/extensions/$_ext/run.sh" >>"$RUN_DIR/ext-$_ext.log" 2>&1 &
+  echo "$!" > "$RUN_DIR/ext-$_ext.pid"
+done < <(ob_ext_processes)
 
 # Configure Open WebUI (tool server + native function calling) in background
 "$SCRIPT_DIR/scripts/configure-webui.sh" &
