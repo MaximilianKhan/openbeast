@@ -109,6 +109,14 @@ _BASH_WRAPPER="${OPENBEAST_BASH_WRAPPER:-$(_ob_conf_value BASH_WRAPPER || true)}
 if [[ -n "$_BASH_WRAPPER" ]]; then
   export OPENBEAST_BASH_WRAPPER="$_BASH_WRAPPER"
 fi
+# fetch() blocks Tailscale CGNAT (100.64.0.0/10) targets by default — pinned
+# explicitly in agents/tools.py because CPython's is_private classification of
+# that range changed across versions. Opt in (true) when the model should fetch
+# from tailnet hosts. Forwarded only when non-empty, same as BASH_WRAPPER.
+_FETCH_ALLOW_TAILNET="${OPENBEAST_FETCH_ALLOW_TAILNET:-$(_ob_conf_value FETCH_ALLOW_TAILNET || true)}"
+if [[ -n "$_FETCH_ALLOW_TAILNET" ]]; then
+  export OPENBEAST_FETCH_ALLOW_TAILNET="$_FETCH_ALLOW_TAILNET"
+fi
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else

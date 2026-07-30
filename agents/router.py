@@ -68,6 +68,11 @@ MCPO = os.environ.get("OPENBEAST_MCPO_URL", "http://127.0.0.1:3001").rstrip("/")
 # Bearer token. Empty (Phase 1 keyless MCPO) = no header sent.
 _MCPO_KEY = os.environ.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
 MCPO_HEADERS = {"Authorization": f"Bearer {_MCPO_KEY}"} if _MCPO_KEY else {}
+# Keyed llama-server (LLAMA_API_KEY): the router's OWN upstream calls (the
+# classify probe) must present the bearer. The proxy path is unaffected — it
+# forwards the client's Authorization header untouched.
+_LLAMA_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
+UPSTREAM_HEADERS = {"Authorization": f"Bearer {_LLAMA_KEY}"} if _LLAMA_KEY else {}
 # Identity gate hardening: when "true", a request WITHOUT an
 # X-OpenWebUI-User-Role header may never spawn (fail-closed). Default "false"
 # keeps single-user/no-auth setups working (WebUI sends no identity headers
@@ -168,7 +173,8 @@ async def _classify(client, user_text):
     # raw decision; the caller decides what to do when spawn=true but the task
     # came back too thin (so we surface it instead of silently passing through).
     try:
-        r = await client.post(f"{UPSTREAM}/v1/chat/completions", json=body, timeout=60)
+        r = await client.post(f"{UPSTREAM}/v1/chat/completions", json=body,
+                              headers=UPSTREAM_HEADERS, timeout=60)
         content = r.json()["choices"][0]["message"].get("content") or ""
         d = json.loads(content)
         if d.get("spawn"):
@@ -335,4 +341,5 @@ app = Starlette(
 if __name__ == "__main__":
     import uvicorn
     print(f"OpenBeast router on :{PORT}  ->  upstream {UPSTREAM}  (spawn via {MCPO})")
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    uvicorn.run(app, host=os.environ.get("OPENBEAST_BIND", "127.0.0.1") or "127.0.0.1",
+                port=PORT, log_level="warning")

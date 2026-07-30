@@ -54,7 +54,12 @@ def detect_model(base_url: str) -> str:
     was launched with (set via the -a flag in our serve scripts)."""
     try:
         url = base_url.rstrip("/") + "/models"
-        with urllib.request.urlopen(url, timeout=5) as resp:
+        # /v1/models is key-protected on a keyed server (LLAMA_API_KEY);
+        # completions inherit the key via the runner's env resolution.
+        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         models = data.get("data", [])
         if models:

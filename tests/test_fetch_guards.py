@@ -204,3 +204,45 @@ class TestReadFileHazardMounts(unittest.TestCase):
         out = read_file(name)
         self.assertIn("a\n", out)
         os.unlink(name)
+
+
+class TestTailnetCGNAT(unittest.TestCase):
+    """Tailscale CGNAT (100.64.0.0/10) policy is pinned in _vet_addr, not
+    inherited from the interpreter's is_private (which flipped for this range
+    in CPython 3.12.4/3.11.9): blocked by default on EVERY Python, allowed
+    only via OPENBEAST_FETCH_ALLOW_TAILNET."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("OPENBEAST_FETCH_ALLOW_TAILNET", None)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("OPENBEAST_FETCH_ALLOW_TAILNET", None)
+        else:
+            os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = self._saved
+
+    def test_cgnat_blocked_by_default(self):
+        from tools import _vet_addr
+        reason = _vet_addr("100.100.1.1")
+        self.assertIsNotNone(reason)
+        self.assertIn("tailnet", reason)
+
+    def test_cgnat_allowed_with_env(self):
+        from tools import _vet_addr
+        os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
+        self.assertIsNone(_vet_addr("100.100.1.1"))
+
+    def test_rfc1918_blocked_regardless(self):
+        from tools import _vet_addr
+        os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
+        self.assertIsNotNone(_vet_addr("10.0.0.1"))
+        self.assertIsNotNone(_vet_addr("192.168.1.1"))
+        self.assertIsNotNone(_vet_addr("127.0.0.1"))
+
+    def test_cgnat_edges(self):
+        from tools import _vet_addr
+        # 100.64.0.0 and 100.127.255.255 are in-range; 100.63.x / 100.128.x out.
+        self.assertIsNotNone(_vet_addr("100.64.0.0"))
+        self.assertIsNotNone(_vet_addr("100.127.255.255"))
+        self.assertIsNone(_vet_addr("100.63.255.255"))
+        self.assertIsNone(_vet_addr("100.128.0.0"))

@@ -104,6 +104,38 @@ def test_run_reaped_reaps_grandchild():
     os.unlink(pidfile)
 
 
+def test_prlimitless_platform_still_works():
+    # macOS has no prlimit(2): simulate it by hiding resource.prlimit from
+    # tools and confirm bash() still runs (the pre-fix behavior was an
+    # AttributeError on EVERY bash/grep call plus a leaked child) and the
+    # preexec_fn/setrlimit fallback still caps the child's address space.
+    import resource as real_resource
+
+    class _NoPrlimit:
+        def __getattr__(self, name):
+            if name == "prlimit":
+                raise AttributeError(name)
+            return getattr(real_resource, name)
+
+    saved = tools.resource
+    tools.resource = _NoPrlimit()
+    try:
+        out = tools.bash("echo darwin-ok", timeout=10)
+        check("bash() works without resource.prlimit", "darwin-ok" in out,
+              f"got: {out[:80]}")
+        out = tools.bash(
+            "python3 -c \"b = bytearray(48 * 1024**3); print('ALLOC' + 'ATED')\"",
+            timeout=30,
+        )
+        check(
+            "setrlimit fallback still stops the memory bomb",
+            "ALLOCATED" not in out and "MemoryError" in out,
+            f"got: {out[:120]}",
+        )
+    finally:
+        tools.resource = saved
+
+
 def test_rlimit_stops_memory_bomb():
     # Try to grab 48 GB in one shot — over the 32 GB RLIMIT_AS cap, so the
     # child must die with MemoryError instead of succeeding.
@@ -124,6 +156,7 @@ def main():
     print("Process hygiene (2026-07-07 OOM post-mortem):")
     test_bash_tool_reaps_grandchild()
     test_run_reaped_reaps_grandchild()
+    test_prlimitless_platform_still_works()
     test_rlimit_stops_memory_bomb()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

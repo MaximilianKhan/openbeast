@@ -99,10 +99,19 @@
 #BIND_HOST=127.0.0.1
 
 # Optional: require "Authorization: Bearer <key>" on the llama-server API.
-# Off by default — the tailnet is already the security boundary, and the
-# eval harness / agents don't send a key yet. Enable if your tailnet has
-# other users.
+# Off by default — the tailnet is already the security boundary. When set,
+# the WHOLE stack presents it: WebUI, healthcheck, the agent runner and the
+# eval harness (OPENBEAST_API_KEY env), the router's classify probe, and
+# beast-slot clients (setup-client.sh --api-key). Enable if your tailnet
+# has devices/users you don't fully own. See docs/BEAST_SLOT.md.
 #LLAMA_API_KEY=
+
+# The model's fetch tool blocks Tailscale CGNAT targets (100.64.0.0/10) by
+# default — pinned explicitly, since Python's own private-range classification
+# for CGNAT changed across versions. Set true when the model should fetch
+# from tailnet hosts (e.g. a beast-slot client whose docs live on the rig).
+# web_search is unaffected (SEARXNG_URL may legitimately be a tailnet host).
+#FETCH_ALLOW_TAILNET=false
 
 # Open WebUI login. Default OFF for local-only single-user installs (no
 # login wall; configure-webui.sh auto-configures via the default admin

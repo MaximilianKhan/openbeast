@@ -54,8 +54,12 @@ check() {
 echo "Stack health check — $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
-# llama.cpp
-if ! check "llama.cpp server" "$LLAMA_URL/health" "ok"; then
+# llama.cpp — bearer passed for keyed installs (LLAMA_API_KEY set); /health
+# itself is public in llama-server but /slots below is not, and sending the
+# key to a keyless server is harmless.
+LLAMA_AUTH=()
+[[ -n "${LLAMA_API_KEY:-}" ]] && LLAMA_AUTH=(-H "Authorization: Bearer $LLAMA_API_KEY")
+if ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
   if $RESTART; then
     # If a start.sh supervisor is alive, it owns llama-server: kill the
     # server and let the supervisor's self-healing loop relaunch it —
@@ -243,8 +247,8 @@ for _mount_label in "weights:$_weights_dir" "repo:$REPO_DIR"; do
   fi
 done
 
-# Slot utilization
-SLOTS_JSON=$(curl -s --max-time 3 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
+# Slot utilization (/slots is key-protected when LLAMA_API_KEY is set)
+SLOTS_JSON=$(curl -s --max-time 3 "${LLAMA_AUTH[@]}" "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 ACTIVE_SLOTS=$(echo "$SLOTS_JSON" | python3 -c "
 import sys, json
 try:

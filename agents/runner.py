@@ -54,11 +54,6 @@ Your toolset:
   grep         — regex search across files (use this to navigate code)
   fetch        — pull text from a URL (docs, API references, gists)
   web_search   — search the web via local SearXNG (when stuck or need references)
-  start_agent  — spawn a sub-agent for a self-contained subtask
-  check_agent  — poll the sub-agent for status
-  tail_agent   — read raw logs of a running sub-agent
-  list_agents  — see what sub-agents you've spawned
-  stop_agent   — kill a sub-agent
 
 USE THE TOOLS. A working professional engineer:
   - Runs the code they wrote. Hand-tracing math is not a substitute for running the test
@@ -67,19 +62,15 @@ USE THE TOOLS. A working professional engineer:
     a reference — guessing wastes iterations.
   - Tests intermediate state. Don't deliver a 100-line solution untested; print interim
     values, run unit checks, verify each piece before composing them.
-  - Decomposes hard problems. If a task has independent subproblems, spawn sub-agents
-    via start_agent to work on them in parallel — then check_agent to gather results.
-    This is the same pattern as a senior engineer delegating to teammates.
 
 Workflow:
 1. Understand the task — read relevant files, explore the codebase with list_files / grep.
 2. Plan your approach. For hard tasks (parsers, algorithms with subtle invariants,
    numerical code), write a brief plan to yourself before coding.
-3. For decomposable hard tasks: consider start_agent for one or more isolated subproblems.
-4. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
-5. Verify by running. Use bash to invoke python/the test/the validation when one exists.
+3. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
+4. Verify by running. Use bash to invoke python/the test/the validation when one exists.
    If stuck, use web_search or fetch for references — don't keep guessing.
-6. Call task_done with a summary when finished.
+5. Call task_done with a summary when finished.
 
 Guidelines:
 - Be thorough but efficient. Don't repeat failed approaches without changing something —
@@ -175,6 +166,22 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
 
 
+def resolve_api_key(explicit: str | None = None) -> str:
+    """Bearer key for the serving endpoint: flag > OPENBEAST_API_KEY > OPENAI_API_KEY.
+
+    llama-server without --api-key ignores the Authorization header, so the
+    "not-needed" fallback keeps keyless endpoints working unchanged. Prefer the
+    env path in our own wiring — argv is visible in `ps`; the flag exists for
+    ad-hoc use against foreign endpoints.
+    """
+    return (
+        explicit
+        or os.environ.get("OPENBEAST_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or "not-needed"
+    )
+
+
 def run_agent(
     task: str,
     base_url: str = DEFAULT_BASE_URL,
@@ -187,6 +194,7 @@ def run_agent(
     context: str = "",
     context_budget: int = 0,
     resume_from: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
 
@@ -198,7 +206,7 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
-    client = OpenAI(base_url=base_url, api_key="not-needed")
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key))
 
     # Resume from existing log or start fresh
     if resume_from and os.path.isfile(resume_from):
@@ -380,6 +388,7 @@ def main():
     parser.add_argument("task", nargs="*", help="Task description (or use --task-file)")
     parser.add_argument("--task-file", "-f", help="Read task from a file")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"API base URL (default: {DEFAULT_BASE_URL})")
+    parser.add_argument("--api-key", help="Bearer key for the endpoint (default: OPENBEAST_API_KEY or OPENAI_API_KEY env; keyless endpoints need none)")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model name (default: {DEFAULT_MODEL})")
     parser.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITER, help=f"Max iterations (default: {DEFAULT_MAX_ITER})")
     parser.add_argument("--workdir", "-w", help="Working directory for file/shell operations")
@@ -426,6 +435,7 @@ def main():
         context=context,
         context_budget=args.context_budget,
         resume_from=args.resume,
+        api_key=args.api_key,
     )
 
 

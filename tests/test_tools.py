@@ -699,5 +699,73 @@ class TestBuildRunnerCmd(unittest.TestCase):
         self.assertIn("--base-url", cmd)
 
 
+class TestRunnerApiKey(unittest.TestCase):
+    """resolve_api_key: flag > OPENBEAST_API_KEY > OPENAI_API_KEY > sentinel.
+
+    The key is deliberately NOT threaded through _build_runner_cmd argv
+    (ps-visible); spawned runners inherit it via env.
+    """
+
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k, None)
+                       for k in ("OPENBEAST_API_KEY", "OPENAI_API_KEY")}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_default_is_sentinel(self):
+        import runner
+        self.assertEqual(runner.resolve_api_key(), "not-needed")
+
+    def test_openai_env_used(self):
+        import runner
+        os.environ["OPENAI_API_KEY"] = "oa-key"
+        self.assertEqual(runner.resolve_api_key(), "oa-key")
+
+    def test_openbeast_env_beats_openai(self):
+        import runner
+        os.environ["OPENAI_API_KEY"] = "oa-key"
+        os.environ["OPENBEAST_API_KEY"] = "ob-key"
+        self.assertEqual(runner.resolve_api_key(), "ob-key")
+
+    def test_explicit_flag_beats_env(self):
+        import runner
+        os.environ["OPENBEAST_API_KEY"] = "ob-key"
+        self.assertEqual(runner.resolve_api_key("flag-key"), "flag-key")
+
+    def test_no_key_in_runner_argv(self):
+        # The spawn path must never place the key on the command line.
+        import mcp_server
+        os.environ["OPENBEAST_API_KEY"] = "sekrit"
+        cmd = mcp_server._build_runner_cmd(
+            task="t", log_path="/tmp/x.jsonl", max_iter=5,
+            workdir="/tmp", context_budget=0, context="",
+            base_url="https://worker:8443/v1")
+        self.assertNotIn("sekrit", " ".join(cmd))
+
+
+class TestRunnerPromptConsistency(unittest.TestCase):
+    def test_prompt_only_advertises_registered_tools(self):
+        # Regression: the runner prompt used to promise start_agent/check_agent
+        # etc., which are not in the runner registry (no recursive spawn, by
+        # design) — an agent following its own instructions hit
+        # "Error: unknown tool". Every name in the "Your toolset:" block must
+        # resolve to a real handler.
+        import runner
+        from tools import TOOL_HANDLERS
+        block = runner._AGENT_INSTRUCTIONS.split("Your toolset:")[1]
+        block = block.split("USE THE TOOLS")[0]
+        advertised = [ln.strip().split()[0] for ln in block.splitlines()
+                      if ln.strip() and "—" in ln]
+        self.assertTrue(advertised, "could not parse the toolset block")
+        for name in advertised:
+            self.assertIn(name, TOOL_HANDLERS,
+                          f"prompt advertises unregistered tool '{name}'")
+
+
 if __name__ == "__main__":
     unittest.main()

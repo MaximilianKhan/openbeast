@@ -81,6 +81,20 @@ def run_reaped(command, timeout, **popen_kw):
     Returns (returncode, output_str) — stderr folded into stdout.
     Raises subprocess.TimeoutExpired after reaping on timeout.
     """
+    # Cap the child's address space. prlimit (from the parent, post-spawn) is
+    # safe when the caller is a threaded server (FastMCP); /bin/sh's own
+    # children inherit the limit when it forks them. prlimit(2) is Linux-only —
+    # on Darwin fall back to preexec_fn/setrlimit (the documented fork-safety
+    # caveat is accepted only on the prlimit-less platform, and RLIMIT_AS is
+    # best-effort there anyway).
+    if not hasattr(resource, "prlimit"):
+        def _cap_as():
+            try:
+                resource.setrlimit(resource.RLIMIT_AS,
+                                   (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+            except (OSError, ValueError):
+                pass
+        popen_kw = dict(popen_kw, preexec_fn=_cap_as)
     proc = subprocess.Popen(
         command,
         shell=True,
@@ -89,14 +103,12 @@ def run_reaped(command, timeout, **popen_kw):
         start_new_session=True,
         **popen_kw,
     )
-    # Cap the child's address space from the parent. prlimit (instead of a
-    # preexec_fn) is safe when the caller is a threaded server (FastMCP);
-    # /bin/sh's own children inherit the limit when it forks them.
-    try:
-        resource.prlimit(proc.pid, resource.RLIMIT_AS,
-                         (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
-    except (OSError, ProcessLookupError):
-        pass
+    if hasattr(resource, "prlimit"):
+        try:
+            resource.prlimit(proc.pid, resource.RLIMIT_AS,
+                             (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+        except (OSError, ProcessLookupError, AttributeError):
+            pass
     kept = bytearray()
     total = [0]
 
@@ -471,12 +483,25 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         return f"Error: {e}"
 
 
+# Tailscale hands out CGNAT addresses (100.64.0.0/10). CPython's is_private
+# changed classification of that range in 3.12.4/3.11.9 (gh-113171), so we pin
+# the semantics explicitly instead of inheriting stdlib drift: blocked by
+# default on every interpreter, opt-in via OPENBEAST_FETCH_ALLOW_TAILNET for
+# clients that fetch from tailnet hosts. web_search deliberately bypasses this
+# guard (SEARXNG_URL may legitimately be a tailnet/loopback service).
+_TS_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _vet_addr(addr: str) -> str | None:
     """Refusal reason if `addr` is a non-public IP, else None."""
     try:
         ip = ipaddress.ip_address(addr.split("%")[0])  # strip v6 zone id
     except ValueError:
         return f"unparseable address '{addr}'"
+    if ip.version == 4 and ip in _TS_CGNAT:
+        if os.environ.get("OPENBEAST_FETCH_ALLOW_TAILNET", "").lower() in ("1", "true", "yes"):
+            return None
+        return f"tailnet/CGNAT address {ip} (set OPENBEAST_FETCH_ALLOW_TAILNET=1 to allow)"
     if (ip.is_loopback or ip.is_private or ip.is_link_local
             or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
         return f"non-public address {ip}"

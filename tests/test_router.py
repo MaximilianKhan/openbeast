@@ -193,5 +193,37 @@ class TestSchema(unittest.TestCase):
                          {"spawn", "task", "workdir"})
 
 
+class TestUpstreamAuth(unittest.TestCase):
+    """Keyed llama-server: the router's own classify call must present the
+    bearer (read at import from OPENBEAST_API_KEY); the proxy path forwards
+    the client's Authorization header (not in _HOP_BY_HOP)."""
+
+    def _reload_with(self, key):
+        import importlib
+        saved = os.environ.pop("OPENBEAST_API_KEY", None)
+        if key is not None:
+            os.environ["OPENBEAST_API_KEY"] = key
+        try:
+            importlib.reload(router)
+            return dict(router.UPSTREAM_HEADERS)
+        finally:
+            os.environ.pop("OPENBEAST_API_KEY", None)
+            if saved is not None:
+                os.environ["OPENBEAST_API_KEY"] = saved
+            importlib.reload(router)
+
+    def test_no_key_no_header(self):
+        self.assertEqual(self._reload_with(None), {})
+
+    def test_key_becomes_bearer(self):
+        hdrs = self._reload_with("rig-key")
+        self.assertEqual(hdrs.get("Authorization"), "Bearer rig-key")
+
+    def test_authorization_not_hop_by_hop(self):
+        # The transparent proxy strips only _HOP_BY_HOP headers — the client's
+        # own Authorization must survive the relay to upstream.
+        self.assertNotIn("authorization", router._HOP_BY_HOP)
+
+
 if __name__ == "__main__":
     unittest.main()

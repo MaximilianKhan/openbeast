@@ -448,6 +448,29 @@ if grep -q 'OPENBEAST_AGENT_INFERENCE_URL' "$REPO_DIR/agent.sh" \
 else
   fail "agent.sh doesn't honor OPENBEAST_AGENT_INFERENCE_URL"
 fi
+# fetch() CGNAT policy (beast-slot): FETCH_ALLOW_TAILNET must follow the same
+# absent-vs-empty export contract as the other opt-in keys.
+FAT_UNSET=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s' \"\${OPENBEAST_FETCH_ALLOW_TAILNET-ABSENT}\"") || FAT_UNSET="(source failed)"
+if [[ "$FAT_UNSET" == "ABSENT" ]]; then
+  pass "conf.sh leaves OPENBEAST_FETCH_ALLOW_TAILNET unset by default (no empty export)"
+else
+  fail "conf.sh exported OPENBEAST_FETCH_ALLOW_TAILNET without config (got: '${FAT_UNSET}')"
+fi
+printf 'FETCH_ALLOW_TAILNET=true\n' > "$CONF_SCRATCH/openbeast.conf"
+FAT_SET=$(env -i PATH="$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh'; printf '%s' \"\${OPENBEAST_FETCH_ALLOW_TAILNET-ABSENT}\"") || FAT_SET="(source failed)"
+if [[ "$FAT_SET" == "true" ]]; then
+  pass "conf.sh exports OPENBEAST_FETCH_ALLOW_TAILNET from the FETCH_ALLOW_TAILNET conf key"
+else
+  fail "conf.sh didn't export FETCH_ALLOW_TAILNET from conf (got: '${FAT_SET}')"
+fi
+rm -f "$CONF_SCRATCH/openbeast.conf"
+if grep -qE '^#?FETCH_ALLOW_TAILNET=' "$REPO_DIR/openbeast.conf.example"; then
+  pass "openbeast.conf.example documents FETCH_ALLOW_TAILNET"
+else
+  fail "openbeast.conf.example doesn't document FETCH_ALLOW_TAILNET"
+fi
 rm -rf "$CONF_SCRATCH"
 
 # --- 11. Collapsed skill tool surface (PRODUCTION_ROADMAP §B, 2026-07-08) ---
