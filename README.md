@@ -170,54 +170,67 @@ budget), and a hot-pluggable [extension system](extensions/README.md).
 ## Architecture
 
 ```mermaid
-flowchart TB
-    dev["📱 Your devices — phone · laptop · desktop"]
-    dev -->|"Tailscale · WireGuard + auto-HTTPS<br/>authenticated, tailnet-only"| edge
-    edge{{"Ingress — loopback 127.0.0.1 by default<br/>remote only via Tailscale Serve"}}
-
-    subgraph FE["Frontends"]
-        direction LR
-        webui["🌐 Open WebUI · :3000<br/>browser chat · accounts · RBAC roles"]
-        opencode["⌨️ OpenCode<br/>terminal coding agent"]
-        agentsh["🔁 agent.sh<br/>headless autonomous agent"]
-    end
-    edge --> webui
-
-    subgraph TOOLS["Tool layer — ONE arsenal, TWO surfaces (imported → can't drift)"]
+flowchart LR
+    subgraph CLIENT["💻 CLIENT — any Mac / Linux device (optional)"]
         direction TB
-        its["🔑 Identity Tool Server · :3001<br/><b>agents/openapi_tools.py</b><br/>RBAC profile keys · per-user file shards<br/>audit trail + Prometheus /metrics<br/>signed-JWT or header identity"]
-        mcp["🔌 MCP Server (stdio)<br/><b>agents/mcp_server.py</b>"]
-        arsenal["⚙️ <b>Tool Arsenal — agents/tools.py</b> · 15 tools<br/>bash · read/write/edit_file · grep · list_files<br/>fetch (SSRF-guarded) · web_search<br/>start / check / tail / list / stop_agent · skill · skill_agent<br/>workspace → ~/openbeast-files/users/USER/"]
-        its --> arsenal
-        mcp --> arsenal
+        coc["⌨️ OpenCode"]
+        cmcp["🔌 MCP server (stdio, no port)<br/><b>agents/mcp_server.py</b>"]
+        ctools["⚙️ Tool arsenal — 15 tools<br/>bash · files · grep · agents<br/><b>acts on THIS machine's disk</b>"]
+        ccli["🧰 openbeast-client<br/>status · agent · search · update"]
+        coc --> cmcp --> ctools
     end
 
-    webui -->|"tool calls + identity headers<br/>X-OpenWebUI-User / Chat / JWT"| its
-    opencode -->|"MCP over stdio"| mcp
-    agentsh --> arsenal
+    subgraph TAILNET["🔒 Tailscale — WireGuard + auto-HTTPS, tailnet-only, never funneled"]
+        p8443(["🛡️ :8443 — inference"])
+        p8444(["📊 :8444/api/slot — discovery"])
+        p8889(["🔎 :8889 — SearXNG (opt-in)"])
+        p443(["🌐 :443 — Open WebUI"])
+    end
 
-    router["🧭 Agent Router · :8088 <i>(opt-in)</i><br/>grammar-constrained spawn-intent<br/>+ admin-only identity gate"]
-    webui -->|"chat completions"| router
-    router -->|"no spawn → pass through"| llama
-    router -.->|"spawn intent → start_agent"| its
+    subgraph RIG["🖥️ COMMAND CENTER — the rig (full stack, always)"]
+        direction TB
+        gate["🛡️ <b>beast-gate</b> · :8090 <i>(opt-in EDGE_GATE)</i><br/>per-device keys · path allowlist<br/>rate + in-flight caps · inference audit"]
+        llama2["🧠 llama.cpp · :8080"]
+        rest["🌐 WebUI :3000 · 🔑 tools :3001<br/>🔎 SearXNG :8888 · 📊 dashboard :3002"]
+        gate --> llama2
+    end
 
-    arsenal -->|"web_search"| searxng
-    arsenal -.->|"spawned agents' inference"| llama
+    ctools -->|"inference only"| p8443
+    ctools -->|"web_search"| p8889
+    ccli --> p8444
+    phone["📱 phone · browser"] --> p443
 
-    searxng["🔎 SearXNG · :8888<br/>private metasearch (no tracking)"]
-    llama["🧠 llama.cpp Server · :8080<br/>OpenAI-compatible API<br/>6 parallel slots · unified KV cache<br/>continuous batching · MTP spec-decode"]
-    gpu["🎮 GPU — RTX 5090 · 32 GB (reference)<br/>context auto-scaled to card VRAM · 11 GB floor"]
-    llama --> gpu
+    p8443 -->|"gate ON"| gate
+    p8443 -.->|"gate OFF — raw, whole route table"| llama2
+    p8444 --> rest
+    p8889 --> rest
+    p443 --> rest
 
-    classDef fe fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
-    classDef tool fill:#ede9fe,stroke:#7c3aed,color:#2a1150;
-    classDef inf fill:#dcfce7,stroke:#16a34a,color:#0b2417;
-    classDef sec fill:#fef3c7,stroke:#d97706,color:#3a2503;
-    class webui,opencode,agentsh fe;
-    class its,mcp,arsenal tool;
-    class llama,gpu,searxng inf;
-    class edge,router sec;
+    classDef cli fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
+    classDef net fill:#fef3c7,stroke:#d97706,color:#3a2503;
+    classDef rig fill:#dcfce7,stroke:#16a34a,color:#0b2417;
+    classDef sec fill:#fee2e2,stroke:#dc2626,color:#3b0a0a;
+    class coc,cmcp,ctools,ccli,phone cli;
+    class p8443,p8444,p8889,p443 net;
+    class llama2,rest rig;
+    class gate sec;
 ```
+
+One **command center** (the rig) and, optionally, any number of **clients**.
+The load-bearing fact: **tools execute where the process runs, not where the
+model runs** — a laptop runs the full tool arsenal against its *own* disk while
+every token is generated on the rig's GPU. The machine boundary is a single
+OpenAI-compatible HTTP call, so the promise is **"nothing leaves your tailnet"**.
+
+The dashed path is the honest default: with `EDGE_GATE=false`, `:8443` maps
+straight at llama-server and publishes its *entire* route table to the tailnet —
+fine on a tailnet you fully own. `EDGE_GATE=true` routes it through **beast-gate**
+instead, which allowlists the OpenAI routes and gives each device its own
+revocable key, rate limits, and an inference audit trail.
+
+Service-level detail (tool layer, RBAC, agent router) →
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Client/server specifics →
+[`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md).
 
 Two frontends, **one** 15-tool arsenal exposed through two surfaces that import
 the same code so they can't drift, llama.cpp serving an OpenAI-compatible API on
@@ -242,11 +255,25 @@ never the public internet:
 | URL | Service |
 |---|---|
 | `https://<host>.<tailnet>.ts.net` | Open WebUI (chat) |
-| `https://<host>.<tailnet>.ts.net:8443/v1` | llama-server (OpenAI-compatible API) |
+| `https://<host>.<tailnet>.ts.net:8443/v1` | Inference (OpenAI-compatible API) |
+
+Two more are **opt-in**, for client devices:
+
+| URL | Service | Enable with |
+|---|---|---|
+| `…:8444/api/slot` | beast-slot discovery — what the rig is actually serving | `setup-tailscale.sh --publish-slot` |
+| `…:8889` | SearXNG, for a client's `web_search` | `setup-tailscale.sh --publish-searxng` |
 
 Every device authenticates via its WireGuard key; the WebUI additionally
 requires an account (first signup becomes admin). Phone: install the Tailscale
 app, open the chat URL, "Add to Home Screen" (the WebUI is a PWA).
+
+> **What `:8443` actually exposes.** By default it maps straight at
+> llama-server, which publishes its *whole* route table to the tailnet — not
+> just chat. That's fine on a tailnet you fully own. Set `EDGE_GATE=true` and
+> it routes through **beast-gate** instead: per-device keys, an OpenAI-route
+> allowlist, rate limits, and an inference audit trail.
+> → [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md)
 
 > **⚠️ Don't run a second full-tunnel VPN (NordVPN, etc.) at the same time as
 > Tailscale** — its kill switch will sever your tailnet mid-stream while the
