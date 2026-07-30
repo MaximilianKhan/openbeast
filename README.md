@@ -346,7 +346,8 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 - **[docs/UPDATING.md](docs/UPDATING.md)** — update every pulled-in component with one command
 - **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)** — GPU detection + per-tier configs
 - **[docs/REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md)** — Tailscale design, VPN coexistence, verification
-- **[docs/MAC_CLIENT_PLAN.md](docs/MAC_CLIENT_PLAN.md)** · **[docs/DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md)** — thin-client + worker-fleet modes
+- **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)** — client/server: run the full tool stack on any device against the rig's model · the `/api/slot` contract · beast-gate (per-device keys, audit) · device enrollment
+- **[docs/DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md)** — worker-fleet mode (spawned-agent inference on a second box)
 - **[docs/RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md)** — consolidated research log (MTP, profiling, model comparisons)
 - **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** · **[skills/README.md](skills/README.md)** — skills system + how to add skills
 - **[docs/TODO.md](docs/TODO.md)** — roadmap and completed work

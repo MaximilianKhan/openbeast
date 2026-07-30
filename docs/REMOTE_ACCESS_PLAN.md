@@ -11,6 +11,24 @@ Decisions taken (the "open questions" below, answered 2026-07-07):
 hostname = `beast`; no API key for now (tailnet device identity is the
 boundary; `LLAMA_API_KEY` stays wired but off).
 
+> **⚠️ SUPERSEDED IN PART (2026-07-30).** This doc records the ORIGINAL
+> 2026-07-07 remote-access design and is kept for that history. Two things
+> have since changed materially, so read
+> **[BEAST_SLOT.md](BEAST_SLOT.md)** for current behavior:
+> 1. **More is published now.** Beyond `:443` (WebUI) and `:8443`
+>    (inference), `setup-tailscale.sh` has opt-in `--publish-searxng`
+>    (`:8889`) and `--publish-slot` (`:8444/api/slot`). The claim below that
+>    SearXNG "stays localhost-only" is no longer unconditionally true.
+> 2. **The "no API key" decision has a successor.** Not `LLAMA_API_KEY` (one
+>    flat shared secret) but **beast-gate** — per-device enrolled keys, a
+>    path allowlist, rate limits, and an inference audit
+>    (`EDGE_GATE=true`, `agents/edge.py`, `:8090`). That also answers open
+>    question #3 below ("should tooling on other machines get API-key auth
+>    from day one?"): yes, per device, opt-in.
+>
+> Also stale below: the "where we are today" table predates both the loopback
+> rebind and the replacement of MCPO by the identity tool server.
+
 Field note from first deployment: `tailscale serve --https` blocks silently
 until **MagicDNS + HTTPS Certificates** are enabled on the tailnet (admin
 console → DNS). The setup script now pre-checks both, prints the exact
@@ -60,6 +78,10 @@ Headscale migration path, this is the pragmatic open-adjacent choice.
 
 ## Target architecture
 
+*(As designed 2026-07-07. Current topology — including beast-gate, the
+client/server split, and the two opt-in surfaces — is diagrammed in
+[ARCHITECTURE.md](ARCHITECTURE.md) and [BEAST_SLOT.md](BEAST_SLOT.md).)*
+
 ```
   phone (cellular)  ──┐                         ┌── https://beast.<tailnet>.ts.net
   laptop (cafe wifi) ─┼── tailnet (WireGuard) ──┤     → Open WebUI :3000
@@ -68,6 +90,12 @@ Headscale migration path, this is the pragmatic open-adjacent choice.
   Services rebind 0.0.0.0 → 127.0.0.1; the ONLY ways in are
   localhost and `tailscale serve` (TLS, tailnet-only, per-device identity).
   SearXNG + the identity tool server (:3001) stay localhost-only (they serve the model, not humans).
+
+  SINCE SHIPPED, not shown above:
+    :8443 → beast-gate :8090 → llama-server, when EDGE_GATE=true
+    :8444 → dashboard :3002, /api/slot only      (--publish-slot)
+    :8889 → SearXNG :8888                        (--publish-searxng)
+  The identity tool server (:3001) and agent router (:8088) are STILL never published.
 ```
 
 - `tailscale serve` terminates TLS with automatic certs on the machine's

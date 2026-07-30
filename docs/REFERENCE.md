@@ -2,78 +2,19 @@
 
 ## Directory layout
 
-```
-openbeast/
-├── llama.cpp/              # inference engine (built with CUDA) [gitignored]
-├── openbeast.conf.example  # config template — copy to openbeast.conf to relocate weights
-├── scripts/lib/weights.sh  # resolves the weights dir (env / config / ./weights / ../weights)
-├── weights/                # GGUF model files — default location, relocatable [gitignored]
-│   ├── Qwen3.6-27B-UD-Q5_K_XL.gguf
-│   ├── Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf
-│   ├── Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
-│   ├── Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
-│   ├── Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf          # MTP variant
-│   ├── Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf       # MTP variant
-│   ├── Qwopus3.6-27B-v2-Q5_K_M.gguf             # Jackrong SFT fine-tune
-│   ├── Qwopus3.6-27B-v2-MTP-Q5_K_M.gguf         # Jackrong SFT + MTP heads
-│   └── gemma-4-31B-it-UD-Q5_K_XL.gguf
-├── start.sh                # launch full stack (server + identity tool server + Open WebUI; + agent router when AGENT_ROUTER=true)
-├── stop.sh                 # stop full stack
-├── agent.sh                # run a local agent against a task
-├── scripts/                # server, chat, and config scripts
-│   ├── serve.sh            # generic OpenAI-compatible API server
-│   ├── run.sh              # generic interactive chat launcher
-│   ├── configure-webui.sh  # auto-configure Open WebUI
-│   ├── serve-qwen-27b-q5.sh
-│   ├── serve-qwen-27b-uncensored-q5.sh
-│   ├── serve-qwen-35b-a3b.sh
-│   ├── serve-qwen-35b-a3b-uncensored-q4.sh
-│   ├── serve-qwen-27b-mtp-q5.sh
-│   ├── serve-qwen-35b-a3b-mtp.sh
-│   ├── serve-qwopus-27b-v2-q5.sh
-│   ├── serve-qwopus-27b-v2-mtp-q5.sh
-│   ├── serve-gemma-4-31b-q5.sh
-│   ├── run-qwen-27b-q5.sh
-│   ├── run-qwen-27b-uncensored-q5.sh
-│   ├── run-qwen-35b-a3b.sh
-│   ├── run-qwen-35b-a3b-uncensored-q4.sh
-│   ├── run-qwen-27b-mtp-q5.sh
-│   ├── run-qwen-35b-a3b-mtp.sh
-│   ├── run-qwopus-27b-v2-q5.sh
-│   ├── run-qwopus-27b-v2-mtp-q5.sh
-│   └── run-gemma-4-31b-q5.sh
-├── agents/                 # agent framework + MCP tool server
-│   ├── runner.py           # standalone agent loop (LLM + tool use)
-│   ├── tools.py            # tool definitions for standalone agent
-│   ├── mcp_server.py       # MCP server (tools + long-running agent management)
-│   ├── router.py           # agent-spawn router proxy on :8088 (opt-in, AGENT_ROUTER=true)
-│   ├── requirements.txt
-│   └── logs/               # agent run logs (JSONL) [gitignored]
-├── tests/                  # test suite
-│   ├── run_tests.sh        # run all tests (unit + structure)
-│   ├── test_tools.py       # tool unit tests
-│   ├── test_scripts.sh     # script structure validation
-│   └── test_smoke.sh       # end-to-end stack smoke test (requires running stack)
-├── evals/                  # eval harness for model benchmarking
-│   ├── run_eval.py         # eval runner
-│   ├── tasks/              # task definitions (JSON)
-│   └── results/            # eval results (JSON, gitignored)
-├── system-prompt.md        # soul file — persona and principles (all frontends)
-├── system-prompt-tools.md  # tool-use guidance (Open WebUI only)
-├── opencode.json           # OpenCode config (local provider + models)
-├── docker-compose.yml      # Open WebUI container config
-├── README.md               # project overview (start here)
-├── skills/                 # curated expertise packages — discovered via MCP
-│   ├── README.md           # skill schema + full table of all 14 shipped skills
-│   └── <name>/SKILL.md     # 14 skills (code-review, security-audit, deep-counsel, …)
-└── docs/
-    ├── INSTALL.md          # step-by-step installation guide
-    ├── REFERENCE.md        # this file — technical reference
-    ├── RESULTS.md          # eval distribution + cross-host sweep results
-    ├── SKILLS_PLAN.md      # skills system design + roadmap
-    ├── WORK_PLAN.md        # active work plan / save state for eval suite work
-    └── TODO.md             # roadmap and completed work
-```
+Kept in **one** place so the two copies can't drift:
+**[`docs/ARCHITECTURE.md` § Project structure](ARCHITECTURE.md#project-structure)**
+— annotated tree of every script, agent, extension, test, and doc, alongside
+the topology diagrams that explain *why* things sit where they do.
+
+The two paths worth knowing before reading anything below:
+
+- **`scripts/lib/weights.sh`** resolves where the GGUFs live (env →
+  `openbeast.conf` → `./weights` → `../weights`); the weights directory itself
+  is gitignored and relocatable — see
+  [INSTALL.md § Where weights live](INSTALL.md#where-weights-live).
+- **`scripts/lib/conf.sh`** resolves everything else, and is the authoritative
+  list of config keys — the table below mirrors it.
 
 ## Configuration reference (`openbeast.conf`)
 
@@ -89,10 +30,18 @@ be sourced before any `docker compose up` so containers get the real values.
 | `GPU_BACKEND` | `OPENBEAST_GPU_BACKEND` | `auto` | llama.cpp build backend: `auto` \| `cuda` \| `hip` \| `sycl` \| `cpu`. `auto` maps the detected GPU vendor (NVIDIA→cuda, AMD→hip, Intel→sycl, none→cpu). Only cuda is measured; `bootstrap.sh` persists the resolved value |
 | `MEM_LIMIT_PCT` | `OPENBEAST_MEM_LIMIT_PCT` | `75` | Daemon-mode (`./start.sh -d`) memory cap as a percent of physical RAM, recomputed at every launch — a runaway process OOMs the stack's scope, never the box. Swap inside the scope is additionally capped at 8G |
 | `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen-27b-uncensored-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
+| `FAST_BOOT` | `OPENBEAST_FAST_BOOT` | `false` | Serve the tiny Qwen3-0.6B bridge (`serve-bootstrap.sh`) on `:8080` for instant chat, bring the stack up, then hot-swap to `SERVE_SCRIPT` once its weights are warmed |
+| `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. `false` hard-fails |
+| `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
+| `REASONING` | `OPENBEAST_REASONING` | empty (model default) | Global thinking override applied by `serve.sh`: `on` \| `off` \| `auto`. Overrides any per-serve-script default |
+| `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes |
 | `FILES_DIR` | `OPENBEAST_FILES_DIR` | `~/openbeast-files` | Private workspace for files the **chat** model reads/writes via the direct tools — see below |
+| `FILES_SHARDING` | `OPENBEAST_FILES_SHARDING` | `user` | Workspace isolation on the identity tool server: `user` (one shard per WebUI account) \| `chat` (additionally per conversation) \| `off` (shared root). Namespacing, not confinement — absolute paths still escape it |
 | `BIND_HOST` | `OPENBEAST_BIND` | `127.0.0.1` | Address the services bind to. Loopback-only by default (remote access comes through Tailscale Serve); `0.0.0.0` restores the legacy LAN-open behavior |
 | `LLAMA_API_KEY` | `OPENBEAST_API_KEY` | empty (off) | When set, llama-server requires `Authorization: Bearer <key>` — and the whole stack presents it: WebUI (compose), healthcheck, agent runner + `agent.sh` (env resolution, or `runner.py --api-key`), eval harness, router classify, dashboard probes, beast-slot clients (`setup-client.sh --api-key`). Rig-side OpenCode needs the key added to user-level config (see docs/BEAST_SLOT.md) |
 | `FETCH_ALLOW_TAILNET` | `OPENBEAST_FETCH_ALLOW_TAILNET` | empty (blocked) | The model's `fetch` tool blocks Tailscale CGNAT targets (100.64.0.0/10) by default — pinned across Python versions. `true` allows fetching from tailnet hosts. `web_search` is unaffected |
+| `BASH_WRAPPER` | `OPENBEAST_BASH_WRAPPER` | empty (off) | Kernel-level sandbox command wrapped around every model `bash` call (e.g. `sandlock run -p openbeast -w "$PWD" --`). Read per-call by `agents/tools.py`; forwarded only when non-empty. See `docs/SANDBOXING.md` |
+| `SEARXNG_SECRET` | `OPENBEAST_SEARXNG_SECRET` | auto-generated | SearXNG session-signing key. **You never set this** — `conf.sh` generates a random per-install value on first run and appends it to `openbeast.conf` (mode 600) so daemon mode and every restart reuse it. `docker-compose.yml` hard-requires the export, which is why compose callers must source `conf.sh` first |
 | `EDGE_GATE` | `OPENBEAST_EDGE_GATE` | `false` | Run beast-gate (`agents/edge.py`), the identity-aware inference edge, and publish `:8443` at it instead of raw llama-server. Per-device keys, path allowlist, rate limits, inference audit. Local frontends unaffected. See `docs/BEAST_SLOT.md` |
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
@@ -102,6 +51,10 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
+| `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
+| `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 15 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
+| `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
+| `IDENTITY_JWT_SECRET` | `OPENBEAST_IDENTITY_JWT_SECRET` | empty (header mode) | Shared HS256 secret: Open WebUI mints a signed JWT per tool call and the identity tool server verifies it, killing header forgery. Requests without a token stay anonymous; a present-but-invalid token is 401. Generate with `scripts/setup-mcpo-keys.sh --with-jwt` |
 | `AGENT_INFERENCE_URL` | `OPENBEAST_AGENT_INFERENCE_URL` | empty (local) | Distributed agents Phase 1 (opt-in): OpenAI-compatible endpoint a worker box serves — spawned agents (`start_agent`, `agent.sh`) send their *inference* there while still executing files/shell on this machine. Tokens (and the file contents agents read) flow over your tailnet. Empty = local model server. See `docs/DISTRIBUTED_AGENTS_PLAN.md` |
 
 **`FILES_DIR` / `OPENBEAST_FILES_DIR` — the chat model's private workspace.**
@@ -591,8 +544,10 @@ agent, continue the conversation, and check back for results later.
 - **`list_agents()`** — tabular overview of all tracked agents
 - **`stop_agent(agent_id)`** — graceful SIGTERM, escalates to SIGKILL after 10s
 
-Agents are context-aware: they receive an approximate token budget (~85K per slot)
-and briefing context from the spawning model. Failed agents can be resumed from
+Agents are context-aware: they receive a fixed conservative token budget
+(~85K, hardcoded in `agents/mcp_server.py` — **not** derived from the live
+server, and not a per-slot share; see the unified-KV note under "Parallel
+request handling") plus briefing context from the spawning model. Failed agents can be resumed from
 their JSONL log with `./agent.sh --resume agents/logs/agent-{id}.jsonl "continue"`.
 
 Agents run as detached processes in their own process group. The MCP server
@@ -721,22 +676,34 @@ All model scripts forward extra args to `run.sh`/`serve.sh`, which forward to ll
 
 ### Parallel request handling
 
-The server runs **6 parallel slots** by default with **unified KV cache** and
-**continuous batching**. This means:
+The server runs **6 parallel slots** by default (`-np 6` in `serve.sh`; MTP
+serve scripts pin `-np 1`) with **unified KV cache** (`--kv-unified`, passed
+unconditionally) and **continuous batching**. This means:
 
 - Up to 6 concurrent requests are processed simultaneously (chat + background agents)
-- Unified KV cache shares the context budget across all slots — **no extra VRAM**
-  compared to a single-slot configuration
-- Idle slots are freed automatically, so a single deep conversation can use more
-  context while other slots are inactive
-- Per-slot context: total context / slots (e.g. 512K / 6 = ~85K per slot)
+- **There is no per-slot context.** Under `--kv-unified` every slot advertises
+  the **full** `-c` value while all slots draw on **one shared KV pool**. So a
+  512K server with 6 slots has 512K tokens *total* across all of them — not
+  ~85K each, and not 6 × 512K. Do **not** divide, and do not multiply.
+- Because the pool is shared, slot count costs **no extra VRAM** — but it also
+  buys no extra context, and one deep conversation can consume the whole pool.
+- When the pool runs dry, llama-server does not "free idle slots" politely: it
+  **purges the lowest-numbered idle slot's cache**, deterministically. That is
+  a fixed victim order, not LRU, and it is the sharp edge to know about before
+  serving more than one tenant. Real per-tenant isolation means
+  `--no-kv-unified -np N -c (N × per-tenant)`, and paying the VRAM for it.
 
-Override with `-np` for more or fewer slots:
+`-np` changes how many requests run at once, not how much context each gets:
 
 ```bash
-./scripts/serve-qwen-35b-a3b.sh -np 12   # 12 slots (~42K context per slot)
-./scripts/serve-qwen-27b-q5.sh -np 3    # 3 slots (~138K context per slot)
+./scripts/serve-qwen-35b-a3b.sh -np 12   # 12 concurrent requests, same 512K shared pool
+./scripts/serve-qwen-27b-q5.sh -np 3     # 3 concurrent requests, same pool
 ```
+
+This arithmetic is exactly why `/api/slot` publishes `capacity.ctx_shared` and
+`capacity.ctx_total` instead of leaving clients to guess.
+**[`docs/BEAST_SLOT.md`](BEAST_SLOT.md) is canonical** for the capacity model,
+slot contract, and the isolation trade-off.
 
 Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
 `http://localhost:8080/metrics`.
@@ -748,8 +715,18 @@ Monitor active slots at `http://localhost:8080/slots` and KV cache usage at
 ./scripts/healthcheck.sh --restart    # check and auto-restart failed services
 ```
 
-Reports status of llama.cpp, the identity tool server, Open WebUI, SearXNG, GPU VRAM utilization, and
-active slot count. With `--restart`, automatically restarts any service that's down.
+Always-reported rows: llama.cpp, the identity tool server, Open WebUI,
+SearXNG, GPU VRAM utilization, and active slot count. Two more appear only
+when configured:
+
+| Row | Appears when | Probe |
+|---|---|---|
+| **beast-gate** | `EDGE_GATE=true` | `:$EDGE_PORT/gate/health` (default 8090) — the inference edge remote clients arrive through. `--restart` relaunches `agents/edge.py` and rewrites `.run/edge.pid` |
+| **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:3002/api/slot` — the discovery contract. Advisory only; never fails the run |
+
+Tailscale is checked too, but only when installed — the stack is fully
+functional without it, just localhost-only. With `--restart`, any service
+that's down is restarted automatically.
 
 ### Eval harness
 

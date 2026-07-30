@@ -166,8 +166,12 @@ Defense in depth:
 1. ✅ **DONE 2026-07-09 — per-profile MCPO keys (opt-in).** Enable with
    `scripts/setup-mcpo-keys.sh` (writes `MCPO_ADMIN_KEY`/`MCPO_GUEST_KEY` to
    `openbeast.conf`; `--rotate` to replace). With both keys set, start.sh
-   launches TWO instances: admin (:3001, all 15 tools, admin key) and guest
-   (:`MCPO_GUEST_PORT`, default 3002, guest key) — and the guest instance
+   launched TWO instances: admin (:3001, all 15 tools, admin key) and guest
+   (`MCPO_GUEST_PORT`, then-default 3002, guest key) — and the guest instance
+   <!-- HISTORICAL: superseded the same day by the single identity server
+        (see item 1b below). MCPO_GUEST_PORT no longer exists anywhere in the
+        codebase, and :3002 is now the dashboard extension's port — the one
+        --publish-slot maps to :8444. Do not resurrect this port choice. -->
    runs with `OPENBEAST_MCP_TOOLS="web_search,fetch"`, a REGISTRATION
    allowlist in `agents/mcp_server.py`: denied tools don't exist on that
    server (a guest-key holder probing `/bash` gets 404 — there is no tool to
@@ -191,11 +195,34 @@ Defense in depth:
    [TOOL_ARSENAL_RESEARCH.md](archive/TOOL_ARSENAL_RESEARCH.md): read-only
    filesystem view, network allowed, no exec outside the tool. One policy
    file per profile — the RBAC and Arsenal workstreams converge here.
-3. Note: the llama-server API (`:8443` via tailscale) is chat-only — tools
-   are executed by frontends, not by llama.cpp — so API access without a
-   tool-server key yields inference, not filesystem. Document this
-   explicitly; enable `LLAMA_API_KEY` if the tailnet ever includes devices
-   Max doesn't own.
+3. ⚠️ **CORRECTED 2026-07-30 — this item was wrong on both counts.** It used
+   to read *"the llama-server API (`:8443` via tailscale) is chat-only …
+   enable `LLAMA_API_KEY` if the tailnet ever includes devices Max doesn't
+   own."* Both halves are false:
+   - **Not chat-only.** Publishing `:8443` maps `/` at llama-server, so its
+     ENTIRE route table goes to the tailnet — verified live: `/slots`,
+     `/props`, `/metrics`, `GET /lora-adapters` all answer 200, and
+     `POST /lora-adapters` (global model mutation) plus
+     `GET/DELETE /v1/stream/<id>` (read or cancel another caller's
+     generation) are reachable. The "tools run in frontends, not llama.cpp"
+     part still holds — it grants inference, not the rig's filesystem — but
+     that is a much narrower claim than "chat-only".
+   - **`LLAMA_API_KEY` is the wrong remedy for un-owned devices.** It is ONE
+     flat shared secret with no attribution, no per-device revocation, and it
+     does not shrink the exposed surface — it just gates it.
+   The shipped answer is **beast-gate** (item 4 below).
+4. ✅ **DONE 2026-07-30 — beast-gate, identity on the inference path.**
+   `agents/edge.py`, opt-in `EDGE_GATE=true`, fails closed. This closes the
+   bypass named at the top of this Phase ("a second frontend … direct
+   `:8443` API use"): a guest laptop pointed straight at the API now needs an
+   **enrolled per-device key** (`scripts/clients.sh enroll`), reaches only
+   the OpenAI routes (everything else 404s), is rate- and in-flight-capped,
+   and has every completion attributed in `.run/inference-audit.jsonl`.
+   Revocation takes effect within seconds without restarting llama-server.
+   **Note the distinct axis:** `:3001` authenticates the *human* (WebUI user
+   → RBAC tier → file shard); beast-gate authenticates the *device*. A
+   device key is not a WebUI role and confers no tool access. Full detail:
+   [BEAST_SLOT.md](BEAST_SLOT.md).
 
 ### Phase 3 — audit + guardrails (~half day, after real guest usage)
 - Per-tool-call audit log in `mcp_server.py` (caller profile, tool, args

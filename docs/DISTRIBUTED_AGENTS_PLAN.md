@@ -37,8 +37,10 @@ multi-node vision.
 
 - ✅ `runner.py --base-url <url>` and `--workdir` exist. Scripted agents can do
   this TODAY: `./agent.sh --base-url http://<worker>:8080/v1 -w ~/project "task"`.
-- ✅ Remote-access layer already publishes llama-server over the tailnet
-  (`setup-tailscale.sh` → `https://<host>.<tailnet>.ts.net:8443/v1`).
+- ✅ Remote-access layer already publishes the inference endpoint over the
+  tailnet (`setup-tailscale.sh` → `https://<host>.<tailnet>.ts.net:8443/v1`).
+  Note that since 2026-07-30 `:8443` terminates at **beast-gate** when
+  `EDGE_GATE=true`, not at llama-server directly.
 - ✅ (Phase 1, 2026-07-08) `mcp_server.start_agent()` / `start_skill_agent()`
   expose a `base_url` param; resolution: explicit arg →
   `OPENBEAST_AGENT_INFERENCE_URL` → local default. The endpoint is recorded in
@@ -114,7 +116,20 @@ Env override: `OPENBEAST_AGENT_INFERENCE_URL`.
   user's own tailnet this is still their hardware, but the promise shifts from
   "no data leaves your machine" to "no data leaves your machines / your
   tailnet." State this plainly wherever the feature is documented.
-- **Security:** worker endpoint should be tailnet-only (never public); reuse the
-  existing `LLAMA_API_KEY` boundary if the worker is exposed more broadly.
+- **Security:** worker endpoint should be tailnet-only (never public). ~~reuse
+  the existing `LLAMA_API_KEY` boundary~~ — **superseded 2026-07-30**: the
+  boundary is now **beast-gate** (`EDGE_GATE=true`), with a per-device
+  enrolled key (`./scripts/clients.sh enroll <worker-id>`) instead of one flat
+  shared secret. See [BEAST_SLOT.md](BEAST_SLOT.md).
+- **⚠️ Admission control will bite this design.** beast-gate defaults to
+  `EDGE_MAX_INFLIGHT=2` concurrent generations **per device** and
+  `EDGE_RATE_LIMIT=120`/min. A worker fleet running parallel agents — the
+  entire premise of this document — starts getting 429s at the third
+  concurrent agent unless the enrollment raises them
+  (`clients.sh enroll <id> --rate N`, and raise `EDGE_MAX_INFLIGHT`). Size
+  these deliberately before Phase 2.
+- **Upside now available:** spawned-agent inference lands in
+  `.run/inference-audit.jsonl`, joinable on `device_uid` — per-agent token
+  and latency accounting that did not exist when this plan was written.
 - **Supervision:** a worker fleet needs the same pidfile/systemd discipline as
   the main stack (see start.sh daemon mode).

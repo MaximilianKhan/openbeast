@@ -11,11 +11,19 @@ running, unchanged. **beast-slot** is what the rig additionally publishes to
 your tailnet: its intelligence as a consumable surface.
 
 ```
-COMMAND CENTER (rig)                          CLIENT (any Mac/Linux device)
-llama-server :8080 ◀── tailscale :8443 ────── opencode + mcp_server.py (stdio)
-dashboard   :3002 ◀── tailscale :8444 ────── client.sh status   (discovery)
-SearXNG     :8888 ◀── tailscale :8889 ────── web_search          (default)
-                       (or --local-search: client runs its own SearXNG)
+COMMAND CENTER (rig)                             CLIENT (any Mac/Linux device)
+llama-server :8080                               opencode + mcp_server.py (stdio)
+     ▲                                                  │
+     │  EDGE_GATE=true                                  │
+beast-gate :8090 ◀──── tailscale :8443 ◀────────────────┘  inference only
+     ▲   per-device keys · path allowlist
+     │   rate caps · inference audit
+     └── (EDGE_GATE=false: :8443 maps straight at llama-server —
+          its WHOLE route table, see "What beast-slot access grants")
+
+dashboard   :3002 ◀──── tailscale :8444 ◀───── client.sh status   (discovery)
+SearXNG     :8888 ◀──── tailscale :8889 ◀───── web_search          (default)
+                        (or --local-search: client runs its own SearXNG)
 
 tools execute on the CLIENT — bash/read/write/edit act on the client's files
 inference happens on the RIG — only chat/completion calls cross the tailnet
@@ -59,9 +67,10 @@ Gated on our config and safe as shipped: `POST /slots/:id` needs
 On a personal tailnet where you own every device, this is acceptable — it is
 the same trust boundary as the chat endpoint itself. On a tailnet with users
 or devices you do not own, a bearer key (below) gates all of it behind one
-shared secret but does **not** shrink the surface; the right fix is an
-identity-aware edge proxy that allowlists the OpenAI routes. Tracked in
-docs/TODO.md.
+shared secret but does **not** shrink the surface. The fix is
+**[beast-gate](#beast-gate--the-identity-aware-inference-edge)** — shipped,
+opt-in, and documented below: it allowlists the OpenAI routes and gives each
+device its own revocable key.
 
 **`id_slot` is hostile input.** llama-server accepts a client-chosen `id_slot`
 on completion requests. It is unauthenticated, wraps modulo the slot count

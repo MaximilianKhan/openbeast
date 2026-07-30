@@ -362,7 +362,7 @@ curl -fsSL https://opencode.ai/install | bash
 OpenCode reads `opencode.json` from the directory you launch it in. Our
 `opencode.json` (committed in the repo root) wires up:
 - The local llama.cpp server as an OpenAI-compatible provider on `localhost:8080`
-- All 9 configured models with their tuned context limits
+- All 15 configured models with their tuned context limits
 - The MCP tool server via stdio (auto-launched as a subprocess by OpenCode)
 
 Run `opencode` from the repo root, or copy `opencode.json` to any project
@@ -431,6 +431,11 @@ This launches:
    + system prompt for every detected model)
 6. *(opt-in)* **agent-spawn router** on port 8088 — only when `AGENT_ROUTER=true`
    in `openbeast.conf`; the frontends then send chat through it
+7. *(opt-in)* **beast-gate** on port 8090 — only when `EDGE_GATE=true` in
+   `openbeast.conf` (`agents/edge.py`: the identity-aware inference edge for
+   *remote* clients — per-device keys, an OpenAI-route allowlist, rate limits,
+   audit). Local frontends are unaffected; it changes what the tailnet sees.
+   See §8 and [BEAST_SLOT.md](BEAST_SLOT.md)
 
 `start.sh` also creates `~/openbeast-files` (mode `0700`) — the private
 workspace where files the chat model writes via the direct tools land
@@ -462,6 +467,12 @@ To stop everything:
 - **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 15 tools; `curl http://localhost:3001/health` for liveness)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
+- **beast-gate** (only with `EDGE_GATE=true`): `curl http://127.0.0.1:8090/gate/health`
+  — loopback callers are exempt from the device-key requirement; `"auth":"closed"`
+  means no devices are enrolled yet (§8)
+- **beast-slot discovery** (only with the dashboard extension enabled —
+  `./scripts/ext.sh enable dashboard`): `curl http://127.0.0.1:3002/api/slot`
+  — read-only JSON: loaded model, slots busy/total, context, service health
 - **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
 - **Tool use:** in Open WebUI, click the wrench icon in the chat input and toggle on "Local Tools (privileged)"
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
@@ -495,12 +506,32 @@ browser moments, telling you precisely what to do at each:
    expected: machine *names* become publicly logged, the services behind
    them stay tailnet-only.)
 
-It finishes by printing your two permanent URLs:
+It finishes by printing your permanent URLs — two always, plus one for each
+opt-in publish flag:
 
-| URL | What |
-|---|---|
-| `https://beast.<tailnet>.ts.net` | Open WebUI (chat) |
-| `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API |
+| URL | What | Published by |
+|---|---|---|
+| `https://beast.<tailnet>.ts.net` | Open WebUI (chat) | always |
+| `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API | always |
+| `https://beast.<tailnet>.ts.net:8889` | SearXNG, for a client's `web_search` | `--publish-searxng` |
+| `https://beast.<tailnet>.ts.net:8444/api/slot` | beast-slot discovery (what the rig is actually serving) | `--publish-slot` |
+
+The two opt-in ones are for client devices (§8). `--publish-slot` needs the
+dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
+serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
+`/api/status` stay rig-local. Undo either with `--unpublish-searxng` /
+`--unpublish-slot`.
+
+> **What `:8443` actually exposes.** By default it maps straight at
+> llama-server, which publishes its *whole* route table to the tailnet — not
+> just chat: `/slots` and `/props` (other sessions' metadata), `POST
+> /lora-adapters` (global model mutation), `GET/DELETE /v1/stream/<id>`,
+> `/infill`, `/metrics`. That's fine on a tailnet you fully own. Set
+> `EDGE_GATE=true` in `openbeast.conf`, restart the stack, and re-run
+> `setup-tailscale.sh`: `:8443` then points at **beast-gate** (`:8090`)
+> instead — per-device keys, an OpenAI-route allowlist, rate limits, and an
+> inference audit trail. The script prints which of the two it published.
+> → [`BEAST_SLOT.md`](BEAST_SLOT.md)
 
 ### Post-setup (one time, ~3 minutes)
 
@@ -531,13 +562,138 @@ It finishes by printing your two permanent URLs:
   `curl https://beast.<tailnet>.ts.net:8443/v1/models` → model list.
 - Same URL with Tailscale disconnected on that device → connection fails.
   That failure is the proof the perimeter works.
-- `./scripts/healthcheck.sh` — the report includes a Tailscale row.
+- `./scripts/healthcheck.sh` — the report includes a Tailscale row (and a
+  beast-gate row when `EDGE_GATE=true`).
 - Optional: `nmap <this-machine's-LAN-IP>` from a LAN device — ports 3000,
-  8080, 3001, 8888 all closed.
+  8080, 3001, 8888, 8090, 3002 all closed. Everything is loopback-bound;
+  devices arrive through the tailnet, never a raw LAN IP.
+
+With `EDGE_GATE=true`, two more checks — both from a tailnet device:
+
+- `curl https://beast.<tailnet>.ts.net:8443/v1/models` with **no** bearer →
+  **401**. The gate fails closed: an empty device registry never means
+  "everyone is welcome".
+- `curl https://beast.<tailnet>.ts.net:8443/slots` → **404**, with or without a
+  valid key. Counter-intuitive but correct: 404 (not 403) is the *success*
+  signal — a blocked route must not exist for remote callers, so they learn
+  nothing about what the rig runs. Same for `/props`, `/lora-adapters`,
+  `/v1/stream/<id>`, `/infill`. The five allowed paths are `/health`,
+  `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`.
 
 See [REMOTE_ACCESS_PLAN.md](REMOTE_ACCESS_PLAN.md) for the full design
 rationale (why Tailscale, the Headscale escape hatch, what's deliberately
 out of scope) and the README "Remote access" section for day-to-day usage.
+
+## 8. Install a client device (optional)
+
+A browser or a bare `baseURL` gets you chat. **Client mode** gets you the whole
+thing on a second machine: OpenCode plus the full tool arsenal running
+*locally* — `bash`, `read_file`, `edit_file`, spawned agents all act on the
+**client's** disk — while inference streams from the rig. The machine boundary
+is one OpenAI-compatible HTTP call.
+
+**Data flow, stated plainly:** file contents the client's agent *reads* are
+sent to the rig as model context — the model must see data to reason about it.
+Both machines are on your tailnet, so the promise is **"nothing leaves your
+tailnet"**, not "nothing leaves this machine".
+
+**On the client you need:** macOS or Linux (Windows/WSL2 untested), Tailscale
+installed and signed in to the same tailnet, Python 3.10+, and
+[OpenCode](https://opencode.ai) (the script writes its config either way, but
+you need the binary to use it). The preflight checks all of these and changes
+nothing if any fail.
+
+### Rig side first
+
+```bash
+./scripts/ext.sh enable dashboard          # the slot API lives in the dashboard
+./stop.sh && ./start.sh                    # picks up the extension
+./scripts/setup-tailscale.sh --publish-searxng --publish-slot
+```
+
+Neither flag is required — without `--publish-searxng` the client's
+`web_search` has no backend (use `--no-search` or `--local-search` below), and
+without `--publish-slot` the client just can't see what model the rig has
+loaded. Both are cheap; publish them.
+
+If you enabled **beast-gate** (§7), enroll the device **before** you install
+the client:
+
+```bash
+./scripts/clients.sh enroll laptop-air --label "MacBook Air"
+```
+
+It prints the key exactly once — only its SHA-256 is stored, and nothing on
+the rig can print it again (lose it and you `rotate`). Enrollment is
+hot-reloaded, so no restart is needed. **Do it first:** the gate fails closed,
+so until at least one device is enrolled every remote request is a 401 and the
+client installer's preflight will report the rig unreachable — which reads
+like a broken tailnet, not a missing key. Also:
+`clients.sh list|show|revoke|unrevoke|rotate|remove`.
+
+### Client side
+
+```bash
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
+./scripts/setup-client.sh                  # auto-detects the tailnet peer named 'beast'
+```
+
+You can also fetch just `scripts/setup-client.sh` and run it — it makes its own
+slim checkout. Flags:
+
+| Flag | What |
+|---|---|
+| `--host <fqdn>` | rig's tailnet FQDN — for a second rig, or a `TS_HOSTNAME` other than `beast` |
+| `--api-key <key>` | the enrolled device key (or the rig's `LLAMA_API_KEY`); also read from `$OPENBEAST_API_KEY` |
+| `--no-search` | skip search wiring entirely |
+| `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
+| `--uninstall` | remove everything below |
+
+What lands on the client:
+
+- `~/.openbeast-client/` — a slim checkout (`agents/ skills/ scripts/ searxng/`)
+  and an isolated venv with the pinned deps. (Run from a full clone and it uses
+  that clone in place.)
+- `~/.openbeast-client.env` (mode 0600) — the rig URLs and, if keyed, the bearer.
+- A **non-clobbering merge** into `~/.config/opencode/opencode.json`: the
+  `llama-cpp` provider pointed at `https://<rig>:8443/v1`, the full model list,
+  and the tool server as a **stdio subprocess** — no daemon, no open port, it
+  dies with OpenCode. Your existing config is preserved; `--uninstall` removes
+  only our two entries. (Chmod'd 600 when it holds a key.)
+- `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`, created
+  only if that directory already exists (otherwise call
+  `~/.openbeast-client/repo/scripts/client.sh` directly).
+
+Then `cd <any project> && opencode` and pick a `llama-cpp` model — the model
+you pick must be the one the rig is actually serving.
+
+### The client CLI
+
+```bash
+openbeast-client status        # client doctor + live beast-slot view
+openbeast-client agent "task"  # CLI agent HERE, thinking on the rig
+openbeast-client search up     # local SearXNG lifecycle (--local-search only)
+openbeast-client update        # refresh the checkout + pinned deps
+openbeast-client uninstall
+```
+
+`status` is the one to run first: it checks the env file, venv imports,
+tailscale, the rig's `/health` **and** `/v1/models` (so a wrong or revoked key
+surfaces here instead of mid-conversation), beast-slot discovery, search, and
+the OpenCode wiring.
+
+### Uninstall
+
+```bash
+./scripts/setup-client.sh --uninstall     # or: openbeast-client uninstall
+```
+
+Removes `~/.openbeast-client`, the env file, the symlink, our `opencode.json`
+entries, and the local SearXNG container if there is one.
+
+The full architecture — the discovery contract, what `:8443` grants and
+doesn't, beast-gate's controls, keyed mode, and the two-machine verification
+walkthrough — is in **[BEAST_SLOT.md](BEAST_SLOT.md)**.
 
 ## Architecture notes
 

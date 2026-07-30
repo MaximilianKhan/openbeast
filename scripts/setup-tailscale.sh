@@ -1,7 +1,8 @@
 #!/bin/bash
 # OpenBeast remote access — one-shot Tailscale setup. Idempotent.
 #
-#   ./scripts/setup-tailscale.sh [--publish-searxng | --unpublish-searxng]
+#   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
+#   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
 #
 # What it does:
 #   1. Installs tailscale (pacman) and enables tailscaled
@@ -238,6 +239,7 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"
+echo "  Installing a client device (laptop):       docs/INSTALL.md §8"
 echo ""
 echo "  Note: services now bind 127.0.0.1 by default (see BIND_HOST in"
 echo "  openbeast.conf.example). Devices reach them via the tailnet, not"
