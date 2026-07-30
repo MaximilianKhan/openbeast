@@ -676,11 +676,45 @@ fi
 # Model governance: serve.sh must check the weight it is about to load against
 # the registry, and must default to WARN (a hard refusal on the critical start
 # path would be a foot-gun on upgrade).
-if grep -q 'weights.registry' "$REPO_DIR/scripts/serve.sh" \
-   && grep -q 'WEIGHT_ENFORCE' "$REPO_DIR/scripts/serve.sh"; then
-  pass "serve.sh enforces the weight registry"
+# BEHAVIORAL, not a grep: extract the enforcement block into a scratch script
+# and exercise every mode. A substring grep would pass for any regression that
+# kept the words but broke the logic — and this block sits on the critical
+# start path, so "it mentions the registry" is not evidence of anything.
+WE_SCRATCH=$(mktemp -d)
+mkdir -p "$WE_SCRATCH/scripts"
+sed -n '/^# --- Model registry enforcement/,/^fi$/p' "$REPO_DIR/scripts/serve.sh" \
+  > "$WE_SCRATCH/block.sh"
+cp "$REPO_DIR/scripts/weights.registry" "$WE_SCRATCH/scripts/" 2>/dev/null
+cat > "$WE_SCRATCH/run.sh" <<'WEEOF'
+set -euo pipefail
+SCRIPT_DIR="$1"; MODEL="$2"; WEIGHT_ENFORCE="${3:-warn}"
+source "$SCRIPT_DIR/../block.sh"
+exit 0
+WEEOF
+echo unlisted > "$WE_SCRATCH/unlisted.gguf"
+_we_rc() { bash "$WE_SCRATCH/run.sh" "$WE_SCRATCH/scripts" "$1" "$2" >/dev/null 2>&1; echo $?; }
+if [[ -s "$WE_SCRATCH/block.sh" ]]; then
+  _rc_warn=$(_we_rc "$WE_SCRATCH/unlisted.gguf" warn)
+  _rc_strict=$(_we_rc "$WE_SCRATCH/unlisted.gguf" strict)
+  _rc_off=$(_we_rc "$WE_SCRATCH/unlisted.gguf" off)
+  _rc_typo=$(_we_rc "$WE_SCRATCH/unlisted.gguf" NOTAMODE)
+  # warn/off/typo MUST NOT block a launch; strict MUST refuse with exit 3 so
+  # start.sh can tell a supply-chain refusal from a crash (and not roll back).
+  if [[ "$_rc_warn" == "0" && "$_rc_off" == "0" && "$_rc_typo" == "0" && "$_rc_strict" == "3" ]]; then
+    pass "weight enforcement: warn/off/bad-value pass, strict refuses with exit 3"
+  else
+    fail "weight enforcement rc wrong (warn=$_rc_warn off=$_rc_off typo=$_rc_typo strict=$_rc_strict; want 0/0/0/3)"
+  fi
 else
-  fail "serve.sh does not check weights against scripts/weights.registry"
+  fail "could not extract the weight-enforcement block from serve.sh"
+fi
+rm -rf "$WE_SCRATCH"
+# start.sh must refuse to roll back on that exit code, or strict mode would
+# silently serve a DIFFERENT model than the operator configured.
+if grep -q 'Refusing to roll back' "$REPO_DIR/start.sh"; then
+  pass "start.sh refuses MODEL_ROLLBACK on a supply-chain refusal"
+else
+  fail "start.sh would roll back past a WEIGHT_ENFORCE=strict refusal"
 fi
 WE_DEFAULT=$(env -i PATH="$PATH" HOME="$(mktemp -d)" REPO_DIR="$REPO_DIR" \
   bash -c "source '$REPO_DIR/scripts/lib/conf.sh' >/dev/null 2>&1; printf '%s' \"\$WEIGHT_ENFORCE\"") || WE_DEFAULT="(failed)"

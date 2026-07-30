@@ -118,6 +118,10 @@ def last_seen_of(dev):
             seen = json.load(fh) or {}
     except (OSError, ValueError):
         seen = {}
+    # Valid JSON that is not an object (a list, a bare string) would make
+    # .get() raise and take down `list`/`show` with a traceback.
+    if not isinstance(seen, dict):
+        seen = {}
     return seen.get(dev.get("id")) or dev.get("last_seen")
 
 

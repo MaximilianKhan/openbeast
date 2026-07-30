@@ -170,20 +170,43 @@ if [[ -n "$_gguf" && -f "$REPO_DIR/scripts/weights.registry" ]]; then
          "pin it (sha256 + bytes) before enabling WEIGHT_ENFORCE=strict"
   fi
 fi
-# Eval quality gate: promotion by evidence. The alias in the serve script is
-# what the leaderboard keys on (scoring.py slugifies it the same way).
-_alias="$(grep -oE -- '-a "[^"]+"' "$REPO_DIR/scripts/$_srv" 2>/dev/null | head -1 | sed 's/-a "//; s/"$//')"
-if [[ -n "$_alias" && -f "$REPO_DIR/evals/leaderboard.json" ]]; then
-  _slug="$(printf '%s' "$_alias" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\+/-/g; s/^-//; s/-$//')"
-  if python3 -c "
-import json,sys
-d=json.load(open('$REPO_DIR/evals/leaderboard.json')).get('entries',[])
-sys.exit(0 if any(e.get('model_slug')=='$_slug' for e in d) else 1)" 2>/dev/null; then
-    pass "default model '$_alias' has a leaderboard row"
-  else
-    warn "default model '$_alias' has NO leaderboard row on this host" \
-         "promotion by evidence: python3 evals/benchmark_all.py --models <slug> (GPU-hours), or accept it knowingly"
-  fi
+# Eval quality gate: promotion by evidence.
+# THREE namespaces exist and conflating them produces permanent false alarms:
+#   serve script  -a "Qwen 27B Uncensored"        (display alias)
+#   MODELS[].name "Qwen 27B Uncensored Q5_K_P"    -> slugified into the
+#                                                   leaderboard's model_slug
+#   MODELS[].slug "qwen-27b-uncensored-q5"        -> what --models accepts
+# The leaderboard key comes from MODELS[].name, NOT the serve alias, so
+# resolve through benchmark_all.py's registry instead of guessing.
+if [[ -f "$REPO_DIR/evals/leaderboard.json" && -f "$REPO_DIR/evals/benchmark_all.py" ]]; then
+  _eval_out="$(OB_SRV="$_srv" python3 - "$REPO_DIR" <<'PYEOF' 2>/dev/null || true
+import ast, json, os, re, sys
+repo, srv = sys.argv[1], os.environ["OB_SRV"]
+src = open(os.path.join(repo, "evals/benchmark_all.py")).read()
+m = re.search(r"^MODELS = (\[.*?\n\])", src, re.S | re.M)
+models = ast.literal_eval(m.group(1)) if m else []
+entry = next((x for x in models
+              if os.path.basename(x.get("serve", "")) == srv), None)
+if entry is None:
+    print("unregistered|" + srv); raise SystemExit
+slug = re.sub(r"[^a-z0-9]+", "-", entry["name"].lower()).strip("-")
+rows = json.load(open(os.path.join(repo, "evals/leaderboard.json"))).get("entries", [])
+row = next((e for e in rows if e.get("model_slug") == slug), None)
+if row:
+    print("ok|%s|%s|%s" % (entry["name"], row.get("suite_version", "?"),
+                           row.get("accuracy", "?")))
+else:
+    print("missing|%s|%s" % (entry["name"], entry["slug"]))
+PYEOF
+)"
+  case "${_eval_out%%|*}" in
+    ok)      pass "default model evaluated here ($(echo "$_eval_out" | cut -d'|' -f2), suite $(echo "$_eval_out" | cut -d'|' -f3))" ;;
+    missing) warn "default model '$(echo "$_eval_out" | cut -d'|' -f2)' has NO leaderboard row on this host" \
+                  "promotion by evidence: python3 evals/benchmark_all.py --models $(echo "$_eval_out" | cut -d'|' -f3) (GPU-hours), or accept it knowingly" ;;
+    unregistered)
+             warn "default serve script '$_srv' is not registered in evals/benchmark_all.py MODELS" \
+                  "it cannot be benchmarked until added there — you are serving an unevaluated model knowingly" ;;
+  esac
 fi
 
 # ── Pinned dependencies ─────────────────────────────────────────────────────

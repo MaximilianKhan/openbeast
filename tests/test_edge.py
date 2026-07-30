@@ -528,16 +528,47 @@ class TestIntrospectionAuth:
     def test_peer_address_alone_does_not_grant_introspection(self, edge, tmp_path):
         # THE regression that matters: `tailscale serve` reverse-proxies into
         # 127.0.0.1, so a remote tailnet caller arrives looking exactly like
-        # loopback. Any peer-address-based exemption protects nothing. The
-        # request below IS from 127.0.0.1 and must still be refused without
-        # the local token.
+        # loopback. Any peer-address-based exemption protects nothing.
+        #
+        # client=("127.0.0.1", ...) is load-bearing. TestClient's DEFAULT peer
+        # is "testclient", which is not in any loopback list — so without this
+        # the test would pass against the very implementation it exists to
+        # catch, i.e. it could not fail. The assertion below is only
+        # meaningful because this request genuinely presents as loopback.
         _registry(tmp_path)
         _stub_upstream(edge, {})
+        with TestClient(edge.app, client=("127.0.0.1", 54321)) as c:
+            assert c.get("/gate/metrics").status_code == 404, (
+                "introspection granted on peer address alone — a "
+                "tailscale-serve caller would read the device roster")
+            # And prove the harness can actually observe the vulnerable
+            # behavior: restore a peer-based check and watch it open up.
+            import edge as _e
+            orig = _e._is_local
+            _e._is_local = lambda r: _e._peer(r) in ("127.0.0.1", "::1")
+            try:
+                vulnerable = c.get("/gate/metrics").status_code
+            finally:
+                _e._is_local = orig
+        assert vulnerable == 200, (
+            "harness cannot distinguish the vulnerable implementation — this "
+            "test would pass either way and is therefore worthless")
+
+    def test_non_ascii_local_header_does_not_500(self, edge, tmp_path):
+        # Starlette decodes header bytes as latin-1 and hmac.compare_digest
+        # raises TypeError on non-ASCII str — so one 0x80-0xFF byte from an
+        # unauthenticated caller used to become an unhandled 500 plus a
+        # traceback per request in .run/stack.log (unbounded log growth by
+        # someone holding no key).
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        # Raw BYTES on purpose: httpx refuses to encode a non-ASCII header
+        # string, but the wire can carry 0x80-0xFF (h11 accepts obs-text), and
+        # that is exactly how a hostile caller reaches the server.
         with TestClient(edge.app) as c:
-            r = c.get("/gate/metrics")
-        assert r.status_code == 404, (
-            "introspection granted on peer address alone — a tailscale-serve "
-            "caller would read the device roster")
+            r = c.get("/gate/metrics",
+                      headers={b"X-OpenBeast-Local": b"\xe9abc"})
+        assert r.status_code == 404, f"got {r.status_code}, want a clean 404"
 
     def test_wrong_local_token_refused(self, edge, tmp_path):
         _registry(tmp_path)

@@ -103,8 +103,12 @@ _fs_source() { # _fs_source <dir> -> /dev/... or empty
 _strip_partition() { # _strip_partition /dev/X -> /dev/Y
   local n="${1#/dev/}"
   case "$n" in
+    # Partition forms only. A WHOLE-disk name must pass through untouched:
+    # nvme0n1 has no "p", and the generic *[0-9] rule would turn it into
+    # "nvme" — a device that does not exist. Same for mmcblk0.
     nvme*n*p[0-9]*|mmcblk[0-9]*p[0-9]*) n="${n%p*}" ;;
-    *[0-9])                             n="${n%%[0-9]*}" ;;
+    nvme*n[0-9]*|mmcblk[0-9]*)          : ;;
+    sd[a-z]*[0-9]|vd[a-z]*[0-9]|hd[a-z]*[0-9]) n="${n%%[0-9]*}" ;;
   esac
   printf '/dev/%s\n' "$n"
 }
@@ -228,7 +232,8 @@ if [[ $ANY_OK -eq 0 && $ANY_DENIED -eq 1 ]]; then
   done
   say "  → run it once as root:      sudo ./scripts/ssd-wear.sh"
   say "  → or permit just this read, so doctor/snapshots work unattended:"
-  say "        echo \"$(id -un) ALL=(root) NOPASSWD: /usr/bin/smartctl -j -a /dev/*\" | sudo tee /etc/sudoers.d/openbeast-smartctl"
+  _sc_path="$(command -v smartctl 2>/dev/null || echo /usr/sbin/smartctl)"
+  say "        echo \"$(id -un) ALL=(root) NOPASSWD: ${_sc_path} -j -a /dev/*\" | sudo tee /etc/sudoers.d/openbeast-smartctl"
   say "        sudo chmod 440 /etc/sudoers.d/openbeast-smartctl"
   say "  (this script only ever runs 'smartctl -j -a' — read-only, no self-tests)"
   if [[ "$MODE" == "json" ]]; then
@@ -243,7 +248,22 @@ fi
 # All JSON handling lives in python: bash must never hand-roll JSON, and the
 # state file is written atomically (mkstemp + os.replace, mode 0600) so a
 # crash or a concurrent doctor run can never leave a truncated history behind.
-mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+# Under the recommended `sudo ./scripts/ssd-wear.sh`, a fresh mkdir here would
+# create a ROOT-OWNED .run/ that the unprivileged stack can no longer write —
+# breaking pidfiles and audit on the next start. Create it as the invoking
+# user, and never create it at all when running as root under sudo.
+_state_dir="$(dirname "$STATE_FILE")"
+if [[ ! -d "$_state_dir" ]]; then
+  if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_UID:-}" ]]; then
+    install -d -o "$SUDO_UID" -g "${SUDO_GID:-$SUDO_UID}" -m 700 "$_state_dir" 2>/dev/null || true
+  else
+    mkdir -p "$_state_dir" 2>/dev/null || true
+  fi
+fi
+# Likewise, never leave a root-owned state file behind for the user's stack.
+if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_UID:-}" && -f "$STATE_FILE" ]]; then
+  chown "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$STATE_FILE" 2>/dev/null || true
+fi
 
 OB_WEAR_MANIFEST="$MANIFEST" \
 OB_WEAR_STATE="$STATE_FILE" \

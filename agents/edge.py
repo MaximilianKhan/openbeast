@@ -427,19 +427,37 @@ def _local_token() -> str:
         _LOCAL_TOKEN = uuid.uuid4().hex
         try:
             os.makedirs(RUN_DIR, exist_ok=True)
+            # O_TRUNC on an existing path keeps the OLD mode, so fchmod
+            # explicitly — a token left 0644 by some earlier run would be
+            # readable by any local user.
             fd = os.open(_LOCAL_TOKEN_PATH,
                          os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as f:
                 f.write(_LOCAL_TOKEN)
-        except Exception:
-            pass
+        except Exception as e:
+            # Do NOT swallow this. If the file cannot be written, no local
+            # tool can ever present the token, so doctor/healthcheck lose
+            # introspection with no clue why. Say so loudly and keep the
+            # in-memory token (a device key still works).
+            _log(f"ERROR: could not write {_LOCAL_TOKEN_PATH} ({e}) — "
+                 "rig-local introspection (doctor/healthcheck detail) will be "
+                 "refused; an enrolled device key still works")
     return _LOCAL_TOKEN
 
 
 def _is_local(request: Request) -> bool:
     """True only for callers that proved filesystem access to this box."""
     presented = request.headers.get("x-openbeast-local", "")
-    return bool(presented) and hmac.compare_digest(presented, _local_token())
+    if not presented:
+        return False
+    # Compare BYTES. compare_digest on str raises TypeError for any non-ASCII
+    # character, and Starlette decodes header bytes as latin-1 — so a single
+    # 0x80-0xFF byte from an unauthenticated caller would turn this check into
+    # an unhandled 500 and spray a traceback into .run/stack.log on every
+    # request. Encoding first makes a hostile header simply not match.
+    return hmac.compare_digest(presented.encode("utf-8", "surrogateescape"),
+                               _local_token().encode())
 
 
 def _bearer(request: Request) -> str:
@@ -653,6 +671,19 @@ async def gate(request: Request):
                                    content=body, headers=headers)
         try:
             resp = await client.send(req, stream=True)
+        except (httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            # A CONNECT/pool timeout means we never reached the server — that
+            # is "unreachable", not "slow". TimeoutException is their parent,
+            # so these must be caught FIRST or a dead upstream would be
+            # reported as a read timeout with a raise-the-read-timeout hint.
+            _release()
+            _audit(device_id, user, path, 502, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   "upstream_error", request_id, uid)
+            _log(f"upstream connect timeout device={device_id} path={path}: {e}")
+            return JSONResponse(
+                {"error": {"message": f"model server unreachable: {e}",
+                           "type": "upstream_unavailable"}}, status_code=502)
         except httpx.TimeoutException as e:
             # Distinct from unreachable: the model server IS there and simply
             # took longer than OPENBEAST_EDGE_READ_TIMEOUT to produce the
@@ -690,6 +721,7 @@ async def gate(request: Request):
     state = {"tail": b"", "whole": b"", "oversize": False}
 
     async def body_iter():
+        timed_out = False
         try:
             async for chunk in resp.aiter_raw():
                 # Bounded tail (usage rides the last SSE chunks) plus, for
@@ -700,6 +732,15 @@ async def gate(request: Request):
                 else:
                     state["oversize"] = True
                 yield chunk
+        except httpx.TimeoutException:
+            # A read timeout AFTER headers lands HERE, not at client.send().
+            # Without this the audit ledger would record the request as a
+            # clean "ok" with the upstream's 200 — the one outcome that makes
+            # a timeout invisible to whoever reads the audit later.
+            timed_out = True
+            _log(f"upstream read timeout mid-stream device={device_id} "
+                 f"path={path} request_id={request_id}")
+            raise
         finally:
             # RELEASE FIRST. aclose() can raise (and on a client disconnect
             # the CancelledError re-raises at that await), which previously
@@ -719,10 +760,15 @@ async def gate(request: Request):
                     usage = None
             if usage is None:
                 usage = _usage_from_sse(state["tail"])
-            _audit(device_id, user, path, resp.status_code, usage,
+            if timed_out:
+                _outcome, _status = "upstream_timeout", 504
+            elif resp.status_code < 400:
+                _outcome, _status = "ok", resp.status_code
+            else:
+                _outcome, _status = "upstream_status", resp.status_code
+            _audit(device_id, user, path, _status, usage,
                    int((time.monotonic() - started) * 1000), model,
-                   "ok" if resp.status_code < 400 else "upstream_status",
-                   request_id, uid)
+                   _outcome, request_id, uid)
 
     # BackgroundTask is a SECOND, idempotent release path. If the client
     # vanishes after upstream headers arrive but before Starlette starts

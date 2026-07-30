@@ -29,6 +29,10 @@ H = "127.0.0.1"
 _API_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
 # beast-gate presence changes what "auth" means to a client (see slot_status).
 _EDGE_GATE = os.environ.get("EDGE_GATE", "").strip().lower() == "true"
+# ALLOW_ANON serves unregistered callers as a single "anon" device, so the
+# gate is up but per-device identity is NOT in force. Saying "device" there
+# would overstate what a client is actually protected by.
+_EDGE_ANON = os.environ.get("OPENBEAST_EDGE_ALLOW_ANON", "").strip().lower() == "true"
 
 
 def _get(url, timeout=2, auth=False):
@@ -283,7 +287,9 @@ def slot_status():
         # Gate-aware: with EDGE_GATE=true remote clients need a per-DEVICE
         # key even when LLAMA_API_KEY is unset. Reporting "open" there told
         # clients the opposite of the truth.
-        "auth": ("device" if _EDGE_GATE else ("key" if _API_KEY else "open")),
+        "auth": ("anon" if (_EDGE_GATE and _EDGE_ANON)
+                 else "device" if _EDGE_GATE
+                 else "key" if _API_KEY else "open"),
     }
 
 

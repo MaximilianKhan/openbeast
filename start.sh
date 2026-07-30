@@ -303,6 +303,19 @@ launch_and_wait() {
   launch_llama
   if wait_llama_health; then record_last_good "$SERVE_SCRIPT"; return 0; fi
   local failed="$SERVE_SCRIPT" lastgood
+  # serve.sh exits 3 for a WEIGHT_ENFORCE=strict supply-chain refusal. Rolling
+  # back there would silently serve a DIFFERENT model than the operator
+  # configured — precisely what strict mode exists to prevent. Refuse loudly
+  # instead; an unvetted weight is a decision for a human, not a fallback.
+  if [[ -n "${LLAMA_PID:-}" ]] && ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+    wait "$LLAMA_PID" 2>/dev/null; local _rc=$?
+    if [[ $_rc -eq 3 ]]; then
+      echo "Refusing to roll back: '$failed' was rejected by the weight registry" >&2
+      echo "  (WEIGHT_ENFORCE=strict). Serving a different model would defeat the check." >&2
+      echo "  Fix the weight, re-pin it, or set WEIGHT_ENFORCE=warn in openbeast.conf." >&2
+      return 1
+    fi
+  fi
   if [[ "${MODEL_ROLLBACK:-true}" == "true" && -f "$RUN_DIR/last-good-serve-script" ]]; then
     lastgood="$(head -n1 "$RUN_DIR/last-good-serve-script" 2>/dev/null || true)"
     if [[ -n "$lastgood" && "$lastgood" != "$failed" && -x "$SCRIPT_DIR/scripts/$lastgood" ]]; then

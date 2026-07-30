@@ -67,6 +67,11 @@ fi
 # Size-only by design — a sha256 of 20 GB on every launch would add minutes to
 # every start; `./scripts/verify-weights.sh --deep` is the hash-level check.
 _wr_enforce="${WEIGHT_ENFORCE:-warn}"
+case "$_wr_enforce" in
+  warn|strict|off) ;;
+  *) echo "WARNING: WEIGHT_ENFORCE='$_wr_enforce' is not warn|strict|off — using warn" >&2
+     _wr_enforce="warn" ;;
+esac
 if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL" ]]; then
   _wr_name="$(basename "$MODEL")"
   _wr_row="$(awk -F'\t' -v n="$_wr_name" '$0 !~ /^#/ && $3 == n {print; exit}' \
@@ -89,7 +94,12 @@ if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL
       echo "Error: $_wr_msg" >&2
       echo "       $_wr_hint" >&2
       echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
-      exit 1
+      # Exit 3, not 1: start.sh's MODEL_ROLLBACK cannot distinguish a crash
+      # from a deliberate supply-chain refusal, and would "recover" by
+      # silently serving a DIFFERENT model — the opposite of what strict
+      # mode is for. A distinct code lets the supervisor refuse to roll back.
+      echo "       (exit 3 = supply-chain refusal; rollback must NOT substitute another model)" >&2
+      exit 3
     fi
     echo "WARNING: $_wr_msg" >&2
     echo "         $_wr_hint" >&2
