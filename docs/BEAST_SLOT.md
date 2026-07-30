@@ -34,11 +34,40 @@ tailnet"**, not "nothing leaves this machine". Never expose any of this with
 
 ## What beast-slot access grants
 
-**Inference, not filesystem.** The `:8443` endpoint is chat-only — tools are
-executed by frontends (the client's own MCP process), never by llama-server.
-A tailnet device that can reach `:8443` can chat with your model; it cannot
-touch the rig's files or tools (those sit behind the separate `:3001` identity
-server, which is never published). See docs/RBAC_PLAN.md.
+**Inference, not filesystem.** Tools are executed by frontends (the client's own
+MCP process), never by llama-server, so a tailnet device that reaches `:8443`
+cannot touch the rig's files or tools — those sit behind the separate `:3001`
+identity server, which is never published. See docs/RBAC_PLAN.md.
+
+**But `:8443` is NOT "chat-only".** `tailscale serve --https=8443 →
+127.0.0.1:8080` mounts `/`, publishing llama-server's *entire* route table to
+every tailnet device. Verified on the reference rig: `/health`, `/props`,
+`/slots`, `/v1/models`, and `GET /lora-adapters` all answer 200. Notably
+reachable:
+
+| Route | Risk |
+|---|---|
+| `GET /slots`, `/props` | Other sessions' metadata: context size, token counts, sampling params. Prompt *text* stays redacted unless `LLAMA_SERVER_SLOTS_DEBUG` is set — never set it on a published rig |
+| `POST /lora-adapters` | Global model mutation — affects every user of the rig |
+| `GET/DELETE /v1/stream/:conv_id` | Sessions are keyed only by a caller-chosen `X-Conversation-Id`; knowing an id lets you read or cancel that generation. Enumeration is blocked (`/v1/streams/lookup` only answers for ids you supply), guessing is not |
+| `/infill`, `/embeddings`, `/rerank`, `/tokenize` | Extra compute surface beyond chat |
+
+Gated on our config and safe as shipped: `POST /slots/:id` needs
+`--slot-save-path` (never passed) and `POST /props` needs `--props` (off).
+
+On a personal tailnet where you own every device, this is acceptable — it is
+the same trust boundary as the chat endpoint itself. On a tailnet with users
+or devices you do not own, a bearer key (below) gates all of it behind one
+shared secret but does **not** shrink the surface; the right fix is an
+identity-aware edge proxy that allowlists the OpenAI routes. Tracked in
+docs/TODO.md.
+
+**`id_slot` is hostile input.** llama-server accepts a client-chosen `id_slot`
+on completion requests. It is unauthenticated, wraps modulo the slot count
+(so an out-of-range value silently lands on someone else's slot), and a client
+that always pins the same slot jumps the deferred queue ahead of unpinned
+callers. Harmless at `-np 1`; strip it at the proxy before serving multiple
+tenants.
 
 ## Server side (the rig)
 
@@ -71,10 +100,24 @@ and `/api/status` stay rig-local:
   it's actually talking to.
 - `slots` is **data, not an assumption**. Today's MTP default serves `-np 1`:
   one slot, concurrent requests (your WebUI turn + a remote client's turn)
-  queue FIFO and pay a KV context-swap per conversation switch — fine for a
-  single operator who is only on one device at a time. A future multi-slot
-  serving profile (or a fleet router) answers the **same shape** with bigger
-  numbers; clients must not hard-code 1.
+  queue FIFO. Switching between conversations is cheaper than it sounds — the
+  server saves the displaced conversation's KV state into a global RAM prompt
+  cache (8 GiB default) and restores it later, so a handoff costs a RAM copy,
+  not a full reprocess. A future multi-slot serving profile (or a fleet
+  router) answers the **same shape** with bigger numbers; clients must not
+  hard-code 1.
+- ⚠️ **`slots.total` × `model.ctx` is NOT your capacity.** We serve with
+  `--kv-unified`, under which every slot advertises the *full* context while
+  all slots share one pool. A default non-MTP install publishes
+  `slots.total: 6` and `ctx: 358400` — that is 358400 tokens **shared**, not
+  per slot. Worse, when the pool runs dry the server purges the
+  *lowest-numbered* idle slot's cache to make room, deterministically. For
+  real per-tenant isolation, serve `--no-kv-unified -np N -c (N × per-tenant)`
+  and accept the lower pool efficiency.
+- `slots.busy` counts only *in-flight* generations. Queued work is invisible
+  (with `-np 1`, `busy` is 1 whether one request or fifty are waiting), so it
+  is a liveness signal, not a load signal. llama-server's `/metrics` carries
+  `requests_deferred` — the number a future contract version should surface.
 - `busy` is `null` when the server runs `--no-slots`.
 - Never contains prompt text or key material.
 
