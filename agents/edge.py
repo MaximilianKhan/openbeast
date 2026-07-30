@@ -52,6 +52,7 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -286,7 +287,10 @@ class Limiter:
         self._buckets: dict[str, Bucket] = {}
 
     def bucket(self, device: dict) -> Bucket:
-        did = device.get("id", "anon")
+        # Keyed on the ENROLLMENT, not the reusable id: a removed-and-
+        # re-enrolled device must start with fresh counters rather than
+        # inheriting the previous holder's rate/in-flight state.
+        did = device_uid(device)
         per_min = int(device.get("rate_limit_per_min") or RATE_LIMIT)
         b = self._buckets.get(did)
         if b is None:
@@ -313,13 +317,32 @@ _METRICS = {
 }
 
 
+def device_uid(device: dict) -> str:
+    """Stable identity for ONE enrollment of a device.
+
+    The human-facing `id` is reusable: `clients.sh remove laptop-air` then
+    `enroll laptop-air` yields a different physical device wearing the same
+    name, which would silently conflate two devices in the audit trail (and
+    inherit the old one's in-flight counters). Binding the enrollment
+    timestamp in makes each enrollment distinct without adding a field the
+    CLI would have to write.
+    """
+    raw = f"{device.get('id','anon')}:{device.get('enrolled_at','')}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
 def _audit(device: str, user: str | None, path: str, status: int,
            usage: dict | None, ms: int, model: str | None,
-           outcome: str) -> None:
+           outcome: str, request_id: str = "", uid: str = "") -> None:
     row = {
         "ts": _now(),
+        "request_id": request_id,
         "device": device,
-        "user": user,
+        # Distinguishes re-enrollments of the same device id; join on this,
+        # not `device`, when attributing historical usage.
+        "device_uid": uid,
+        # CLAIMED by the caller, not authenticated — see docs/BEAST_SLOT.md.
+        "user_claimed": user,
         "path": path,
         "model": model,
         "status": status,
@@ -521,6 +544,11 @@ async def gate(request: Request):
                        "type": "invalid_request_error"}}, status_code=401)
 
     device_id = device.get("id", "anon")
+    uid = device_uid(device)
+    # Correlation handle: returned to the caller as X-OpenBeast-Request-Id and
+    # written to every audit row, so a support question ("what happened to my
+    # 11:04 request?") is answerable without guessing from timestamps.
+    request_id = uuid.uuid4().hex[:16]
     # CLAIMED, not authenticated: this header is client-supplied and a device
     # holder can set it to anything. `device` is the authenticated identity;
     # this is a hint for correlating with WebUI users. Bounded so it can't be
@@ -544,7 +572,8 @@ async def gate(request: Request):
     if refusal:
         _bump("denied_total", refusal)
         _audit(device_id, user, path, 429, None,
-               int((time.monotonic() - started) * 1000), None, refusal)
+               int((time.monotonic() - started) * 1000), None, refusal,
+               request_id, uid)
         retry = "5" if refusal == "rate_limited" else "2"
         msg = ("rate limit exceeded for this device" if refusal == "rate_limited"
                else f"device already has {bucket.max_inflight} generations in flight")
@@ -586,7 +615,8 @@ async def gate(request: Request):
         except httpx.HTTPError as e:
             _release()
             _audit(device_id, user, path, 502, None,
-                   int((time.monotonic() - started) * 1000), model, "upstream_error")
+                   int((time.monotonic() - started) * 1000), model,
+                   "upstream_error", request_id, uid)
             _log(f"upstream error device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
@@ -598,6 +628,7 @@ async def gate(request: Request):
 
     hdrs = {k: v for k, v in resp.headers.items()
             if k.lower() not in _HOP_BY_HOP}
+    hdrs["X-OpenBeast-Request-Id"] = request_id
     state = {"tail": b"", "whole": b"", "oversize": False}
 
     async def body_iter():
@@ -632,7 +663,8 @@ async def gate(request: Request):
                 usage = _usage_from_sse(state["tail"])
             _audit(device_id, user, path, resp.status_code, usage,
                    int((time.monotonic() - started) * 1000), model,
-                   "ok" if resp.status_code < 400 else "upstream_status")
+                   "ok" if resp.status_code < 400 else "upstream_status",
+                   request_id, uid)
 
     return StreamingResponse(body_iter(), status_code=resp.status_code,
                              headers=hdrs)

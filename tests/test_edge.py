@@ -262,6 +262,12 @@ class TestTenancyKnobs:
         assert sent and sent != "shared-guessable-id"
 
 
+def _laptop_bucket(edge, client):
+    """Buckets are keyed by ENROLLMENT uid, not the reusable device id."""
+    uid = edge.device_uid({"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})
+    return client.app.state.limiter._buckets[uid]
+
+
 class TestSlotAccounting:
     """The in-flight counter is the device's admission budget: any path that
     increments without releasing wedges that device at 429 permanently."""
@@ -274,7 +280,7 @@ class TestSlotAccounting:
                 r = c.post("/v1/chat/completions", json={"messages": []},
                            headers={"Authorization": f"Bearer {DEVICE_KEY}"})
                 assert r.status_code == 200
-            b = c.app.state.limiter._buckets["laptop"]
+            b = _laptop_bucket(edge, c)
         assert b.inflight == 0, "in-flight slot leaked across requests"
 
     def test_slot_released_when_upstream_errors(self, edge, tmp_path):
@@ -288,7 +294,7 @@ class TestSlotAccounting:
             r = c.post("/v1/chat/completions", json={"messages": []},
                        headers={"Authorization": f"Bearer {DEVICE_KEY}"})
             assert r.status_code == 502
-            assert c.app.state.limiter._buckets["laptop"].inflight == 0
+            assert _laptop_bucket(edge, c).inflight == 0
 
     def test_release_is_idempotent(self, edge):
         b = edge.Bucket(60, 2)
@@ -419,6 +425,30 @@ class TestAuditAndMetrics:
         assert row["prompt_tokens"] == 10
         assert row["completion_tokens"] == 5
         assert row["model"] == "heretic-v2"
+        # Correlation handle + enrollment identity: the two fields that make
+        # "who used what, when" answerable across device-id reuse.
+        assert row["request_id"] and len(row["request_id"]) == 16
+        assert row["device_uid"] == edge.device_uid(
+            {"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})
+
+    def test_request_id_is_returned_to_the_caller(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            r = c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        rid = r.headers.get("x-openbeast-request-id")
+        assert rid, "no correlation id returned"
+        audit = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert rid in audit, "returned id does not match the audit row"
+
+    def test_reenrolled_device_id_does_not_inherit_history(self, edge, tmp_path):
+        # `clients.sh remove laptop-air` then `enroll laptop-air` is a
+        # DIFFERENT physical device wearing the same name. It must not inherit
+        # the previous holder's audit identity or rate/in-flight counters.
+        a = edge.device_uid({"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})
+        b = edge.device_uid({"id": "laptop", "enrolled_at": "2026-08-15T09:00:00Z"})
+        assert a != b
 
     def test_authenticated_denials_are_audited(self, edge, tmp_path):
         # A KNOWN device hitting its limit is audited (it has an identity to
