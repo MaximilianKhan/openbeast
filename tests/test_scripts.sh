@@ -530,22 +530,60 @@ else
   fail "bootstrap.sh does not read weights.registry"
 fi
 
-# --- 13. Client mode (docs/MAC_CLIENT_PLAN.md) ------------------------------
+# --- 13. Client mode (docs/BEAST_SLOT.md) -----------------------------------
 echo ""
 echo "Client mode:"
-MC="$REPO_DIR/scripts/setup-mac-client.sh"
-if [[ -x "$MC" ]] && grep -q -- '--uninstall' "$MC" && grep -q -- '--no-search' "$MC" \
-   && grep -q -- '--host' "$MC"; then
-  pass "setup-mac-client.sh present with --host/--no-search/--uninstall"
+SC="$REPO_DIR/scripts/setup-client.sh"
+if [[ -x "$SC" ]] && grep -q -- '--uninstall' "$SC" && grep -q -- '--no-search' "$SC" \
+   && grep -q -- '--host' "$SC" && grep -q -- '--api-key' "$SC" \
+   && grep -q -- '--local-search' "$SC"; then
+  pass "setup-client.sh present with --host/--no-search/--local-search/--api-key/--uninstall"
 else
-  fail "setup-mac-client.sh missing or flags incomplete"
+  fail "setup-client.sh missing or flags incomplete"
 fi
-# Stock macOS ships Bash 3.2 — bash-4+ constructs must not creep in.
-if ! grep -qE '\bmapfile\b|\breadarray\b|declare -A' "$MC" \
-   && head -1 "$MC" | grep -q '/usr/bin/env bash'; then
-  pass "setup-mac-client.sh is Bash 3.2-safe (no mapfile/readarray/declare -A)"
+# The old entry point must survive as a passthrough (published in docs/README
+# since 2026-07-17).
+MC="$REPO_DIR/scripts/setup-mac-client.sh"
+if [[ -x "$MC" ]] && grep -q 'setup-client.sh' "$MC" && grep -q 'exec' "$MC"; then
+  pass "setup-mac-client.sh is a back-compat exec wrapper"
 else
-  fail "setup-mac-client.sh uses bash-4+ constructs (breaks stock macOS)"
+  fail "setup-mac-client.sh no longer delegates to setup-client.sh"
+fi
+# Stock macOS ships Bash 3.2 — bash-4+ constructs must not creep into any
+# client-side script.
+for _cs in "$SC" "$MC" "$REPO_DIR/scripts/client.sh"; do
+  if ! grep -qE '\bmapfile\b|\breadarray\b|declare -A' "$_cs" \
+     && head -1 "$_cs" | grep -q '/usr/bin/env bash'; then
+    pass "$(basename "$_cs") is Bash 3.2-safe (no mapfile/readarray/declare -A)"
+  else
+    fail "$(basename "$_cs") uses bash-4+ constructs (breaks stock macOS)"
+  fi
+done
+# Client CLI subcommand surface.
+CC="$REPO_DIR/scripts/client.sh"
+if [[ -x "$CC" ]] && grep -q 'status)' "$CC" && grep -q 'agent)' "$CC" \
+   && grep -q 'search)' "$CC" && grep -q 'update)' "$CC" && grep -q 'uninstall)' "$CC"; then
+  pass "client.sh has status/agent/search/update/uninstall"
+else
+  fail "client.sh subcommand surface incomplete"
+fi
+# The client CLI must never source the rig-shaped conf.sh (it would generate
+# a SearXNG secret into a nonexistent openbeast.conf on the laptop).
+if ! grep -qE '^[^#]*(source|\.)[[:space:]]+[^#]*lib/conf\.sh' "$CC" \
+   && ! grep -qE '^[^#]*(source|\.)[[:space:]]+[^#]*lib/conf\.sh' "$SC"; then
+  pass "client scripts never source scripts/lib/conf.sh (rig-shaped)"
+else
+  fail "a client script sources lib/conf.sh — rig-shaped behavior on a laptop"
+fi
+# Local-search compose variant: bridge network (Docker Desktop has no
+# network_mode:host), loopback-only port map, fail-loud secret.
+CSC="$REPO_DIR/scripts/client-searxng.compose.yml"
+if [[ -f "$CSC" ]] && ! grep -qE '^[[:space:]]*network_mode:' "$CSC" \
+   && grep -q '127.0.0.1:8888' "$CSC" \
+   && grep -q 'OPENBEAST_SEARXNG_SECRET:?' "$CSC"; then
+  pass "client-searxng.compose.yml: bridge net, loopback map, required secret"
+else
+  fail "client-searxng.compose.yml missing or violates the client contract"
 fi
 if grep -q -- '--publish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
    && grep -q -- '--unpublish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
