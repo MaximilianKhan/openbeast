@@ -35,6 +35,12 @@ version; this is the exhaustive reference.
 - [OpenCode](https://opencode.ai): terminal coding agent with built-in tools
 - `agent.sh`: headless autonomous agent for scripted/scheduled tasks
 
+## Remote access & beast-slot (client/server)
+- **Tailscale remote access** (`scripts/setup-tailscale.sh`): the whole stack stays loopback-bound; your private tailnet gets HTTPS access to the WebUI (`:443`) and the OpenAI-compatible API (`:8443`) — WireGuard device identity, never the public internet (funnel is deliberately not offered)
+- **beast-slot**: the rig remains the full command center AND publishes its intelligence for other devices — `--publish-slot` adds a read-only discovery API (`:8444/api/slot`: the *actually loaded* model, slot busy/total, context, health) so clients know what they're talking to; slot-count-agnostic contract, ready for future multi-slot/fleet serving. See [`BEAST_SLOT.md`](BEAST_SLOT.md)
+- **OpenBeast client** (`scripts/setup-client.sh`, macOS + Linux): any device runs OpenCode + the complete 15-tool arsenal locally — files, shell, and spawned agents act on the *client's* disk — while inference streams from the rig; `openbeast-client` CLI (status/agent/search/update/uninstall), optional client-local SearXNG (`--local-search`), optional bearer auth (`--api-key`). Data-flow promise: nothing leaves your tailnet
+- **Keyed mode** (`LLAMA_API_KEY`, off by default): when enabled, the entire stack presents the bearer — WebUI, healthcheck, agents, evals, router, dashboard, clients
+
 ## Operations
 - Daemon mode: `./start.sh -d` returns when the model is loaded and keeps the stack running in a **memory-capped scope** (a runaway process can never take down the box); `./start.sh --status` shows what's up, and `./stop.sh` shuts everything down gracefully any time
 - Health monitor with auto-restart (`scripts/healthcheck.sh`)

@@ -1,5 +1,13 @@
 # OpenBeast client mode — thin client on the laptop, big rig does the thinking
 
+> **SUPERSEDED 2026-07-30 by [BEAST_SLOT.md](BEAST_SLOT.md)** — client mode
+> grew into the first-class client/server architecture: generalized
+> macOS+Linux installer (`scripts/setup-client.sh`; `setup-mac-client.sh` is
+> now a wrapper), client CLI (`scripts/client.sh`), `--local-search`,
+> keyed-mode support, and the `/api/slot` discovery contract. The
+> "remaining live two-machine run" below is now the three-localities
+> checklist in BEAST_SLOT.md. Preserved for history.
+
 **Status: SHIPPED (2026-07-17). Both deliverables landed:
 `scripts/setup-mac-client.sh` (client, macOS/Linux — preflight, slim sparse
 checkout or in-place clone, pinned venv, env file, non-clobbering

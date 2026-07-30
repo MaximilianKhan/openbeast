@@ -126,11 +126,13 @@
 #WEBUI_ADMIN_EMAIL=
 #WEBUI_ADMIN_PASSWORD=
 
-# Client mode (env-only, no conf keys — see docs/MAC_CLIENT_PLAN.md):
-# a laptop can run the tool arsenal locally against this rig's model +
-# search. Rig side: ./scripts/setup-tailscale.sh --publish-searxng.
-# Laptop side: ./scripts/setup-mac-client.sh (wires SEARXNG_URL and
-# OPENBEAST_AGENT_INFERENCE_URL into the laptop's own env file).
+# Client mode / beast-slot (env-only on the client, no conf keys here —
+# see docs/BEAST_SLOT.md): any Mac/Linux device runs the tool arsenal
+# locally against this rig's model + search. Rig side:
+# ./scripts/setup-tailscale.sh --publish-searxng --publish-slot.
+# Client side: ./scripts/setup-client.sh [--api-key <LLAMA_API_KEY>]
+# [--local-search] (writes ~/.openbeast-client.env; client CLI:
+# openbeast-client status|agent|search|update|uninstall).
 
 # SearXNG session-signing key. AUTO-GENERATED — you never need to set this:
 # the first ./start.sh (via scripts/lib/conf.sh) creates a random per-install

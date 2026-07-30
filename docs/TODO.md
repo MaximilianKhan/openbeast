@@ -85,11 +85,20 @@ processes eating the free space.
    works, needs a documented test pass.
    *(Distinct from client mode below — this ports the SERVER to Mac; that runs
    NO model on the Mac.)*
-5b. ✅ **OpenBeast client mode (DONE 2026-07-17).** [`docs/MAC_CLIENT_PLAN.md`](MAC_CLIENT_PLAN.md).
-   `scripts/setup-mac-client.sh` (laptop thin client: pinned venv + non-clobbering
-   opencode.json merge + --uninstall) and `setup-tailscale.sh --publish-searxng`
-   / `--unpublish-searxng` (rig). Verified end-to-end under an isolated HOME;
-   test_scripts §13. Remaining: a live two-machine run from the actual laptop.
+5b. ✅ **OpenBeast client mode (DONE 2026-07-17) → EXTENDED to beast-slot
+   (2026-07-30).** [`docs/BEAST_SLOT.md`](BEAST_SLOT.md) — first-class
+   client/server: generalized `scripts/setup-client.sh` (macOS+Linux,
+   `--api-key`, `--local-search` bridge compose), `scripts/client.sh` CLI,
+   `/api/slot` discovery contract published via
+   `setup-tailscale.sh --publish-slot` (:8444), LLAMA_API_KEY loop closed
+   stack-wide, macOS prlimit blocker fixed, fetch CGNAT policy pinned.
+   Re-verified under an isolated HOME against the live stack (install →
+   status → uninstall w/ foreign-key survival); test_scripts §13 (rewritten)
+   + §15, tests/test_beast_slot.py. Remaining: the live two-machine
+   three-localities run from the actual laptop (checklist now in
+   BEAST_SLOT.md, incl. keyed variant). Multi-slot serving profile + fleet
+   router are designed-for-deferred BEHIND the /api/slot contract — clients
+   need no change when they land.
 6. ✅ **fetch() DNS-rebinding pin (DONE 2026-07-09)** — _resolve_vetted +
    _PinnedHTTP(S)Connection dial the vetted IP; TLS keeps real-host SNI/cert.
    Proven: zero connect-time re-resolution; connect-flip to loopback refused.
@@ -101,6 +110,24 @@ processes eating the free space.
 9. **WebUI volume backup** (S) — log rotation ✅ DONE (logrotate-openbeast
    .conf); REMAINING: automate `docker volume` backup for chat data (folds
    into the enterprise Backup/restore CLI).
+9b. **SSD/NVMe wear tracking (S/M — Max, 2026-07-30).** Local calculation of
+   how much wear our drives absorb from model loads, eval-cache/KV writes,
+   log churn, and swap storms (the 2026-07-07 OOM chewed through 187 GB of
+   swap). Prompted by reports of Codex-style agent workloads killing
+   people's drives — we want visibility before it's a problem, and NAND
+   dies by WRITES (the 20 GB GGUF loads are reads — nearly free).
+   Sketch: `smartctl -j -a /dev/nvmeX` →
+   `nvme_smart_health_information_log.percentage_used` +
+   `.data_units_written` (1 unit = 512,000 bytes) + media errors, for every
+   NVMe/SATA device backing the weights + repo mounts; snapshot to
+   `.run/ssd-wear.json` on each `start.sh` (or a `doctor --wear`
+   subcommand); delta over wall-clock → GB-written/day per device +
+   projected days to 100% percentage-used; surface as a doctor row (WARN
+   when projected lifetime < ~2 years or percentage_used jumps) and
+   optionally a dashboard card. Zero new deps (smartmontools is standard;
+   degrade gracefully when absent/unprivileged — smartctl wants root, so
+   doctor should try `sudo -n` and fall back to "install/permit smartctl"
+   advice).
 10. **mTLS / cert-based auth: assessed, deferred** — Tailscale already
     provides identity + encrypted transport equivalent to mTLS for the
     home-lab threat model. Revisit only if OpenBeast ever fronts a network

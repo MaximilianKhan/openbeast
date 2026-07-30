@@ -252,10 +252,14 @@ app, open the chat URL, "Add to Home Screen" (the WebUI is a PWA).
 > Tailscale** — its kill switch will sever your tailnet mid-stream while the
 > stack stays healthy. Details and fixes: [`docs/REMOTE_ACCESS_PLAN.md`](docs/REMOTE_ACCESS_PLAN.md).
 
-- **Client mode** — turn a laptop into a thin client: OpenCode + the tool
-  arsenal run locally, model + search come from the rig over the tailnet.
-  `./scripts/setup-tailscale.sh --publish-searxng` (rig) +
-  `./scripts/setup-mac-client.sh` (laptop). → [`docs/MAC_CLIENT_PLAN.md`](docs/MAC_CLIENT_PLAN.md)
+- **beast-slot (client/server)** — the rig stays the full command center AND
+  publishes its intelligence for any Mac/Linux device: the client runs
+  OpenCode + the complete tool arsenal locally (files, shell, agents on the
+  client's disk) while inference streams from the rig. Rig:
+  `./scripts/setup-tailscale.sh --publish-searxng --publish-slot`. Client:
+  `./scripts/setup-client.sh`, then `openbeast-client status` shows the rig's
+  actually-loaded model live. Optional bearer auth, optional client-local
+  SearXNG (`--local-search`). → [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md)
 - **Distributed agents** — point spawned-agent *inference* at a second GPU box
   while files/shell stay local (`AGENT_INFERENCE_URL`). → [`docs/DISTRIBUTED_AGENTS_PLAN.md`](docs/DISTRIBUTED_AGENTS_PLAN.md)
 
