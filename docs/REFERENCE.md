@@ -602,9 +602,12 @@ model to invoke `skill(name)` for non-trivial work.
 ### Full stack
 
 The default model is **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive
-uncensored fine-tune; #2 on the internal leaderboard at 96.16 % on v3.5). The
-dense 27B Q5 leads on raw accuracy (97.85 %) and the 35B-A3B MoEs are faster —
-each is one `./start.sh <serve-script>` away.
+uncensored fine-tune) — chosen for the uncensored behavior, not for a
+leaderboard position; it has not been re-run since v4 and its last score is
+the legacy v3.5 board (#2, 96.16 % accuracy). On the current **v4 capability
+board** (`SCORE = 0.75·problem-solving + 0.25·language-breadth`) the dense
+27B Q5_K_XL leads at **98.7 %**, and the 35B-A3B MoEs are faster — each is
+one `./start.sh <serve-script>` away. Full board: `docs/RESULTS.md`.
 
 ```bash
 ./start.sh                                      # default model + MCP tools + Open WebUI + SearXNG
@@ -746,34 +749,42 @@ leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
 flagged in the sweep summary.
 
 ```bash
-python3 evals/benchmark_all.py                       # all 9 configured models, full suite
+python3 evals/benchmark_all.py                       # all 11 configured models, full suite
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime: 8 of the 9 configured models are benchmarked (5 on legacy
-v3.5, 3 MTP models on v4; only the non-MTP Qwopus is pending). The 5 v3.5
-models took **~16–20 hours**; the 3 MTP models took ~4–5 h each on v4. A
-sweep of all 9 — budget roughly a day. Plan to run overnight. Sweep summaries are saved to
+Total runtime: 10 of the 11 configured models carry a leaderboard entry
+(7 on v4, 3 still on legacy v3.5; only the non-MTP Qwopus is pending —
+`evals/leaderboard.json` is the live answer). Individual v4 runs took ~4–8 h
+each (see the Wall column in `docs/RESULTS.md`); a full sweep — budget well
+over a day. Plan to run overnight. Sweep summaries are saved to
 `evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
 7h 21m wall-clock (26,489 s) on the prior 144-task suite — see
 [RESULTS.md](RESULTS.md).
 
 #### Scoring + leaderboard
 
-Ranking is **accuracy-primary** (tie-break: pass count → hard pass count →
-speed). **Tokens** (prompt + completion) and **API-equivalent cost** (Sonnet
-4.6 pricing as a sense-of-scale baseline: $3/M input, $15/M output) are
-tracked per task and summed per run, surfaced as separate columns so you can
-see how chatty a model is on the way to the same answer. `scoring.py` does
-derive a composite column (`compute_composite`) for reference, but it never
-drives the ranking — speed and accuracy trade off in opposite directions on
-this suite, and a weighted average hides the signal, so ranking stays
-accuracy-primary. See `evals/scoring.py`:
+Ranking is **capability-primary** since scoring v2 (2026-07-10) — the old
+accuracy-primary ordering let a weak problem-solver that ported its few
+solutions widely outrank a stronger one. Tie-break: problem-solving → hard
+pass count → speed. **Tokens** (prompt + completion) and **API-equivalent
+cost** (Sonnet 4.6 pricing as a sense-of-scale baseline: $3/M input, $15/M
+output) are tracked per task and summed per run, surfaced as separate columns
+so you can see how chatty a model is on the way to the same answer.
+`scoring.py` still derives a speed/accuracy composite (`compute_composite`)
+and still reports v1 `accuracy` as a column, but neither drives the ranking.
+See `evals/scoring.py`:
 
 ```
-accuracy    = 100 × Σ(weight × passed) / Σ(weight)
+problem_solving  = % of base problems solved in ≥1 language (the scarce skill)
+language_breadth = % of language ports passed AMONG solved problems
+
+SCORE = capability   = 0.75 × problem_solving + 0.25 × language_breadth
+                       ← the ranking key
+
+accuracy (v1 column) = 100 × Σ(weight × passed) / Σ(weight)
               weights: easy=1, medium=1.5, hard=2 (per-variant: weight / num_variants)
 
 speed       = 100 × mean(max(0, 1 - elapsed/budget)) over passed tasks
@@ -782,6 +793,10 @@ speed       = 100 × mean(max(0, 1 - elapsed/budget)) over passed tasks
 tokens      = Σ(prompt + completion) across all task runs
               (parsed from runner stdout; 0 if the server didn't return usage)
 ```
+
+Rows scored before v2 have no `capability` and fall back to `accuracy` for
+sorting, so the mixed board still orders sanely; `scoring.py --rebuild`
+rescores everything in `evals/results/` under the current metric.
 
 `scoring.py --by-category` produces a per-model × per-category accuracy table
 with subcategory drilldown.

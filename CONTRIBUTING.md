@@ -6,6 +6,16 @@ MCP server for the terminal), browser + terminal frontends, RBAC, and a
 137-task / 291-unit (v4) eval suite. Contributions welcome — here's how to
 land one cleanly.
 
+**It also splits across machines.** The **rig** runs the full stack; any
+Mac/Linux box can install **client mode** (`scripts/setup-client.sh`), which
+runs the same tool arsenal *locally* and sends only inference to the rig over
+Tailscale — mediated by the versioned `/api/slot` discovery contract and,
+optionally, **beast-gate** (`agents/edge.py`), the identity-aware inference
+edge. So `agents/tools.py`, `agents/mcp_server.py`, and `scripts/client*.sh`
+are **client-facing**: a change there ships to other people's laptops, not just
+the rig. Read [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md) and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before touching them.
+
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 Found a security issue? Do **not** open a public issue — see
 [SECURITY.md](SECURITY.md).
@@ -25,8 +35,8 @@ Run what CI runs, so nothing surprises you in review:
 
 ```bash
 # Tests (the CI 'test' job)
-./tests/run_tests.sh                 # structure checks + tool unit tests
-python3 -m pytest tests/ -q          # full suite (174 tests, CPU-only)
+./tests/run_tests.sh                 # structure checks + enrollment CLI + tool unit tests
+python3 -m pytest tests/ -q          # full suite (~278 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
@@ -58,6 +68,20 @@ House rules the suite enforces (so you don't discover them in review):
 - **Tool changes**: `agents/tools.py` is the single source of truth;
   `agents/mcp_server.py` only wraps it. Update `docs/TOOLS.md` in the
   same PR if the surface changes.
+- **New config key**: it lands in **three** places in the *same* change —
+  `scripts/lib/conf.sh` (the resolver, and the only authority on defaults),
+  `openbeast.conf.example` (commented, with the env override named), and the
+  configuration table in `docs/REFERENCE.md`. A key that exists in only one or
+  two of those is how the table went twelve keys stale. Mind the export
+  discipline already in `conf.sh`: only export when non-empty, because an
+  exported empty string still reads as "set" downstream.
+- **`/api/slot` is a versioned contract**, not an internal JSON blob —
+  `tests/test_beast_slot.py` pins its field names and the `ctx_shared` /
+  `ctx_total` capacity math. Adding a field is *additive*: bump `beast_slot`,
+  leave `min_client` alone. **Renaming or repurposing** a field breaks every
+  deployed client and forces an explicit decision to raise `min_client` —
+  make that call in the PR description, not in a test edit. Same rule for
+  `.run/clients.json`, the registry schema shared with `agents/edge.py`.
 - **Skills**: after editing any `skills/*/SKILL.md`, run
   `python3 scripts/generate-skill-index.py` (CI fails on a stale index).
 

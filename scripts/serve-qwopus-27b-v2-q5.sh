@@ -11,7 +11,8 @@
 # Qwen3.6-27B may or may not be intact in their GGUF conversion. If outputs
 # degrade past ~128K in practice, back off the context here and validate
 # against the base Qwen3.6-27B at the same context for comparison.
-# 6 parallel slots (unified KV — no extra VRAM, ~58K context per slot).
+# 6 parallel slots (unified KV — no extra VRAM; slots SHARE the -c pool,
+# they do not each get -c/6 — see docs/BEAST_SLOT.md).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

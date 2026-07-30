@@ -2,7 +2,8 @@
 # Serve Qwen3.6-35B-A3B (MoE) Q4_K_M as OpenAI-compatible API on RTX 5090
 # 512K context: 27,807 MiB total / 4,271 MiB headroom on a 32 GB GPU — measured 2026-05-05.
 # Per-token KV ~6.3 KB (MoE-efficient).
-# 6 parallel slots (unified KV — no extra VRAM, ~85K context per slot).
+# 6 parallel slots (unified KV — no extra VRAM; slots SHARE the -c pool,
+# they do not each get -c/6 — see docs/BEAST_SLOT.md).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

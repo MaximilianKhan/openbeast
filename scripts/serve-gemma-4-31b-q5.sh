@@ -4,7 +4,8 @@
 # tasks 10–11; the 2,080 MiB headroom at 220K was too tight under sustained KV
 # pressure). 192K still comfortably exceeds the largest observed eval prompt
 # (~47K), and unified KV lets a single sequential request use the whole pool.
-# Per-token KV: 128K→200K=20 KB. 6 parallel slots, ~32K per slot at unified-c.
+# Per-token KV: 128K→200K=20 KB. 6 parallel slots SHARING the -c pool under
+# unified KV (not -c/6 each — see docs/BEAST_SLOT.md).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

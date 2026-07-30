@@ -28,7 +28,7 @@ version; this is the exhaustive reference.
 - Fire-and-forget background agents that code independently
 - Context briefing from spawning model
 - JSONL logging with full replay/resumption (`agents/logs/`)
-- Token budget awareness (~85K per slot)
+- Token budget awareness (spawned agents are given a deliberately conservative ~85K budget — not a per-slot capacity; under unified KV slots share one pool, see [`BEAST_SLOT.md`](BEAST_SLOT.md))
 
 ## Frontends
 - [Open WebUI](https://github.com/open-webui/open-webui): browser chat with persistent history, file upload, tool use

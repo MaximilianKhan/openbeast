@@ -8,6 +8,38 @@ across 12 categories), and 14 curated skills for specialized work.
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
 
+## Architecture in 60 seconds
+
+OpenBeast is **not** a single-box stack any more. Full picture:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (topology + project layout) and
+[`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md) (the client/server contract). The
+four facts that change how you edit code here:
+
+- **Rig + clients.** The rig ("command center") runs everything: llama-server
+  `:8080`, the identity tool server `:3001`, Open WebUI `:3000`, SearXNG
+  `:8888`, optional extensions. Any Mac/Linux box can additionally install
+  *client mode* (`scripts/setup-client.sh` → `~/.openbeast-client`), which runs
+  the **same tool arsenal locally** and sends only chat/completion calls to the
+  rig over Tailscale. **Tools execute where the process runs, not where the
+  model runs** — so `agents/tools.py` and `agents/mcp_server.py` ship to
+  clients, and a change there is a client-facing change.
+- **beast-slot** (`/api/slot`, served by the dashboard extension) is the
+  versioned discovery contract clients read: model, slots, capacity, services.
+  Pinned by `tests/test_beast_slot.py`.
+- **beast-gate** (`agents/edge.py`, opt-in `EDGE_GATE=true`) is the
+  identity-aware **inference** edge — per-device bearer keys, path allowlist,
+  rate + in-flight caps, inference audit. It is the one place on the inference
+  path where identity exists (llama-server has no users). Devices are enrolled
+  with `scripts/clients.sh`.
+- **Two identity layers, deliberately separate.** `:3001` authenticates the
+  *human* (WebUI user → RBAC tier → file shard); beast-gate authenticates the
+  *device*. Don't conflate them.
+
+**Unified KV, one shared pool.** `serve.sh` passes `--kv-unified`
+unconditionally: with `-np N`, every slot advertises the full `-c` context
+while all slots draw on ONE pool. Never divide context by slot count — that
+arithmetic is wrong, and `/api/slot`'s `capacity.ctx_*` exists because of it.
+
 ## Use skills first
 
 You have access to **14 curated skills** via two MCP tools:
@@ -50,10 +82,16 @@ your main conversation stays responsive while the sub-agent grinds.
 
 ### Default model
 
-`Qwen3.6-27B Uncensored Q5_K_P` (HauhauCS Aggressive uncensored fine-tune; #2 on
-the internal leaderboard at 96.16% on v3.5). Launched by `./start.sh` with no args.
-The dense `Qwen3.6-27B Q5_K_XL` is the top raw scorer (97.85%) and the 35B-A3B MoEs
-are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
+`Qwen3.6-27B Uncensored Q5_K_P` (HauhauCS Aggressive uncensored fine-tune),
+launched by `./start.sh` with no args — picked for the uncensored behavior, not
+a leaderboard slot; it hasn't been re-run since v4, so its last score is the
+legacy v3.5 board (#2, 96.16% accuracy).
+
+Ranking is by the **v4 SCORE** metric (`SCORE = 0.75·problem-solving +
+0.25·language-breadth`), not raw accuracy. The dense `Qwen3.6-27B Q5_K_XL`
+leads at **98.7%**; the 35B-A3B MoEs are much faster at a small SCORE cost.
+Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
+`docs/RESULTS.md`.
 
 ### Where things live
 
@@ -62,8 +100,8 @@ are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 | Source: model serving, agents, MCP tools | `agents/`, `scripts/`, `start.sh`, `stop.sh` |
 | Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
-| Tests | `tests/run_tests.sh` (runs all), `tests/test_tools.py`, `tests/test_scripts.sh`, `tests/test_smoke.sh`, `tests/test_cache.py`, `tests/test_proc_hygiene.py` |
-| Documentation (technical) | `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/RESULTS.md`, `docs/SKILLS_PLAN.md`, `docs/TODO.md`, `docs/archive/WORK_PLAN.md` |
+| Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
+| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite
@@ -71,9 +109,9 @@ are faster — each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`.
 - 137 base tasks (v4); 31 of them have multi-language variants (291
   effective test units across Python / Go / C / C++ / Rust / Zig)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
-- Full sweep (9 models): `python3 evals/benchmark_all.py` (budget roughly
-  a day on the 5090)
-- Score: `python3 evals/scoring.py --show` (with TOKENS column)
+- Full sweep (11 configured models — `--list` to see them):
+  `python3 evals/benchmark_all.py` (budget well over a day on the 5090)
+- Score: `python3 evals/scoring.py --show` (ranked by SCORE = capability)
 - Distribution + methodology: `evals/README.md`
 
 ### Skills

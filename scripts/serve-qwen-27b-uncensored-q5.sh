@@ -5,7 +5,8 @@
 # Historical measurements: 380K = 30,648 MiB / 2,120 MiB headroom (2026-05-05);
 # 416K = 31,405 MiB / 1.36 GB headroom (below 2GB rule, OOM-prone).
 # Per-token KV at high context is ~20 KB, denser than original 18 KB estimate.
-# 6 parallel slots (unified KV — no extra VRAM, ~58K context per slot).
+# 6 parallel slots (unified KV — no extra VRAM; slots SHARE the -c pool,
+# they do not each get -c/6 — see docs/BEAST_SLOT.md).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

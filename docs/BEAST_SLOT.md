@@ -85,8 +85,17 @@ tenants.
 ./scripts/setup-tailscale.sh                     # :443 WebUI, :8443 inference
 ./scripts/setup-tailscale.sh --publish-searxng   # + :8889 search for clients
 ./scripts/ext.sh enable dashboard                # slot API lives in the dashboard
+                                                 # (must precede --publish-slot; see below)
 ./scripts/setup-tailscale.sh --publish-slot      # + :8444 discovery API
 ```
+
+**Order matters.** The slot API is served by the dashboard *extension*, and
+`EXTENSIONS` is empty by default. Publishing before enabling it (and
+restarting) leaves `:8444` proxying to a port nothing is listening on, so
+clients get **502**, not a clean "not published" — `setup-tailscale.sh`
+warns but does not block. `openbeast-client status` treats a missing slot
+API as informational, so a client will look healthy while silently flying
+blind about what the rig is serving.
 
 ### The `/api/slot` discovery contract (version 2)
 

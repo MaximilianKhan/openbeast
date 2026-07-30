@@ -3,7 +3,8 @@
 # 350K context (-c 358400): reduced from 416K on 2026-05-22 — the 416K default
 # left only ~2 GB headroom and was crashing under sustained OS+KV pressure.
 # Historical measurement: 416K = 30,711 MiB / 2,057 MiB headroom (2026-05-05).
-# 6 parallel slots (unified KV — no extra VRAM, ~58K context per slot).
+# 6 parallel slots (unified KV — no extra VRAM; slots SHARE the -c pool,
+# they do not each get -c/6 — see docs/BEAST_SLOT.md).
 # Endpoint: http://localhost:8080/v1/chat/completions
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

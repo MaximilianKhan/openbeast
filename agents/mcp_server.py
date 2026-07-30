@@ -591,7 +591,14 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
     os.makedirs(_LOG_DIR, exist_ok=True)
 
-    # Estimate per-slot context budget (~85K tokens at 512K/6 slots, rough)
+    # A deliberately conservative context budget advertised to the spawned
+    # agent so it self-manages. It is NOT a per-slot capacity: under
+    # --kv-unified (our default) every slot advertises the FULL -c while all
+    # slots share one pool, so "total / slots" is meaningless — see
+    # docs/BEAST_SLOT.md. Kept fixed rather than read from the live server
+    # because a spawn must not depend on a round-trip that may be rate-limited
+    # or gated; if you raise it, raise it against the SMALLEST context any
+    # shipped serve script uses, not the largest.
     context_budget = 85_000
 
     resolved_base_url = _resolve_agent_base_url(base_url)
