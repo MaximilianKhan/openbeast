@@ -46,6 +46,21 @@ fi
 echo ""
 echo ""
 
+# --- Drive wear tracking tests ---
+echo "--- SSD/NVMe wear tests (scripts/ssd-wear.sh) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_ssd_wear.sh"; then
+  echo ""
+  echo "SSD wear tests: ALL PASSED"
+else
+  echo ""
+  echo "SSD wear tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""

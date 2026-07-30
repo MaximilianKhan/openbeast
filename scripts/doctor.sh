@@ -76,6 +76,21 @@ for pair in "weights:$_wdir" "repo:$REPO_DIR"; do
   fi
 done
 
+# ── Drive wear ──────────────────────────────────────────────────────────────
+# NAND dies by WRITES, and agent workloads write hard (the 2026-07-07 OOM burned
+# 187 GB of swap). Advisory only: ssd-wear.sh always exits 0 and degrades to a
+# single warn row when smartctl is missing or unprivileged — it never FAILs.
+if [[ -x "$SCRIPT_DIR/ssd-wear.sh" ]]; then
+  section "Drive wear"
+  while IFS='|' read -r _st _msg _fix; do
+    [[ -z "$_st" ]] && continue
+    case "$_st" in
+      ok)   pass "$_msg" ;;
+      warn) warn "$_msg" "$_fix" ;;
+    esac
+  done < <("$SCRIPT_DIR/ssd-wear.sh" --doctor 2>/dev/null || true)
+fi
+
 # ── Config & secrets ────────────────────────────────────────────────────────
 section "Config & secrets"
 CONF="$REPO_DIR/openbeast.conf"

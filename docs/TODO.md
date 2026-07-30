@@ -110,24 +110,35 @@ processes eating the free space.
 9. **WebUI volume backup** (S) — log rotation ✅ DONE (logrotate-openbeast
    .conf); REMAINING: automate `docker volume` backup for chat data (folds
    into the enterprise Backup/restore CLI).
-9b. **SSD/NVMe wear tracking (S/M — Max, 2026-07-30).** Local calculation of
-   how much wear our drives absorb from model loads, eval-cache/KV writes,
-   log churn, and swap storms (the 2026-07-07 OOM chewed through 187 GB of
-   swap). Prompted by reports of Codex-style agent workloads killing
-   people's drives — we want visibility before it's a problem, and NAND
-   dies by WRITES (the 20 GB GGUF loads are reads — nearly free).
-   Sketch: `smartctl -j -a /dev/nvmeX` →
-   `nvme_smart_health_information_log.percentage_used` +
-   `.data_units_written` (1 unit = 512,000 bytes) + media errors, for every
-   NVMe/SATA device backing the weights + repo mounts; snapshot to
-   `.run/ssd-wear.json` on each `start.sh` (or a `doctor --wear`
-   subcommand); delta over wall-clock → GB-written/day per device +
-   projected days to 100% percentage-used; surface as a doctor row (WARN
-   when projected lifetime < ~2 years or percentage_used jumps) and
-   optionally a dashboard card. Zero new deps (smartmontools is standard;
-   degrade gracefully when absent/unprivileged — smartctl wants root, so
-   doctor should try `sudo -n` and fall back to "install/permit smartctl"
-   advice).
+9b. ✅ **SSD/NVMe wear tracking (DONE 2026-07-30).** `scripts/ssd-wear.sh`
+   (report / `--json` / `--snapshot` / `--doctor`) + a doctor row. Reads SMART
+   READ-ONLY via `smartctl -j -a`, resolves the drives actually backing the
+   weights and repo mounts, and tracks GB-written/day + projected days to 100%
+   wear from a bounded history in `.run/ssd-wear.json` (0600).
+   Design notes worth keeping:
+   - **Device discovery walks `lsblk --inverse`, not string-munging.** This box
+     is LUKS — `df` returns `/dev/mapper/root`, and the obvious
+     strip-the-partition-suffix approach yields `/dev/mapper/roo`. Encrypted
+     and LVM layouts are the common case, so name-munging is the fallback only.
+   - **1 NVMe data unit = 512,000 bytes** (not 512) — the classic error.
+   - `percentage_used` is a whole integer that barely moves, so a pure delta
+     projection reports nothing for months; a lifetime-average endurance
+     fallback fills the gap and both methods are labeled in the output.
+   - History prunes from the MIDDLE and keeps the oldest point as a permanent
+     anchor, so frequent doctor runs don't collapse the measurement window;
+     snapshots coalesce to one per 5 min.
+   - smartctl's exit status is a BITMASK (8 = failing drive) with valid JSON,
+     so the script never gates on it — it parses and lets the data speak.
+   - Serials are never printed or persisted, only `sha256(serial)[:12]` to keep
+     history attached across device renumbering.
+   Advisory by design: always exits 0, degrades to one warn row when smartctl
+   is absent or unprivileged. **It warns rather than staying silent when it
+   cannot read** — a green row for health nobody measured is the worst
+   outcome this tool could produce.
+   REMAINING (needs root, Max): add the sudoers line the script prints, then
+   `sudo ./scripts/ssd-wear.sh` for the first real datapoint. Until then the
+   doctor row is a warning, and this rig's actual wear is UNKNOWN.
+
 10. **mTLS / cert-based auth: assessed, deferred** — Tailscale already
     provides identity + encrypted transport equivalent to mTLS for the
     home-lab threat model. Revisit only if OpenBeast ever fronts a network
