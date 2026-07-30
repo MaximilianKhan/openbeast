@@ -341,5 +341,8 @@ app = Starlette(
 if __name__ == "__main__":
     import uvicorn
     print(f"OpenBeast router on :{PORT}  ->  upstream {UPSTREAM}  (spawn via {MCPO})")
-    uvicorn.run(app, host=os.environ.get("OPENBEAST_BIND", "127.0.0.1") or "127.0.0.1",
-                port=PORT, log_level="warning")
+    # Loopback ALWAYS, deliberately unlike the sibling servers: the spawn path
+    # is fail-open by default (ROUTER_REQUIRE_IDENTITY=false), so honoring a
+    # BIND_HOST=0.0.0.0 here would hand agent-spawn to the whole LAN. WebUI
+    # reaches it on 127.0.0.1, and start.sh probes 127.0.0.1 for readiness.
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

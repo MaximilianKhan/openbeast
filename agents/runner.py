@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -166,17 +167,46 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
 
 
-def resolve_api_key(explicit: str | None = None) -> str:
+def _host_of(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _key_endpoint_trusted(base_url: str) -> bool:
+    """True when the ambient key may be sent to `base_url`.
+
+    start_agent(base_url=...) is a model-callable MCP parameter with no host
+    allowlist, so an injected prompt can name an arbitrary endpoint. The
+    ambient key therefore travels ONLY to the endpoint this install was
+    configured for (OPENBEAST_AGENT_INFERENCE_URL) or to the local server;
+    anywhere else gets the keyless sentinel. An explicit --api-key is operator
+    intent and always honored.
+    """
+    host = _host_of(base_url)
+    if not host or host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    configured = os.environ.get("OPENBEAST_AGENT_INFERENCE_URL", "")
+    return bool(configured) and host == _host_of(configured)
+
+
+def resolve_api_key(explicit: str | None = None,
+                    base_url: str = DEFAULT_BASE_URL) -> str:
     """Bearer key for the serving endpoint: flag > OPENBEAST_API_KEY > OPENAI_API_KEY.
 
     llama-server without --api-key ignores the Authorization header, so the
     "not-needed" fallback keeps keyless endpoints working unchanged. Prefer the
     env path in our own wiring — argv is visible in `ps`; the flag exists for
-    ad-hoc use against foreign endpoints.
+    ad-hoc use against foreign endpoints. Env-sourced keys are withheld from
+    endpoints this install wasn't configured for (see _key_endpoint_trusted).
     """
+    if explicit:
+        return explicit
+    if not _key_endpoint_trusted(base_url):
+        return "not-needed"
     return (
-        explicit
-        or os.environ.get("OPENBEAST_API_KEY")
+        os.environ.get("OPENBEAST_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
         or "not-needed"
     )
@@ -206,7 +236,7 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key))
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url))
 
     # Resume from existing log or start fresh
     if resume_from and os.path.isfile(resume_from):

@@ -18,7 +18,20 @@
 # Bash 3.2-compatible on purpose (stock macOS); §13 enforces this.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve $0 through symlinks BEFORE deriving the repo root: setup-client.sh
+# installs ~/.local/bin/openbeast-client as a bare symlink to this file, and an
+# unresolved $0 would put REPO at ~/.local — breaking every subcommand that
+# reaches into the checkout. `readlink -f` is GNU-only (stock macOS lacks it),
+# so walk the chain by hand.
+_self="$0"
+while [ -L "$_self" ]; do
+  _link="$(readlink "$_self")"
+  case "$_link" in
+    /*) _self="$_link" ;;
+    *)  _self="$(dirname "$_self")/$_link" ;;
+  esac
+done
+REPO="$(cd "$(dirname "$_self")/.." && pwd)"
 CLIENT_DIR="$HOME/.openbeast-client"
 ENV_FILE="$HOME/.openbeast-client.env"
 VENV="$CLIENT_DIR/venv"
@@ -70,7 +83,17 @@ case "$CMD" in
     if [ -n "$BASE" ]; then
       HURL="$(echo "$BASE" | sed 's|/v1$||')/health"
       if _curl_auth "$HURL" | grep -q "ok"; then
-        echo "  ✓ rig model API reachable ($BASE)"; ok=$((ok+1))
+        # /health is public even on a keyed server, so it proves reachability
+        # but NOT that our key is accepted. Probe a protected endpoint too,
+        # otherwise a wrong/revoked key looks perfectly healthy here and only
+        # surfaces as a 401 mid-conversation.
+        if _curl_auth "$BASE/models" | grep -q '"data"'; then
+          echo "  ✓ rig model API reachable ($BASE)"; ok=$((ok+1))
+        else
+          echo "  ✗ rig reachable but /v1/models refused — wrong or missing"
+          echo "    API key? Re-run: setup-client.sh --api-key <rig LLAMA_API_KEY>"
+          bad=$((bad+1))
+        fi
       else
         echo "  ✗ rig model API not answering ($BASE)"; bad=$((bad+1))
       fi

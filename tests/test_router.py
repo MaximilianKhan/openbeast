@@ -224,6 +224,17 @@ class TestUpstreamAuth(unittest.TestCase):
         # own Authorization must survive the relay to upstream.
         self.assertNotIn("authorization", router._HOP_BY_HOP)
 
+    def test_router_binds_loopback_only(self):
+        # The spawn path is fail-open by default, so the router must never
+        # honor BIND_HOST — a 0.0.0.0 stack would otherwise expose agent-spawn
+        # to the whole LAN.
+        src = open(os.path.join(os.path.dirname(__file__), "..",
+                                "agents", "router.py")).read()
+        run_line = [ln for ln in src.splitlines() if "uvicorn.run(" in ln]
+        self.assertTrue(run_line, "uvicorn.run call not found")
+        self.assertIn('host="127.0.0.1"', run_line[0])
+        self.assertNotIn("OPENBEAST_BIND", run_line[0])
+
 
 if __name__ == "__main__":
     unittest.main()

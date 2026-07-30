@@ -44,9 +44,15 @@ def _fake_get(responses):
 class TestSlotContract(unittest.TestCase):
     def setUp(self):
         self._real_get = dashboard._get
+        # _API_KEY is frozen from the ambient env at import — pin it here so
+        # the auth assertions test the CODE, not whoever's shell ran pytest
+        # (conf.sh exports OPENBEAST_API_KEY on every keyed rig).
+        self._real_key = dashboard._API_KEY
+        dashboard._API_KEY = ""
 
     def tearDown(self):
         dashboard._get = self._real_get
+        dashboard._API_KEY = self._real_key
 
     def _status(self, responses):
         dashboard._get = _fake_get(responses)

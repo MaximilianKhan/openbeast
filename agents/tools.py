@@ -483,13 +483,31 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         return f"Error: {e}"
 
 
-# Tailscale hands out CGNAT addresses (100.64.0.0/10). CPython's is_private
-# changed classification of that range in 3.12.4/3.11.9 (gh-113171), so we pin
-# the semantics explicitly instead of inheriting stdlib drift: blocked by
-# default on every interpreter, opt-in via OPENBEAST_FETCH_ALLOW_TAILNET for
-# clients that fetch from tailnet hosts. web_search deliberately bypasses this
-# guard (SEARXNG_URL may legitimately be a tailnet/loopback service).
+# Tailscale addresses: CGNAT v4 (100.64.0.0/10) and the default v6 ULA range
+# (fd7a:115c:a1e0::/48). CPython's is_private classification of the CGNAT range
+# changed in 3.12.4/3.11.9 (gh-113171), so we pin the semantics explicitly
+# instead of inheriting stdlib drift: blocked by default on every interpreter,
+# opt-in via OPENBEAST_FETCH_ALLOW_TAILNET for clients that fetch from tailnet
+# hosts — and the opt-in must cover BOTH families, since MagicDNS returns A and
+# AAAA. web_search deliberately bypasses this guard entirely (SEARXNG_URL may
+# legitimately be a tailnet/loopback service).
 _TS_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_TS_ULA = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
+def _unwrap_v6(ip):
+    """Return the embedded IPv4 address for v4-in-v6 forms, else `ip`.
+
+    ::ffff:100.64.1.2 and 2002::/16 / 2001::/32 tunnels otherwise sail past a
+    v4-only range check while still dialing the v4 target.
+    """
+    if ip.version == 6:
+        for attr in ("ipv4_mapped", "sixtofour", "teredo"):
+            embedded = getattr(ip, attr, None)
+            if embedded is not None:
+                # teredo yields (server, client) — the client is the endpoint.
+                return embedded[1] if isinstance(embedded, tuple) else embedded
+    return ip
 
 
 def _vet_addr(addr: str) -> str | None:
@@ -498,10 +516,13 @@ def _vet_addr(addr: str) -> str | None:
         ip = ipaddress.ip_address(addr.split("%")[0])  # strip v6 zone id
     except ValueError:
         return f"unparseable address '{addr}'"
-    if ip.version == 4 and ip in _TS_CGNAT:
+    ip = _unwrap_v6(ip)
+    is_tailnet = ((ip.version == 4 and ip in _TS_CGNAT)
+                  or (ip.version == 6 and ip in _TS_ULA))
+    if is_tailnet:
         if os.environ.get("OPENBEAST_FETCH_ALLOW_TAILNET", "").lower() in ("1", "true", "yes"):
             return None
-        return f"tailnet/CGNAT address {ip} (set OPENBEAST_FETCH_ALLOW_TAILNET=1 to allow)"
+        return f"tailnet address {ip} (set OPENBEAST_FETCH_ALLOW_TAILNET=1 to allow)"
     if (ip.is_loopback or ip.is_private or ip.is_link_local
             or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
         return f"non-public address {ip}"

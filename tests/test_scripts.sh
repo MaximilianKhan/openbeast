@@ -559,8 +559,20 @@ for _cs in "$SC" "$MC" "$REPO_DIR/scripts/client.sh"; do
     fail "$(basename "$_cs") uses bash-4+ constructs (breaks stock macOS)"
   fi
 done
-# Client CLI subcommand surface.
+# The CLI is installed as a SYMLINK (~/.local/bin/openbeast-client), so $0
+# must be resolved before deriving the repo root — otherwise every subcommand
+# but `status` reaches into a nonexistent ~/.local/agents|scripts.
 CC="$REPO_DIR/scripts/client.sh"
+SYMTEST=$(mktemp -d)
+ln -s "$CC" "$SYMTEST/openbeast-client"
+if [[ "$(bash "$SYMTEST/openbeast-client" --help 2>/dev/null | head -1)" == *"client CLI"* ]] \
+   && grep -q 'readlink' "$CC"; then
+  pass "client.sh resolves \$0 through symlinks before deriving REPO"
+else
+  fail "client.sh does not resolve symlinks — the installed CLI breaks"
+fi
+rm -rf "$SYMTEST"
+# Client CLI subcommand surface.
 if [[ -x "$CC" ]] && grep -q 'status)' "$CC" && grep -q 'agent)' "$CC" \
    && grep -q 'search)' "$CC" && grep -q 'update)' "$CC" && grep -q 'uninstall)' "$CC"; then
   pass "client.sh has status/agent/search/update/uninstall"

@@ -198,10 +198,16 @@ if command -v tailscale >/dev/null 2>&1; then
   section "Tailnet surfaces"
   _serve=$(tailscale serve status 2>/dev/null || true)
   if [[ -n "$_serve" ]]; then
-    for _p in 443 8443 8444 8889; do
-      _map=$(echo "$_serve" | grep -E ":${_p}[^0-9]" | head -1 | sed 's/^[[:space:]]*//' || true)
-      [[ -n "$_map" ]] && pass "published :${_p} → ${_map#*proxy }"
-    done
+    # Print the mappings as tailscale reports them. Don't grep per-port: the
+    # default :443 entry prints WITHOUT a port token, so a port-keyed loop
+    # silently omits the WebUI.
+    while IFS= read -r _line; do
+      [[ -z "${_line// }" ]] && continue
+      case "$_line" in
+        https://*) _url="${_line%% *}" ;;
+        *proxy*)   pass "published ${_url:-?} → ${_line##*proxy }" ;;
+      esac
+    done <<< "$_serve"
     if echo "$_serve" | grep -qE ':8443[^0-9]' && [[ -z "${LLAMA_API_KEY:-}" ]]; then
       warn "inference endpoint (:8443) is published with no API key" \
            "fine on a personal tailnet; set LLAMA_API_KEY in openbeast.conf if other users/devices share it (docs/BEAST_SLOT.md)"

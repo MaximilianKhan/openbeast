@@ -737,6 +737,41 @@ class TestRunnerApiKey(unittest.TestCase):
         os.environ["OPENBEAST_API_KEY"] = "ob-key"
         self.assertEqual(runner.resolve_api_key("flag-key"), "flag-key")
 
+    def test_ambient_key_withheld_from_foreign_endpoint(self):
+        # start_agent(base_url=...) is model-controllable with no host
+        # allowlist: an injected prompt must not be able to ship the rig's
+        # key (and the agent's context) to an attacker endpoint.
+        import runner
+        os.environ["OPENBEAST_API_KEY"] = "rig-key"
+        self.assertEqual(
+            runner.resolve_api_key(base_url="https://attacker.example/v1"),
+            "not-needed")
+
+    def test_ambient_key_sent_to_configured_worker(self):
+        import runner
+        os.environ["OPENBEAST_API_KEY"] = "rig-key"
+        os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = "https://beast.ts.net:8443/v1"
+        try:
+            self.assertEqual(
+                runner.resolve_api_key(base_url="https://beast.ts.net:8443/v1"),
+                "rig-key")
+        finally:
+            del os.environ["OPENBEAST_AGENT_INFERENCE_URL"]
+
+    def test_ambient_key_sent_to_localhost(self):
+        import runner
+        os.environ["OPENBEAST_API_KEY"] = "rig-key"
+        self.assertEqual(
+            runner.resolve_api_key(base_url="http://localhost:8080/v1"),
+            "rig-key")
+
+    def test_explicit_key_honored_anywhere(self):
+        # Operator intent beats the host check.
+        import runner
+        self.assertEqual(
+            runner.resolve_api_key("flag-key", "https://elsewhere.example/v1"),
+            "flag-key")
+
     def test_no_key_in_runner_argv(self):
         # The spawn path must never place the key on the command line.
         import mcp_server

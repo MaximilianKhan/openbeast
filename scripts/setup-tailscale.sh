@@ -158,8 +158,18 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "      WARNING: dashboard extension not in EXTENSIONS — the slot API"
     echo "               will 502 until: ./scripts/ext.sh enable dashboard && ./stop.sh && ./start.sh"
   fi
-  sudo tailscale serve --bg --https=8444 http://127.0.0.1:3002
-  echo "      beast-slot status API published (tailnet-only, :8444 → :3002)."
+  # Mount ONLY /api/slot — a bare `--https=8444 → :3002` would publish the
+  # whole dashboard (HTML page + /api/status) to every tailnet device. Fall
+  # back to the full mount on tailscale builds without --set-path.
+  if sudo tailscale serve --bg --https=8444 --set-path=/api/slot \
+       http://127.0.0.1:3002/api/slot 2>/dev/null; then
+    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
+  else
+    sudo tailscale serve --bg --https=8444 http://127.0.0.1:3002
+    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
+    echo "      NOTE: this tailscale build lacks --set-path, so the whole"
+    echo "            dashboard (page + /api/status) is tailnet-visible."
+  fi
 fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'

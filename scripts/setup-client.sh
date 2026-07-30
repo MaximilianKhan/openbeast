@@ -47,6 +47,13 @@ REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
 HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0
 API_KEY="${OPENBEAST_API_KEY:-}"
+# Re-running without --api-key must not silently de-key a keyed install:
+# fall back to the key already stored by a previous run (same treatment the
+# client SearXNG secret gets below). Pass --api-key "" to deliberately clear.
+if [ -z "$API_KEY" ] && [ -f "$HOME/.openbeast-client.env" ]; then
+  API_KEY="$(sed -n "s/^OPENBEAST_API_KEY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" \
+    "$HOME/.openbeast-client.env" 2>/dev/null | tail -1)"
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)         HOST_FQDN="${2:?--host needs a value}"; shift ;;
@@ -54,7 +61,7 @@ while [ $# -gt 0 ]; do
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
-    -h|--help)      sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -156,10 +163,12 @@ else
   SEARCH_URL="https://$HOST_FQDN:8889"
 fi
 
+# -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
+# (published port, stack down) reports as "reachable".
 if [ -n "$API_KEY" ]; then
-  probe_ok="$(curl -s -m 5 -H "Authorization: Bearer $API_KEY" "https://$HOST_FQDN:8443/health" >/dev/null 2>&1 && echo yes || echo no)"
+  probe_ok="$(curl -fsS -m 5 -H "Authorization: Bearer $API_KEY" "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
 else
-  probe_ok="$(curl -s -m 5 "https://$HOST_FQDN:8443/health" >/dev/null 2>&1 && echo yes || echo no)"
+  probe_ok="$(curl -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
 fi
 [ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
   || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
@@ -228,27 +237,32 @@ if [ $LOCAL_SEARCH -eq 1 ]; then
   # Per-install secret, never shipped — same idiom as the rig's conf.sh.
   # Reuse an existing one across re-runs so the container keeps its sessions.
   if [ -f "$ENV_FILE" ]; then
-    SEARXNG_CLIENT_SECRET="$(grep -E '^OPENBEAST_SEARXNG_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+    SEARXNG_CLIENT_SECRET="$(sed -n "s/^OPENBEAST_SEARXNG_SECRET='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" \
+      "$ENV_FILE" 2>/dev/null | tail -1)"
   fi
   if [ -z "$SEARXNG_CLIENT_SECRET" ]; then
     SEARXNG_CLIENT_SECRET="$(openssl rand -hex 32 2>/dev/null \
       || od -vN32 -An -tx1 /dev/urandom | tr -d ' \n')"
   fi
 fi
+# Values are single-quoted: this file is SOURCED by client.sh, so an
+# unquoted key containing shell metacharacters would execute or break every
+# client command. (Embedded single quotes are escaped the POSIX way.)
+_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 {
   echo "# OpenBeast client mode — written by setup-client.sh (re-run to refresh)."
   echo "# Sourced by scripts/client.sh; OpenCode gets its copy via the"
   echo "# environment block in opencode.json."
-  echo "OPENBEAST_AGENT_INFERENCE_URL=$API_URL"
-  echo "OPENBEAST_SLOT_URL=$SLOT_URL"
-  [ $NO_SEARCH -eq 0 ] && echo "SEARXNG_URL=$SEARCH_URL"
+  echo "OPENBEAST_AGENT_INFERENCE_URL=$(_q "$API_URL")"
+  echo "OPENBEAST_SLOT_URL=$(_q "$SLOT_URL")"
+  [ $NO_SEARCH -eq 0 ] && echo "SEARXNG_URL=$(_q "$SEARCH_URL")"
   if [ -n "$API_KEY" ]; then
-    echo "OPENBEAST_API_KEY=$API_KEY"
-    echo "OPENAI_API_KEY=$API_KEY"
+    echo "OPENBEAST_API_KEY=$(_q "$API_KEY")"
+    echo "OPENAI_API_KEY=$(_q "$API_KEY")"
   else
     echo "# If the rig sets LLAMA_API_KEY, re-run with --api-key <key>."
   fi
-  [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$SEARXNG_CLIENT_SECRET"
+  [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$(_q "$SEARXNG_CLIENT_SECRET")"
 } > "$ENV_FILE"
 echo "  ✓ wrote $ENV_FILE"
 

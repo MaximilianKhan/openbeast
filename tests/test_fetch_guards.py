@@ -246,3 +246,36 @@ class TestTailnetCGNAT(unittest.TestCase):
         self.assertIsNotNone(_vet_addr("100.127.255.255"))
         self.assertIsNone(_vet_addr("100.63.255.255"))
         self.assertIsNone(_vet_addr("100.128.0.0"))
+
+    def test_v4_mapped_cgnat_blocked(self):
+        # Regression: a v4-mapped v6 literal skipped the v4-only CGNAT check
+        # while still dialing the v4 target — SSRF onto the tailnet with the
+        # opt-in OFF. Modern CPython reports is_private False for this form.
+        from tools import _vet_addr
+        reason = _vet_addr("::ffff:100.64.1.2")
+        self.assertIsNotNone(reason)
+        self.assertIn("tailnet", reason)
+
+    def test_v4_mapped_private_still_blocked(self):
+        from tools import _vet_addr
+        self.assertIsNotNone(_vet_addr("::ffff:127.0.0.1"))
+        self.assertIsNotNone(_vet_addr("::ffff:192.168.1.5"))
+        self.assertIsNotNone(_vet_addr("::ffff:169.254.169.254"))
+
+    def test_tailscale_v6_ula_follows_the_optin(self):
+        # MagicDNS returns A *and* AAAA; the opt-in must cover both families
+        # or fetch-by-name stays blocked despite FETCH_ALLOW_TAILNET=1.
+        from tools import _vet_addr
+        ula = "fd7a:115c:a1e0::1234"
+        reason = _vet_addr(ula)
+        self.assertIsNotNone(reason)
+        self.assertIn("tailnet", reason)
+        os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
+        self.assertIsNone(_vet_addr(ula))
+
+    def test_other_ula_stays_blocked_under_optin(self):
+        # The opt-in is for TAILNET hosts, not every private v6 range.
+        from tools import _vet_addr
+        os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
+        self.assertIsNotNone(_vet_addr("fd00::1"))
+        self.assertIsNotNone(_vet_addr("::1"))
