@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""beast-gate (agents/edge.py) — the identity-aware inference edge.
+
+These tests pin the security contract that makes the gate worth having:
+fail-closed auth, a strict path allowlist, client tenancy knobs stripped,
+per-device admission control, and an audit trail that records cost without
+recording content or key material.
+
+Run: python3 -m pytest tests/test_edge.py -q
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import os
+import sys
+
+import pytest
+from starlette.testclient import TestClient
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "agents"))
+
+DEVICE_KEY = "a" * 64
+REVOKED_KEY = "b" * 64
+
+
+def _registry(tmp_path, *, slot=None, rate=None, revoked=False):
+    run = tmp_path / ".run"
+    run.mkdir(exist_ok=True)
+    reg = {
+        "version": 1,
+        "devices": [
+            {"id": "laptop", "label": "Test laptop",
+             "key_sha256": hashlib.sha256(DEVICE_KEY.encode()).hexdigest(),
+             "enrolled_at": "2026-07-30T00:00:00Z", "revoked_at": None,
+             "slot": slot, "rate_limit_per_min": rate, "last_seen": None},
+            {"id": "stolen", "label": "Lost laptop",
+             "key_sha256": hashlib.sha256(REVOKED_KEY.encode()).hexdigest(),
+             "enrolled_at": "2026-07-30T00:00:00Z",
+             "revoked_at": "2026-07-30T01:00:00Z" if revoked else None,
+             "slot": None, "rate_limit_per_min": None, "last_seen": None},
+        ],
+    }
+    (run / "clients.json").write_text(json.dumps(reg))
+    return run / "clients.json"
+
+
+@pytest.fixture
+def edge(tmp_path, monkeypatch):
+    """Fresh module bound to a scratch REPO_DIR (module-level config)."""
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENBEAST_EDGE_ALLOW_ANON", raising=False)
+    monkeypatch.delenv("OPENBEAST_API_KEY", raising=False)
+    monkeypatch.setenv("OPENBEAST_EDGE_RATE_LIMIT", "120")
+    monkeypatch.setenv("OPENBEAST_EDGE_MAX_INFLIGHT", "2")
+    import edge as _edge
+    importlib.reload(_edge)
+    return _edge
+
+
+class _FakeResponse:
+    def __init__(self, status=200, body=b'{"usage":{"prompt_tokens":10,'
+                                        b'"completion_tokens":5}}'):
+        self.status_code = status
+        self.headers = {"content-type": "application/json"}
+        self._body = body
+
+    async def aiter_raw(self):
+        yield self._body
+
+    async def aclose(self):
+        pass
+
+
+def _stub_upstream(edge, captured):
+    """Capture what the gate would send upstream; never make a real call."""
+    class _Client:
+        def build_request(self, method, url, content=None, headers=None):
+            captured["method"] = method
+            captured["url"] = url
+            captured["content"] = content
+            captured["headers"] = headers or {}
+            return object()
+
+        async def send(self, req, stream=False):
+            return _FakeResponse()
+
+        async def get(self, url, timeout=None):
+            class R:
+                status_code = 200
+                text = '{"status":"ok"}'
+            return R()
+
+        async def aclose(self):
+            pass
+
+    app = edge.app
+    orig = edge._lifespan
+
+    @edge.asynccontextmanager
+    async def _lifespan(a):
+        a.state.client = _Client()
+        a.state.registry = edge.Registry()
+        a.state.limiter = edge.Limiter()
+        yield
+
+    app.router.lifespan_context = _lifespan
+    return orig
+
+
+class TestAuthFailsClosed:
+    def test_no_registry_is_closed_not_open(self, edge):
+        # The 2026-07-17 RBAC lesson: absent config must never mean "open".
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            r = c.post("/v1/chat/completions", json={"messages": []})
+        assert r.status_code == 401
+        assert "no_registry" in r.text
+
+    def test_anon_opt_in_allows(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+        monkeypatch.setenv("OPENBEAST_EDGE_ALLOW_ANON", "true")
+        import edge as _edge
+        importlib.reload(_edge)
+        _stub_upstream(_edge, {})
+        with TestClient(_edge.app) as c:
+            r = c.post("/v1/chat/completions", json={"messages": []})
+        assert r.status_code == 200
+
+    def test_auth_matrix(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            assert c.post("/v1/chat/completions",
+                          json={"messages": []}).status_code == 401
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": "Bearer wrong"}
+                          ).status_code == 401
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {DEVICE_KEY}"}
+                          ).status_code == 200
+
+    def test_revoked_device_refused_without_restart(self, edge, tmp_path):
+        path = _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {REVOKED_KEY}"}
+                          ).status_code == 200
+            # Revoke on disk mid-flight; the gate hot-reloads on mtime.
+            data = json.loads(path.read_text())
+            for d in data["devices"]:
+                if d["id"] == "stolen":
+                    d["revoked_at"] = "2026-07-30T02:00:00Z"
+            os.utime(path, (0, 0))          # force a different mtime
+            path.write_text(json.dumps(data))
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {REVOKED_KEY}"}
+                          ).status_code == 401
+
+    def test_corrupt_registry_keeps_last_good_map(self, edge, tmp_path):
+        path = _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {DEVICE_KEY}"}
+                          ).status_code == 200
+            path.write_text("{ this is not json")
+            os.utime(path, None)
+            # Must not fall back to "no registry => 401 for everyone" churn
+            # NOR open up; the last good map stands.
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {DEVICE_KEY}"}
+                          ).status_code == 200
+
+
+class TestPathAllowlist:
+    @pytest.mark.parametrize("path", [
+        "/lora-adapters",        # global model mutation
+        "/slots",                # other tenants' metadata
+        "/props",
+        "/v1/stream/abc",        # read/cancel another generation
+        "/infill",
+        "/tokenize",
+        "/apply-template",
+        "/metrics",
+    ])
+    def test_dangerous_routes_are_404(self, edge, tmp_path, path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            r = c.get(path, headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        # 404 not 403: a remote caller learns nothing about what exists.
+        assert r.status_code == 404
+
+    def test_allowed_routes_pass(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            for p in ("/v1/models", "/v1/chat/completions"):
+                r = c.post(p, json={"messages": []},
+                           headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+                assert r.status_code == 200, p
+
+
+class TestTenancyKnobs:
+    def test_client_id_slot_is_stripped(self, edge, tmp_path):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "id_slot": 7},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        sent = json.loads(cap["content"])
+        # Unauthenticated upstream: wraps modulo slot count onto someone
+        # else's slot AND jumps the deferred queue. Never forwarded.
+        assert "id_slot" not in sent
+
+    def test_server_side_affinity_is_injected(self, edge, tmp_path):
+        _registry(tmp_path, slot=3)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "id_slot": 7},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert json.loads(cap["content"])["id_slot"] == 3
+
+    def test_device_key_never_reaches_upstream(self, edge, tmp_path):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert DEVICE_KEY not in json.dumps(cap["headers"])
+
+    def test_conversation_id_is_namespaced_per_device(self, edge, tmp_path):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}",
+                            "X-Conversation-Id": "shared-guessable-id"})
+        sent = cap["headers"].get("X-Conversation-Id")
+        # Upstream keys stream sessions on this header with no ownership
+        # check — an un-namespaced id lets one device cancel another's.
+        assert sent and sent != "shared-guessable-id"
+
+
+class TestAdmissionControl:
+    def test_rate_limit_returns_429(self, edge, tmp_path):
+        _registry(tmp_path, rate=2)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            hdr = {"Authorization": f"Bearer {DEVICE_KEY}"}
+            codes = [c.post("/v1/chat/completions", json={"messages": []},
+                            headers=hdr).status_code for _ in range(4)]
+        assert 429 in codes
+        assert codes[0] == 200
+
+    def test_health_is_not_rate_limited(self, edge, tmp_path):
+        _registry(tmp_path, rate=1)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            hdr = {"Authorization": f"Bearer {DEVICE_KEY}"}
+            for _ in range(5):
+                assert c.get("/health", headers=hdr).status_code == 200
+
+
+class TestAuditAndMetrics:
+    def test_audit_records_cost_not_content(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        secret = "the-user-private-prompt-text"
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [{"role": "user", "content": secret}],
+                         "model": "heretic-v2"},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        audit = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert secret not in audit
+        assert DEVICE_KEY not in audit
+        row = json.loads(audit.strip().splitlines()[-1])
+        assert row["device"] == "laptop"
+        assert row["prompt_tokens"] == 10
+        assert row["completion_tokens"] == 5
+        assert row["model"] == "heretic-v2"
+
+    def test_denials_are_audited(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": "Bearer nope"})
+        audit = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert "bad_key" in audit
+
+    def test_metrics_exposes_per_device_tokens(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            body = c.get("/gate/metrics").text
+        assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' in body
+        assert DEVICE_KEY not in body
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

@@ -73,6 +73,9 @@ fi
 echo "Stopping agent router..."
 pkill -f "$SCRIPT_DIR/agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
+echo "Stopping beast-gate..."
+pkill -f "$SCRIPT_DIR/agents/edge.py" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+
 echo "Stopping tool server..."
 pkill -f "$SCRIPT_DIR/agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
 # Legacy mcpo instances (pre-identity-server stacks)
@@ -82,4 +85,5 @@ echo "Stopping llama.cpp server..."
 pkill -f "$SCRIPT_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
 
 rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-      "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" 2>/dev/null || true
+      "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" \
+      "$RUN_DIR/edge.pid" 2>/dev/null || true

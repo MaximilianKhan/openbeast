@@ -169,6 +169,22 @@ if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   fi
 fi
 
+# beast-gate (opt-in) — the inference edge remote clients arrive through.
+if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+  if ! check "beast-gate" "http://${HEALTH_HOST:-127.0.0.1}:${EDGE_PORT:-8090}/gate/health" "beast-gate"; then
+    if $RESTART; then
+      echo "       → restarting beast-gate..."
+      pkill -f "$REPO_DIR/agents/edge.py" 2>/dev/null || true
+      sleep 1
+      (cd "$REPO_DIR" && OPENBEAST_REPO_DIR="$REPO_DIR" \
+        OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+        python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &)
+      sleep 3
+      echo "       → restarted"
+    fi
+  fi
+fi
+
 # beast-slot status API (dashboard extension) — only when enabled in conf.
 if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
   check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true

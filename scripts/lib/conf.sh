@@ -117,6 +117,24 @@ _FETCH_ALLOW_TAILNET="${OPENBEAST_FETCH_ALLOW_TAILNET:-$(_ob_conf_value FETCH_AL
 if [[ -n "$_FETCH_ALLOW_TAILNET" ]]; then
   export OPENBEAST_FETCH_ALLOW_TAILNET="$_FETCH_ALLOW_TAILNET"
 fi
+# beast-gate: the identity-aware inference edge (agents/edge.py, docs/BEAST_SLOT.md).
+# Opt-in. When true, start.sh runs it on EDGE_PORT and setup-tailscale.sh
+# publishes :8443 at IT instead of raw llama-server — remote clients then get
+# per-device keys, a path allowlist, rate limits, and an inference audit. The
+# local command center is untouched either way.
+EDGE_GATE="${OPENBEAST_EDGE_GATE:-$(_ob_conf_value EDGE_GATE || echo false)}"
+EDGE_PORT="${OPENBEAST_EDGE_PORT:-$(_ob_conf_value EDGE_PORT || echo 8090)}"
+export EDGE_GATE EDGE_PORT
+export OPENBEAST_EDGE_PORT="$EDGE_PORT"
+# Per-device admission control (llama-server's own queue is unbounded).
+_EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || true)}"
+[[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
+_EDGE_INFLIGHT="${OPENBEAST_EDGE_MAX_INFLIGHT:-$(_ob_conf_value EDGE_MAX_INFLIGHT || true)}"
+[[ -n "$_EDGE_INFLIGHT" ]] && export OPENBEAST_EDGE_MAX_INFLIGHT="$_EDGE_INFLIGHT"
+# Fail-closed by default: an empty device registry refuses remote callers
+# rather than serving them anonymously (the 2026-07-17 RBAC lesson).
+_EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || true)}"
+[[ -n "$_EDGE_ANON" ]] && export OPENBEAST_EDGE_ALLOW_ANON="$_EDGE_ANON"
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else

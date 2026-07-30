@@ -32,7 +32,7 @@ echo ""
 echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh setup-tailscale.sh
-  update.sh doctor.sh setup-mcpo-keys.sh
+  update.sh doctor.sh setup-mcpo-keys.sh clients.sh client.sh setup-client.sh
   serve-qwen-27b-q5.sh
   serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-35b-a3b-uncensored-q4.sh
@@ -636,9 +636,46 @@ else
   fail "malformed extension manifests:$EXT_ERR"
 fi
 
-# --- 15. beast-slot (docs/BEAST_SLOT.md) ------------------------------------
+# --- 15. beast-slot + beast-gate (docs/BEAST_SLOT.md) -----------------------
 echo ""
 echo "beast-slot surface:"
+# The gate is the only place on the inference path where identity exists —
+# these pin the properties that make it worth having.
+EDGE="$REPO_DIR/agents/edge.py"
+if [[ -f "$EDGE" ]] && grep -q "ALLOWED_PATHS" "$EDGE" \
+   && grep -q '"/v1/chat/completions"' "$EDGE"; then
+  pass "beast-gate ships a path allowlist"
+else
+  fail "agents/edge.py missing or has no path allowlist"
+fi
+# Dangerous llama-server routes must NOT be in the allowlist.
+if ! sed -n '/ALLOWED_PATHS = /,/})/p' "$EDGE" \
+     | grep -qE 'lora-adapters|/slots|/v1/stream|/infill|/props'; then
+  pass "beast-gate allowlist excludes lora-adapters/slots/stream/infill/props"
+else
+  fail "beast-gate allowlist admits a dangerous llama-server route"
+fi
+if grep -q 'body.pop("id_slot"' "$EDGE"; then
+  pass "beast-gate strips client-supplied id_slot"
+else
+  fail "beast-gate does not strip id_slot (unauth'd slot pinning + queue jump)"
+fi
+# Fail-closed: an empty registry must not serve anonymous callers by default.
+if grep -q 'ALLOW_ANON' "$EDGE" && grep -q '"no_registry"' "$EDGE"; then
+  pass "beast-gate fails closed with no devices enrolled"
+else
+  fail "beast-gate has no fail-closed path for an empty registry"
+fi
+if grep -q -- '--metrics' "$REPO_DIR/scripts/serve.sh"; then
+  pass "serve.sh enables llama-server metrics (queue depth for /api/slot)"
+else
+  fail "serve.sh lacks --metrics — capacity.queue_deferred will always be null"
+fi
+if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then
+  pass "logrotate covers the inference audit stream"
+else
+  fail "inference-audit.jsonl not in logrotate-openbeast.conf"
+fi
 if grep -q -- '--publish-slot' "$REPO_DIR/scripts/setup-tailscale.sh" \
    && grep -q -- '--unpublish-slot' "$REPO_DIR/scripts/setup-tailscale.sh" \
    && grep -q 'https=8444' "$REPO_DIR/scripts/setup-tailscale.sh"; then

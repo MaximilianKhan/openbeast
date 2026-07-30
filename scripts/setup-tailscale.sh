@@ -141,7 +141,23 @@ if [[ "$(_ts_ready)" != "yes" ]]; then
   echo " done!"
 fi
 sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
-sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+# :8443 = the inference endpoint remote clients use. When beast-gate is
+# enabled (EDGE_GATE=true) publish IT instead of raw llama-server: the gate
+# adds per-device keys, a path allowlist (no /lora-adapters, /slots,
+# /v1/stream for remote callers), rate limits, and an inference audit. Raw
+# llama-server stays on loopback for the local command center either way.
+_EDGE_GATE="$(grep -E '^[[:space:]]*EDGE_GATE[[:space:]]*=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "'"'"'')"
+_EDGE_PORT="$(grep -E '^[[:space:]]*EDGE_PORT[[:space:]]*=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "'"'"'')"
+if [[ "$_EDGE_GATE" == "true" ]]; then
+  sudo tailscale serve --bg --https=8443 "http://127.0.0.1:${_EDGE_PORT:-8090}"
+  echo "      Inference published via beast-gate (:8443 → :${_EDGE_PORT:-8090} → llama-server)."
+  echo "      Remote devices need an enrolled key: ./scripts/clients.sh enroll <id>"
+else
+  sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
+  echo "      Inference published RAW (:8443 → :8080) — the whole llama-server"
+  echo "      route table is tailnet-visible. For per-device keys + audit, set"
+  echo "      EDGE_GATE=true in openbeast.conf and re-run (docs/BEAST_SLOT.md)."
+fi
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
   # Client mode (docs/BEAST_SLOT.md): the laptop's local web_search
   # tool calls the rig's SearXNG. Tailnet-only like everything else; see

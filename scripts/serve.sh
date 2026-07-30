@@ -60,6 +60,10 @@ fi
 # On a smaller card that context would OOM, so scale it to the card's KV
 # budget: weights are a fixed cost (≈ the GGUF file size), and with
 # --kv-unified the KV cache scales with context and is shared across slots.
+# --metrics turns on llama-server's Prometheus endpoint. It's what makes
+# `requests_deferred` — the real queue depth — visible to the beast-slot
+# contract (slots.busy only counts in-flight work). Loopback-bound like
+# everything else, and beast-gate does not expose /metrics to remote clients.
 # We only ever scale DOWN — the measured value stands on reference-class
 # cards, so behavior is byte-identical there. Overrides:
 #   OPENBEAST_CONTEXT=<n>     force an exact context (skip scaling)
@@ -125,6 +129,7 @@ exec "$LLAMA_SERVER" \
   --kv-unified \
   -ctk "$KV_QUANT" \
   -ctv "$KV_QUANT" \
+  --metrics \
   --host "$HOST" \
   --port "$PORT" \
   "${EXTRA_ARGS[@]}" \

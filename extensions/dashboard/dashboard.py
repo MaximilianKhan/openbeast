@@ -112,13 +112,91 @@ def status():
             "services": services_status(), "metrics": tool_metrics()}
 
 
+# The beast-slot contract version this rig publishes, and the oldest client
+# contract it still serves. v2 is purely ADDITIVE over v1 — every v1 field is
+# present under its v1 name — so a v1 client keeps working and MIN_CLIENT
+# stays 1. Bump MIN_CLIENT only when a field is removed or its meaning changes.
+SLOT_CONTRACT = 2
+SLOT_MIN_CLIENT = 1
+
+
+def _uncommented(path):
+    """Read a shell script with comment lines stripped, or None if unreadable.
+
+    serve.sh *documents* --kv-unified in prose as well as passing it; a flag
+    that was deleted but still explained must not read as "in use".
+    """
+    try:
+        with open(path) as fh:
+            src = fh.read()
+    except Exception:
+        return None
+    return "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def _kv_unified():
+    """True when llama-server was launched with --kv-unified, else False;
+    None when we cannot tell.
+
+    This build exposes no kv_unified field on /props, so we derive it from the
+    launch path we recorded: .run/serve-script names the model script, which
+    execs scripts/serve.sh (where the flag lives today). A model script that
+    passes --no-kv-unified later on the command line wins — llama.cpp takes the
+    last occurrence. Never guesses: capacity numbers built on a wrong answer
+    are worse than no numbers at all.
+    """
+    try:
+        served = open(
+            os.path.join(REPO_DIR, ".run", "serve-script")).read().strip()
+    except Exception:
+        return None
+    if not served or "/" in served:   # unrecorded, or not a plain script name
+        return None
+    texts = [t for t in (_uncommented(os.path.join(REPO_DIR, "scripts", served)),
+                         _uncommented(os.path.join(REPO_DIR, "scripts", "serve.sh")))
+             if t is not None]
+    if not texts:
+        return None
+    if any("--no-kv-unified" in t for t in texts):
+        return False
+    return any("--kv-unified" in t for t in texts)
+
+
+def _queue_deferred():
+    """requests_deferred from llama-server's /metrics, or None.
+
+    The real queue-depth signal: slots.busy counts only in-flight generations,
+    so at -np 1 it reads 1 whether one request or fifty are waiting. Metrics
+    are opt-in server-side (--metrics); without it /metrics answers 501 and we
+    report null rather than pretending the queue is empty.
+    """
+    st, body = _get(f"http://{H}:8080/metrics", auth=True)
+    if st != 200:
+        return None
+    for line in body.splitlines():
+        if line.startswith("llamacpp:requests_deferred "):
+            try:
+                return int(float(line.rsplit(" ", 1)[1]))
+            except Exception:
+                return None
+    return None
+
+
 def slot_status():
-    """The beast-slot discovery contract (docs/BEAST_SLOT.md), version 1.
+    """The beast-slot discovery contract (docs/BEAST_SLOT.md), version 2.
 
     Read-only, published on the tailnet via setup-tailscale.sh --publish-slot.
     Slot-count-agnostic by design: clients must treat slots.total as data —
     a future multi-slot serving profile (or a fleet router) answers the same
     shape. Never includes prompt text or key material.
+
+    v2 adds the `capacity` block because v1's numbers invite one specific
+    misread: under --kv-unified every slot advertises the FULL n_ctx while all
+    slots share ONE pool (llama.cpp/src/llama-context.cpp:286-288), so
+    slots.total × model.ctx overstates the rig by the slot count. capacity
+    states the real total budget, whether it is shared, and the queue depth
+    that slots.busy cannot see.
     """
     ok = _get(f"http://{H}:8080/health")[0] == 200
     model = {"id": None, "ctx": None}
@@ -135,6 +213,10 @@ def slot_status():
             props = json.loads(body)
             slots["total"] = props.get("total_slots")
             model["id"] = model["id"] or props.get("model_alias") or None
+            # ctx fallback for --no-slots rigs: /props carries the same
+            # per-slot number (meta->slot_n_ctx) that /slots reports as n_ctx.
+            model["ctx"] = (props.get("default_generation_settings")
+                            or {}).get("n_ctx") or None
         except Exception:
             pass
     # /slots may be disabled (--no-slots) → busy stays null. Busy detection
@@ -153,11 +235,34 @@ def slot_status():
                     break
         except Exception:
             pass
+    # Capacity: model.ctx is what ONE slot advertises. Shared → that number is
+    # already the whole budget; per-slot → multiply. Either input missing
+    # leaves ctx_total null.
+    shared = _kv_unified()
+    ctx_total = None
+    if model["ctx"]:
+        if shared is True:
+            ctx_total = model["ctx"]
+        elif shared is False and slots["total"]:
+            ctx_total = model["ctx"] * slots["total"]
+    if slots["total"] is None:
+        profile = "unknown"
+    elif slots["total"] == 1:
+        profile = "mtp-single-slot"
+    else:
+        profile = "batched-multi-slot"
     return {
-        "beast_slot": 1,
+        "beast_slot": SLOT_CONTRACT,
+        "min_client": SLOT_MIN_CLIENT,
         "healthy": ok,
         "model": model,
         "slots": slots,
+        "capacity": {
+            "ctx_shared": shared,
+            "ctx_total": ctx_total,
+            "queue_deferred": _queue_deferred(),
+            "serving_profile": profile,
+        },
         "services": services_status(),
         "auth": "key" if _API_KEY else "open",
     }

@@ -31,6 +31,21 @@ fi
 echo ""
 echo ""
 
+# --- Per-device enrollment CLI tests ---
+echo "--- Client enrollment tests (scripts/clients.sh) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_clients.sh"; then
+  echo ""
+  echo "Client enrollment tests: ALL PASSED"
+else
+  echo ""
+  echo "Client enrollment tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""

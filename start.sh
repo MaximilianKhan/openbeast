@@ -244,6 +244,9 @@ cleanup() {
   if [[ -n "${ROUTER_PID:-}" ]]; then
     kill "$ROUTER_PID" 2>/dev/null && echo "agent router stopped."
   fi
+  if [[ -n "${EDGE_PID:-}" ]]; then
+    kill "$EDGE_PID" 2>/dev/null && echo "beast-gate stopped."
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
@@ -256,7 +259,8 @@ cleanup() {
     kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
     rm -f "$_pf"
   done
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" "$RUN_DIR/router.pid"
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -443,6 +447,34 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
   echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
+fi
+
+# beast-gate (opt-in, EDGE_GATE=true) — the identity-aware inference edge for
+# REMOTE clients (docs/BEAST_SLOT.md). Local frontends are unaffected: they
+# keep talking to llama-server / the router on loopback. Publishing changes
+# only on the tailnet side (setup-tailscale.sh points :8443 here).
+if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+  echo "Starting beast-gate on http://localhost:${EDGE_PORT}..."
+  OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
+  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+    python3 "$SCRIPT_DIR/agents/edge.py" &
+  EDGE_PID=$!
+  echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
+  EDGE_UP=0
+  for _i in $(seq 1 20); do
+    if ! kill -0 "$EDGE_PID" 2>/dev/null; then
+      echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
+    fi
+    curl -s -m 2 "http://127.0.0.1:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
+    sleep 1
+  done
+  [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
+  _EDGE_AUTH=$(curl -s -m 2 "http://127.0.0.1:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
+  echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
+  if [[ "$_EDGE_AUTH" == "closed" ]]; then
+    echo "  No devices enrolled yet — remote clients will get 401 until:"
+    echo "    ./scripts/clients.sh enroll <device-id>"
+  fi
 fi
 
 echo "Starting Open WebUI..."

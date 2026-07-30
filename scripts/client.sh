@@ -101,19 +101,54 @@ case "$CMD" in
       echo "  ✗ OPENBEAST_AGENT_INFERENCE_URL not set"; bad=$((bad+1))
     fi
     if [ -n "${OPENBEAST_SLOT_URL:-}" ]; then
+      # beast-slot contract v2 (docs/BEAST_SLOT.md). Line 1 is the summary;
+      # any further lines are version warnings, printed indented below it.
       SLOT="$(curl -s -m 5 "$OPENBEAST_SLOT_URL" 2>/dev/null | python3 -c '
 import json, sys
+CLIENT_V = 2   # the contract version THIS client understands
 try:
     d = json.load(sys.stdin)
-    m, s = d.get("model") or {}, d.get("slots") or {}
-    h = "healthy" if d.get("healthy") else "UNHEALTHY"
-    print("%s | model %s | slots %s/%s busy | ctx %s | auth %s" % (
-        h, m.get("id") or "?", s.get("busy", "?"), s.get("total", "?"),
-        m.get("ctx") or "?", d.get("auth", "?")))
 except Exception:
-    pass' || true)"
+    sys.exit(0)
+m, s = d.get("model") or {}, d.get("slots") or {}
+c = d.get("capacity") or {}
+
+
+def num(v):
+    return "?" if v is None else v
+
+
+def ctx(n):
+    # 212992 -> "208K": the number people actually quote.
+    if not n:
+        return "?"
+    return "%dK" % (n // 1024) if n >= 1024 else str(n)
+
+
+# ctx_shared=True means that context is ONE pool across every slot, not a
+# per-slot allowance — the trap v2 exists to close. False -> it multiplies.
+budget = ctx(m.get("ctx"))
+if c.get("ctx_shared") is True:
+    budget += " shared"
+elif c.get("ctx_shared") is False and c.get("ctx_total"):
+    budget += " x%s (%s total)" % (num(s.get("total")), ctx(c["ctx_total"]))
+print("%s | model %s | slots %s/%s busy | ctx %s | queued %s | %s | auth %s" % (
+    "healthy" if d.get("healthy") else "UNHEALTHY",
+    m.get("id") or "?", num(s.get("busy")), num(s.get("total")), budget,
+    num(c.get("queue_deferred")), c.get("serving_profile") or "unknown",
+    d.get("auth", "?")))
+rig_v, min_c = d.get("beast_slot"), d.get("min_client")
+if isinstance(min_c, int) and min_c > CLIENT_V:
+    print("! rig needs beast-slot client v%d, this client speaks v%d —"
+          " run: openbeast-client update" % (min_c, CLIENT_V))
+elif isinstance(rig_v, int) and rig_v > CLIENT_V:
+    print("! rig publishes beast-slot v%d, this client reads v%d — fields"
+          " above are still correct, newer ones are ignored;"
+          " openbeast-client update to see them" % (rig_v, CLIENT_V))
+' || true)"
       if [ -n "$SLOT" ]; then
-        echo "  ✓ beast-slot: $SLOT"; ok=$((ok+1))
+        echo "  ✓ beast-slot: $(printf '%s\n' "$SLOT" | sed -n '1p')"; ok=$((ok+1))
+        printf '%s\n' "$SLOT" | sed -n '2,$p' | sed 's/^/    /'
       else
         echo "  ! beast-slot status not published (optional — rig:"
         echo "      ./scripts/setup-tailscale.sh --publish-slot)"

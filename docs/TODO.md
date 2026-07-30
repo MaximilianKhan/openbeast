@@ -164,6 +164,10 @@ the choke point where identity, quotas, audit, and metering all attach.
 - **Tamper-evident audit v2 (M).** Hash-chain the tool-audit entries
   (each row carries prev-row hash) + logrotate policy + retention knob.
   Today's audit is append-only JSONL; chaining makes deletion detectable.
+  NOTE 2026-07-30: there are now TWO audit streams — tool calls
+  (`.run/tool-audit.jsonl`) and inference (`.run/inference-audit.jsonl`,
+  from beast-gate). Chain both, and add the new one to
+  `scripts/logrotate-openbeast.conf`.
 - ✅ **SECURITY.md + threat model + disclosure policy (DONE 2026-07-09).**
   Private-disclosure policy, scoped attack surfaces, brief threat model.
 - **SBOM + scanning in CI (S/M).** ✅ pip-audit DONE (pr-quality.yml).
@@ -194,14 +198,30 @@ the choke point where identity, quotas, audit, and metering all attach.
   points spawned-agent inference at a worker box.
 
 ### Multi-tenancy & fairness
-- **Per-user rate limits + disk quotas (M).** Token-bucket per user-id in
-  openapi_tools (it sees identity on every call); du-based shard quota
-  with a friendly refusal. Prevents one user starving the box.
-- **Usage metering (M).** Per-user prompt/completion token tallies (the
-  audit row already has the hook) → monthly usage report; the "who used
-  what" question every shared deployment eventually asks.
-- **Slot fairness (L).** llama-server -np slots are first-come; a small
-  queue in the router could enforce per-user concurrency caps.
+- ✅ **beast-gate — identity-aware inference edge (DONE 2026-07-30).**
+  `agents/edge.py` + `scripts/clients.sh`. The inference path had NO identity
+  (`:8443` → llama-server, which has zero tenancy primitives), so every
+  device collapsed into one anonymous caller with the run of the whole route
+  table. The gate adds per-device keys (hot-reloaded → revoke without
+  restarting llama-server), a path allowlist (404 for `/lora-adapters`,
+  `/slots`, `/v1/stream`, …), client `id_slot` stripping + server-side
+  affinity injection, per-device conversation-id namespacing, token bucket +
+  in-flight cap, and an inference audit with token usage + `/gate/metrics`.
+  Opt-in (`EDGE_GATE`), fails closed. docs/BEAST_SLOT.md.
+- **Per-user rate limits + disk quotas (M).** ⏳ PARTIAL: per-DEVICE rate
+  limits + in-flight caps shipped in beast-gate. REMAINING: per-user (not
+  per-device) limits in openapi_tools, and du-based shard quotas.
+- **Usage metering (M).** ⏳ PARTIAL: per-device prompt/completion tokens now
+  recorded per completion (`.run/inference-audit.jsonl`) and exported at
+  `/gate/metrics`. REMAINING: roll-up reporting (monthly per-user/per-device
+  usage report) and joining gate rows to WebUI user identity.
+- ✅ **Slot fairness — downgraded from L and largely DONE.** The assumption
+  that this needed a scheduler was wrong: llama-server already honors a
+  client `id_slot` and prefers slot-matching deferred tasks. beast-gate does
+  the affinity server-side (`--slot N` at enroll). REMAINING: measure it
+  under a real multi-slot profile, and note that under `--kv-unified` pinning
+  reserves a slot, not KV (pool exhaustion purges the lowest-numbered idle
+  slot's cache — serve `--no-kv-unified` for hard isolation).
 
 ### Deployment & fleet provisioning
 - ✅ **`openbeast doctor` (DONE 2026-07-09).** ./start.sh doctor —

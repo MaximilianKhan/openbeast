@@ -78,7 +78,7 @@ tenants.
 ./scripts/setup-tailscale.sh --publish-slot      # + :8444 discovery API
 ```
 
-### The `/api/slot` discovery contract (version 1)
+### The `/api/slot` discovery contract (version 2)
 
 `GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
 *only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
@@ -86,40 +86,56 @@ and `/api/status` stay rig-local:
 
 ```json
 {
-  "beast_slot": 1,
+  "beast_slot": 2,
+  "min_client": 1,
   "healthy": true,
   "model": {"id": "heretic-v2-27b-mtp-q6", "ctx": 212992},
   "slots": {"total": 1, "busy": 0},
+  "capacity": {
+    "ctx_shared": true,
+    "ctx_total": 212992,
+    "queue_deferred": 0,
+    "serving_profile": "mtp-single-slot"
+  },
   "services": {"model": true, "tools": true, "webui": true, "search": true},
   "auth": "open"
 }
 ```
 
-- `model.id` is the **real loaded model** (from `/v1/models`) — llama-server
-  ignores the model name clients request, so this is how a client knows what
-  it's actually talking to.
+**v2 is purely additive** — every v1 field keeps its name and meaning, so v1
+clients keep working and `min_client` stays 1. Bump `min_client` only when a
+field is removed or its meaning changes. A client should compare its own
+understood version against `beast_slot` (newer rig → unknown fields ignored,
+still safe) and against `min_client` (rig demands newer → update the client);
+`openbeast-client status` does exactly this and warns without failing.
+
+- `model.id` is the **real loaded model** (from `/v1/models`, falling back to
+  `/props`) — llama-server ignores the model name clients request, so this is
+  how a client knows what it's actually talking to.
 - `slots` is **data, not an assumption**. Today's MTP default serves `-np 1`:
   one slot, concurrent requests (your WebUI turn + a remote client's turn)
   queue FIFO. Switching between conversations is cheaper than it sounds — the
   server saves the displaced conversation's KV state into a global RAM prompt
   cache (8 GiB default) and restores it later, so a handoff costs a RAM copy,
-  not a full reprocess. A future multi-slot serving profile (or a fleet
-  router) answers the **same shape** with bigger numbers; clients must not
+  not a full reprocess. A multi-slot profile answers the **same shape** with
+  bigger numbers and `serving_profile: "batched-multi-slot"`; clients must not
   hard-code 1.
-- ⚠️ **`slots.total` × `model.ctx` is NOT your capacity.** We serve with
-  `--kv-unified`, under which every slot advertises the *full* context while
-  all slots share one pool. A default non-MTP install publishes
-  `slots.total: 6` and `ctx: 358400` — that is 358400 tokens **shared**, not
-  per slot. Worse, when the pool runs dry the server purges the
-  *lowest-numbered* idle slot's cache to make room, deterministically. For
-  real per-tenant isolation, serve `--no-kv-unified -np N -c (N × per-tenant)`
-  and accept the lower pool efficiency.
-- `slots.busy` counts only *in-flight* generations. Queued work is invisible
-  (with `-np 1`, `busy` is 1 whether one request or fifty are waiting), so it
-  is a liveness signal, not a load signal. llama-server's `/metrics` carries
-  `requests_deferred` — the number a future contract version should surface.
-- `busy` is `null` when the server runs `--no-slots`.
-- Never contains prompt text or key material.
+- **`capacity` answers "how much can this rig actually take", which
+  `slots.total` × `model.ctx` does not.** Under `--kv-unified` (our default)
+  every slot advertises the *full* context while all slots draw on ONE pool,
+  so a 6-slot rig publishing `ctx: 358400` has 358400 tokens **shared**, not
+  6×. `ctx_shared` tells you which arithmetic applies and `ctx_total` does it
+  for you; both are `null` when the launch path can't be read — never a guess.
+  Note the sharp edge `capacity` describes but cannot fix: when the unified
+  pool runs dry, llama-server purges the *lowest-numbered* idle slot's cache,
+  deterministically. For real per-tenant isolation serve
+  `--no-kv-unified -np N -c (N × per-tenant)` and accept the lower efficiency.
+- `slots.busy` counts only *in-flight* generations, so it is a liveness
+  signal; `capacity.queue_deferred` is the load signal (llama-server's
+  `requests_deferred`). It is `null` unless the server runs with `--metrics`,
+  which `serve.sh` now passes by default.
+- On `--no-slots`, `busy` is `null` but `ctx` still resolves from `/props`.
+- Never contains prompt text, sampling params, or key material.
 
 ## Client side (any Mac/Linux device)
 
@@ -155,6 +171,83 @@ openbeast-client uninstall
 wiring. RBAC deliberately does not apply to the client path — it's your
 device; `OPENBEAST_MCP_TOOLS` is the scoping lever if a shared client ever
 needs one.
+
+## beast-gate — the identity-aware inference edge
+
+Everything above describes the *raw* topology, where `:8443` maps straight to
+llama-server. That is fine for a rig only you can reach. The moment more than
+one person or device shares it, three facts bite (all verified in the vendored
+llama.cpp source):
+
+- **llama-server has no users.** One flat API key, no per-caller attribution,
+  no per-caller limits. Every WebUI user, laptop, and spawned agent collapses
+  into one anonymous caller.
+- **Slot assignment is opportunistic**, by longest-common-prefix then LRU —
+  never by identity. And `id_slot` from a client is unauthenticated, wraps
+  modulo the slot count onto someone else's slot, and jumps the deferred queue.
+- **There is no admission control.** The task queue is an unbounded deque with
+  no per-request timeout and no preemption, so one remote agent loop can
+  monopolize the rig indefinitely.
+
+`agents/edge.py` is the missing hop — the one place on the inference path
+where identity exists. Enable it:
+
+```bash
+# rig
+echo "EDGE_GATE=true" >> openbeast.conf
+./scripts/clients.sh enroll laptop-air --label "MacBook Air"   # prints the key ONCE
+./stop.sh && ./start.sh -d
+./scripts/setup-tailscale.sh          # repoints :8443 at the gate
+
+# client
+./scripts/setup-client.sh --api-key <the key from enroll>
+```
+
+What each remote request now passes through:
+
+| Control | Behavior |
+|---|---|
+| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` takes effect in seconds with **no llama-server restart** (a restart would destroy your KV cache and every live stream) |
+| **Path allowlist** | Only `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`. Everything else is **404** — not 403, so a remote caller learns nothing about what exists. `/lora-adapters`, `/slots`, `/props`, `/v1/stream`, `/infill` stop existing for remote callers |
+| **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map |
+| **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |
+| **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After` |
+| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: device, user, model, status, duration, prompt/completion tokens. Never content, never key material. Prometheus at `/gate/metrics` |
+
+**Fails closed.** With `EDGE_GATE=true` and no devices enrolled, remote callers
+get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
+opts out, at the cost of attribution and revocation. A corrupt or half-written
+registry keeps the last good device map rather than opening up.
+
+**Your local command center is untouched.** Open WebUI and the agent router
+keep talking to llama-server on loopback exactly as before. Enabling the gate
+changes what the *tailnet* sees, not what the rig does.
+
+### Device enrollment
+
+```bash
+./scripts/clients.sh enroll <id> [--label "…"] [--slot N] [--rate N]
+./scripts/clients.sh list
+./scripts/clients.sh revoke <id>      # lost laptop — effective in seconds
+./scripts/clients.sh rotate <id>      # new key, same device identity
+```
+
+The registry (`.run/clients.json`, mode 0600) stores **only the sha256** of
+each key — a key is printed exactly once, at enroll time, and is not
+recoverable. Revoked devices stay in the file so the audit trail keeps
+resolving their id.
+
+### Per-device slot affinity
+
+`--slot N` at enroll time pins a device to a specific llama-server slot. The
+gate injects it server-side (never trusting the client's). Two caveats worth
+internalizing before relying on it:
+
+- It only means anything with a **multi-slot serving profile** (`-np > 1`).
+  Our MTP default is `-np 1`, where every request lands on slot 0 anyway.
+- Under `--kv-unified`, pinning reserves a **slot, not KV**. Slots share one
+  pool, and pool exhaustion purges the lowest-numbered idle slot's cache. For
+  real isolation serve `--no-kv-unified -np N -c (N × per-tenant)`.
 
 ## Keyed mode (optional, off by default)
 

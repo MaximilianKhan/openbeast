@@ -190,6 +190,23 @@ probe "http://$HEALTH_HOST:3000/api/version" "version" \
   && pass "Open WebUI (:3000)" \
   || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
 
+if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+  _gate=$(curl -s --max-time 4 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
+  if [[ -n "$_gate" ]]; then
+    _mode=$(echo "$_gate" | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
+    _ndev=$(echo "$_gate" | grep -o '"devices":[0-9]*' | cut -d: -f2)
+    case "$_mode" in
+      devices) pass "beast-gate (:${EDGE_PORT:-8090}) — ${_ndev:-?} enrolled device(s)" ;;
+      anon)    warn "beast-gate is serving UNREGISTERED callers (EDGE_ALLOW_ANON=true)" \
+                    "enroll devices and unset EDGE_ALLOW_ANON: ./scripts/clients.sh enroll <id>" ;;
+      *)       warn "beast-gate is up but no devices are enrolled — remote clients get 401" \
+                    "./scripts/clients.sh enroll <device-id>" ;;
+    esac
+  else
+    warn "beast-gate not responding (:${EDGE_PORT:-8090})" "./scripts/healthcheck.sh --restart"
+  fi
+fi
+
 # ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
 # Informational: what tailscale serve currently maps, and whether the raw
 # inference endpoint is published without a bearer key. Keyless is the
@@ -208,9 +225,23 @@ if command -v tailscale >/dev/null 2>&1; then
         *proxy*)   pass "published ${_url:-?} → ${_line##*proxy }" ;;
       esac
     done <<< "$_serve"
-    if echo "$_serve" | grep -qE ':8443[^0-9]' && [[ -z "${LLAMA_API_KEY:-}" ]]; then
-      warn "inference endpoint (:8443) is published with no API key" \
-           "fine on a personal tailnet; set LLAMA_API_KEY in openbeast.conf if other users/devices share it (docs/BEAST_SLOT.md)"
+    if echo "$_serve" | grep -qE ':8443[^0-9]'; then
+      # What sits behind :8443 decides the real exposure. The gate allowlists
+      # the OpenAI routes and keys per device; raw llama-server publishes its
+      # entire route table (/lora-adapters, /slots, /v1/stream) to the tailnet.
+      if echo "$_serve" | grep -qE ":8443[^0-9]" && \
+         echo "$_serve" | grep -A2 -E ":8443[^0-9]" | grep -q ":${EDGE_PORT:-8090}"; then
+        pass "inference published via beast-gate (per-device keys + audit)"
+      elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
+        warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
+             "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"
+      elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
+        warn "raw llama-server is published on :8443 with no API key" \
+             "fine on a personal tailnet you fully own; otherwise set EDGE_GATE=true (per-device keys, path allowlist, audit) — docs/BEAST_SLOT.md"
+      else
+        warn "raw llama-server is published on :8443 (whole route table)" \
+             "the shared key gates it but doesn't shrink it; EDGE_GATE=true allowlists just the OpenAI routes"
+      fi
     fi
   else
     pass "no tailscale serve mappings (stack is localhost-only)"
