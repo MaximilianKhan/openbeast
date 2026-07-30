@@ -199,7 +199,12 @@ class Registry:
         `clients.sh list/show` merges this file for display.
         """
         now = time.monotonic()
-        if now - self._touched.get(device_id, 0.0) < _TOUCH_INTERVAL_S:
+        last = self._touched.get(device_id)
+        # `last is None` means never touched -> always write. Do NOT use 0.0 as
+        # the sentinel: time.monotonic() is time since BOOT, so on a machine
+        # that booted less than _TOUCH_INTERVAL_S ago the arithmetic would
+        # silently skip a device's very first last-seen record.
+        if last is not None and now - last < _TOUCH_INTERVAL_S:
             return
         self._touched[device_id] = now
         try:

@@ -336,6 +336,35 @@ class TestRegistryFreshness:
         seen = tmp_path / ".run" / "clients-lastseen.json"
         assert seen.exists() and "laptop" in json.loads(seen.read_text())
 
+    def test_first_touch_writes_even_on_a_freshly_booted_host(self, edge, tmp_path):
+        # Regression: the throttle used 0.0 as the "never touched" sentinel and
+        # compared against time.monotonic(), which is time since BOOT. On a host
+        # up for less than the interval (CI runners, a rig rebooting), the very
+        # first last-seen write for every device was silently skipped.
+        _registry(tmp_path)
+        reg = edge.Registry(str(tmp_path / ".run" / "clients.json"))
+        real_monotonic = edge.time.monotonic
+        edge.time.monotonic = lambda: 3.0        # 3 seconds since boot
+        try:
+            reg.touch("laptop")
+        finally:
+            edge.time.monotonic = real_monotonic
+        seen = tmp_path / ".run" / "clients-lastseen.json"
+        assert seen.exists(), "first touch skipped on a freshly booted host"
+        assert "laptop" in json.loads(seen.read_text())
+
+    def test_touch_is_throttled_after_the_first(self, edge, tmp_path):
+        _registry(tmp_path)
+        reg = edge.Registry(str(tmp_path / ".run" / "clients.json"))
+        reg.touch("laptop")
+        seen = tmp_path / ".run" / "clients-lastseen.json"
+        first = seen.read_text()
+        seen.write_text('{"laptop": "sentinel"}')
+        reg.touch("laptop")                       # immediately again
+        assert seen.read_text() == '{"laptop": "sentinel"}', \
+            "touch rewrote inside the throttle window (write amplification)"
+        assert first                              # the first one did land
+
     def test_rate_limit_change_takes_effect_live(self, edge, tmp_path):
         path = _registry(tmp_path, rate=100)
         _stub_upstream(edge, {})
