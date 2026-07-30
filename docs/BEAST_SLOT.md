@@ -51,7 +51,9 @@ server, which is never published). See docs/RBAC_PLAN.md.
 
 ### The `/api/slot` discovery contract (version 1)
 
-`GET https://<rig>:8444/api/slot` — read-only JSON:
+`GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
+*only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
+and `/api/status` stay rig-local:
 
 ```json
 {
