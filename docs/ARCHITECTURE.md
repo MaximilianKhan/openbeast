@@ -174,6 +174,7 @@ scripts/                     # Server, chat, and ops scripts
   weights.registry           # sha256 + size pins for every shipped GGUF
   setup-tailscale.sh         # Publish to the tailnet (--publish-searxng/--publish-slot)
   clients.sh                 # RIG: device enrollment/revocation for beast-gate
+  ssd-wear.sh                # SMART-based drive wear report (doctor row; --json/--snapshot)
   setup-client.sh            # CLIENT: install client mode (macOS/Linux; --api-key, --local-search)
   setup-mac-client.sh        # Back-compat wrapper → setup-client.sh
   client.sh                  # CLIENT: the openbeast-client CLI (status/agent/search/update)
@@ -202,6 +203,7 @@ tests/                       # Test suite
   test_identity_server.py    # Identity tool server tests (headers, RBAC keys, sharding, audit)
   test_edge.py               # beast-gate: auth matrix, allowlist, admission control, audit
   test_clients.sh            # Device enrollment/revocation CLI
+  test_ssd_wear.sh           # Drive-wear math + degraded paths (stubbed smartctl)
   test_beast_slot.py         # /api/slot discovery contract (v2 capacity math)
   test_manifest.py           # Per-shard write-manifest tests
   test_scripts.sh            # Script structure validation

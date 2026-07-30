@@ -121,6 +121,22 @@ and `/api/status` stay rig-local:
 }
 ```
 
+**`auth` tells a client what it will actually need to present**, and has four
+values. Treat any *unknown* value as "authentication required, kind
+unspecified" rather than switching exhaustively — the set can grow:
+
+| value | meaning |
+|---|---|
+| `open` | no credential required (personal tailnet, gate off, no key) |
+| `key` | one shared `LLAMA_API_KEY` gates the endpoint |
+| `device` | beast-gate is on: you need your own enrolled device key |
+| `anon` | beast-gate is on but `EDGE_ALLOW_ANON=true`, so unregistered callers are served as a single `anon` device — the gate is up, per-device identity is **not** in force |
+
+`device` and `anon` were added alongside beast-gate. This is an additive
+change to an existing field's value set, not a rename, so `min_client` stays
+1 — but a client that hard-codes `== "open"` to mean "no auth needed" was
+already wrong and will now be wrong more often.
+
 **v2 is purely additive** — every v1 field keeps its name and meaning, so v1
 clients keep working and `min_client` stays 1. Bump `min_client` only when a
 field is removed or its meaning changes. A client should compare its own
