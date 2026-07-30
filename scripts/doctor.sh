@@ -190,6 +190,27 @@ probe "http://$HEALTH_HOST:3000/api/version" "version" \
   && pass "Open WebUI (:3000)" \
   || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
 
+# ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
+# Informational: what tailscale serve currently maps, and whether the raw
+# inference endpoint is published without a bearer key. Keyless is the
+# documented default on a personal tailnet — WARN, never FAIL.
+if command -v tailscale >/dev/null 2>&1; then
+  section "Tailnet surfaces"
+  _serve=$(tailscale serve status 2>/dev/null || true)
+  if [[ -n "$_serve" ]]; then
+    for _p in 443 8443 8444 8889; do
+      _map=$(echo "$_serve" | grep -E ":${_p}[^0-9]" | head -1 | sed 's/^[[:space:]]*//' || true)
+      [[ -n "$_map" ]] && pass "published :${_p} → ${_map#*proxy }"
+    done
+    if echo "$_serve" | grep -qE ':8443[^0-9]' && [[ -z "${LLAMA_API_KEY:-}" ]]; then
+      warn "inference endpoint (:8443) is published with no API key" \
+           "fine on a personal tailnet; set LLAMA_API_KEY in openbeast.conf if other users/devices share it (docs/BEAST_SLOT.md)"
+    fi
+  else
+    pass "no tailscale serve mappings (stack is localhost-only)"
+  fi
+fi
+
 # ── Verdict ─────────────────────────────────────────────────────────────────
 [[ $QUIET -eq 1 ]] || echo ""
 echo "doctor: ${PASS} ok, ${WARN} warning(s), ${FAIL} failure(s)"

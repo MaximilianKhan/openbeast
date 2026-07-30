@@ -14,7 +14,7 @@
 # The identity tool server (:3001) and SearXNG (:8888) are NOT published by
 # default — internal plumbing for the model, not human-facing services.
 #
-# --publish-searxng (client mode, docs/MAC_CLIENT_PLAN.md) additionally
+# --publish-searxng (client mode, docs/BEAST_SLOT.md) additionally
 # publishes SearXNG at :8889 so a thin-client laptop's local web_search tool
 # can use the rig's private metasearch. SECURITY: SearXNG has no auth and
 # its rate limiter is off, so ANY tailnet device can search through it —
@@ -22,11 +22,19 @@
 # tailnet, never public (this script never funnels). Undo with
 # --unpublish-searxng (standalone; doesn't rerun setup).
 #
+# --publish-slot publishes the beast-slot status/discovery API at :8444
+# (→ the dashboard extension on :3002): read-only JSON — loaded model,
+# slots busy/total, context, service health. Lets clients answer "what am
+# I talking to" (llama-server ignores the requested model name). Requires
+# the dashboard extension (./scripts/ext.sh enable dashboard). Undo with
+# --unpublish-slot.
+#
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
 
 PUBLISH_SEARXNG=0
+PUBLISH_SLOT=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -34,7 +42,12 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8889 off
       echo "SearXNG unpublished from the tailnet (:8889 off)."
       exit 0 ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --publish-slot)      PUBLISH_SLOT=1 ;;
+    --unpublish-slot)
+      sudo tailscale serve --https=8444 off
+      echo "beast-slot status API unpublished from the tailnet (:8444 off)."
+      exit 0 ;;
+    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -130,11 +143,23 @@ fi
 sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
 sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
-  # Client mode (docs/MAC_CLIENT_PLAN.md): the laptop's local web_search
+  # Client mode (docs/BEAST_SLOT.md): the laptop's local web_search
   # tool calls the rig's SearXNG. Tailnet-only like everything else; see
   # the security note in the header.
   sudo tailscale serve --bg --https=8889 http://127.0.0.1:8888
   echo "      SearXNG published for thin clients (tailnet-only, :8889 → :8888)."
+fi
+if [[ $PUBLISH_SLOT -eq 1 ]]; then
+  # beast-slot discovery (docs/BEAST_SLOT.md): read-only status JSON from
+  # the dashboard extension. Best-effort preflight — publishing without the
+  # extension enabled just serves 502s until it is.
+  _conf_ext="$(grep -E '^[[:space:]]*EXTENSIONS[[:space:]]*=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null | tail -1 || true)"
+  if [[ "$_conf_ext" != *dashboard* ]]; then
+    echo "      WARNING: dashboard extension not in EXTENSIONS — the slot API"
+    echo "               will 502 until: ./scripts/ext.sh enable dashboard && ./stop.sh && ./start.sh"
+  fi
+  sudo tailscale serve --bg --https=8444 http://127.0.0.1:3002
+  echo "      beast-slot status API published (tailnet-only, :8444 → :3002)."
 fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
@@ -169,10 +194,16 @@ echo "  Agents: point OpenCode/any OpenAI client at the API:"
 echo "          \"baseURL\": \"https://$FQDN:8443/v1\""
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
   echo ""
-  echo "  Thin clients (scripts/setup-mac-client.sh on the laptop):"
+  echo "  Thin clients (scripts/setup-client.sh on the laptop):"
   echo "          SEARXNG_URL=https://$FQDN:8889"
   echo "          (any tailnet device can search through this — undo with"
   echo "           ./scripts/setup-tailscale.sh --unpublish-searxng)"
+fi
+if [[ $PUBLISH_SLOT -eq 1 ]]; then
+  echo ""
+  echo "  beast-slot discovery:  https://$FQDN:8444/api/slot"
+  echo "          (read-only model/slots/health JSON — undo with"
+  echo "           ./scripts/setup-tailscale.sh --unpublish-slot)"
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"

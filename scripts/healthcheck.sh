@@ -169,6 +169,11 @@ if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   fi
 fi
 
+# beast-slot status API (dashboard extension) — only when enabled in conf.
+if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
+  check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true
+fi
+
 # Tailscale (remote access) — only checked when installed; the stack is
 # fully functional without it, just localhost-only.
 if command -v tailscale &>/dev/null; then

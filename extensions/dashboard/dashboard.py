@@ -23,9 +23,18 @@ PORT = int(os.environ.get("DASHBOARD_PORT", "3002"))
 H = "127.0.0.1"
 
 
-def _get(url, timeout=2):
+# Keyed llama-server (LLAMA_API_KEY): the dashboard's own probes must present
+# the bearer. start.sh's extension launcher inherits the conf.sh export;
+# a standalone `run.sh` on a keyless stack sends nothing, unchanged.
+_API_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
+
+
+def _get(url, timeout=2, auth=False):
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        req = urllib.request.Request(url)
+        if auth and _API_KEY:
+            req.add_header("Authorization", f"Bearer {_API_KEY}")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace")
     except Exception:
         return None, ""
@@ -57,7 +66,7 @@ def model_status():
     except Exception:
         pass
     alias = ""
-    st, body = _get(f"http://{H}:8080/v1/models")
+    st, body = _get(f"http://{H}:8080/v1/models", auth=True)
     if st == 200:
         try:
             alias = json.loads(body)["data"][0].get("id", "")
@@ -101,6 +110,57 @@ def tool_metrics():
 def status():
     return {"gpu": gpu_status(), "model": model_status(),
             "services": services_status(), "metrics": tool_metrics()}
+
+
+def slot_status():
+    """The beast-slot discovery contract (docs/BEAST_SLOT.md), version 1.
+
+    Read-only, published on the tailnet via setup-tailscale.sh --publish-slot.
+    Slot-count-agnostic by design: clients must treat slots.total as data —
+    a future multi-slot serving profile (or a fleet router) answers the same
+    shape. Never includes prompt text or key material.
+    """
+    ok = _get(f"http://{H}:8080/health")[0] == 200
+    model = {"id": None, "ctx": None}
+    slots = {"total": None, "busy": None}
+    st, body = _get(f"http://{H}:8080/v1/models", auth=True)
+    if st == 200:
+        try:
+            model["id"] = json.loads(body)["data"][0].get("id") or None
+        except Exception:
+            pass
+    st, body = _get(f"http://{H}:8080/props", auth=True)
+    if st == 200:
+        try:
+            props = json.loads(body)
+            slots["total"] = props.get("total_slots")
+            model["id"] = model["id"] or props.get("model_alias") or None
+        except Exception:
+            pass
+    # /slots may be disabled (--no-slots) → busy stays null. Busy detection
+    # covers both server generations: is_processing (current) / state != 0.
+    st, body = _get(f"http://{H}:8080/slots", auth=True)
+    if st == 200:
+        try:
+            data = json.loads(body)
+            slots["busy"] = sum(
+                1 for s in data
+                if s.get("is_processing") or s.get("state", 0) != 0)
+            slots["total"] = slots["total"] or len(data)
+            for s in data:
+                if s.get("n_ctx"):
+                    model["ctx"] = s["n_ctx"]
+                    break
+        except Exception:
+            pass
+    return {
+        "beast_slot": 1,
+        "healthy": ok,
+        "model": model,
+        "slots": slots,
+        "services": services_status(),
+        "auth": "key" if _API_KEY else "open",
+    }
 
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8>
@@ -153,7 +213,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path.startswith("/api/status"):
+        if self.path.startswith("/api/slot"):
+            body = json.dumps(slot_status()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+        elif self.path.startswith("/api/status"):
             body = json.dumps(status()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

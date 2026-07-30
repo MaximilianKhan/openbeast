@@ -586,6 +586,38 @@ else
   fail "malformed extension manifests:$EXT_ERR"
 fi
 
+# --- 15. beast-slot (docs/BEAST_SLOT.md) ------------------------------------
+echo ""
+echo "beast-slot surface:"
+if grep -q -- '--publish-slot' "$REPO_DIR/scripts/setup-tailscale.sh" \
+   && grep -q -- '--unpublish-slot' "$REPO_DIR/scripts/setup-tailscale.sh" \
+   && grep -q 'https=8444' "$REPO_DIR/scripts/setup-tailscale.sh"; then
+  pass "setup-tailscale.sh publishes/unpublishes the slot API (:8444)"
+else
+  fail "setup-tailscale.sh missing --publish-slot/--unpublish-slot/:8444"
+fi
+if grep -q '/api/slot' "$REPO_DIR/extensions/dashboard/dashboard.py" \
+   && grep -q 'beast_slot' "$REPO_DIR/extensions/dashboard/dashboard.py"; then
+  pass "dashboard serves the /api/slot contract"
+else
+  fail "dashboard.py missing the /api/slot beast-slot contract"
+fi
+# Keyed installs: healthcheck must present the bearer to llama-server.
+if grep -qE 'check "llama.cpp server".*LLAMA_API_KEY' "$REPO_DIR/scripts/healthcheck.sh" \
+   && grep -q 'LLAMA_AUTH' "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "healthcheck presents LLAMA_API_KEY to llama-server"
+else
+  fail "healthcheck.sh doesn't pass the bearer to llama-server checks"
+fi
+# The runner must resolve a key (keyed beast-slot endpoints) but never
+# receive one on argv from the spawn path.
+if grep -q 'resolve_api_key' "$REPO_DIR/agents/runner.py" \
+   && ! grep -q -- '--api-key' "$REPO_DIR/agents/mcp_server.py"; then
+  pass "runner resolves API key from env; spawn path keeps it off argv"
+else
+  fail "runner/mcp_server api-key wiring drifted (env-only contract)"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
