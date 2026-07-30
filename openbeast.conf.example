@@ -136,6 +136,16 @@
 # (useful while migrating; it gives up per-device attribution and revocation).
 #EDGE_ALLOW_ANON=false
 
+# Model supply chain. Before loading a GGUF, serve.sh checks it against
+# scripts/weights.registry (sha256 + byte size for every shipped weight) —
+# the same discipline as digest-pinned images and hash-pinned Python deps.
+#   warn   (default) log loudly, start anyway — never blocks an upgrade
+#   strict refuse to start on an unlisted or size-mismatched weight
+#   off    no check
+# `./start.sh doctor` tells you whether strict is safe to enable here.
+# Size-only per launch; sha256 is ./scripts/verify-weights.sh --deep.
+#WEIGHT_ENFORCE=warn
+
 # The model's fetch tool blocks Tailscale CGNAT targets (100.64.0.0/10) by
 # default — pinned explicitly, since Python's own private-range classification
 # for CGNAT changed across versions. Set true when the model should fetch

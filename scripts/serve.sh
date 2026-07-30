@@ -55,6 +55,47 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
+# --- Model registry enforcement (supply chain for weights) -----------------
+# Container images are digest-pinned and Python deps are hash-pinned; weights
+# are the one shipped artifact too big to vendor, so scripts/weights.registry
+# pins each by sha256 + byte size. This checks the file we are ABOUT to load.
+#
+# Default is `warn`, deliberately: a hard refusal here cannot start the stack,
+# and someone serving a legitimately unlisted local GGUF should not be locked
+# out by an upgrade. `strict` turns it into a refusal for installs that want
+# supply-chain enforcement. `off` silences it entirely.
+# Size-only by design — a sha256 of 20 GB on every launch would add minutes to
+# every start; `./scripts/verify-weights.sh --deep` is the hash-level check.
+_wr_enforce="${WEIGHT_ENFORCE:-warn}"
+if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL" ]]; then
+  _wr_name="$(basename "$MODEL")"
+  _wr_row="$(awk -F'\t' -v n="$_wr_name" '$0 !~ /^#/ && $3 == n {print; exit}' \
+             "$SCRIPT_DIR/weights.registry" || true)"
+  if [[ -z "$_wr_row" ]]; then
+    _wr_msg="weight '$_wr_name' is NOT in scripts/weights.registry (unpinned)"
+    _wr_hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
+  else
+    _wr_want="$(printf '%s' "$_wr_row" | cut -f2)"
+    _wr_have="$(stat -c%s "$MODEL" 2>/dev/null || echo 0)"
+    if [[ "$_wr_want" != "0" && "$_wr_have" != "$_wr_want" ]]; then
+      _wr_msg="weight '$_wr_name' is ${_wr_have} bytes, registry pins ${_wr_want}"
+      _wr_hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
+    else
+      _wr_msg=""
+    fi
+  fi
+  if [[ -n "${_wr_msg:-}" ]]; then
+    if [[ "$_wr_enforce" == "strict" ]]; then
+      echo "Error: $_wr_msg" >&2
+      echo "       $_wr_hint" >&2
+      echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
+      exit 1
+    fi
+    echo "WARNING: $_wr_msg" >&2
+    echo "         $_wr_hint" >&2
+  fi
+fi
+
 # --- Adaptive context (Hardware Profiles Phase 2) --------------------------
 # The shipped -c values are MEASURED on the 32 GB reference card (RTX 5090).
 # On a smaller card that context would OOM, so scale it to the card's KV

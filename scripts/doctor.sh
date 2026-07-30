@@ -133,6 +133,44 @@ else
   warn "scripts/weights.registry missing" "restore it from git — it pins every shipped GGUF"
 fi
 
+# ── Model governance ────────────────────────────────────────────────────────
+# Two questions an operator should be able to answer before trusting a rig:
+# is the weight I serve the one that was vetted, and has the model I made the
+# default actually earned it on THIS host?
+section "Model governance"
+_srv="$DEFAULT_SERVE_SCRIPT"
+[[ -f "$REPO_DIR/.run/serve-script" ]] && _srv="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || echo "$_srv")"
+_gguf="$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$REPO_DIR/scripts/$_srv" 2>/dev/null | head -1)"
+_gguf="${_gguf##*/}"
+if [[ -n "$_gguf" && -f "$REPO_DIR/scripts/weights.registry" ]]; then
+  if awk -F'\t' -v n="$_gguf" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
+       "$REPO_DIR/scripts/weights.registry"; then
+    case "${WEIGHT_ENFORCE:-warn}" in
+      strict) pass "served weight is registry-pinned (WEIGHT_ENFORCE=strict)" ;;
+      off)    warn "weight enforcement is off" "set WEIGHT_ENFORCE=warn (or strict) in openbeast.conf" ;;
+      *)      pass "served weight is registry-pinned — safe to set WEIGHT_ENFORCE=strict" ;;
+    esac
+  else
+    warn "served weight '$_gguf' is not in scripts/weights.registry" \
+         "pin it (sha256 + bytes) before enabling WEIGHT_ENFORCE=strict"
+  fi
+fi
+# Eval quality gate: promotion by evidence. The alias in the serve script is
+# what the leaderboard keys on (scoring.py slugifies it the same way).
+_alias="$(grep -oE -- '-a "[^"]+"' "$REPO_DIR/scripts/$_srv" 2>/dev/null | head -1 | sed 's/-a "//; s/"$//')"
+if [[ -n "$_alias" && -f "$REPO_DIR/evals/leaderboard.json" ]]; then
+  _slug="$(printf '%s' "$_alias" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\+/-/g; s/^-//; s/-$//')"
+  if python3 -c "
+import json,sys
+d=json.load(open('$REPO_DIR/evals/leaderboard.json')).get('entries',[])
+sys.exit(0 if any(e.get('model_slug')=='$_slug' for e in d) else 1)" 2>/dev/null; then
+    pass "default model '$_alias' has a leaderboard row"
+  else
+    warn "default model '$_alias' has NO leaderboard row on this host" \
+         "promotion by evidence: python3 evals/benchmark_all.py --models <slug> (GPU-hours), or accept it knowingly"
+  fi
+fi
+
 # ── Pinned dependencies ─────────────────────────────────────────────────────
 section "Pinned dependencies"
 if command -v python3 >/dev/null 2>&1; then

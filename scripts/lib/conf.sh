@@ -117,6 +117,10 @@ fi
 # explicitly in agents/tools.py because CPython's is_private classification of
 # that range changed across versions. Opt in (true) when the model should fetch
 # from tailnet hosts. Forwarded only when non-empty, same as BASH_WRAPPER.
+# Model supply chain: check the weight about to be served against
+# scripts/weights.registry. warn (default) | strict (refuse) | off.
+WEIGHT_ENFORCE="${OPENBEAST_WEIGHT_ENFORCE:-$(_ob_conf_value WEIGHT_ENFORCE || echo warn)}"
+export WEIGHT_ENFORCE
 _FETCH_ALLOW_TAILNET="${OPENBEAST_FETCH_ALLOW_TAILNET:-$(_ob_conf_value FETCH_ALLOW_TAILNET || true)}"
 if [[ -n "$_FETCH_ALLOW_TAILNET" ]]; then
   export OPENBEAST_FETCH_ALLOW_TAILNET="$_FETCH_ALLOW_TAILNET"

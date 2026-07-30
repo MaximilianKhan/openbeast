@@ -237,13 +237,22 @@ the choke point where identity, quotas, audit, and metering all attach.
   metal to healthy stack; builds on bootstrap's idempotency.
 
 ### Model governance
-- **Model registry + verification (M).** sha256 manifest of approved
-  GGUFs (ties into the checksum campaign item); serve.sh refuses
-  unlisted/mismatched weights unless overridden. Supply-chain for models,
-  not just code.
-- **Eval quality gate (S).** Refuse to flip the default model unless the
-  candidate has a full-suite leaderboard row on this host — promotion by
-  evidence, which the eval harness already makes possible.
+- ✅ **Model registry + verification (DONE 2026-07-30).** `scripts/weights.registry`
+  pins sha256 + bytes for every shipped GGUF; `serve.sh` now checks the weight
+  it is about to load and honors `WEIGHT_ENFORCE` (`warn` default / `strict`
+  refuses / `off`). Default is warn ON PURPOSE — a hard refusal on the critical
+  start path would brick an upgrade whose weights predate a re-pin; `doctor`
+  reports when `strict` is safe to enable. Size-only per launch (a 20 GB sha256
+  every start costs minutes); `verify-weights.sh --deep` is the hash check.
+  test_scripts asserts the default AND that every shipped serve script targets
+  a pinned weight.
+- ✅ **Eval quality gate (DONE 2026-07-30).** `doctor` resolves the default
+  serve script's alias, slugifies it the way `scoring.py` does, and WARNS when
+  it has no leaderboard row on this host — promotion by evidence, surfaced
+  where an operator already looks instead of inventing a new workflow. It is a
+  warning, not a refusal: the operator may knowingly run an unevaluated model
+  (and today does — the 6 community models added 2026-07-17, including the
+  current default, have never been benchmarked here).
 
 ## ⚠️ SECURITY
 

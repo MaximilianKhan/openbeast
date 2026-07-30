@@ -673,6 +673,37 @@ if grep -qE '^[[:space:]]*--metrics' "$REPO_DIR/scripts/serve.sh"; then
 else
   fail "serve.sh lacks --metrics — capacity.queue_deferred will always be null"
 fi
+# Model governance: serve.sh must check the weight it is about to load against
+# the registry, and must default to WARN (a hard refusal on the critical start
+# path would be a foot-gun on upgrade).
+if grep -q 'weights.registry' "$REPO_DIR/scripts/serve.sh" \
+   && grep -q 'WEIGHT_ENFORCE' "$REPO_DIR/scripts/serve.sh"; then
+  pass "serve.sh enforces the weight registry"
+else
+  fail "serve.sh does not check weights against scripts/weights.registry"
+fi
+WE_DEFAULT=$(env -i PATH="$PATH" HOME="$(mktemp -d)" REPO_DIR="$REPO_DIR" \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh' >/dev/null 2>&1; printf '%s' \"\$WEIGHT_ENFORCE\"") || WE_DEFAULT="(failed)"
+if [[ "$WE_DEFAULT" == "warn" ]]; then
+  pass "WEIGHT_ENFORCE defaults to warn (never blocks an upgrade's first start)"
+else
+  fail "WEIGHT_ENFORCE default is '$WE_DEFAULT', want 'warn'"
+fi
+# Every weight a shipped serve script targets should be pinned, or strict mode
+# is unusable out of the box.
+UNPINNED=""
+for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
+  _g=$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | head -1); _g="${_g##*/}"
+  [[ -n "$_g" ]] || continue
+  awk -F'\t' -v n="$_g" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
+    "$REPO_DIR/scripts/weights.registry" || UNPINNED="$UNPINNED $(basename "$_ss")"
+done
+if [[ -z "$UNPINNED" ]]; then
+  pass "every shipped serve script targets a registry-pinned weight"
+else
+  fail "serve scripts targeting unpinned weights:$UNPINNED"
+fi
+
 if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then
   pass "logrotate covers the inference audit stream"
 else
