@@ -52,10 +52,11 @@ def _registry(tmp_path, *, slot=None, rate=None, revoked=False):
 def edge(tmp_path, monkeypatch):
     """Fresh module bound to a scratch REPO_DIR (module-level config).
 
-    Starlette's TestClient reports the peer as "testclient", not 127.0.0.1,
-    so treat it as loopback by default — that matches how these routes are
-    reached in production by start.sh/healthcheck/doctor. Tests that mean
-    "a remote tailnet caller" override _is_loopback explicitly.
+    Locality is proven by a token file, NOT by the peer address — see
+    _local_token. So the DEFAULT in these tests is a remote caller, which is
+    the honest default: behind `tailscale serve` every tailnet caller arrives
+    from 127.0.0.1, and an earlier peer-based check therefore protected
+    nothing. Tests meaning "rig-local tooling" pass _local_headers().
     """
     monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
     monkeypatch.delenv("OPENBEAST_EDGE_ALLOW_ANON", raising=False)
@@ -64,10 +65,12 @@ def edge(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_EDGE_MAX_INFLIGHT", "2")
     import edge as _edge
     importlib.reload(_edge)
-    _real_peer = _edge._peer
-    _edge._is_loopback = lambda r: _real_peer(r) in (
-        "127.0.0.1", "::1", "localhost", "testclient")
     return _edge
+
+
+def _local_headers(edge):
+    """Headers proving rig-local access (what start.sh/doctor/healthcheck send)."""
+    return {"X-OpenBeast-Local": edge._local_token()}
 
 
 class _FakeResponse:
@@ -470,7 +473,7 @@ class TestAuditAndMetrics:
         with TestClient(edge.app) as c:
             c.post("/v1/chat/completions", json={"messages": []},
                    headers={"Authorization": "Bearer nope"})
-            body = c.get("/gate/metrics").text
+            body = c.get("/gate/metrics", headers=_local_headers(edge)).text
         assert 'openbeast_edge_denied_total{reason="bad_key"}' in body
 
     def test_metrics_exposes_per_device_tokens(self, edge, tmp_path):
@@ -479,8 +482,7 @@ class TestAuditAndMetrics:
         with TestClient(edge.app) as c:
             c.post("/v1/chat/completions", json={"messages": []},
                    headers={"Authorization": f"Bearer {DEVICE_KEY}"})
-            # TestClient presents as loopback, which is exempt (local tooling).
-            body = c.get("/gate/metrics").text
+            body = c.get("/gate/metrics", headers=_local_headers(edge)).text
         assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' in body
         assert DEVICE_KEY not in body
 
@@ -507,13 +509,8 @@ class TestIntrospectionAuth:
         _stub_upstream(edge, {})
         hdr = {"Authorization": f"Bearer {key}"} if key else {}
         with TestClient(edge.app) as c:
-            # Force a non-loopback peer.
-            orig = edge._is_loopback
-            edge._is_loopback = lambda r: False
-            try:
-                return c.get(path, headers=hdr)
-            finally:
-                edge._is_loopback = orig
+            # No local token => a remote tailnet caller, the default.
+            return c.get(path, headers=hdr)
 
     def test_remote_metrics_without_key_is_404(self, edge, tmp_path):
         assert self._remote(edge, tmp_path, "/gate/metrics").status_code == 404
@@ -528,11 +525,39 @@ class TestIntrospectionAuth:
         assert "devices" not in r.json()     # roster size does not
         assert "upstream" not in r.json()
 
+    def test_peer_address_alone_does_not_grant_introspection(self, edge, tmp_path):
+        # THE regression that matters: `tailscale serve` reverse-proxies into
+        # 127.0.0.1, so a remote tailnet caller arrives looking exactly like
+        # loopback. Any peer-address-based exemption protects nothing. The
+        # request below IS from 127.0.0.1 and must still be refused without
+        # the local token.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            r = c.get("/gate/metrics")
+        assert r.status_code == 404, (
+            "introspection granted on peer address alone — a tailscale-serve "
+            "caller would read the device roster")
+
+    def test_wrong_local_token_refused(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            r = c.get("/gate/metrics",
+                      headers={"X-OpenBeast-Local": "f" * 32})
+        assert r.status_code == 404
+
+    def test_local_token_file_is_private(self, edge, tmp_path):
+        edge._local_token()
+        p = tmp_path / ".run" / "edge-local.token"
+        assert p.exists()
+        assert oct(p.stat().st_mode)[-3:] == "600"
+
     def test_loopback_health_keeps_detail(self, edge, tmp_path):
         _registry(tmp_path)
         _stub_upstream(edge, {})
         with TestClient(edge.app) as c:
-            body = c.get("/gate/health").json()
+            body = c.get("/gate/health", headers=_local_headers(edge)).json()
         assert body["devices"] == 2 and "upstream" in body
 
 

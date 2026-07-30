@@ -13,9 +13,13 @@
 #       (scripts/setup-tailscale.sh). Set 0.0.0.0 to restore the legacy
 #       LAN-open behavior.
 #   LLAMA_API_KEY    (env OPENBEAST_API_KEY)     default empty (off)
-#       When set, llama-server requires "Authorization: Bearer <key>".
-#       NOTE: the eval harness and agents/runner.py do not send a key —
-#       leave unset on eval days, or export OPENAI_API_KEY to match.
+#       When set, llama-server requires "Authorization: Bearer <key>", and
+#       the WHOLE stack now presents it: serve.sh (--api-key), WebUI via
+#       compose, healthcheck, the router's classify probe, the dashboard's
+#       probes, agents/runner.py + agent.sh (OPENBEAST_API_KEY/OPENAI_API_KEY
+#       env), and the eval harness. Safe to leave on during evals.
+#       For PER-DEVICE keys with revocation and an audit trail, use
+#       beast-gate instead (EDGE_GATE — see docs/BEAST_SLOT.md).
 #   WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD     default empty
 #       Lets configure-webui.sh authenticate after WEBUI_AUTH is enabled.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto

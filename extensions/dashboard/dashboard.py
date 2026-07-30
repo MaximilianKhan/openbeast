@@ -27,6 +27,8 @@ H = "127.0.0.1"
 # the bearer. start.sh's extension launcher inherits the conf.sh export;
 # a standalone `run.sh` on a keyless stack sends nothing, unchanged.
 _API_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
+# beast-gate presence changes what "auth" means to a client (see slot_status).
+_EDGE_GATE = os.environ.get("EDGE_GATE", "").strip().lower() == "true"
 
 
 def _get(url, timeout=2, auth=False):
@@ -278,7 +280,10 @@ def slot_status():
             "serving_profile": profile,
         },
         "services": services_status(),
-        "auth": "key" if _API_KEY else "open",
+        # Gate-aware: with EDGE_GATE=true remote clients need a per-DEVICE
+        # key even when LLAMA_API_KEY is unset. Reporting "open" there told
+        # clients the opposite of the truth.
+        "auth": ("device" if _EDGE_GATE else ("key" if _API_KEY else "open")),
     }
 
 

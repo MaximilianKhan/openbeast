@@ -57,7 +57,11 @@ fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)         HOST_FQDN="${2:?--host needs a value}"; shift ;;
-    --api-key)      API_KEY="${2:?--api-key needs a value}"; shift ;;
+    --api-key)      # arity check, NOT ${2:?...} — the header documents
+                    # `--api-key ""` as the way to CLEAR a stored key, and a
+                    # null-check would reject exactly that.
+                    [ $# -ge 2 ] || { echo "--api-key needs a value (use \"\" to clear)" >&2; exit 2; }
+                    API_KEY="$2"; shift ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;

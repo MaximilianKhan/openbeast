@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 
 import httpx
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -71,6 +72,9 @@ AUDIT_PATH = os.path.join(RUN_DIR, "inference-audit.jsonl")
 # never rewrites the authorization source (see Registry.touch).
 _LASTSEEN_PATH = os.path.join(RUN_DIR, "clients-lastseen.json")
 _TOUCH_INTERVAL_S = 60.0
+# Proof-of-locality for the /gate/* introspection routes (see _local_token).
+_LOCAL_TOKEN_PATH = os.path.join(RUN_DIR, "edge-local.token")
+_LOCAL_TOKEN: str | None = None
 # Requests larger than this are refused rather than buffered whole in RAM.
 MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(32 * 1024 * 1024)))
 
@@ -405,10 +409,37 @@ def _peer(request: Request) -> str:
         return "?"
 
 
-def _is_loopback(request: Request) -> bool:
-    """Local callers (start.sh readiness, healthcheck, doctor) skip auth on
-    the /gate/* introspection routes; tailnet callers do not."""
-    return _peer(request) in ("127.0.0.1", "::1", "localhost")
+def _local_token() -> str:
+    """Shared secret proving a caller is ON this box, minted per gate start.
+
+    The transport peer address CANNOT be used for this: `tailscale serve`
+    reverse-proxies into 127.0.0.1, so every REMOTE tailnet caller arrives
+    looking exactly like loopback. An earlier version trusted
+    request.client.host and therefore protected nothing in the deployment we
+    actually document.
+
+    Filesystem access is the real local/remote boundary here — a tailnet peer
+    cannot read this file, and the rig's own tooling can. Written 0600 at
+    startup; regenerated every run so a stale copy is worthless.
+    """
+    global _LOCAL_TOKEN
+    if _LOCAL_TOKEN is None:
+        _LOCAL_TOKEN = uuid.uuid4().hex
+        try:
+            os.makedirs(RUN_DIR, exist_ok=True)
+            fd = os.open(_LOCAL_TOKEN_PATH,
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(_LOCAL_TOKEN)
+        except Exception:
+            pass
+    return _LOCAL_TOKEN
+
+
+def _is_local(request: Request) -> bool:
+    """True only for callers that proved filesystem access to this box."""
+    presented = request.headers.get("x-openbeast-local", "")
+    return bool(presented) and hmac.compare_digest(presented, _local_token())
 
 
 def _bearer(request: Request) -> str:
@@ -598,12 +629,22 @@ async def gate(request: Request):
             return JSONResponse(
                 {"error": {"message": "request body too large",
                            "type": "invalid_request_error"}}, status_code=413)
-        raw = await request.body()
-        if len(raw) > MAX_BODY_BYTES:
-            _release()
-            return JSONResponse(
-                {"error": {"message": "request body too large",
-                           "type": "invalid_request_error"}}, status_code=413)
+        # Drain INCREMENTALLY and stop at the cap. `await request.body()`
+        # buffers the whole body first, so a chunked request (no
+        # Content-Length, so the check above cannot fire) would be fully
+        # resident before any size check ran — an unbounded-memory path on a
+        # box already holding a 27B model.
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > MAX_BODY_BYTES:
+                _release()
+                _log(f"body over cap device={device_id} path={path}")
+                return JSONResponse(
+                    {"error": {"message": "request body too large",
+                               "type": "invalid_request_error"}},
+                    status_code=413)
+        raw = bytes(buf)
         body, model, streaming = _sanitize_body(raw, device) if raw else (raw, None, False)
         headers = _upstream_headers(request, device)
         registry.touch(device_id)
@@ -612,6 +653,23 @@ async def gate(request: Request):
                                    content=body, headers=headers)
         try:
             resp = await client.send(req, stream=True)
+        except httpx.TimeoutException as e:
+            # Distinct from unreachable: the model server IS there and simply
+            # took longer than OPENBEAST_EDGE_READ_TIMEOUT to produce the
+            # first byte (a long non-streaming completion can do this). Saying
+            # "unreachable" would send an operator hunting the wrong problem.
+            _release()
+            _audit(device_id, user, path, 504, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   "upstream_timeout", request_id, uid)
+            _log(f"upstream timeout device={device_id} path={path}: {e}")
+            return JSONResponse(
+                {"error": {"message": (
+                    "model server did not respond within the gate's timeout "
+                    f"({os.environ.get('OPENBEAST_EDGE_READ_TIMEOUT', '600')}s). "
+                    "A long non-streaming completion can exceed it — raise "
+                    "OPENBEAST_EDGE_READ_TIMEOUT, or stream the request."),
+                    "type": "upstream_timeout"}}, status_code=504)
         except httpx.HTTPError as e:
             _release()
             _audit(device_id, user, path, 502, None,
@@ -666,8 +724,20 @@ async def gate(request: Request):
                    "ok" if resp.status_code < 400 else "upstream_status",
                    request_id, uid)
 
+    # BackgroundTask is a SECOND, idempotent release path. If the client
+    # vanishes after upstream headers arrive but before Starlette starts
+    # iterating body_iter(), that generator's finally never runs and the
+    # device's in-flight slot would leak — wedging it at 429 forever.
+    # _release() is guarded, so whichever path runs first wins.
+    async def _sweep():
+        _release()
+        try:
+            await resp.aclose()
+        except BaseException:
+            pass
+
     return StreamingResponse(body_iter(), status_code=resp.status_code,
-                             headers=hdrs)
+                             headers=hdrs, background=BackgroundTask(_sweep))
 
 
 def _introspection_allowed(request: Request) -> bool:
@@ -677,10 +747,13 @@ def _introspection_allowed(request: Request) -> bool:
     gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
     mounts `/`), so leaving them open would hand every tailnet peer — including
     one whose key was just revoked — the device list and usage telemetry.
-    Loopback (start.sh readiness, healthcheck, doctor) is exempt so local
-    tooling keeps working without a key.
+
+    Two ways in: the local-token header (rig tooling, which can read
+    .run/edge-local.token) or a valid enrolled device key. Deliberately NOT
+    the peer address — tailscale serve proxies from 127.0.0.1, so a peer
+    check would treat the entire tailnet as local. See _local_token.
     """
-    if _is_loopback(request):
+    if _is_local(request):
         return True
     reg: Registry = request.app.state.registry
     key = _bearer(request)
@@ -749,6 +822,11 @@ async def _lifespan(app):
     ))
     app.state.registry = Registry()
     app.state.limiter = Limiter()
+    # Mint the local token EAGERLY. _is_local() short-circuits when the header
+    # is absent, so a lazy mint would leave .run/edge-local.token missing
+    # until some caller happened to send one — and start.sh/doctor read that
+    # file to build their own probe. It must exist the moment we serve.
+    _local_token()
     try:
         yield
     finally:

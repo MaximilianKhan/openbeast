@@ -102,6 +102,25 @@ import tempfile
 REG = os.environ["OB_REG"]
 CMD = os.environ.get("OB_CMD", "")
 
+
+def last_seen_of(dev):
+    """Live last-seen, read from the gate's sidecar.
+
+    beast-gate deliberately does NOT write clients.json (an unlocked
+    read-modify-write on the data path could resurrect a revoked device, and
+    rewriting it per request is needless disk churn). It records last-seen in
+    .run/clients-lastseen.json instead, so this is a DISPLAY-ONLY overlay —
+    without it the column reads "never" for every device forever, which is an
+    affirmative false statement that feeds a revocation decision.
+    """
+    try:
+        with open(os.path.join(os.path.dirname(REG), "clients-lastseen.json")) as fh:
+            seen = json.load(fh) or {}
+    except (OSError, ValueError):
+        seen = {}
+    return seen.get(dev.get("id")) or dev.get("last_seen")
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -179,6 +198,8 @@ def redact(dev):
         else:
             out[k] = v
     out["status"] = "revoked" if dev.get("revoked_at") else "active"
+    # Display-only overlay, same reason as list (see last_seen_of).
+    out["last_seen"] = last_seen_of(dev)
     return out
 
 # --- commands -----------------------------------------------------------
@@ -240,7 +261,7 @@ elif CMD == "list":
     for dev in devices:
         print(fmt % (short(dev.get("id"), 20), short(dev.get("label"), 24),
                      short(dev.get("slot"), 4), stamp(dev.get("enrolled_at")),
-                     stamp(dev.get("last_seen")), status(dev)))
+                     stamp(last_seen_of(dev)), status(dev)))
     revoked = sum(1 for d in devices if d.get("revoked_at"))
     print("")
     print("%d device(s): %d active, %d revoked."

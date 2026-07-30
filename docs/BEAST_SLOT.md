@@ -226,7 +226,7 @@ What each remote request now passes through:
 
 | Control | Behavior |
 |---|---|
-| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). It does **not** kill a generation already streaming; that request runs to completion. To cut one off immediately, restart the gate (`pkill -f agents/edge.py`) — the local stack is unaffected |
+| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). It does **not** kill a generation already streaming; that request runs to completion. To cut one off immediately, restart the gate with `./scripts/healthcheck.sh --restart` (it kills, relaunches, and rewrites `.run/edge.pid`; a bare `pkill` would leave a stale pidfile) — the local stack is unaffected |
 | **Path allowlist** | Only `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`. Everything else is **404** — not 403, so a remote caller learns nothing about what exists. `/lora-adapters`, `/slots`, `/props`, `/v1/stream`, `/infill` stop existing for remote callers |
 | **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map |
 | **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |

@@ -191,7 +191,11 @@ probe "http://$HEALTH_HOST:3000/api/version" "version" \
   || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
 
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
-  _gate=$(curl -s --max-time 4 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
+  # Proof-of-locality header: the peer address can't distinguish local from
+  # tailnet (tailscale serve proxies from loopback), so the gate keys this on
+  # a 0600 token only readable on this box.
+  _gate_tok=$(cat "$REPO_DIR/.run/edge-local.token" 2>/dev/null || true)
+  _gate=$(curl -s --max-time 4 -H "X-OpenBeast-Local: ${_gate_tok}" "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
   if [[ -n "$_gate" ]]; then
     _mode=$(echo "$_gate" | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
     _ndev=$(echo "$_gate" | grep -o '"devices":[0-9]*' | cut -d: -f2)

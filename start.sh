@@ -165,9 +165,17 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
       curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 || ROUTER_READY=0
     fi
+    # Same reasoning for the gate: without this term, `-d` prints "Stack is
+    # up" and exits 0 while the supervisor may still be failing its gate
+    # check — the caller would think remote clients are served when they
+    # are not. /gate/health needs no auth for liveness.
+    EDGE_READY=1
+    if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+      curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" >/dev/null 2>&1 || EDGE_READY=0
+    fi
     if curl -s -m 2 "http://$HEALTH_HOST:8080/health" >/dev/null 2>&1 \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
-       && [[ $ROUTER_READY -eq 1 ]]; then
+       && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
       echo ""
       echo "Stack is up:"
       echo "  Model server:  http://localhost:8080"
@@ -175,6 +183,9 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "  Open WebUI:    http://localhost:3000"
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
         echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
+      fi
+      if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+        echo "  beast-gate:    http://localhost:${EDGE_PORT:-8090} (remote clients arrive here)"
       fi
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
@@ -473,7 +484,11 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # `|| true`: under set -e a non-matching grep here would abort start.sh
   # AFTER the stack is already up, tearing down a healthy rig over a cosmetic
   # status line.
-  _EDGE_AUTH=$(curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
+  # The gate's introspection detail needs proof-of-locality (the transport
+  # peer is useless: tailscale serve proxies from 127.0.0.1). The token file
+  # is 0600 and only readable on this box.
+  _EDGE_TOK=$(cat "$RUN_DIR/edge-local.token" 2>/dev/null || true)
+  _EDGE_AUTH=$(curl -s -m 2 -H "X-OpenBeast-Local: ${_EDGE_TOK}" "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
   echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
