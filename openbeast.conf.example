@@ -124,8 +124,12 @@
 
 # Per-device admission control (llama-server's own queue is unbounded and has
 # no per-request timeout, so backpressure has to live in the gate).
-#EDGE_RATE_LIMIT=120     # requests per minute per device
-#EDGE_MAX_INFLIGHT=2     # concurrent generations per device
+# NOTE: values must stand alone — the conf parser does NOT strip trailing
+# comments, so "EDGE_RATE_LIMIT=120  # per minute" would be read literally.
+# Requests per minute, per device:
+#EDGE_RATE_LIMIT=120
+# Concurrent generations, per device:
+#EDGE_MAX_INFLIGHT=2
 
 # Fail-closed by default: with no devices enrolled, remote callers get 401.
 # Set true ONLY to serve unregistered callers as a single "anon" device

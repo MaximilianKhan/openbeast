@@ -60,13 +60,14 @@ _pid_pattern() {
     llama)      echo 'llama-server' ;;
     mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
-    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router' ;;
+    edge)       echo 'edge\.py' ;;
+    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge' ;;
   esac
 }
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
-  for name in supervisor llama mcpo router; do
+  for name in supervisor llama mcpo router edge; do
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"
@@ -465,11 +466,14 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
     if ! kill -0 "$EDGE_PID" 2>/dev/null; then
       echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
     fi
-    curl -s -m 2 "http://127.0.0.1:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
+    curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
     sleep 1
   done
   [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
-  _EDGE_AUTH=$(curl -s -m 2 "http://127.0.0.1:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
+  # `|| true`: under set -e a non-matching grep here would abort start.sh
+  # AFTER the stack is already up, tearing down a healthy rig over a cosmetic
+  # status line.
+  _EDGE_AUTH=$(curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
   echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"

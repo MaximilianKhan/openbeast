@@ -30,9 +30,11 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# shellcheck source=lib/conf.sh
-source "$SCRIPT_DIR/lib/conf.sh"
+REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# Deliberately does NOT source lib/conf.sh. Nothing here needs a conf value,
+# and sourcing it has a SIDE EFFECT: the SearXNG-secret bootstrap creates and
+# appends to openbeast.conf. A read-only command like `clients.sh list` must
+# not mutate the rig's config.
 
 RUN_DIR="$REPO_DIR/.run"
 REGISTRY="$RUN_DIR/clients.json"
@@ -317,7 +319,29 @@ case "$cmd" in
     label=""; slot=""; rate=""
     has_label=0; has_slot=0; has_rate=0
     force=0
-    if [[ "$cmd" == "rotate" ]]; then force=1; fi
+    # rotate implies --force, but ALSO requires the device to already exist:
+    # rotating a mistyped id must fail loudly, not silently enroll a brand-new
+    # live device while the key the operator meant to rotate stays valid.
+    if [[ "$cmd" == "rotate" ]]; then
+      force=1
+      _exists=0
+      if [[ -f "$REGISTRY" ]]; then
+        _exists="$(OB_ID="$dev_id" python3 -c '
+import json, os, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); raise SystemExit
+print(int(any(d.get("id") == os.environ["OB_ID"]
+              for d in doc.get("devices", []))))' "$REGISTRY" 2>/dev/null || echo 0)"
+      fi
+      if [[ "$_exists" != "1" ]]; then
+        echo "ERROR: no device '$dev_id' to rotate." >&2
+        echo "       ./scripts/clients.sh list          # see enrolled devices" >&2
+        echo "       ./scripts/clients.sh enroll $dev_id  # if you meant to add it" >&2
+        exit 3
+      fi
+    fi
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --label)   label="${2:-}"; [[ $# -ge 2 ]] || _die "--label needs a value"; has_label=1; shift 2 ;;

@@ -176,9 +176,14 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       echo "       → restarting beast-gate..."
       pkill -f "$REPO_DIR/agents/edge.py" 2>/dev/null || true
       sleep 1
-      (cd "$REPO_DIR" && OPENBEAST_REPO_DIR="$REPO_DIR" \
+      # Record the pid like the llama/mcpo relaunch paths do — without it
+      # ./start.sh --status reports the gate down after a watchdog restart,
+      # and the supervisor is left holding a stale pid.
+      OPENBEAST_REPO_DIR="$REPO_DIR" \
         OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
-        python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &)
+        python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &
+      mkdir -p "$REPO_DIR/.run"
+      echo "$!" > "$REPO_DIR/.run/edge.pid"
       sleep 3
       echo "       → restarted"
     fi

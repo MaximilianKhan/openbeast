@@ -131,8 +131,18 @@ def _uncommented(path):
             src = fh.read()
     except Exception:
         return None
-    return "\n".join(
-        ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+    out = []
+    for ln in src.splitlines():
+        if ln.lstrip().startswith("#"):
+            continue
+        # Also drop TRAILING comments: an explanatory "# ... --no-kv-unified"
+        # after real code would otherwise flip ctx_shared to False and make
+        # ctx_total overstate the rig by the slot count. Naive on quoted '#',
+        # which is fine — we only ever look for flag tokens here.
+        head = ln.split("#", 1)[0]
+        if head.strip():
+            out.append(head)
+    return "\n".join(out)
 
 
 def _kv_unified():
@@ -153,11 +163,15 @@ def _kv_unified():
         return None
     if not served or "/" in served:   # unrecorded, or not a plain script name
         return None
-    texts = [t for t in (_uncommented(os.path.join(REPO_DIR, "scripts", served)),
-                         _uncommented(os.path.join(REPO_DIR, "scripts", "serve.sh")))
-             if t is not None]
-    if not texts:
+    model_txt = _uncommented(os.path.join(REPO_DIR, "scripts", served))
+    base_txt = _uncommented(os.path.join(REPO_DIR, "scripts", "serve.sh"))
+    # Both halves are required. Falling back to serve.sh alone would report a
+    # confident True while the model script (which can pass --no-kv-unified,
+    # and wins — llama.cpp takes the last occurrence) was unreadable. A wrong
+    # capacity number is worse than an absent one.
+    if model_txt is None or base_txt is None:
         return None
+    texts = [model_txt, base_txt]
     if any("--no-kv-unified" in t for t in texts):
         return False
     return any("--kv-unified" in t for t in texts)

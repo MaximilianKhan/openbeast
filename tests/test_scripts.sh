@@ -666,7 +666,9 @@ if grep -q 'ALLOW_ANON' "$EDGE" && grep -q '"no_registry"' "$EDGE"; then
 else
   fail "beast-gate has no fail-closed path for an empty registry"
 fi
-if grep -q -- '--metrics' "$REPO_DIR/scripts/serve.sh"; then
+# Anchor to the exec arg list: a bare grep is satisfied by serve.sh's own
+# explanatory COMMENT, so it could never detect the regression it claims to.
+if grep -qE '^[[:space:]]*--metrics' "$REPO_DIR/scripts/serve.sh"; then
   pass "serve.sh enables llama-server metrics (queue depth for /api/slot)"
 else
   fail "serve.sh lacks --metrics — capacity.queue_deferred will always be null"

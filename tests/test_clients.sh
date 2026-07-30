@@ -143,10 +143,23 @@ if [[ "$(_q 'doc["version"]')" == "1" ]]; then
 else
   fail "registry version is $(_q 'doc["version"]'), want 1"
 fi
-if [[ "$(_q 'dev(0)["slot"]')" == "0" && "$(_q 'dev(0)["rate_limit_per_min"]')" == "60" ]]; then
-  pass "--slot / --rate land as integers"
+# TYPE, not just value: agents/edge.py does isinstance(slot, int) to decide
+# whether to inject affinity, so a "0" string would silently disable slot
+# pinning while this assertion still passed on the printed value alone.
+if [[ "$(_q 'type(dev(0)["slot"]).__name__')" == "int" \
+   && "$(_q 'type(dev(0)["rate_limit_per_min"]).__name__')" == "int" \
+   && "$(_q 'dev(0)["slot"]')" == "0" \
+   && "$(_q 'dev(0)["rate_limit_per_min"]')" == "60" ]]; then
+  pass "--slot / --rate land as JSON integers (the type edge.py requires)"
 else
-  fail "--slot / --rate not stored as given"
+  fail "--slot / --rate wrong value or type: slot=$(_q 'repr(dev(0)["slot"])') rate=$(_q 'repr(dev(0)["rate_limit_per_min"])')"
+fi
+# A JSON bool is an int in Python — edge.py must not treat true/false as a
+# slot index, and the CLI must never write one.
+if [[ "$(_q 'isinstance(dev(0)["slot"], bool)')" == "False" ]]; then
+  pass "--slot is not a JSON boolean"
+else
+  fail "--slot stored as a boolean — edge.py would inject id_slot=True"
 fi
 if [[ "$(_q 'dev(0)["revoked_at"] is None')" == "True" && "$(_q 'dev(0)["last_seen"] is None')" == "True" ]]; then
   pass "revoked_at / last_seen start null"

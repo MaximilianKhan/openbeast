@@ -50,7 +50,13 @@ def _registry(tmp_path, *, slot=None, rate=None, revoked=False):
 
 @pytest.fixture
 def edge(tmp_path, monkeypatch):
-    """Fresh module bound to a scratch REPO_DIR (module-level config)."""
+    """Fresh module bound to a scratch REPO_DIR (module-level config).
+
+    Starlette's TestClient reports the peer as "testclient", not 127.0.0.1,
+    so treat it as loopback by default — that matches how these routes are
+    reached in production by start.sh/healthcheck/doctor. Tests that mean
+    "a remote tailnet caller" override _is_loopback explicitly.
+    """
     monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
     monkeypatch.delenv("OPENBEAST_EDGE_ALLOW_ANON", raising=False)
     monkeypatch.delenv("OPENBEAST_API_KEY", raising=False)
@@ -58,6 +64,9 @@ def edge(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_EDGE_MAX_INFLIGHT", "2")
     import edge as _edge
     importlib.reload(_edge)
+    _real_peer = _edge._peer
+    _edge._is_loopback = lambda r: _real_peer(r) in (
+        "127.0.0.1", "::1", "localhost", "testclient")
     return _edge
 
 
@@ -253,6 +262,96 @@ class TestTenancyKnobs:
         assert sent and sent != "shared-guessable-id"
 
 
+class TestSlotAccounting:
+    """The in-flight counter is the device's admission budget: any path that
+    increments without releasing wedges that device at 429 permanently."""
+
+    def test_slot_released_after_normal_request(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            for _ in range(6):
+                r = c.post("/v1/chat/completions", json={"messages": []},
+                           headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+                assert r.status_code == 200
+            b = c.app.state.limiter._buckets["laptop"]
+        assert b.inflight == 0, "in-flight slot leaked across requests"
+
+    def test_slot_released_when_upstream_errors(self, edge, tmp_path):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            async def boom(req, stream=False):
+                raise edge.httpx.ConnectError("upstream down")
+            c.app.state.client.send = boom
+            r = c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            assert r.status_code == 502
+            assert c.app.state.limiter._buckets["laptop"].inflight == 0
+
+    def test_release_is_idempotent(self, edge):
+        b = edge.Bucket(60, 2)
+        b.reserve()
+        b.release()
+        b.release()
+        assert b.inflight == 0      # never negative — that would grant extra
+
+    def test_reserve_is_atomic_check_and_increment(self, edge):
+        b = edge.Bucket(1000, 2)
+        assert b.reserve() is None
+        assert b.reserve() is None
+        # Third concurrent request must be refused, not admitted-then-counted.
+        assert b.reserve() == "max_inflight"
+        assert b.inflight == 2
+
+
+class TestRegistryFreshness:
+    def test_enrolling_the_first_device_needs_no_restart(self, edge, tmp_path):
+        # The gate boots with NO registry (start.sh prints "enroll a device"),
+        # then the operator enrolls one. Without a reload on the configured
+        # path, that device 401s forever.
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {DEVICE_KEY}"}
+                          ).status_code == 401
+            _registry(tmp_path)          # enroll happens now
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers={"Authorization": f"Bearer {DEVICE_KEY}"}
+                          ).status_code == 200
+
+    def test_gate_never_writes_the_registry(self, edge, tmp_path):
+        # The authorization source must not be rewritten by the data path:
+        # an unlocked read-modify-write here can resurrect a revoked device.
+        path = _registry(tmp_path)
+        before = path.read_bytes()
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            for _ in range(5):
+                c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert path.read_bytes() == before, "gate mutated clients.json"
+        # last_seen lands in the gate-owned sidecar instead.
+        seen = tmp_path / ".run" / "clients-lastseen.json"
+        assert seen.exists() and "laptop" in json.loads(seen.read_text())
+
+    def test_rate_limit_change_takes_effect_live(self, edge, tmp_path):
+        path = _registry(tmp_path, rate=100)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            hdr = {"Authorization": f"Bearer {DEVICE_KEY}"}
+            assert c.post("/v1/chat/completions", json={"messages": []},
+                          headers=hdr).status_code == 200
+            data = json.loads(path.read_text())
+            data["devices"][0]["rate_limit_per_min"] = 1
+            path.write_text(json.dumps(data))
+            os.utime(path, None)
+            codes = [c.post("/v1/chat/completions", json={"messages": []},
+                            headers=hdr).status_code for _ in range(4)]
+        assert 429 in codes, "clients.sh rate change never took effect"
+
+
 class TestAdmissionControl:
     def test_rate_limit_returns_429(self, edge, tmp_path):
         _registry(tmp_path, rate=2)
@@ -292,14 +391,28 @@ class TestAuditAndMetrics:
         assert row["completion_tokens"] == 5
         assert row["model"] == "heretic-v2"
 
-    def test_denials_are_audited(self, edge, tmp_path):
+    def test_authenticated_denials_are_audited(self, edge, tmp_path):
+        # A KNOWN device hitting its limit is audited (it has an identity to
+        # attribute). Unauthenticated rejects are counted + logged instead —
+        # see test_unauth_denials_do_not_grow_the_audit_file.
+        _registry(tmp_path, rate=1)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            hdr = {"Authorization": f"Bearer {DEVICE_KEY}"}
+            for _ in range(4):
+                c.post("/v1/chat/completions", json={"messages": []},
+                       headers=hdr)
+        audit = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert "rate_limited" in audit
+
+    def test_unauth_denial_is_counted_in_metrics(self, edge, tmp_path):
         _registry(tmp_path)
         _stub_upstream(edge, {})
         with TestClient(edge.app) as c:
             c.post("/v1/chat/completions", json={"messages": []},
                    headers={"Authorization": "Bearer nope"})
-        audit = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
-        assert "bad_key" in audit
+            body = c.get("/gate/metrics").text
+        assert 'openbeast_edge_denied_total{reason="bad_key"}' in body
 
     def test_metrics_exposes_per_device_tokens(self, edge, tmp_path):
         _registry(tmp_path)
@@ -307,9 +420,61 @@ class TestAuditAndMetrics:
         with TestClient(edge.app) as c:
             c.post("/v1/chat/completions", json={"messages": []},
                    headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            # TestClient presents as loopback, which is exempt (local tooling).
             body = c.get("/gate/metrics").text
         assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' in body
         assert DEVICE_KEY not in body
+
+    def test_unauth_denials_do_not_grow_the_audit_file(self, edge, tmp_path):
+        # The gate is published at the tailnet root, so an unauthenticated
+        # caller must not be able to append to the audit file at will.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            for _ in range(20):
+                c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": "Bearer nope"})
+        audit = tmp_path / ".run" / "inference-audit.jsonl"
+        assert not audit.exists() or audit.read_text().strip() == ""
+
+
+class TestIntrospectionAuth:
+    """/gate/health and /gate/metrics carry the device roster and per-device
+    usage. The gate is mounted at the tailnet ROOT, so remote callers must
+    not read them; loopback tooling still must."""
+
+    def _remote(self, edge, tmp_path, path, key=None):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        hdr = {"Authorization": f"Bearer {key}"} if key else {}
+        with TestClient(edge.app) as c:
+            # Force a non-loopback peer.
+            orig = edge._is_loopback
+            edge._is_loopback = lambda r: False
+            try:
+                return c.get(path, headers=hdr)
+            finally:
+                edge._is_loopback = orig
+
+    def test_remote_metrics_without_key_is_404(self, edge, tmp_path):
+        assert self._remote(edge, tmp_path, "/gate/metrics").status_code == 404
+
+    def test_remote_metrics_with_valid_device_key_allowed(self, edge, tmp_path):
+        r = self._remote(edge, tmp_path, "/gate/metrics", key=DEVICE_KEY)
+        assert r.status_code == 200
+
+    def test_remote_health_hides_roster(self, edge, tmp_path):
+        r = self._remote(edge, tmp_path, "/gate/health")
+        assert r.status_code == 200          # liveness stays public
+        assert "devices" not in r.json()     # roster size does not
+        assert "upstream" not in r.json()
+
+    def test_loopback_health_keeps_detail(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            body = c.get("/gate/health").json()
+        assert body["devices"] == 2 and "upstream" in body
 
 
 if __name__ == "__main__":

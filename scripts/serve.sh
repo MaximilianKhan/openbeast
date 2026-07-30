@@ -61,9 +61,12 @@ fi
 # budget: weights are a fixed cost (≈ the GGUF file size), and with
 # --kv-unified the KV cache scales with context and is shared across slots.
 # --metrics turns on llama-server's Prometheus endpoint. It's what makes
-# `requests_deferred` — the real queue depth — visible to the beast-slot
+# requests_deferred — the real queue depth — visible to the beast-slot
 # contract (slots.busy only counts in-flight work). Loopback-bound like
-# everything else, and beast-gate does not expose /metrics to remote clients.
+# everything else. NOTE the honest caveat: beast-gate's allowlist keeps
+# /metrics away from remote clients, but on the DEFAULT topology (EDGE_GATE
+# =false, :8443 mapped straight at llama-server) it joins /slots and /props
+# as tailnet-readable aggregate metadata. Documented in docs/BEAST_SLOT.md.
 # We only ever scale DOWN — the measured value stands on reference-class
 # cards, so behavior is byte-identical there. Overrides:
 #   OPENBEAST_CONTEXT=<n>     force an exact context (skip scaling)

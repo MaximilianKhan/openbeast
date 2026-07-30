@@ -146,8 +146,13 @@ sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
 # adds per-device keys, a path allowlist (no /lora-adapters, /slots,
 # /v1/stream for remote callers), rate limits, and an inference audit. Raw
 # llama-server stays on loopback for the local command center either way.
-_EDGE_GATE="$(grep -E '^[[:space:]]*EDGE_GATE[[:space:]]*=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "'"'"'')"
-_EDGE_PORT="$(grep -E '^[[:space:]]*EDGE_PORT[[:space:]]*=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' "'"'"'')"
+# Resolve via lib/conf.sh, not an ad-hoc grep: that keeps the documented
+# env-var-over-conf precedence and one parser for the whole repo.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$(dirname "$0")/lib/conf.sh"
+_EDGE_GATE="${EDGE_GATE:-false}"
+_EDGE_PORT="${EDGE_PORT:-8090}"
 if [[ "$_EDGE_GATE" == "true" ]]; then
   sudo tailscale serve --bg --https=8443 "http://127.0.0.1:${_EDGE_PORT:-8090}"
   echo "      Inference published via beast-gate (:8443 → :${_EDGE_PORT:-8090} → llama-server)."

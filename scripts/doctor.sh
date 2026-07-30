@@ -229,9 +229,16 @@ if command -v tailscale >/dev/null 2>&1; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
       # the OpenAI routes and keys per device; raw llama-server publishes its
       # entire route table (/lora-adapters, /slots, /v1/stream) to the tailnet.
-      if echo "$_serve" | grep -qE ":8443[^0-9]" && \
-         echo "$_serve" | grep -A2 -E ":8443[^0-9]" | grep -q ":${EDGE_PORT:-8090}"; then
-        pass "inference published via beast-gate (per-device keys + audit)"
+      if echo "$_serve" | grep -A2 -E ":8443[^0-9]" | grep -q ":${EDGE_PORT:-8090}"; then
+        # The mapping alone is not proof: if the gate process is down, :8443
+        # is a 502 and reporting "per-device keys + audit" would be a
+        # dangerously false green. Probe it.
+        if curl -s --max-time 4 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null | grep -q "beast-gate"; then
+          pass "inference published via beast-gate (per-device keys + audit)"
+        else
+          fail ":8443 points at beast-gate but the gate is NOT responding" \
+               "remote clients are getting 502 — ./scripts/healthcheck.sh --restart"
+        fi
       elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
         warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
              "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"

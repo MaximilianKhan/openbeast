@@ -48,6 +48,7 @@ reachable:
 | Route | Risk |
 |---|---|
 | `GET /slots`, `/props` | Other sessions' metadata: context size, token counts, sampling params. Prompt *text* stays redacted unless `LLAMA_SERVER_SLOTS_DEBUG` is set — never set it on a published rig |
+| `GET /metrics` | llama-server's Prometheus counters (we pass `--metrics` so the slot contract can report real queue depth). Aggregate only — no prompts — but it is a new surface on the raw path |
 | `POST /lora-adapters` | Global model mutation — affects every user of the rig |
 | `GET/DELETE /v1/stream/:conv_id` | Sessions are keyed only by a caller-chosen `X-Conversation-Id`; knowing an id lets you read or cancel that generation. Enumeration is blocked (`/v1/streams/lookup` only answers for ids you supply), guessing is not |
 | `/infill`, `/embeddings`, `/rerank`, `/tokenize` | Extra compute surface beyond chat |
@@ -207,12 +208,13 @@ What each remote request now passes through:
 
 | Control | Behavior |
 |---|---|
-| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` takes effect in seconds with **no llama-server restart** (a restart would destroy your KV cache and every live stream) |
+| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). It does **not** kill a generation already streaming; that request runs to completion. To cut one off immediately, restart the gate (`pkill -f agents/edge.py`) — the local stack is unaffected |
 | **Path allowlist** | Only `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`. Everything else is **404** — not 403, so a remote caller learns nothing about what exists. `/lora-adapters`, `/slots`, `/props`, `/v1/stream`, `/infill` stop existing for remote callers |
 | **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map |
 | **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |
 | **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After` |
-| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: device, user, model, status, duration, prompt/completion tokens. Never content, never key material. Prometheus at `/gate/metrics` |
+| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: device, claimed user, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too). Never content, never key material. Prometheus at `/gate/metrics`. Note `device` is the **authenticated** identity; `user` is a client-supplied hint and must not be treated as proof. Unauthenticated rejects are counted in metrics and logged with a key fingerprint, but deliberately not written to the audit file — otherwise any tailnet peer could grow it without bound |
+| **Introspection** | `/gate/health` and `/gate/metrics` require an enrolled key from non-loopback callers (they carry the device roster and per-device usage). Loopback — start.sh, healthcheck, doctor — is exempt |
 
 **Fails closed.** With `EDGE_GATE=true` and no devices enrolled, remote callers
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`

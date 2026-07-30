@@ -66,6 +66,12 @@ REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR") or os.path.dirname(
 RUN_DIR = os.path.join(REPO_DIR, ".run")
 REGISTRY_PATH = os.path.join(RUN_DIR, "clients.json")
 AUDIT_PATH = os.path.join(RUN_DIR, "inference-audit.jsonl")
+# Gate-owned last-seen sidecar. Kept OUT of clients.json so the data path
+# never rewrites the authorization source (see Registry.touch).
+_LASTSEEN_PATH = os.path.join(RUN_DIR, "clients-lastseen.json")
+_TOUCH_INTERVAL_S = 60.0
+# Requests larger than this are refused rather than buffered whole in RAM.
+MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(32 * 1024 * 1024)))
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -94,6 +100,14 @@ ALLOWED_PATHS = frozenset({
 # llama-server; we substitute the upstream key (or nothing).
 _HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection"}
 
+# Identity headers a REMOTE client must never be able to assert for itself.
+# The agent router gates its spawn path on X-OpenWebUI-User-Role, so letting
+# a device set it would be privilege escalation by header.
+_CLIENT_SPOOFABLE = {
+    "x-openwebui-user-role", "x-openwebui-user-id", "x-openwebui-user-name",
+    "x-openwebui-user-email", "x-openbeast-device",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -107,9 +121,10 @@ def _now() -> str:
 class Registry:
     def __init__(self, path: str = REGISTRY_PATH):
         self.path = path
-        self._mtime = 0.0
+        self._mtime = None
         self._by_hash: dict[str, dict] = {}
         self._present = False
+        self._touched: dict[str, float] = {}
         self.reload()
 
     def reload(self) -> None:
@@ -117,8 +132,14 @@ class Registry:
             st = os.stat(self.path)
         except OSError:
             self._by_hash, self._present, self._mtime = {}, False, 0.0
+            self._size = -1
             return
-        if st.st_mtime == self._mtime:
+        # mtime alone is not enough: two writes inside the same filesystem
+        # timestamp tick (mtime granularity can be 1s) would leave a stale
+        # map — and a stale map means a MISSED REVOCATION. Key the cache on
+        # (mtime, size, inode) so same-second edits are still noticed.
+        stamp = (st.st_mtime, st.st_size, st.st_ino)
+        if stamp == self._mtime:
             return
         try:
             with open(self.path) as f:
@@ -134,11 +155,21 @@ class Registry:
                 by_hash[key_hash] = dev
         self._by_hash = by_hash
         self._present = True
-        self._mtime = st.st_mtime
+        self._mtime = stamp
 
     @property
     def configured(self) -> bool:
-        """True when a registry exists with at least one device."""
+        """True when a registry exists with at least one device.
+
+        Reloads first — deliberately. Without this, a gate that started before
+        the first device was enrolled would never notice the registry
+        appearing: `configured` stays False, so `lookup()` (the only other
+        reload caller) is unreachable, and every request 401s until a
+        restart. That would break both the hot-reload contract and start.sh's
+        own printed "enroll a device" instructions. reload() is stat-gated,
+        so the steady-state cost is one os.stat.
+        """
+        self.reload()
         return self._present and bool(self._by_hash)
 
     def lookup(self, presented_key: str) -> dict | None:
@@ -153,36 +184,44 @@ class Registry:
         return None
 
     def touch(self, device_id: str) -> None:
-        """Best-effort last_seen. Never blocks a request; clients.sh
-        round-trips unknown fields so this survives its rewrites."""
+        """Record last-seen in a GATE-OWNED sidecar, throttled.
+
+        Deliberately does NOT write clients.json. Two reasons, both learned
+        the hard way:
+          1. SAFETY — an unlocked read-modify-write of the registry races
+             `clients.sh revoke`: a touch that read the file before the
+             revoke and wrote after it silently RESURRECTS a revoked device.
+             Never let the data path rewrite the authorization source.
+          2. WEAR + LATENCY — the old version rewrote the whole registry on
+             every single request, synchronously, on the event loop. That is
+             gratuitous disk churn (see the SSD-wear item in docs/TODO.md)
+             and it blocked concurrent streams.
+        `clients.sh list/show` merges this file for display.
+        """
+        now = time.monotonic()
+        if now - self._touched.get(device_id, 0.0) < _TOUCH_INTERVAL_S:
+            return
+        self._touched[device_id] = now
         try:
-            self.reload()
-            with open(self.path) as f:
-                data = json.load(f)
-            for dev in data.get("devices", []):
-                if dev.get("id") == device_id:
-                    dev["last_seen"] = _now()
-                    break
-            else:
-                return
-            # UNIQUE temp name: a fixed one lets two concurrent touches (two
-            # devices mid-request) interleave writes into the same file and
-            # publish a torn registry. clients.sh uses mkstemp for the same
-            # reason; never collide with its names either.
-            fd, tmp = tempfile.mkstemp(prefix=".clients-touch-", suffix=".json",
-                                       dir=os.path.dirname(self.path))
+            seen = {}
+            try:
+                with open(_LASTSEEN_PATH) as f:
+                    seen = json.load(f) or {}
+            except (OSError, ValueError):
+                seen = {}
+            seen[device_id] = _now()
+            fd, tmp = tempfile.mkstemp(prefix=".lastseen-", suffix=".json",
+                                       dir=os.path.dirname(_LASTSEEN_PATH))
             try:
                 os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp, self.path)
+                    json.dump(seen, f)
+                os.replace(tmp, _LASTSEEN_PATH)
             except Exception:
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
-                raise
-            self._mtime = os.stat(self.path).st_mtime
         except Exception:
             pass
 
@@ -196,22 +235,45 @@ class Bucket:
     """Token bucket + in-flight cap, per device."""
 
     def __init__(self, per_min: int, max_inflight: int):
-        self.capacity = max(1, per_min)
+        self.retune(per_min)
         self.tokens = float(self.capacity)
-        self.rate = self.capacity / 60.0
         self.updated = time.monotonic()
         self.inflight = 0
         self.max_inflight = max(1, max_inflight)
 
-    def take(self) -> bool:
+    def retune(self, per_min: int) -> None:
+        """Adopt a new per-minute limit without dropping in-flight state."""
+        self.capacity = max(1, int(per_min))
+        self.rate = self.capacity / 60.0
+        # Never let a lowered limit leave a device holding more credit than
+        # the new ceiling allows.
+        if getattr(self, "tokens", 0.0) > self.capacity:
+            self.tokens = float(self.capacity)
+
+    def reserve(self) -> str | None:
+        """Atomically admit one request, or return a refusal reason.
+
+        Check-and-increment MUST happen with no await in between: the caller
+        reads the request body (a real suspension point) before proxying, and
+        a check-then-act split there let a device blow straight through
+        EDGE_MAX_INFLIGHT with concurrent requests.
+        """
         now = time.monotonic()
         self.tokens = min(self.capacity,
                           self.tokens + (now - self.updated) * self.rate)
         self.updated = now
         if self.tokens < 1.0:
-            return False
+            return "rate_limited"
+        if self.inflight >= self.max_inflight:
+            return "max_inflight"
         self.tokens -= 1.0
-        return True
+        self.inflight += 1
+        return None
+
+    def release(self) -> None:
+        # Guard against a double-release wedging the counter negative.
+        if self.inflight > 0:
+            self.inflight -= 1
 
 
 class Limiter:
@@ -220,11 +282,15 @@ class Limiter:
 
     def bucket(self, device: dict) -> Bucket:
         did = device.get("id", "anon")
+        per_min = int(device.get("rate_limit_per_min") or RATE_LIMIT)
         b = self._buckets.get(did)
         if b is None:
-            per_min = device.get("rate_limit_per_min") or RATE_LIMIT
-            b = Bucket(int(per_min), MAX_INFLIGHT)
+            b = Bucket(per_min, MAX_INFLIGHT)
             self._buckets[did] = b
+        elif b.capacity != max(1, per_min):
+            # `clients.sh` changed this device's limit — adopt it live rather
+            # than caching the value seen at first contact for process life.
+            b.retune(per_min)
         return b
 
 
@@ -287,6 +353,36 @@ def _esc(v: str) -> str:
 # Request handling
 # ---------------------------------------------------------------------------
 
+def _log(msg: str) -> None:
+    """Operator-visible line (stdout -> .run/stack.log in daemon mode).
+
+    The gate is a security boundary; an admin must be able to answer "why did
+    that device get 401/429" without a debugger. Never log key material.
+    """
+    print(f"[beast-gate] {_now()} {msg}", flush=True)
+
+
+def _key_fp(key: str) -> str:
+    """Short, non-reversible fingerprint of a presented key, for logs only —
+    enough to tell 'revoked laptop still retrying' from 'someone guessing'."""
+    if not key:
+        return "none"
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def _peer(request: Request) -> str:
+    try:
+        return request.client.host if request.client else "?"
+    except Exception:
+        return "?"
+
+
+def _is_loopback(request: Request) -> bool:
+    """Local callers (start.sh readiness, healthcheck, doctor) skip auth on
+    the /gate/* introspection routes; tailnet callers do not."""
+    return _peer(request) in ("127.0.0.1", "::1", "localhost")
+
+
 def _bearer(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -312,30 +408,47 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
     return None, "no_registry"
 
 
-def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None]:
+def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
-    Returns (body, model_name). Non-JSON bodies pass through untouched.
+    Returns (body, model_name, streaming). Non-JSON bodies pass through.
     """
     try:
         body = json.loads(raw)
     except Exception:
-        return raw, None
+        return raw, None, False
     if not isinstance(body, dict):
-        return raw, None
+        return raw, None, False
     # id_slot is unauthenticated in llama-server: it wraps modulo the slot
     # count (landing on another tenant's slot) and a pinned task jumps the
     # deferred queue ahead of unpinned callers. Never honor the client's.
     body.pop("id_slot", None)
     slot = device.get("slot")
+    if isinstance(slot, bool):
+        slot = None                      # JSON true/false is not a slot index
     if isinstance(slot, int):
         body["id_slot"] = slot
-    return json.dumps(body).encode(), body.get("model")
+    streaming = bool(body.get("stream"))
+    if streaming:
+        # Without this the streaming path — which is the DEFAULT for chat —
+        # never emits a usage block, so every metered token silently reads
+        # null and the audit promise is empty in normal use.
+        opts = body.get("stream_options")
+        opts = dict(opts) if isinstance(opts, dict) else {}
+        opts["include_usage"] = True
+        body["stream_options"] = opts
+    return json.dumps(body).encode(), body.get("model"), streaming
 
 
 def _upstream_headers(request: Request, device: dict) -> dict:
     headers = {k: v for k, v in request.headers.items()
-               if k.lower() not in _HOP_BY_HOP}
+               if k.lower() not in _HOP_BY_HOP
+               and k.lower() not in _CLIENT_SPOOFABLE}
+    # Re-assert identity from the AUTHENTICATED device, so a client can't
+    # smuggle its own X-OpenWebUI-User-* headers to something downstream that
+    # trusts them (the agent router gates its spawn path on exactly that role
+    # header).
+    headers["X-OpenBeast-Device"] = str(device.get("id", "anon"))
     # The device key is OURS, not llama-server's. Replace it with the
     # upstream key so a device key is never forwarded anywhere.
     headers.pop("authorization", None)
@@ -387,9 +500,13 @@ async def gate(request: Request):
 
     device, reason = _identify(request, registry)
     if device is None:
+        # Counted in /gate/metrics, with the presented key's short fingerprint
+        # in the log so an admin can tell "revoked laptop still retrying" from
+        # "someone is guessing". NOT written to the audit FILE: unauthenticated
+        # callers must not be able to grow it without bound.
         _bump("denied_total", reason)
-        _audit("-", None, path, 401, None,
-               int((time.monotonic() - started) * 1000), None, reason)
+        _log(f"denied {reason} path={path} key_fp={_key_fp(_bearer(request))} "
+             f"peer={_peer(request)}")
         hint = ("this rig has no enrolled devices yet — run "
                 "./scripts/clients.sh enroll <id> on the rig"
                 if reason == "no_registry" else
@@ -399,7 +516,11 @@ async def gate(request: Request):
                        "type": "invalid_request_error"}}, status_code=401)
 
     device_id = device.get("id", "anon")
-    user = request.headers.get("x-openwebui-user-id")
+    # CLAIMED, not authenticated: this header is client-supplied and a device
+    # holder can set it to anything. `device` is the authenticated identity;
+    # this is a hint for correlating with WebUI users. Bounded so it can't be
+    # used to bloat audit rows.
+    user = (request.headers.get("x-openwebui-user-id") or "")[:128] or None
 
     if path == "/health":
         # Cheap liveness, no admission control — clients poll it.
@@ -411,83 +532,130 @@ async def gate(request: Request):
             return JSONResponse({"error": {"message": f"upstream: {e}"}},
                                 status_code=502)
 
+    # Atomic admit: check-and-increment in one step with no await between,
+    # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.
     bucket = app.state.limiter.bucket(device)
-    if not bucket.take():
-        _bump("denied_total", "rate_limited")
+    refusal = bucket.reserve()
+    if refusal:
+        _bump("denied_total", refusal)
         _audit(device_id, user, path, 429, None,
-               int((time.monotonic() - started) * 1000), None, "rate_limited")
+               int((time.monotonic() - started) * 1000), None, refusal)
+        retry = "5" if refusal == "rate_limited" else "2"
+        msg = ("rate limit exceeded for this device" if refusal == "rate_limited"
+               else f"device already has {bucket.max_inflight} generations in flight")
         return JSONResponse(
-            {"error": {"message": "rate limit exceeded for this device",
-                       "type": "rate_limit_error"}},
-            status_code=429, headers={"Retry-After": "5"})
-    if bucket.inflight >= bucket.max_inflight:
-        _bump("denied_total", "max_inflight")
-        _audit(device_id, user, path, 429, None,
-               int((time.monotonic() - started) * 1000), None, "max_inflight")
-        return JSONResponse(
-            {"error": {"message": (f"device already has {bucket.inflight} "
-                                   "generations in flight"),
-                       "type": "rate_limit_error"}},
-            status_code=429, headers={"Retry-After": "2"})
+            {"error": {"message": msg, "type": "rate_limit_error"}},
+            status_code=429, headers={"Retry-After": retry})
 
-    raw = await request.body()
-    body, model = _sanitize_body(raw, device) if raw else (raw, None)
-    headers = _upstream_headers(request, device)
+    # From here the slot is HELD: every exit path must release it. Note the
+    # bare `except:`/BaseException handling below — asyncio.CancelledError is
+    # a BaseException, so a client disconnect would otherwise skip the
+    # release and wedge the device at 429 forever.
+    released = {"done": False}
 
-    bucket.inflight += 1
-    registry.touch(device_id)
+    def _release():
+        if not released["done"]:
+            released["done"] = True
+            bucket.release()
+
     try:
+        if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
+            _release()
+            return JSONResponse(
+                {"error": {"message": "request body too large",
+                           "type": "invalid_request_error"}}, status_code=413)
+        raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            _release()
+            return JSONResponse(
+                {"error": {"message": "request body too large",
+                           "type": "invalid_request_error"}}, status_code=413)
+        body, model, streaming = _sanitize_body(raw, device) if raw else (raw, None, False)
+        headers = _upstream_headers(request, device)
+        registry.touch(device_id)
+
         req = client.build_request(request.method, f"{UPSTREAM}{path}",
                                    content=body, headers=headers)
         try:
             resp = await client.send(req, stream=True)
         except httpx.HTTPError as e:
-            bucket.inflight -= 1
+            _release()
             _audit(device_id, user, path, 502, None,
                    int((time.monotonic() - started) * 1000), model, "upstream_error")
+            _log(f"upstream error device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
                            "type": "upstream_unavailable"}}, status_code=502)
+    except BaseException:
+        # Includes CancelledError (client vanished mid-read).
+        _release()
+        raise
 
-        hdrs = {k: v for k, v in resp.headers.items()
-                if k.lower() not in _HOP_BY_HOP}
-        state = {"tail": b"", "whole": b"", "streaming": False}
+    hdrs = {k: v for k, v in resp.headers.items()
+            if k.lower() not in _HOP_BY_HOP}
+    state = {"tail": b"", "whole": b"", "oversize": False}
 
-        async def body_iter():
+    async def body_iter():
+        try:
+            async for chunk in resp.aiter_raw():
+                # Bounded tail (usage rides the last SSE chunks) plus, for
+                # small non-streaming replies, the whole body.
+                state["tail"] = (state["tail"] + chunk)[-16384:]
+                if len(state["whole"]) < 262144:
+                    state["whole"] += chunk
+                else:
+                    state["oversize"] = True
+                yield chunk
+        finally:
+            # RELEASE FIRST. aclose() can raise (and on a client disconnect
+            # the CancelledError re-raises at that await), which previously
+            # skipped the decrement and leaked the slot permanently.
+            _release()
             try:
-                async for chunk in resp.aiter_raw():
-                    # Keep only a bounded tail (usage rides the last chunks)
-                    # and, for small non-streaming replies, the whole body.
-                    state["tail"] = (state["tail"] + chunk)[-8192:]
-                    if len(state["whole"]) < 65536:
-                        state["whole"] += chunk
-                    else:
-                        state["streaming"] = True
-                    yield chunk
-            finally:
                 await resp.aclose()
-                bucket.inflight -= 1
-                usage = None
+            except BaseException:
+                pass
+            usage = None
+            if not state["oversize"]:
                 try:
-                    if not state["streaming"]:
-                        obj = json.loads(state["whole"] or b"{}")
-                        usage = obj.get("usage") if isinstance(obj, dict) else None
+                    obj = json.loads(state["whole"] or b"{}")
+                    if isinstance(obj, dict):
+                        usage = obj.get("usage")
                 except Exception:
                     usage = None
-                if usage is None:
-                    usage = _usage_from_sse(state["tail"])
-                _audit(device_id, user, path, resp.status_code, usage,
-                       int((time.monotonic() - started) * 1000), model,
-                       "ok" if resp.status_code < 400 else "upstream_status")
+            if usage is None:
+                usage = _usage_from_sse(state["tail"])
+            _audit(device_id, user, path, resp.status_code, usage,
+                   int((time.monotonic() - started) * 1000), model,
+                   "ok" if resp.status_code < 400 else "upstream_status")
 
-        return StreamingResponse(body_iter(), status_code=resp.status_code,
-                                 headers=hdrs)
-    except Exception:
-        bucket.inflight -= 1
-        raise
+    return StreamingResponse(body_iter(), status_code=resp.status_code,
+                             headers=hdrs)
+
+
+def _introspection_allowed(request: Request) -> bool:
+    """Gate the /gate/* routes.
+
+    These expose the device roster size and per-device usage counters. The
+    gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
+    mounts `/`), so leaving them open would hand every tailnet peer — including
+    one whose key was just revoked — the device list and usage telemetry.
+    Loopback (start.sh readiness, healthcheck, doctor) is exempt so local
+    tooling keeps working without a key.
+    """
+    if _is_loopback(request):
+        return True
+    reg: Registry = request.app.state.registry
+    key = _bearer(request)
+    return bool(key) and reg.lookup(key) is not None
 
 
 async def metrics(request: Request):
+    if not _introspection_allowed(request):
+        _bump("denied_total", "introspection_unauthorized")
+        return JSONResponse(
+            {"error": {"message": "not found", "type": "invalid_request_error"}},
+            status_code=404)
     lines = [
         "# HELP openbeast_edge_requests_total Requests through beast-gate.",
         "# TYPE openbeast_edge_requests_total counter",
@@ -518,6 +686,9 @@ async def metrics(request: Request):
 async def health(request: Request):
     reg: Registry = request.app.state.registry
     reg.reload()
+    if not _introspection_allowed(request):
+        # Remote callers get liveness only — no roster size, no upstream URL.
+        return JSONResponse({"status": "ok", "service": "beast-gate"})
     return JSONResponse({
         "status": "ok",
         "service": "beast-gate",
@@ -530,7 +701,15 @@ async def health(request: Request):
 
 @asynccontextmanager
 async def _lifespan(app):
-    app.state.client = httpx.AsyncClient(timeout=None)
+    # No overall timeout (a long generation is legitimate), but connect/read
+    # deadlines are essential: with timeout=None a WEDGED (not crashed)
+    # llama-server pins the device's in-flight slot forever, and the caller
+    # hangs with no error. Read timeout is generous and tunable.
+    app.state.client = httpx.AsyncClient(timeout=httpx.Timeout(
+        None,
+        connect=float(os.environ.get("OPENBEAST_EDGE_CONNECT_TIMEOUT", "10")),
+        read=float(os.environ.get("OPENBEAST_EDGE_READ_TIMEOUT", "600")),
+    ))
     app.state.registry = Registry()
     app.state.limiter = Limiter()
     try:
