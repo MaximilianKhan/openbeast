@@ -788,6 +788,39 @@ else
   fail "runner/mcp_server api-key wiring drifted (env-only contract)"
 fi
 
+# --- 16. configure-webui.sh degrades without an admin token (2026-07-31) -----
+# Regression: the script used to `exit 0` when the WebUI sign-in failed, which
+# happens permanently as soon as the operator changes their WebUI password from
+# the one in openbeast.conf. Everything downstream — model connection, web
+# search, and the per-model entry that attaches tools via meta.toolIds — is
+# written straight to the DB and needs no token, but was being skipped every
+# startup. Symptom: a newly-defaulted model has no WebUI model entry, so no
+# tools are attached and the UI silently can't make tool calls.
+CW="$REPO_DIR/scripts/configure-webui.sh"
+if ! grep -qE '^\s*exit 0\s*$' "$CW"; then
+  pass "configure-webui.sh does not bail out when the admin token is missing"
+else
+  fail "configure-webui.sh still exits early without a token (skips DB config)"
+fi
+if grep -q 'TOKEN_OK' "$CW"; then
+  pass "configure-webui.sh gates only the API-backed section on the token"
+else
+  fail "configure-webui.sh lost its TOKEN_OK degradation flag"
+fi
+# WebUI's built-in Web Search (the composer toggle) is separate from the
+# web_search TOOL and ships disabled with no engine — wire it to our SearXNG.
+if grep -q 'web.search.enable' "$CW" && grep -q 'web.search.searxng_query_url' "$CW"; then
+  pass "configure-webui.sh wires built-in web search to SearXNG"
+else
+  fail "configure-webui.sh no longer configures built-in web search"
+fi
+# A DB-written setting is invisible until WebUI reloads its cached config.
+if grep -q 'WEBSEARCH_CHANGED' "$CW" && grep -q 'docker restart open-webui' "$CW"; then
+  pass "configure-webui.sh restarts WebUI when it changes cached config"
+else
+  fail "configure-webui.sh writes config without triggering a reload"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
