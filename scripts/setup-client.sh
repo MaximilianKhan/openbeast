@@ -400,6 +400,9 @@ if [ -d "$BIN_DIR" ] && ln -sf "$CLIENT_REPO/scripts/client.sh" "$BIN_DIR/openbe
     *)
       # Name the RIGHT file for the user's shell. macOS defaults to zsh, whose
       # login shell reads ~/.zprofile; bash uses ~/.bash_profile.
+      # Tilde is intentional: this string is DISPLAYED for the user to
+      # copy-paste, and it expands in their shell, not in ours.
+      # shellcheck disable=SC2088
       case "$(basename "${SHELL:-/bin/zsh}")" in
         zsh)  _rc="~/.zprofile" ;;
         bash) _rc="~/.bash_profile" ;;
