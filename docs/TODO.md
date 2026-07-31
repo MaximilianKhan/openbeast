@@ -302,51 +302,98 @@ downloads ~20 GB of weights for a CPU-only install.
 
 **Fix:** detect macOS or no-GPU early and offer the one-line client install.
 
-## 🐛 KNOWN ISSUE — GPU display watchdog aborts llama-server (2026-07-31)
+## 🐛 KNOWN ISSUE — GPU RC watchdog aborts llama-server (Xid 8) (2026-07-31)
 
-llama-server took SIGABRT (exit 134) mid-request. The cause is **environmental,
-not a llama.cpp defect** — the driver killed a compute kernel for overrunning
-the display watchdog:
+**Corrected 2026-07-31.** An earlier version of this entry blamed the NVIDIA
+*display* watchdog and recommended moving the desktop to the iGPU. **That was
+wrong** — the kernel log names a different, display-independent mechanism, and
+going headless would not have prevented the crash.
+
+llama-server took SIGABRT (exit 134). Userspace signature:
 
 ```
-CUDA error: the launch timed out and was terminated      ← cudaErrorLaunchTimeout
-ggml/src/ggml-cuda/ggml-cuda.cu:106: CUDA error
-  → ggml_abort → ggml_backend_cuda_synchronize → llama_context::synchronize
-  → common_speculative_impl_draft_mtp::process           ← MTP draft, the victim
+CUDA error: the launch timed out and was terminated
+ggml-cuda.cu:2485  cudaStreamSynchronize(cuda_ctx->stream())
+  → common_speculative_impl_draft_mtp::process
 ```
 
-**Why it happens.** An NVIDIA GPU with an attached display enforces a launch
-timeout so a long compute kernel can't freeze the desktop. On the dev rig
-`nvidia-smi` reports `display_active: Enabled` — Hyprland, Xwayland, a browser
-and terminals all render on the same RTX 5090 that serves the model. Any kernel
-that overruns the watchdog is killed, and ggml turns that into `abort()`.
+The kernel log, same second, same pid:
 
-The MTP draft path shows up in the backtrace because speculative decode issues
-extra forward passes, so it holds the GPU longest — it's the most frequent
-victim, not the cause. A non-MTP model lowers exposure but does not remove it.
-Risk rises with VRAM pressure (rig sits at ~91%, ~944 MiB of that the desktop).
+```
+NVRM: krcWatchdog_IMPL: RC watchdog: GPU is probably locked!  Notify Timeout Seconds: 7
+NVRM: Xid (PCI:0000:01:00): 8, pid=463898, name=llama-server, channel 0x00000007
+```
 
-**Impact:** the in-flight turn dies. WebUI surfaces it as `model server
-unreachable via router: Server disconnected without sending a response.` —
-which reads as "tool calls are broken" even though tool calling isn't involved.
-The supervisor relaunches and is healthy again in ~3s (weights stay in page
-cache), so it self-heals at the cost of one lost turn. Observed once.
+**Mechanism.** This is the driver's **Robust Channel watchdog**, which pings
+its own GPFIFO channel on a timer and RC-resets the offending channel if the
+ping goes unserviced for `RmWatchDogTimeOut` (default 7s) → Xid 8 →
+`cudaErrorLaunchTimeout` surfaces at the next `cudaStreamSynchronize`. It is
+armed by RM default on a stock `nvidia-open` install, on every GPU, headless or
+not. Verified on this rig: `KERNEL_EXEC_TIMEOUT=1`, `RegistryDwords: ""`, and
+**zero** "another client's request" lines in the boot log — no display client
+ever pinned it. Under Wayland there is no X server on the GPU, so the
+`Interactive` xorg.conf knob the display-watchdog folklore rests on does not
+exist in this stack. Xid 8 is classified HW/driver/user-app — explicitly *not*
+thermal, bus, or FB corruption, matching clean telemetry (zero ECC, zero
+retired pages, no thermal/power brake).
 
-**Not a tool-calling bug** — 6 tool-carrying vs 6 plain completions gave 0
-aborts in both arms, and the model emits `finish_reason: tool_calls` correctly
-at 150/600/2000 max_tokens with thinking on and off. Do not chase it as one.
+**What actually correlates.** The crashing task decoded **99,574 tokens in one
+unbroken 10.5-minute generation** — 7.3× the next-longest in the log's history,
+and 8.7% of every token this rig has ever produced. Rate: **1 abort in 2,323
+tasks / ~1.14M tokens / 14 days.** A healthy driver should have time-sliced the
+watchdog's probe channel regardless, so the runaway generation is the
+**trigger**, not a sufficient cause — it exposed a preemption/GSP hiccup.
+Corroborated upstream: `open-gpu-kernel-modules#1063` and `#1080` (RTX 5090,
+Xid 8, open module only), `llama.cpp#22060` (identical signature, closed
+without root cause).
 
-**The real fix (rig):** move the desktop off the compute GPU. The 9950X3D has
-Radeon integrated graphics (`7c:00.0`, own DRI nodes), so Hyprland can render
-on the iGPU and leave the 5090 headless — watchdog gone, plus ~944 MiB VRAM
-back. Needs the monitor on the motherboard output, the iGPU enabled in BIOS,
-and likely `WLR_DRM_DEVICES` pinned to the AMD card. Not yet done.
+**Why the MTP frame appears — and the earlier explanation was backwards.** MTP
+is *faster* per token, so it holds the GPU *less*. `common/speculative.cpp:1405`
+calls `llama_get_embeddings_nextn(ctx_tgt)` — the **target** 27B context,
+synchronized before any draft work. It's a sync barrier where deferred async
+errors surface, which is positive evidence the hung kernel was in the main
+model's forward pass. Still not a tool-calling bug.
 
-**To do for users, before launch:** most OpenBeast installs will be exactly
-this shape — one consumer GPU that both drives the desktop and serves the
-model — so this failure is likely to be common in the wild. Add a
-troubleshooting entry keyed on the `launch timed out` string, and have `doctor`
-warn when `display_active: Enabled` on the serving GPU.
+**Recovery** is ~7.6s (5s supervisor sleep + 2.55s model load), not the ~3s
+previously claimed. One turn is lost.
+
+### To do, highest leverage first
+
+1. **Cap generation length — this is OpenBeast's bug, not NVIDIA's.**
+   `scripts/serve.sh` passes **no `-n`/`--n-predict`**, so llama.cpp defaults to
+   infinity and a client can decode the full 212,992-token context. The MTP
+   scripts also set no `--reasoning-budget` (the fable-fusion ones cap at 4096).
+   Honest caveat to document: `-n` is a *default*, applied only when the request
+   omits `n_predict` (`server-context.cpp:388-398` `has_budget`) — a client
+   sending `max_tokens` overrides it. Open WebUI omits it, so it would have
+   caught this one.
+2. **`NVreg_RegistryDwords="RmWatchDogTimeOut=60"`** in `/etc/modprobe.d/` —
+   the source-verified knob (default 7, max 60). Targets the real mechanism.
+   `RmRcWatchdog=0` disables it entirely (last resort). Note `RmDisableRcWatchdog`
+   does not exist. `nvidia-smi -c EXCLUSIVE_PROCESS` and persistence mode have
+   **no** effect on this watchdog.
+3. **A/B test MTP off** — `llama.cpp#23268`/`#23210` report speculative-decode
+   timeouts on Qwen3.6-27B + MTP. Cheap hypothesis test.
+4. **`doctor`: do NOT warn on `display_active: Enabled`.** It fires on
+   essentially every single-GPU desktop — our whole audience — most users can't
+   act on it, and it points at the wrong cause. Warning fatigue for no signal.
+   Add a **forensic** check instead: count `NVRM: Xid` in `journalctl -k -b` and
+   `exited unexpectedly` in `.run/stack.log`; silent when clean, degrades to a
+   silent pass when the journal is unreadable.
+5. **Troubleshooting entry** in `docs/INSTALL.md` keyed on the `launch timed
+   out` string, pointing at `journalctl -k -b | grep NVRM` to confirm Xid 8.
+6. **Supervisor gaps.** On restart-budget exhaustion `cleanup` kills the
+   processes but never the Docker containers, leaving a WebUI up with no model
+   behind it. And `agents/router.py:250-252` streams the body outside its
+   `try/except`, so an upstream death mid-stream just truncates the SSE with no
+   error object — the `Server disconnected` message we quoted actually comes
+   from a *later* request landing in the outage window, not the killed turn.
+
+**Doc conflict to reconcile:** `scripts/healthcheck.sh:240,247`,
+`docs/MODELS.md`, and `docs/REFERENCE.md` assert a "sustained-load crash zone"
+near 2,080–2,132 MiB free. This crash happened at 2,247 MiB free. The repo now
+carries two competing folk explanations for llama-server dying under load,
+neither with a verified mechanism.
 
 ## ⚠️ SECURITY
 
