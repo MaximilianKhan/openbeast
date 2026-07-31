@@ -265,6 +265,38 @@ the choke point where identity, quotas, audit, and metering all attach.
   (and today does — the 6 community models added 2026-07-17, including the
   current default, have never been benchmarked here).
 
+## 🐛 KNOWN ISSUE — intermittent llama-server abort in the MTP draft path (2026-07-31)
+
+Observed once on `serve-heretic-v2-27b-mtp-q6.sh`: llama-server took SIGABRT
+(exit 134) mid-request. Backtrace is unambiguous and entirely upstream:
+
+```
+ggml_cuda_error → ggml_backend_cuda_synchronize → llama_context::synchronize
+  → llama_get_embeddings_nextn
+  → common_speculative_impl_draft_mtp::process     ← MTP speculative decode
+  → server_context_impl::decode / update_slots
+```
+
+**Impact when it fires:** the in-flight turn dies. WebUI surfaces it as
+`Error processing chat payload: model server unreachable via router: Server
+disconnected without sending a response.` — which reads to a user as "tool
+calls are broken" even though nothing about tool calling is involved.
+
+**Frequency:** 1 abort across the full session log. The supervisor caught it
+and relaunched (weights were in page cache, back healthy in ~3s), so it
+self-heals; the cost is one lost turn.
+
+**Not correlated with tool calls** — tested 6 tool-carrying vs 6 plain
+completions back-to-back, 0 aborts in both arms, and the model emits
+`finish_reason: tool_calls` correctly at 150/600/2000 max_tokens with thinking
+both on and off. Do not chase this as a tool-calling bug.
+
+**To do:** capture the CUDA error string (the abort line above the backtrace
+was not retained — add stderr capture to the supervisor so the next one is
+diagnosable), then decide between reporting upstream, pinning a known-good
+llama.cpp revision, or defaulting to a non-MTP serve script. Track how often
+it recurs before spending GPU-hours on it. All 17 MTP models share this path.
+
 ## ⚠️ SECURITY
 
 - ✅ **Router IS identity-aware (DONE 2026-07-08).** WebUI forwards
