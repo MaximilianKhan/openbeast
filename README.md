@@ -542,6 +542,37 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 [SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·
 [docs/archive/](docs/archive/) (superseded plans, kept for provenance)
 
+## Uninstall
+
+**A client** removes itself in one command. Your own OpenCode settings survive,
+and so do your checkout and any agent transcripts:
+
+```bash
+openbeast-client uninstall          # or: ./scripts/setup-client.sh --uninstall
+```
+
+**The rig** has no uninstall script yet (tracked in
+[`docs/TODO.md`](docs/TODO.md)); it is a handful of steps, in this order:
+
+```bash
+./stop.sh                                   # stops services AND containers
+tailscale serve reset                       # unpublish every tailnet surface
+systemctl --user stop openbeast-stack.service 2>/dev/null   # daemon scope
+systemctl --user reset-failed openbeast-stack 2>/dev/null
+
+rm -rf llama.cpp venv .run                  # build, venv, runtime state
+```
+
+Two things are deliberately *not* in that list. **Model weights** are the
+expensive part to re-download, so delete them only if you mean it. They live in
+`WEIGHTS_DIR` from `openbeast.conf` (default `./weights`), which may be outside
+the repo if you relocated them. And **`openbeast.conf`** itself holds your
+per-install secrets, so keeping it makes a reinstall pick up where you left off
+while deleting it gives you a genuinely clean slate.
+
+Nothing OpenBeast installs lives outside the repo, the Docker containers, and
+the tailscale serve config, so the steps above are the whole footprint.
+
 ## Credits: standing on the shoulders of giants
 
 OpenBeast is an orchestration layer. The heavy lifting below it is done by
