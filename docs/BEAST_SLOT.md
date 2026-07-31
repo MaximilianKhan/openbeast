@@ -188,8 +188,50 @@ Desktop/Engine — bridge network, loopback-only port map), `--uninstall`.
 What lands: an isolated venv + slim checkout under `~/.openbeast-client`,
 `~/.openbeast-client.env` (0600), non-clobbering `opencode.json` merge (the
 full model list + the local MCP tool server as a stdio subprocess — no daemon,
-no open port, dies with OpenCode), and `~/.local/bin/openbeast-client` when
-that directory exists.
+no open port, dies with OpenCode), and a `~/.local/bin/openbeast-client`
+symlink — the directory is created if missing, and when it isn't on `PATH`
+(the macOS default) the installer prints the exact line to add.
+
+### Using someone else's rig
+
+A client needs **no GPU and no weights**, so joining a rig you don't own is a
+first-class path — a household with one GPU box, a small team, a friend who
+offered you a slot. Nothing about the install differs except where you point
+it.
+
+**The rig owner does two things.** Share the tailnet with your device
+(Tailscale invite, or an ACL that lets your node reach theirs), and publish the
+client-facing surfaces once:
+
+```bash
+./scripts/setup-tailscale.sh --publish-slot --publish-searxng
+```
+
+**You do one thing** — point the installer at their machine:
+
+```bash
+./scripts/setup-client.sh --host their-rig.their-tailnet.ts.net
+```
+
+Add `--api-key <key>` if they run [keyed mode](#keyed-mode-optional-off-by-default)
+or have enrolled your device through beast-gate; skip `--publish-searxng` on
+their side and pass `--local-search` on yours if you'd rather your queries never
+touch their SearXNG.
+
+**What they can and cannot see.** They host the model, so **everything your
+agent sends as context — including the contents of files it reads on your
+laptop — is processed on their hardware**, and with beast-gate enabled it is
+attributable to your device in their inference audit log. What they do *not*
+get is any path to your filesystem: tools execute in your process, on your
+disk, and the rig only ever answers with tokens. Treat a shared rig the way
+you'd treat any hosted inference provider you trust — the trust boundary is the
+rig owner, not the network.
+
+**What you should expect from them:** slots are shared. With the rig on a
+single-slot serving profile your turns queue behind theirs FIFO; llama.cpp has
+no per-user fairness, no preemption and no request timeout, so a long
+generation ahead of you is simply a wait. See
+[Roadmap behind the same contract](#roadmap-behind-the-same-contract).
 
 ### The client CLI
 

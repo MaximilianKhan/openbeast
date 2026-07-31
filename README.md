@@ -3,13 +3,19 @@
 [![CI](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml/badge.svg)](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Your own private AI workstation: frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
+**Your own private AI workstation: frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, nothing ever leaving hardware you own.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
 15-tool arsenal (shell, file editing, web search, background sub-agents), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
+
+**One GPU box, every device you own.** Install the **rig** on the machine with
+the graphics card, then install the **client** on any laptop — no GPU, no
+weights — and it runs the same agent and the same 15 tools against *its own*
+files, sending only inference across your private tailnet. Your laptop stays a
+laptop; your rig does the thinking.
 
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
@@ -19,7 +25,24 @@ workstation that just works, out of the box.
 <!-- TODO(max): hero screenshot or GIF here — WebUI chat with a tool call in
      flight is the money shot. `docs/assets/` is the intended home. -->
 
-## Install (one command)
+## Install
+
+OpenBeast runs in **two roles**, and the same repo does both:
+
+| | 🖥️ **The rig** (server) | 💻 **A client** |
+|---|---|---|
+| Runs on | a machine with an NVIDIA GPU | any Mac or Linux laptop — **no GPU** |
+| Downloads model weights | yes (~20 GB) | **no** |
+| Where the model runs | here | on the rig, over your tailnet |
+| Where `bash` / file edits run | here | **on the laptop, against its own files** |
+| Install | `./bootstrap.sh` | `./scripts/setup-client.sh` |
+
+You don't need both. Run the rig on its own and use it from any browser — or
+install **only** the client if someone else is hosting the rig. The client is a
+real OpenBeast install: the same 15-tool arsenal, acting on *your* disk. All
+that crosses the network is inference.
+
+### 🖥️ The rig — one command
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
@@ -45,6 +68,40 @@ install if anything's missing.
 Prefer to run the steps by hand? The full walkthrough — prerequisites, per-distro
 toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
+### 💻 A client — use a rig from your laptop
+
+Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
+and no model download**. OpenCode and the entire 15-tool arsenal run *on the
+laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
+the thinking happens on the rig.
+
+**Requirements:** Python ≥ 3.10, [Tailscale](https://tailscale.com) running,
+and membership in the tailnet the rig is on. No CUDA. No Docker (unless you
+want `--local-search`).
+
+```bash
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
+./scripts/setup-client.sh                          # auto-detects a rig named "beast"
+./scripts/setup-client.sh --host rig.tailnet.ts.net   # …or name it explicitly
+
+openbeast-client status                            # what the rig is actually serving
+```
+
+**Someone else hosting?** This is a first-class path — you need no GPU and no
+weights, only an invite to their tailnet. Ask the rig's owner to share their
+tailnet with you and run `./scripts/setup-tailscale.sh --publish-slot
+--publish-searxng` once. Then point `--host` at their machine's tailnet FQDN,
+adding `--api-key <key>` if they've enrolled your device
+([keyed mode](docs/BEAST_SLOT.md#keyed-mode-optional-off-by-default)).
+
+Two flags worth knowing: `--local-search` runs SearXNG on the laptop instead of
+using the rig's, and `--uninstall` removes everything (your own OpenCode
+settings survive). Full guide → **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)**.
+
+> **On a VPN?** NordVPN and similar clients sever tailnet routing. If the rig is
+> unreachable from the laptop but healthy locally, quit the VPN first —
+> see [Remote access](#remote-access-tailscale).
+
 ## Why OpenBeast
 
 One column per *archetype* — a bare **model runner**, an **agent runtime**, a
@@ -65,18 +122,21 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 | **Terminal coding agent** | — | ✅ *(own CLI)* | ✅ ⁴ | ✅ *(OpenCode)* |
 | Self-improving agent (memory + skills) | — | ✅ | ✅ ⁴ | — |
 | **Secure remote access** (device-authenticated) | — | — | ~ ⁵ | ✅ *(Tailscale)* |
+| **Client mode** — full tool stack on *your* laptop, only inference remote | — | ~ ⁸ | — | ✅ |
 | **Per-user RBAC + per-call audit** | — | — | ~ ⁶ | ✅ |
 | Voice · image-gen · workflow automation | — | — | ✅ | — ⁷ |
 | Cloud / hybrid API fallback | — | — | ✅ | — ⁷ |
 | **Design philosophy** | Minimal runner | Agent-first | Kitchen-sink: *every service* | Opinionated: *one biggest brain* |
 
 ¹ Hermes runs 100% local but *points at* a model server you host — like OpenBeast — rather than serving the model itself.
-² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast never lets data leave the machine.
+² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast has no cloud code path at all — data never leaves hardware you own (one box, or your own tailnet).
 ³ ODS selects from a static tier→model catalog (`model-library.json`) with rough VRAM heuristics ("8 GB → 7B", etc.) and catalog context lengths; OpenBeast *measures* actual VRAM + max safe context per model on the reference card.
 ⁴ ODS's default agent **is** Hermes Agent (bundled) — so its agent rows mirror Hermes'.
 ⁵ ODS uses a magic-link-gated proxy; OpenBeast uses Tailscale (WireGuard device identity + auto-HTTPS).
 ⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
 ⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
+
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape; what it doesn't do is install as a second role of the same distribution — one command turning any laptop into a full peer of the rig, sharing the rig's model list, RBAC and audit trail.
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner — it serves a model and stops there; OpenBeast *includes* a
@@ -150,6 +210,8 @@ the same top-tier model. Built and tuned on an RTX 5090 (32 GB) running Arch Lin
 
 ## Using the stack
 
+**On the rig:**
+
 ```bash
 xdg-open http://localhost:3000      # browser chat (Open WebUI)
 opencode                            # terminal coding agent (from any project)
@@ -160,6 +222,18 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 `./stop.sh`, `./start.sh doctor`. Pick a specific model with
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
+
+**On a client** — same agent, same tools, acting on *this* machine's files:
+
+```bash
+opencode                                   # tools run here, thinking runs on the rig
+openbeast-client agent "refactor utils.py" # autonomous agent, local files
+openbeast-client status                    # rig's real model, context, free slots
+openbeast-client update                    # pull + reinstall deps
+```
+
+The rig loses nothing by serving clients — it stays the full command center,
+browser UI and all.
 
 Built for the long haul — the daemon runs in a memory-capped scope with
 health-monitored auto-restart, plus **fast boot** (chat while the big model
@@ -390,10 +464,21 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 
 ## Requirements
 
+**To run the rig (server):**
+
 - NVIDIA GPU with CUDA and **at least 11 GB VRAM** (1080 Ti / 2080 Ti class or better — bootstrap enforces this floor). Tested on RTX 5090; works on 3090/4090 (auto-detected CUDA arch + per-tier config recommendation, see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md)).
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model; each additional model 16–24 GB
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults
+
+**To run a client** — far less, because the rig does the thinking:
+
+- **macOS or Linux. No GPU, no CUDA, no model weights.** (Windows/WSL2 is
+  untested rather than unsupported.)
+- Python 3.10+, `git`, and [Tailscale](https://tailscale.com) connected to the
+  tailnet the rig is on
+- Docker only if you want `--local-search` (a client-local SearXNG)
+- Disk: well under 1 GB — a slim checkout plus a Python venv
 
 ## Documentation
 
