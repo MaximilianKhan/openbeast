@@ -695,6 +695,44 @@ The full architecture — the discovery contract, what `:8443` grants and
 doesn't, beast-gate's controls, keyed mode, and the two-machine verification
 walkthrough — is in **[BEAST_SLOT.md](BEAST_SLOT.md)**.
 
+### If `openbeast-client` isn't found
+
+`~/.local/bin` is not on `PATH` by default on macOS. The full path always works:
+
+```bash
+<checkout>/scripts/client.sh status
+```
+
+To get the short command, add the directory (the installer prints the exact
+line for your shell) and open a new terminal:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile   # zsh (macOS default)
+```
+
+**Note the two scripts**: `setup-client.sh` *installs* (takes flags like
+`--host`), `client.sh` *operates* (takes subcommands like `status`). Typing a
+subcommand at the installer prints a redirect rather than a bare error.
+
+### Uninstall and clean reinstall
+
+```bash
+./scripts/setup-client.sh --uninstall           # tear down
+./scripts/setup-client.sh --host <rig-fqdn>     # reinstall fresh
+```
+
+Re-running the installer over an existing install is idempotent, so a full
+cycle is only needed for a genuinely clean slate — a rebuilt venv, or after
+changing which Python you use.
+
+Uninstall removes `~/.openbeast-client`, the env file, the CLI symlink, our
+`opencode.json` entries (leaving any foreign keys untouched), and the
+`--local-search` container. It deliberately leaves **your git checkout** and,
+for in-place installs, **agent transcripts** in `agents/logs/` — those contain
+prompts and file contents, so they are named in the output rather than deleted
+silently. `--purge-logs` deletes them, and refuses to run against a rig
+checkout. Full detail: [BEAST_SLOT.md](BEAST_SLOT.md).
+
 ## Architecture notes
 
 ### Why an OpenAPI tool server instead of direct MCP?

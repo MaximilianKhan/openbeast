@@ -193,6 +193,16 @@ that directory exists.
 
 ### The client CLI
 
+**Two scripts, easy to confuse — the distinction matters:**
+
+| script | role | takes |
+|---|---|---|
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key`, `--local-search`, `--uninstall` |
+| `scripts/client.sh` | **operates** | subcommands — `status`, `agent`, `search`, `update`, `uninstall` |
+
+Passing a subcommand to the installer (`setup-client.sh status`) prints a
+redirect to the right script rather than a bare "unknown option".
+
 ```bash
 openbeast-client status        # client doctor + live beast-slot view
 openbeast-client agent "task"  # CLI agent HERE, thinking on the rig
@@ -201,11 +211,55 @@ openbeast-client update        # refresh checkout + pinned deps
 openbeast-client uninstall
 ```
 
+**If `openbeast-client` isn't a command**, `~/.local/bin` isn't on your `PATH`
+— the default on macOS. Either use the full path, which always works:
+
+```bash
+<checkout>/scripts/client.sh status
+```
+
+or add the directory (the installer prints this line for your shell):
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile   # zsh (macOS default)
+```
+
 `status` checks: env file, venv imports, tailscale up, rig API reachable
 (with bearer when keyed), beast-slot discovery, search reachable, opencode
 wiring. RBAC deliberately does not apply to the client path — it's your
 device; `OPENBEAST_MCP_TOOLS` is the scoping lever if a shared client ever
 needs one.
+
+### Uninstall, and a clean reinstall
+
+```bash
+./scripts/setup-client.sh --uninstall              # remove client mode
+./scripts/setup-client.sh --host <rig-fqdn>        # reinstall fresh
+```
+
+Re-running the installer over an existing install is safe and idempotent, so
+a full uninstall→reinstall is only needed when you want a genuinely clean
+slate (e.g. a rebuilt venv, or after changing Python).
+
+**What uninstall removes:** `~/.openbeast-client` (venv + any slim checkout),
+`~/.openbeast-client.env`, the `~/.local/bin/openbeast-client` symlink, our
+two entries in `opencode.json` (and any container they leave empty), and the
+`--local-search` SearXNG container. Foreign keys in `opencode.json` are
+preserved — only entries matching *our* install are touched.
+
+**What it deliberately does NOT remove:**
+
+- **Your git checkout.** It's yours; delete it manually if you want.
+- **Agent transcripts** (`agents/logs/agent-*.jsonl`) when you installed from
+  an in-place clone. These hold full prompts *and* the contents of every file
+  an agent read on that machine, so uninstall names the path and leaves them
+  rather than deleting data inside your own repo. Add `--purge-logs` to
+  delete them.
+
+> **`--purge-logs` refuses to run against a rig checkout** (one with
+> `openbeast.conf`, `weights/`, or a live supervisor). A client teardown must
+> never destroy a server's agent history — they share a repo layout, and the
+> mistake is unrecoverable because `agents/logs/` is gitignored.
 
 ## beast-gate — the identity-aware inference edge
 

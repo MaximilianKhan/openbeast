@@ -30,6 +30,8 @@
 #                    Docker Desktop) instead of using the rig's :8889
 #   --uninstall      remove ~/.openbeast-client, the env file, the local
 #                    SearXNG container, and our opencode.json entries
+#   --purge-logs     with --uninstall: ALSO delete agent transcripts from an
+#                    in-place checkout (they hold prompts + file contents)
 #
 # After install, the client CLI lives at scripts/client.sh in the checkout and
 # is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
@@ -48,7 +50,7 @@ OC_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
 REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
-HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0
+HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
 API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
 # fall back to the key already stored by a previous run (same treatment the
@@ -68,6 +70,7 @@ while [ $# -gt 0 ]; do
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
+    --purge-logs)   PURGE_LOGS=1 ;;
     -h|--help)      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
@@ -116,40 +119,101 @@ TS_BIN="$(_find_ts || true)"
 
 # ---- uninstall --------------------------------------------------------------
 if [ $UNINSTALL -eq 1 ]; then
+  echo "=== OpenBeast client uninstall ==="
+  _left_behind=""
   # Local SearXNG container (best-effort — only if docker + compose file exist).
   if command -v docker >/dev/null 2>&1; then
     for _repo in "$CLIENT_DIR/repo" "$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"; do
       if [ -n "$_repo" ] && [ -f "$_repo/scripts/client-searxng.compose.yml" ]; then
         OPENBEAST_SEARXNG_SECRET="${OPENBEAST_SEARXNG_SECRET:-x}" \
           docker compose -p openbeast-client -f "$_repo/scripts/client-searxng.compose.yml" \
-          down >/dev/null 2>&1 && echo "  stopped local SearXNG (openbeast-client)" || true
+          down >/dev/null 2>&1 && echo "  ✓ stopped local SearXNG (project openbeast-client)" || true
         break
       fi
     done
   fi
   if [ -f "$OC_CONFIG" ]; then
-    python3 - "$OC_CONFIG" <<'PYEOF'
+    "${PY_BIN:-python3}" - "$OC_CONFIG" <<'PYEOF'
 import json, sys
 path = sys.argv[1]
-cfg = json.load(open(path))
+try:
+    cfg = json.load(open(path))
+except Exception as e:
+    print("  ! could not parse %s (%s) — left untouched" % (path, e)); raise SystemExit
 removed = []
 mcp = cfg.get("mcp", {})
 lt = mcp.get("local-tools", {})
+# The venv always lives under ~/.openbeast-client, even for an in-place clone
+# install, so this match holds for both install shapes.
 if ".openbeast-client" in " ".join(lt.get("command", [])):
     del mcp["local-tools"]; removed.append("mcp.local-tools")
 prov = cfg.get("provider", {})
 if prov.get("llama-cpp", {}).get("options", {}).get("baseURL", "").endswith(":8443/v1"):
     del prov["llama-cpp"]; removed.append("provider.llama-cpp")
+# Drop containers we emptied, so an uninstall does not leave "mcp": {} behind.
+for k in ("mcp", "provider"):
+    if k in cfg and not cfg[k]:
+        del cfg[k]
 json.dump(cfg, open(path, "w"), indent=2); open(path, "a").write("\n")
-print("  removed from opencode.json: " + (", ".join(removed) or "nothing (no entries of ours)"))
+print("  ✓ opencode.json: removed " + (", ".join(removed) or "nothing (no entries of ours)"))
 PYEOF
   fi
-  [ -L "$HOME/.local/bin/openbeast-client" ] && rm -f "$HOME/.local/bin/openbeast-client" \
-    && echo "  removed ~/.local/bin/openbeast-client"
+  if [ -L "$HOME/.local/bin/openbeast-client" ]; then
+    rm -f "$HOME/.local/bin/openbeast-client"
+    echo "  ✓ removed ~/.local/bin/openbeast-client"
+  fi
+
+  # Agent transcripts are the one artifact worth naming explicitly: they hold
+  # full prompts AND the contents of every file an agent read on this machine.
+  # For a slim install they sit under $CLIENT_DIR and vanish below. For an
+  # IN-PLACE clone install they live in the user's own git checkout, where we
+  # must not delete without being asked — but must not silently leave either.
+  _checkout="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+  _logdir="$_checkout/agents/logs"
+  case "$_checkout" in
+    "$CLIENT_DIR"*) : ;;   # slim install: removed with $CLIENT_DIR
+    *)
+      if [ -d "$_logdir" ]; then
+        _n=$(find "$_logdir" -name 'agent-*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
+        if [ "${_n:-0}" -gt 0 ]; then
+          if [ "${PURGE_LOGS:-0}" = "1" ]; then
+            # REFUSE to purge a RIG checkout. A client uninstall must never
+            # destroy a server's own agent history: the two share a repo
+            # layout, so --purge-logs pointed at a rig would delete months of
+            # transcripts that have nothing to do with any client. Learned the
+            # hard way — this exact mistake cost 6035 files during testing.
+            if [ -f "$_checkout/openbeast.conf" ] || [ -d "$_checkout/weights" ] \
+               || [ -e "$_checkout/.run/supervisor.pid" ]; then
+              echo "  ! REFUSING to purge $_logdir"
+              echo "    This checkout looks like a RIG install (openbeast.conf /"
+              echo "    weights/ / a running supervisor). Those transcripts are the"
+              echo "    server's, not a client's. Delete them yourself if you mean to."
+              _left_behind="$_logdir"
+            else
+              rm -f "$_logdir"/agent-*.jsonl
+              echo "  ✓ purged $_n agent transcript(s) from $_logdir"
+            fi
+          else
+            _left_behind="$_logdir"
+          fi
+        fi
+      fi ;;
+  esac
+
   rm -rf "$CLIENT_DIR"
   rm -f "$ENV_FILE"
-  echo "  removed $CLIENT_DIR and $ENV_FILE"
+  echo "  ✓ removed $CLIENT_DIR and $ENV_FILE"
+  if [ -n "$_left_behind" ]; then
+    echo ""
+    echo "  ! LEFT IN PLACE: $_left_behind"
+    echo "    Agent transcripts contain full prompts and the contents of files"
+    echo "    the agent read on this machine. They are inside your own git"
+    echo "    checkout, so uninstall does not delete them by default."
+    echo "    Remove them with:  $0 --uninstall --purge-logs"
+  fi
+  echo ""
   echo "Client mode uninstalled."
+  echo "  Your checkout at $_checkout was NOT removed (it is yours — 'rm -rf' it if you want)."
   exit 0
 fi
 

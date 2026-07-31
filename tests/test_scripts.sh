@@ -572,6 +572,22 @@ else
   fail "client.sh does not resolve symlinks — the installed CLI breaks"
 fi
 rm -rf "$SYMTEST"
+# --purge-logs must REFUSE to run against a rig checkout. A client uninstall
+# destroying a server's agent history is data loss with no upside — this
+# guard exists because that exact mistake cost 6035 transcripts once.
+PURGE_T=$(mktemp -d); mkdir -p "$PURGE_T/agents/logs" "$PURGE_T/scripts" "$PURGE_T/weights"
+cp "$REPO_DIR/scripts/setup-client.sh" "$PURGE_T/scripts/"
+echo '{}' > "$PURGE_T/agents/logs/agent-guard.jsonl"
+touch "$PURGE_T/openbeast.conf"                       # <- marks it as a RIG
+PURGE_HOME=$(mktemp -d)
+HOME="$PURGE_HOME" bash "$PURGE_T/scripts/setup-client.sh" --uninstall --purge-logs >/dev/null 2>&1 || true
+if [[ -f "$PURGE_T/agents/logs/agent-guard.jsonl" ]]; then
+  pass "--purge-logs refuses to delete a RIG checkout's agent transcripts"
+else
+  fail "--purge-logs deleted transcripts from a rig checkout (data loss)"
+fi
+rm -rf "$PURGE_T" "$PURGE_HOME"
+
 # Client CLI subcommand surface.
 if [[ -x "$CC" ]] && grep -q 'status)' "$CC" && grep -q 'agent)' "$CC" \
    && grep -q 'search)' "$CC" && grep -q 'update)' "$CC" && grep -q 'uninstall)' "$CC"; then
