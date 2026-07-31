@@ -12,10 +12,10 @@ browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
 
 **One GPU box, every device you own.** Install the **rig** on the machine with
-the graphics card, then install the **client** on any laptop — no GPU, no
-weights — and it runs the same agent and the same 15 tools against *its own*
-files, with only the thinking crossing your private tailnet. Your laptop stays
-a laptop; your rig does the reasoning.
+the graphics card, then install the **client** on any laptop (no GPU, no
+weights). It runs the same agent and the same 15 tools against *its own* files,
+with only the thinking crossing your private tailnet. Your laptop stays a
+laptop; your rig does the reasoning.
 
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
@@ -31,20 +31,21 @@ OpenBeast runs in **two roles**, and the same repo does both:
 
 | | 🖥️ **The rig** (server) | 💻 **A client** |
 |---|---|---|
-| Runs on | a machine with an NVIDIA GPU | any Mac or Linux laptop — **no GPU** |
+| Runs on | a machine with an NVIDIA GPU | any Mac or Linux laptop, **no GPU** |
 | Downloads model weights | yes (~20 GB) | **no** |
 | Where the model runs | here | on the rig, over your tailnet |
 | Where `bash` / file edits run | here | **on the laptop, against its own files** |
 | Install | `./bootstrap.sh` | `./scripts/setup-client.sh` |
 
-You don't need both. Run the rig on its own and use it from any browser — or
+You don't need both. Run the rig on its own and use it from any browser, or
 install **only** the client if someone else is hosting the rig. The client is a
-real OpenBeast install: the same 15-tool arsenal, acting on *your* disk. Your
-shell and your files stay on your machine — what crosses the tailnet is the
-prompt, whatever the agent *reads* as context, and the model's replies (plus
-`web_search` queries, unless you pass `--local-search`).
+real OpenBeast install: the same 15-tool arsenal, acting on *your* disk.
 
-## 🖥️ Install the rig — one command
+Your shell and your files stay on your machine. What crosses the tailnet is the
+prompt, whatever the agent *reads* as context, and the model's replies, plus
+`web_search` queries unless you pass `--local-search`.
+
+## 🖥️ Install the rig (one command)
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
@@ -70,7 +71,7 @@ install if anything's missing.
 Prefer to run the steps by hand? The full walkthrough — prerequisites, per-distro
 toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
-## 💻 Install a client — use a rig from your laptop
+## 💻 Install a client (use a rig from your laptop)
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
 and no model download**. OpenCode and the entire 15-tool arsenal run *on the
@@ -138,71 +139,79 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 | Cloud / hybrid API fallback | — | — | ✅ | — ⁷ |
 | **Design philosophy** | Minimal runner | Agent-first | Kitchen-sink: *every service* | Opinionated: *one biggest brain* |
 
-¹ Hermes runs 100% local but *points at* a model server you host — like OpenBeast — rather than serving the model itself.
-² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast has no cloud code path at all — data never leaves hardware you own (one box, or your own tailnet).
-³ ODS selects from a static tier→model catalog (`model-library.json`) with rough VRAM heuristics ("8 GB → 7B", etc.) and catalog context lengths; OpenBeast *measures* actual VRAM + max safe context per model on the reference card.
-⁴ ODS's default agent **is** Hermes Agent (bundled) — so its agent rows mirror Hermes'.
-⁵ ODS uses a magic-link-gated proxy; OpenBeast uses Tailscale (WireGuard device identity + auto-HTTPS).
-⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
-⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
+¹ Hermes runs 100% local but *points at* a model server you host (like OpenBeast) rather than serving the model itself.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape; what it doesn't do is install as a second role of the same distribution — one command turning any laptop into a peer of the rig, with the same 15-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path — a client is your own device.)
+² ODS ships an optional cloud/hybrid API fallback (LiteLLM). OpenBeast has no cloud code path at all: data never leaves hardware you own, whether that's one box or your own tailnet.
+
+³ ODS selects from a static tier→model catalog (`model-library.json`) using rough VRAM heuristics ("8 GB → 7B") and catalog context lengths. OpenBeast *measures* actual VRAM and max safe context per model on the reference card.
+
+⁴ ODS's default agent **is** Hermes Agent (bundled), so its agent rows mirror Hermes'.
+
+⁵ ODS uses a magic-link-gated proxy. OpenBeast uses Tailscale: WireGuard device identity plus auto-HTTPS.
+
+⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus. OpenBeast shards and RBAC-gates every user.
+
+⁷ Deliberately **out of scope**. OpenBeast maximizes one model rather than bundling services. Bolt these on via the [extension system](extensions/README.md) if you want them.
+
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 15-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path, since a client is your own device.)
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
-a bare model runner — it serves a model and stops there; OpenBeast *includes* a
+a bare model runner: it serves a model and stops there. OpenBeast *includes* a
 runner and builds the whole workstation on top.
 
-**Hermes Agent** (Nous Research) is a client-side agent runtime — self-improving
-memory and skills — that brings its own model *endpoint*, not its own *server*.
+**Hermes Agent** (Nous Research) is a client-side agent runtime with
+self-improving memory and skills. It brings its own model *endpoint*, not its
+own *server*.
 Orthogonal and stackable: **OpenBeast is exactly the local backend it consumes**,
 so run Hermes on OpenBeast's endpoint for a self-improving agent whose brain
 never leaves your GPU.
 
 **ODS** (Osmantic Deployment System) is the closest peer and the most
-instructive comparison — both turn a box into a private AI server in one command,
-but on opposite philosophies. ODS bundles *everything* — voice, image generation,
+instructive comparison. Both turn a box into a private AI server in one command,
+but on opposite philosophies. ODS bundles *everything*: voice, image generation,
 workflow automation, RAG, cloud fallback (its default agent is literally Hermes)
-— for maximum breadth. OpenBeast goes the opposite way: one model, made as smart
+for maximum breadth. OpenBeast goes the opposite way: one model, made as smart
 and fast as the hardware allows. Pick ODS for a Swiss-army stack; pick OpenBeast
-for the single best model your GPU can run — and since ODS runs on a llama-server
+for the single best model your GPU can run. And since ODS runs on a llama-server
 backend, OpenBeast can even *be* that backend.
 
 ### What only OpenBeast does
 
-Across the whole field — runners, agent runtimes, kitchen-sink stacks — a
-handful of capabilities are **OpenBeast's alone**. They're the ones that decide a
-serious deployment:
+Across the whole field (runners, agent runtimes, kitchen-sink stacks) a handful
+of capabilities are **OpenBeast's alone**. They're the ones that decide a serious
+deployment:
 
 - **Evidence, not vibes.** The only one here that *evaluates the models it
-  serves* — a reproducible, capability-ranked leaderboard, per host. You
+  serves*, with a reproducible capability-ranked leaderboard per host. You
   standardize on a model because it earned the top score on *your* hardware, not
   because a post said so.
 - **Measured, not guessed.** Every model's VRAM and max-safe context is measured
   on the card and pinned; MTP speculative decoding is profiled to its optimal
   draft depth per model. No OOM roulette, no catalog approximations.
 - **Multi-tenant by design.** Per-user file shards, per-profile RBAC (admin vs
-  guest), signed-JWT identity, and a per-call audit trail — *who* ran *which*
-  tool, *when*. The others are single-user, or audit the agent, not the person.
+  guest), signed-JWT identity, and a per-call audit trail recording *who* ran
+  *which* tool, *when*. The others are single-user, or audit the agent rather
+  than the person.
 - **Supply chain, end to end.** Every model weight is sha256-pinned and
   verifiable, every container image digest-pinned, every Python dep pinned and
   CVE-audited in CI. You know exactly what is running.
 - **Data sovereignty by construction.** There is no cloud code path to enable by
-  accident — data physically cannot leave your machine (or, remote, your
-  tailnet). Not "local by default with a cloud toggle." Local, period.
+  accident. Data physically cannot leave your machine, or when remote, your
+  tailnet. Not "local by default with a cloud toggle." Local, period.
 - **Real tools *with* real guardrails.** SSRF-pinned fetch, path-guarded file
   ops, process-group reaping + memory caps, and an optional kernel-level sandbox
-  — an agent that can act, safely.
+  an agent that can act, safely.
 
 **Who reads this and knows it's the one:**
 
-- **Home / power user** — one command to the largest model your GPU can hold,
+- **Home / power user.** One command to the largest model your GPU can hold,
   secure phone access over Tailscale, and family-safe roles (the kids get web
   search, not your shell). The best local brain, not a weekend science project.
-- **Organization / team** — per-user roles + audit make a shared GPU box safe to
+- **Organization / team.** Per-user roles and audit make a shared GPU box safe to
   share; the eval leaderboard lets you standardize on a *vetted* model; the
   supply-chain pins answer "what exactly is running?" in one command
   (`./start.sh doctor`).
-- **Company / regulated** — no cloud path at all, signed identity + a per-call
+- **Company / regulated.** No cloud path at all, signed identity plus a per-call
   audit trail, a documented threat model ([`SECURITY.md`](SECURITY.md)), and
   Apache-2.0 (fork it, air-gap it, build a business on it). The compliance story
   writes itself.
@@ -352,34 +361,34 @@ flowchart TB
 
 One **command center** (the rig) and, optionally, any number of **clients**.
 The load-bearing fact: **tools execute where the process runs, not where the
-model runs** — a laptop runs the full tool arsenal against its *own* disk while
+model runs.** A laptop runs the full tool arsenal against its *own* disk while
 every token is generated on the rig's GPU. The machine boundary is a single
 OpenAI-compatible HTTP call, so the promise is **"nothing leaves your tailnet"**.
 
-**Reading it, top to bottom.** The red box is the entire security perimeter —
-every service binds `127.0.0.1` and the only way in is Tailscale's
-authenticated WireGuard mesh; `tailscale funnel` is deliberately never used.
+**Reading it, top to bottom.** The red box is the entire security perimeter.
+Every service binds `127.0.0.1`, and the only way in is Tailscale's
+authenticated WireGuard mesh. `tailscale funnel` is deliberately never used.
 Above the rig sit the two kinds of caller: a **client laptop** running the
 whole tool stack locally, and any **browser device**, which needs nothing
-installed. Inside the rig the stack is layered — frontends, then the **tool
+installed. Inside the rig the stack is layered: frontends, then the **tool
 plane** (never published, acts only on the rig), then the **inference plane**
-(the one surface that *is* published), then what lives on disk. The thick
-arrow is the only load-bearing crossing between machines.
+(the one surface that *is* published), then what lives on disk. The thick arrow
+is the only load-bearing crossing between machines.
 
 Two identity layers, and they answer different questions: the tool server
-(`:3001`) authenticates **the human** — RBAC tier, per-user file shard — while
-beast-gate (`:8090`) authenticates **the device**.
+(`:3001`) authenticates **the human**, resolving RBAC tier and per-user file
+shard. beast-gate (`:8090`) authenticates **the device**.
 
 The dashed path is the honest default: with `EDGE_GATE=false`, `:8443` maps
-straight at llama-server and publishes its *entire* route table to the tailnet —
-fine on a tailnet you fully own. `EDGE_GATE=true` routes it through **beast-gate**
+straight at llama-server and publishes its *entire* route table to the tailnet,
+which is fine on a tailnet you fully own. `EDGE_GATE=true` routes it through **beast-gate**
 instead, which allowlists the OpenAI routes and gives each device its own
 revocable key, rate limits, and an inference audit trail.
 
 Note what is **opt-in** rather than always-on: beast-gate (`EDGE_GATE`), the
 agent router (`AGENT_ROUTER`), and the dashboard extension (`EXTENSIONS`) all
 default to off, so a plain `./start.sh` brings up the rig with none of them.
-Remote access is a separate deliberate step — nothing is published until you
+Remote access is a separate deliberate step. Nothing is published until you
 run `setup-tailscale.sh`, and when you do it publishes Open WebUI (`:443`) and
 inference (`:8443`); SearXNG (`:8889`) and `/api/slot` (`:8444`) additionally
 require `--publish-searxng` / `--publish-slot`.
@@ -496,26 +505,44 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 
 ## Documentation
 
-- **[docs/INSTALL.md](docs/INSTALL.md)** — step-by-step installation, prerequisites, per-model downloads, troubleshooting
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — architecture diagram, component walkthrough, project layout
-- **[docs/MODELS.md](docs/MODELS.md)** — the full 17-model lineup (measured VRAM/context/speed) + weights location
-- **[docs/FEATURES.md](docs/FEATURES.md)** — the complete capability breakdown
-- **[docs/REFERENCE.md](docs/REFERENCE.md)** — VRAM tables (measured), config reference, per-variant details
-- **[docs/RESULTS.md](docs/RESULTS.md)** — eval leaderboards (v4 + v3.5), distribution, cross-host results
-- **[evals/README.md](evals/README.md)** — eval suite: schema, scoring, the eval CLI, pitfalls
-- **[docs/TOOLS.md](docs/TOOLS.md)** — every tool a model can call: inventory, provenance, hardening, RBAC visibility
-- **[docs/UPDATING.md](docs/UPDATING.md)** — update every pulled-in component with one command
-- **[docs/HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md)** — GPU detection + per-tier configs
-- **[docs/REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md)** — Tailscale design, VPN coexistence, verification
-- **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)** — client/server: run the full tool stack on any device against the rig's model · the `/api/slot` contract · beast-gate (per-device keys, audit) · device enrollment
-- **[docs/DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md)** — worker-fleet mode (spawned-agent inference on a second box)
-- **[docs/RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md)** — consolidated research log (MTP, profiling, model comparisons)
-- **[docs/SKILLS_PLAN.md](docs/SKILLS_PLAN.md)** · **[skills/README.md](skills/README.md)** — skills system + how to add skills
-- **[docs/TODO.md](docs/TODO.md)** — roadmap and completed work
-- **[docs/archive/](docs/archive/)** — historical design plans, eval reviews, and superseded work-plans (kept for provenance)
-- **[extensions/README.md](extensions/README.md)** — the optional-service extension system
+**Start here**
 
-## Credits — standing on the shoulders of giants
+| Doc | What's in it |
+|---|---|
+| [INSTALL.md](docs/INSTALL.md) | Step-by-step install, prerequisites, per-model downloads, troubleshooting |
+| [BEAST_SLOT.md](docs/BEAST_SLOT.md) | Client/server: the `/api/slot` contract, beast-gate, device enrollment, using someone else's rig |
+| [FEATURES.md](docs/FEATURES.md) | The complete capability breakdown |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component walkthrough, service diagram, project layout |
+
+**Reference**
+
+| Doc | What's in it |
+|---|---|
+| [MODELS.md](docs/MODELS.md) | The 17-model lineup, with measured VRAM, context and speed |
+| [REFERENCE.md](docs/REFERENCE.md) | Config keys, measured VRAM tables, per-variant details |
+| [TOOLS.md](docs/TOOLS.md) | Every tool a model can call: inventory, provenance, hardening, RBAC |
+| [HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md) | GPU detection and per-tier configs |
+| [RESULTS.md](docs/RESULTS.md) | Eval leaderboards (v4 + v3.5), distribution, cross-host results |
+| [evals/README.md](evals/README.md) | Eval suite: schema, scoring, the CLI, pitfalls |
+
+**Operating it**
+
+| Doc | What's in it |
+|---|---|
+| [UPDATING.md](docs/UPDATING.md) | Update every pulled-in component with one command |
+| [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
+| [extensions/README.md](extensions/README.md) | The optional-service extension system |
+| [skills/README.md](skills/README.md) | The skills system, and how to add one |
+
+**Project**
+
+[TODO.md](docs/TODO.md) (roadmap and completed work) ·
+[RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md) (MTP, profiling, model comparisons) ·
+[DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md) (worker-fleet mode) ·
+[SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·
+[docs/archive/](docs/archive/) (superseded plans, kept for provenance)
+
+## Credits: standing on the shoulders of giants
 
 OpenBeast is an orchestration layer. The heavy lifting below it is done by
 outstanding open source projects, and each deserves the credit:
