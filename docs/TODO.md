@@ -359,19 +359,26 @@ previously claimed. One turn is lost.
 
 ### To do, highest leverage first
 
-1. **Cap generation length — this is OpenBeast's bug, not NVIDIA's.**
-   `scripts/serve.sh` passes **no `-n`/`--n-predict`**, so llama.cpp defaults to
-   infinity and a client can decode the full 212,992-token context. The MTP
-   scripts also set no `--reasoning-budget` (the fable-fusion ones cap at 4096).
-   Honest caveat to document: `-n` is a *default*, applied only when the request
-   omits `n_predict` (`server-context.cpp:388-398` `has_budget`) — a client
-   sending `max_tokens` overrides it. Open WebUI omits it, so it would have
-   caught this one.
-2. **`NVreg_RegistryDwords="RmWatchDogTimeOut=60"`** in `/etc/modprobe.d/` —
-   the source-verified knob (default 7, max 60). Targets the real mechanism.
-   `RmRcWatchdog=0` disables it entirely (last resort). Note `RmDisableRcWatchdog`
-   does not exist. `nvidia-smi -c EXCLUSIVE_PROCESS` and persistence mode have
-   **no** effect on this watchdog.
+1. **`NVreg_RegistryDwords="RmWatchDogTimeOut=60"`** in `/etc/modprobe.d/` —
+   the source-verified knob (default 7s, max 60s), then regenerate initramfs
+   and reboot. Targets the actual mechanism, keeps a real hang detector, costs
+   no capability. `RmRcWatchdog=0` disables it entirely (last resort). Note
+   `RmDisableRcWatchdog` does not exist, and `nvidia-smi -c EXCLUSIVE_PROCESS`
+   / persistence mode have **no** effect on this watchdog.
+2. **DECIDED 2026-07-31 (Max): do NOT cap generation length.** A reviewer
+   proposed adding `-n`/`--n-predict` to `serve.sh` because the crash
+   correlated with a 99,574-token unbounded decode. Rejected, for three
+   reasons. It isn't enforceable — `-n` is only a *default* applied when the
+   request omits `n_predict` (`server-context.cpp:388-398`), so any client
+   sending `max_tokens` overrides it; it would constrain our own WebUI turns
+   while leaving the real surface open. The rate (1 abort / 2,323 tasks /
+   ~1.14M tokens / 14 days, self-healing in ~8s) does not justify losing the
+   capability. And the defect is upstream in `nvidia-open`, not here.
+   Unbounded generation is deliberate — it's the "no compromise" ethos, and a
+   27B model reasoning for 100K tokens is a feature. Revisit only if the rate
+   climbs materially or a multi-tenant profile makes one client's runaway
+   everyone's problem — and then bound it per-device at beast-gate, where
+   identity exists, not globally at the serve layer.
 3. **A/B test MTP off** — `llama.cpp#23268`/`#23210` report speculative-decode
    timeouts on Qwen3.6-27B + MTP. Cheap hypothesis test.
 4. **`doctor`: do NOT warn on `display_active: Enabled`.** It fires on
