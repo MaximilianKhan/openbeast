@@ -59,6 +59,29 @@ pf_mark_fail() {
 }
 hard_fail() { MISSING=1; pf_mark_fail; }
 
+# ---- wrong-machine off-ramp -------------------------------------------------
+# The rig is CUDA/Linux only, by design. But the README invites macOS and
+# GPU-less users to install CLIENT mode, and `./bootstrap.sh` is the headline
+# command they'll type first. Without this they hit a missing-C-toolchain error
+# carrying a Linux package hint (macOS), or — worse on GPU-less Linux, where no
+# VRAM floor rejection fires — a full llama.cpp build and a ~20 GB weight
+# download for a CPU-only install nobody wants. Signpost instead of dead-end.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  cat >&2 <<'EOF'
+This is macOS — OpenBeast's rig (server) is Linux + NVIDIA/CUDA only.
+
+You almost certainly want CLIENT mode, which is fully supported here: it runs
+OpenCode and the complete 15-tool arsenal on THIS Mac, against this Mac's own
+files, and sends only inference to a rig over your tailnet. No GPU, no CUDA,
+no model download.
+
+    ./scripts/setup-client.sh --host <rig>.<tailnet>.ts.net
+
+Details (including using a rig someone else hosts): docs/BEAST_SLOT.md
+EOF
+  exit 2
+fi
+
 # ---- distro detection ------------------------------------------------------
 DISTRO="unknown"; PKG_HINT=""
 if [[ -r /etc/os-release ]]; then
@@ -132,7 +155,16 @@ run_preflight() {
     nvidia) ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
     amd)    ok "AMD GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
     intel)  ok "Intel GPU: ${OB_GPU_NAME:-unknown}" ;;
-    none)   warn "no supported GPU detected" ;;
+    none)
+      # ob_vram_floor_check returns early when vendor is 'none', so nothing
+      # downstream stops a CPU-only install from building llama.cpp and pulling
+      # ~20 GB of weights for inference that would be 10-50x slower. Point at
+      # client mode, which is what a GPU-less box actually wants.
+      warn "no supported GPU detected"
+      echo "      → this box can't serve models, but it CAN be a client:"
+      echo "        ./scripts/setup-client.sh --host <rig>.<tailnet>.ts.net"
+      echo "        (full tool arsenal locally, inference on a rig — docs/BEAST_SLOT.md)"
+      ;;
   esac
   ob_profile_advice
   # Opinionated floor: detected GPUs under 11 GB VRAM are not supported —

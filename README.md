@@ -44,7 +44,7 @@ shell and your files stay on your machine — what crosses the tailnet is the
 prompt, whatever the agent *reads* as context, and the model's replies (plus
 `web_search` queries, unless you pass `--local-search`).
 
-### 🖥️ The rig — one command
+## 🖥️ Install the rig — one command
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
@@ -70,7 +70,7 @@ install if anything's missing.
 Prefer to run the steps by hand? The full walkthrough — prerequisites, per-distro
 toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
-### 💻 A client — use a rig from your laptop
+## 💻 Install a client — use a rig from your laptop
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
 and no model download**. OpenCode and the entire 15-tool arsenal run *on the

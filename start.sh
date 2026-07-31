@@ -295,6 +295,23 @@ wait_llama_health() { # returns 1 if the process dies before becoming healthy
 # fails can revert to it (model load-failure rollback, conf MODEL_ROLLBACK).
 record_last_good() { printf '%s\n' "$1" > "$RUN_DIR/last-good-serve-script"; }
 
+# Re-run WebUI model configuration after the SERVED MODEL CHANGES.
+#
+# configure-webui.sh is backgrounded early (below) and polls /v1/models for up
+# to 30s. Under FAST_BOOT it therefore wins the race against the hot-swap and
+# writes a permanent WebUI model row for the BOOTSTRAP BRIDGE — leaving the real
+# model with no row, hence no meta.toolIds, hence no tools attached to any chat.
+# Model-load rollback has the same shape: it switches serve scripts long after
+# configure-webui.sh has exited. Both silently produce a toolless WebUI.
+#
+# Guarded on WebUI actually being reachable, which makes this a no-op during the
+# initial launch (WebUI isn't up yet and the normal backgrounded run covers it)
+# and safe to call from anywhere the model changes. Idempotent and backgrounded.
+reconfigure_webui_for_model() {
+  curl -s -m 3 "http://localhost:3000/api/version" >/dev/null 2>&1 || return 0
+  "$SCRIPT_DIR/scripts/configure-webui.sh" >/dev/null 2>&1 &
+}
+
 # Launch the current $SERVE_SCRIPT and wait for health. On failure, if rollback
 # is enabled and a different last-known-good exists, launch THAT instead and
 # update $SERVE_SCRIPT + the restart record. Returns 0 if some model is serving
@@ -326,6 +343,7 @@ launch_and_wait() {
       if wait_llama_health; then
         record_last_good "$SERVE_SCRIPT"
         echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        reconfigure_webui_for_model
         return 0
       fi
     fi
@@ -587,6 +605,8 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
     exit 1
   fi
   echo "Full model live: $SERVE_SCRIPT on http://localhost:8080."
+  # The bridge, not this model, is what configure-webui.sh saw. Fix the rows.
+  reconfigure_webui_for_model
   warm_kv_cache
   FAST_BOOT_ACTIVE=0
 fi

@@ -368,6 +368,30 @@ else:
 " 2>/dev/null \
       || echo "    Warning: failed to configure model '$model_id' (docker exec error) — re-run ./scripts/configure-webui.sh" >&2
   done <<< "$MODELS"
+
+  # Deactivate rows for models we are no longer serving.
+  #
+  # Nothing ever cleaned these up, so they accumulate one per model ever loaded
+  # — and llama.cpp's single-model server ignores the `model` field entirely, so
+  # picking a dead entry does NOT error: you get the loaded model's answers
+  # under the wrong name, at the wrong advertised context, recorded that way in
+  # the transcript. Fast boot makes this concrete by design, briefly serving a
+  # bootstrap bridge whose row would otherwise linger as a selectable option.
+  ACTIVE_IDS=$(printf '%s\n' "$MODELS" | cut -d'|' -f1 | paste -sd'\n' -)
+  docker exec -i -e ACTIVE_IDS="$ACTIVE_IDS" open-webui python3 -c "
+import sqlite3, os
+db = sqlite3.connect('/app/backend/data/webui.db')
+active = {m for m in os.environ.get('ACTIVE_IDS', '').split('\n') if m.strip()}
+if active:   # never blank the list on a failed/empty model probe
+    rows = db.execute('SELECT id FROM model WHERE is_active=1').fetchall()
+    stale = [r[0] for r in rows if r[0] not in active]
+    for mid in stale:
+        db.execute('UPDATE model SET is_active=0 WHERE id=?', (mid,))
+    if stale:
+        db.commit()
+        print('    Deactivated %d stale model entr%s (no longer served).'
+              % (len(stale), 'y' if len(stale) == 1 else 'ies'))
+" 2>/dev/null || true
 fi
 
 # Open WebUI caches its persisted config at startup, so anything we wrote
