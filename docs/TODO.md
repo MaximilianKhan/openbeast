@@ -265,37 +265,51 @@ the choke point where identity, quotas, audit, and metering all attach.
   (and today does — the 6 community models added 2026-07-17, including the
   current default, have never been benchmarked here).
 
-## 🐛 KNOWN ISSUE — intermittent llama-server abort in the MTP draft path (2026-07-31)
+## 🐛 KNOWN ISSUE — GPU display watchdog aborts llama-server (2026-07-31)
 
-Observed once on `serve-heretic-v2-27b-mtp-q6.sh`: llama-server took SIGABRT
-(exit 134) mid-request. Backtrace is unambiguous and entirely upstream:
+llama-server took SIGABRT (exit 134) mid-request. The cause is **environmental,
+not a llama.cpp defect** — the driver killed a compute kernel for overrunning
+the display watchdog:
 
 ```
-ggml_cuda_error → ggml_backend_cuda_synchronize → llama_context::synchronize
-  → llama_get_embeddings_nextn
-  → common_speculative_impl_draft_mtp::process     ← MTP speculative decode
-  → server_context_impl::decode / update_slots
+CUDA error: the launch timed out and was terminated      ← cudaErrorLaunchTimeout
+ggml/src/ggml-cuda/ggml-cuda.cu:106: CUDA error
+  → ggml_abort → ggml_backend_cuda_synchronize → llama_context::synchronize
+  → common_speculative_impl_draft_mtp::process           ← MTP draft, the victim
 ```
 
-**Impact when it fires:** the in-flight turn dies. WebUI surfaces it as
-`Error processing chat payload: model server unreachable via router: Server
-disconnected without sending a response.` — which reads to a user as "tool
-calls are broken" even though nothing about tool calling is involved.
+**Why it happens.** An NVIDIA GPU with an attached display enforces a launch
+timeout so a long compute kernel can't freeze the desktop. On the dev rig
+`nvidia-smi` reports `display_active: Enabled` — Hyprland, Xwayland, a browser
+and terminals all render on the same RTX 5090 that serves the model. Any kernel
+that overruns the watchdog is killed, and ggml turns that into `abort()`.
 
-**Frequency:** 1 abort across the full session log. The supervisor caught it
-and relaunched (weights were in page cache, back healthy in ~3s), so it
-self-heals; the cost is one lost turn.
+The MTP draft path shows up in the backtrace because speculative decode issues
+extra forward passes, so it holds the GPU longest — it's the most frequent
+victim, not the cause. A non-MTP model lowers exposure but does not remove it.
+Risk rises with VRAM pressure (rig sits at ~91%, ~944 MiB of that the desktop).
 
-**Not correlated with tool calls** — tested 6 tool-carrying vs 6 plain
-completions back-to-back, 0 aborts in both arms, and the model emits
-`finish_reason: tool_calls` correctly at 150/600/2000 max_tokens with thinking
-both on and off. Do not chase this as a tool-calling bug.
+**Impact:** the in-flight turn dies. WebUI surfaces it as `model server
+unreachable via router: Server disconnected without sending a response.` —
+which reads as "tool calls are broken" even though tool calling isn't involved.
+The supervisor relaunches and is healthy again in ~3s (weights stay in page
+cache), so it self-heals at the cost of one lost turn. Observed once.
 
-**To do:** capture the CUDA error string (the abort line above the backtrace
-was not retained — add stderr capture to the supervisor so the next one is
-diagnosable), then decide between reporting upstream, pinning a known-good
-llama.cpp revision, or defaulting to a non-MTP serve script. Track how often
-it recurs before spending GPU-hours on it. All 17 MTP models share this path.
+**Not a tool-calling bug** — 6 tool-carrying vs 6 plain completions gave 0
+aborts in both arms, and the model emits `finish_reason: tool_calls` correctly
+at 150/600/2000 max_tokens with thinking on and off. Do not chase it as one.
+
+**The real fix (rig):** move the desktop off the compute GPU. The 9950X3D has
+Radeon integrated graphics (`7c:00.0`, own DRI nodes), so Hyprland can render
+on the iGPU and leave the 5090 headless — watchdog gone, plus ~944 MiB VRAM
+back. Needs the monitor on the motherboard output, the iGPU enabled in BIOS,
+and likely `WLR_DRM_DEVICES` pinned to the AMD card. Not yet done.
+
+**To do for users, before launch:** most OpenBeast installs will be exactly
+this shape — one consumer GPU that both drives the desktop and serves the
+model — so this failure is likely to be common in the wild. Add a
+troubleshooting entry keyed on the `launch timed out` string, and have `doctor`
+warn when `display_active: Enabled` on the serving GPU.
 
 ## ⚠️ SECURITY
 
