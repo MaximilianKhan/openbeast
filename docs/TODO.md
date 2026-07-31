@@ -402,6 +402,42 @@ near 2,080–2,132 MiB free. This crash happened at 2,247 MiB free. The repo now
 carries two competing folk explanations for llama-server dying under load,
 neither with a verified mechanism.
 
+## 🏛️ SOC 2 READINESS GAPS (2026-07-31)
+
+Full mapping and evidence in [SOC2_READINESS.md](SOC2_READINESS.md). These are
+the gaps a security reviewer at a regulated customer will find, ranked by how
+early they will find them. Raised because OpenBeast is being taken into private
+equity diligence conversations.
+
+1. **beast-gate is off by default** (`EDGE_GATE=false`), so a default install
+   has no per-device identity, no admission control and **no inference audit
+   trail at all**. Nothing warns the operator. Ship a documented hardening
+   profile plus a `doctor` warning when remote surfaces are published with the
+   gate off. (CC6.1, CC7.2 — small)
+2. **`/api/slot` is unauthenticated.** Live-verified: HTTP 200 with no
+   credentials, returning model, capacity and service topology. A revoked
+   device still reads it. Reuse the gate's token check. (CC6.1 — small)
+3. **No usage accountability per principal.** beast-gate rate-limits requests
+   but not tokens or wall-clock, so one device can consume unbounded compute and
+   starve others. No quota, no usage report. `clients.sh usage` over
+   `.run/inference-audit.jsonl` is the cheap first half. (CC6.1, A1.1 — medium)
+4. **Enrollment is out-of-band; keys never expire.** No request-and-approve
+   flow, no expiry, no rotation schedule. (CC6.2/6.3 — medium)
+5. **Revocation does not terminate an in-flight stream.** (CC6.2 — small)
+6. **No decommissioning path.** No rig-side uninstall, so secure disposal is a
+   manual checklist. (CC6.5 — medium)
+7. **No SBOM.** Everything is pinned and inventoried but nothing emits
+   CycloneDX/SPDX. (CC9.2 — small)
+8. **No log-integrity guarantees.** Audit logs are plain append-only JSONL on
+   local disk: no signing, no tamper evidence, no SIEM forwarding. An assessor
+   will ask whether an admin could edit them. (CC7.2/7.3 — medium)
+9. **No encryption at rest.** Prompts, transcripts and audit logs sit in
+   plaintext. FDE is assumed but never checked. (Confidentiality — small to
+   check)
+10. **No configuration baseline or drift detection.** `doctor` checks health and
+    consistency, not conformance to a documented secure baseline. (CC7.1 —
+    medium)
+
 ## ⚠️ SECURITY
 
 - ✅ **Router IS identity-aware (DONE 2026-07-08).** WebUI forwards

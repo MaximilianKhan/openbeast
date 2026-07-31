@@ -531,6 +531,8 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 |---|---|
 | [UPDATING.md](docs/UPDATING.md) | Update every pulled-in component with one command |
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
+| [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
+| [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |
 | [extensions/README.md](extensions/README.md) | The optional-service extension system |
 | [skills/README.md](skills/README.md) | The skills system, and how to add one |
 
