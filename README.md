@@ -242,8 +242,11 @@ openbeast-client status                    # rig's real model, context, busy slo
 openbeast-client update                    # reinstall pinned deps (pulls too, on a slim checkout)
 ```
 
-The rig loses nothing by serving clients — it stays the full command center,
-browser UI and all.
+The rig stays the full command center — browser UI, tools, agents, all of it.
+What it does give up is exclusivity: on the single-slot MTP default a client's
+long generation queues ahead of the owner's own turns (llama.cpp has no
+per-user fairness or preemption). Fine for one person across their devices;
+worth knowing before you hand out keys.
 
 Built for the long haul — the daemon runs in a memory-capped scope with
 health-monitored auto-restart, plus **fast boot** (chat while the big model

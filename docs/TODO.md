@@ -265,6 +265,43 @@ the choke point where identity, quotas, audit, and metering all attach.
   (and today does — the 6 community models added 2026-07-17, including the
   current default, have never been benchmarked here).
 
+## 🔴 REGRESSION RISK — FAST_BOOT re-creates the WebUI toolless-model bug (2026-07-31)
+
+`e85536d` fixed WebUI tool calls by making `configure-webui.sh` create the
+served model's WebUI row (with `meta.toolIds`). **That fix is defeated by
+`FAST_BOOT`, and by model-load rollback.**
+
+`start.sh:545` backgrounds `configure-webui.sh`, which polls `/v1/models` for
+up to 30s. Under `FAST_BOOT=true` the stack is serving `serve-bootstrap.sh`
+(alias `OpenBeast Bootstrap (loading full model…)`) at that moment and only
+hot-swaps to the real model afterwards. So the config run wins the race and
+writes a permanent WebUI model row for the **bridge**; the real model never
+gets one → no `toolIds` → **no tools attached to any chat**. Identical symptom
+to the bug just fixed, and it repeats every fast boot.
+
+Same defect on two other paths: model-load rollback (`start.sh:319-331`)
+switches to a different serve script with a different alias long after
+`configure-webui.sh` exited, and the supervisor's relaunch loop can too.
+
+FAST_BOOT is opt-in but advertised in `docs/FEATURES.md` and the README.
+
+**Fix:** re-run the model-config pass after the fast-boot swap and after any
+rollback, and have `configure-webui.sh` deactivate rows for models no longer
+served (they accumulate — 11 active rows on the dev rig, 10 of them dead, and
+llama.cpp ignores the `model` field so selecting one silently answers with the
+loaded model under the wrong name and context).
+
+## 🔴 LAUNCH GAP — bootstrap.sh has no client-mode off-ramp (2026-07-31)
+
+The README now invites macOS and GPU-less users ("macOS or Linux. No GPU"), but
+`bootstrap.sh` has **zero** `Darwin`/`uname -s` branches and never mentions
+`scripts/setup-client.sh`. A Mac user running the headline `./bootstrap.sh`
+hard-fails on a missing C toolchain with a Linux package hint. A GPU-less Linux
+user fares worse: no VRAM floor rejection fires, so it builds llama.cpp and
+downloads ~20 GB of weights for a CPU-only install.
+
+**Fix:** detect macOS or no-GPU early and offer the one-line client install.
+
 ## 🐛 KNOWN ISSUE — GPU display watchdog aborts llama-server (2026-07-31)
 
 llama-server took SIGABRT (exit 134) mid-request. The cause is **environmental,
