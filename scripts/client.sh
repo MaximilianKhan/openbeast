@@ -75,6 +75,25 @@ _curl_auth() {
   fi
 }
 
+_http_code() {
+  # _http_code <url> — the HTTP status alone, or 000 when nothing answered.
+  # Grepping bodies collapsed four different failures into one wrong message:
+  # a REVOKED device, a rig that is down, a rig still loading a 27B model, and
+  # a TLS/clock problem all printed "rig model API not answering". beast-gate
+  # already distinguishes them (401 vs 502 vs 504), so read the status.
+  # NOTE: curl PRINTS '000' and ALSO exits non-zero when it cannot connect, so
+  # a trailing `|| echo 000` yields '000000' and the 000 branch never matches.
+  # Capture, ignore the exit status, and default only when the output is empty.
+  _u="$1"
+  if [ -n "${OPENBEAST_API_KEY:-}" ]; then
+    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
+      -H "Authorization: Bearer $OPENBEAST_API_KEY" "$_u" 2>/dev/null) || true
+  else
+    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
+  fi
+  echo "${_c:-000}"
+}
+
 case "$CMD" in
   status)
     echo "=== OpenBeast client status ==="
@@ -113,7 +132,27 @@ case "$CMD" in
           bad=$((bad+1))
         fi
       else
-        echo "  ✗ rig model API not answering ($BASE)"; bad=$((bad+1))
+        # Say WHICH failure this is. "Not answering" was wrong for most of them.
+        case "$(_http_code "$HURL")" in
+          401|403)
+            echo "  ✗ rig rejected this device (401/403) — key wrong, or your"
+            echo "    device was revoked. Ask the rig owner to re-enroll:"
+            echo "    ./scripts/clients.sh enroll <name>, then setup-client.sh --api-key <key>" ;;
+          503)
+            echo "  ! rig is up but still loading the model (503) — retry shortly" ;;
+          502|504)
+            echo "  ✗ rig's gate is up but llama-server is not answering behind it"
+            echo "    (502/504) — the model may be restarting; check the rig" ;;
+          404)
+            echo "  ✗ endpoint reachable but /health is not there (404) — is"
+            echo "    OPENBEAST_AGENT_INFERENCE_URL pointing at the right port?" ;;
+          000)
+            echo "  ✗ no response from $BASE — rig down, not on the tailnet, or"
+            echo "    TLS failed (a large clock skew breaks it; check your date)" ;;
+          *)
+            echo "  ✗ rig model API not answering ($BASE)" ;;
+        esac
+        bad=$((bad+1))
       fi
     else
       echo "  ✗ OPENBEAST_AGENT_INFERENCE_URL not set"; bad=$((bad+1))
@@ -222,13 +261,34 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     ;;
 
   update)
-    if [ -d "$CLIENT_DIR/repo/.git" ]; then
-      git -C "$CLIENT_DIR/repo" pull --ff-only
+    # Pull whichever checkout we are ACTUALLY running from. This used to pull
+    # only $CLIENT_DIR/repo (the slim-checkout install); for the in-place clone
+    # the README documents it printed "pull it yourself" and then said "client
+    # updated." regardless. So the remedy the version-skew warning in `status`
+    # points users to did nothing, and reported success while doing it.
+    _pulled=0
+    if [ -d "$REPO/.git" ]; then
+      if git -C "$REPO" pull --ff-only; then
+        _pulled=1
+      else
+        echo "  x git pull failed in $REPO (local changes, or not fast-forward)." >&2
+        echo "    Resolve it there, then re-run: openbeast-client update" >&2
+        exit 1
+      fi
     else
-      echo "  (running from a full clone — pull it yourself: git -C $REPO pull)"
+      echo "  ! $REPO is not a git checkout, so the source cannot be updated." >&2
     fi
-    [ -x "$VENV/bin/pip" ] && "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"
-    echo "client updated."
+    if [ -x "$VENV/bin/pip" ]; then
+      if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
+        echo "  x dependency install failed." >&2
+        exit 1
+      fi
+    fi
+    if [ "$_pulled" -eq 1 ]; then
+      echo "client updated (source + dependencies)."
+    else
+      echo "dependencies reinstalled; SOURCE NOT UPDATED."
+    fi
     ;;
 
   uninstall)
