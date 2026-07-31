@@ -44,6 +44,24 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+
+# macOS-safe resolution (see scripts/setup-client.sh for the full rationale):
+# the Tailscale app hides its CLI inside the app bundle, and /usr/bin/python3
+# from the Xcode CLT is often 3.9 — below our floor.
+_find_ts() {
+  for _t in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale \
+            /opt/homebrew/bin/tailscale /usr/local/bin/tailscale; do
+    if command -v "$_t" >/dev/null 2>&1; then command -v "$_t"; return 0; fi
+    [ -x "$_t" ] && { printf '%s\n' "$_t"; return 0; }
+  done
+  return 1
+}
+TS_BIN="$(_find_ts || true)"
+# Prefer the venv interpreter — it is guaranteed >=3.10 because
+# setup-client.sh built it with a vetted one.
+if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
+else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi
+
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
 
@@ -71,7 +89,7 @@ case "$CMD" in
     else
       echo "  ✗ venv broken — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
-    if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+    if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))
     else
       echo "  ✗ tailscale down — if it JUST dropped, a full-tunnel VPN"
@@ -103,7 +121,7 @@ case "$CMD" in
     if [ -n "${OPENBEAST_SLOT_URL:-}" ]; then
       # beast-slot contract v2 (docs/BEAST_SLOT.md). Line 1 is the summary;
       # any further lines are version warnings, printed indented below it.
-      SLOT="$(curl -s -m 5 "$OPENBEAST_SLOT_URL" 2>/dev/null | python3 -c '
+      SLOT="$(curl -s -m 5 "$OPENBEAST_SLOT_URL" 2>/dev/null | "$PY_BIN" -c '
 import json, sys
 CLIENT_V = 2   # the contract version THIS client understands
 try:

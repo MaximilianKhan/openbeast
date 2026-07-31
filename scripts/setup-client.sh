@@ -74,6 +74,31 @@ if [ $NO_SEARCH -eq 1 ] && [ $LOCAL_SEARCH -eq 1 ]; then
   echo "--no-search and --local-search are mutually exclusive" >&2; exit 2
 fi
 
+
+# --- interpreter + tailscale resolution (macOS-safe) -------------------------
+# Resolved ONCE, before anything uses them — the uninstall path shells out to
+# python too, so this cannot live inside preflight.
+_find_py() {
+  for _c in "${OPENBEAST_PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3 python; do
+    [ -n "$_c" ] || continue
+    command -v "$_c" >/dev/null 2>&1 || continue
+    if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+      command -v "$_c"; return 0
+    fi
+  done
+  return 1
+}
+_find_ts() {
+  for _t in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale \
+            /opt/homebrew/bin/tailscale /usr/local/bin/tailscale; do
+    if command -v "$_t" >/dev/null 2>&1; then command -v "$_t"; return 0; fi
+    [ -x "$_t" ] && { printf '%s\n' "$_t"; return 0; }
+  done
+  return 1
+}
+PY_BIN="$(_find_py || true)"
+TS_BIN="$(_find_ts || true)"
+
 # ---- uninstall --------------------------------------------------------------
 if [ $UNINSTALL -eq 1 ]; then
   # Local SearXNG container (best-effort — only if docker + compose file exist).
@@ -128,12 +153,38 @@ case "$OS" in
     fi ;;
   *) echo "  ! $OS — untested territory, proceeding at your own risk" ;;
 esac
-py_ok="$(python3 -c 'import sys; print("yes" if sys.version_info >= (3,10) else "no")' 2>/dev/null || echo no)"
-[ "$py_ok" = "yes" ] && echo "  ✓ python3 ≥3.10" || { echo "  ✗ python3 ≥3.10 required"; fail=1; }
-if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
-  echo "  ✓ tailscale up"
+# python3 on macOS is a minefield: /usr/bin/python3 from the Xcode Command
+# Line Tools is frequently 3.9.6, which is BELOW our floor, while a perfectly
+# good 3.11/3.12/3.13 sits alongside it under a versioned name. Hard-coding
+# "python3" reported "not installed" on a Mac that had three usable
+# interpreters. Search, and say what we found.
+PY="$PY_BIN"
+if [ -n "$PY" ]; then
+  echo "  ✓ python $("$PY" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))') ($PY)"
 else
-  echo "  ✗ tailscale not running — install + sign in first (tailscale.com/download)"; fail=1
+  echo "  ✗ no python ≥3.10 found (checked python3.13/3.12/3.11/3.10/python3/python)"
+  _seen="$(python3 -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || true)"
+  [ -n "$_seen" ] && echo "    python3 on PATH is $_seen — too old (macOS Xcode CLT ships 3.9)"
+  echo "    macOS:  brew install python@3.12"
+  echo "    or set OPENBEAST_PYTHON=/path/to/python3 and re-run"
+  fail=1
+fi
+
+# The macOS Tailscale app does NOT put its CLI on PATH — the binary lives
+# inside the app bundle. `command -v tailscale` therefore fails on a Mac that
+# is connected and working perfectly. Look where it actually is.
+TS="$TS_BIN"
+if [ -n "$TS" ] && "$TS" status >/dev/null 2>&1; then
+  echo "  ✓ tailscale up ($TS)"
+elif [ -n "$TS" ]; then
+  echo "  ✗ tailscale CLI found ($TS) but 'status' failed — is it signed in?"
+  echo "    a full-tunnel VPN (NordVPN etc.) can also sever the tailnet"
+  fail=1
+else
+  echo "  ✗ tailscale not found — install + sign in first (tailscale.com/download)"
+  echo "    macOS: the App Store build hides the CLI in the app bundle;"
+  echo "    this script checks there automatically, so a miss means it isn't installed"
+  fail=1
 fi
 command -v opencode >/dev/null 2>&1 && echo "  ✓ opencode" \
   || echo "  ! opencode not found — config will be written; install it from opencode.ai"
@@ -146,7 +197,7 @@ if [ $LOCAL_SEARCH -eq 1 ]; then
 fi
 
 if [ -z "$HOST_FQDN" ] && [ $fail -eq 0 ]; then
-  HOST_FQDN="$(tailscale status --json 2>/dev/null | python3 -c '
+  HOST_FQDN="$("$TS" status --json 2>/dev/null | "$PY" -c '
 import json, sys
 d = json.load(sys.stdin)
 for p in (d.get("Peer") or {}).values():
@@ -177,7 +228,7 @@ fi
 [ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
   || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
 # beast-slot discovery (informational — tells you what the rig has loaded).
-SLOT_INFO="$(curl -s -m 5 "$SLOT_URL" 2>/dev/null | python3 -c '
+SLOT_INFO="$(curl -s -m 5 "$SLOT_URL" 2>/dev/null | "$PY" -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -229,7 +280,9 @@ fi
 # ---- 3. isolated venv with the pinned deps ----------------------------------
 VENV="$CLIENT_DIR/venv"
 mkdir -p "$CLIENT_DIR"
-[ -x "$VENV/bin/python3" ] || python3 -m venv "$VENV"
+# Build the venv with the interpreter we VETTED, not whatever "python3"
+# resolves to — otherwise a 3.9 on PATH silently creates a 3.9 venv.
+[ -x "$VENV/bin/python3" ] || "$PY" -m venv "$VENV"
 "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
 "$VENV/bin/python3" -c "import mcp, openai" || { echo "  ✗ venv deps failed to import"; exit 1; }
 echo "  ✓ venv ready ($VENV, pins from agents/requirements.txt)"
