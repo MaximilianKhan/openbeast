@@ -3,13 +3,19 @@
 [![CI](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml/badge.svg)](https://github.com/MaximilianKhan/openbeast/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Your own private AI workstation: frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, no data ever leaving your machine.**
+**Your own private AI workstation: frontier-class models, a full agent tool suite, and secure access from anywhere, running entirely on your hardware. No cloud, no API keys, nothing ever leaving hardware you own.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
 15-tool arsenal (shell, file editing, web search, background sub-agents), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
+
+**One GPU box, every device you own.** Install the **rig** on the machine with
+the graphics card, then install the **client** on any laptop — no GPU, no
+weights — and it runs the same agent and the same 15 tools against *its own*
+files, sending only inference across your private tailnet. Your laptop stays a
+laptop; your rig does the thinking.
 
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
@@ -19,7 +25,24 @@ workstation that just works, out of the box.
 <!-- TODO(max): hero screenshot or GIF here — WebUI chat with a tool call in
      flight is the money shot. `docs/assets/` is the intended home. -->
 
-## Install (one command)
+## Install
+
+OpenBeast runs in **two roles**, and the same repo does both:
+
+| | 🖥️ **The rig** (server) | 💻 **A client** |
+|---|---|---|
+| Runs on | a machine with an NVIDIA GPU | any Mac or Linux laptop — **no GPU** |
+| Downloads model weights | yes (~20 GB) | **no** |
+| Where the model runs | here | on the rig, over your tailnet |
+| Where `bash` / file edits run | here | **on the laptop, against its own files** |
+| Install | `./bootstrap.sh` | `./scripts/setup-client.sh` |
+
+You don't need both. Run the rig on its own and use it from any browser — or
+install **only** the client if someone else is hosting the rig. The client is a
+real OpenBeast install: the same 15-tool arsenal, acting on *your* disk. All
+that crosses the network is inference.
+
+### 🖥️ The rig — one command
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
@@ -45,6 +68,40 @@ install if anything's missing.
 Prefer to run the steps by hand? The full walkthrough — prerequisites, per-distro
 toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
+### 💻 A client — use a rig from your laptop
+
+Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
+and no model download**. OpenCode and the entire 15-tool arsenal run *on the
+laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
+the thinking happens on the rig.
+
+**Requirements:** Python ≥ 3.10, [Tailscale](https://tailscale.com) running,
+and membership in the tailnet the rig is on. No CUDA. No Docker (unless you
+want `--local-search`).
+
+```bash
+git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
+./scripts/setup-client.sh                          # auto-detects a rig named "beast"
+./scripts/setup-client.sh --host rig.tailnet.ts.net   # …or name it explicitly
+
+openbeast-client status                            # what the rig is actually serving
+```
+
+**Someone else hosting?** This is a first-class path — you need no GPU and no
+weights, only an invite to their tailnet. Ask the rig's owner to share their
+tailnet with you and run `./scripts/setup-tailscale.sh --publish-slot
+--publish-searxng` once. Then point `--host` at their machine's tailnet FQDN,
+adding `--api-key <key>` if they've enrolled your device
+([keyed mode](docs/BEAST_SLOT.md#keyed-mode-optional-off-by-default)).
+
+Two flags worth knowing: `--local-search` runs SearXNG on the laptop instead of
+using the rig's, and `--uninstall` removes everything (your own OpenCode
+settings survive). Full guide → **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)**.
+
+> **On a VPN?** NordVPN and similar clients sever tailnet routing. If the rig is
+> unreachable from the laptop but healthy locally, quit the VPN first —
+> see [Remote access](#remote-access-tailscale).
+
 ## Why OpenBeast
 
 One column per *archetype* — a bare **model runner**, an **agent runtime**, a
@@ -65,18 +122,21 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 | **Terminal coding agent** | — | ✅ *(own CLI)* | ✅ ⁴ | ✅ *(OpenCode)* |
 | Self-improving agent (memory + skills) | — | ✅ | ✅ ⁴ | — |
 | **Secure remote access** (device-authenticated) | — | — | ~ ⁵ | ✅ *(Tailscale)* |
+| **Client mode** — full tool stack on *your* laptop, only inference remote | — | ~ ⁸ | — | ✅ |
 | **Per-user RBAC + per-call audit** | — | — | ~ ⁶ | ✅ |
 | Voice · image-gen · workflow automation | — | — | ✅ | — ⁷ |
 | Cloud / hybrid API fallback | — | — | ✅ | — ⁷ |
 | **Design philosophy** | Minimal runner | Agent-first | Kitchen-sink: *every service* | Opinionated: *one biggest brain* |
 
 ¹ Hermes runs 100% local but *points at* a model server you host — like OpenBeast — rather than serving the model itself.
-² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast never lets data leave the machine.
+² ODS ships an optional cloud/hybrid API fallback (LiteLLM); OpenBeast has no cloud code path at all — data never leaves hardware you own (one box, or your own tailnet).
 ³ ODS selects from a static tier→model catalog (`model-library.json`) with rough VRAM heuristics ("8 GB → 7B", etc.) and catalog context lengths; OpenBeast *measures* actual VRAM + max safe context per model on the reference card.
 ⁴ ODS's default agent **is** Hermes Agent (bundled) — so its agent rows mirror Hermes'.
 ⁵ ODS uses a magic-link-gated proxy; OpenBeast uses Tailscale (WireGuard device identity + auto-HTTPS).
 ⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
 ⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
+
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape; what it doesn't do is install as a second role of the same distribution — one command turning any laptop into a full peer of the rig, sharing the rig's model list, RBAC and audit trail.
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner — it serves a model and stops there; OpenBeast *includes* a
@@ -150,6 +210,8 @@ the same top-tier model. Built and tuned on an RTX 5090 (32 GB) running Arch Lin
 
 ## Using the stack
 
+**On the rig:**
+
 ```bash
 xdg-open http://localhost:3000      # browser chat (Open WebUI)
 opencode                            # terminal coding agent (from any project)
@@ -161,6 +223,18 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
 
+**On a client** — same agent, same tools, acting on *this* machine's files:
+
+```bash
+opencode                                   # tools run here, thinking runs on the rig
+openbeast-client agent "refactor utils.py" # autonomous agent, local files
+openbeast-client status                    # rig's real model, context, free slots
+openbeast-client update                    # pull + reinstall deps
+```
+
+The rig loses nothing by serving clients — it stays the full command center,
+browser UI and all.
+
 Built for the long haul — the daemon runs in a memory-capped scope with
 health-monitored auto-restart, plus **fast boot** (chat while the big model
 loads), **model-load rollback**, reasoning control (per-request toggle + global
@@ -170,50 +244,96 @@ budget), and a hot-pluggable [extension system](extensions/README.md).
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph CLIENT["💻 CLIENT — any Mac / Linux device (optional)"]
+%%{init: {"flowchart": {"htmlLabels": true, "curve": "basis", "nodeSpacing": 32, "rankSpacing": 40}}}%%
+flowchart TB
+  subgraph TAILNET["🔒 YOUR TAILNET — WireGuard · device-authenticated · never funneled to the public internet"]
+    direction TB
+
+    subgraph CLIENTBOX["💻 CLIENT — any Mac / Linux laptop<br/><i>(optional, purely additive)</i>"]
+      direction TB
+      coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
+      ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
+      cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
+      ctools["⚙️ <b>15 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      csx["🔎 local SearXNG<br/><i>--local-search</i>"]
+      coc --> cmcp
+      ccli --> cmcp
+      cmcp --> ctools
+      ctools -.-> csx
+    end
+
+    phone["📱 <b>phone · tablet</b><br/>browser only<br/>nothing to install"]
+
+    subgraph RIG["🖥️ THE RIG — command center<br/>full stack · every service binds 127.0.0.1"]
+      direction TB
+
+      dash["📊 <b>dashboard</b> · :3002<br/><i>extension</i> · serves /api/slot"]
+      gate["🛡️ <b>beast-gate</b> · :8090<br/><i>opt-in EDGE_GATE</i><br/>per-device keys<br/>route allowlist · caps<br/><i>authenticates DEVICE</i>"]
+
+      webui["🌐 <b>Open WebUI</b> · :3000<br/>chat · accounts · roles"]
+      router["🧭 <b>agent router</b> · :8088<br/><i>opt-in</i> · spawn intent"]
+      runner["🤖 <b>agent runner</b><br/>headless agents"]
+
+      subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>NEVER published"]
         direction TB
-        coc["⌨️ OpenCode"]
-        cmcp["🔌 MCP server (stdio, no port)<br/><b>agents/mcp_server.py</b>"]
-        ctools["⚙️ Tool arsenal — 15 tools<br/>bash · files · grep · agents<br/><b>acts on THIS machine's disk</b>"]
-        ccli["🧰 openbeast-client<br/>status · agent · search · update"]
-        coc --> cmcp --> ctools
-    end
+        idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards<br/>audit · <i>auth HUMAN</i>"]
+        mcp["🔌 <b>MCP surface</b><br/><b>15 tools</b><br/>+ skill · agent ctl"]
+        prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls<br/>grep · fetch · search"]
+        searx["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
+        idsrv --> mcp
+        mcp --> prim
+        prim --> searx
+      end
 
-    subgraph TAILNET["🔒 Tailscale — WireGuard + auto-HTTPS, tailnet-only, never funneled"]
-        p8443(["🛡️ :8443 — inference"])
-        p8444(["📊 :8444/api/slot — discovery"])
-        p8889(["🔎 :8889 — SearXNG (opt-in)"])
-        p443(["🌐 :443 — Open WebUI"])
-    end
-
-    subgraph RIG["🖥️ COMMAND CENTER — the rig (full stack, always)"]
+      subgraph INFPLANE["🧠 INFERENCE PLANE<br/>the only published surface"]
         direction TB
-        gate["🛡️ <b>beast-gate</b> · :8090 <i>(opt-in EDGE_GATE)</i><br/>per-device keys · path allowlist<br/>rate + in-flight caps · inference audit"]
-        llama2["🧠 llama.cpp · :8080"]
-        rest["🌐 WebUI :3000 · 🔑 tools :3001<br/>🔎 SearXNG :8888 · 📊 dashboard :3002"]
-        gate --> llama2
+        llama["🧠 <b>llama.cpp</b> · :8080<br/>OpenAI-compatible<br/>unified KV · batching"]
+        gpu["🎮 <b>GPU</b><br/>every token HERE"]
+        llama --> gpu
+      end
+
+      subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
+        direction TB
+        weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
+        skills["📚 <b>skills/</b>"]
+        evals["📊 <b>evals/</b><br/>leaderboard"]
+      end
+
+      webui --> idsrv
+      webui --> router
+      router --> runner
+      runner --> prim
+      gate --> llama
+      router --> llama
+      prim -.-> llama
+      llama -.-> weights
+      llama -.-> dash
+      mcp -.-> skills
     end
+  end
 
-    ctools -->|"inference only"| p8443
-    ctools -->|"web_search"| p8889
-    ccli --> p8444
-    phone["📱 phone · browser"] --> p443
+  ctools ==>|"<b>INFERENCE ONLY</b><br/>prompts up · tokens down<br/>files &amp; shell never cross<br/>:8443"| gate
+  ctools -.->|"<b>gate OFF = the default</b><br/>straight to llama-server<br/>whole route table exposed"| llama
+  phone ==>|"browser · :443"| webui
+  ccli -.->|"status · :8444"| dash
+  ctools -.->|"search · :8889"| searx
 
-    p8443 -->|"gate ON"| gate
-    p8443 -.->|"gate OFF — raw, whole route table"| llama2
-    p8444 --> rest
-    p8889 --> rest
-    p443 --> rest
-
-    classDef cli fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
-    classDef net fill:#fef3c7,stroke:#d97706,color:#3a2503;
-    classDef rig fill:#dcfce7,stroke:#16a34a,color:#0b2417;
-    classDef sec fill:#fee2e2,stroke:#dc2626,color:#3b0a0a;
-    class coc,cmcp,ctools,ccli,phone cli;
-    class p8443,p8444,p8889,p443 net;
-    class llama2,rest rig;
-    class gate sec;
+  classDef cli fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c2733;
+  classDef rig fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0b2417;
+  classDef sec fill:#fef3c7,stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3,color:#3a2503;
+  classDef tool fill:#f3e8ff,stroke:#7c3aed,stroke-width:2px,color:#2a1046;
+  classDef store fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a;
+  class coc,ccli,cmcp,ctools,csx,phone cli;
+  class webui,router,runner,llama,gpu rig;
+  class gate sec;
+  class idsrv,mcp,prim,searx tool;
+  class weights,skills,evals,dash store;
+  style TAILNET fill:#fafaf9,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
+  style CLIENTBOX fill:#f0f9ff,stroke:#0284c7,stroke-width:2px,stroke-dasharray:6 4;
+  style RIG fill:#f0fdf4,stroke:#16a34a,stroke-width:2px;
+  style TOOLPLANE fill:#faf5ff,stroke:#7c3aed,stroke-width:2px;
+  style INFPLANE fill:#ecfdf5,stroke:#16a34a,stroke-width:2px;
+  style ASSETS fill:#f8fafc,stroke:#94a3b8,stroke-width:1px;
 ```
 
 One **command center** (the rig) and, optionally, any number of **clients**.
@@ -222,21 +342,37 @@ model runs** — a laptop runs the full tool arsenal against its *own* disk whil
 every token is generated on the rig's GPU. The machine boundary is a single
 OpenAI-compatible HTTP call, so the promise is **"nothing leaves your tailnet"**.
 
+**Reading it, top to bottom.** The red box is the entire security perimeter —
+every service binds `127.0.0.1` and the only way in is Tailscale's
+authenticated WireGuard mesh; `tailscale funnel` is deliberately never used.
+Above the rig sit the two kinds of caller: a **client laptop** running the
+whole tool stack locally, and any **browser device**, which needs nothing
+installed. Inside the rig the stack is layered — frontends, then the **tool
+plane** (never published, acts only on the rig), then the **inference plane**
+(the one surface that *is* published), then what lives on disk. The thick
+arrow is the only load-bearing crossing between machines.
+
+Two identity layers, and they answer different questions: the tool server
+(`:3001`) authenticates **the human** — RBAC tier, per-user file shard — while
+beast-gate (`:8090`) authenticates **the device**.
+
 The dashed path is the honest default: with `EDGE_GATE=false`, `:8443` maps
 straight at llama-server and publishes its *entire* route table to the tailnet —
 fine on a tailnet you fully own. `EDGE_GATE=true` routes it through **beast-gate**
 instead, which allowlists the OpenAI routes and gives each device its own
 revocable key, rate limits, and an inference audit trail.
 
+Note what is **opt-in** rather than always-on: beast-gate (`EDGE_GATE`), the
+agent router (`AGENT_ROUTER`), and the dashboard extension (`EXTENSIONS`) all
+default to off, so a plain `./start.sh` brings up the rig with none of them.
+Remote access is a separate deliberate step — nothing is published until you
+run `setup-tailscale.sh`, and when you do it publishes Open WebUI (`:443`) and
+inference (`:8443`); SearXNG (`:8889`) and `/api/slot` (`:8444`) additionally
+require `--publish-searxng` / `--publish-slot`.
+
 Service-level detail (tool layer, RBAC, agent router) →
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Client/server specifics →
 [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md).
-
-Two frontends, **one** 15-tool arsenal exposed through two surfaces that import
-the same code so they can't drift, llama.cpp serving an OpenAI-compatible API on
-`:8080`, private SearXNG for web search, and an opt-in agent-spawn router.
-Everything binds `127.0.0.1`; remote devices arrive only through Tailscale's
-authenticated HTTPS proxy. **Full component walkthrough → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).**
 
 ## Remote access (Tailscale)
 
@@ -328,10 +464,21 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 
 ## Requirements
 
+**To run the rig (server):**
+
 - NVIDIA GPU with CUDA and **at least 11 GB VRAM** (1080 Ti / 2080 Ti class or better — bootstrap enforces this floor). Tested on RTX 5090; works on 3090/4090 (auto-detected CUDA arch + per-tier config recommendation, see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md)).
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model; each additional model 16–24 GB
 - VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults
+
+**To run a client** — far less, because the rig does the thinking:
+
+- **macOS or Linux. No GPU, no CUDA, no model weights.** (Windows/WSL2 is
+  untested rather than unsupported.)
+- Python 3.10+, `git`, and [Tailscale](https://tailscale.com) connected to the
+  tailnet the rig is on
+- Docker only if you want `--local-search` (a client-local SearXNG)
+- Disk: well under 1 GB — a slim checkout plus a Python venv
 
 ## Documentation
 

@@ -73,17 +73,26 @@ if [[ -z "$TOKEN" && -n "$WEBUI_ADMIN_EMAIL" ]]; then
   TOKEN=$(_signin "$WEBUI_ADMIN_EMAIL" "$WEBUI_ADMIN_PASSWORD")
 fi
 
+# Only the tool-server reconciliation actually needs the admin API; everything
+# else here is written straight to WebUI's DB. This used to `exit 0` on a
+# missing token, which meant that the moment an operator changed their WebUI
+# password from the one in openbeast.conf — the normal case — the model
+# connection, web search and per-model function calling silently stopped being
+# configured on every startup. Degrade to skipping the one API-backed section.
+TOKEN_OK=1
 if [[ -z "$TOKEN" ]]; then
-  echo "Warning: Could not get admin token." >&2
-  echo "  If you just enabled auth: create the admin account in the browser" >&2
-  echo "  first, then put WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in" >&2
-  echo "  openbeast.conf and re-run this script. Or configure manually:" >&2
+  TOKEN_OK=0
+  echo "Warning: Could not get admin token — tool-server connections will be skipped." >&2
+  echo "  Everything else (model connection, web search, native function calling)" >&2
+  echo "  is applied directly and still works." >&2
+  echo "  To restore full configuration: put the WebUI admin account's" >&2
+  echo "  WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in openbeast.conf and re-run." >&2
+  echo "  Or configure manually:" >&2
   echo "  1. Admin Settings → External Tools → Add: OpenAPI, $MCPO_URL" >&2
   echo "  2. Admin Settings → Models → [model] → Function Calling: Native" >&2
-  exit 0
 fi
 
-AUTH="Authorization: Bearer $TOKEN"
+AUTH="Authorization: Bearer ${TOKEN:-}"
 
 # --- 0. Point WebUI's model connection at the OpenBeast endpoint ---
 # Open WebUI PERSISTS the OpenAI connection in its DB and IGNORES the
@@ -130,6 +139,9 @@ fi
 # accounts get all 15 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
 # exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
+if [[ "$TOKEN_OK" != "1" ]]; then
+  echo "  Skipping tool-server reconciliation (no admin token — see warning above)."
+else
 echo "  Reconciling RBAC tool-server connections..."
 # Both connections target the ONE identity tool server (:3001,
 # agents/openapi_tools.py). RBAC Phase 2 keys (conf.sh) differentiate them:
@@ -169,6 +181,53 @@ if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]
 else
   echo "  Tool server configured (privileged=admin-only, web_search+fetch=all users)."
 fi
+fi   # TOKEN_OK
+
+# --- 1b. Wire Open WebUI's built-in Web Search to the local SearXNG ---
+# Distinct from the `web_search` TOOL configured above: this is the "Web
+# Search" toggle in the chat composer, which Open WebUI implements itself
+# (retrieval + citations) instead of via a tool call. It ships disabled with no
+# engine set, so the toggle failed on every OpenBeast install even though we
+# run SearXNG right there. Requires SearXNG to serve format=json — ours does
+# (searxng/settings.yml `formats:`).
+#
+# Written straight to the DB rather than through the API because the API needs
+# an admin token, and that sign-in fails the moment the operator changes their
+# WebUI password from the one in openbeast.conf — which is the normal case.
+SEARXNG_QUERY_URL="${SEARXNG_URL:-http://localhost:8888}/search?q=<query>"
+echo "  Wiring built-in Web Search → SearXNG ..."
+if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
+import sqlite3, json, os, sys, time
+db = sqlite3.connect('/app/backend/data/webui.db')
+want = {'web.search.enable': True,
+        'web.search.engine': 'searxng',
+        'web.search.searxng_query_url': os.environ['SXURL']}
+# Only disable Ollama if it still points at the seeded default, which cannot
+# work under this container's host networking — never clobber a real one.
+row = db.execute(\"SELECT value FROM config WHERE key='ollama.base_urls'\").fetchone()
+if row and 'host.docker.internal' in row[0]:
+    want['ollama.enable'] = False
+changed = False
+for k, v in want.items():
+    row = db.execute('SELECT value FROM config WHERE key=?', (k,)).fetchone()
+    if row is None:
+        db.execute('INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)',
+                   (k, json.dumps(v), int(time.time())))
+        changed = True
+    elif json.loads(row[0]) != v:
+        db.execute('UPDATE config SET value=?, updated_at=? WHERE key=?',
+                   (json.dumps(v), int(time.time()), k))
+        changed = True
+if changed:
+    db.commit()
+    sys.exit(3)   # signal 'changed'
+" 2>/dev/null; then
+  echo "    already set"
+elif [[ $? -eq 3 ]]; then
+  echo "    web search enabled → $SEARXNG_QUERY_URL"; WEBSEARCH_CHANGED=1
+else
+  echo "    (could not configure web search — WebUI may not be up yet)"
+fi
 
 # Model tool wiring uses these two connection ids.
 TOOL_REFS='["server:1","server:2"]'
@@ -180,10 +239,16 @@ TOOL_REFS='["server:1","server:2"]'
 # Poll until Open WebUI has detected models from llama.cpp (bounded: up to
 # 30s, 1s interval, proceed on the first non-empty list). A blind sleep
 # either wasted time or — on a slow first scan — missed the models entirely.
+#
+# Without an admin token WebUI's /api/models returns 401, so fall back to
+# asking the inference endpoint itself for the model ids — the same list WebUI
+# would discover. The existing-setting probe ('|<fc>') is only an optimization
+# to skip already-configured models; the DB step below is idempotent anyway.
 MODELS=""
 for _i in $(seq 1 30); do
-  MODELS=$(curl -s -m 5 -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
-    | python3 -c "
+  if [[ "$TOKEN_OK" == "1" ]]; then
+    MODELS=$(curl -s -m 5 -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
+      | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for m in data.get('data', []):
@@ -194,6 +259,17 @@ for m in data.get('data', []):
         fc = params.get('function_calling', '')
         print(f'{mid}|{fc}')
 " 2>/dev/null || true)
+  else
+    MODELS=$(curl -s -m 5 ${LLAMA_API_KEY:+-H "Authorization: Bearer $LLAMA_API_KEY"} \
+        "${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}/models" 2>/dev/null \
+      | python3 -c "
+import sys, json
+for m in json.load(sys.stdin).get('data', []):
+    mid = m.get('id', '')
+    if mid and 'arena' not in mid:
+        print(f'{mid}|')
+" 2>/dev/null || true)
+  fi
   [[ -n "$MODELS" ]] && break
   sleep 1
 done
@@ -278,12 +354,13 @@ else:
   done <<< "$MODELS"
 fi
 
-# Open WebUI loads the OpenAI connection at startup, so a changed endpoint only
-# takes effect after a restart. All config above is persisted in the DB and
-# survives this restart. (No-op on a fresh install where the env already seeded
-# the right URL, so CONN_CHANGED stays 0.)
-if [[ "${CONN_CHANGED:-0}" == "1" ]]; then
-  echo "  Restarting Open WebUI to load the new model connection..."
+# Open WebUI caches its persisted config at startup, so anything we wrote
+# straight to the DB (the model connection, the web-search settings) only takes
+# effect after a restart. All config above is persisted and survives it. (No-op
+# on a fresh install where the env already seeded the right values, so both
+# flags stay 0.)
+if [[ "${CONN_CHANGED:-0}" == "1" || "${WEBSEARCH_CHANGED:-0}" == "1" ]]; then
+  echo "  Restarting Open WebUI to load the new configuration..."
   docker restart open-webui >/dev/null 2>&1 || true
 fi
 
