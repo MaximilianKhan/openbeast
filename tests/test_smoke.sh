@@ -48,10 +48,18 @@ echo ""
 echo "2. Parallel slots"
 SLOTS_JSON=$(curl -s --max-time 5 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 SLOT_COUNT=$(echo "$SLOTS_JSON" | python3 -c "import sys,json; data=json.load(sys.stdin); print(len(data) if isinstance(data,list) else 0)" 2>/dev/null || echo "0")
-if [[ "$SLOT_COUNT" -gt 1 ]]; then
-  pass "parallel slots active ($SLOT_COUNT slots)"
+# A single slot is CORRECT for MTP models — llama.cpp pins -np 1 for
+# speculative decoding, and every shipped MTP serve script sets it. Asserting
+# >1 here failed on the default config, which teaches people to ignore smoke
+# output. Assert the endpoint answers with a sane slot count instead.
+if [[ "$SLOT_COUNT" -ge 1 ]]; then
+  if [[ "$SLOT_COUNT" -eq 1 ]]; then
+    pass "slots endpoint healthy (1 slot — expected for an MTP model)"
+  else
+    pass "parallel slots active ($SLOT_COUNT slots)"
+  fi
 else
-  fail "expected multiple slots, got $SLOT_COUNT"
+  fail "slots endpoint returned no slots (is --slots disabled?)"
 fi
 
 # --- 3. MCPO proxy ---
@@ -94,6 +102,12 @@ else
 fi
 
 # --- 6. Chat completion ---
+# enable_thinking:false is load-bearing. The shipped defaults are REASONING
+# models with thinking ON, so a 50-token budget is consumed entirely by
+# <think> and the reply comes back with content="" and finish_reason="length"
+# — a false failure against a perfectly healthy stack. Automated checks that
+# want a short deterministic answer should opt out of thinking, exactly as
+# the agent router does for its classifier.
 echo ""
 echo "6. Chat completion"
 CHAT_RESPONSE=$(curl -s --max-time 60 "$LLAMA_URL/v1/chat/completions" \
@@ -102,7 +116,8 @@ CHAT_RESPONSE=$(curl -s --max-time 60 "$LLAMA_URL/v1/chat/completions" \
     "model": "test",
     "messages": [{"role": "user", "content": "Reply with exactly: SMOKE_TEST_OK"}],
     "max_tokens": 50,
-    "temperature": 0
+    "temperature": 0,
+    "chat_template_kwargs": {"enable_thinking": false}
   }' 2>/dev/null)
 
 if echo "$CHAT_RESPONSE" | python3 -c "
