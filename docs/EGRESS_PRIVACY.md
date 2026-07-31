@@ -107,6 +107,73 @@ For a client on public Wi-Fi, pointing the exit node at your own rig is often
 the best answer. You get one tunnel, your traffic appears to originate from your
 own network, and you were already trusting that machine with your inference.
 
+## Routing egress through a commercial VPN (design notes, not yet implemented)
+
+> **Status: tentative. None of the three options below has been built or tested
+> in this repo.** They are recorded so the design work isn't lost, and so nobody
+> follows them as verified instructions. Tracked in [`TODO.md`](TODO.md).
+
+If you specifically want traffic leaving through a commercial provider rather
+than a node you own, there are three shapes. They differ mainly in blast radius.
+
+### Option 1: Mullvad through Tailscale (lowest risk, recommended)
+
+Tailscale's first-party Mullvad integration gives you commercial exit IPs
+selected as ordinary tailnet exit nodes. One WireGuard stack, no second client
+fighting the routing table, and exit selection becomes a tailnet ACL you can
+audit rather than a third-party app's opaque firewall rules.
+
+Nothing to build. It is account configuration plus `tailscale up --exit-node=`.
+This is the option to reach for unless you have a specific reason not to.
+
+### Option 2: VPN sidecar for SearXNG only (contained blast radius)
+
+If the real requirement is "our *searches* aren't attributable" rather than all
+egress, route only SearXNG. A VPN sidecar container (gluetun supports NordVPN
+via WireGuard) holds the tunnel, and SearXNG joins its network namespace.
+
+Model downloads, container pulls and Tailscale itself are untouched, so a VPN
+flap cannot affect inference or remote access at all.
+
+**Work required:** our SearXNG runs `network_mode: host` (see
+`docker-compose.yml`). A sidecar means moving it to bridge networking, mapping
+its port back to loopback, and rewiring `SEARXNG_URL` in `agents/tools.py` and
+the healthcheck. Moderate, and entirely contained.
+
+### Option 3: commercial VPN upstream of a self-hosted exit node
+
+```
+client → tailnet → exit node → nordlynx → internet
+```
+
+This is the correct topology if you need a specific provider for all egress, and
+it is genuinely different from the broken pattern: the VPN sits *downstream* of
+the exit node rather than competing with Tailscale for a client's default route.
+
+Requirements, none of them verified here:
+
+1. **The provider's Linux CLI, not its GUI.** NordVPN's GUI does not expose the
+   routing controls this needs.
+2. **Allowlist the tailnet** (`nordvpn allowlist add subnet 100.64.0.0/10`, plus
+   `fd7a:115c:a1e0::/48`), or the exit node drops off the tailnet and you have
+   simply relocated the collision.
+3. **Permit forwarded traffic.** These clients typically allow only
+   host-originated traffic; forwarding needs an explicit `FORWARD` accept and
+   `MASQUERADE` out the VPN interface. The kill switch is usually what silently
+   breaks it.
+4. IP forwarding and exit-node approval, as in the section above.
+
+> **Do not put this on the rig.** The rig is the inference server that every
+> client, WebUI session and agent depends on. This design makes it dependent on
+> a third-party client that auto-restarts on its own schedule and resets
+> firewall rules on update. The failure mode is the documented collision
+> relocated to the worst possible host: the VPN restarts, the allowlist doesn't
+> survive, and the rig vanishes from the tailnet mid-generation. On a laptop
+> that is an annoyance; on the rig it takes down everyone.
+>
+> If you build this, put the exit node on a **cheap VPS**, so a VPN flap cannot
+> reach your inference server.
+
 ## Compliance note
 
 If you are doing this to satisfy an audit rather than a preference, read

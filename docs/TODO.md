@@ -402,6 +402,35 @@ near 2,080–2,132 MiB free. This crash happened at 2,247 MiB free. The repo now
 carries two competing folk explanations for llama-server dying under load,
 neither with a verified mechanism.
 
+## 🌐 EGRESS PRIVACY — tabled 2026-07-31 (Max: design only, do not implement)
+
+User-requested feature: route OpenBeast's outbound traffic through a commercial
+VPN. Shipped so far is only the *documentation* of the supported baseline (a
+Tailscale exit node) in [EGRESS_PRIVACY.md](EGRESS_PRIVACY.md). The three
+commercial-VPN options below are DESIGNED, NOT BUILT, and none is tested.
+
+- **Option 1 — Mullvad via Tailscale.** No code. Account configuration plus
+  `tailscale up --exit-node=`. Recommended default: one WireGuard stack, exit
+  selection governed by tailnet ACLs. Nothing to do here but document a walked
+  example once someone runs it.
+- **Option 2 — VPN sidecar for SearXNG only.** The contained option, and the
+  one that matches the actual privacy ask (search queries leak intent; model
+  downloads do not). Requires moving SearXNG off `network_mode: host` to bridge
+  networking, remapping its port to loopback, and rewiring `SEARXNG_URL` in
+  `agents/tools.py` plus the healthcheck probe. Medium effort, blast radius
+  limited to search.
+- **Option 3 — commercial VPN upstream of a self-hosted exit node.** Correct
+  topology, highest risk. Needs the provider's Linux CLI, a tailnet allowlist,
+  and explicit FORWARD/MASQUERADE rules, since these clients permit only
+  host-originated traffic. **Must not run on the rig**: it would make the
+  inference server depend on a client that auto-restarts and resets firewall
+  rules, which is the documented VPN collision relocated to the machine
+  everything else depends on. Put the exit node on a VPS.
+
+Prerequisite for any of it: none of these can be verified on the current dev rig
+(no NordVPN CLI installed, no exit node configured). Whoever builds this needs a
+test bed with the provider CLI present.
+
 ## 🏛️ SOC 2 READINESS GAPS (2026-07-31)
 
 Full mapping and evidence in [SOC2_READINESS.md](SOC2_READINESS.md). These are
