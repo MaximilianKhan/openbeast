@@ -31,9 +31,12 @@
 #   --uninstall      remove ~/.openbeast-client, the env file, the local
 #                    SearXNG container, and our opencode.json entries
 #
-# After install, the client CLI lives at scripts/client.sh in the checkout
-# (symlinked to ~/.local/bin/openbeast-client when that dir exists):
+# After install, the client CLI lives at scripts/client.sh in the checkout and
+# is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
+# dir is not on your PATH — the macOS default — the installer prints the exact
+# line to add, and the full path always works:
 #   openbeast-client status|agent|search|update|uninstall
+#   <checkout>/scripts/client.sh status
 #
 # Bash 3.2-compatible on purpose (stock macOS ships it): avoids all
 # bash-4-only builtins; tests/test_scripts.sh §13 enforces this.
@@ -381,17 +384,50 @@ else:
     print(f"  ✓ merged provider + MCP config into {oc_path}")
 PYEOF
 
-# ---- 5b. client CLI symlink -------------------------------------------------
-if [ -d "$HOME/.local/bin" ]; then
-  ln -sf "$CLIENT_REPO/scripts/client.sh" "$HOME/.local/bin/openbeast-client"
-  echo "  ✓ symlinked ~/.local/bin/openbeast-client"
+# ---- 5b. client CLI on PATH -------------------------------------------------
+# Two Linux assumptions used to break this on macOS: ~/.local/bin usually does
+# NOT exist there, and even when it does it is NOT on PATH by default. The old
+# code silently skipped the symlink and then told the user to run
+# `openbeast-client`, which of course was not a command.
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR" 2>/dev/null || true
+CLI_LINKED=0
+if [ -d "$BIN_DIR" ] && ln -sf "$CLIENT_REPO/scripts/client.sh" "$BIN_DIR/openbeast-client" 2>/dev/null; then
+  CLI_LINKED=1
+  case ":$PATH:" in
+    *":$BIN_DIR:"*)
+      echo "  ✓ openbeast-client on PATH ($BIN_DIR)" ;;
+    *)
+      # Name the RIGHT file for the user's shell. macOS defaults to zsh, whose
+      # login shell reads ~/.zprofile; bash uses ~/.bash_profile.
+      case "$(basename "${SHELL:-/bin/zsh}")" in
+        zsh)  _rc="~/.zprofile" ;;
+        bash) _rc="~/.bash_profile" ;;
+        *)    _rc="your shell profile" ;;
+      esac
+      echo "  ! $BIN_DIR is not on your PATH — 'openbeast-client' won't resolve yet."
+      echo "    Add it (then open a new terminal):"
+      echo "      echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> $_rc"
+      echo "    Or just use the full path, which always works:"
+      echo "      $CLIENT_REPO/scripts/client.sh status" ;;
+  esac
+else
+  echo "  ! could not create $BIN_DIR/openbeast-client — use the full path:"
+  echo "      $CLIENT_REPO/scripts/client.sh status"
 fi
 
 # ---- 6. report --------------------------------------------------------------
 echo ""
 echo "Client mode ready. Use it:"
 echo "  cd <any project> && opencode     # pick a 'llama-cpp' model"
-echo "  $CLIENT_REPO/scripts/client.sh status   # client doctor + beast-slot view"
+if [ "${CLI_LINKED:-0}" = "1" ]; then
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) echo "  openbeast-client status          # client doctor + beast-slot view" ;;
+    *)                      echo "  $CLIENT_REPO/scripts/client.sh status   # (until ~/.local/bin is on PATH)" ;;
+  esac
+else
+  echo "  $CLIENT_REPO/scripts/client.sh status   # client doctor + beast-slot view"
+fi
 echo ""
 echo "  • bash/read/write/edit act on THIS machine's files"
 echo "  • the model runs on the rig ($HOST_FQDN) — start the one you want there first"
