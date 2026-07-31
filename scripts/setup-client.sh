@@ -69,6 +69,18 @@ while [ $# -gt 0 ]; do
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     -h|--help)      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    status|agent|search|update)
+      # Two scripts, confusingly similar names: setup-client.sh INSTALLS
+      # (flags), client.sh OPERATES (subcommands). Sending someone who typed
+      # a subcommand here away with "unknown option" is a dead end — point
+      # them at the right script instead.
+      _here="$(cd "$(dirname "$0")" && pwd)"
+      echo "'$1' is a command for the client CLI, not the installer." >&2
+      echo "  Run:  $_here/client.sh $*" >&2
+      if [ -x "$HOME/.local/bin/openbeast-client" ]; then
+        echo "  or:   openbeast-client $*" >&2
+      fi
+      exit 2 ;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
