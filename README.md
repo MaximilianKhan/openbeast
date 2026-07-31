@@ -170,50 +170,96 @@ budget), and a hot-pluggable [extension system](extensions/README.md).
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph CLIENT["💻 CLIENT — any Mac / Linux device (optional)"]
+%%{init: {"flowchart": {"htmlLabels": true, "curve": "basis", "nodeSpacing": 32, "rankSpacing": 40}}}%%
+flowchart TB
+  subgraph TAILNET["🔒 YOUR TAILNET — WireGuard · device-authenticated · never funneled to the public internet"]
+    direction TB
+
+    subgraph CLIENTBOX["💻 CLIENT — any Mac / Linux laptop<br/><i>(optional, purely additive)</i>"]
+      direction TB
+      coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
+      ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
+      cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
+      ctools["⚙️ <b>15 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      csx["🔎 local SearXNG<br/><i>--local-search</i>"]
+      coc --> cmcp
+      ccli --> cmcp
+      cmcp --> ctools
+      ctools -.-> csx
+    end
+
+    phone["📱 <b>phone · tablet</b><br/>browser only<br/>nothing to install"]
+
+    subgraph RIG["🖥️ THE RIG — command center<br/>full stack · every service binds 127.0.0.1"]
+      direction TB
+
+      dash["📊 <b>dashboard</b> · :3002<br/><i>extension</i> · serves /api/slot"]
+      gate["🛡️ <b>beast-gate</b> · :8090<br/><i>opt-in EDGE_GATE</i><br/>per-device keys<br/>route allowlist · caps<br/><i>authenticates DEVICE</i>"]
+
+      webui["🌐 <b>Open WebUI</b> · :3000<br/>chat · accounts · roles"]
+      router["🧭 <b>agent router</b> · :8088<br/><i>opt-in</i> · spawn intent"]
+      runner["🤖 <b>agent runner</b><br/>headless agents"]
+
+      subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>NEVER published"]
         direction TB
-        coc["⌨️ OpenCode"]
-        cmcp["🔌 MCP server (stdio, no port)<br/><b>agents/mcp_server.py</b>"]
-        ctools["⚙️ Tool arsenal — 15 tools<br/>bash · files · grep · agents<br/><b>acts on THIS machine's disk</b>"]
-        ccli["🧰 openbeast-client<br/>status · agent · search · update"]
-        coc --> cmcp --> ctools
-    end
+        idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards<br/>audit · <i>auth HUMAN</i>"]
+        mcp["🔌 <b>MCP surface</b><br/><b>15 tools</b><br/>+ skill · agent ctl"]
+        prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls<br/>grep · fetch · search"]
+        searx["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
+        idsrv --> mcp
+        mcp --> prim
+        prim --> searx
+      end
 
-    subgraph TAILNET["🔒 Tailscale — WireGuard + auto-HTTPS, tailnet-only, never funneled"]
-        p8443(["🛡️ :8443 — inference"])
-        p8444(["📊 :8444/api/slot — discovery"])
-        p8889(["🔎 :8889 — SearXNG (opt-in)"])
-        p443(["🌐 :443 — Open WebUI"])
-    end
-
-    subgraph RIG["🖥️ COMMAND CENTER — the rig (full stack, always)"]
+      subgraph INFPLANE["🧠 INFERENCE PLANE<br/>the only published surface"]
         direction TB
-        gate["🛡️ <b>beast-gate</b> · :8090 <i>(opt-in EDGE_GATE)</i><br/>per-device keys · path allowlist<br/>rate + in-flight caps · inference audit"]
-        llama2["🧠 llama.cpp · :8080"]
-        rest["🌐 WebUI :3000 · 🔑 tools :3001<br/>🔎 SearXNG :8888 · 📊 dashboard :3002"]
-        gate --> llama2
+        llama["🧠 <b>llama.cpp</b> · :8080<br/>OpenAI-compatible<br/>unified KV · batching"]
+        gpu["🎮 <b>GPU</b><br/>every token HERE"]
+        llama --> gpu
+      end
+
+      subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
+        direction TB
+        weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
+        skills["📚 <b>skills/</b>"]
+        evals["📊 <b>evals/</b><br/>leaderboard"]
+      end
+
+      webui --> idsrv
+      webui --> router
+      router --> runner
+      runner --> prim
+      gate --> llama
+      router --> llama
+      prim -.-> llama
+      llama -.-> weights
+      llama -.-> dash
+      mcp -.-> skills
     end
+  end
 
-    ctools -->|"inference only"| p8443
-    ctools -->|"web_search"| p8889
-    ccli --> p8444
-    phone["📱 phone · browser"] --> p443
+  ctools ==>|"<b>INFERENCE ONLY</b><br/>prompts up · tokens down<br/>files &amp; shell never cross<br/>:8443"| gate
+  ctools -.->|"<b>gate OFF = the default</b><br/>straight to llama-server<br/>whole route table exposed"| llama
+  phone ==>|"browser · :443"| webui
+  ccli -.->|"status · :8444"| dash
+  ctools -.->|"search · :8889"| searx
 
-    p8443 -->|"gate ON"| gate
-    p8443 -.->|"gate OFF — raw, whole route table"| llama2
-    p8444 --> rest
-    p8889 --> rest
-    p443 --> rest
-
-    classDef cli fill:#e0f2fe,stroke:#0284c7,color:#0c2733;
-    classDef net fill:#fef3c7,stroke:#d97706,color:#3a2503;
-    classDef rig fill:#dcfce7,stroke:#16a34a,color:#0b2417;
-    classDef sec fill:#fee2e2,stroke:#dc2626,color:#3b0a0a;
-    class coc,cmcp,ctools,ccli,phone cli;
-    class p8443,p8444,p8889,p443 net;
-    class llama2,rest rig;
-    class gate sec;
+  classDef cli fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c2733;
+  classDef rig fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0b2417;
+  classDef sec fill:#fef3c7,stroke:#d97706,stroke-width:2px,stroke-dasharray:5 3,color:#3a2503;
+  classDef tool fill:#f3e8ff,stroke:#7c3aed,stroke-width:2px,color:#2a1046;
+  classDef store fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a;
+  class coc,ccli,cmcp,ctools,csx,phone cli;
+  class webui,router,runner,llama,gpu rig;
+  class gate sec;
+  class idsrv,mcp,prim,searx tool;
+  class weights,skills,evals,dash store;
+  style TAILNET fill:#fafaf9,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
+  style CLIENTBOX fill:#f0f9ff,stroke:#0284c7,stroke-width:2px,stroke-dasharray:6 4;
+  style RIG fill:#f0fdf4,stroke:#16a34a,stroke-width:2px;
+  style TOOLPLANE fill:#faf5ff,stroke:#7c3aed,stroke-width:2px;
+  style INFPLANE fill:#ecfdf5,stroke:#16a34a,stroke-width:2px;
+  style ASSETS fill:#f8fafc,stroke:#94a3b8,stroke-width:1px;
 ```
 
 One **command center** (the rig) and, optionally, any number of **clients**.
@@ -222,21 +268,37 @@ model runs** — a laptop runs the full tool arsenal against its *own* disk whil
 every token is generated on the rig's GPU. The machine boundary is a single
 OpenAI-compatible HTTP call, so the promise is **"nothing leaves your tailnet"**.
 
+**Reading it, top to bottom.** The red box is the entire security perimeter —
+every service binds `127.0.0.1` and the only way in is Tailscale's
+authenticated WireGuard mesh; `tailscale funnel` is deliberately never used.
+Above the rig sit the two kinds of caller: a **client laptop** running the
+whole tool stack locally, and any **browser device**, which needs nothing
+installed. Inside the rig the stack is layered — frontends, then the **tool
+plane** (never published, acts only on the rig), then the **inference plane**
+(the one surface that *is* published), then what lives on disk. The thick
+arrow is the only load-bearing crossing between machines.
+
+Two identity layers, and they answer different questions: the tool server
+(`:3001`) authenticates **the human** — RBAC tier, per-user file shard — while
+beast-gate (`:8090`) authenticates **the device**.
+
 The dashed path is the honest default: with `EDGE_GATE=false`, `:8443` maps
 straight at llama-server and publishes its *entire* route table to the tailnet —
 fine on a tailnet you fully own. `EDGE_GATE=true` routes it through **beast-gate**
 instead, which allowlists the OpenAI routes and gives each device its own
 revocable key, rate limits, and an inference audit trail.
 
+Note what is **opt-in** rather than always-on: beast-gate (`EDGE_GATE`), the
+agent router (`AGENT_ROUTER`), and the dashboard extension (`EXTENSIONS`) all
+default to off, so a plain `./start.sh` brings up the rig with none of them.
+Remote access is a separate deliberate step — nothing is published until you
+run `setup-tailscale.sh`, and when you do it publishes Open WebUI (`:443`) and
+inference (`:8443`); SearXNG (`:8889`) and `/api/slot` (`:8444`) additionally
+require `--publish-searxng` / `--publish-slot`.
+
 Service-level detail (tool layer, RBAC, agent router) →
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Client/server specifics →
 [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md).
-
-Two frontends, **one** 15-tool arsenal exposed through two surfaces that import
-the same code so they can't drift, llama.cpp serving an OpenAI-compatible API on
-`:8080`, private SearXNG for web search, and an opt-in agent-spawn router.
-Everything binds `127.0.0.1`; remote devices arrive only through Tailscale's
-authenticated HTTPS proxy. **Full component walkthrough → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).**
 
 ## Remote access (Tailscale)
 
