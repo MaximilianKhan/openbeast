@@ -14,8 +14,8 @@ access, and family-grade multi-user permissions. All self-hosted, all yours.
 **One GPU box, every device you own.** Install the **rig** on the machine with
 the graphics card, then install the **client** on any laptop — no GPU, no
 weights — and it runs the same agent and the same 15 tools against *its own*
-files, sending only inference across your private tailnet. Your laptop stays a
-laptop; your rig does the thinking.
+files, with only the thinking crossing your private tailnet. Your laptop stays
+a laptop; your rig does the reasoning.
 
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
@@ -39,8 +39,10 @@ OpenBeast runs in **two roles**, and the same repo does both:
 
 You don't need both. Run the rig on its own and use it from any browser — or
 install **only** the client if someone else is hosting the rig. The client is a
-real OpenBeast install: the same 15-tool arsenal, acting on *your* disk. All
-that crosses the network is inference.
+real OpenBeast install: the same 15-tool arsenal, acting on *your* disk. Your
+shell and your files stay on your machine — what crosses the tailnet is the
+prompt, whatever the agent *reads* as context, and the model's replies (plus
+`web_search` queries, unless you pass `--local-search`).
 
 ### 🖥️ The rig — one command
 
@@ -75,8 +77,10 @@ and no model download**. OpenCode and the entire 15-tool arsenal run *on the
 laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
 the thinking happens on the rig.
 
-**Requirements:** Python ≥ 3.10, [Tailscale](https://tailscale.com) running,
-and membership in the tailnet the rig is on. No CUDA. No Docker (unless you
+**Requirements:** `git`, `curl`, Python ≥ 3.10 (stock macOS ships 3.9 — install
+a newer one with Homebrew or python.org), [OpenCode](https://github.com/sst/opencode)
+if you want the terminal agent, and [Tailscale](https://tailscale.com) running
+and joined to the tailnet the rig is on. No GPU. No CUDA. No Docker (unless you
 want `--local-search`).
 
 ```bash
@@ -88,15 +92,21 @@ openbeast-client status                            # what the rig is actually se
 ```
 
 **Someone else hosting?** This is a first-class path — you need no GPU and no
-weights, only an invite to their tailnet. Ask the rig's owner to share their
-tailnet with you and run `./scripts/setup-tailscale.sh --publish-slot
---publish-searxng` once. Then point `--host` at their machine's tailnet FQDN,
-adding `--api-key <key>` if they've enrolled your device
-([keyed mode](docs/BEAST_SLOT.md#keyed-mode-optional-off-by-default)).
+weights, only an invite to their tailnet. Point `--host` at their machine's
+tailnet FQDN, adding `--api-key <key>` if they've keyed the rig or enrolled
+your device. The owner's side is three commands (the dashboard extension must
+be enabled *before* publishing, or `/api/slot` 502s) —
+**[full walkthrough, including the trust model you should understand first](docs/BEAST_SLOT.md#using-someone-elses-rig)**.
+
+> **Read that trust model before joining a rig you don't own.** Your agent
+> executes the tool calls the rig's model emits, so a rig owner you don't trust
+> can reach your files through the agent loop. Joining someone's rig is closer
+> to giving them a shell than to using a hosted API.
 
 Two flags worth knowing: `--local-search` runs SearXNG on the laptop instead of
-using the rig's, and `--uninstall` removes everything (your own OpenCode
-settings survive). Full guide → **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)**.
+using the rig's, and `--uninstall` tears down client mode (your OpenCode
+settings, your checkout, and agent transcripts survive).
+Full guide → **[docs/BEAST_SLOT.md](docs/BEAST_SLOT.md)**.
 
 > **On a VPN?** NordVPN and similar clients sever tailnet routing. If the rig is
 > unreachable from the laptop but healthy locally, quit the VPN first —
@@ -136,7 +146,7 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 ⁶ ODS is single-instance and audits agent tool calls (APE), but per-user RBAC isn't its focus; OpenBeast shards + RBAC-gates every user.
 ⁷ Deliberately **out of scope** — OpenBeast maximizes one model, not a service bundle. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape; what it doesn't do is install as a second role of the same distribution — one command turning any laptop into a full peer of the rig, sharing the rig's model list, RBAC and audit trail.
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape; what it doesn't do is install as a second role of the same distribution — one command turning any laptop into a peer of the rig, with the same 15-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path — a client is your own device.)
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner — it serves a model and stops there; OpenBeast *includes* a
@@ -228,8 +238,8 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 ```bash
 opencode                                   # tools run here, thinking runs on the rig
 openbeast-client agent "refactor utils.py" # autonomous agent, local files
-openbeast-client status                    # rig's real model, context, free slots
-openbeast-client update                    # pull + reinstall deps
+openbeast-client status                    # rig's real model, context, busy slots
+openbeast-client update                    # reinstall pinned deps (pulls too, on a slim checkout)
 ```
 
 The rig loses nothing by serving clients — it stays the full command center,
@@ -257,7 +267,6 @@ flowchart TB
       ctools["⚙️ <b>15 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
       csx["🔎 local SearXNG<br/><i>--local-search</i>"]
       coc --> cmcp
-      ccli --> cmcp
       cmcp --> ctools
       ctools -.-> csx
     end
@@ -274,18 +283,19 @@ flowchart TB
       router["🧭 <b>agent router</b> · :8088<br/><i>opt-in</i> · spawn intent"]
       runner["🤖 <b>agent runner</b><br/>headless agents"]
 
-      subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>NEVER published"]
+      subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>never published to the tailnet"]
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards<br/>audit · <i>auth HUMAN</i>"]
         mcp["🔌 <b>MCP surface</b><br/><b>15 tools</b><br/>+ skill · agent ctl"]
         prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls<br/>grep · fetch · search"]
-        searx["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
         idsrv --> mcp
         mcp --> prim
-        prim --> searx
       end
 
-      subgraph INFPLANE["🧠 INFERENCE PLANE<br/>the only published surface"]
+      searx["🔎 <b>SearXNG</b> · :8888<br/>private metasearch<br/><i>publishable at :8889</i>"]
+      prim --> searx
+
+      subgraph INFPLANE["🧠 INFERENCE PLANE<br/>what :8443 reaches"]
         direction TB
         llama["🧠 <b>llama.cpp</b> · :8080<br/>OpenAI-compatible<br/>unified KV · batching"]
         gpu["🎮 <b>GPU</b><br/>every token HERE"]
@@ -300,14 +310,15 @@ flowchart TB
       end
 
       webui --> idsrv
-      webui --> router
-      router --> runner
+      webui ==> llama
+      webui -.-> router
+      router -.-> idsrv
       runner --> prim
       gate --> llama
       router --> llama
       prim -.-> llama
       llama -.-> weights
-      llama -.-> dash
+      dash -.-> llama
       mcp -.-> skills
     end
   end
@@ -329,11 +340,11 @@ flowchart TB
   class idsrv,mcp,prim,searx tool;
   class weights,skills,evals,dash store;
   style TAILNET fill:#fafaf9,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
-  style CLIENTBOX fill:#f0f9ff,stroke:#0284c7,stroke-width:2px,stroke-dasharray:6 4;
-  style RIG fill:#f0fdf4,stroke:#16a34a,stroke-width:2px;
-  style TOOLPLANE fill:#faf5ff,stroke:#7c3aed,stroke-width:2px;
-  style INFPLANE fill:#ecfdf5,stroke:#16a34a,stroke-width:2px;
-  style ASSETS fill:#f8fafc,stroke:#94a3b8,stroke-width:1px;
+  style CLIENTBOX fill:#f0f9ff,stroke:#0284c7,stroke-width:2px,stroke-dasharray:6 4,color:#0c2733;
+  style RIG fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#0b2417;
+  style TOOLPLANE fill:#faf5ff,stroke:#7c3aed,stroke-width:2px,color:#2a1046;
+  style INFPLANE fill:#ecfdf5,stroke:#16a34a,stroke-width:2px,color:#052e16;
+  style ASSETS fill:#f8fafc,stroke:#94a3b8,stroke-width:1px,color:#0f172a;
 ```
 
 One **command center** (the rig) and, optionally, any number of **clients**.

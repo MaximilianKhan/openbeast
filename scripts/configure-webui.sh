@@ -199,32 +199,48 @@ echo "  Wiring built-in Web Search → SearXNG ..."
 if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
 import sqlite3, json, os, sys, time
 db = sqlite3.connect('/app/backend/data/webui.db')
-want = {'web.search.enable': True,
-        'web.search.engine': 'searxng',
-        'web.search.searxng_query_url': os.environ['SXURL']}
-# Only disable Ollama if it still points at the seeded default, which cannot
-# work under this container's host networking — never clobber a real one.
-row = db.execute(\"SELECT value FROM config WHERE key='ollama.base_urls'\").fetchone()
-if row and 'host.docker.internal' in row[0]:
-    want['ollama.enable'] = False
-changed = False
-for k, v in want.items():
+
+def get(k, default=None):
     row = db.execute('SELECT value FROM config WHERE key=?', (k,)).fetchone()
-    if row is None:
-        db.execute('INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)',
-                   (k, json.dumps(v), int(time.time())))
-        changed = True
-    elif json.loads(row[0]) != v:
-        db.execute('UPDATE config SET value=?, updated_at=? WHERE key=?',
-                   (json.dumps(v), int(time.time()), k))
-        changed = True
+    return json.loads(row[0]) if row else default
+
+def put(k, v):
+    db.execute('INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) '
+               'ON CONFLICT(key) DO UPDATE SET value=excluded.value, '
+               'updated_at=excluded.updated_at',
+               (k, json.dumps(v), int(time.time())))
+
+want = {}
+
+# CONFIGURE ONCE, THEN LEAVE IT ALONE. An earlier version asserted these values
+# on every run, which meant an admin who turned Web Search off in the UI had it
+# switched back on at the next start — forever, with no opt-out. We only fill in
+# an engine that was never chosen; after that the operator owns the setting.
+if not (get('web.search.engine') or '').strip():
+    want['web.search.engine'] = 'searxng'
+    want['web.search.searxng_query_url'] = os.environ['SXURL']
+    want['web.search.enable'] = True
+
+# Same restraint for Ollama, and only when the seeded default is the ONLY entry.
+# Substring-matching the whole JSON list disabled real Ollama servers whenever a
+# user had added one alongside the stale default, which is the common case.
+urls = get('ollama.base_urls') or []
+if urls and all('host.docker.internal' in u for u in urls) and get('ollama.enable') is True:
+    want['ollama.enable'] = False
+
+changed = [k for k, v in want.items() if get(k) != v]
+for k in changed:
+    put(k, want[k])
 if changed:
     db.commit()
     sys.exit(3)   # signal 'changed'
 " 2>/dev/null; then
-  echo "    already set"
+  echo "    already configured (leaving operator settings alone)"
 elif [[ $? -eq 3 ]]; then
-  echo "    web search enabled → $SEARXNG_QUERY_URL"; WEBSEARCH_CHANGED=1
+  # No restart: this image reads config straight from the DB per request
+  # (models/config.py — "Reads are direct DB lookups"), so a container bounce
+  # would only kill in-flight streams for nothing.
+  echo "    web search wired → $SEARXNG_QUERY_URL"
 else
   echo "    (could not configure web search — WebUI may not be up yet)"
 fi

@@ -199,13 +199,65 @@ first-class path — a household with one GPU box, a small team, a friend who
 offered you a slot. Nothing about the install differs except where you point
 it.
 
-**The rig owner does two things.** Share the tailnet with your device
-(Tailscale invite, or an ACL that lets your node reach theirs), and publish the
-client-facing surfaces once:
+**The rig owner does three things, and the first one is not optional.**
+
+**1. Turn on beast-gate before anyone else's device can reach the endpoint.**
+`EDGE_GATE` is off by default, and with it off `:8443` is *raw llama-server* —
+every tailnet peer gets the whole route table. `POST /lora-adapters` swaps the
+model for you and everyone else, `GET /slots` and `/props` leak your session
+metadata and on-disk model path, `DELETE /v1/stream/:id` cancels generations,
+and a client-chosen `id_slot` jumps the queue ahead of you. See
+[What beast-slot access grants](#what-beast-slot-access-grants). A shared
+`LLAMA_API_KEY` gates that surface behind **one secret you'd have to rotate
+stack-wide to revoke one person** — it doesn't shrink the surface.
 
 ```bash
-./scripts/setup-tailscale.sh --publish-slot --publish-searxng
+echo "EDGE_GATE=true" >> openbeast.conf
+./stop.sh && ./start.sh -d
+./scripts/clients.sh enroll their-laptop --label "Sam's MacBook"
+#   → prints their key ONCE; send it over a channel you trust
 ```
+
+**2. Give them access to the rig — and only the rig.** A Tailscale **user
+invite** adds them to your tailnet, where the default ACL is allow-all: their
+devices reach *every* device you own, on every port — your NAS, your SSH, your
+other laptops. Use **node sharing** instead (admin console → *Share this
+machine*), which exposes the rig alone. If you must invite a user, write the
+restricting ACL first.
+
+**3. Publish the client-facing surfaces.** Order matters — `--publish-slot`
+maps to the dashboard extension, which ships disabled, so publishing first
+yields a 502:
+
+```bash
+./scripts/ext.sh enable dashboard     # /api/slot lives here; off by default
+./stop.sh && ./start.sh               # extensions load at start
+./scripts/setup-tailscale.sh --publish-slot --publish-searxng   # needs sudo
+```
+
+**Verify before you hand out the key.** With no bearer,
+`curl https://<rig>:8443/v1/models` must return **401** and
+`curl https://<rig>:8443/slots` must return **404** (the gate's allowlist). If
+either answers 200, the gate isn't in the path — go back to step 1.
+
+Three more things that surprise owners:
+
+- **`:443` publishes Open WebUI — with your entire chat history — to every
+  peer.** `setup-tailscale.sh` sets `WEBUI_AUTH=true` only if the key is
+  *absent* from `openbeast.conf`; an explicit `WEBUI_AUTH=false` is left alone
+  and you publish an unauthenticated admin panel. Check with
+  `grep WEBUI_AUTH openbeast.conf` before inviting anyone.
+- **`--publish-searxng` is unauthenticated and unmetered, and beast-gate does
+  not front it.** Every search a guest runs exits from *your* IP and is
+  attributed to you upstream. Skip the flag and have them install with
+  `--local-search` if you'd rather not wear that.
+- **You can be denied service by your own guest.** One client with a large
+  `max_tokens` holds a single-slot rig for as long as it likes; beast-gate
+  rate-limits *requests*, not tokens or wall-clock, so `--rate` won't save you.
+  Until per-request budgets land ([roadmap](#roadmap-behind-the-same-contract)),
+  the controls are social: enroll people you'd lend the machine to, watch
+  `.run/inference-audit.jsonl`, and `./scripts/clients.sh revoke <id>` — new
+  requests fail at once, though a stream already in flight runs to completion.
 
 **You do one thing** — point the installer at their machine:
 
@@ -218,19 +270,63 @@ or have enrolled your device through beast-gate; skip `--publish-searxng` on
 their side and pass `--local-search` on yours if you'd rather your queries never
 touch their SearXNG.
 
-**What they can and cannot see.** They host the model, so **everything your
-agent sends as context — including the contents of files it reads on your
-laptop — is processed on their hardware**, and with beast-gate enabled it is
-attributable to your device in their inference audit log. What they do *not*
-get is any path to your filesystem: tools execute in your process, on your
-disk, and the rig only ever answers with tokens. Treat a shared rig the way
-you'd treat any hosted inference provider you trust — the trust boundary is the
-rig owner, not the network.
+> ### ⚠️ Only join a rig whose owner you trust with a shell on your laptop
+>
+> This is the honest threat model, and it is stronger than "they see your
+> prompts."
+>
+> The rig owner controls what the model emits, and **the tool-call stream *is*
+> model output**. Your agent executes those calls with no approval step
+> ([`agents/runner.py`](../agents/runner.py) runs every returned `tool_call`
+> and appends the result to the next request), `bash` is unsandboxed unless you
+> set `OPENBEAST_BASH_WRAPPER`, and the credential guard in
+> [`agents/tools.py`](../agents/tools.py) covers *writes only* — reads of
+> `~/.ssh/id_rsa` or your own env file are not blocked. A hostile rig can
+> therefore read files and run commands on your machine, and receive the output
+> as the next turn's context.
+>
+> What a rig owner does **not** get is a *direct* route in: the rig never
+> initiates a connection, the client's tool process opens no port, and nothing
+> on your machine is reachable from the tailnet. The exposure runs entirely
+> through the agent loop you are choosing to point at them.
+>
+> **Nothing prompts you before a tool call runs.** Not `openbeast-client
+> agent`, and not OpenCode — its default permission map is `{"*": "allow"}`,
+> and our tools arrive as MCP calls, which its native `bash`/`edit` gating
+> doesn't cover. You get a console line scrolling past, and that's it.
+>
+> So the correct mental model is not "hosted inference provider." It is **"I am
+> running their code on my laptop."** Point a client at a rig only if you'd
+> give that person a shell. If you want it anyway, shrink the blast radius:
+>
+> - Run the client as a **dedicated user account**, or in a VM/container, with
+>   nothing in its `$HOME` you'd mind losing.
+> - Force confirmation in `~/.config/opencode/opencode.json` —
+>   `{"permission": {"*": "ask"}}` at minimum — and actually *read* each
+>   `local-tools_bash` call before approving.
+> - Enable the kernel sandbox: `./scripts/setup-sandlock.sh`, then
+>   `OPENBEAST_BASH_WRAPPER="sandlock --profile openbeast --"` in
+>   `~/.openbeast-client.env`.
+> - Use `--local-search` or `--no-search`, and don't run the client from a
+>   directory holding credentials or a repo you'd mind being uploaded.
+> - Watch the tool lines. A rig that answers "summarize this file" with a
+>   `bash` call is attacking you — stop, and tell the owner.
+>
+> Note also that `agents/logs/agent-*.jsonl` accumulates the full prompts and
+> file contents of every past run, so one `read_file` returns your whole
+> history. It's a target, not just a privacy footnote.
+
+**What they can see in the normal case.** They host the model, so everything
+your agent sends as context — including the contents of files it reads on your
+laptop — is processed on their hardware, and with beast-gate enabled it is
+attributable to your device in their inference audit log.
 
 **What you should expect from them:** slots are shared. With the rig on a
 single-slot serving profile your turns queue behind theirs FIFO; llama.cpp has
 no per-user fairness, no preemption and no request timeout, so a long
-generation ahead of you is simply a wait. See
+generation ahead of you is simply a wait. It runs both ways — *your* long
+generation locks the owner out of their own machine, so don't leave an agent
+looping unattended on someone else's rig. See
 [Roadmap behind the same contract](#roadmap-behind-the-same-contract).
 
 ### The client CLI
