@@ -142,14 +142,28 @@ except Exception as e:
     print("  ! could not parse %s (%s) — left untouched" % (path, e)); raise SystemExit
 removed = []
 mcp = cfg.get("mcp", {})
+if "openbeast-tools" in mcp:
+    del mcp["openbeast-tools"]; removed.append("mcp.openbeast-tools")
+# Sweep the legacy "local-tools" key older installers wrote — but ONLY when its
+# command points into our venv (~/.openbeast-client, true for both install
+# shapes), so we never touch the checkout's own bare-python3 "local-tools".
 lt = mcp.get("local-tools", {})
-# The venv always lives under ~/.openbeast-client, even for an in-place clone
-# install, so this match holds for both install shapes.
 if ".openbeast-client" in " ".join(lt.get("command", [])):
-    del mcp["local-tools"]; removed.append("mcp.local-tools")
+    del mcp["local-tools"]; removed.append("mcp.local-tools (legacy)")
 prov = cfg.get("provider", {})
+# Remove our provider by its distinct id. Also sweep the legacy "llama-cpp"
+# entry that older installers wrote (id-collision bug) — but ONLY when its
+# baseURL is the rig's :8443/v1, so we never touch the checkout's local-dev
+# "llama-cpp" pointed at localhost:8080.
+if "openbeast-rig" in prov:
+    del prov["openbeast-rig"]; removed.append("provider.openbeast-rig")
 if prov.get("llama-cpp", {}).get("options", {}).get("baseURL", "").endswith(":8443/v1"):
-    del prov["llama-cpp"]; removed.append("provider.llama-cpp")
+    del prov["llama-cpp"]; removed.append("provider.llama-cpp (legacy)")
+# Clear a default model we set — but only if it still points at our provider, so
+# a user who repointed it keeps their choice and we leave no dangling default.
+for key in ("model", "small_model"):
+    if str(cfg.get(key, "")).startswith("openbeast-rig/"):
+        del cfg[key]; removed.append(key)
 # Drop containers we emptied, so an uninstall does not leave "mcp": {} behind.
 for k in ("mcp", "provider"):
     if k in cfg and not cfg[k]:
@@ -431,7 +445,15 @@ if api_key:
     # deliberate: OpenCode 1.18.x doesn't substitute env refs in provider
     # apiKey (upstream #27853/#19946), and this file is chmod 600 below.
     env["OPENBEAST_API_KEY"] = api_key
-cfg.setdefault("mcp", {})["local-tools"] = {
+# Key is "openbeast-tools", NOT "local-tools" — same shadowing hazard as the
+# provider above: the checkout's ./opencode.json defines mcp."local-tools" with
+# a bare `python3 agents/mcp_server.py` (relative path, whatever python is on
+# PATH — often one without the mcp module). Run `opencode` from inside the repo
+# and that project entry shadows a same-key global one, so the tool server dies
+# on ModuleNotFoundError ("server unavailable"). A distinct key can't be
+# shadowed; we pin the venv python + an absolute path. Do NOT rename to
+# "local-tools".
+cfg.setdefault("mcp", {})["openbeast-tools"] = {
     "type": "local",
     "command": [os.path.join(venv, "bin", "python3"),
                 os.path.join(repo, "agents", "mcp_server.py")],
@@ -446,12 +468,28 @@ try:
     models = json.load(open(os.path.join(repo, "opencode.json")))["provider"]["llama-cpp"]["models"]
 except Exception:
     pass
-cfg.setdefault("provider", {})["llama-cpp"] = {
+# Provider id is deliberately "openbeast-rig", NOT "llama-cpp". The checkout's
+# own ./opencode.json ships a "llama-cpp" provider pointed at localhost:8080
+# (the local-dev pointer). opencode deep-merges a project-dir config OVER the
+# global one, so sharing the id means: run `opencode` from inside this repo and
+# the rig provider silently collapses to the dead localhost:8080 — an instant
+# "Unable to connect" that curl/the doctor never see. A distinct id cannot be
+# shadowed. Do NOT rename this back to "llama-cpp".
+cfg.setdefault("provider", {})["openbeast-rig"] = {
     "npm": "@ai-sdk/openai-compatible",
     "name": f"OpenBeast rig ({host})",
     "options": {"baseURL": api_url, "apiKey": api_key or "not-needed"},
     "models": models,
 }
+# Pin the default model to our provider. Without it, from inside this repo
+# opencode also sees the checkout's local-dev "llama-cpp/<same-model-ids>" and
+# can default into that dead localhost provider. A model default on our id keeps
+# `opencode` (no -m) pointed at the rig. Kept non-clobbering so we never stomp a
+# user's own default; small_model too, since the rig serves a single model.
+# (llama-server ignores the model id, so any id in the catalog reaches the rig.)
+default_model = "openbeast-rig/" + next(iter(models))
+cfg.setdefault("model", default_model)
+cfg.setdefault("small_model", default_model)
 json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
 if api_key:
     os.chmod(oc_path, 0o600)
@@ -498,7 +536,7 @@ fi
 # ---- 6. report --------------------------------------------------------------
 echo ""
 echo "Client mode ready. Use it:"
-echo "  cd <any project> && opencode     # pick a 'llama-cpp' model"
+echo "  cd <any project> && opencode     # pick an 'openbeast-rig' model"
 if [ "${CLI_LINKED:-0}" = "1" ]; then
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) echo "  openbeast-client status          # client doctor + beast-slot view" ;;

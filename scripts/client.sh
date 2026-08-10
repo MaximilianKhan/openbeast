@@ -220,9 +220,14 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     else
       echo "  - search not wired (--no-search)"
     fi
-    if [ -f "$OC_CONFIG" ] && grep -q '"local-tools"' "$OC_CONFIG" \
-       && grep -q '"llama-cpp"' "$OC_CONFIG"; then
-      echo "  ✓ opencode.json wired (local-tools + llama-cpp provider)"; ok=$((ok+1))
+    if [ -f "$OC_CONFIG" ] && grep -qE '"openbeast-tools"|"local-tools"' "$OC_CONFIG" \
+       && grep -qE '"openbeast-rig"|"llama-cpp"' "$OC_CONFIG"; then
+      # NOTE: this greps the config file; it cannot prove opencode/Bun actually
+      # connects (that runtime resolves the provider itself, and a repo-local
+      # ./opencode.json can shadow a same-id provider when run from that dir —
+      # which is why the client provider id is the distinct "openbeast-rig").
+      # A green line here means "wired", not "opencode reached the rig".
+      echo "  ✓ opencode.json wired (openbeast-tools + openbeast-rig provider)"; ok=$((ok+1))
     else
       echo "  ✗ opencode.json not wired — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi

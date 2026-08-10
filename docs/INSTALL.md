@@ -656,16 +656,20 @@ What lands on the client:
   that clone in place.)
 - `~/.openbeast-client.env` (mode 0600) — the rig URLs and, if keyed, the bearer.
 - A **non-clobbering merge** into `~/.config/opencode/opencode.json`: the
-  `llama-cpp` provider pointed at `https://<rig>:8443/v1`, the full model list,
-  and the tool server as a **stdio subprocess** — no daemon, no open port, it
-  dies with OpenCode. Your existing config is preserved; `--uninstall` removes
-  only our two entries. (Chmod'd 600 when it holds a key.)
+  `openbeast-rig` provider pointed at `https://<rig>:8443/v1`, the full model
+  list, and the tool server as a **stdio subprocess** — no daemon, no open
+  port, it dies with OpenCode. The id is deliberately `openbeast-rig`, not
+  `llama-cpp`: the checkout's own `./opencode.json` ships a `llama-cpp` provider
+  at `localhost:8080`, and running `opencode` from inside the repo would let
+  that project config shadow a same-id global one (an instant "Unable to
+  connect"). Your existing config is preserved; `--uninstall` removes only our
+  entries. (Chmod'd 600 when it holds a key.)
 - `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`, created
   only if that directory already exists (otherwise call
   `~/.openbeast-client/repo/scripts/client.sh` directly).
 
-Then `cd <any project> && opencode` and pick a `llama-cpp` model — the model
-you pick must be the one the rig is actually serving.
+Then `cd <any project> && opencode` and pick an `openbeast-rig` model — the
+model you pick must be the one the rig is actually serving.
 
 ### The client CLI
 
