@@ -108,7 +108,9 @@ Idempotent; macOS-first (also fine on a Linux laptop). Flags: `--host <fqdn>`
    passthrough if the rig set one. Optional `OPENBEAST_MCP_TOOLS=` allowlist
    (default: all tools register).
 5. **Merge `~/.config/opencode/opencode.json`** (never clobber — read-merge via a
-   small Python/jq step): add/refresh the `llama-cpp` provider (`baseURL` :8443,
+   small Python/jq step): add/refresh the `openbeast-rig` provider (id kept
+   distinct from the repo's local-dev `llama-cpp` so a repo-dir run can't shadow
+   it; `baseURL` :8443,
    dummy `apiKey`), the model list (copied from repo `opencode.json`), and the
    `mcp.local-tools` block pointing `command` at the venv python +
    `~/.openbeast-client/agents/mcp_server.py`, with `environment` carrying
@@ -116,8 +118,8 @@ Idempotent; macOS-first (also fine on a Linux laptop). Flags: `--host <fqdn>`
 6. **Health check.** `curl` the rig `:8443/health`; if search wired, hit
    `:8889/search?q=test&format=json` and assert JSON; `python -c "import mcp,
    openai"` in the venv.
-7. **Report + uninstall path.** Print how to launch (`opencode` → pick a
-   `llama-cpp` model) and remind that nothing persists — quitting OpenCode reaps
+7. **Report + uninstall path.** Print how to launch (`opencode` → pick an
+   `openbeast-rig` model) and remind that nothing persists — quitting OpenCode reaps
    the stdio MCP subprocess. `--uninstall` removes the opencode block + the
    `~/.openbeast-client/` dir + the env file.
 
@@ -148,7 +150,7 @@ Opt-in, off by default, so the private-by-default posture is preserved.
    status` shows the `:8889 → :8888` line and `curl https://<fqdn>:8889/search?q=test&format=json`
    returns JSON.
 2. **Laptop:** `setup-mac-client.sh --host beast.<tailnet>.ts.net`; then
-   `opencode`, pick a `llama-cpp` model, and prove all three localities in one
+   `opencode`, pick an `openbeast-rig` model, and prove all three localities in one
    session:
    - ask it to **edit a file** in the current laptop project → change lands on
      **laptop** disk (tools local ✓);
