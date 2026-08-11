@@ -1,0 +1,2 @@
+TWO-SIDED r64: PPL= (one-sided fullcov r64: 27.58; diag r64: 31.29)
+TWO-SIDED r64 (balanced): PPL=27.2721 +/- 0.23868 (one-sided: 27.58; diag: 31.29)

@@ -1,0 +1,6 @@
+[lloyd] blk.0.attn_gate.weight (2048x1024) iters=6 J 32.38->31.52 (2.64% off) guard=0 42.2s
+[lloyd] blk.0.ffn_gate.weight (3584x1024) iters=8 J 15.14->14.79 (2.29% off) guard=0 92.2s
+[lloyd] blk.0.ffn_up.weight (3584x1024) iters=8 J 7.506->7.312 (2.59% off) guard=0 92.8s
+[lloyd] blk.0.ssm_out.weight (1024x2048) iters=8 J 0.03943->0.03756 (4.74% off) guard=0 106.8s
+[lloyd] blk.1.attn_gate.weight (2048x1024) iters=8 J 44.55->43.55 (2.24% off) guard=0 53.2s
+[lloyd] blk.1.ffn_gate.weight (3584x1024) iters=8 J 22.16->21.67 (2.20% off) guard=0 91.3s

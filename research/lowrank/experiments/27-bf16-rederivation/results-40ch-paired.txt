@@ -1,0 +1,52 @@
+== MIXEDfc vs CONTROL ==
+paired per-chunk stats: A = kld40-MIXEDfc.log
+                        B = kld40-CONTROL.log
+  final: A KLD 0.08311 top 88.618%  |  B KLD 0.07388 top 88.990%
+  KLD (nats/tok)           paired dmean = +0.009230 ± 0.004088  (t = +2.26, n = 40, A better on 12/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.001303 ± 0.004323  (t = +0.30, n = 40, A better on 22/40 chunks)
+  same-top fraction        paired dmean = -0.003720 ± 0.002652  (t = -1.40, n = 40, A better on 17/40 chunks)
+
+== MIXEDfc vs Q3_K_S ==
+paired per-chunk stats: A = kld40-MIXEDfc.log
+                        B = kld40-Q3_K_S.log
+  final: A KLD 0.08311 top 88.618%  |  B KLD 0.08319 top 88.118%
+  KLD (nats/tok)           paired dmean = -0.000080 ± 0.001990  (t = -0.04, n = 40, A better on 22/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.020871 ± 0.006269  (t = -3.33, n = 40, A better on 29/40 chunks)
+  same-top fraction        paired dmean = +0.005000 ± 0.002649  (t = +1.89, n = 40, A better on 26/40 chunks)
+
+== CONTROL vs Q3_K_S ==
+paired per-chunk stats: A = kld40-CONTROL.log
+                        B = kld40-Q3_K_S.log
+  final: A KLD 0.07388 top 88.990%  |  B KLD 0.08319 top 88.118%
+  KLD (nats/tok)           paired dmean = -0.009310 ± 0.003064  (t = -3.04, n = 40, A better on 34/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.022174 ± 0.005166  (t = -4.29, n = 40, A better on 37/40 chunks)
+  same-top fraction        paired dmean = +0.008720 ± 0.001796  (t = +4.86, n = 40, A better on 32/40 chunks)
+
+== Q3_K_S vs Q3_K_M ==
+paired per-chunk stats: A = kld40-Q3_K_S.log
+                        B = kld40-Q3_K_M.log
+  final: A KLD 0.08319 top 88.118%  |  B KLD 0.05512 top 90.441%
+  KLD (nats/tok)           paired dmean = +0.028070 ± 0.003033  (t = +9.26, n = 40, A better on 1/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.031862 ± 0.007634  (t = +4.17, n = 40, A better on 5/40 chunks)
+  same-top fraction        paired dmean = -0.023230 ± 0.003279  (t = -7.08, n = 40, A better on 3/40 chunks)
+
+== Q2Krr-legacy vs Q2Kbare-legacy ==
+paired per-chunk stats: A = kld40-Q2Krr-legacy.log
+                        B = kld40-Q2Kbare-legacy.log
+  final: A KLD 0.13743 top 85.059%  |  B KLD 0.15331 top 84.196%
+  KLD (nats/tok)           paired dmean = -0.015880 ± 0.004293  (t = -3.70, n = 40, A better on 26/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.003148 ± 0.008423  (t = -0.37, n = 40, A better on 24/40 chunks)
+  same-top fraction        paired dmean = +0.008630 ± 0.003368  (t = +2.56, n = 40, A better on 29/40 chunks)
+
+== sign tests (exact binomial, two-sided; T1.16 metric spec) ==
+  MIXEDfc vs CONTROL   KLD  (control better 28/40)     p = 0.0166
+  MIXEDfc vs Q3_K_S    KLD  (flagship better 22/40)    p = 0.6358
+  MIXEDfc vs Q3_K_S    NLL  (flagship better 29/40)    p = 0.0064
+  CONTROL vs Q3_K_S    KLD  (control better 34/40)     p = 0.0000
+  Q2Krr vs Q2Kbare     KLD  (RR better 26/40)          p = 0.0807
+  Q2Krr vs Q2Kbare     top1 (RR better 29/40)          p = 0.0064
+== robustness: MIXEDfc vs CONTROL KLD, drop-1 largest |d| ==
+  full n=40:      dmean +0.009230 ± 0.004088  t = +2.26
+  drop-1 (n=39):  dmean +0.005625 ± 0.001978  t = +2.84
+  drop-2 (n=38):  dmean +0.004893 ± 0.001886  t = +2.59
+  max |d| = +0.1498, median |d| = 0.0079

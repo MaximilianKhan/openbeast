@@ -1,0 +1,9 @@
+attn_q :: Mean    KLD:   0.728571 Same top p: 59.471 :: bytes=11013984 
+attn_k :: Mean    KLD:   0.672208 Same top p: 60.794 :: bytes=7343968 
+attn_v :: Mean    KLD:   0.711754 Same top p: 59.314 :: bytes=7343968 
+attn_o :: Mean    KLD:   0.749160 Same top p: 58.569 :: bytes=11014240 
+ffn_gate :: Mean    KLD:   0.715380 Same top p: 59.422 :: bytes=14684096 
+ffn_up :: Mean    KLD:   0.710458 Same top p: 59.529 :: bytes=14684000 
+ffn_down :: Mean    KLD:   0.723045 Same top p: 59.882 :: bytes=14684096 
+col-ffn_down :: Mean    KLD:   0.732331 Same top p: 59.608 
+col-attn_o :: Mean    KLD:   0.749332 Same top p: 58.775 

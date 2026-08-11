@@ -1,0 +1,19 @@
+[lloyd] blk.3.attn_q.weight (4096x1024) iters=8 J 94.06->92.21 (1.97% off) guard=0 145.5s
+[lloyd] blk.7.attn_q.weight (4096x1024) iters=8 J 34.08->33.31 (2.24% off) guard=0 125.4s
+[lloyd] blk.11.attn_q.weight (4096x1024) iters=8 J 25.75->25.22 (2.04% off) guard=0 209.6s
+[lloyd] blk.12.attn_gate.weight (2048x1024) iters=8 J 25.62->25.01 (2.41% off) guard=0 95.8s
+[lloyd] blk.13.attn_gate.weight (2048x1024) iters=5 J 21.4->20.87 (2.47% off) guard=0 58.2s
+[lloyd] blk.14.attn_gate.weight (2048x1024) iters=8 J 23.09->22.43 (2.88% off) guard=0 93.6s
+[lloyd] blk.15.attn_k.weight (512x1024) iters=8 J 2.664->2.601 (2.37% off) guard=0 23.1s
+[lloyd] blk.15.attn_q.weight (4096x1024) iters=8 J 38.89->37.84 (2.71% off) guard=0 186.3s
+[lloyd] blk.16.attn_gate.weight (2048x1024) iters=8 J 35.2->34.25 (2.70% off) guard=0 90.2s
+[lloyd] blk.17.attn_gate.weight (2048x1024) iters=8 J 45.06->43.94 (2.49% off) guard=0 90.3s
+[lloyd] blk.18.attn_gate.weight (2048x1024) iters=8 J 51.2->49.95 (2.44% off) guard=0 92.8s
+[lloyd] blk.19.attn_k.weight (512x1024) iters=8 J 2.766->2.71 (2.04% off) guard=0 23.1s
+[lloyd] blk.19.attn_q.weight (4096x1024) iters=8 J 39.7->38.8 (2.26% off) guard=0 186.9s
+[lloyd] blk.20.attn_gate.weight (2048x1024) iters=8 J 47.48->46.48 (2.11% off) guard=0 93.0s
+[lloyd] blk.21.attn_gate.weight (2048x1024) iters=8 J 48.13->46.9 (2.55% off) guard=0 92.7s
+[lloyd] blk.22.attn_gate.weight (2048x1024) iters=8 J 36.74->35.89 (2.31% off) guard=0 93.2s
+[lloyd] blk.23.attn_k.weight (512x1024) iters=8 J 2.414->2.353 (2.54% off) guard=0 23.2s
+[lloyd] blk.23.attn_q.weight (4096x1024) iters=8 J 46.33->45.43 (1.95% off) guard=0 155.3s
+[compute-only]: 28 tensors Lloyd-refit, iters min/med/max = 5/8/8, 1890s

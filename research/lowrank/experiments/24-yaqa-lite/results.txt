@@ -1,0 +1,19 @@
+# E24 YAQA-lite, Qwen3.5-0.8B, 2026-08-04. All vs BF16 truth
+# (data/bf16ref08b-40.logits, 40 chunks); PPL = full wikitext-2-test,
+# 580 chunks x 512. bare + bare-fc rows reproduce E22 exactly.
+
+q35-08b-Q2_K bare        bytes=436408832 ppl=33.0877 +/- 0.28782  KLD 0.490179 +/- 0.005766  top-1 66.422 +/- 0.468
++ RR input-only (free)   bytes=436408832 ppl=28.0902 +/- 0.23730  KLD 0.323369 +/- 0.004774  top-1 72.686 +/- 0.441
++ RR kron S(x)T (free)   bytes=436408832 ppl=29.4803 +/- 0.24880  KLD 0.370837 +/- 0.005456  top-1 72.000 +/- 0.445
+Q2_K + fc-r128q8 (E22)   total=523MB     ppl=23.0310 +/- 0.18935  KLD 0.168461 +/- 0.002923  top-1 79.402 +/- 0.400
+RR-input + fc-r128q8     total=523MB     ppl=23.8982 +/- 0.19805  KLD 0.191582 +/- 0.003531  top-1 78.725 +/- 0.405
+
+# paired per-chunk deltas (mean +/- sem of difference; neg = first better)
+# RR-input vs bare:      dNLL -0.163741 +/- 0.003649 (t=-44.9, 557/580)   dKLD -0.166810 +/- 0.005504 (t=-30.3, 40/40)   dtop +6.264pt +/- 0.445 (t=+14.1)
+# RR-kron  vs bare:      dNLL -0.115439 +/- 0.004165 (t=-27.7, 509/580)   dKLD -0.119340 +/- 0.008128 (t=-14.7, 40/40)   dtop +5.578pt +/- 0.498 (t=+11.2)
+# RR-kron  vs RR-input:  dNLL +0.048301 +/- 0.003119 (t=+15.5, 147/580)   dKLD +0.047470 +/- 0.005787 (t=+8.2,  2/40)    dtop -0.686pt +/- 0.415 (t=-1.7, unresolved)
+# RR+fc    vs bare+fc:   dNLL +0.036962 +/- 0.002095 (t=+17.6, 133/580)   dKLD +0.023120 +/- 0.003182 (t=+7.3,  5/40)    dtop -0.677pt +/- 0.396 (t=-1.7, unresolved)
+
+# coverage: 96/96 re-rounded Q2_K tensors had BOTH S and T Grams (kron
+# used everywhere; input-only fallback: 0 tensors). ssm_alpha/beta (36,
+# 16x1024) + promoted Q3_K/Q4_K tensors untouched (codec gap, as E13).

@@ -1,0 +1,22 @@
+fc-Q2K+r64  PPL20=7.8832 +/- 0.28888  adapter_bytes=870372992
+fc-Q2K+r64 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.138688 ±   0.006708 Same top p: 85.137 ± 0.498 % 
+fc-IQ2+r64  PPL20=8.3400 +/- 0.30526  adapter_bytes=870372992
+fc-IQ2+r64 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.204721 ±   0.007423 Same top p: 81.255 ± 0.547 % 
+fcv2-Q2K+r64  PPL20=  adapter_bytes=
+
+fcv2-Q2K+r128q8  PPL20=  adapter_bytes=
+
+fcv2-IQ2+r128q8  PPL20=  adapter_bytes=
+
+fcv2-Q2K+r64  PPL20=7.8174 +/- 0.28488  adapter_bytes=870372992
+fcv2-Q2K+r64 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.128220 ±   0.005527 Same top p: 85.392 ± 0.495 % 
+fcv2-Q2K+r128q8  PPL20=7.7886 +/- 0.28374  adapter_bytes=924767872
+fcv2-Q2K+r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.121658 ±   0.005601 Same top p: 86.059 ± 0.485 % 
+fcv2-IQ2+r128q8  PPL20=8.3490 +/- 0.30669  adapter_bytes=924767872
+fcv2-IQ2+r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.190530 ±   0.006550 Same top p: 82.804 ± 0.528 % 
+alt-fcv2a1 r128q8  PPL20=7.7071 +/- 0.27862
+alt-fcv2a1 r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.114173 ±   0.004587 Same top p: 86.078 ± 0.485 % MIXED-bare  PPL20=7.3967 +/- 0.26403
+MIXED-bare :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.091330 ±   0.005461 Same top p: 87.588 ± 0.462 % MIXED+fc  PPL20=7.3131 +/- 0.26081
+MIXED+fc :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.081186 ±   0.003944 Same top p: 88.039 ± 0.454 % MIXED2+fc  PPL20=7.4392 +/- 0.26406  total_bytes=11696742880
+MIXED2+fc :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.097015 ±   0.004140 Same top p: 87.804 ± 0.458 % MIXED+fc serving :: VRAM=15029MiB decode=86.3tok/s
+MIXED+fc on Phase-2 kernel :: 82.3 tok/s (pre-fusion: 86.3)

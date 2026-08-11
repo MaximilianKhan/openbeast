@@ -1,0 +1,8 @@
+RR-bare: PPL=43.3339 +/- 0.38435 (original Q2_K-imat bare: 43.33)
+RR2-bare: PPL=35.5441 +/- 0.31856 (original: 43.33)
+RR2+fc-r128q8 (382MB total): PPL=26.8005 +/- 0.23184 (prev best fcalt2-r128q8: 25.27; Q3_K_M: 26.06 @347MB)
+RR2+fc-r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.273795 ±   0.004329 Same top p: 74.392 ± 0.432 % fcalt1+RR+fc-r128q8 (382MB): PPL=25.8384 +/- 0.22398 (fcalt2-r128q8: 25.27)
+fcalt1+RR+fc :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.244892 ±   0.003936 Same top p: 75.873 ± 0.424 % RR3(lazy-batch)-bare: PPL=35.5346 +/- 0.31854 (RR2 exact: 35.54)
+27B-RR-bare  PPL20= (original Q2_K bare: 7.891)
+27B-RR-bare  PPL20=7.9523 +/- 0.29004 (original Q2_K bare: 7.891, KLD 0.1529)
+27B-RR-bare :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.146092 ±   0.005840 Same top p: 84.627 ± 0.505 % 06B-RR2-bare :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.556192 ±   0.007109 Same top p: 64.029 ± 0.475 % PROJQ+fc-r128q8: PPL=25.9434 +/- 0.22407 (naive RR+fc: 26.80; alt2+fc crown: 25.27)

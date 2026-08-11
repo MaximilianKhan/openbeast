@@ -1,0 +1,6 @@
+{
+ "quant": "cf1840c225cded85",
+ "gram_dir": "/home/max/Documents/openbeast/research/lowrank/data/gram06b",
+ "t_gram_dir": "/home/max/Documents/openbeast/research/lowrank/data/gradgram06b",
+ "t_damp": 0.001
+}

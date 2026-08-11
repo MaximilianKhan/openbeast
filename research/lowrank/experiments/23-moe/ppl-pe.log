@@ -1,0 +1,187 @@
+0.04.326.502 W llama_adapter_lora_init_impl: lora for 'blk.0.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.509 W llama_adapter_lora_init_impl: lora for 'blk.0.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.512 W llama_adapter_lora_init_impl: lora for 'blk.0.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.513 W llama_adapter_lora_init_impl: lora for 'blk.1.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.514 W llama_adapter_lora_init_impl: lora for 'blk.1.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.515 W llama_adapter_lora_init_impl: lora for 'blk.1.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.517 W llama_adapter_lora_init_impl: lora for 'blk.10.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.517 W llama_adapter_lora_init_impl: lora for 'blk.10.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.520 W llama_adapter_lora_init_impl: lora for 'blk.10.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.521 W llama_adapter_lora_init_impl: lora for 'blk.11.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.522 W llama_adapter_lora_init_impl: lora for 'blk.11.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.523 W llama_adapter_lora_init_impl: lora for 'blk.11.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.524 W llama_adapter_lora_init_impl: lora for 'blk.12.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.525 W llama_adapter_lora_init_impl: lora for 'blk.12.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.527 W llama_adapter_lora_init_impl: lora for 'blk.12.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.528 W llama_adapter_lora_init_impl: lora for 'blk.13.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.529 W llama_adapter_lora_init_impl: lora for 'blk.13.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.530 W llama_adapter_lora_init_impl: lora for 'blk.13.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.531 W llama_adapter_lora_init_impl: lora for 'blk.14.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.532 W llama_adapter_lora_init_impl: lora for 'blk.14.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.533 W llama_adapter_lora_init_impl: lora for 'blk.14.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.534 W llama_adapter_lora_init_impl: lora for 'blk.15.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.535 W llama_adapter_lora_init_impl: lora for 'blk.15.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.535 W llama_adapter_lora_init_impl: lora for 'blk.15.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.536 W llama_adapter_lora_init_impl: lora for 'blk.16.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.537 W llama_adapter_lora_init_impl: lora for 'blk.16.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.539 W llama_adapter_lora_init_impl: lora for 'blk.16.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.540 W llama_adapter_lora_init_impl: lora for 'blk.17.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.540 W llama_adapter_lora_init_impl: lora for 'blk.17.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.541 W llama_adapter_lora_init_impl: lora for 'blk.17.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.543 W llama_adapter_lora_init_impl: lora for 'blk.18.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.544 W llama_adapter_lora_init_impl: lora for 'blk.18.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.545 W llama_adapter_lora_init_impl: lora for 'blk.18.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.546 W llama_adapter_lora_init_impl: lora for 'blk.19.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.547 W llama_adapter_lora_init_impl: lora for 'blk.19.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.548 W llama_adapter_lora_init_impl: lora for 'blk.19.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.549 W llama_adapter_lora_init_impl: lora for 'blk.2.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.550 W llama_adapter_lora_init_impl: lora for 'blk.2.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.551 W llama_adapter_lora_init_impl: lora for 'blk.2.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.552 W llama_adapter_lora_init_impl: lora for 'blk.20.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.553 W llama_adapter_lora_init_impl: lora for 'blk.20.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.554 W llama_adapter_lora_init_impl: lora for 'blk.20.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.555 W llama_adapter_lora_init_impl: lora for 'blk.21.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.556 W llama_adapter_lora_init_impl: lora for 'blk.21.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.557 W llama_adapter_lora_init_impl: lora for 'blk.21.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.559 W llama_adapter_lora_init_impl: lora for 'blk.22.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.560 W llama_adapter_lora_init_impl: lora for 'blk.22.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.561 W llama_adapter_lora_init_impl: lora for 'blk.22.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.562 W llama_adapter_lora_init_impl: lora for 'blk.23.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.563 W llama_adapter_lora_init_impl: lora for 'blk.23.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.564 W llama_adapter_lora_init_impl: lora for 'blk.23.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.565 W llama_adapter_lora_init_impl: lora for 'blk.24.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.566 W llama_adapter_lora_init_impl: lora for 'blk.24.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.567 W llama_adapter_lora_init_impl: lora for 'blk.24.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.569 W llama_adapter_lora_init_impl: lora for 'blk.25.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.570 W llama_adapter_lora_init_impl: lora for 'blk.25.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.571 W llama_adapter_lora_init_impl: lora for 'blk.25.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.572 W llama_adapter_lora_init_impl: lora for 'blk.26.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.573 W llama_adapter_lora_init_impl: lora for 'blk.26.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.575 W llama_adapter_lora_init_impl: lora for 'blk.26.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.577 W llama_adapter_lora_init_impl: lora for 'blk.27.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.578 W llama_adapter_lora_init_impl: lora for 'blk.27.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.579 W llama_adapter_lora_init_impl: lora for 'blk.27.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.580 W llama_adapter_lora_init_impl: lora for 'blk.28.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.581 W llama_adapter_lora_init_impl: lora for 'blk.28.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.583 W llama_adapter_lora_init_impl: lora for 'blk.28.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.584 W llama_adapter_lora_init_impl: lora for 'blk.29.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.585 W llama_adapter_lora_init_impl: lora for 'blk.29.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.587 W llama_adapter_lora_init_impl: lora for 'blk.29.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.588 W llama_adapter_lora_init_impl: lora for 'blk.3.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.589 W llama_adapter_lora_init_impl: lora for 'blk.3.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.590 W llama_adapter_lora_init_impl: lora for 'blk.3.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.591 W llama_adapter_lora_init_impl: lora for 'blk.30.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.592 W llama_adapter_lora_init_impl: lora for 'blk.30.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.593 W llama_adapter_lora_init_impl: lora for 'blk.30.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.595 W llama_adapter_lora_init_impl: lora for 'blk.31.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.596 W llama_adapter_lora_init_impl: lora for 'blk.31.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.597 W llama_adapter_lora_init_impl: lora for 'blk.31.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.598 W llama_adapter_lora_init_impl: lora for 'blk.32.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.599 W llama_adapter_lora_init_impl: lora for 'blk.32.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.601 W llama_adapter_lora_init_impl: lora for 'blk.32.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.602 W llama_adapter_lora_init_impl: lora for 'blk.33.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.604 W llama_adapter_lora_init_impl: lora for 'blk.33.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.605 W llama_adapter_lora_init_impl: lora for 'blk.33.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.606 W llama_adapter_lora_init_impl: lora for 'blk.34.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.607 W llama_adapter_lora_init_impl: lora for 'blk.34.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.609 W llama_adapter_lora_init_impl: lora for 'blk.34.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.610 W llama_adapter_lora_init_impl: lora for 'blk.35.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.611 W llama_adapter_lora_init_impl: lora for 'blk.35.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.613 W llama_adapter_lora_init_impl: lora for 'blk.35.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.614 W llama_adapter_lora_init_impl: lora for 'blk.36.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.616 W llama_adapter_lora_init_impl: lora for 'blk.36.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.617 W llama_adapter_lora_init_impl: lora for 'blk.36.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.618 W llama_adapter_lora_init_impl: lora for 'blk.37.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.619 W llama_adapter_lora_init_impl: lora for 'blk.37.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.621 W llama_adapter_lora_init_impl: lora for 'blk.37.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.622 W llama_adapter_lora_init_impl: lora for 'blk.38.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.623 W llama_adapter_lora_init_impl: lora for 'blk.38.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.624 W llama_adapter_lora_init_impl: lora for 'blk.38.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.626 W llama_adapter_lora_init_impl: lora for 'blk.39.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.627 W llama_adapter_lora_init_impl: lora for 'blk.39.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.628 W llama_adapter_lora_init_impl: lora for 'blk.39.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.629 W llama_adapter_lora_init_impl: lora for 'blk.4.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.630 W llama_adapter_lora_init_impl: lora for 'blk.4.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.631 W llama_adapter_lora_init_impl: lora for 'blk.4.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.632 W llama_adapter_lora_init_impl: lora for 'blk.5.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.633 W llama_adapter_lora_init_impl: lora for 'blk.5.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.634 W llama_adapter_lora_init_impl: lora for 'blk.5.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.635 W llama_adapter_lora_init_impl: lora for 'blk.6.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.636 W llama_adapter_lora_init_impl: lora for 'blk.6.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.637 W llama_adapter_lora_init_impl: lora for 'blk.6.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.638 W llama_adapter_lora_init_impl: lora for 'blk.7.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.639 W llama_adapter_lora_init_impl: lora for 'blk.7.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.640 W llama_adapter_lora_init_impl: lora for 'blk.7.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.641 W llama_adapter_lora_init_impl: lora for 'blk.8.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.642 W llama_adapter_lora_init_impl: lora for 'blk.8.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.643 W llama_adapter_lora_init_impl: lora for 'blk.8.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.644 W llama_adapter_lora_init_impl: lora for 'blk.9.ffn_down_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.645 W llama_adapter_lora_init_impl: lora for 'blk.9.ffn_gate_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.04.326.646 W llama_adapter_lora_init_impl: lora for 'blk.9.ffn_up_exps.weight' cannot use buft 'CPU_REPACK', fallback to CPU
+0.05.176.658 I 
+0.05.176.732 I system_info: n_threads = 8 (n_threads_batch = 8) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.05.194.467 I kl_divergence: computing over 20 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.22.463.230 I kl_divergence: 17.27 seconds per pass - ETA 1.43 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1       4.7806 ±    0.6933       0.16311 ±    0.04920       0.16778 ±    0.02813    13.953 ±  2.131 %    88.627 ±  1.992 %
+   2       6.8793 ±    0.8371       0.18273 ±    0.03394       0.17447 ±    0.01774    12.738 ±  1.378 %    85.294 ±  1.570 %
+   3       6.3626 ±    0.6137       0.21205 ±    0.03026       0.26269 ±    0.02094    16.557 ±  1.113 %    82.484 ±  1.375 %
+   4       6.1323 ±    0.4873       0.17619 ±    0.02625       0.25694 ±    0.01784    16.314 ±  0.924 %    81.275 ±  1.222 %
+   5       6.2534 ±    0.4362       0.17222 ±    0.02258       0.23981 ±    0.01449    15.561 ±  0.788 %    80.627 ±  1.107 %
+   6       6.5827 ±    0.4190       0.19114 ±    0.02042       0.24079 ±    0.01269    15.528 ±  0.702 %    79.542 ±  1.032 %
+   7       6.7838 ±    0.4002       0.17604 ±    0.01913       0.23895 ±    0.01122    15.235 ±  0.637 %    79.440 ±  0.957 %
+   8       7.3324 ±    0.4140       0.16733 ±    0.01742       0.22981 ±    0.00996    14.768 ±  0.588 %    80.000 ±  0.886 %
+   9       7.8902 ±    0.4279       0.16631 ±    0.01632       0.22149 ±    0.00900    14.226 ±  0.554 %    80.131 ±  0.833 %
+  10       8.3053 ±    0.4295       0.16116 ±    0.01526       0.21443 ±    0.00818    13.756 ±  0.520 %    80.039 ±  0.792 %
+  11       8.1749 ±    0.3988       0.15524 ±    0.01447       0.20994 ±    0.00756    13.538 ±  0.485 %    80.285 ±  0.751 %
+  12       8.3652 ±    0.3947       0.16016 ±    0.01386       0.21171 ±    0.00739    13.753 ±  0.484 %    80.490 ±  0.716 %
+  13       8.8087 ±    0.4065       0.15510 ±    0.01327       0.20841 ±    0.00726    13.570 ±  0.467 %    80.513 ±  0.688 %
+  14       8.2953 ±    0.3642       0.15273 ±    0.01250       0.20388 ±    0.00688    13.576 ±  0.451 %    80.728 ±  0.660 %
+  15       8.2099 ±    0.3473       0.14846 ±    0.01192       0.19873 ±    0.00647    13.303 ±  0.431 %    80.993 ±  0.634 %
+  16       8.2309 ±    0.3375       0.14686 ±    0.01151       0.19593 ±    0.00618    13.243 ±  0.416 %    80.980 ±  0.614 %
+  17       7.7394 ±    0.3043       0.14177 ±    0.01103       0.19142 ±    0.00592    13.144 ±  0.400 %    81.130 ±  0.594 %
+  18       7.7835 ±    0.2973       0.13986 ±    0.01072       0.18991 ±    0.00566    13.035 ±  0.388 %    81.373 ±  0.575 %
+  19       7.7282 ±    0.2882       0.14219 ±    0.01061       0.19154 ±    0.00577    13.067 ±  0.383 %    81.445 ±  0.559 %
+  20       7.6193 ±    0.2751       0.13951 ±    0.01039       0.19228 ±    0.00554    13.010 ±  0.369 %    81.255 ±  0.547 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   7.619337 ±   0.275126
+Mean PPL(base)                :   6.627162 ±   0.228283
+Cor(ln(PPL(Q)), ln(PPL(base))):  95.77%
+Mean ln(PPL(Q)/PPL(base))     :   0.139513 ±   0.010389
+Mean PPL(Q)/PPL(base)         :   1.149713 ±   0.011944
+Mean PPL(Q)-PPL(base)         :   0.992175 ±   0.086630
+
+====== KL divergence statistics ======
+Mean    KLD:   0.192280 ±   0.005542
+Maximum KLD:   7.964347
+99.9%   KLD:   4.729786
+99.0%   KLD:   1.729327
+95.0%   KLD:   0.657734
+90.0%   KLD:   0.416224
+Median  KLD:   0.089959
+10.0%   KLD:   0.002424
+ 5.0%   KLD:   0.000571
+ 1.0%   KLD:   0.000056
+ 0.1%   KLD:   0.000002
+Minimum KLD:  -0.000000
+
+====== Token probability statistics ======
+Mean    Δp: -1.936 ± 0.180 %
+Maximum Δp: 74.690%
+99.9%   Δp: 49.587%
+99.0%   Δp: 29.311%
+95.0%   Δp: 13.806%
+90.0%   Δp:  7.766%
+75.0%   Δp:  1.241%
+Median  Δp: -0.057%
+25.0%   Δp: -3.413%
+10.0%   Δp: -12.924%
+ 5.0%   Δp: -21.941%
+ 1.0%   Δp: -58.348%
+ 0.1%   Δp: -93.110%
+Minimum Δp: -98.745%
+RMS Δp    : 13.010 ± 0.369 %
+Same top p: 81.255 ± 0.547 %
+

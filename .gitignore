@@ -27,3 +27,6 @@ evals/results/
 .ruff_cache/
 evals/cache/
 .run/
+
+# llama.cpp experiment worktrees
+.wt-*/

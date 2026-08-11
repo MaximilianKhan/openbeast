@@ -1,0 +1,9 @@
+ALT1: Q2K-alt1+r64  PPL=30.5782 +/- 0.26778  (round-0: 31.29)
+ALT2: Q2K-alt2+r64  PPL=30.4989 +/- 0.26642  (alt1: 30.58, round-0: 31.29)
+FC-ALT1 r64: PPL=26.9619 +/- 0.23411  (fc round-0: 27.58)
+fcalt2-r64q8: PPL= adapter= total=296237984  (Q3_K_M: 26.06 @ 347126720)
+fcalt2-r128q8: PPL= adapter= total=296237984  (Q3_K_M: 26.06 @ 347126720)
+fcalt2-r64q8: PPL=26.5787 +/- 0.23151 adapter_bytes=42920128 total=339158112 (Q3_K_M: 26.06 @ 347126720)
+fcalt2-r128q8: PPL=25.2697 +/- 0.21938 adapter_bytes=85813440 total=382051424 (Q3_K_M: 26.06 @ 347126720)
+fcalt2-r96q8: PPL=25.8737 +/- 0.22499 total=360604768 (Q3_K_M: 26.06 @ 347126720)
+fc-r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.246373 ±   0.004077 Same top p: 75.725 ± 0.425 % fcalt2-r96q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.238621 ±   0.003898 Same top p: 76.078 ± 0.422 % fcalt2-r128q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.208611 ±   0.003575 Same top p: 77.922 ± 0.411 % 

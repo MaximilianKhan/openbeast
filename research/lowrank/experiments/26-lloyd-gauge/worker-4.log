@@ -1,0 +1,7 @@
+[lloyd] blk.16.ssm_out.weight (1024x2048) iters=8 J 0.04301->0.04162 (3.24% off) guard=0 102.6s
+[lloyd] blk.17.ssm_out.weight (1024x2048) iters=8 J 0.03303->0.0321 (2.81% off) guard=0 102.8s
+[lloyd] blk.18.ssm_out.weight (1024x2048) iters=8 J 0.04937->0.04808 (2.61% off) guard=0 102.6s
+[lloyd] blk.20.ssm_out.weight (1024x2048) iters=8 J 0.0755->0.07336 (2.84% off) guard=0 103.9s
+[lloyd] blk.21.ssm_out.weight (1024x2048) iters=8 J 0.07461->0.07186 (3.68% off) guard=0 102.5s
+[lloyd] blk.22.ssm_out.weight (1024x2048) iters=8 J 0.0981->0.09455 (3.62% off) guard=0 102.9s
+[compute-only]: 87 tensors Lloyd-refit, iters min/med/max = 5/8/8, 626s

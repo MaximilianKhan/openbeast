@@ -1,0 +1,156 @@
+120 expert stacks, arch=qwen35moe
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:386: RuntimeWarning: overflow encountered in divide
+  id = np.where(d == 0, 0, 1 / d)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:387: RuntimeWarning: invalid value encountered in multiply
+  qs = np_roundf(blocks * id)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:47: RuntimeWarning: invalid value encountered in subtract
+  b = floored + np.floor(2 * (a - floored))
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:392: RuntimeWarning: invalid value encountered in cast
+  qs = qs.astype(np.int8).view(np.uint8)
+blk.0.ffn_gate_exps.weight           cap_pe=0.443 cap_sh=0.100 44s
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:386: RuntimeWarning: overflow encountered in divide
+  id = np.where(d == 0, 0, 1 / d)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:387: RuntimeWarning: invalid value encountered in multiply
+  qs = np_roundf(blocks * id)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:47: RuntimeWarning: invalid value encountered in subtract
+  b = floored + np.floor(2 * (a - floored))
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:392: RuntimeWarning: invalid value encountered in cast
+  qs = qs.astype(np.int8).view(np.uint8)
+blk.0.ffn_up_exps.weight             cap_pe=0.431 cap_sh=0.093 46s
+blk.1.ffn_down_exps.weight           cap_pe=0.219 cap_sh=0.022 51s
+blk.0.ffn_down_exps.weight           cap_pe=0.522 cap_sh=0.028 52s
+blk.1.ffn_gate_exps.weight           cap_pe=0.359 cap_sh=0.086 46s
+blk.1.ffn_up_exps.weight             cap_pe=0.358 cap_sh=0.085 48s
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:386: RuntimeWarning: overflow encountered in divide
+  id = np.where(d == 0, 0, 1 / d)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:387: RuntimeWarning: invalid value encountered in multiply
+  qs = np_roundf(blocks * id)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:47: RuntimeWarning: invalid value encountered in subtract
+  b = floored + np.floor(2 * (a - floored))
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:392: RuntimeWarning: invalid value encountered in cast
+  qs = qs.astype(np.int8).view(np.uint8)
+blk.2.ffn_gate_exps.weight           cap_pe=0.334 cap_sh=0.082 47s
+blk.2.ffn_down_exps.weight           cap_pe=0.199 cap_sh=0.022 49s
+blk.2.ffn_up_exps.weight             cap_pe=0.334 cap_sh=0.081 45s
+blk.3.ffn_gate_exps.weight           cap_pe=0.334 cap_sh=0.086 46s
+blk.3.ffn_down_exps.weight           cap_pe=0.183 cap_sh=0.021 51s
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:386: RuntimeWarning: overflow encountered in divide
+  id = np.where(d == 0, 0, 1 / d)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:387: RuntimeWarning: invalid value encountered in multiply
+  qs = np_roundf(blocks * id)
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:47: RuntimeWarning: invalid value encountered in subtract
+  b = floored + np.floor(2 * (a - floored))
+/home/max/Documents/openbeast/llama.cpp/gguf-py/gguf/quants.py:392: RuntimeWarning: invalid value encountered in cast
+  qs = qs.astype(np.int8).view(np.uint8)
+blk.3.ffn_up_exps.weight             cap_pe=0.330 cap_sh=0.081 46s
+blk.4.ffn_gate_exps.weight           cap_pe=0.326 cap_sh=0.085 46s
+blk.4.ffn_up_exps.weight             cap_pe=0.323 cap_sh=0.081 46s
+blk.4.ffn_down_exps.weight           cap_pe=0.174 cap_sh=0.021 57s
+blk.5.ffn_down_exps.weight           cap_pe=0.159 cap_sh=0.021 51s
+blk.5.ffn_gate_exps.weight           cap_pe=0.316 cap_sh=0.083 44s
+blk.5.ffn_up_exps.weight             cap_pe=0.314 cap_sh=0.080 46s
+blk.6.ffn_gate_exps.weight           cap_pe=0.312 cap_sh=0.083 43s
+blk.6.ffn_down_exps.weight           cap_pe=0.160 cap_sh=0.021 52s
+blk.7.ffn_gate_exps.weight           cap_pe=0.311 cap_sh=0.083 44s
+blk.6.ffn_up_exps.weight             cap_pe=0.310 cap_sh=0.080 50s
+blk.7.ffn_up_exps.weight             cap_pe=0.308 cap_sh=0.079 41s
+blk.7.ffn_down_exps.weight           cap_pe=0.170 cap_sh=0.021 55s
+blk.8.ffn_gate_exps.weight           cap_pe=0.321 cap_sh=0.085 59s
+blk.8.ffn_down_exps.weight           cap_pe=0.175 cap_sh=0.021 66s
+blk.8.ffn_up_exps.weight             cap_pe=0.319 cap_sh=0.081 83s
+blk.9.ffn_down_exps.weight           cap_pe=0.174 cap_sh=0.021 84s
+blk.9.ffn_gate_exps.weight           cap_pe=0.330 cap_sh=0.084 48s
+blk.9.ffn_up_exps.weight             cap_pe=0.329 cap_sh=0.083 55s
+blk.10.ffn_gate_exps.weight          cap_pe=0.332 cap_sh=0.082 53s
+blk.10.ffn_down_exps.weight          cap_pe=0.162 cap_sh=0.021 66s
+blk.10.ffn_up_exps.weight            cap_pe=0.331 cap_sh=0.082 56s
+blk.11.ffn_down_exps.weight          cap_pe=0.158 cap_sh=0.021 51s
+blk.11.ffn_gate_exps.weight          cap_pe=0.317 cap_sh=0.082 57s
+blk.11.ffn_up_exps.weight            cap_pe=0.316 cap_sh=0.081 55s
+blk.12.ffn_down_exps.weight          cap_pe=0.169 cap_sh=0.021 59s
+blk.12.ffn_gate_exps.weight          cap_pe=0.325 cap_sh=0.083 54s
+blk.12.ffn_up_exps.weight            cap_pe=0.323 cap_sh=0.080 55s
+blk.13.ffn_down_exps.weight          cap_pe=0.185 cap_sh=0.022 58s
+blk.13.ffn_gate_exps.weight          cap_pe=0.335 cap_sh=0.084 55s
+blk.13.ffn_up_exps.weight            cap_pe=0.332 cap_sh=0.082 51s
+blk.14.ffn_gate_exps.weight          cap_pe=0.352 cap_sh=0.085 51s
+blk.14.ffn_down_exps.weight          cap_pe=0.184 cap_sh=0.023 62s
+blk.14.ffn_up_exps.weight            cap_pe=0.351 cap_sh=0.084 52s
+blk.15.ffn_down_exps.weight          cap_pe=0.169 cap_sh=0.022 61s
+blk.15.ffn_gate_exps.weight          cap_pe=0.352 cap_sh=0.086 55s
+blk.15.ffn_up_exps.weight            cap_pe=0.350 cap_sh=0.083 50s
+blk.16.ffn_down_exps.weight          cap_pe=0.159 cap_sh=0.022 52s
+blk.16.ffn_gate_exps.weight          cap_pe=0.346 cap_sh=0.084 44s
+blk.16.ffn_up_exps.weight            cap_pe=0.345 cap_sh=0.083 28s
+blk.17.ffn_down_exps.weight          cap_pe=0.162 cap_sh=0.022 30s
+blk.17.ffn_gate_exps.weight          cap_pe=0.351 cap_sh=0.085 24s
+blk.17.ffn_up_exps.weight            cap_pe=0.349 cap_sh=0.083 24s
+blk.18.ffn_down_exps.weight          cap_pe=0.166 cap_sh=0.023 31s
+blk.18.ffn_gate_exps.weight          cap_pe=0.355 cap_sh=0.086 27s
+blk.18.ffn_up_exps.weight            cap_pe=0.354 cap_sh=0.084 26s
+blk.19.ffn_down_exps.weight          cap_pe=0.169 cap_sh=0.022 31s
+blk.19.ffn_gate_exps.weight          cap_pe=0.354 cap_sh=0.087 26s
+blk.19.ffn_up_exps.weight            cap_pe=0.351 cap_sh=0.084 26s
+blk.20.ffn_down_exps.weight          cap_pe=0.205 cap_sh=0.022 28s
+blk.20.ffn_gate_exps.weight          cap_pe=0.363 cap_sh=0.091 24s
+blk.20.ffn_up_exps.weight            cap_pe=0.358 cap_sh=0.085 23s
+blk.21.ffn_down_exps.weight          cap_pe=0.180 cap_sh=0.022 28s
+blk.21.ffn_gate_exps.weight          cap_pe=0.365 cap_sh=0.088 24s
+blk.21.ffn_up_exps.weight            cap_pe=0.362 cap_sh=0.086 23s
+blk.22.ffn_down_exps.weight          cap_pe=0.158 cap_sh=0.022 27s
+blk.22.ffn_gate_exps.weight          cap_pe=0.359 cap_sh=0.086 24s
+blk.22.ffn_up_exps.weight            cap_pe=0.357 cap_sh=0.085 24s
+blk.23.ffn_down_exps.weight          cap_pe=0.150 cap_sh=0.021 27s
+blk.23.ffn_gate_exps.weight          cap_pe=0.344 cap_sh=0.084 21s
+blk.23.ffn_up_exps.weight            cap_pe=0.341 cap_sh=0.083 21s
+blk.24.ffn_down_exps.weight          cap_pe=0.155 cap_sh=0.021 23s
+blk.24.ffn_gate_exps.weight          cap_pe=0.338 cap_sh=0.085 20s
+blk.24.ffn_up_exps.weight            cap_pe=0.336 cap_sh=0.083 19s
+blk.25.ffn_gate_exps.weight          cap_pe=0.339 cap_sh=0.085 20s
+blk.25.ffn_down_exps.weight          cap_pe=0.171 cap_sh=0.022 23s
+blk.25.ffn_up_exps.weight            cap_pe=0.335 cap_sh=0.083 21s
+blk.26.ffn_down_exps.weight          cap_pe=0.162 cap_sh=0.022 24s
+blk.26.ffn_gate_exps.weight          cap_pe=0.343 cap_sh=0.084 21s
+blk.26.ffn_up_exps.weight            cap_pe=0.341 cap_sh=0.083 21s
+blk.27.ffn_down_exps.weight          cap_pe=0.164 cap_sh=0.022 25s
+blk.27.ffn_gate_exps.weight          cap_pe=0.350 cap_sh=0.086 20s
+blk.27.ffn_up_exps.weight            cap_pe=0.347 cap_sh=0.084 21s
+blk.28.ffn_down_exps.weight          cap_pe=0.160 cap_sh=0.022 25s
+blk.28.ffn_gate_exps.weight          cap_pe=0.361 cap_sh=0.087 21s
+blk.28.ffn_up_exps.weight            cap_pe=0.357 cap_sh=0.086 21s
+blk.29.ffn_down_exps.weight          cap_pe=0.164 cap_sh=0.021 24s
+blk.29.ffn_gate_exps.weight          cap_pe=0.370 cap_sh=0.088 21s
+blk.29.ffn_up_exps.weight            cap_pe=0.366 cap_sh=0.087 21s
+blk.30.ffn_down_exps.weight          cap_pe=0.174 cap_sh=0.022 23s
+blk.30.ffn_gate_exps.weight          cap_pe=0.378 cap_sh=0.091 19s
+blk.30.ffn_up_exps.weight            cap_pe=0.373 cap_sh=0.089 19s
+blk.31.ffn_down_exps.weight          cap_pe=0.181 cap_sh=0.022 22s
+blk.31.ffn_gate_exps.weight          cap_pe=0.373 cap_sh=0.091 19s
+blk.31.ffn_up_exps.weight            cap_pe=0.368 cap_sh=0.088 19s
+blk.32.ffn_down_exps.weight          cap_pe=0.182 cap_sh=0.022 22s
+blk.32.ffn_gate_exps.weight          cap_pe=0.395 cap_sh=0.095 19s
+blk.32.ffn_up_exps.weight            cap_pe=0.386 cap_sh=0.091 19s
+blk.33.ffn_down_exps.weight          cap_pe=0.174 cap_sh=0.022 22s
+blk.33.ffn_up_exps.weight            cap_pe=0.382 cap_sh=0.090 19s
+blk.33.ffn_gate_exps.weight          cap_pe=0.391 cap_sh=0.096 19s
+blk.34.ffn_down_exps.weight          cap_pe=0.194 cap_sh=0.023 21s
+blk.34.ffn_gate_exps.weight          cap_pe=0.397 cap_sh=0.100 19s
+blk.34.ffn_up_exps.weight            cap_pe=0.389 cap_sh=0.093 19s
+blk.35.ffn_down_exps.weight          cap_pe=0.225 cap_sh=0.024 22s
+blk.35.ffn_gate_exps.weight          cap_pe=0.392 cap_sh=0.103 19s
+blk.35.ffn_up_exps.weight            cap_pe=0.382 cap_sh=0.090 19s
+blk.36.ffn_down_exps.weight          cap_pe=0.238 cap_sh=0.024 22s
+blk.36.ffn_gate_exps.weight          cap_pe=0.416 cap_sh=0.109 19s
+blk.36.ffn_up_exps.weight            cap_pe=0.403 cap_sh=0.092 19s
+blk.37.ffn_down_exps.weight          cap_pe=0.249 cap_sh=0.025 22s
+blk.37.ffn_gate_exps.weight          cap_pe=0.451 cap_sh=0.114 19s
+blk.37.ffn_up_exps.weight            cap_pe=0.439 cap_sh=0.098 19s
+blk.38.ffn_down_exps.weight          cap_pe=0.257 cap_sh=0.025 21s
+blk.38.ffn_gate_exps.weight          cap_pe=0.488 cap_sh=0.123 18s
+blk.38.ffn_up_exps.weight            cap_pe=0.475 cap_sh=0.104 19s
+blk.39.ffn_down_exps.weight          cap_pe=0.262 cap_sh=0.031 21s
+blk.39.ffn_gate_exps.weight          cap_pe=0.517 cap_sh=0.132 18s
+blk.39.ffn_up_exps.weight            cap_pe=0.507 cap_sh=0.113 18s
+extraction 1062s; assembling ggufs
+e23-adapter-pe-r32q8.gguf: 2673.9 MB, whitened-energy captured 0.3772
+e23-adapter-sh-r32q8.gguf: 1608.5 MB, whitened-energy captured 0.0911

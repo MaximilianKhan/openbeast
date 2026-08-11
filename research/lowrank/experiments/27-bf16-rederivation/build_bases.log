@@ -1,0 +1,17 @@
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q2_K.gguf (Q2_K) 16:06:15
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q2_K.gguf 11003736448 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q3_K_S.gguf (Q3_K_S) 16:07:43
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q3_K_S.gguf 12366025088 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q3_K_M.gguf (Q3_K_M) 16:08:32
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q3_K_M.gguf 13593514368 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-IQ3_XXS.gguf (IQ3_XXS) 16:09:39
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-IQ3_XXS.gguf 11478442368 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-IQ3_XS.gguf (IQ3_XS) 16:14:18
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-IQ3_XS.gguf 12259201408 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q4_K_M.gguf (Q4_K_M) 16:18:19
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-Q4_K_M.gguf 16839471488 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-MIXED.gguf (Q2_K) 16:19:45
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-MIXED.gguf 12162412928 bytes
+=== building research/lowrank/experiments/27-bf16-rederivation/h27bf16-CONTROL.gguf (Q3_K_S) 16:20:48
+=== done research/lowrank/experiments/27-bf16-rederivation/h27bf16-CONTROL.gguf 12496933248 bytes
+ALL BASES DONE

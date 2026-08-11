@@ -1,0 +1,3 @@
+IQ1_S+fc-mix  PPL20=11.5495 +/- 0.44658  total=8240769056
+IQ1_S+fc-mix :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.527413 ±   0.013061 Same top p: 70.373 ± 0.639 % IQ1_S+fc-BIG  PPL20=10.5014 +/- 0.40007
+IQ1_S+fc-BIG :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.430546 ±   0.011387 Same top p: 73.333 ± 0.619 % 

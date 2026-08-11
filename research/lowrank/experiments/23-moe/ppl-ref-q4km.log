@@ -1,0 +1,10 @@
+0.04.218.519 I 
+0.04.218.571 I system_info: n_threads = 8 (n_threads_batch = 8) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.04.218.676 I perplexity: saving all logits to ../../data/q4ref35b-20.logits
+0.04.218.679 I perplexity: tokenizing the input ..
+0.04.487.136 I perplexity: tokenization took 268.45 ms
+0.04.487.252 I perplexity: calculating perplexity over 20 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.25.979.961 I perplexity: 21.46 seconds per pass - ETA 1.78 minutes
+[1]4.0611,[2]5.7304,[3]5.1552,[4]5.1479,[5]5.2691,[6]5.4417,[7]5.6979,[8]6.2114,[9]6.6896,[10]7.0770,[11]7.0066,[12]7.1339,[13]7.5497,[14]7.1261,[15]7.0825,[16]7.1116,[17]6.7208,[18]6.7718,[19]6.7078,[20]6.6309,
+4.26.654.535 I Final estimate: PPL = 6.6309 +/- 0.22873
+

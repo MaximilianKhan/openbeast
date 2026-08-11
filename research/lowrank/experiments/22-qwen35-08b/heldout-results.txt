@@ -1,0 +1,13 @@
+heldout-code bare-Q2K: 3.0830 +/- 0.02797
+heldout-code RR-input: 3.4704 +/- 0.03310
+heldout-code Q2K+fc-r128q8: 2.6493 +/- 0.02228
+heldout-code Q3_K_M: 2.4725 +/- 0.01998
+heldout-code BF16-ref: 2.2298 +/- 0.01696
+RR-mixed: wiki=27.5384 +/- 0.23135 code=3.4278 +/- 0.03269 (bare: 33.09/3.083; RR-wikionly: 28.09/3.470)
+RR-mixed2 (TRUE interleave): wiki=29.8420 +/- 0.25350 code=2.7852 +/- 0.02430 (bare 33.09/3.083; RR-wiki 28.09/3.470; prior 'mixed' was 100% wiki — bug, invalid)
+T1.11 third-corpus bare: 57.5630 +/- 0.77339
+T1.11 third-corpus RR-wiki: 54.4000 +/- 0.71304
+T1.11 third-corpus RR-mixed2: 55.3221 +/- 0.72862
+T1.14 code-KLD bare: Mean    KLD:   0.318470 Same top p: 84.365 
+T1.14 code-KLD RR-mixed2: Mean    KLD:   0.219349 Same top p: 86.826 
+T1.14 wiki-KLD RR-mixed2: Mean    KLD:   0.372431 Same top p: 70.716 

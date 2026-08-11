@@ -1,0 +1,11 @@
+# T1.16 40-chunk extension (2026-08-04 evening). Truth logits: data/bf16ref27b-40.logits
+# (BF16, 40 chunks wiki.test n_ctx 512, -ngl 20; gen log gen-bf16ref27b-40.log).
+# BF16 PPL40 = 6.0270 ± 0.1455. Q2K*-legacy rows are the E13-27B pair: Q6-DERIVED
+# LEGACY provenance (old imatrix), cross-provenance vs the BF16-1step rows above them.
+# Paired stats: results-40ch-paired.txt. Pre-registered JOURNAL 2026-08-04 18:08.
+MIXEDfc bytes=12162412928 Mean PPL(Q) : 6.220769 ± 0.151033 Mean KLD: 0.083105 ± 0.003524 Same top p: 88.618 ± 0.314 %
+CONTROL bytes=12496933248 Mean PPL(Q) : 6.212703 ± 0.151155 Mean KLD: 0.073879 ± 0.002508 Same top p: 88.990 ± 0.310 %
+Q3_K_S bytes=12366025088 Mean PPL(Q) : 6.351977 ± 0.156176 Mean KLD: 0.083186 ± 0.002859 Same top p: 88.118 ± 0.320 %
+Q3_K_M bytes=13593514368 Mean PPL(Q) : 6.152770 ± 0.150003 Mean KLD: 0.055120 ± 0.001936 Same top p: 90.441 ± 0.291 %
+Q2Krr-legacy bytes=10864595360 Mean PPL(Q) : 6.692503 ± 0.166153 Mean KLD: 0.137434 ± 0.004195 Same top p: 85.059 ± 0.353 %
+Q2Kbare-legacy bytes=10864595360 Mean PPL(Q) : 6.713565 ± 0.167927 Mean KLD: 0.153308 ± 0.004698 Same top p: 84.196 ± 0.361 %
