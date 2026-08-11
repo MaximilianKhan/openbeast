@@ -75,6 +75,20 @@ freezing any section:
 6. **Measurement hygiene**: no new speed number ships until the
    llama.cpp pin is checked against #26177 (--fit/NextN miscount);
    the −13.4% MTP figure may be two bugs, not one.
+7. **[added 2026-08-11 evening — the GPU-block results]** §4 gains the
+   session's central claim: the equal-byte EQUIVALENCE CLASS —
+   post-hoc whitened correction ≈ pre-quant whitened carve-out (SRR
+   order, E29 tie t=+0.99) ≈ shared-basis variants (E28b tie t=−0.91),
+   with wildly different surrogate captures (40% of R / 76% of W /
+   +12% union), all beaten by mixed-TYPE allocation (CONTROL, t≥+2.3)
+   which alone escapes the class; uniform rung sits below (flagship
+   beats Q3_K_S t=−2.85 at n=100 — the §4.3 parity language upgrades
+   to rung-victory-under-the-line). Supporting: whitened-W is 76%
+   capturable @k128 at 27B (E01's raw null is metric- and
+   scale-bound); shared-A r128 = −16.6% adapter bytes at tied KLD
+   (patched-loader column, candidate small upstream PR: lora_a
+   aliasing). Free-lever §3 cites the n=100 finals (t=−7.02 legacy
+   pair).
 
 Rev 3 addition (E09): the boundary is a CURVE, not a point — at 27B the
 correction's recovery fraction rises monotonically as the base

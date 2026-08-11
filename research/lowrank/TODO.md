@@ -50,12 +50,14 @@ lever ids):
   outcome #6); parity NOT flipped (CONTROL t=+2.35 stands); bytes
   variant (r128 shared, −17% adapter bytes at predicted KLD-tie) =
   E28c, see JOURNAL. Experiment: experiments/28-glowq-shared-a/.
-- [x] L3 SRR k-split — part 1 DONE 2026-08-11 (E29 proxy): whitened-W
-  76.6% capturable @k128 at 27B (E01's raw 0.6B null does NOT
-  transfer to the whitened metric at scale — finding); absmax proxy
-  weak (−4.5%). Part 2 (full SRR-as-adapter build, byte-matched vs
-  MIXEDfc/CONTROL) pre-registered + building same day.
-  Experiment: experiments/29-srr-split/.
+- [x] L3 SRR k-split — DONE 2026-08-11 (E29, both parts): whitened-W
+  76.6% capturable @k128 at 27B (E01's raw 0.6B null does NOT transfer
+  to the whitened metric at scale — finding); full SRR-as-adapter
+  build TIES the flagship (t=+0.99) and loses to CONTROL (t=+5.15) —
+  order doesn't matter. SESSION SYNTHESIS: equal-byte EQUIVALENCE
+  CLASS of low-rank mechanisms at 27B (correction ≈ carve ≈ shared
+  basis; only TYPE allocation escapes) — new claim, ours, measured
+  three ways pre-registered. Experiment: experiments/29-srr-split/.
 - [ ] L1 BaKron: derive the K-quant-constrained (superblock-scale)
   two-sided recursion; estimate two-sided-vs-diag refinement gain from
   cached activation Grams + the 196 grad Grams. Doubles as the T1.12
