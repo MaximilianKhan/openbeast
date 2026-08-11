@@ -35,7 +35,10 @@ BF16 = REPO / "weights/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-BF
 MIXED = HERE.parent / "27-bf16-rederivation/h27bf16-MIXED.gguf"
 OLD_ADAPTER = HERE.parent / "27-bf16-rederivation/mixed-fc-r128q8-bf16.gguf"
 GRAMDIR = REPO / "research/lowrank/data/gram27b-bf16"
-OUT = HERE.parent / "27-bf16-rederivation/mixed-fc-sharedA-q8-bf16.gguf"
+R128_MODE = len(sys.argv) > 1 and sys.argv[1] == "r128"
+OUT = HERE.parent / ("27-bf16-rederivation/mixed-fc-sharedA-r128-q8-bf16.gguf"
+                     if R128_MODE else
+                     "27-bf16-rederivation/mixed-fc-sharedA-q8-bf16.gguf")
 R0 = 128
 QT = gguf.GGMLQuantizationType.Q8_0
 
@@ -128,10 +131,18 @@ def main():
         exact = R0 * sum(5120 + o for o in outs) / (5120 + sum(outs))
         return int(round(exact / 32) * 32), exact
 
-    r_att, e_att = parity_rank(attn_layers[0], ["attn_q", "attn_k", "attn_v"])
-    r_gdn, e_gdn = parity_rank(gdn_layers[0], ["attn_qkv", "attn_gate"])
-    print(f"parity ranks: attn {e_att:.1f} -> {r_att}, "
-          f"gdn {e_gdn:.1f} -> {r_gdn}", flush=True)
+    if R128_MODE:
+        # E28c bytes-variant: shared A at the ORIGINAL rank — quality
+        # predicted ~tie (E28: 99.55%/99.75% same-rank capture), dedup
+        # bytes -17% vs the flagship adapter.
+        r_att = r_gdn = R0
+        print(f"r128 bytes-variant -> {OUT.name}", flush=True)
+    else:
+        r_att, e_att = parity_rank(attn_layers[0],
+                                   ["attn_q", "attn_k", "attn_v"])
+        r_gdn, e_gdn = parity_rank(gdn_layers[0], ["attn_qkv", "attn_gate"])
+        print(f"parity ranks: attn {e_att:.1f} -> {r_att}, "
+              f"gdn {e_gdn:.1f} -> {r_gdn}", flush=True)
 
     for blk in attn_layers:
         group(blk, ["attn_q", "attn_k", "attn_v"], r_att,

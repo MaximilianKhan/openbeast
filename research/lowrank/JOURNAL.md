@@ -883,3 +883,26 @@ extends; cite-and-kill, part 2 not run). Capture > 15% or shrink >
 10% ⇒ part 2 (full deflated-base build + measure100, SRR-as-adapter
 is stock-servable) is warranted and gets its own registration.
 Between gates: report, judgment call logged.
+
+### E28b EVAL RESULT 2026-08-11 16:20 — quality-null; SURROGATE-VS-OUTCOME #6
+sharedA(parity r192/160) vs MIXEDfc: KLD t=−0.91, NLL t=−0.38, top-1
+t=+0.36 — TIE. The +12.2%/+6.9% whitened capture at byte parity moved
+KLD by −0.0005 (noise). Per the registered rule: the capture surrogate
+OVERSTATED the lever — recorded as the campaign's SIXTH
+surrogate-vs-outcome divergence (energy-greedy alloc, kron, Lloyd,
+equalization, [E24 T-estimate], now shared-A capture). Marginal
+whitened energy beyond the top directions carries ~no KLD. vs CONTROL:
+t=+2.35 — gap 2.62→2.35, NOT closed; the E27 verdict stands.
+Log verified: 100 rows + final.
+
+### PRE-REGISTRATION 2026-08-11 16:22 — E28c shared-A r128 BYTES variant
+The surviving reading: same-rank shared basis keeps 99.55%/99.75% of
+capture — and E28b showed KLD is INSENSITIVE to the marginal capture
+band — so shared-A @ r128 should TIE the flagship on KLD while its
+DEDUP bytes run −17% (−56 MB adapter; patched-loader accounting, same
+local-patch class as the fused kernel; file-with-duplicates ≈ old
+bytes, eval container only). Build: e28b_extract.py r128. EVAL:
+measure100, paired vs MIXEDfc. DECISION: |t_KLD| < 2 ⇒ bytes lever GO
+(−17% adapter bytes at tied quality — deployable-wins entry, patched
+column); t ≤ −2 ⇒ better AND smaller (report loudly); t ≥ +2 ⇒ lever
+dead, sharing costs real quality at equal rank.
