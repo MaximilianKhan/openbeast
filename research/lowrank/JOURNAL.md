@@ -801,3 +801,40 @@ GO. NEXT (new registration required before it runs): shared-A
 extraction + measure100 eval — capture is the surrogate; the E27 table
 only moves if KLD moves (fifth law respected). Full table:
 experiments/28-glowq-shared-a/results.txt.
+
+### T1.3 + T1.5 RESULTS 2026-08-11 15:20 (n=100 — FINAL per registration)
+Battery: one path-bug false start (driver cd'd to E27, measure100 cd'd
+to repo root — all 8 failed in ~1 s; fixed to absolute paths, rerun
+clean). All 8 logs verified: 100 per-chunk rows + final line each.
+results-100ch.txt + results-100ch-paired.txt.
+(1) **Flagship beats Q3_K_S — the tie breaks our way.** MIXEDfc vs
+Q3_K_S: KLD t=−2.85 (71/100), NLL t=−5.75, top-1 t=+2.04. The n=40
+parity (t=−0.04) resolves at n=100 to a win on all three paired
+metrics — the campaign's first paired ladder-rung victory for
+correction at 27B. (Registration rule (1) anticipated |t|<2 parity;
+data exceeded it in our favor; recorded as measured.)
+(2) **CONTROL still beats the flagship — confirmed FINAL.** t=+2.62
+KLD, top-1 t=−2.14 (NLL tie). The n=40 license (t=+2.26) holds at
+n=100. Refined 27B law: mixed-TYPE allocation > low-rank correction >
+uniform rung, all at equal bytes. CONTROL vs Q3_K_S hardens to
+t=−7.23/−7.35/+5.55.
+(3) **fc lever paired-proven at 27B, first time** (MIXEDfc vs
+MIXEDbare): −0.0090 KLD (t=−8.52, 92/100), +0.69 pt top-1 (t=+5.20).
+(4) **T1.3 FINAL (legacy-provenance pair, labeled):** re-round
+−0.0213 KLD = −13.3% (t=−7.02, 77/100), +1.07 pt top-1 (t=+4.72),
+NLL tie (t=−0.98). The free lever is paired-FINAL at 27B.
+Gap to CONTROL for any future flip attempt: −0.0063 KLD. Alternation
+rider NOT run (no 27B artifact; would need new registration).
+
+### PRE-REGISTRATION 2026-08-11 15:35 — T1.8 first task eval (HellaSwag)
+Full val set (10042 tasks — full set ⇒ identical tasks per config),
+llama-perplexity --hellaswag, -c 2048, on the trio {MIXEDfc (MIXED +
+fc adapter), Q3_K_S, Q3_K_M}. EXPECTED OUTCOME stated honestly in
+advance: with binomial se ≈ 0.5 pp at n=10042, configs whose KLD
+differs by ~0.005 likely tie — a tie IS the paper's point (KLD silent
+zone: task evals cannot see what KLD sees at these deltas). DECISION
+RULES: (a) any pairwise acc gap > 2·se(diff) ≈ 1.4 pp = real
+separation, report; (b) ordering consistent with KLD (M > fc > S) at
+any margin = weak corroboration, report as such; (c) inversion of the
+KLD ordering beyond noise = finding against KLD-first methodology —
+report loudly. VERIFY: 10042 tasks completed per log before use.
