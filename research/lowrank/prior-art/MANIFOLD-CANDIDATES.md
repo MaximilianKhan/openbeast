@@ -14,6 +14,11 @@ Cross-slice verdict in one line: **the metric is the money, not the
 manifold machinery** — every ranked winner upgrades an objective/metric
 in a pipeline we already run; pure geometric solvers are single-digit
 gains at best.
+[Caveat added 2026-08-11 per recon T4: TwinQuant (2606.01556, ICML
+2026) is a Stiefel-manifold joint quant+subspace optimization that
+wins in print at LLM scale — a counterexample at the margin. Their
+gain may still be the objective rather than the manifold machinery,
+but the one-liner cannot be stated without this citation.]
 
 ## The list (ranked by expected KLD per engineering-day)
 

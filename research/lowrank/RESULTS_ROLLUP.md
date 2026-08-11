@@ -1,6 +1,15 @@
 # beast-rank — consolidated results rollup
 > ⚠ round-2 corrections 2026-08-04 (review/adversarial-round2-*.md,
 > review/coherence-audit.md applied)
+> ⚠ RECON 2026-08-11 (prior-art/recon-2026-08-11.md): no measured
+> number below changes, but the novelty FRAMINGS do — frozen-grid
+> re-rounding is now published twice (GSQ improves shipped GGUFs
+> in-format, code public; ReQuant), two-sided whitening was published
+> in April (OBD-LLM/KronQ), and E16 is twice-narrowed (TwinQuant;
+> SVDQuant ships NVFP4+low-rank for diffusion). Verified still ours:
+> E17, capture-vs-width, E27's interpolation-control methodology, the
+> register-neutral fusion law, MTP/linear-attn calibration. Read the
+> recon before quoting any "first"/"unpublished" line from this file.
 
 ## ⚠️ ADVERSARIAL REVIEW CORRECTIONS (2026-08-04, review/*.md — read
 ## before citing ANY verdict below; raw tables stand, framings repaired)

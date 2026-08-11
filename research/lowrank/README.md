@@ -140,9 +140,16 @@ Scale up (0.6B → 9B GLM → 27B) only after each stage earns it.
 - [`JOURNAL.md`](JOURNAL.md) — dated lab notebook, append-only. Every session
   writes what was tried, what happened, what it taught us. Failed runs are
   sacred knowledge — record them with the same care as wins.
-- [`TODO.md`](TODO.md) — the investigation queue, ranked.
+- [`TODO.md`](TODO.md) — the investigation queue, ranked (recon-adjusted
+  2026-08-11: paper-math lane first, then the re-gated GPU queue).
 - [`prior-art/`](prior-art/) — one file per paper/system, with the numbers
-  (compression vs perplexity/benchmarks), not vibes.
+  (compression vs perplexity/benchmarks), not vibes. **Start with
+  [`recon-2026-08-11.md`](prior-art/recon-2026-08-11.md)** — the
+  post-08-04 threat/lever synthesis; it supersedes every
+  "first"/"unpublished" claim elsewhere in this tree (gguf-refine and
+  two-sided whitening are reframed, E16 twice-narrowed; E17,
+  capture-vs-width, and the E27 control methodology verified still
+  ours).
 - [`experiments/`](experiments/) — numbered, self-contained, each with its
   own README stating hypothesis → method → result. NAMING note (ids
   diverged from dirs mid-campaign; map added per coherence-audit

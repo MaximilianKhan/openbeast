@@ -29,13 +29,34 @@ is a model class fitting or not.
 Why it deploys everywhere: output is a byte-compatible standard GGUF —
 runs unmodified on every llama.cpp version and every downstream app
 (Ollama, LM Studio, ...). Zero adoption friction. Tool shape:
-`gguf-refine model.gguf` (calibrate ~minutes, emit better file). We
-are not aware of an equivalent tool class — stated as awareness, not
-proof: the 2026-08-04 tracker sweep left no query/hit artifact, and
-round-1 sweeps missed tracker-resident prior art twice
-(#21037/#23476/#23575); retain a sweep record before claiming novelty
-in print (softened 2026-08-04 per adversarial-round2-experiments
-F13). Millions of deployed K-quant files carry this headroom today.
+`gguf-refine model.gguf` (calibrate ~minutes, emit better file).
+Millions of deployed K-quant files carry this headroom today.
+
+**Equivalent-tool-class question RESOLVED 2026-08-11**
+(prior-art/recon-2026-08-11.md T1/T2 — this supersedes the 08-04
+"awareness, not proof" hedge, which was the right call: the sweep
+found them): the frame "existing quantized artifacts are improvable
+post-export, in-format" is now published TWICE — GSQ (2604.18556,
+verified from PDF: improves shipped Unsloth GGUF Q2_K/Q3_K_M
+in-format via Gumbel-Softmax TRAINING, optimizer state near model
+size, code public) and ReQuant (2608.07019: generic frozen-grid
+coordinate descent, no GGUF/whitening/KLD). The pitch is therefore
+NOT "first"; it is **the cheap deterministic point on that curve**:
+one-shot, backprop-free, imatrix-whitened, sub-block-scale-aware,
+paired-KLD-proven at 0.6B and 27B. The GSQ head-to-head on the same
+Unsloth Qwen3-8B Q2_K artifact is the mandatory benchmark
+(ABLATION-PLAN T1.17) — the paper does not ship without it.
+
+Two new named use cases (recon 2026-08-11, both simulatable on cached
+weights before GPU time): (a) **QAT→GGUF grid mismatch** — Kimi K2/K3
+ship bf16-scale INT4 grids that llama.cpp's f16-scale Q4_0 grid
+cannot represent (community measured Q8_0 beating the "grid-faithful"
+mix); re-rounding against the true dequant values is exactly the
+missing repair. (b) **DeepSeek-V4 experts** ship native MXFP4 — exact
+reference values, expert menu locked to the 2-bit family in
+VRAM-constrained GGUFs, and our Q2_K codec already exists; frame as
+an ACCURACY lever only (V4 decode is compute-bound — bytes do not buy
+speed there).
 
 ## Win 2 — the kernel patch-set: compute saved, directly
 

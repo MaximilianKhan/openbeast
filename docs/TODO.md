@@ -32,6 +32,13 @@ relevant to beast-slot); (d) integration cost: OpenAI-compat surface,
 beast-gate/identity-server compatibility, streaming, the /api/slot
 contract. Outcome: a measured recommendation, not a migration — the
 stack stays llama.cpp unless vLLM wins on our actual workload.
+Recon addendum (2026-08-11): vLLM v0.27 ships QuTLASS FP4 + a fused
+one-graph AR speculator, and FlashInfer v0.6.16+ has SM120 (RTX
+5090-class) NVFP4 dense GEMM + fused FP4 MoE — desktop-Blackwell FP4
+is no longer second-class outside llama.cpp, which strengthens the
+case for running this experiment and gives the beast-rank NVFP4 work
+a second serving substrate. Details:
+research/lowrank/prior-art/recon-2026-08-11.md (CONTEXT section).
 
 ## 🔌 ODS ABSORPTION — decided 2026-07-17 (Max)
 

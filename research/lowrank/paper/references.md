@@ -416,3 +416,38 @@ gguf=gguf-tooling · int=llamacpp-internals
 12. **llama.cpp Discussion #8831 (+ ik_llama.cpp #15)** · the upstream prior-art thread and the on-record skeptic's prediction our measurements answer — the deployment story's anchor.
 
 Runners-up (cite in §2/§3, not necessarily the intro): 2212.09720 (k-bit scaling — the 2–3 bpw target zone), 2412.07902 + 2412.14363 (rank ∝ d empirics), 2601.05684 (FLRQ — allocation beats uniform rank), 2606.03465 (tensor-decomposition negative), 2509.23202 (FP4 outlier-neutralization — why fc composes with NVFP4).
+
+## Recon 2026-08-11 additions (post-08-04 wave)
+
+Roles only — full extraction, verification status (CONFIRMED vs
+LANE-REPORTED), and the threat/lever ranking live in
+`../prior-art/recon-2026-08-11.md`. Merge into the theme tables at the
+next bibliography pass. Entries marked ✋ have unread PDFs that are
+load-bearing — pull before the section that cites them is frozen.
+
+- **GSQ — 2604.18556** (IST-DASLab + Red Hat, code public) · MANDATORY contrast + benchmark: Gumbel-Softmax re-optimization of SHIPPED GGUF K-quants in-format (verified from PDF; Unsloth Qwen3-8B Q2_K 50.03→56.28). gguf-refine = the one-shot whitened point on its curve; head-to-head is T1.17.
+- **ReQuant — 2608.07019** · frozen-grid coordinate descent as generic PTQ post-processing; dL = −dq·g + dq²·H_jj scoring — the paper-math comparison target for our whitened error feedback (L6).
+- **OBD-LLM — 2604.00821** (Yale) ✋ · bi-directional Kronecker whitening for LLM low-rank; demotes M3 to independent confirmation; its 10% diagonal dampening = the published T1.12 estimator-repair candidate.
+- **KronQ — 2607.07964** (COLM 2026, same group) · two-sided metric for rounding/rotation; Prop 1 (HG cancels in the column-wise update) = published support for "estimator quality gates metric sophistication" (E24/M1). Claim split: their two-sided ROTATION for rounding vs our two-sided whitened METRIC for residual fitting.
+- **TwinQuant — 2606.01556** (ICML 2026) · joint learnable subspace decomposition, BOTH branches 4-bit, fused dual-branch epilogue kernel (must-cite in kernel section); Fig. 1 = published unwhitened capture-vs-width cousin; Stiefel-manifold optimization that wins in print (caveat for the MANIFOLD-CANDIDATES one-liner).
+- **SVDQuant — 2411.05007 role UPDATE** (already load-bearing #8) · per recon also the shipping diffusion NVFP4-base + rank-32 low-rank precedent (Nunchaku fusion = must-cite); E16 = first LLM instance, in whitened residual-correction order vs their pre-quant plain-SVD outlier absorption; DeepCompressor issue #88 (unanswered ~14 months) = evidence the LLM extension is non-trivial.
+- **BaKron — 2608.06291** (UCSD) · two-sided Kronecker rounding at GPTQ cost — the gguf-refine metric-upgrade path (L1, best adoption candidate of the sweep).
+- **GlowQ — 2603.25385** (ICLR 2026) · shared right-factor across input-sharing tensor groups — adapter bytes ÷2–3; the cheapest potential E27-parity flip (L2).
+- **SRR / Preserve-Then-Quantize — 2602.02001** (ICML 2026) · QERA-lineage SOTA; principled pre-quant carve-out vs post-hoc rank split — must-cite either way (L3).
+- **SERQ — 2603.08185** ✋ · saliency-aware low-rank error reconstruction (diag saliency + offline PERMUTATION — a lever we have not tried; testable on cached Grams).
+- **DAM — 2607.20434** ✋ · claimed first non-orthogonality theorem for low-rank + quant errors — check against 27B parity data before the theory section.
+- **GPTQ-intrinsic LoRA — 2606.01412 / ProjQ — 2606.00494** · joint base+adapter alternation published twice in GPTQ-land; Bid-Up monotone bounds = E11 theory import (already draft-cited, flags 5–6 stand).
+- **BitsMoE — 2606.00079** · full-rank shared expert basis + mixed-bit spectral factors; consistent with our orthogonality negative (full-rank = change of coordinates); byte-fair check on cached per-expert spectra. Adjacent: GEMQ 2605.23078, AlphaQ 2606.04980 (ESD tail-exponent allocation, L7), EAQuant 2506.13329 (expert-coverage calibration), TileQ 2605.09281 (within-expert tiles — corroborates orthogonality), VSRAQ 2606.05688 (routing-consistency metric).
+- **Adaptive-MoE compensators — 2512.17073** ✋ · nearest MoE low-rank-compensation prior (per-expert, shipped with routed experts); check their fitting metric — if plain SVD, that is the clean differentiation.
+- **QAM-W 2605.26339 / CubicQuant 2608.06763 / basin-init 2604.08118** · 2026's working codebook methods all freeze the codebook — three-way external support for the Lloyd limit-cycle negative (M4); basin-init frames "start from the shipped artifact" as principled.
+- **ScaleSweep — 2606.07618 + vLLM PR #45187 (4-over-6, merged) + FlashInfer #3932** · NVFP4 codec scale-search inputs (L4).
+- **NVFP4-QAD — 2601.20088 / 2606.05682** · NVIDIA's NVFP4 recovery = teacher distillation — the contrast class for E16/E17 (ours: closed-form, calibration-only). ModelOpt verified low-rank-free through v0.46.0rc1.
+- **DuQuant++ — 2604.17789** · outlier-aware rotation block-aligned to MXFP4 groups — "FP4 + transform" is claimed territory; we are "FP4 + whitened residual". Qift 2606.02823's rotation-kurtosis number reusable.
+- **Muon geometry — 2606.08388 / 2506.15054 / 2509.23500** · Muon flattens singular spectra → provenance axis for T1.10 (L8); 2509.23500 = "outlier proxies don't predict PTQ loss" (KLD-first support).
+- **2605.30571** · batch-1 analytic-floor decode study — bandwidth-inversion corroboration + floor-fraction methodology (L10).
+- **2605.20402** · MXFP4 error taxonomy (reducible bias / recoverable deadzone / irreducible floor) — E17's restatement frame.
+- **Fusion nearest-neighbors** · Fast-NF4 2604.02556, TileFuse 2606.11357, AdaFuse 2603.11873 ✋, LoRDBA 2605.24058, Multi-Scale Dequant 2605.13915, LiquidGEMM (SC'25), CoreQ 2602.05902 ✋ · none do batch-1 CUDA dequant+adapter with occupancy analysis — related-work writes itself.
+- **QAD drafter co-calibration — 2607.04244** (AdaptFM rank 3, Nota AI) · drafter adapted to the QUANTIZED target; reframes the MTP correction target as E[error | quantized-trunk activations]; cite in the #23476 argument.
+- **Lab/vendor ground truth** · Kimi K3 2607.24653 (MXFP4-experts QAT; QAT→GGUF grid-mismatch use case); DeepSeek V4 2606.19348 (FP4-QAT experts, MXFP4 native; V4-expert Q2_K use case); GLM-5 2602.15763 + disclosed W8A8-attn/W4A8-expert recipe (per-stack TYPE allocation corroborated at 744B); AngelSlim ternary 2601.07892/2602.21233 (the ladder below IQ1_S exists); msModelSlim (Ascend — scale search only, citable deployed-practice baseline); MiniMax M3 2606.13392 (linear attention retreated at scale — deprioritize hybrid-linear quant beyond Qwen3.5).
+- **OSCAR 2605.17757 / STAR-KV 2606.08382 / RDKV 2605.08317** · KV lane successors; RDKV owns the unified rate-distortion framing — cite, don't claim; adopt reverse-water-filling vocabulary.
+- **Windowed-MTP — 2607.21535** · MTP work is runtime-only, zero calibration — dated evidence the MTP-calibration lane was unscooped as of late July.

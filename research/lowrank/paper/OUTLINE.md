@@ -41,6 +41,41 @@ localization (participation ratios). Methods additions: Gram-capture
 instrumentation, PD-safe whitening, alternation protocol, mixed-base
 recipe.
 
+Rev 5 (recon 2026-08-11, `../prior-art/recon-2026-08-11.md`) — the
+claim ledger after the post-08-04 literature sweep; apply before
+freezing any section:
+1. **gguf-refine**: "first to improve shipped GGUFs in-format" is DEAD
+   (GSQ 2604.18556, verified from PDF, public code; ReQuant
+   2608.07019). Reposition as the cheap deterministic point on the
+   GSQ curve — one-shot, backprop-free, imatrix-whitened,
+   sub-block-scale-aware, paired-KLD at two scales — and add the GSQ
+   head-to-head on the same Unsloth Qwen3-8B Q2_K artifact as a
+   REQUIRED evaluation row (ABLATION-PLAN T1.17).
+2. **§2 gains the 2026 wave**: GSQ/ReQuant (frozen-grid); OBD-LLM +
+   KronQ (two-sided metric — M3 reframed as *independent
+   confirmation, first in GGUF K-quant residual correction with
+   byte-fair interpolation controls*); TwinQuant + SVDQuant/Nunchaku
+   + LoRaQ (quant+low-rank compositions — E16 stated as *first LLM
+   instance, whitened residual correction of a frozen NVFP4 base,
+   stock adapter serving*); SRR (rank-budget split — must-cite);
+   SERQ; BaKron; DuQuant++ (FP4+transform contrast). One-line roles
+   in references.md "Recon 2026-08-11 additions".
+3. **Theory section**: check DAM's (2607.20434) non-orthogonality
+   theorem against the 27B parity data before writing; import
+   Bid-Up's (2606.01412) monotone-descent bounds for the E11
+   convergence note; KronQ Prop 1 (HG cancels in the column update)
+   is published support for "estimator quality gates metric
+   sophistication" (E24/M1).
+4. **Capture-vs-width (§4.2/F8)**: cite TwinQuant Fig. 1 as the
+   published unwhitened cousin; ours is the first systematic
+   whitened measurement (verified unscooped).
+5. **Kernel section**: must-cite TwinQuant's fused dual-branch
+   epilogue and Nunchaku's branch-fusion trick; the register-neutral
+   occupancy law remains unclaimed — state it as the contribution.
+6. **Measurement hygiene**: no new speed number ships until the
+   llama.cpp pin is checked against #26177 (--fit/NextN miscount);
+   the −13.4% MTP figure may be two bugs, not one.
+
 Rev 3 addition (E09): the boundary is a CURVE, not a point — at 27B the
 correction's recovery fraction rises monotonically as the base
 approaches its cliff (7.5% of KLD damage at Q2_K → 18% at IQ2_XS, both
@@ -65,7 +100,9 @@ issues.
    bandwidth-bound decode measurement makes compute the free resource.
 2. **Background & prior art** — SVD family (ASVD, SVD-LLM), quant+low-rank
    hybrids (CALDERA, EoRA, SVDQuant), llama.cpp quant ecosystem + LoRA
-   machinery. ← feeds from `prior-art/`.
+   machinery, plus the 2026 wave per rev 5 (GSQ/ReQuant frozen-grid,
+   OBD-LLM/KronQ two-sided, TwinQuant/SRR/SERQ/BaKron). ← feeds from
+   `prior-art/` (start: `recon-2026-08-11.md`).
 3. **Analysis** — factorized-serving cost model: FLOPs/bytes vs rank; the
    premise inversion (decode is bandwidth-bound → factorization speeds it
    up); why accuracy is the binding constraint. Spectrum census results

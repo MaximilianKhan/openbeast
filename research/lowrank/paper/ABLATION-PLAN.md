@@ -201,6 +201,21 @@ est. wall time (rig)**. GPU-h = wall hours occupying the 5090; CPU-h =
 CPU-bound (sweeps/regressions can overlap GPU runs). Runs marked ◆ share
 prerequisites (build once, reuse).
 
+### TIER 0 — paper-math queue (recon 2026-08-11; pre-GPU, CPU/cached-data
+### only — run BEFORE committing the GPU block, results may re-rank T1)
+From prior-art/recon-2026-08-11.md levers L1–L3/L6/L10 (full specs in
+the research TODO "PAPER-MATH LANE"): GlowQ shared-A principal angles
+on cached 27B Grams (possible E27-parity flip → would change T1.5's
+config set); SRR k-split criterion on cached spectra (predicts whether
+a pre-quant carve-out belongs in T1.9's recipe); BaKron
+K-quant-constrained recursion (upgrades the T2.1 codec metric and
+supplies T1.12's repair candidate alongside OBD-LLM dampening);
+ReQuant/GSQ objective math; the cached-spectra micro-checks (SVDQuant
+order duel, ARCQuant duel, LoRaQ byte model, ARCHead, DuQuant++
+rotation test). GATE inherited from recon: no new speed/GPU number
+until the llama.cpp pin is verified against #26177 (--fit/NextN
+miscount) — affects every serving column below.
+
 ### TIER 1 — required for the paper's main claims (free lever §3, walls §4)
 Rule for inclusion: a T1 run either (a) supplies the isolated measurement a
 headline sentence currently lacks, or (b) closes a confound the draft
@@ -225,10 +240,19 @@ already discloses as pending.
 | **T1.15 Calibration-sampling-alone bound** (round-2 experiments F1a — formalize the accidental 27.54-vs-28.09 control) | 0.8B | wiki-only calibration, E13 RR config | chunk budget/sampling ∈ {40ch as gram08b, 48ch resample ×2 disjoint} | spread of RR PPL across resamples — names the F12a variance floor every sub-0.5-PPL margin inherits | 3 captures + 3 sweeps + 3 evals ≈ **1.5 GPU-h** |
 | **T1.16 ≥40-chunk E27 control extension** (round-2 experiments F3 — the t=1.9 verdict is below the campaign's own 2σ bar on n=20) — **DONE 2026-08-04 evening** (pre-registered JOURNAL 18:08; +Q3_K_M anchor and the paired E13-27B RR pair). VERDICT: control-beats-flagship LICENSED — KLD t=+2.26, 28/40 chunks, sign p=0.017, outlier trims raise to t≈2.8; flagship-Q3_K_S parity holds (KLD t=−0.04, PPL edge t=−3.33); E13-27B re-round RESOLVED in RR's favor (KLD t=−3.70, top-1 t=+2.56, legacy-provenance pair). Raw: experiments/27-bf16-rederivation/results-40ch{,-paired}.txt; MASTER-TABLE 27B rows marked [40]. | 27B | E27 artifacts {MIXED+fc, CONTROL, Q3_K_S}; 40-chunk BF16 logits (subset of T1.2's 100) | — | 40-chunk paired ΔKLD + sign test printed beside t — licenses or demotes "matches-or-beats" | ~20 min/eval ×3 + logits ≈ **1.5 GPU-h** (subsumed by T1.5 if T1.2 runs first); ACTUAL: logits ~14 min + 6 evals ~15 s each ≈ 0.3 GPU-h |
 
-**T1 totals: 16 runs ≈ 38 GPU-h + 4 CPU-h ≈ 3 rig-days.**
+| **T1.17 GSQ head-to-head** (recon 2026-08-11 T1 — the frozen-grid frame is published; the paper cannot ship without this comparison) | 8B (their artifact) | Unsloth Qwen3-8B Q2_K checkpoint (the exact artifact GSQ improves), our Q2_K codec + mixed calibration per HELDOUT-METHOD, their public code (github.com/IST-DASLab/GSQ) at defaults | method ∈ {bare, gguf-refine (one-shot whitened), GSQ (trained)} | KLD + top-1 vs BF16 logits on shared eval tokens, paired; plus wall-clock + peak-memory cost per method (the cost axis IS the claim) | their training run is the unknown (budget-cap it and report); ours ~minutes CPU + 3 evals ≈ **1 GPU-day ceiling, likely well under** |
+
+**T1 totals: 17 runs ≈ 38–46 GPU-h + 4 CPU-h ≈ 3–4 rig-days.**
 (Was "10 runs ≈ 30 GPU-h" — T1.11-T1.16 added 2026-08-04 from the
-round-2 reviews' repair lists; T1.2/T1.4/T1.5/T1.16 chain;
-T1.1/T1.6/T1.7/T1.11-T1.15 can run on the 0.8B lane in parallel.)
+round-2 reviews' repair lists; T1.17 added 2026-08-11 from the recon;
+T1.2/T1.4/T1.5/T1.16 chain; T1.1/T1.6/T1.7/T1.11-T1.15 can run on the
+0.8B lane in parallel; T1.17 is independent of every chain.)
+Recon riders on existing rows: **T1.10** gains the Muon-provenance
+axis (L8: Muon flattens spectra → optimizer geometry as a candidate
+setter of c; optional Moonlight-16B-A3B out-of-family point);
+**T1.12** gains two published repair candidates to test alongside the
+rerun (OBD-LLM's 10% diagonal dampening; BaKron's solver) —
+"fundamentally different estimator" now has named instances.
 
 ### TIER 2 — strengthens (composition table, lever isolation, speed rigor)
 

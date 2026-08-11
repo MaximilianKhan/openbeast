@@ -20,11 +20,88 @@
 - [x] Scale ladder → 0.6B / 0.8B / 27B / 35B MoE (9B GLM died —
   conversion rot)
 
-## NOW — the actual queue (2026-08-04)
-- [ ] REVIEW REPAIRS QUEUE below (round-1 + round-2 items)
-- [ ] Re-rounder codec targets (directive 2026-08-04e below)
-- [ ] 27B two-sided (M3 trailer: hybrid-layer backward + KV bypass)
-- [ ] ABLATION-PLAN Tier-1 matrix (T1.1–T1.16 — the submission gate)
+## 🛰️ RECON 2026-08-11 — read prior-art/recon-2026-08-11.md BEFORE
+## citing any novelty claim; it supersedes all "first"/"unpublished"
+## wording in this tree
+
+Nothing measured is falsified; three framings changed. Frozen-grid
+re-rounding is published twice (GSQ 2604.18556 — improves SHIPPED
+Unsloth GGUFs in-format, code public; ReQuant 2608.07019) →
+gguf-refine repositions as the one-shot whitened instantiation and a
+GSQ head-to-head becomes MANDATORY (T1.17). Two-sided whitening
+published April (OBD-LLM 2604.00821 + KronQ) → M3 = independent
+confirmation, first in GGUF residual correction with interpolation
+controls. E16 twice-narrowed (TwinQuant both-branches-4bit; SVDQuant
+NVFP4+low-rank but diffusion-only, plain pre-quant SVD) → "first LLM
+instance, whitened residual on a frozen NVFP4 base, stock adapter
+serving". Verified STILL OURS: E17 posterior dequant, capture-vs-width
+scaling, E27's interpolation-control methodology, register-neutral
+fusion law, MTP/linear-attention calibration.
+**GATE: no new GPU speed number until the llama.cpp pin is checked
+against #26177 (--fit/NextN miscount, fixed b10152) — the −13.4% MTP
+figure may be part #25489, part #26177.**
+
+## NOW — recon-adjusted queue (2026-08-11)
+
+PAPER-MATH LANE (pre-GPU, ranked by expected KLD-per-day; L# = recon
+lever ids):
+- [ ] L2 GlowQ shared-A: principal-angle overlap of attn_q/k/v
+  whitened residual subspaces on cached 27B Grams; if overlap is high,
+  recompute the E27 byte-fair table with shared-A accounting —
+  cheapest possible flip of the 27B parity verdict. (afternoon, CPU)
+- [ ] L3 SRR k-split: their preserve-vs-reconstruct criterion on
+  cached 27B spectra — predicts whether a pre-quant carve-out closes
+  the gap to the interpolation line. (1 day)
+- [ ] L1 BaKron: derive the K-quant-constrained (superblock-scale)
+  two-sided recursion; estimate two-sided-vs-diag refinement gain from
+  cached activation Grams + the 196 grad Grams. Doubles as the T1.12
+  estimator-repair path (test OBD-LLM's 10% dampening recipe on cached
+  statistics). (1–2 days)
+- [ ] L6 ReQuant/GSQ math: prove our whitened objective generalizes
+  ReQuant's dL = −dq·g + dq²·H_jj scoring; bound the MSE-vs-whitened
+  gap from cached stats. (paper-days)
+- [ ] L10 cached-spectra micro-checks (hours each): SVDQuant order
+  duel (plain-SVD-of-W vs whitened-NVFP4-residual capture @r32);
+  ARCQuant channel-vs-rank duel; LoRaQ INT8-adapter-at-2r vs FP16-at-r
+  byte model; ARCHead lm-head capture at 0.6B/0.8B; DuQuant++
+  16-aligned rotation compose-vs-cannibalize; RR code-stream entropy;
+  floor-fraction restatement of decode numbers; vocab-pruning byte
+  bound (AdaptFM rank-2 lever); KronQ µ-incoherence of gradient Grams.
+- [ ] L7 AlphaQ per-expert tail exponents on cached 35B-A3B spectra +
+  EAQuant token-starvation quantification from cached routing stats.
+- [ ] L8 Muon-provenance axis folded into T1.10 (optional
+  Moonlight-16B-A3B capture point as the out-of-family test).
+
+UPSTREAM WINDOW (this week — the audience is assembled):
+- [ ] Post confirmation comments on #23575 (ACTIVE 23-comment thread;
+  #26903 shows maintainers hitting the pain) + #23476 + #21037, armed
+  with AdaptFM ammo (rank 2 kept MTP FP16; rank 6's recurrent-state
+  rollback hazard). Supersedes the "rewrite draft #2" wording below.
+- [ ] L5: port llama.cpp PR #23258's dual-context MTP capture into the
+  gradmatrix/imatrix harness → real Grams for MTP/NextN tensors.
+  (2–3 days, CPU + short validation)
+
+GPU QUEUE (re-gated, order matters):
+- [ ] #26177 pin check FIRST (gate above), then re-measure MTP tok/s
+- [ ] T1.17 GSQ head-to-head (the one new mandatory benchmark)
+- [ ] REVIEW REPAIRS QUEUE below (remaining round-1 + round-2 items)
+- [ ] Re-rounder codec targets (directive 2026-08-04e below — now with
+  BaKron metric upgrade + vLLM 4-over-6/ScaleSweep scale search +
+  MXFP4 column)
+- [ ] 27B two-sided (M3 trailer: hybrid-layer backward + KV bypass) —
+  now framed as OBD-LLM confirmation-at-scale
+- [ ] ABLATION-PLAN Tier-1 matrix (T1.1–T1.17 — the submission gate)
+
+PAPER REPAIRS (wording; do before freezing any section):
+- [ ] Reframe the three claims per recon (gguf-refine, M3 two-sided,
+  E16 twice-narrowed); cite TwinQuant Fig. 1 beside capture-vs-width;
+  add DAM non-orthogonality check + Bid-Up monotone bounds to the
+  theory section.
+- [ ] PDF pulls: OBD-LLM (full — residual application is
+  lane-reported), DAM 2607.20434, SERQ 2603.08185, 2512.17073 (their
+  fitting metric), AdaptFM straggler repos (September re-check),
+  openPangu-2.0-Pro quant chapter, Noah's Ark author re-watch
+  pre-submission.
 
 ## 📌 MAX DIRECTIVE (2026-08-04) — E17 candidate: probability/entropy-
 ## driven weight RECONSTRUCTION at dequant time
@@ -127,6 +204,9 @@ Also feeds paper figure F5 (tok/s vs rank) with real curvature.
   per-expert count semantics in load_imatrix.
 - [ ] Upstream: post confirmation-comments on #23476/#23575 and #21037
   (Max's account) instead of new issues; rewrite draft #2 mechanism.
+  → URGENT per recon 2026-08-11: #23575 thread is active (23
+  comments) and #26903 shows maintainers hitting the MTP-calibration
+  pain themselves — see UPSTREAM WINDOW in the NOW queue above.
 
 ## 📌 MAX DIRECTIVE (2026-08-04e) — re-rounder codec targets
 NVFP4 codec for e13 (nearest-of-8 E2M1 lookup, frozen FP8 scales;
@@ -134,3 +214,11 @@ output byte-compatible NVFP4 — no export conflict; favorable prior per
 E16's covariance-structured-residual finding, tempered by the 4.5-bpw
 tier law) + Q3_K/Q4_K codecs. Goal: `gguf-refine` covers the full
 format family, K-quants through NVFP4.
+RECON ADDENDA (2026-08-11): metric upgrade path = BaKron's two-sided
+Kronecker recursion at GPTQ cost (L1); NVFP4 scale-side search space =
+vLLM PR #45187's 4-over-6 candidates + ScaleSweep init, replayed
+offline in our whitened metric, numerics cross-checked against
+FlashInfer #3932 (L4); add an MXFP4 codec column (E8M0 32-elem blocks
+— Kimi K3 and DeepSeek-V4 experts ship it natively; the QAT→GGUF grid
+mismatch and V4-expert use cases are gguf-refine's two new named
+targets, L9).

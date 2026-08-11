@@ -91,6 +91,20 @@ upgrade, check for this before blaming our stack.
     prefill-disaggregation + CUDA race fixes are worth it); pin back with the
     rollback below if serving speed matters before upstream fixes #25489.
     Re-measure on the next pull.
+- **`--fit`/NextN layer miscount (#26177, fixed in b10152).** `--fit`
+  undercounted the MTP/NextN block, so layer 0 could land on CPU and the
+  fused GDN kernel was silently disabled (~10% decode on MTP models). Our
+  pinned `0ef6e55ed` PREDATES the fix — the −13.4% measurement above may be
+  part #25489, part #26177. Before quoting ANY MTP throughput number (this
+  includes the research campaign's speed columns): check whether the serve/
+  measure invocation passes `--fit`, then re-measure on ≥b10152. Related
+  merges spotted in the 2026-08-11 recon: #26861 (imatrix collection −30%
+  MoE / −13.5% dense, no math change) and #26903 (MTP-export lm-head quant
+  scales — upstream now feels the MTP-calibration pain we reported in
+  #23476/#23575; the comment window is open). Also worth a code inspection:
+  the MTP speculative path for the recurrent-state rollback-on-rejected-
+  drafts hazard reported on hybrid linear-attention rigs (AdaptFM rank-6
+  finding, `research/lowrank/prior-art/recon-2026-08-11.md` §T8).
 - **`--kv-unified` semantics.** Our tenancy ground truth (prefix-based slots,
   unbounded queue, kv-unified purges lowest slot) was re-verified against the
   July window — no upstream changes. Any upgrade note mentioning kv-cache or
@@ -111,7 +125,10 @@ upgrade, check for this before blaming our stack.
   neko-legends NVFP4 pair on the new build before citing the old numbers.
 - **DSpark speculative decoding (#25173).** `--spec-type draft-dspark`;
   Qwen3 4B/8B/14B only so far — not our 27B lineup yet. Watch for larger-model
-  support.
+  support. Update 2026-08-11: DeepSeek-V4 support + DSpark for it merged
+  Aug 2 (#24162/#25784, ~1.8–2.0× measured) — the larger-model lane is
+  opening; note the drafter tensors join the imatrix blind-spot family
+  (same class as MTP/NextN — check coverage before quantizing).
 - **Slot-similarity trace logging (#26218/#26271).** Debugging aid for exactly
   our prefix-based slot-reuse behavior — useful next time slot assignment
   needs forensics.
