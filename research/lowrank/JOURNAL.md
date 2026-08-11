@@ -966,3 +966,24 @@ budget, not the low-rank mechanism, sets quality. New paper claim
 (ours): the equal-byte equivalence class, measured three ways in one
 pre-registered afternoon. Deflated 55 GB intermediate retained for
 now (rebuildable — delete when disk pressure).
+
+### T1.8 RESULT 2026-08-11 16:38 — first task eval: the silent zone MEASURED
+Full HellaSwag val (10042 tasks, identical set per config; all logs
+verified 10042 rows; trio ran ~50 min total — the 1.5 h/config
+estimate was 5× over, page cache again). Final acc: MIXEDfc 82.25%
+[81.50, 82.99], Q3_K_S 82.39% [81.64, 83.13], Q3_K_M 82.85%
+[82.10, 83.58]. REGISTERED RULES: (a) largest gap 0.60 pp < 1.4 pp
+bar → no separation at the registered threshold; (b) ordering
+consistent with KLD for the M pairs, 0.14 pp inversion for
+flagship-vs-S deep inside noise → not rule (c).
+POST-HOC (labeled; not pre-registered): per-task outcomes
+reconstructed from the running-acc lines (exact — diffs all 0/1,
+totals match), paired McNemar: flagship vs Q3_K_S z=−0.81 (TIE — at
+ΔKLD≈0.005 the task eval is blind even paired at n=10042);
+Q3_K_M vs flagship z=+3.48 and vs Q3_K_S z=+2.82 (SIGNIFICANT — at
+ΔKLD≈0.027 tasks see the gap and AGREE with KLD's ordering).
+VERDICT: the KLD silent zone is now a measured resolution floor
+(somewhere in ΔKLD 0.005–0.027 at this scale/task), not an assertion;
+where tasks resolve at all they corroborate KLD — the KLD-first
+methodology survives its own audit. §6.1's "zero task evaluations"
+sentence dies today (ABLATION-PLAN promise kept).
