@@ -857,3 +857,29 @@ gap is CLOSED at 27B (patched-serving column only; stock column
 unchanged); if CONTROL still wins ≥2, control stands and the E27
 verdict is unchanged. Bytes: dedup accounting reported alongside;
 file-with-duplicates is an eval container, not the serving claim.
+
+### E28b BUILD RESULT 2026-08-11 16:05 — shared-A adapter written, parity confirmed
+196 s extraction. File 412.3 MB (A duplicated — eval container); DEDUP
+accounting 337.0 MB vs old adapter 336.5 MB — byte parity BY
+CONSTRUCTION (+0.15% rounding wash). Ranks: attn 192 (exact parity
+195.4), gdn 160 (158.5). Acceptance vs E28 analysis: per-group shared
+captures match to 3 decimals (blk.3 attn 0.411 vs 0.413; blk.63 0.558
+vs 0.560). 64 groups + 128 copied singles. Eval launched (measure100,
+concurrent with T1.8 — 4 GB VRAM headroom; a clean OOM fail would
+defer it, not corrupt T1.8).
+
+### PRE-REGISTRATION 2026-08-11 16:06 — E29 part 1: SRR split proxy (L3)
+SRR (2602.02001) preserve-then-quantize carve-out, exact proxy on BF16
++ Grams (no quantizer in the loop — gguf-py cannot K-quant; the E13
+codec is frozen-grid only). Sample: {attn_q, attn_qkv, ffn_up,
+ssm_out} × 3 depth-spanning layers each. Metrics per tensor × {whitened,
+raw} carve × k ∈ {64,128,256}: (a) top-k capture of ‖W·L‖² (does W
+have carvable structure? E01 said NO at 0.6B — first 27B measurement),
+(b) per-16-block absmax ratio after deflation (Q2_K scale proxy — the
+outlier-absorption mechanism). GATE (pre-registered): mean k=128
+capture < 5% AND mean absmax ratio > 0.97 (i.e. <3% shrink) on both
+metrics ⇒ SRR-split predicted DEAD at 27B (E01's full-rank null
+extends; cite-and-kill, part 2 not run). Capture > 15% or shrink >
+10% ⇒ part 2 (full deflated-base build + measure100, SRR-as-adapter
+is stock-servable) is warranted and gets its own registration.
+Between gates: report, judgment call logged.
