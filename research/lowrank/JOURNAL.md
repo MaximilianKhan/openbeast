@@ -715,3 +715,45 @@ the campaign). Lab clean at the bell: no processes, all raw files
 retained, MASTER-TABLE/ABLATION-PLAN/JOURNAL current. Remaining T1:
 calibration grid (overnight-scale), task eval, M5 ablations, 0.6B-vs-
 0.8B kron purity rerun. The tree says only what the data licenses.
+
+## 2026-08-11 — GPU block opens (post-recon; Max ran beastdown 15:05)
+
+Recon 2026-08-11 integrated tree-wide this morning (commits 3c1a62f,
+29ddd27). Queue per TODO "NOW": GPU starts on the T1.2→T1.3/T1.5
+chain; CPU runs the paper-math lane in parallel (L2 first). Standing
+Max directive (this session): runs have historically stalled/emptied —
+every run gets a live monitor, and no result is consumed without
+row-count + exit-status verification.
+
+### PRE-REGISTRATION 2026-08-11 15:10 — T1.2 100-chunk BF16 truth logits @27B
+Command: llama-perplexity -m weights/Qwen3.6-27B-uncensored-heretic-v2-
+Native-MTP-Preserved-BF16.gguf -f data/wikitext-2-raw/wiki.test.raw
+--save-all-logits data/bf16ref27b-100.logits --chunks 100 -ngl 20
+-c 512 --no-warmup. Infrastructure step (no decision rule). Expected
+~35–40 min (40ch took ~14). ACCEPTANCE: exit 0; file ≈ 12 G (40ch =
+4.8 G); printed cumulative PPL at [20] ≈ 6.979 and at [40] ≈ 6.027
+(consistency vs the verified 20ch/40ch refs — mismatch = STOP, do not
+consume). Note: the #26177 GDN-fused-disable warning appears in these
+partial-offload runs; quality unaffected (speed-path bug), no speed
+numbers will be quoted from this build (recon gate).
+
+### PRE-REGISTRATION 2026-08-11 15:10 — L2 GlowQ shared-A principal angles (CPU, cached data only)
+New experiment 28-glowq-shared-a. HYPOTHESIS (GlowQ 2603.25385
+transplant): input-sharing tensor groups (attn q/k/v; ffn gate/up)
+have overlapping whitened-residual right-subspaces, so a SHARED
+A-factor per group frees adapter bytes at small capture cost.
+METHOD: for the E27 MIXED base vs BF16, per attention layer compute
+R_t = W_bf16 − dequant(W_q) for t ∈ {q,k,v}; whiten with the shared
+input Gram G^{1/2} (gram27b-bf16); top-r right singular subspaces via
+randomized SVD; report (a) pairwise principal-angle cosines, (b)
+shared-subspace capture retention: whitened capture of rank-r shared A
+(from stacked [R_q;R_k;R_v]G^{1/2}) vs sum of per-tensor rank-r
+captures, (c) the byte-fair verdict: capture at EQUAL TOTAL adapter
+bytes, shared vs separate. Same for gate/up on a layer sample.
+DECISION RULE: if shared-A at equal total bytes captures ≥ what
+separate-A captures (ratio ≥ 1.0) on the attention group, the lever is
+GO → rebuild the E27 byte-fair table with shared-A accounting and
+queue a build; if ratio < 0.9, lever DEAD (subspaces disjoint —
+consistent with per-kind sensitivity findings); 0.9–1.0 = marginal,
+report only. Layer sample: all attention layers (few in this hybrid
+arch) + 6 depth-spanning linear layers for gate/up.
