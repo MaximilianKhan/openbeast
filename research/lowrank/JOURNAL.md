@@ -938,3 +938,15 @@ t ≥ +2 ⇒ post-hoc wins (SRR-split dead at our scale, cite with
 numbers). (b) SRR vs CONTROL — reported either way.
 VERIFY: deflated-file tensor count/offsets unchanged (in-place write);
 quantize log clean; 100 rows before stats.
+
+### E28c RESULT 2026-08-11 16:55 — BYTES LEVER GO (registered rule fired)
+sharedA-r128 vs MIXEDfc: KLD t=−1.48 (dmean −0.0008, i.e. trending
+BETTER), NLL t=−0.15, top-1 t=−1.15 — TIE on all three, exactly the
+registered |t|<2 outcome. Dedup bytes 280.8 MB vs flagship 336.5 MB =
+**−16.6% adapter bytes at tied quality** (loader-alias patch class,
+same as the fused kernel). The E28 arc closes: capture lever
+quality-null at parity (surrogate #6), bytes lever REAL at r128.
+100 rows verified. Q8 rank stays %32-legal (128 unchanged); the freed
+56 MB is genuine VRAM/file at serving time under the alias patch —
+and the alias dedup is a plausible small upstream PR (lora_a aliasing
+for input-sharing tensor groups) to ride the fusion bundle.
