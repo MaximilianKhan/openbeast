@@ -906,3 +906,35 @@ measure100, paired vs MIXEDfc. DECISION: |t_KLD| < 2 ⇒ bytes lever GO
 (−17% adapter bytes at tied quality — deployable-wins entry, patched
 column); t ≤ −2 ⇒ better AND smaller (report loudly); t ≥ +2 ⇒ lever
 dead, sharing costs real quality at equal rank.
+
+### E29 PART 1 RESULT 2026-08-11 16:30 — gate FIRES, part 2 warranted
+12 tensors × {whitened, raw} × k∈{64,128,256}. AGG k=128: whitened
+capW = 76.56% (!), absmax ratio 0.9546; raw capW = 16.05%, ratio
+0.9295. The registered warrant-gate (capture > 15%) fires on BOTH
+metrics. FINDING EN ROUTE: at 27B the WHITENED weight matrix is
+strongly low-rank-capturable (76% @ k=128) — E01's 0.6B raw-SVD
+full-rank null does NOT transfer to the whitened metric at scale.
+(Caution attached: E28b measured capture≠KLD the same afternoon — the
+proxy warrants the build, nothing more.) absmax shrink is small
+(−4.5%/−7%) so the quantizer-side mechanism looks weak; the
+carve-side mechanism is what part 2 tests.
+
+### PRE-REGISTRATION 2026-08-11 16:32 — E29 part 2: SRR-as-adapter full build
+Carve set = exactly the fc adapter's tensor set (q/k/v/output ×16,
+qkv/gate/ssm_out ×48), k=128 whitened carve per tensor:
+W·L = UΣVᵀ, carve C = B·A (B=U_kΣ_k, A=V_kᵀL⁻¹), stored as Q8
+LoRA adapter (byte-equal to the flagship fc adapter by construction).
+Deflated base: copy of the BF16 GGUF with carved tensors overwritten
+in place by bf16(W − C) (round-to-nearest-even truncation), then
+llama-quantize with the EXACT MIXED recipe (Q2_K + ffn q3_k overrides,
+same imatrix, MTP pin). Byte-comparable to MIXEDfc and CONTROL.
+KNOWN APPROXIMATIONS (disclosed): imatrix/Grams are the ORIGINAL
+model's (deflation shifts activations second-order); carve A stored
+Q8 like fc factors. EVAL: measure100, pairs (a) SRR vs MIXEDfc —
+t_KLD ≤ −2 ⇒ preserve-then-quantize beats fix-after-quantize at equal
+bytes (SRR transplant GO; E27 narrative gains a third arm);
+|t| < 2 ⇒ order doesn't matter at 27B (cite SRR, report tie);
+t ≥ +2 ⇒ post-hoc wins (SRR-split dead at our scale, cite with
+numbers). (b) SRR vs CONTROL — reported either way.
+VERIFY: deflated-file tensor count/offsets unchanged (in-place write);
+quantize log clean; 100 rows before stats.
