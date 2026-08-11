@@ -124,13 +124,19 @@ free lever; greedy RR-then-correct loses to joint shaping.
 
 \* IQ2_XS serving measured with the diag alloc adapter. † file size only.
 
-27B verdicts (rewritten 2026-08-04 per coherence-audit P1.2; the old
-"first ladder victory" line contradicted this file's own header and
-E27): MIXED+fc = paired PARITY with Q3_K_S (E27: KLD t=0.6 tie, top-1
-tie, PPL edge; the legacy margin flipped sign); the 27B interpolation
-CONTROL matches-or-beats the flagship at equal bytes; IQ3_XS keeps the
-crown (paired, t=−2.8 vs Q3_K_S); every lever real but scale-shrunk;
-corrected-Q2_K ≈ IQ-codebook efficiency at equal tensors.
+27B verdicts (rewritten 2026-08-04 per coherence-audit P1.2; UPDATED
+2026-08-11 with the n=100 T1.3/T1.5 finals — MASTER-TABLE §27B is the
+authoritative table): **MIXED+fc BEATS Q3_K_S at n=100 on all three
+paired metrics (KLD t=−2.85, NLL t=−5.75, top-1 t=+2.04)** — the n=40
+tie resolved with power; first paired ladder-rung victory for
+correction at 27B. **The interpolation CONTROL still beats the
+flagship (KLD t=+2.62)** — correction beats the rung, not the line;
+standing law: mixed-TYPE allocation > correction > uniform rung.
+fc increment paired-proven (−0.0090 KLD, t=−8.52); E13 free lever
+paired-FINAL (−13.3% KLD, t=−7.02, legacy-provenance pair); IQ3_XS
+keeps the KLD point-crown at 100ch; every lever real but
+scale-shrunk; corrected-Q2_K ≈ IQ-codebook efficiency at equal
+tensors.
 
 ## Block 4 additions (2026-08-04 morning, BF16 truth-scored)
 

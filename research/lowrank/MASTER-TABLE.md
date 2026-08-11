@@ -54,50 +54,50 @@ compete between Q3_K_M and Q4-tier; Q4-tier dominates above ~540 MB.
 ## step from BF16, new 48-chunk BF16 imatrix+Grams, MTP pin
 ## blk.64=q5_k; † = paired per-chunk stats in
 ## experiments/27-bf16-rederivation/results-paired.txt; rows marked
-## [40] carry n=40 values from the T1.16 extension (truth logits
-## bf16ref27b-40.logits, BF16 PPL40 6.027 ± 0.145; their PPL column
-## is PPL40, not PPL20 — raw: results-40ch{,-paired}.txt))
+## [100] carry n=100 values from the T1.3/T1.5 finals (truth logits
+## bf16ref27b-100.logits, 2026-08-11, [20]/[40] cumulative verified
+## against the older refs; BF16 PPL100 7.003 ± 0.110; their PPL column
+## is PPL100 — raw: results-100ch{,-paired}.txt))
 
 | config | GB | bpw | ×BF16 | PPL20 | KLD | top-1 % | prov |
 |---|---|---|---|---|---|---|---|
 | BF16 reference | 54.66 | 16.0 | 1.00× | 6.974 ± 0.246 | 0 | 100 | — |
 | Q2_K | 11.00 | 3.22 | 4.97× | 7.724 ± 0.279 | 0.1576 ± 0.0069 | 83.9 ± 0.5 | BF16-1step |
 | IQ3_XXS | 11.48 | 3.36 | 4.76× | 7.562 ± 0.270 | 0.0983 ± 0.0041 | 87.3 ± 0.5 | BF16-1step |
-| MIXED bare (ffn q3_k) | 12.16 | 3.56 | 4.49× | 7.248 ± 0.256 | 0.0944 ± 0.0061 | 88.0 ± 0.5 | BF16-1step |
-| IQ3_XS | 12.26 | 3.59 | 4.46× | 7.363 ± 0.259 | 0.0666 ± 0.0025† | 89.4 ± 0.4 | BF16-1step |
-| Q3_K_S [40] | 12.37 | 3.62 | 4.42× | 6.352 ± 0.156 | 0.0832 ± 0.0029† | 88.1 ± 0.3† | BF16-1step |
-| MIXED + fc r128q8 [40] | 12.50 | 3.66 | 4.37× | 6.221 ± 0.151† | 0.0831 ± 0.0035† | 88.6 ± 0.3† | BF16-1step |
-| interpolation CONTROL [40] | 12.50 | 3.66 | 4.37× | 6.213 ± 0.151† | 0.0739 ± 0.0025† | 89.0 ± 0.3† | BF16-1step |
-| Q3_K_M [40] | 13.59 | 3.98 | 4.02× | 6.153 ± 0.150 | 0.0551 ± 0.0019 | 90.4 ± 0.3 | BF16-1step |
+| MIXED bare (ffn q3_k) [100] | 12.16 | 3.56 | 4.49× | 7.235 ± 0.114 | 0.0967 ± 0.0024† | 87.2 ± 0.2† | BF16-1step |
+| IQ3_XS [100] | 12.26 | 3.59 | 4.46× | 7.303 ± 0.114 | 0.0767 ± 0.0021 | 88.8 ± 0.2 | BF16-1step |
+| Q3_K_S [100] | 12.37 | 3.62 | 4.42× | 7.378 ± 0.118 | 0.0924 ± 0.0024† | 87.5 ± 0.2† | BF16-1step |
+| MIXED + fc r128q8 [100] | 12.50 | 3.66 | 4.37× | 7.204 ± 0.114† | 0.0876 ± 0.0024† | 87.9 ± 0.2† | BF16-1step |
+| interpolation CONTROL [100] | 12.50 | 3.66 | 4.37× | 7.194 ± 0.114† | 0.0814 ± 0.0021† | 88.3 ± 0.2† | BF16-1step |
+| Q3_K_M [100] | 13.59 | 3.98 | 4.02× | 7.128 ± 0.113 | 0.0609 ± 0.0016 | 89.9 ± 0.2 | BF16-1step |
 | Q4_K_M | 16.84 | 4.93 | 3.25× | 7.078 ± 0.251 | 0.0186 ± 0.0019 | 94.3 ± 0.3 | BF16-1step |
 
-† E27 paired verdicts at the 12.5 GB point, UPGRADED to n=40 (T1.16,
-2026-08-04 evening; pre-registered): MIXED+fc vs Q3_K_S = KLD dead tie
-(t=−0.04, point estimates 0.0831 vs 0.0832) / top-1 t=+1.89 (under the
-bar) / PPL edge t=−3.33 — parity CONFIRMED at n=40; the legacy 1.0σ
-"victory" stays dead. The CONTROL (pure-quant mix at the same bytes:
-Q3_K_S + attn_k/v/output→q4_k + 6-layer attn_qkv→q4_k) now BEATS the
-flagship on KLD past the 2σ bar (t=+2.26, 28/40 chunks, sign p=0.017;
-outlier trims raise it to t≈2.8; was t=1.9 at n=20), PPL/top-1 tied —
-"matches-or-beats" is paired-RESOLVED, and the corrected config does
-not rise above the ladder's interpolation line. CONTROL vs Q3_K_S
-strengthens to |t|≥3 on all three (KLD −3.04 / NLL −4.29 / top-1
-+4.86). The correction increment over its own base is real (KLD
-t=−5.9, top-1 t=+2.5, n=20). IQ3_XS holds the KLD crown from below
-(vs Q3_K_S t=−2.8, n=20). Single-step rebuild vs legacy Q6-requant:
-−0.002…−0.003 KLD on every rung checked (the F10 provenance tax,
-measured). Serving columns (tok/s, VRAM) pending locked-clock
-protocol (R8).
+† E27 paired verdicts at the 12.5 GB point, FINAL at n=100 (T1.3/T1.5,
+2026-08-11; pre-registered JOURNAL 15:25): **MIXED+fc now BEATS
+Q3_K_S on all three paired metrics** — KLD t=−2.85 (71/100), NLL
+t=−5.75, top-1 t=+2.04; the n=40 dead tie resolved with power — the
+campaign's first paired ladder-rung victory for correction at 27B.
+**The CONTROL still beats the flagship**: KLD t=+2.62, top-1 t=−2.14,
+NLL tie — the corrected config beats the RUNG but stays under the
+ladder's interpolation LINE (n=40 license confirmed final). Standing
+27B law: mixed-TYPE allocation > low-rank correction > uniform rung
+at equal bytes. CONTROL vs Q3_K_S hardens to t=−7.23/−7.35/+5.55.
+The fc increment over its own base is paired-proven at n=100: −0.0090
+KLD (t=−8.52, 92/100), +0.69 pt top-1 (t=+5.20). IQ3_XS still holds
+the KLD point-crown at 100ch (0.0767 vs CONTROL 0.0814; unpaired).
+Single-step rebuild vs legacy Q6-requant: −0.002…−0.003 KLD on every
+rung checked (the F10 provenance tax, measured). Serving columns
+(tok/s, VRAM) pending locked-clock protocol (R8) AND the #26177 pin
+gate (recon 2026-08-11).
 
-E13-27B re-round pair, n=40 (LEGACY Q6-requant provenance — NOT
-tabled above per the provenance rule; both sides same provenance so
-the DELTA is clean): re-rounded Q2_K 0.1374 ± 0.0042 KLD / 85.06%
-top-1 vs bare 0.1533 ± 0.0047 / 84.20% — paired KLD t=−3.70 (26/40),
-top-1 t=+2.56, NLL tie. The E13 0.78σ open question is RESOLVED in
-the re-rounder's favor: −10.4% KLD + 0.86 pt top-1 for zero bytes at
-27B. Wiki-calibrated/wiki-scored; the 0.8B R7 held-out
-anti-generalization gate is untested at 27B — no deployment language
-until it runs.
+E13-27B re-round pair, n=100 FINAL (LEGACY Q6-requant provenance —
+NOT tabled above per the provenance rule; both sides same provenance
+so the DELTA is clean): re-rounded Q2_K 0.1390 ± 0.0029 KLD / 84.55%
+top-1 vs bare 0.1603 ± 0.0032 / 83.48% — paired KLD t=−7.02 (77/100),
+top-1 t=+4.72, NLL tie (t=−0.98). **−13.3% KLD + 1.07 pt top-1 for
+zero bytes at 27B — the free lever is paired-FINAL at this scale.**
+Wiki-calibrated/wiki-scored; the 0.8B R7 held-out anti-generalization
+gate is untested at 27B — no deployment language until it runs.
 
 ## Qwen3.6-35B-A3B MoE (E23 COMPLETE — capture shipped with gates
 ## green, REPORT-capture.md; review-compliant ladder + paired stats
