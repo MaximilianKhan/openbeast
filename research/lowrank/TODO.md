@@ -45,13 +45,17 @@ figure may be part #25489, part #26177.**
 
 PAPER-MATH LANE (pre-GPU, ranked by expected KLD-per-day; L# = recon
 lever ids):
-- [ ] L2 GlowQ shared-A: principal-angle overlap of attn_q/k/v
-  whitened residual subspaces on cached 27B Grams; if overlap is high,
-  recompute the E27 byte-fair table with shared-A accounting —
-  cheapest possible flip of the 27B parity verdict. (afternoon, CPU)
-- [ ] L3 SRR k-split: their preserve-vs-reconstruct criterion on
-  cached 27B spectra — predicts whether a pre-quant carve-out closes
-  the gap to the interpolation line. (1 day)
+- [x] L2 GlowQ shared-A — DONE 2026-08-11 as E28/E28b/E28c: capture GO
+  (+12%/+7% at byte parity) but KLD-NULL at parity (surrogate-vs-
+  outcome #6); parity NOT flipped (CONTROL t=+2.35 stands); bytes
+  variant (r128 shared, −17% adapter bytes at predicted KLD-tie) =
+  E28c, see JOURNAL. Experiment: experiments/28-glowq-shared-a/.
+- [x] L3 SRR k-split — part 1 DONE 2026-08-11 (E29 proxy): whitened-W
+  76.6% capturable @k128 at 27B (E01's raw 0.6B null does NOT
+  transfer to the whitened metric at scale — finding); absmax proxy
+  weak (−4.5%). Part 2 (full SRR-as-adapter build, byte-matched vs
+  MIXEDfc/CONTROL) pre-registered + building same day.
+  Experiment: experiments/29-srr-split/.
 - [ ] L1 BaKron: derive the K-quant-constrained (superblock-scale)
   two-sided recursion; estimate two-sided-vs-diag refinement gain from
   cached activation Grams + the 196 grad Grams. Doubles as the T1.12
