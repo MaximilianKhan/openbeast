@@ -1,5 +1,38 @@
 # TODO
 
+## 🔭 UPSTREAM WATCH — llama.cpp (recon 2026-08-03)
+
+Full brief: [`LLAMACPP_WATCH.md`](LLAMACPP_WATCH.md). Short version: default
+port 8080→9931 is announced upstream (we pass `--port` everywhere — docs-only
+change when it lands, recommendation is to keep 8080); llama-server is heading
+toward daemon/router mode (re-evaluate the deferred beast-slot fleet router
+against it before building ours); an OPEN 15-20% MTP throughput regression
+(#25489) makes a tok/s baseline check mandatory after every rebuild. Rollback
+pin recorded there: b10066 (`86a9c79f8`).
+
+## 🧪 EXPERIMENT — serve with vLLM instead of llama.cpp (Max, 2026-08-04)
+
+Evaluate vLLM as the serving engine for our weights. Motivation: vLLM
+has shipped TurboQuant KV-cache quantization (fused Triton backend,
+extended to hybrid-attention Qwen3.5-class models via PR #39931) while
+llama.cpp has only an open feature request (#20977); its issue traffic
+shows active Qwen3.6-27B + NVFP4 + Blackwell usage — exactly our
+territory. Test matrix: (a) serve the production 27B (and the beast-rank
+corrected artifacts — vLLM's GGUF support is partial; may need HF/
+safetensors weights + separate LoRA loading for our corrections.
+Post-E27 scope note (2026-08-04, research/lowrank coherence-audit
+P3.8): at ≥2.5 bpw the equal-byte winners are PURE-QUANT GGUFs
+(mixed-TYPE control, byte-compatible re-rounded files) — no LoRA
+needed, which simplifies this matrix; adapter plumbing only matters
+for the sub-2.5-bpw lane);
+(b) single-stream tok/s + VRAM vs our llama.cpp numbers (llama.cpp wins
+today on MTP speculative decoding — check vLLM's spec-decode support
+for this model family); (c) multi-client throughput (vLLM's home turf —
+relevant to beast-slot); (d) integration cost: OpenAI-compat surface,
+beast-gate/identity-server compatibility, streaming, the /api/slot
+contract. Outcome: a measured recommendation, not a migration — the
+stack stays llama.cpp unless vLLM wins on our actual workload.
+
 ## 🔌 ODS ABSORPTION — decided 2026-07-17 (Max)
 
 Reviewed [Osmantic/ODS](https://github.com/Osmantic/ODS) (a kitchen-sink

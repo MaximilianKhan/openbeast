@@ -41,6 +41,8 @@ Update a single component (flags compose):
 
 ```bash
 ./scripts/update.sh --llama       # just llama.cpp — the usual reason to update
+                                  #   (read docs/LLAMACPP_WATCH.md first: upstream
+                                  #   tripwires to re-check after every rebuild)
 ./scripts/update.sh --images      # just Open WebUI + SearXNG images (re-pins digests)
 ./scripts/update.sh --python      # just mcp / openai / fastapi / uvicorn / huggingface_hub
 ./scripts/update.sh --opencode    # just OpenCode
