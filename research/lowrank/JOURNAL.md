@@ -757,3 +757,34 @@ queue a build; if ratio < 0.9, lever DEAD (subspaces disjoint —
 consistent with per-kind sensitivity findings); 0.9–1.0 = marginal,
 report only. Layer sample: all attention layers (few in this hybrid
 arch) + 6 depth-spanning linear layers for gate/up.
+
+### T1.2 RESULT 2026-08-11 15:14 — 100-chunk BF16 truth logits: ACCEPTED
+data/bf16ref27b-100.logits (12 G, exit clean, 3m46s — file cache made
+the 40ch 14-min estimate obsolete). Acceptance checks PASSED: cumulative
+[20]=6.9793 and [40]=6.0270 match the verified 40ch run EXACTLY.
+PPL100 = 7.0030 ± 0.1101. #26177 GDN-fused warning present as expected
+(speed-path only). T1.3/T1.5 unblocked.
+
+### PRE-REGISTRATION 2026-08-11 15:25 — T1.3 + T1.5 100-chunk battery
+Eight configs vs bf16ref27b-100.logits via measure100.sh (clone of the
+verified measure40 pattern), sequential: MIXEDfc (MIXED + fc adapter),
+MIXEDbare, Q3_K_S, IQ3_XS, CONTROL, Q3_K_M (anchor), Q2Kbare-legacy
+(04b-27b artifact), Q2Krr-legacy (13-rerounder artifact — the E13 pair,
+legacy Q6-derived provenance, labeled as such; its BF16-provenance
+re-round does not exist yet and is NOT part of this registration).
+PAIRS (paired_stats.py, same tool as T1.16): MIXEDfc–CONTROL,
+MIXEDfc–Q3_K_S, CONTROL–Q3_K_S, MIXEDfc–MIXEDbare (fc lever paired at
+27B — first time), Q3_K_S–Q3_K_M, Q2Krr–Q2Kbare (T1.3).
+DECISION RULES (n=100 is FINAL for these claims): (1) flagship–Q3_K_S
+|t_KLD| < 2 → parity certified, closes T1.5's parity-vs-victory
+question; (2) CONTROL–flagship: t confirms/denies the n=40
+control-beats-flagship license (expect ~+2.3); (3) T1.3: RR–bare
+t_KLD < −2 with consistent sign test → 27B free lever paired-FINAL
+(legacy provenance on the label); (4) MIXEDfc–MIXEDbare quantifies the
+fc adapter's paired contribution at 27B — no prior registration
+exists, report whatever the data says. Alternation-round rider NOT run
+(no 27B alternation adapter artifact exists; extraction would be new
+work — queued separately, not silently added).
+VERIFICATION RULE (stall-watch): each log must contain the [100] row
+and a "Final estimate" line before its numbers are consumed; battery
+driver is resume-safe and skips complete logs.
