@@ -838,3 +838,22 @@ separation, report; (b) ordering consistent with KLD (M > fc > S) at
 any margin = weak corroboration, report as such; (c) inversion of the
 KLD ordering beyond noise = finding against KLD-first methodology —
 report loudly. VERIFY: 10042 tasks completed per log before use.
+
+### PRE-REGISTRATION 2026-08-11 15:45 — E28b shared-A adapter build + eval
+Build: e28b_extract.py — groups {q,k,v}×16 @ r_s=%32-rounded byte
+parity (~192), {qkv,gate}×48 @ ~160; A = V·L⁻¹ shared per group
+(stored duplicated — stock GGUF has no aliasing; DEDUP bytes printed
+for the patched-loader accounting, same local-patch class as the fused
+kernel), B_t = (R_t L)Vᵀ exact; ssm_out/attn_output copied from the
+flagship adapter (Q8 payload, ×128 rank-fold, lossless). ACCEPTANCE:
+extractor's per-group capture consistent with E28's shared-basis
+measurement; adapter loads in llama-server/perplexity without error.
+EVAL (measure100, GPU after T1.8 or in a low-VRAM window): pairs
+(a) sharedA vs MIXEDfc — ΔKLD t ≤ −2 ⇒ shared-A lever GO measured on
+the outcome metric (not just capture); |t|<2 ⇒ capture surrogate
+overstated the lever (report as surrogate-vs-outcome instance #6);
+(b) sharedA vs CONTROL — if t crosses to |t|<2 the interpolation-line
+gap is CLOSED at 27B (patched-serving column only; stock column
+unchanged); if CONTROL still wins ≥2, control stands and the E27
+verdict is unchanged. Bytes: dedup accounting reported alongside;
+file-with-duplicates is an eval container, not the serving claim.
