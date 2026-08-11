@@ -1,0 +1,33 @@
+# E28 run 2026-08-11 15:16:51  R=128 attn_layers=16 gdn_sample=12/48
+# group blk r_s  sep_cap  shared_cap@r_s  ratio  shared_cap@R  mean_cos2_pairs  E_total
+attn 3 r_s=195 sep=7.1393e+01 shared_rs=8.1654e+01 ratio=1.1437 shared_R=7.0102e+01 cos2=0.4271 E=1.9778e+02 t=3s
+attn 7 r_s=195 sep=6.8008e+01 shared_rs=7.8074e+01 ratio=1.1480 shared_R=6.6814e+01 cos2=0.4458 E=1.9105e+02 t=3s
+attn 11 r_s=195 sep=7.6300e+01 shared_rs=8.7339e+01 ratio=1.1447 shared_R=7.4938e+01 cos2=0.4733 E=2.0230e+02 t=3s
+attn 15 r_s=195 sep=6.9131e+01 shared_rs=7.9718e+01 ratio=1.1531 shared_R=6.7653e+01 cos2=0.4560 E=1.9536e+02 t=3s
+attn 19 r_s=195 sep=9.9636e+01 shared_rs=1.1415e+02 ratio=1.1457 shared_R=9.7797e+01 cos2=0.4651 E=2.6992e+02 t=3s
+attn 23 r_s=195 sep=1.4399e+02 shared_rs=1.6294e+02 ratio=1.1317 shared_R=1.4140e+02 cos2=0.4862 E=3.5919e+02 t=3s
+attn 27 r_s=195 sep=1.3271e+02 shared_rs=1.5009e+02 ratio=1.1309 shared_R=1.3033e+02 cos2=0.4957 E=3.2139e+02 t=3s
+attn 31 r_s=195 sep=1.0990e+02 shared_rs=1.2495e+02 ratio=1.1370 shared_R=1.0717e+02 cos2=0.4493 E=2.9616e+02 t=3s
+attn 35 r_s=195 sep=1.3204e+02 shared_rs=1.4940e+02 ratio=1.1314 shared_R=1.2892e+02 cos2=0.4479 E=3.4979e+02 t=3s
+attn 39 r_s=195 sep=1.6754e+02 shared_rs=1.8914e+02 ratio=1.1289 shared_R=1.6430e+02 cos2=0.4852 E=4.1144e+02 t=3s
+attn 43 r_s=195 sep=1.5053e+02 shared_rs=1.6968e+02 ratio=1.1272 shared_R=1.4757e+02 cos2=0.4814 E=3.6458e+02 t=3s
+attn 47 r_s=195 sep=1.5752e+02 shared_rs=1.7689e+02 ratio=1.1230 shared_R=1.5362e+02 cos2=0.4502 E=3.9222e+02 t=3s
+attn 51 r_s=195 sep=2.2344e+02 shared_rs=2.5088e+02 ratio=1.1228 shared_R=2.1874e+02 cos2=0.4810 E=5.2218e+02 t=3s
+attn 55 r_s=195 sep=3.1381e+02 shared_rs=3.5246e+02 ratio=1.1232 shared_R=3.0794e+02 cos2=0.4952 E=7.2250e+02 t=3s
+attn 59 r_s=195 sep=3.9616e+02 shared_rs=4.4287e+02 ratio=1.1179 shared_R=3.8790e+02 cos2=0.5018 E=8.9065e+02 t=3s
+attn 63 r_s=195 sep=5.0576e+02 shared_rs=5.5096e+02 ratio=1.0894 shared_R=4.9764e+02 cos2=0.5097 E=9.8455e+02 t=3s
+gdn 0 r_s=158 sep=1.9074e+02 shared_rs=2.0416e+02 ratio=1.0703 shared_R=1.9027e+02 cos2=0.7620 E=4.2566e+02 t=3s
+gdn 5 r_s=158 sep=1.8989e+01 shared_rs=2.0479e+01 ratio=1.0784 shared_R=1.8960e+01 cos2=0.7525 E=4.8949e+01 t=3s
+gdn 10 r_s=158 sep=2.6146e+01 shared_rs=2.8375e+01 ratio=1.0852 shared_R=2.6074e+01 cos2=0.7485 E=7.3049e+01 t=3s
+gdn 16 r_s=158 sep=2.8795e+01 shared_rs=3.1370e+01 ratio=1.0894 shared_R=2.8693e+01 cos2=0.7264 E=8.7682e+01 t=3s
+gdn 21 r_s=158 sep=1.0500e+02 shared_rs=1.1262e+02 ratio=1.0726 shared_R=1.0480e+02 cos2=0.7471 E=2.7041e+02 t=3s
+gdn 26 r_s=158 sep=6.4759e+01 shared_rs=6.9412e+01 ratio=1.0718 shared_R=6.4539e+01 cos2=0.7609 E=1.6200e+02 t=3s
+gdn 32 r_s=158 sep=4.7776e+01 shared_rs=5.1585e+01 ratio=1.0797 shared_R=4.7502e+01 cos2=0.7133 E=1.4239e+02 t=3s
+gdn 37 r_s=158 sep=1.3731e+02 shared_rs=1.4652e+02 ratio=1.0671 shared_R=1.3701e+02 cos2=0.7633 E=3.2559e+02 t=3s
+gdn 42 r_s=158 sep=8.4942e+01 shared_rs=9.1010e+01 ratio=1.0714 shared_R=8.4665e+01 cos2=0.7548 E=2.1265e+02 t=3s
+gdn 48 r_s=158 sep=8.0155e+01 shared_rs=8.5721e+01 ratio=1.0694 shared_R=7.9819e+01 cos2=0.7406 E=2.0563e+02 t=3s
+gdn 53 r_s=158 sep=1.9175e+02 shared_rs=2.0383e+02 ratio=1.0630 shared_R=1.9113e+02 cos2=0.7744 E=4.3184e+02 t=3s
+gdn 58 r_s=158 sep=2.6381e+02 shared_rs=2.8031e+02 ratio=1.0625 shared_R=2.6318e+02 cos2=0.7769 E=5.9565e+02 t=3s
+AGG attn: sep_cap=2.8179e+03 shared_cap=3.1612e+03 RATIO=1.1218 total_E=6.6711e+03
+AGG gdn: sep_cap=1.2402e+03 shared_cap=1.3254e+03 RATIO=1.0687 total_E=2.9815e+03
+# done 2026-08-11 15:18:10

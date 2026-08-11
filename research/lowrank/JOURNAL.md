@@ -788,3 +788,16 @@ work — queued separately, not silently added).
 VERIFICATION RULE (stall-watch): each log must contain the [100] row
 and a "Final estimate" line before its numbers are consumed; battery
 driver is resume-safe and skips complete logs.
+
+### E28 RESULT 2026-08-11 15:18 — GlowQ shared-A: GO, uniformly (L2)
+Ran in 80 s on cached Grams (the "afternoon" estimate was 100× over).
+Byte-parity capture ratio shared/separate: attn {q,k,v} 1.1218 (16/16
+layers > 1, range 1.089–1.153), gdn {qkv,gate} 1.0687 (12/48 sampled,
+all > 1). Same-rank shared basis keeps 99.55%/99.75% of separate
+capture → −17% adapter bytes (−56 MB, 80 of 208 A-tensors) for ~0.3%
+capture loss. GDN overlap strong (cos²≈0.75), attn moderate (≈0.47) —
+byte geometry, not just overlap, drives the win. Decision rule fired:
+GO. NEXT (new registration required before it runs): shared-A
+extraction + measure100 eval — capture is the surrogate; the E27 table
+only moves if KLD moves (fifth law respected). Full table:
+experiments/28-glowq-shared-a/results.txt.

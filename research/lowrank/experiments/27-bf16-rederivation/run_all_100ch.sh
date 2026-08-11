@@ -12,12 +12,14 @@ run() { # label model [extra args]
   echo "=== $label $(date +%H:%M:%S)"
   ./measure100.sh "$label" "$@" || echo "FAILED $label"
 }
-run MIXEDfc   h27bf16-MIXED.gguf --lora mixed-fc-r128q8-bf16.gguf
-run MIXEDbare h27bf16-MIXED.gguf
-run Q3_K_S    h27bf16-Q3_K_S.gguf
-run IQ3_XS    h27bf16-IQ3_XS.gguf
-run CONTROL   h27bf16-CONTROL.gguf
-run Q3_K_M    h27bf16-Q3_K_M.gguf
-run Q2Kbare-legacy ../04b-27b/heretic27b-Q2_K.gguf
-run Q2Krr-legacy   ../13-rerounder/heretic27b-Q2K-rr.gguf
+E27=/home/max/Documents/openbeast/research/lowrank/experiments/27-bf16-rederivation
+EXP=/home/max/Documents/openbeast/research/lowrank/experiments
+run MIXEDfc   "$E27/h27bf16-MIXED.gguf" --lora "$E27/mixed-fc-r128q8-bf16.gguf"
+run MIXEDbare "$E27/h27bf16-MIXED.gguf"
+run Q3_K_S    "$E27/h27bf16-Q3_K_S.gguf"
+run IQ3_XS    "$E27/h27bf16-IQ3_XS.gguf"
+run CONTROL   "$E27/h27bf16-CONTROL.gguf"
+run Q3_K_M    "$E27/h27bf16-Q3_K_M.gguf"
+run Q2Kbare-legacy "$EXP/04b-27b/heretic27b-Q2_K.gguf"
+run Q2Krr-legacy   "$EXP/13-rerounder/heretic27b-Q2K-rr.gguf"
 echo "BATTERY DONE $(date +%H:%M:%S)"
