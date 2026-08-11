@@ -45,12 +45,39 @@ moderately (cos² ≈ 0.47) — yet attn gains MORE at byte parity because
 its A-side byte share is larger (3×5120 → 1×5120 vs out-dims 14336).
 The lever is byte-geometry as much as subspace overlap.
 
+## E28b — the build + eval: quality-NULL (surrogate-vs-outcome #6)
+
+The caveat below fired, exactly as the fifth law predicts. Built the
+byte-parity shared-A adapter (e28b_extract.py: r_att=192, r_gdn=160;
+A=V·L⁻¹ shared, B_t=(R_tL)Vᵀ; per-group captures matched this
+analysis to 3 decimals; dedup bytes 337.0 MB ≈ flagship 336.5 MB —
+parity by construction). measure100 at n=100, paired:
+
+| pair | KLD t | NLL t | top-1 t | verdict |
+|---|---|---|---|---|
+| sharedA vs MIXEDfc | −0.91 | −0.38 | +0.36 | TIE — +12% capture bought ~0 KLD |
+| sharedA vs CONTROL | +2.35 | +0.28 | −1.90 | control still wins (was +2.62) |
+
+**The +12.2%/+6.9% extra whitened capture at byte parity moved KLD by
+−0.0005 (noise).** Recorded as the campaign's sixth
+surrogate-vs-outcome divergence: the marginal capture band (union
+directions beyond each tensor's own top-128) carries almost no
+functional signal. The E27 verdict (allocation > correction > rung)
+stands.
+
+**What survives: the BYTES reading (E28c).** Same-rank sharing keeps
+99.55%/99.75% of capture, and E28b just showed KLD is insensitive to
+exactly the band sharing sacrifices — so shared-A at r128 should TIE
+the flagship at −17% adapter bytes (−56 MB, dedup/patched-loader
+accounting; same local-patch class as the fused kernel). Built and
+evaluated as E28c — see JOURNAL 2026-08-11 16:22 registration and the
+result entry that follows it.
+
 ## Caveats
 
 - Capture is the surrogate, KLD is the outcome — and this campaign's
-  own fifth law is "the surrogate is not the outcome." A shared-A
-  adapter must be BUILT and evaluated (extraction + measure100) before
-  any E27-table claim. Queued next.
+  own fifth law is "the surrogate is not the outcome." E28b measured
+  exactly this (above).
 - gdn measured on a 12/48 depth-spanning sample (uniform verdict,
   tight range); byte accounting is exact for all layers.
 - ssm_out and attn_output have no input-sharing partner — untouched.
