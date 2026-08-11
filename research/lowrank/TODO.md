@@ -192,7 +192,9 @@ Also feeds paper figure F5 (tok/s vs rank) with real curvature.
   DEPLOYABLE-WINS + E22 HELDOUT-METHOD.md). Still [ ]: crown configs +
   27B held-out; third-corpus extrapolation (T1.11); RR-mixed2
   KLD/top-1 (T1.14). [split 2026-08-04 per coherence-audit P2.6]
-- [ ] Task eval — still ZERO anywhere in the campaign (T1.8).
+- [x] Task eval — DONE 2026-08-11 (T1.8): HellaSwag full-val trio;
+  silent zone MEASURED (flagship-vs-S paired tie at ΔKLD≈0.005;
+  Q3_K_M visible z=+3.5 at ΔKLD≈0.027, KLD ordering corroborated).
 - [ ] KLD silent-zone caveat into every near-baseline comparison.
 - [x] BF16-rescore Q3_K_S — SUPERSEDED by E27's full BF16-1step rebuild
   of the 27B ladder (Q3_K_S 0.0845 ± 0.0044 vs BF16 truth). Still [ ]:
