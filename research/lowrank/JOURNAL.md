@@ -950,3 +950,19 @@ quality-null at parity (surrogate #6), bytes lever REAL at r128.
 56 MB is genuine VRAM/file at serving time under the alias patch —
 and the alias dedup is a plausible small upstream PR (lora_a aliasing
 for input-sharing tensor groups) to ride the fusion bundle.
+
+### E29 PART 2 RESULT 2026-08-11 17:05 — TIE: order doesn't matter (registered outcome)
+SRR vs MIXEDfc: KLD t=+0.99, NLL t=+0.74, top-1 t=−1.68 — the
+registered |t|<2 tie. SRR vs CONTROL: t=+5.15 KLD / −3.86 top-1 —
+control beats the carve too. 100 rows verified; quantize log clean;
+srr-MIXED byte-identical to MIXED; carve adapter 321 MB = flagship
+bytes. SESSION SYNTHESIS (E28b + E28c + E29): at 27B, at equal bytes,
+{post-hoc whitened correction, pre-quant whitened carve-out,
+shared-basis variants} form an EQUIVALENCE CLASS — surrogate captures
+differ wildly (40% of R vs 76% of W vs +12% union), KLD identical;
+only mixed-TYPE allocation escapes the class (beats all, t≥+2.3);
+uniform rung sits below it (flagship beats Q3_K_S t=−2.85). The byte
+budget, not the low-rank mechanism, sets quality. New paper claim
+(ours): the equal-byte equivalence class, measured three ways in one
+pre-registered afternoon. Deflated 55 GB intermediate retained for
+now (rebuildable — delete when disk pressure).

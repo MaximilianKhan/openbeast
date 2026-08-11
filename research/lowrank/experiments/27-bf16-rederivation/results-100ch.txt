@@ -8,3 +8,4 @@ Q2Kbare-legacy bytes=10864595360 Mean PPL(Q) : 7.734929 ± 0.125900 Mean KLD: 0.
 Q2Krr-legacy bytes=10864595360 Mean PPL(Q) : 7.696277 ± 0.124129 Mean KLD: 0.139041 ± 0.002889 Same top p: 84.553 ± 0.226 %
 MIXEDfc-sharedA bytes=12162412928 Mean PPL(Q) : 7.201119 ± 0.113841 Mean KLD: 0.087113 ± 0.002413 Same top p: 87.957 ± 0.204 %
 MIXEDfc-sharedA-r128 bytes=12162412928 Mean PPL(Q) : 7.203009 ± 0.113853 Mean KLD: 0.086787 ± 0.002308 Same top p: 87.824 ± 0.205 %
+SRR bytes=12162412928 Mean PPL(Q) : 7.222814 ± 0.114734 Mean KLD: 0.089287 ± 0.002101 Same top p: 87.627 ± 0.206 %
