@@ -12,7 +12,7 @@ services:
     # rebuild months later could pull a different — possibly compromised —
     # image. The digest is the exact image validated on the reference box.
     # `scripts/update.sh --images` bumps BOTH the tag-follow and this digest.
-    image: ghcr.io/open-webui/open-webui:main@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0
+    image: ghcr.io/open-webui/open-webui:main@sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d
     container_name: open-webui
     network_mode: host
     environment:
@@ -54,7 +54,7 @@ services:
 
   searxng:
     # Digest-pinned — see the open-webui note above.
-    image: searxng/searxng:latest@sha256:252cfb5b348809167f5519970ca3457711e723afc76179a662b1c720cbbc1dd3
+    image: searxng/searxng:latest@sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d
     container_name: searxng
     network_mode: host
     environment:
