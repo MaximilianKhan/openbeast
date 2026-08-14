@@ -6,7 +6,7 @@ version; this is the exhaustive reference.
 ## Model Serving
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - 6 parallel request slots with unified KV cache and continuous batching
-- 21 pre-configured models (all VRAM/context-measured on the 5090), capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [MODELS.md](MODELS.md), scores in the [leaderboard](RESULTS.md)
+- 23 pre-configured models (all VRAM/context-measured on the 5090), capability-ranked on the hardened v4 eval suite — default **Qwen 27B Uncensored Q5_K_P**; full lineup in [MODELS.md](MODELS.md), scores in the [leaderboard](RESULTS.md)
 - Context lengths tuned to measured VRAM ceilings (192K–512K) on a 32GB card; MTP variants additionally pin `-np 1` per upstream constraint
 - **Reasoning on by default.** The shipped Qwen models are "thinking" models — full chain-of-thought is on out of the box for maximum answer quality. It's a stateless *per-request* toggle (`chat_template_kwargs: {enable_thinking: false}`), so automated sub-calls (e.g. a JSON classification or routing step) can opt out for speed and clean output without touching your deployment or any other request. A global `REASONING` / `REASONING_BUDGET` (in `openbeast.conf`) caps or disables thinking per deployment — the over-reasoning "MAX" tunes ship with a sane `--reasoning-budget` default.
 - **Fast boot** (opt-in, `FAST_BOOT`): serve the tiny Qwen3-0.6B bridge on :8080 for instant chat, then hot-swap to the configured model once the stack is up and its weights are warmed.

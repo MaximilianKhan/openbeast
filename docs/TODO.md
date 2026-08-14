@@ -27,8 +27,61 @@ Open questions the sweep should settle:
 3. **Q5 vs Q6 accuracy-per-byte.** Q6 costs 2.7 GB and ~9% decode for whatever
    fidelity it buys; the equal-byte findings from the beast-rank campaign make
    this the interesting rung.
-4. **Vision.** The GGUF carries multimodal rope but no vision tower — decide
-   whether to pull an `mmproj` (note MTP does not support `--mmproj`).
+4. ✅ **Vision — DONE 2026-08-14.** `mmproj-F16.gguf` downloaded, pinned, and
+   verified reading a synthetic test image; two vision serve scripts shipped.
+   Loads under the existing `PROJECTOR_TYPE_QWEN3VL` graph, no llama.cpp change.
+   Details in [`MODELS.md`](MODELS.md). Two follow-ups left: **video** input is
+   untested (the chat template renders `<|video_pad|>`), and the vision configs
+   are not in `benchmark_all.py` (our eval suite is text-only — adding vision
+   tasks is its own project).
+
+## 🔁 RETEST — is the MTP + `--mmproj` ban actually lifted? (2026-08-14)
+
+Every MTP serve script we ship asserts "`--mmproj` is not yet supported with
+MTP", inherited from a 2026-05-22 upstream limitation. On 2026-08-14 that was
+**disproven for arch `qwen35`**: no such guard exists in the current llama.cpp
+source, and Qwen3.8 + `--mmproj` + `--spec-type draft-mtp` ran correctly with
+the draft path live at 64.6% acceptance.
+
+The Qwen3.6-era scripts (`serve-qwen-27b-mtp-q5.sh`, the Fable-Fusion and
+Heretic v2 MTP scripts, etc.) still carry the old claim in their headers and
+were **not** retested. If it is lifted for them too, several models gain vision
+they are currently documented as not having. Cheap to settle: load one Qwen3.6
+MTP script with a matching `mmproj` and send an image. Fix the headers either
+way — right now they state as fact something we know is false for at least one
+architecture.
+
+## 🎛️ DEFAULT MODEL SWAP — Heretic v2 Q6 -> Q5 (Max, 2026-08-14)
+
+Max's call: the current default (`serve-heretic-v2-27b-mtp-q6.sh`, `-c 212992`
+= 208K) is excellent but its context is too small for his typical use. Swap the
+default to the **Q5_K_M** sibling, conditional on the context gain being more
+than marginal.
+
+**Condition met — the gain is real, and Q5 is already maxed out:**
+
+| | Context | VRAM used / free | Decode |
+|---|---|---|---|
+| Q6_K (current default) | 208K (`-c 212992`) | 30.4 GB / 2.25 GB | ~139 tok/s (n4) |
+| **Q5_K_M (proposed)** | **256K (`-c 262144`)** | 29.6 GB / 2.97 GB | ~136 tok/s (n8) |
+
+**+49,152 tokens (+23%)**, and it also buys ~0.7 GB more headroom for ~2% less
+decode. Note "push the context as far as we can take it" is already satisfied:
+262144 is Qwen3.6's **native ceiling**, and `serve-heretic-v2-27b-mtp-q5.sh`
+already ships exactly there — going higher needs YaRN rope scaling, which is
+untested on this fine-tune and risks silent quality loss past ~128K. So this is
+a one-line config change, not a script change:
+
+```
+# openbeast.conf line 26
+SERVE_SCRIPT=serve-heretic-v2-27b-mtp-q5.sh
+```
+
+Not applied yet — `openbeast.conf` is gitignored local config and the running
+stack would need a restart to pick it up. Also update the "default is …"
+sentences in `README.md`, `docs/MODELS.md`, and `docs/FEATURES.md`, which still
+name Qwen3.6-27B Uncensored Q5_K_P and are already stale against the current Q6
+default.
 
 ## 🔭 UPSTREAM WATCH — llama.cpp (recon 2026-08-03)
 

@@ -454,7 +454,7 @@ verification checklist: [`docs/REMOTE_ACCESS_PLAN.md`](docs/REMOTE_ACCESS_PLAN.m
 
 ## Models
 
-Twenty-one models ship pre-configured, every one measured for VRAM and context
+Twenty-three models ship pre-configured, every one measured for VRAM and context
 on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
 Blackwell NVFP4, and community MTP builds. The default is **Qwen3.6-27B
 Uncensored Q5_K_P**; the dense **Qwen3.6-27B Q5_K_XL** tops the capability
