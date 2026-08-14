@@ -1,0 +1,1950 @@
+From 3690cab8bcc9e5f2b658d0e736f71277a49abdbe Mon Sep 17 00:00:00 2001
+From: Maximilian Khan <maxjkh@gmail.com>
+Date: Fri, 14 Aug 2026 12:45:07 -0700
+Subject: [PATCH] beast-rank: low-rank VRAM research kernels + gradmatrix tool
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Local research instrumentation for the beast-rank campaign, developed
+2026-08-03/04 against b10066-188-g0ef6e55ed and never committed until now.
+
+CUDA / ggml:
+  ggml-cuda/mmvq.cu       +267  low-rank correction path in the MMVQ kernels
+  ggml-cuda/quantize.cu   +180  re-rounding / quantize-side support
+  ggml-cuda/ggml-cuda.cu  +138  dispatch + wiring
+  ggml-cuda/common.cuh     +27
+  ggml-alloc.c             +60
+  ggml.c / ggml.h          +41  op plumbing
+  ggml-cpu/*                +3  CPU fallbacks
+
+llama:
+  llama-graph.cpp          +40  graph-level correction hookup
+  llama-context.cpp         +7
+
+tooling:
+  tools/imatrix/imatrix.cpp +205  gradient/covariance capture for the campaign
+  tools/gradmatrix/          NEW  422-line standalone gradmatrix extractor
+
+Measured result of this work: +79% on the 0.6B kernel trilogy (see the
+openbeast repo, research/lowrank/ — MASTER-TABLE.md and RESULTS_ROLLUP.md).
+
+Committed as a rescue point before rebasing onto current upstream master
+(we are 180 commits behind; 9 of these 14 files also changed upstream).
+A patch export of this commit is vendored in the openbeast repo at
+research/lowrank/kernels/, which survives a re-clone of this directory —
+llama.cpp/ is gitignored by the parent repo and is NOT captured by it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ ggml/include/ggml.h             |   1 +
+ ggml/src/ggml-alloc.c           |  60 ++++-
+ ggml/src/ggml-cpu/ggml-cpu.cpp  |   2 +-
+ ggml/src/ggml-cpu/ops.cpp       |   1 +
+ ggml/src/ggml-cuda/common.cuh   |  27 +++
+ ggml/src/ggml-cuda/ggml-cuda.cu | 138 ++++++++++-
+ ggml/src/ggml-cuda/mmvq.cu      | 267 +++++++++++++++++++-
+ ggml/src/ggml-cuda/quantize.cu  | 180 +++++++++++++-
+ ggml/src/ggml-cuda/quantize.cuh |   9 +-
+ ggml/src/ggml.c                 |  40 +++
+ src/llama-context.cpp           |   7 +-
+ src/llama-graph.cpp             |  40 ++-
+ tools/CMakeLists.txt            |   1 +
+ tools/gradmatrix/CMakeLists.txt |   4 +
+ tools/gradmatrix/gradmatrix.cpp | 418 ++++++++++++++++++++++++++++++++
+ tools/imatrix/imatrix.cpp       | 205 ++++++++++++++++
+ 16 files changed, 1367 insertions(+), 33 deletions(-)
+ create mode 100644 tools/gradmatrix/CMakeLists.txt
+ create mode 100644 tools/gradmatrix/gradmatrix.cpp
+
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 35f0c44ec..61b0342a1 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -653,6 +653,7 @@ extern "C" {
+         GGML_TENSOR_FLAG_PARAM   =  4, // ...contains trainable parameters
+         GGML_TENSOR_FLAG_LOSS    =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
+         GGML_TENSOR_FLAG_COMPUTE = 16, // ...must be computed
++        GGML_TENSOR_FLAG_BRANCH  = 32, // ...is inside a fork-join concurrency window; ggml-alloc holds back freed memory until the join
+     };
+ 
+     enum ggml_tri_type {
+diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
+index 3bda9abbe..36460a5f1 100644
+--- a/ggml/src/ggml-alloc.c
++++ b/ggml/src/ggml-alloc.c
+@@ -478,6 +478,13 @@ struct node_alloc {
+     struct tensor_alloc src[GGML_MAX_SRC];
+ };
+ 
++// a free held back while inside a fork-join concurrency window (GGML_TENSOR_FLAG_BRANCH)
++struct deferred_free {
++    struct ggml_dyn_tallocr * alloc;
++    struct buffer_address addr;
++    size_t size;
++};
++
+ struct ggml_gallocr {
+     ggml_backend_buffer_type_t * bufts; // [n_buffers]
+     struct vbuffer ** buffers; // [n_buffers]
+@@ -492,6 +499,12 @@ struct ggml_gallocr {
+ 
+     struct leaf_alloc * leaf_allocs; // [n_leafs]
+     int n_leafs;
++
++    // frees held back until the end of the current concurrency window
++    struct deferred_free * deferred_frees;
++    int n_deferred_frees;
++    int deferred_frees_cap;
++    bool defer_frees;
+ };
+ 
+ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
+@@ -575,6 +588,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
+     free(galloc->buf_tallocs);
+     free(galloc->node_allocs);
+     free(galloc->leaf_allocs);
++    free(galloc->deferred_frees);
+     free(galloc);
+ }
+ 
+@@ -595,6 +609,30 @@ static bool ggml_gallocr_is_allocated(ggml_gallocr_t galloc, struct ggml_tensor
+         || ggml_gallocr_is_own(galloc, t); // tensor will be allocated by galloc
+ }
+ 
++// nodes in a fork-join concurrency window run on parallel streams; memory freed inside the
++// window must not be reused before the join, otherwise one branch could overwrite memory
++// another branch still reads (cross-stream WAR hazard)
++static void ggml_gallocr_free_or_defer(ggml_gallocr_t galloc, struct ggml_dyn_tallocr * alloc, struct buffer_address addr, size_t size) {
++    if (!galloc->defer_frees) {
++        ggml_dyn_tallocr_free_bytes(alloc, addr, size);
++        return;
++    }
++    if (galloc->n_deferred_frees == galloc->deferred_frees_cap) {
++        galloc->deferred_frees_cap = galloc->deferred_frees_cap ? 2*galloc->deferred_frees_cap : 16;
++        galloc->deferred_frees = realloc(galloc->deferred_frees, galloc->deferred_frees_cap*sizeof(struct deferred_free));
++        GGML_ASSERT(galloc->deferred_frees != NULL);
++    }
++    galloc->deferred_frees[galloc->n_deferred_frees++] = (struct deferred_free) { alloc, addr, size };
++}
++
++static void ggml_gallocr_flush_deferred_frees(ggml_gallocr_t galloc) {
++    for (int i = 0; i < galloc->n_deferred_frees; i++) {
++        struct deferred_free * df = &galloc->deferred_frees[i];
++        ggml_dyn_tallocr_free_bytes(df->alloc, df->addr, df->size);
++    }
++    galloc->n_deferred_frees = 0;
++}
++
+ // free the extra space at the end if the new tensor is smaller
+ static void ggml_gallocr_free_extra_space(ggml_gallocr_t galloc, struct ggml_tensor * node, struct ggml_tensor * parent) {
+     struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
+@@ -615,7 +653,7 @@ static void ggml_gallocr_free_extra_space(ggml_gallocr_t galloc, struct ggml_ten
+         p_addr.offset += node_size;
+         size_t extra_size = parent_size - node_size;
+         AT_PRINTF("freeing extra %zu bytes from parent %s for %s\n", extra_size, parent->name, node->name);
+-        ggml_dyn_tallocr_free_bytes(p_alloc, p_addr, extra_size);
++        ggml_gallocr_free_or_defer(galloc, p_alloc, p_addr, extra_size);
+     }
+ }
+ 
+@@ -635,6 +673,15 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
+                     continue;
+                 }
+ 
++                // inside a concurrency window, do not reuse the buffer of a parent from outside
++                // the window: other branches may still read it on parallel streams
++                if (node->flags & GGML_TENSOR_FLAG_BRANCH) {
++                    if (!(parent->flags & GGML_TENSOR_FLAG_BRANCH) ||
++                        (parent->view_src && !(parent->view_src->flags & GGML_TENSOR_FLAG_BRANCH))) {
++                        continue;
++                    }
++                }
++
+                 // if the node's data is external, then we cannot re-use it
+                 if (!ggml_gallocr_is_own(galloc, parent)) {
+                     AT_PRINTF("not reusing parent %s for %s as %p is external\n", parent->name, node->name, parent->data);
+@@ -706,7 +753,7 @@ static void ggml_gallocr_free_node(ggml_gallocr_t galloc, struct ggml_tensor * n
+     remove_allocated_tensor(alloc, hn->addr, node);
+ #endif
+ 
+-    ggml_dyn_tallocr_free_bytes(alloc, hn->addr, size);
++    ggml_gallocr_free_or_defer(galloc, alloc, hn->addr, size);
+     hn->allocated = false;
+ }
+ 
+@@ -764,6 +811,12 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
+         struct ggml_tensor * node = graph->nodes[i];
+         int buffer_id = get_node_buffer_id(node_buffer_ids, i);
+ 
++        // hold back frees while inside a fork-join concurrency window, release at the join
++        galloc->defer_frees = (node->flags & GGML_TENSOR_FLAG_BRANCH) != 0;
++        if (!galloc->defer_frees && galloc->n_deferred_frees > 0) {
++            ggml_gallocr_flush_deferred_frees(galloc);
++        }
++
+         // allocate parents (only leafs need to be allocated at this point)
+         for (int j = 0; j < GGML_MAX_SRC; j++) {
+             struct ggml_tensor * parent = node->src[j];
+@@ -819,6 +872,9 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
+             AT_PRINTF("\n");
+         }
+     }
++
++    galloc->defer_frees = false;
++    ggml_gallocr_flush_deferred_frees(galloc);
+ }
+ 
+ static bool ggml_gallocr_reserve_n_impl(
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 16cc5116c..5cdc95fb4 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -467,7 +467,7 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
+             return src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16;
+         case GGML_OP_OUT_PROD:
+             return (src0->type == GGML_TYPE_F32 ||
+-                    ((src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type)) && src0->ne[2] == src1->ne[2] && src0->ne[3] == src1->ne[3])) &&
++                    ((src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16 || ggml_is_quantized(src0->type)) && src0->ne[2] == src1->ne[2] && src0->ne[3] == src1->ne[3])) &&
+                 src1->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
+         case GGML_OP_CONV_2D:
+             return ggml_is_contiguous(op->src[0]);
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 42ec809ce..6fa9a45c2 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -4545,6 +4545,7 @@ void ggml_compute_forward_out_prod(
+         case GGML_TYPE_IQ4_XS:
+         case GGML_TYPE_IQ3_S:
+         case GGML_TYPE_IQ2_S:
++        case GGML_TYPE_BF16: // LOCAL RESEARCH PATCH (beast-rank E20): row dequant via type traits
+             {
+                 ggml_compute_forward_out_prod_q_f32(params, dst);
+             } break;
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index d27d8acb1..3941dd7e4 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1532,6 +1532,12 @@ struct ggml_cuda_mm_fusion_args_host {
+     const ggml_tensor * x_scale = nullptr;
+     const ggml_tensor * gate_scale = nullptr;
+     ggml_glu_op glu_op;
++    // lora epilogue: dst += lora_scale * (lora_b @ lora_t), lora_t = lora_a @ x
++    // lora_a set: t is produced inside the activation-quantize launch; else t is precomputed
++    const ggml_tensor * lora_a = nullptr; // [ncols_x, rank], F16, F32 or Q8_0
++    const ggml_tensor * lora_b = nullptr; // [rank, nrows_dst], F16, F32 or Q8_0
++    const ggml_tensor * lora_t = nullptr; // [rank, 1], F32
++    float lora_scale = 0.0f;
+ };
+ struct ggml_cuda_mm_fusion_args_device {
+     const void * x_bias = nullptr;
+@@ -1540,8 +1546,29 @@ struct ggml_cuda_mm_fusion_args_device {
+     const void * x_scale = nullptr;
+     const void * gate_scale = nullptr;
+     ggml_glu_op glu_op;
++    const void * lora_b = nullptr;
++    const float * lora_t = nullptr;
++    // q8 sidecar of t (quantized alongside t in the activation-quantize launch):
++    // per-8-component scales + int8 quants; set => the Q8_0-B epilogue runs as an
++    // int8 dp4a dot against these instead of a float dot against lora_t
++    const float * lora_t_sc = nullptr;
++    const int8_t * lora_t_qs = nullptr;
++    float lora_scale = 0.0f;
++    uint32_t lora_rank = 0;
++    int lora_b_fmt = 0; // GGML_CUDA_LORA_FMT_*
+ };
+ 
++// element storage of the lora adapter factors
++enum ggml_cuda_lora_fmt : int {
++    GGML_CUDA_LORA_FMT_F32  = 0,
++    GGML_CUDA_LORA_FMT_F16  = 1,
++    GGML_CUDA_LORA_FMT_Q8_0 = 2,
++};
++
++// scale-group width of the quantized-t sidecar: the 8 rank components one trailing
++// quantize block computes share one scale (finer than q8_1's 32, no cross-block sync)
++#define GGML_CUDA_LORA_TQ_GROUP 8
++
+ struct ggml_cuda_kernel_launch_params {
+     dim3 block_nums;
+     dim3 block_dims;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 561ab7ac5..238bf8356 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -3688,6 +3688,101 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph
+         return fused_node_count - 1;
+     }
+ 
++    // lora branch at batch 1: mul_mat(W,x) + mul_mat(A,x) + mul_mat(B,t) + scale + add
++    // t = A@x stays a separate small kernel, B@t + scale + add ride the mmvq epilogue
++    static bool disable_lora_fusion = getenv("GGML_CUDA_DISABLE_LORA_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_LORA_FUSION"));
++    if (!disable_lora_fusion) {
++        const ggml_op lora_ops[5] = { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_SCALE, GGML_OP_ADD };
++        const int lora_out[1] = { i + 4 };
++
++        if (ggml_can_fuse_subgraph(cgraph, i, 5, lora_ops, lora_out, 1) &&
++                ggml_cuda_check_fusion_memory_ranges(cgraph, i, 5, lora_out, 1)) {
++            ggml_tensor * mm_node    = cgraph->nodes[i];
++            ggml_tensor * mm_a_node  = cgraph->nodes[i + 1];
++            ggml_tensor * mm_b_node  = cgraph->nodes[i + 2];
++            ggml_tensor * scale_node = cgraph->nodes[i + 3];
++            ggml_tensor * add_node   = cgraph->nodes[i + 4];
++
++            const ggml_tensor * lora_a = mm_a_node->src[0];
++            const ggml_tensor * lora_b = mm_b_node->src[0];
++
++            const bool edges_ok =
++                mm_a_node->src[1]  == mm_node->src[1] &&
++                mm_b_node->src[1]  == mm_a_node       &&
++                scale_node->src[0] == mm_b_node       &&
++                ((add_node->src[0] == mm_node && add_node->src[1] == scale_node) ||
++                 (add_node->src[0] == scale_node && add_node->src[1] == mm_node)) &&
++                ggml_are_same_shape(add_node->src[0], add_node->src[1]);
++
++            const bool factors_ok = edges_ok &&
++                (lora_a->type == GGML_TYPE_F16 || lora_a->type == GGML_TYPE_F32 || lora_a->type == GGML_TYPE_Q8_0) &&
++                (lora_b->type == GGML_TYPE_F16 || lora_b->type == GGML_TYPE_F32 || lora_b->type == GGML_TYPE_Q8_0) &&
++                ggml_is_contiguous(lora_a) && ggml_is_contiguous(lora_b) &&
++                mm_a_node->type == GGML_TYPE_F32   &&
++                lora_a->ne[1] == lora_b->ne[0]     &&
++                lora_b->ne[0] <= 1024              &&
++                lora_a->ne[0] == mm_node->src[0]->ne[0] &&
++                lora_b->ne[1] == mm_node->src[0]->ne[1] &&
++                lora_a->ne[2] == 1 && lora_a->ne[3] == 1 &&
++                lora_b->ne[2] == 1 && lora_b->ne[3] == 1 &&
++                mm_node->ne[2] == 1 && mm_node->ne[3] == 1;
++
++            // Q8_0 factors: unfused B@t already runs as an int8 dp4a kernel, so the
++            // float-epilogue fused path only pays off when dst_rows x rank is small
++            // (launch-bound regime) — that keeps the Phase-2B NR gate. Windows that will
++            // take the quantized-t dp4a epilogue (mirrors the mmvq host decision: Q8_0 B,
++            // rank multiple of the sidecar group, nrows >= GGML_CUDA_LORA_TQ_MIN_ROWS)
++            // match the unfused kernel's integer path per row and fuse unconditionally.
++            static bool disable_lora_tq = getenv("GGML_CUDA_DISABLE_LORA_TQ") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_LORA_TQ"));
++            static int64_t lora_tq_min_rows = getenv("GGML_CUDA_LORA_TQ_MIN_ROWS") ?
++                atoll(getenv("GGML_CUDA_LORA_TQ_MIN_ROWS")) : 4096;
++            static int64_t lora_q8_max_nr = getenv("GGML_CUDA_LORA_FUSION_Q8_MAX_NR") ?
++                atoll(getenv("GGML_CUDA_LORA_FUSION_Q8_MAX_NR")) : 448*1024;
++            const bool window_tq = !disable_lora_tq && lora_b->type == GGML_TYPE_Q8_0 &&
++                lora_b->ne[0] % GGML_CUDA_LORA_TQ_GROUP == 0 && lora_b->ne[1] >= lora_tq_min_rows;
++            const bool size_ok = factors_ok &&
++                ((lora_a->type != GGML_TYPE_Q8_0 && lora_b->type != GGML_TYPE_Q8_0) ||
++                 window_tq ||
++                 lora_b->ne[1]*lora_b->ne[0] <= lora_q8_max_nr);
++
++            // t stays live as an input of the fused kernel, so it must not alias the fused dst
++            const bool no_alias = size_ok &&
++                ((const char *) add_node->data + ggml_nbytes(add_node) <= (const char *) mm_a_node->data ||
++                 (const char *) mm_a_node->data + ggml_nbytes(mm_a_node) <= (const char *) add_node->data);
++
++            if (no_alias && ggml_get_op_params_f32(scale_node, 1) == 0.0f &&
++                    ggml_cuda_should_fuse_mul_mat_vec_q(mm_node)) {
++                ggml_cuda_mm_fusion_args_host fusion_data{};
++                fusion_data.lora_b     = lora_b;
++                fusion_data.lora_t     = mm_a_node;
++                fusion_data.lora_scale = ggml_get_op_params_f32(scale_node, 0);
++
++                // t = A @ x folds into the activation-quantize launch when x is a single
++                // contiguous row; otherwise t stays a separate matvec kernel
++                static bool disable_lora_quant_fusion = getenv("GGML_CUDA_DISABLE_LORA_QUANT_FUSION") != nullptr &&
++                    std::atoi(getenv("GGML_CUDA_DISABLE_LORA_QUANT_FUSION"));
++                // Q8_0 A: the fold's post-sync tail beyond the prefetched 1024 elements costs
++                // more than the saved matvec launch when K is large
++                static int64_t lora_q8_max_k = getenv("GGML_CUDA_LORA_FUSION_Q8_MAX_K") ?
++                    atoll(getenv("GGML_CUDA_LORA_FUSION_Q8_MAX_K")) : 4096;
++                const ggml_tensor * x = mm_node->src[1];
++                const bool fold_a = !disable_lora_quant_fusion &&
++                    ggml_is_contiguous(x) && x->ne[1] == 1 && x->ne[2] == 1 && x->ne[3] == 1 &&
++                    mm_a_node->ne[1] == 1 &&
++                    (lora_a->type != GGML_TYPE_Q8_0 || lora_a->ne[0] <= lora_q8_max_k);
++
++                if (fold_a) {
++                    fusion_data.lora_a = lora_a;
++                } else {
++                    ggml_cuda_mul_mat(*cuda_ctx, mm_a_node->src[0], mm_a_node->src[1], mm_a_node);
++                }
++
++                ggml_cuda_mul_mat_vec_q(*cuda_ctx, mm_node->src[0], mm_node->src[1], nullptr, add_node, &fusion_data);
++                return 4;
++            }
++        }
++    }
++
+     fused_mul_mat_vec = false;
+     fused_node_count  = 0;
+ 
+@@ -3923,8 +4018,10 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                 }
+             }
+ 
+-            if (should_launch_concurrent_events) {
+-                // Restore original node order within each concurrent region to enable fusion within streams
++            if (stream_ctx.concurrent_events.size() > 0) {
++                // Restore original node order within each concurrent region to enable fusion
++                // within streams; do this even when the events are invalid, otherwise the
++                // interleaved order also defeats the single-stream fusions
+ 
+                 std::unordered_map<const ggml_tensor *, int> node_to_idx;
+                 node_to_idx.reserve(cgraph->n_nodes);
+@@ -3974,7 +4071,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                         cgraph->nodes[start_pos + i] = const_cast<ggml_tensor *>(event.original_order[i]);
+                     }
+                 }
+-            } else {
++            }
++            if (!should_launch_concurrent_events) {
+                 stream_ctx.concurrent_events.clear();
+             }
+ 
+@@ -4275,12 +4373,15 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+ 
+     const int min_fan_out = 3;
+     const int max_fan_out = 3;
++    // with a lora adapter each q/k/v projection contributes 2 consumers of attn_norm
++    // (the base mul_mat and the lora A matvec); they pair into one branch per window
++    const int lora_fan_out = 2*max_fan_out;
+ 
+     // store {fork_idx, join_idx}
+     std::vector<std::pair<int, int>> concurrent_node_ranges;
+ 
+     for (const auto & [root_node, count] : fan_out) {
+-        if (count >= min_fan_out && count <= max_fan_out) {
++        if ((count >= min_fan_out && count <= max_fan_out) || count == lora_fan_out) {
+             const int root_node_idx = node_indices[root_node];
+ 
+             // only optimize for attn_norm
+@@ -4301,14 +4402,34 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+             }
+ 
+             std::vector<std::vector<const ggml_tensor *>> nodes_per_branch;
++            size_t n_seeds = 0;
+             for (int i = root_node_idx + 1; i < cgraph->n_nodes; ++i) {
+                 const ggml_tensor * node = cgraph->nodes[i];
+-                if (!is_noop(node) && depends_on(node, root_node)) {
++                if (is_noop(node) || !depends_on(node, root_node)) {
++                    continue;
++                }
++                n_seeds++;
++                // lora A matvec directly follows its base mul_mat and shares the same
++                // activation input: keep the whole lora window in one branch so the
++                // in-stream window fusion still sees it contiguously
++                const bool lora_a_mm = count == lora_fan_out && !nodes_per_branch.empty() &&
++                    node->op == GGML_OP_MUL_MAT && i > 0 &&
++                    cgraph->nodes[i - 1] == nodes_per_branch.back().back() &&
++                    nodes_per_branch.back().back()->op == GGML_OP_MUL_MAT &&
++                    node->src[1] == nodes_per_branch.back().back()->src[1] &&
++                    (node->src[0]->type == GGML_TYPE_F16 || node->src[0]->type == GGML_TYPE_F32 ||
++                     node->src[0]->type == GGML_TYPE_Q8_0);
++                if (lora_a_mm) {
++                    nodes_per_branch.back().push_back(node);
++                } else {
+                     nodes_per_branch.push_back({ node });
+                 }
+             }
+ 
+-            GGML_ASSERT(nodes_per_branch.size() == (size_t) count);
++            GGML_ASSERT(n_seeds == (size_t) count);
++            if (nodes_per_branch.size() < (size_t) min_fan_out || nodes_per_branch.size() > (size_t) max_fan_out) {
++                continue; // lora pairing did not reduce to one branch per projection
++            }
+ 
+             //find the join point
+             const ggml_tensor * join_node = nullptr;
+@@ -4370,7 +4491,6 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+                 int fork_node_idx = node_indices[root_node];
+                 int join_node_idx = node_indices[join_node];
+ 
+-                int       current_branch_idx = 0;
+                 int       current_node_idx   = fork_node_idx + 1;
+                 const int n_branches         = nodes_per_branch.size();
+ 
+@@ -4394,6 +4514,9 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+                 concurrent_event.original_order.reserve(total_branch_nodes);
+                 for (int i = fork_node_idx + 1; i < join_node_idx; ++i) {
+                     concurrent_event.original_order.push_back(cgraph->nodes[i]);
++                    // mark the window so ggml-alloc does not reuse memory freed in one branch
++                    // inside another branch (would be a cross-stream WAR hazard, see is_valid)
++                    cgraph->nodes[i]->flags |= GGML_TENSOR_FLAG_BRANCH;
+                 }
+ 
+                 std::unordered_map<const ggml_tensor *, ggml_cuda_concurrent_event> & concurrent_events = cuda_ctx->stream_context().concurrent_events;
+@@ -4406,6 +4529,7 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
+                 // example transformation:
+                 // [attn-norm, QMul, QNorm, QRope, KMul, KNorm, KRope, VMul, attn] ->
+                 // [attn-norm, QMul, KMul, VMul, QNorm, VNorm, QRope, KRope, attn]
++                int current_branch_idx = 0;
+                 while (current_node_idx < join_node_idx) {
+                     std::vector<const ggml_tensor *> & branch_nodes = nodes_per_branch[current_branch_idx];
+ 
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 0589e65bd..54a7dd37e 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -477,7 +477,12 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int
+     return 1;
+ }
+ 
+-template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
++// has_fusion: glu/bias/scale epilogue machinery (gate dot rides the main loop).
++// has_lora: lora B@t epilogue only — kept a separate instantiation so lora windows
++// do not pay for the gate accumulator/branch in the hot loop (measured -8% at 27B).
++// has_lora_tq: B is Q8_0 and t has a q8 sidecar — int8 dp4a dot, no float-B/float-t
++// code compiled in (keeps the register count near the lean kernel's).
++template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool has_lora = false, bool has_lora_tq = false>
+ __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
+ static __global__ void mul_mat_vec_q(
+         const void * vx_ptr, const void * vy_ptr, const int32_t * ids_ptr, const ggml_cuda_mm_fusion_args_device fusion, float * dst_ptr,
+@@ -512,6 +517,80 @@ static __global__ void mul_mat_vec_q(
+     uint32_t channel_y;
+     uint32_t sample_dst;
+ 
++    // lora unpack + B-row prefetch before the grid sync: B is static weights, so its
++    // loads overlap the wait for the producer grid; the dot against t (produced by that
++    // grid) runs right after the sync and parks its result in shared memory, so no lora
++    // register is live across the main loop (occupancy of the W dot is untouched)
++    bool use_lora = false;
++    bool use_lora_prefetch = false;
++    [[maybe_unused]] const void * lora_b = nullptr;
++    [[maybe_unused]] const float * lora_t = nullptr;
++    [[maybe_unused]] const float * lora_t_sc = nullptr;
++    [[maybe_unused]] const int8_t * lora_t_qs = nullptr;
++    [[maybe_unused]] float lora_scale = 0.0f;
++    [[maybe_unused]] uint32_t lora_rank = 0;
++    [[maybe_unused]] int lora_b_fmt = GGML_CUDA_LORA_FMT_F32;
++    // float path: 1 element per lane per iteration; dp4a path: 4 per lane, one iteration
++    constexpr int lora_niter = has_lora_tq ? 1 : 4; // both cover rank <= 4*warp_size prefetched
++    [[maybe_unused]] float lora_bv[lora_niter] = {0.0f};
++    [[maybe_unused]] int lora_bq[lora_niter] = {0}; // dp4a: 4 packed B quants per lane per iter
++    [[maybe_unused]] const int lora_row_i = threadIdx.y; // warp-per-row, rows_per_cuda_block <= nwarps
++    [[maybe_unused]] bool lora_row_ok = false;
++    if constexpr (has_lora) {
++        use_lora   = fusion.lora_b != nullptr;
++        lora_b     = fusion.lora_b;
++        lora_scale = fusion.lora_scale;
++        lora_rank  = fusion.lora_rank;
++        if constexpr (has_lora_tq) {
++            lora_t_sc = fusion.lora_t_sc;
++            lora_t_qs = fusion.lora_t_qs;
++        } else {
++            lora_t     = fusion.lora_t;
++            lora_b_fmt = fusion.lora_b_fmt;
++        }
++        // float path: 4 iters x 1 elem/lane; dp4a path: 1 iter x 4 elems/lane — both 4*warp_size
++        use_lora_prefetch = use_lora && lora_rank <= uint32_t(4*warp_size);
++        if (use_lora_prefetch) {
++            lora_row_ok = lora_row_i < rows_per_cuda_block &&
++                (rows_per_cuda_block == 1 || uint32_t(row0 + lora_row_i) < stride_col_dst);
++            if (lora_row_ok) {
++                const uint32_t row = row0 + lora_row_i;
++                const block_q8_0 * brow_q8 = (const block_q8_0 *) lora_b + (size_t) row * (lora_rank/QK8_0);
++                if constexpr (has_lora_tq) {
++                    // Q8_0 blocks are 34 bytes (2-byte aligned): assemble each lane's 4
++                    // quants from byte loads; the block scale rides in lora_bv
++#pragma unroll
++                    for (int m = 0; m < lora_niter; ++m) {
++                        const uint32_t k4 = 4*(m*warp_size + threadIdx.x);
++                        if (k4 < lora_rank) {
++                            const block_q8_0 * blk = &brow_q8[k4/QK8_0];
++                            const int qo = k4 % QK8_0;
++                            lora_bq[m] = (int) (uint8_t) blk->qs[qo + 0]        |
++                                        ((int) (uint8_t) blk->qs[qo + 1] <<  8) |
++                                        ((int) (uint8_t) blk->qs[qo + 2] << 16) |
++                                        ((int)           blk->qs[qo + 3] << 24);
++                            lora_bv[m] = __half2float(blk->d);
++                        }
++                    }
++                } else {
++#pragma unroll
++                    for (int m = 0; m < lora_niter; ++m) {
++                        const uint32_t k = m*warp_size + threadIdx.x;
++                        if (k < lora_rank) {
++                            if (lora_b_fmt == GGML_CUDA_LORA_FMT_Q8_0) {
++                                lora_bv[m] = __half2float(brow_q8[k/QK8_0].d) * (float) brow_q8[k/QK8_0].qs[k % QK8_0];
++                            } else if (lora_b_fmt == GGML_CUDA_LORA_FMT_F16) {
++                                lora_bv[m] = __half2float(((const half *) lora_b)[(size_t) row * lora_rank + k]);
++                            } else {
++                                lora_bv[m] = ((const float *) lora_b)[(size_t) row * lora_rank + k];
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++
+     ggml_cuda_pdl_sync();
+     channel_x  = ncols_dst == 1 && ids ? ids[channel_dst]                     : fastdiv(channel_dst, channel_ratio);
+     channel_y  = ncols_dst == 1 && ids ? fastmodulo(channel_dst, nchannels_y) : channel_dst;
+@@ -584,6 +663,41 @@ static __global__ void mul_mat_vec_q(
+         }
+     }
+ 
++    // lora: t is produced by the preceding grid, so this must follow the sync. The whole
++    // dot runs here — before the main loop — and parks its per-row result in shared
++    // memory (protected by the same barrier as tmp_shared), so no lora register stays
++    // live across the main loop and the W dot keeps the lean kernel's occupancy.
++    [[maybe_unused]] __shared__ float lora_row_sum[has_lora ? rows_per_cuda_block : 1];
++    if constexpr (has_lora) {
++        if (lora_row_ok) { // implies use_lora_prefetch
++            float sum = 0.0f;
++            if constexpr (has_lora_tq) {
++                // sidecar quants are 4-byte aligned by construction; a lane's 4 elements
++                // never straddle a scale group (group = 8, chunks start at 0 or 4 mod 8)
++#pragma unroll
++                for (int m = 0; m < lora_niter; ++m) {
++                    const uint32_t k4 = 4*(m*warp_size + threadIdx.x);
++                    if (k4 < lora_rank) {
++                        sum += lora_bv[m] * lora_t_sc[k4/GGML_CUDA_LORA_TQ_GROUP] *
++                            (float) ggml_cuda_dp4a(lora_bq[m], *(const int *) (lora_t_qs + k4), 0);
++                    }
++                }
++            } else {
++#pragma unroll
++                for (int m = 0; m < lora_niter; ++m) {
++                    const uint32_t k = m*warp_size + threadIdx.x;
++                    if (k < lora_rank) {
++                        sum += lora_bv[m] * lora_t[k];
++                    }
++                }
++            }
++            sum = warp_reduce_sum<warp_size>(sum);
++            if (threadIdx.x == 0) {
++                lora_row_sum[lora_row_i] = sum;
++            }
++        }
++    }
++
+     // partial sum for each thread
+     float tmp[ncols_dst][rows_per_cuda_block] = {{0.0f}};
+     float tmp_gate[ncols_dst][rows_per_cuda_block] = {{0.0f}};
+@@ -658,6 +772,48 @@ static __global__ void mul_mat_vec_q(
+                 }
+             }
+ 
++            [[maybe_unused]] float lora_sum = 0.0f;
++            if constexpr (has_lora) {
++                if (use_lora && (rows_per_cuda_block == 1 || uint32_t(row0 + i) < stride_col_dst)) {
++                    if (use_lora_prefetch) {
++                        lora_sum = lora_row_sum[i];
++                    } else {
++                        // large ranks: warp-cooperative dot(B[row, :], t) in the tail
++                        const uint32_t row = row0 + i;
++                        if constexpr (has_lora_tq) {
++                            const block_q8_0 * brow = (const block_q8_0 *) lora_b + (size_t) row * (lora_rank/QK8_0);
++                            for (uint32_t k4 = 4*threadIdx.x; k4 < lora_rank; k4 += 4*warp_size) {
++                                const block_q8_0 * blk = &brow[k4/QK8_0];
++                                const int qo = k4 % QK8_0;
++                                const int bq = (int) (uint8_t) blk->qs[qo + 0]        |
++                                              ((int) (uint8_t) blk->qs[qo + 1] <<  8) |
++                                              ((int) (uint8_t) blk->qs[qo + 2] << 16) |
++                                              ((int)           blk->qs[qo + 3] << 24);
++                                const int tq = *(const int *) (lora_t_qs + k4);
++                                lora_sum += __half2float(blk->d) * lora_t_sc[k4/GGML_CUDA_LORA_TQ_GROUP] *
++                                    (float) ggml_cuda_dp4a(bq, tq, 0);
++                            }
++                        } else if (lora_b_fmt == GGML_CUDA_LORA_FMT_Q8_0) {
++                            const block_q8_0 * brow = (const block_q8_0 *) lora_b + (size_t) row * (lora_rank/QK8_0);
++                            for (uint32_t k = threadIdx.x; k < lora_rank; k += warp_size) {
++                                lora_sum += __half2float(brow[k/QK8_0].d) * (float) brow[k/QK8_0].qs[k % QK8_0] * lora_t[k];
++                            }
++                        } else if (lora_b_fmt == GGML_CUDA_LORA_FMT_F16) {
++                            const half * brow = (const half *) lora_b + (size_t) row * lora_rank;
++                            for (uint32_t k = threadIdx.x; k < lora_rank; k += warp_size) {
++                                lora_sum += __half2float(brow[k]) * lora_t[k];
++                            }
++                        } else {
++                            const float * brow = (const float *) lora_b + (size_t) row * lora_rank;
++                            for (uint32_t k = threadIdx.x; k < lora_rank; k += warp_size) {
++                                lora_sum += brow[k] * lora_t[k];
++                            }
++                        }
++                        lora_sum = warp_reduce_sum<warp_size>(lora_sum);
++                    }
++                }
++            }
++
+             if (threadIdx.x == i && (rows_per_cuda_block == 1 || uint32_t(row0 + i) < stride_col_dst)) {
+                 float result = tmp[j][i];
+                 if constexpr (has_fusion) {
+@@ -687,6 +843,11 @@ static __global__ void mul_mat_vec_q(
+                         }
+                     }
+                 }
++                if constexpr (has_lora) {
++                    if (use_lora) {
++                        result += lora_scale * lora_sum;
++                    }
++                }
+                 dst[j*stride_col_dst + i] = result;
+             }
+         }
+@@ -695,6 +856,10 @@ static __global__ void mul_mat_vec_q(
+     if constexpr (!has_fusion) {
+         GGML_UNUSED_VARS(use_gate, use_bias, use_gate_bias, use_scale, use_gate_scale, active_glu, gate_bias, x_bias, x_scale, gate_scale, tmp_gate);
+     }
++    if constexpr (!has_lora) {
++        GGML_UNUSED_VARS(use_lora, lora_b, lora_t, lora_t_sc, lora_t_qs, lora_scale, lora_rank, lora_b_fmt, use_lora_prefetch,
++            lora_bv, lora_bq, lora_row_i, lora_row_ok);
++    }
+     if constexpr (type != GGML_TYPE_NVFP4) {
+         GGML_UNUSED_VARS(use_scale, use_gate_scale, x_scale, gate_scale, x_scales, gate_scales);
+     }
+@@ -792,10 +957,29 @@ static void mul_mat_vec_q_switch_fusion(
+         const dim3 & block_nums, const dim3 & block_dims, const int nbytes_shared,
+         const uint32_t ids_stride, cudaStream_t stream) {
+ 
+-    const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
+-                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
++    const bool has_glu_fusion  = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
++                                 fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
++    const bool has_lora_fusion = fusion.lora_b != nullptr;
+     if constexpr (c_ncols_dst == 1) {
+-        if (has_fusion) {
++        if (has_lora_fusion) {
++            // dedicated instantiations: lean main loop (no gate accumulator), lora epilogue only;
++            // the quantized-t variant compiles the dp4a dot exclusively (no float-B/float-t code)
++            GGML_ASSERT(!has_glu_fusion && "lora fusion cannot combine with glu/bias fusion");
++            const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
++            if (fusion.lora_t_qs != nullptr) {
++                ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k, true, true>, launch_params,
++                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
++                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
++                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
++            } else {
++                ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k, true, false>, launch_params,
++                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
++                     channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
++                     sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
++            }
++            return;
++        }
++        if (has_glu_fusion) {
+             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
+             ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k>, launch_params,
+                  vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
+@@ -805,7 +989,7 @@ static void mul_mat_vec_q_switch_fusion(
+         }
+     }
+ 
+-    GGML_ASSERT(!has_fusion && "fusion only supported for ncols_dst=1");
++    GGML_ASSERT(!has_glu_fusion && !has_lora_fusion && "fusion only supported for ncols_dst=1");
+ 
+     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
+     ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k>, launch_params,
+@@ -1150,6 +1334,15 @@ static void mul_mat_vec_q_switch_type(
+     }
+ }
+ 
++static int ggml_cuda_lora_fmt_from_type(ggml_type type) {
++    switch (type) {
++        case GGML_TYPE_F32:  return GGML_CUDA_LORA_FMT_F32;
++        case GGML_TYPE_F16:  return GGML_CUDA_LORA_FMT_F16;
++        case GGML_TYPE_Q8_0: return GGML_CUDA_LORA_FMT_Q8_0;
++        default: GGML_ABORT("unsupported lora factor type");
++    }
++}
++
+ void ggml_cuda_mul_mat_vec_q(
+         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
+         const ggml_cuda_mm_fusion_args_host * fusion) {
+@@ -1213,6 +1406,30 @@ void ggml_cuda_mul_mat_vec_q(
+             GGML_ASSERT(ggml_nelements(fusion->gate_scale) == (ids ? src0->ne[2] : 1));
+             fusion_local.gate_scale = fusion->gate_scale->data;
+         }
++        if (fusion->lora_b) {
++            GGML_ASSERT(!ids);
++            GGML_ASSERT(fusion->lora_t != nullptr);
++            GGML_ASSERT(fusion->lora_b->type == GGML_TYPE_F16 || fusion->lora_b->type == GGML_TYPE_F32 || fusion->lora_b->type == GGML_TYPE_Q8_0);
++            GGML_ASSERT(fusion->lora_b->type != GGML_TYPE_Q8_0 || fusion->lora_b->ne[0] % QK8_0 == 0);
++            GGML_ASSERT(fusion->lora_t->type == GGML_TYPE_F32);
++            GGML_ASSERT(ggml_is_contiguous(fusion->lora_b) && ggml_is_contiguous(fusion->lora_t));
++            GGML_ASSERT(fusion->lora_b->ne[1] == dst->ne[0]);
++            GGML_ASSERT(fusion->lora_b->ne[0] == fusion->lora_t->ne[0]);
++            fusion_local.lora_b     = fusion->lora_b->data;
++            fusion_local.lora_t     = (const float *) fusion->lora_t->data;
++            fusion_local.lora_scale = fusion->lora_scale;
++            fusion_local.lora_rank  = fusion->lora_b->ne[0];
++            fusion_local.lora_b_fmt = ggml_cuda_lora_fmt_from_type(fusion->lora_b->type);
++            if (fusion->lora_a) {
++                GGML_ASSERT(fusion->lora_a->type == GGML_TYPE_F16 || fusion->lora_a->type == GGML_TYPE_F32 || fusion->lora_a->type == GGML_TYPE_Q8_0);
++                GGML_ASSERT(fusion->lora_a->type != GGML_TYPE_Q8_0 || fusion->lora_a->ne[0] % QK8_0 == 0);
++                GGML_ASSERT(ggml_is_contiguous(fusion->lora_a));
++                GGML_ASSERT(fusion->lora_a->ne[0] == src1->ne[0]);
++                GGML_ASSERT(fusion->lora_a->ne[1] == fusion->lora_t->ne[0]);
++                GGML_ASSERT(src1->ne[1] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1);
++                GGML_ASSERT(ggml_is_contiguous(src1));
++            }
++        }
+         fusion_local.glu_op = fusion->glu_op;
+     }
+ 
+@@ -1228,12 +1445,48 @@ void ggml_cuda_mul_mat_vec_q(
+     }
+ 
+     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+-    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
++    const int64_t quant_size  = ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1;
++
++    // quantized-t sidecar for the dp4a epilogue (Q8_0 B only): per-group scales + int8
++    // quants appended to the activation-quantize allocation (36-byte q8_1 blocks keep the
++    // tail 4-byte aligned); produced inside the quantize launch, either by the fold or by
++    // quantizing the precomputed float t. GGML_CUDA_DISABLE_LORA_TQ=1 restores the float
++    // epilogue. Per-window row threshold: the sidecar's production cost is constant while
++    // its epilogue win scales with nrows_dst — small windows (0.6B rig, all <= 3072 rows)
++    // measure faster on the float path, large ones (27B rig, >= 5120 rows) on dp4a.
++    static bool disable_lora_tq = getenv("GGML_CUDA_DISABLE_LORA_TQ") != nullptr && atoi(getenv("GGML_CUDA_DISABLE_LORA_TQ"));
++    static int64_t lora_tq_min_rows = getenv("GGML_CUDA_LORA_TQ_MIN_ROWS") ?
++        atoll(getenv("GGML_CUDA_LORA_TQ_MIN_ROWS")) : 4096;
++    const int64_t lora_rank = fusion && fusion->lora_b ? fusion->lora_b->ne[0] : 0;
++    const bool use_lora_tq = !disable_lora_tq && !ids && fusion && fusion->lora_b &&
++        fusion->lora_b->type == GGML_TYPE_Q8_0 && lora_rank % GGML_CUDA_LORA_TQ_GROUP == 0 &&
++        dst->ne[0] >= lora_tq_min_rows &&
++        ne11 == 1 && ne12 == 1 && ne13 == 1;
++    const int64_t tq_size = use_lora_tq ? lora_rank/GGML_CUDA_LORA_TQ_GROUP*sizeof(float) + lora_rank : 0;
++
++    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), quant_size + tq_size);
++    float  * lora_t_sc = nullptr;
++    int8_t * lora_t_qs = nullptr;
++    if (use_lora_tq) {
++        lora_t_sc = (float  *) (src1_q8_1.get() + quant_size);
++        lora_t_qs = (int8_t *) (src1_q8_1.get() + quant_size + lora_rank/GGML_CUDA_LORA_TQ_GROUP*sizeof(float));
++        fusion_local.lora_t_sc = lora_t_sc;
++        fusion_local.lora_t_qs = lora_t_qs;
++    }
+     {
+         const int64_t s11 = src1->nb[1] / ts_src1;
+         const int64_t s12 = src1->nb[2] / ts_src1;
+         const int64_t s13 = src1->nb[3] / ts_src1;
+-        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
++        if (fusion && (fusion->lora_a || use_lora_tq)) {
++            // t = lora_a @ x rides the quantize launch instead of its own kernel; with
++            // lora_a null (fold gated off) the launch only quantizes t into the sidecar
++            quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream,
++                fusion->lora_a ? fusion->lora_a->data : nullptr,
++                fusion->lora_a ? ggml_cuda_lora_fmt_from_type(fusion->lora_a->type) : 0,
++                (float *) fusion->lora_t->data, fusion->lora_t->ne[0], lora_t_sc, lora_t_qs);
++        } else {
++            quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
++        }
+     }
+ 
+     const int64_t s01 = src0->nb[1] / ts_src0;
+diff --git a/ggml/src/ggml-cuda/quantize.cu b/ggml/src/ggml-cuda/quantize.cu
+index 2bd9b6262..1b614f979 100644
+--- a/ggml/src/ggml-cuda/quantize.cu
++++ b/ggml/src/ggml-cuda/quantize.cu
+@@ -50,12 +50,163 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
+ }
+ #endif // CUDART_VERSION >= 12080
+ 
++// has_lora: trailing blocks beyond the quantize grid compute t = A @ x for the lora
++// fusion (batch 1 only), sharing the launch and the L2-resident x with quantization.
++// One 32-lane group per rank component; A rows are contiguous (F16, F32 or Q8_0).
++// lora_t_qs set: the block additionally emits a q8 sidecar of t (int8 quants + one
++// scale per GGML_CUDA_LORA_TQ_GROUP components) for the dp4a epilogue. lora_a may
++// then be null: t was precomputed by the preceding grid (fold gated off) and the
++// trailing blocks only quantize it.
++template <bool has_lora>
+ __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
+ static __global__ void quantize_q8_1(
+-        const float * x_ptr, void * vy_ptr,
++        const float * x_ptr, void * vy_ptr, const void * lora_a, float * lora_t,
+         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
+-        const int64_t ne0, const uint32_t ne1, const uint3 ne2) {
++        const int64_t ne0, const uint32_t ne1, const uint3 ne2,
++        const uint32_t lora_rank, const int lora_a_fmt, float * lora_t_sc, int8_t * lora_t_qs) {
+     ggml_cuda_pdl_lc();
++    if constexpr (!has_lora) {
++        GGML_UNUSED_VARS(lora_a, lora_t, lora_rank, lora_a_fmt, lora_t_sc, lora_t_qs);
++    } else {
++        const int64_t nblocks_quant = (ne0 + blockDim.x - 1) / blockDim.x;
++        if (blockIdx.x >= nblocks_quant) {
++            const int     lane = threadIdx.x % 32;
++            const int64_t j    = (int64_t) (blockIdx.x - nblocks_quant)*(blockDim.x/32) + threadIdx.x/32;
++            const bool    jok  = j < (int64_t) lora_rank;
++            const bool    x16  = ne00 % 4 == 0 && (uintptr_t) x_ptr % 16 == 0;
++            const bool    vec4 = x16 && (uintptr_t) lora_a % 16 == 0;
++            float sum = 0.0f;
++            if (jok && lora_a_fmt == GGML_CUDA_LORA_FMT_F16 && vec4) {
++                // A is static weights: issue its loads before the grid sync so they
++                // overlap the wait for the producer of x
++                const half * arow = (const half *) lora_a + j*ne00;
++                constexpr int npref = 8; // 32 elements/lane, covers ne00 <= 1024 fully
++                half2 apref[2*npref];
++#pragma unroll
++                for (int m = 0; m < npref; ++m) {
++                    const int64_t k = 4*(lane + 32*m);
++                    if (k < ne00) {
++                        apref[2*m + 0] = *(const half2 *)(arow + k);
++                        apref[2*m + 1] = *(const half2 *)(arow + k + 2);
++                    }
++                }
++                ggml_cuda_pdl_sync();
++#pragma unroll
++                for (int m = 0; m < npref; ++m) {
++                    const int64_t k = 4*(lane + 32*m);
++                    if (k < ne00) {
++                        const float4 xv  = *(const float4 *)(x_ptr + k);
++                        const float2 a01 = __half22float2(apref[2*m + 0]);
++                        const float2 a23 = __half22float2(apref[2*m + 1]);
++                        sum += a01.x*xv.x + a01.y*xv.y + a23.x*xv.z + a23.y*xv.w;
++                    }
++                }
++                for (int64_t k = 4*(lane + 32*npref); k < ne00; k += 4*32) {
++                    const float4 xv  = *(const float4 *)(x_ptr + k);
++                    const float2 a01 = __half22float2(*(const half2 *)(arow + k));
++                    const float2 a23 = __half22float2(*(const half2 *)(arow + k + 2));
++                    sum += a01.x*xv.x + a01.y*xv.y + a23.x*xv.z + a23.y*xv.w;
++                }
++            } else if (jok && lora_a_fmt == GGML_CUDA_LORA_FMT_Q8_0 && x16) {
++                // Q8_0 A: 4 blocks per iteration, 8 lanes per block, 4 elements per lane;
++                // blocks are 34 bytes so only 2-byte aligned, load the quants as bytes
++                const int64_t      nblk = ne00 / QK8_0;
++                const block_q8_0 * arow = (const block_q8_0 *) lora_a + j*nblk;
++                const int          sub  = lane / 8;
++                const int          qoff = 4*(lane % 8);
++                constexpr int npref = 8; // 128 elements per iteration, covers ne00 <= 1024 fully
++                half   ad[npref];
++                int8_t aq[npref][4];
++#pragma unroll
++                for (int m = 0; m < npref; ++m) {
++                    const int64_t blk = 4*m + sub;
++                    if (blk < nblk) {
++                        ad[m]    = arow[blk].d;
++                        aq[m][0] = arow[blk].qs[qoff + 0];
++                        aq[m][1] = arow[blk].qs[qoff + 1];
++                        aq[m][2] = arow[blk].qs[qoff + 2];
++                        aq[m][3] = arow[blk].qs[qoff + 3];
++                    }
++                }
++                ggml_cuda_pdl_sync();
++#pragma unroll
++                for (int m = 0; m < npref; ++m) {
++                    const int64_t blk = 4*m + sub;
++                    if (blk < nblk) {
++                        const float4 xv = *(const float4 *)(x_ptr + blk*QK8_0 + qoff);
++                        sum += __half2float(ad[m]) * (aq[m][0]*xv.x + aq[m][1]*xv.y + aq[m][2]*xv.z + aq[m][3]*xv.w);
++                    }
++                }
++                for (int64_t blk = 4*npref + sub; blk < nblk; blk += 4) {
++                    const float4 xv = *(const float4 *)(x_ptr + blk*QK8_0 + qoff);
++                    const float  d  = __half2float(arow[blk].d);
++                    sum += d * (arow[blk].qs[qoff + 0]*xv.x + arow[blk].qs[qoff + 1]*xv.y + arow[blk].qs[qoff + 2]*xv.z + arow[blk].qs[qoff + 3]*xv.w);
++                }
++            } else {
++                ggml_cuda_pdl_sync();
++                if (jok && lora_a_fmt == GGML_CUDA_LORA_FMT_F16) {
++                    const half * arow = (const half *) lora_a + j*ne00;
++                    for (int64_t k = lane; k < ne00; k += 32) {
++                        sum += __half2float(arow[k]) * x_ptr[k];
++                    }
++                } else if (jok && lora_a_fmt == GGML_CUDA_LORA_FMT_Q8_0) {
++                    const block_q8_0 * arow = (const block_q8_0 *) lora_a + j*(ne00/QK8_0);
++                    for (int64_t b = 0; b < ne00/QK8_0; ++b) {
++                        sum += __half2float(arow[b].d) * (float) arow[b].qs[lane] * x_ptr[b*QK8_0 + lane];
++                    }
++                } else if (jok && lora_a != nullptr) {
++                    const float * arow = (const float *) lora_a + j*ne00;
++                    if (vec4) {
++                        for (int64_t k = 4*lane; k < ne00; k += 4*32) {
++                            const float4 xv = *(const float4 *)(x_ptr + k);
++                            const float4 av = *(const float4 *)(arow + k);
++                            sum += av.x*xv.x + av.y*xv.y + av.z*xv.z + av.w*xv.w;
++                        }
++                    } else {
++                        for (int64_t k = lane; k < ne00; k += 32) {
++                            sum += arow[k] * x_ptr[k];
++                        }
++                    }
++                }
++            }
++            if (jok) {
++                if (lora_a != nullptr) {
++                    sum = warp_reduce_sum<32>(sum);
++                    if (lane == 0) {
++                        lora_t[j] = sum;
++                    }
++                } else if (lane == 0) {
++                    // fold gated off: t was produced by the preceding grid (pdl-synced
++                    // above), the trailing blocks only quantize it into the sidecar
++                    sum = lora_t[j];
++                }
++            }
++            if (lora_t_qs != nullptr) {
++                // q8 sidecar: the block's 8 components form one scale group
++                constexpr int ngrp = CUDA_QUANTIZE_BLOCK_SIZE/32;
++                static_assert(ngrp == GGML_CUDA_LORA_TQ_GROUP, "sidecar scale group must match warps per block");
++                __shared__ float tsh[ngrp];
++                if (jok && lane == 0) {
++                    tsh[threadIdx.x/32] = sum;
++                }
++                __syncthreads();
++                const int64_t j0 = (int64_t) (blockIdx.x - nblocks_quant)*ngrp;
++                if (threadIdx.x < 32) {
++                    const bool  qok  = threadIdx.x < ngrp && j0 + threadIdx.x < (int64_t) lora_rank;
++                    const float v    = qok ? tsh[threadIdx.x] : 0.0f;
++                    const float amax = warp_reduce_max<ngrp>(fabsf(v));
++                    const float d    = amax / 127.0f;
++                    if (qok) {
++                        lora_t_qs[j0 + threadIdx.x] = amax == 0.0f ? 0 : (int8_t) roundf(v / d);
++                    }
++                    if (threadIdx.x == 0) {
++                        lora_t_sc[j0/ngrp] = d;
++                    }
++                }
++            }
++            return;
++        }
++    }
+     const float * GGML_CUDA_RESTRICT x  = x_ptr;
+     void        * GGML_CUDA_RESTRICT vy = vy_ptr;
+     const int64_t i0 = (int64_t)blockDim.x*blockIdx.x + threadIdx.x;
+@@ -558,17 +709,34 @@ static __global__ void quantize_mmq_q8_1(
+ void quantize_row_q8_1_cuda(
+         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
+         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
+-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, cudaStream_t stream) {
++        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, cudaStream_t stream,
++        const void * lora_a, const int lora_a_fmt, float * lora_t, const int64_t lora_rank,
++        float * lora_t_sc, int8_t * lora_t_qs) {
+     GGML_ASSERT(!ids);
+     GGML_ASSERT(ne0 % QK8_1 == 0);
+ 
+     const uint3 ne2_fastdiv = init_fastdiv_values(ne2);
+ 
+     const int64_t block_num_x = (ne0 + CUDA_QUANTIZE_BLOCK_SIZE - 1) / CUDA_QUANTIZE_BLOCK_SIZE;
+-    const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
+     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
+-    const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
+-    ggml_cuda_kernel_launch(quantize_q8_1, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
++    if (lora_a == nullptr && lora_t_qs == nullptr) {
++        const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
++        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
++        ggml_cuda_kernel_launch(quantize_q8_1<false>, launch_params, x, vy, (const void *) nullptr, (float *) nullptr,
++            ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv, 0, 0, (float *) nullptr, (int8_t *) nullptr);
++    } else {
++        GGML_ASSERT(ne1 == 1 && ne2 == 1 && ne3 == 1);
++        GGML_ASSERT(lora_t != nullptr && lora_rank > 0);
++        GGML_ASSERT(lora_a == nullptr || lora_a_fmt != GGML_CUDA_LORA_FMT_Q8_0 || ne00 % QK8_0 == 0);
++        GGML_ASSERT((lora_t_sc == nullptr) == (lora_t_qs == nullptr));
++        GGML_ASSERT(lora_t_qs == nullptr || lora_rank % GGML_CUDA_LORA_TQ_GROUP == 0);
++        constexpr int64_t rows_per_block = CUDA_QUANTIZE_BLOCK_SIZE/32;
++        const int64_t block_num_lora = (lora_rank + rows_per_block - 1) / rows_per_block;
++        const dim3 num_blocks(block_num_x + block_num_lora, 1, 1);
++        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
++        ggml_cuda_kernel_launch(quantize_q8_1<true>, launch_params, x, vy, lora_a, lora_t,
++            ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv, (uint32_t) lora_rank, lora_a_fmt, lora_t_sc, lora_t_qs);
++    }
+     GGML_UNUSED(type_src0);
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/quantize.cuh b/ggml/src/ggml-cuda/quantize.cuh
+index 5f08dcbfe..a9c767814 100644
+--- a/ggml/src/ggml-cuda/quantize.cuh
++++ b/ggml/src/ggml-cuda/quantize.cuh
+@@ -16,10 +16,17 @@ typedef void (*quantize_cuda_t)(
+         ggml_type type_src0, int64_t ne00, int64_t s01, int64_t s02, int64_t s03,
+         int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, cudaStream_t stream);
+ 
++// lora_a != nullptr additionally computes lora_t = lora_a @ x in the same launch
++// (batch 1 only; lora_a is [ne00, lora_rank] contiguous F16/F32/Q8_0, lora_t is [lora_rank] F32).
++// lora_t_sc/lora_t_qs != nullptr additionally emits a q8 sidecar of t (int8 quants + one
++// scale per GGML_CUDA_LORA_TQ_GROUP components); with lora_a == nullptr the trailing blocks
++// only quantize a lora_t precomputed by the preceding grid.
+ void quantize_row_q8_1_cuda(
+         const float * x, const int32_t * ids, void * vy,
+         ggml_type type_src0, int64_t ne00, int64_t s01, int64_t s02, int64_t s03,
+-        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, cudaStream_t stream);
++        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, cudaStream_t stream,
++        const void * lora_a = nullptr, int lora_a_fmt = 0, float * lora_t = nullptr, int64_t lora_rank = 0,
++        float * lora_t_sc = nullptr, int8_t * lora_t_qs = nullptr);
+ 
+ void quantize_mmq_q8_1_cuda(
+         const float * x, const int32_t * ids, void * vy,
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 59191c663..3797e5547 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -7037,6 +7037,13 @@ static void ggml_compute_backward(
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_silu_back(ctx, grad, src0));
+                     }
+                 } break;
++                case GGML_UNARY_OP_SIGMOID: {
++                    if (src0_needs_grads) {
++                        // dsigmoid(x) = y - y^2 with y = sigmoid(x) = tensor
++                        struct ggml_tensor * tmp = ggml_sub(ctx, tensor, ggml_sqr(ctx, tensor));
++                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, tmp));
++                    }
++                } break;
+                 case GGML_UNARY_OP_EXP: {
+                     if (src0_needs_grads) {
+                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, tensor, grad));
+@@ -7200,6 +7207,27 @@ void ggml_build_forward_expand(struct ggml_cgraph * cgraph, struct ggml_tensor *
+     ggml_build_forward_impl(cgraph, tensor, true, true);
+ }
+ 
++// LOCAL RESEARCH PATCH (beast-rank E20): ops with no usable backward pass,
++// cut instead of aborted when LLAMA_GRADMATRIX_DIR is set (delta-net and
++// recurrent-state machinery in hybrid archs)
++static bool ggml_gradmatrix_cut_op(enum ggml_op op) {
++    switch (op) {
++        case GGML_OP_SSM_CONV:
++        case GGML_OP_SSM_SCAN:
++        case GGML_OP_SET_ROWS:
++        case GGML_OP_SET:
++        case GGML_OP_CONCAT:
++        case GGML_OP_L2_NORM:
++        case GGML_OP_PAD:
++        case GGML_OP_TRI:
++        case GGML_OP_SOLVE_TRI:
++        case GGML_OP_GATED_DELTA_NET:
++            return true;
++        default:
++            return false;
++    }
++}
++
+ void ggml_build_backward_expand(
+         struct ggml_context *  ctx,
+         struct ggml_cgraph  *  cgraph,
+@@ -7272,7 +7300,19 @@ void ggml_build_backward_expand(
+             continue;
+         }
+ 
++        // LOCAL RESEARCH PATCH (beast-rank E20): treat ops that have no usable
++        // backward pass as gradient sinks (stop-gradient) instead of aborting.
++        // gradients keep flowing around them through the residual stream.
++        if (getenv("LLAMA_GRADMATRIX_DIR") != NULL && ggml_gradmatrix_cut_op(node->op)) {
++            continue;
++        }
++
+         // inplace operations are currently not supported
++        if (node->view_src && !(node->op == GGML_OP_CPY || node->op == GGML_OP_VIEW ||
++            node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE)) {
++            GGML_LOG_ERROR("%s: unsupported view node in backward: op=%s name=%s view_src=%s\n",
++                __func__, ggml_op_name(node->op), node->name, node->view_src->name);
++        }
+         GGML_ASSERT(!node->view_src || node->op == GGML_OP_CPY || node->op == GGML_OP_VIEW ||
+             node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE);
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 19cca7df1..614e6acaa 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2349,6 +2349,9 @@ void llama_context::output_reorder() {
+ //
+ 
+ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
++    // LOCAL RESEARCH PATCH (beast-rank E20): the backward graph for gradient
++    // Gram collection needs several nodes per forward node
++    const uint32_t gradmatrix_scale = getenv("LLAMA_GRADMATRIX_DIR") != nullptr ? 8u : 1u;
+     if (model.arch == LLM_ARCH_QWEN3NEXT ||
+         model.arch == LLM_ARCH_KIMI_LINEAR ||
+         model.arch == LLM_ARCH_QWEN35 ||
+@@ -2357,13 +2360,13 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+         (model.arch == LLM_ARCH_DFLASH && model.hparams.dsv4_hc_mult > 0) ||
+         model.arch == LLM_ARCH_NANBEIGE ||
+         model.arch == LLM_ARCH_MINIMAX_M3) {
+-        return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
++        return gradmatrix_scale*std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
+     }
+     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
+     for (const auto & lora : model.loras) {
+         res += lora->get_n_nodes();
+     }
+-    return res;
++    return gradmatrix_scale*res;
+ }
+ 
+ llm_graph_result * llama_context::get_gf_res_reserve() const {
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 9dde345df..15977ff69 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -466,8 +466,13 @@ void llm_graph_input_attn_no_cache::set_input(const llama_ubatch * ubatch) {
+ }
+ 
+ void llm_graph_input_attn_kv::set_input(const llama_ubatch * ubatch) {
+-    mctx->set_input_k_idxs(self_k_idxs, ubatch);
+-    mctx->set_input_v_idxs(self_v_idxs, ubatch);
++    // the idxs are left unallocated when the gradmatrix kv bypass skips the cache store
++    if (self_k_idxs && self_k_idxs->buffer) {
++        mctx->set_input_k_idxs(self_k_idxs, ubatch);
++    }
++    if (self_v_idxs && self_v_idxs->buffer) {
++        mctx->set_input_v_idxs(self_v_idxs, ubatch);
++    }
+ 
+     // the mask is left unallocated when the graph only stores K/V without attending
+     // (e.g. DFlash's KV-injection pass)
+@@ -1059,8 +1064,13 @@ void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
+ }
+ 
+ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
+-    mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
+-    mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
++    // the idxs are left unallocated when the gradmatrix kv bypass skips the cache store
++    if (inp_attn->self_k_idxs && inp_attn->self_k_idxs->buffer) {
++        mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
++    }
++    if (inp_attn->self_v_idxs && inp_attn->self_v_idxs->buffer) {
++        mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
++    }
+ 
+     mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
+ 
+@@ -2774,8 +2784,16 @@ ggml_tensor * llm_graph_context::build_attn(
+ 
+     const auto * mctx_cur = inp->mctx;
+ 
++    // LOCAL RESEARCH PATCH (beast-rank E20): when collecting gradient Grams,
++    // read attention K/V from the current batch instead of the cache.
++    // ggml_set_rows has no backward pass and the cache read is a view of the
++    // cache leaf, not of the write result, so gradients for wk/wv are lost on
++    // the normal path. equivalent only when the whole window is one ubatch.
++    // only when n_kv == n_tokens; reserve/warmup graphs keep the normal path
++    const bool bypass_kv = getenv("LLAMA_GRADMATRIX_DIR") != nullptr && inp->get_kq_mask()->ne[0] == k_cur->ne[2];
++
+     // store to KV cache
+-    {
++    if (!bypass_kv) {
+         const auto & k_idxs = inp->get_k_idxs();
+         const auto & v_idxs = inp->get_v_idxs();
+ 
+@@ -2786,8 +2804,16 @@ ggml_tensor * llm_graph_context::build_attn(
+     ggml_tensor * kq_mask = inp->get_kq_mask();
+ 
+     ggml_tensor * q = q_cur;
+-    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+-    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
++    ggml_tensor * k = nullptr;
++    ggml_tensor * v = nullptr;
++
++    if (bypass_kv) {
++        k = k_cur;
++        v = v_cur;
++    } else {
++        k = mctx_cur->get_k(ctx0, il);
++        v = mctx_cur->get_v(ctx0, il);
++    }
+ 
+     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+     cb(cur, "kqv_out", il);
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index 780df3266..a15bf092c 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -17,6 +17,7 @@ else()
+     add_subdirectory(batched-bench)
+     add_subdirectory(gguf-split)
+     add_subdirectory(imatrix)
++    add_subdirectory(gradmatrix) # LOCAL RESEARCH PATCH (beast-rank E20)
+     add_subdirectory(llama-bench)
+     add_subdirectory(completion)
+     add_subdirectory(perplexity)
+diff --git a/tools/gradmatrix/CMakeLists.txt b/tools/gradmatrix/CMakeLists.txt
+new file mode 100644
+index 000000000..92706e925
+--- /dev/null
++++ b/tools/gradmatrix/CMakeLists.txt
+@@ -0,0 +1,4 @@
++set(TARGET llama-gradmatrix)
++add_executable(${TARGET} gradmatrix.cpp)
++target_link_libraries(${TARGET} PRIVATE llama-common llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/gradmatrix/gradmatrix.cpp b/tools/gradmatrix/gradmatrix.cpp
+new file mode 100644
+index 000000000..1b4dccabf
+--- /dev/null
++++ b/tools/gradmatrix/gradmatrix.cpp
+@@ -0,0 +1,418 @@
++// LOCAL RESEARCH PATCH (beast-rank E20, not for upstream):
++// collect output-gradient Grams T = sum_t g g^T per weight tensor, where
++// g = dLoss/d(pre-activation output row) of the tensor's mul_mat.
++//
++// Method: run forward+backward via llama_opt_epoch with learning disabled
++// (SGD, alpha = 0, wd = 0). In the backward graph, the input-gradient of
++// each mul_mat(W, x) is built as out_prod(W, transpose(G)) where G is the
++// output gradient [n_out, n_tokens] (see ggml_compute_backward, MUL_MAT).
++// We hook the sched eval callback on those OUT_PROD nodes; src[0] carries
++// the weight name, src[1]->src[0] is G. This works with quantized weights,
++// which cannot be params (llama_set_param is F32-only) - gradient flow is
++// kept alive by the F32 norm weights, which are params in every layer.
++//
++// Env (mirrors the imatrix Gram patch):
++//   LLAMA_GRADMATRIX_DIR    - output dir (required)
++//   LLAMA_GRADMATRIX_CHUNKS - number of n_ctx windows to process (default 32)
++//   LLAMA_GRADMATRIX_MAXDIM - block 8x above this dim (default 8192)
++
++#include "arg.h"
++#include "common.h"
++#include "log.h"
++#include "llama.h"
++
++#include <cinttypes>
++#include <clocale>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <ctime>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <unordered_map>
++#include <vector>
++
++#if defined(_MSC_VER)
++#pragma warning(disable: 4244 4267)  // possible loss of data
++#endif
++
++struct GradGramStats {
++    std::vector<float> g;      // n*n, or n_blocks*(bs*bs) when blocked
++    int64_t n       = 0;
++    int64_t blocks  = 1;
++    int64_t count   = 0;       // accumulated tokens
++};
++
++class GradGramCollector {
++public:
++    bool collect(struct ggml_tensor * t, bool ask);
++    int64_t save() const; // returns number of Gram files written
++    int64_t n_tensors() const { return (int64_t) m_grams.size(); }
++private:
++    void accumulate(const std::string & wname, const struct ggml_tensor * G, const char * data);
++    std::mutex m_mutex;
++    std::unordered_map<std::string, GradGramStats> m_grams;
++    std::vector<float> m_g;    // packed token buffer
++    std::vector<char>  m_host; // host copy of G
++};
++
++static GradGramCollector g_collector;
++
++static const char * gradgram_dir() {
++    return getenv("LLAMA_GRADMATRIX_DIR");
++}
++
++static int64_t gradgram_maxdim() {
++    const char * s = getenv("LLAMA_GRADMATRIX_MAXDIM");
++    return s ? atoll(s) : 8192;
++}
++
++static int64_t gradgram_chunks() {
++    const char * s = getenv("LLAMA_GRADMATRIX_CHUNKS");
++    return s ? atoll(s) : 32;
++}
++
++// unlike the input-side Grams (shared input group), every projection has a
++// distinct output, so one Gram per tensor kind; blk. prefix excludes the
++// vocab-sized output.weight.
++// hybrid (delta-net) layers: ssm_out and attn_gate sit above the gradient
++// cut and get exact G; attn_qkv/ssm_alpha/ssm_beta only feed cut ops, their
++// G would be all-zero, so they are not collected.
++static bool gradgram_wanted(const std::string & wname) {
++    if (wname.compare(0, 4, "blk.") != 0) {
++        return false;
++    }
++    return wname.find("attn_q.weight")      != std::string::npos ||
++           wname.find("attn_k.weight")      != std::string::npos ||
++           wname.find("attn_v.weight")      != std::string::npos ||
++           wname.find("attn_output.weight") != std::string::npos ||
++           wname.find("ffn_gate.weight")    != std::string::npos ||
++           wname.find("ffn_up.weight")      != std::string::npos ||
++           wname.find("ffn_down.weight")    != std::string::npos ||
++           wname.find("ssm_out.weight")     != std::string::npos ||
++           wname.find("attn_gate.weight")   != std::string::npos;
++}
++
++// remove any prefix and suffixes from the name
++// CUDA0#blk.0.attn_k.weight#0 => blk.0.attn_k.weight
++static std::string filter_tensor_name(const char * name) {
++    std::string wname;
++    const char * p = strchr(name, '#');
++    if (p != NULL) {
++        p = p + 1;
++        const char * q = strchr(p, '#');
++        if (q != NULL) {
++            wname = std::string(p, q - p);
++        } else {
++            wname = p;
++        }
++    } else {
++        wname = name;
++    }
++    return wname;
++}
++
++bool GradGramCollector::collect(struct ggml_tensor * t, bool ask) {
++    if (t->op != GGML_OP_OUT_PROD) {
++        return false;
++    }
++    const struct ggml_tensor * src0 = t->src[0];
++    const struct ggml_tensor * src1 = t->src[1];
++    if (!src0 || !src1) {
++        return false;
++    }
++    const std::string wname = filter_tensor_name(src0->name);
++    if (!gradgram_wanted(wname)) {
++        return false;
++    }
++    // dx = out_prod(W, transpose(G)); the other OUT_PROD (dW = out_prod(x, G))
++    // has an activation as src0 and never matches a .weight name
++    if (src1->op != GGML_OP_TRANSPOSE || !src1->src[0]) {
++        return false;
++    }
++    const struct ggml_tensor * G = src1->src[0];
++    if (G->ne[0] != src0->ne[1] || G->ne[2] != 1 || G->ne[3] != 1) {
++        return false;
++    }
++    if (ask) {
++        return true;
++    }
++
++    std::lock_guard<std::mutex> lock(m_mutex);
++
++    if (!G->buffer) {
++        LOG_WRN("%s: %s: gradient tensor '%s' (op %s) has no buffer - skipping\n",
++                __func__, wname.c_str(), G->name, ggml_op_name(G->op));
++        return true;
++    }
++
++    const bool is_host = ggml_backend_buffer_is_host(G->buffer);
++    if (!is_host) {
++        m_host.resize(ggml_nbytes(G));
++        ggml_backend_tensor_get(G, m_host.data(), 0, ggml_nbytes(G));
++    }
++    const char * data = is_host ? (const char *) G->data : m_host.data();
++    GGML_ASSERT(G->nb[0] == ggml_element_size(G));
++    GGML_ASSERT(G->type == GGML_TYPE_F32);
++
++    accumulate(wname, G, data);
++
++    return true;
++}
++
++void GradGramCollector::accumulate(const std::string & wname, const struct ggml_tensor * G, const char * data) {
++    const int64_t n = G->ne[0];
++    const int64_t blocks = n > gradgram_maxdim() ? 8 : 1;
++    if (n % blocks != 0) {
++        return;
++    }
++    auto & gs = m_grams[wname];
++    if (gs.g.empty()) {
++        gs.n = n;
++        gs.blocks = blocks;
++        const int64_t bs = n / blocks;
++        gs.g.assign((size_t)(blocks * bs * bs), 0.0f);
++    }
++    if (gs.n != n) {
++        return;
++    }
++
++    const int64_t T = G->ne[1];
++    m_g.resize((size_t)(T * n));
++    for (int64_t row = 0; row < T; ++row) {
++        memcpy(m_g.data() + (size_t) row * n, data + row * G->nb[1], n * sizeof(float));
++    }
++    gs.count += T;
++
++    const int64_t bs = gs.n / gs.blocks;
++    const int nth = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
++    for (int64_t b = 0; b < gs.blocks; ++b) {
++        float * Gm = gs.g.data() + (size_t)(b * bs * bs);
++        const int64_t off = b * bs;
++        std::vector<std::thread> th;
++        for (int ti = 0; ti < nth; ++ti) {
++            th.emplace_back([&, ti]() {
++                for (int64_t i = ti; i < bs; i += nth) {
++                    float * grow = Gm + (size_t) i * bs;
++                    for (int64_t t = 0; t < T; ++t) {
++                        const float * x = m_g.data() + (size_t) t * n + off;
++                        const float xi = x[i];
++                        if (xi == 0.0f) {
++                            continue;
++                        }
++                        for (int64_t j = 0; j < bs; ++j) {
++                            grow[j] += xi * x[j];
++                        }
++                    }
++                }
++            });
++        }
++        for (auto & t : th) {
++            t.join();
++        }
++    }
++}
++
++int64_t GradGramCollector::save() const {
++    const char * dir = gradgram_dir();
++    if (!dir || m_grams.empty()) {
++        return 0;
++    }
++    int64_t n_written = 0;
++    std::string manifest = "{";
++    bool first = true;
++    for (const auto & kv : m_grams) {
++        bool all_zero = true;
++        for (float v : kv.second.g) {
++            if (v != 0.0f) {
++                all_zero = false;
++                break;
++            }
++        }
++        if (all_zero) {
++            LOG_WRN("%s: %s accumulated an all-zero Gram (disconnected gradient path?) - writing anyway\n", __func__, kv.first.c_str());
++        }
++        std::string fn = kv.first;
++        for (auto & c : fn) {
++            if (c == '/') c = '_';
++        }
++        std::string path = std::string(dir) + "/" + fn + ".gradgram.bin";
++        FILE * f = fopen(path.c_str(), "wb");
++        if (!f) {
++            LOG_ERR("%s: cannot write %s\n", __func__, path.c_str());
++            continue;
++        }
++        fwrite(kv.second.g.data(), sizeof(float), kv.second.g.size(), f);
++        fclose(f);
++        n_written++;
++        if (!first) {
++            manifest += ",";
++        }
++        first = false;
++        manifest += "\"" + kv.first + "\":{\"n\":" + std::to_string(kv.second.n) +
++                    ",\"blocks\":" + std::to_string(kv.second.blocks) +
++                    ",\"count\":" + std::to_string(kv.second.count) + "}";
++    }
++    manifest += "}";
++    std::string mpath = std::string(dir) + "/gradgrams.json";
++    FILE * f = fopen(mpath.c_str(), "wb");
++    if (!f) {
++        LOG_ERR("%s: cannot write %s\n", __func__, mpath.c_str());
++        return 0;
++    }
++    fwrite(manifest.data(), 1, manifest.size(), f);
++    fclose(f);
++    LOG_INF("%s: wrote %" PRId64 " grad Grams + gradgrams.json to %s\n", __func__, n_written, dir);
++    return n_written;
++}
++
++static bool cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
++    GradGramCollector * c = (GradGramCollector *) user_data;
++    return c->collect(t, ask);
++}
++
++// learning disabled: ggml-opt asserts alpha > 0, but 1e-30f makes the SGD
++// update w - alpha*g round to exactly w in fp32 (relative change < 2^-24)
++static ggml_opt_optimizer_params zero_lr_pars(void * userdata) {
++    GGML_UNUSED(userdata);
++    ggml_opt_optimizer_params p = ggml_opt_get_default_optimizer_params(nullptr);
++    p.sgd.alpha   = 1e-30f;
++    p.sgd.wd      = 0.0f;
++    p.adamw.alpha = 1e-30f;
++    p.adamw.wd    = 0.0f;
++    return p;
++}
++
++static void print_usage(int, char ** argv) {
++    LOG("\nexample usage:\n");
++    LOG("\n    LLAMA_GRADMATRIX_DIR=./out %s -m model.gguf -f calib.txt -c 512 -b 512 -ub 512\n", argv[0]);
++    LOG("\n");
++}
++
++int main(int argc, char ** argv) {
++    std::setlocale(LC_NUMERIC, "C");
++
++    common_params params;
++    params.escape = false;
++
++    common_init();
++
++    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_FINETUNE, print_usage)) {
++        return 1;
++    }
++
++    if (!gradgram_dir()) {
++        LOG_ERR("%s: LLAMA_GRADMATRIX_DIR is not set\n", __func__);
++        return 1;
++    }
++    {
++        // fail fast if the output dir is missing or not writable
++        std::string probe = std::string(gradgram_dir()) + "/.gradgram.probe";
++        FILE * f = fopen(probe.c_str(), "wb");
++        if (!f) {
++            LOG_ERR("%s: LLAMA_GRADMATRIX_DIR '%s' is not writable\n", __func__, gradgram_dir());
++            return 1;
++        }
++        fclose(f);
++        remove(probe.c_str());
++    }
++
++    if (params.load_mode != LLAMA_LOAD_MODE_NONE) {
++        LOG_INF("%s: forcing load_mode = none to enable writable pointers to the weights\n", __func__);
++        params.load_mode = LLAMA_LOAD_MODE_NONE;
++    }
++    if (params.cache_type_k != GGML_TYPE_F32) {
++        LOG_INF("%s: force changing k cache type to f32 due to a lack of f16 support for OUT_PROD\n", __func__);
++        params.cache_type_k = GGML_TYPE_F32;
++    }
++    if (params.cache_type_v != GGML_TYPE_F32) {
++        LOG_INF("%s: force changing v cache type to f32 due to a lack of f16 support for OUT_PROD\n", __func__);
++        params.cache_type_v = GGML_TYPE_F32;
++    }
++    // FLASH_ATTN_EXT has no backward pass
++    params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
++    // the warmup decode arms the sched eval callback before the opt path runs
++    params.warmup = true;
++
++    params.cb_eval           = cb_eval;
++    params.cb_eval_user_data = &g_collector;
++
++    llama_backend_init();
++    llama_numa_init(params.numa);
++
++    auto llama_init = common_init_from_params(params);
++
++    auto * model = llama_init->model();
++    auto * ctx   = llama_init->context();
++
++    if (model == NULL) {
++        LOG_ERR("%s: unable to load model\n", __func__);
++        return 1;
++    }
++
++    {
++        LOG_INF("\n");
++        LOG_INF("%s\n", common_params_get_system_info(params).c_str());
++    }
++
++    std::vector<llama_token> tokens = common_tokenize(ctx, params.prompt, true);
++    const int64_t n_ctx = llama_n_ctx(ctx);
++
++    // non-overlapping windows so each token contributes exactly one gradient
++    const int64_t n_chunks = gradgram_chunks();
++    const size_t n_keep = (size_t)(n_chunks * n_ctx + n_ctx + 2);
++    if (tokens.size() > n_keep) {
++        tokens.resize(n_keep);
++    }
++    if ((int64_t) tokens.size() < 2*n_ctx) {
++        LOG_ERR("%s: need at least %" PRId64 " tokens, got %zu\n", __func__, 2*n_ctx, tokens.size());
++        return 1;
++    }
++    ggml_opt_dataset_t dataset = common_opt_dataset_init(ctx, tokens, /*stride =*/ n_ctx);
++
++    struct llama_opt_params lopt_params {
++        /*n_ctx_train     =*/ 0,
++        /*param_filter    =*/ llama_opt_param_filter_all,
++        /*param_filter_ud =*/ nullptr,
++        /*get_opt_pars    =*/ zero_lr_pars,
++        /*get_opt_pars_ud =*/ nullptr,
++        /*optimizer_type  =*/ GGML_OPT_OPTIMIZER_TYPE_SGD,
++    };
++    llama_opt_init(ctx, model, lopt_params);
++
++    // all windows go through the train split: backward runs, lr = 0 keeps the weights fixed
++    const int64_t idata_split = ggml_opt_dataset_ndata(dataset);
++    LOG_INF("%s: %" PRId64 " windows of %" PRId64 " tokens, backward pass with lr = 0\n", __func__, idata_split, n_ctx);
++
++    ggml_opt_result_t result_train = ggml_opt_result_init();
++    ggml_opt_result_t result_eval  = ggml_opt_result_init();
++
++    llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split,
++                    ggml_opt_epoch_callback_progress_bar, ggml_opt_epoch_callback_progress_bar);
++    fprintf(stderr, "\n");
++
++    {
++        double loss, unc;
++        int64_t ndata;
++        ggml_opt_result_ndata(result_train, &ndata);
++        ggml_opt_result_loss(result_train, &loss, &unc);
++        LOG_INF("%s: ndata = %" PRId64 ", mean loss per token = %.6f +- %.6f\n", __func__, ndata, loss, unc);
++    }
++
++    ggml_opt_result_free(result_train);
++    ggml_opt_result_free(result_eval);
++
++    if (g_collector.n_tensors() == 0) {
++        LOG_ERR("%s: no gradient Grams were collected - callback did not fire\n", __func__);
++        return 1;
++    }
++    if (g_collector.save() == 0) {
++        LOG_ERR("%s: no gradient Gram files were written to %s\n", __func__, gradgram_dir());
++        return 1;
++    }
++
++    llama_backend_free();
++
++    return 0;
++}
+diff --git a/tools/imatrix/imatrix.cpp b/tools/imatrix/imatrix.cpp
+index 3431a4eca..c6750287c 100644
+--- a/tools/imatrix/imatrix.cpp
++++ b/tools/imatrix/imatrix.cpp
+@@ -55,6 +55,15 @@ struct tensor_statistics {
+     float cossim       = 0.0f;
+ };
+ 
++// LOCAL RESEARCH PATCH (beast-rank E10, not for upstream as-is):
++// optional activation Gram accumulation, enabled via LLAMA_IMATRIX_GRAM_DIR
++struct GramStats {
++    std::vector<float> g;      // n*n, or n_blocks*(bs*bs) when blocked
++    int64_t n       = 0;
++    int64_t blocks  = 1;       // 1 = full Gram, >1 = block-diagonal
++    int64_t count   = 0;       // accumulated rows: tokens (MUL_MAT) or routed (token, slot) pairs (MUL_MAT_ID)
++};
++
+ class IMatrixCollector {
+ public:
+     IMatrixCollector() = default;
+@@ -64,7 +73,13 @@ public:
+     void save_imatrix(int32_t n_chunk = -1) const;
+     bool load_imatrix(const char * file_name);
+     const std::unordered_map<std::string, Stats> & get_mstats() const { return m_stats; }
++    int64_t gram_written() const { return m_gram_written; }
+ private:
++    GramStats * gram_get(const std::string & wname, int64_t n);
++    void gram_update(GramStats & gs, int64_t T);
++    void gram_accumulate(const std::string & wname, const struct ggml_tensor * src1, const char * data);
++    void gram_accumulate_id(const std::string & wname, const struct ggml_tensor * src1, const char * data, int64_t n_ids);
++    void gram_save() const;
+     std::unordered_map<std::string, Stats> m_stats;
+     common_params                          m_params;
+     std::mutex                             m_mutex;
+@@ -72,8 +87,34 @@ private:
+     int32_t                                m_last_chunk = 0;
+     std::vector<char>                      m_src1_data;
+     std::vector<char>                      m_ids; // the expert ids from ggml_mul_mat_id
++    std::unordered_map<std::string, GramStats> m_grams;
++    std::vector<float>                     m_gram_x; // packed token buffer
++    mutable int64_t                        m_gram_written = -1; // files written by last gram_save
+ };
+ 
++static const char * gram_dir() {
++    return getenv("LLAMA_IMATRIX_GRAM_DIR");
++}
++
++static int64_t gram_maxdim() {
++    const char * s = getenv("LLAMA_IMATRIX_GRAM_MAXDIM");
++    return s ? atoll(s) : 8192;
++}
++
++// one Gram per distinct layer input: attn_k covers q/k/v, ffn_up covers
++// gate/up, attn_qkv covers the hybrid layers' qkv+gate;
++// for MoE expert stacks ffn_up_exps covers gate_exps (same routed input)
++static bool gram_wanted(const std::string & wname) {
++    return wname.find("attn_k.") != std::string::npos ||
++           wname.find("attn_output.") != std::string::npos ||
++           wname.find("ffn_up.") != std::string::npos ||
++           wname.find("ffn_down.") != std::string::npos ||
++           wname.find("ffn_up_exps.") != std::string::npos ||
++           wname.find("ffn_down_exps.") != std::string::npos ||
++           wname.find("attn_qkv.") != std::string::npos ||
++           wname.find("ssm_out.") != std::string::npos;
++}
++
+ // remove any prefix and suffixes from the name
+ // CUDA0#blk.0.attn_k.weight#0 => blk.0.attn_k.weight
+ static std::string filter_tensor_name(const char * name) {
+@@ -338,6 +379,9 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void *
+                 }
+             }
+         }
++        if (gram_dir() && gram_wanted(wname)) {
++            gram_accumulate_id(wname, src1, data, n_ids);
++        }
+     } else {
+         auto & e = m_stats[wname];
+         const int64_t n_mat = src0->ne[2] * src0->ne[3];
+@@ -384,6 +428,10 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void *
+                 }
+             }
+         }
++        if (gram_dir() && gram_wanted(wname)) {
++            gram_accumulate(wname, src1, data);
++        }
++
+         // only 1 count in practice, except when a tensor is used for both MUL_MAT_ID and MUL_MAT
+         for (size_t i = 0; i < e.counts.size(); ++i) {
+             e.counts[i] += ggml_nrows(src1) / n_mat;
+@@ -404,6 +452,156 @@ bool IMatrixCollector::collect_imatrix(struct ggml_tensor * t, bool ask, void *
+     return true;
+ }
+ 
++// LOCAL RESEARCH PATCH (beast-rank E10/E23)
++GramStats * IMatrixCollector::gram_get(const std::string & wname, int64_t n) {
++    const int64_t blocks = n > gram_maxdim() ? 8 : 1;
++    if (n % blocks != 0) {
++        return nullptr;
++    }
++    auto & gs = m_grams[wname];
++    if (gs.g.empty()) {
++        gs.n = n;
++        gs.blocks = blocks;
++        const int64_t bs = n / blocks;
++        gs.g.assign((size_t)(blocks * bs * bs), 0.0f);
++    }
++    return gs.n == n ? &gs : nullptr;
++}
++
++void IMatrixCollector::gram_accumulate(const std::string & wname, const struct ggml_tensor * src1, const char * data) {
++    const int64_t n = src1->ne[0];
++    GramStats * gs = gram_get(wname, n);
++    if (!gs) {
++        return;
++    }
++
++    // pack tokens contiguous: rows of all i3/i2 slices
++    const int64_t T = ggml_nrows(src1);
++    m_gram_x.resize((size_t)(T * n));
++    int64_t tt = 0;
++    for (int64_t i3 = 0; i3 < src1->ne[3]; ++i3) {
++        for (int64_t i2 = 0; i2 < src1->ne[2]; ++i2) {
++            for (int64_t row = 0; row < src1->ne[1]; ++row) {
++                const float * x = (const float *) (data + row * src1->nb[1] + i2 * src1->nb[2] + i3 * src1->nb[3]);
++                memcpy(m_gram_x.data() + (size_t) tt * n, x, n * sizeof(float));
++                tt++;
++            }
++        }
++    }
++    gram_update(*gs, T);
++}
++
++// pooled Gram for MoE expert stacks: one Gram per stack input over all routed
++// (token, slot) pairs, matching the per-pair accumulation of the imatrix sums.
++// experts share the input space, so a single pooled basis serves all of them.
++void IMatrixCollector::gram_accumulate_id(const std::string & wname, const struct ggml_tensor * src1, const char * data, int64_t n_ids) {
++    if (src1->type != GGML_TYPE_F32) {
++        return;
++    }
++    const int64_t n = src1->ne[0];
++    GramStats * gs = gram_get(wname, n);
++    if (!gs) {
++        return;
++    }
++
++    // src1 is [n, ne1, n_tokens]; ne1 == 1 broadcasts one row to all slots
++    const int64_t T = n_ids * src1->ne[2];
++    m_gram_x.resize((size_t)(T * n));
++    int64_t tt = 0;
++    for (int64_t row = 0; row < src1->ne[2]; ++row) {
++        for (int64_t idx = 0; idx < n_ids; ++idx) {
++            const int64_t i11 = idx % src1->ne[1];
++            const float * x = (const float *) (data + i11 * src1->nb[1] + row * src1->nb[2]);
++            memcpy(m_gram_x.data() + (size_t) tt * n, x, n * sizeof(float));
++            tt++;
++        }
++    }
++    gram_update(*gs, T);
++}
++
++void IMatrixCollector::gram_update(GramStats & gs, int64_t T) {
++    gs.count += T;
++
++    const int64_t n = gs.n;
++    const int64_t bs = gs.n / gs.blocks;
++    const int nth = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
++    for (int64_t b = 0; b < gs.blocks; ++b) {
++        float * G = gs.g.data() + (size_t)(b * bs * bs);
++        const int64_t off = b * bs;
++        std::vector<std::thread> th;
++        for (int ti = 0; ti < nth; ++ti) {
++            th.emplace_back([&, ti]() {
++                for (int64_t i = ti; i < bs; i += nth) {
++                    float * grow = G + (size_t) i * bs;
++                    for (int64_t t = 0; t < T; ++t) {
++                        const float * x = m_gram_x.data() + (size_t) t * n + off;
++                        const float xi = x[i];
++                        if (xi == 0.0f) {
++                            continue;
++                        }
++                        for (int64_t j = 0; j < bs; ++j) {
++                            grow[j] += xi * x[j];
++                        }
++                    }
++                }
++            });
++        }
++        for (auto & t : th) {
++            t.join();
++        }
++    }
++}
++
++void IMatrixCollector::gram_save() const {
++    const char * dir = gram_dir();
++    if (!dir) {
++        return;
++    }
++    m_gram_written = 0;
++    if (m_grams.empty()) {
++        return;
++    }
++    std::string manifest = "{";
++    bool first = true;
++    for (const auto & kv : m_grams) {
++        std::string fn = kv.first;
++        for (auto & c : fn) {
++            if (c == '/') c = '_';
++        }
++        std::string path = std::string(dir) + "/" + fn + ".gram.bin";
++        FILE * f = fopen(path.c_str(), "wb");
++        if (!f) {
++            LOG_ERR("%s: cannot write %s\n", __func__, path.c_str());
++            continue;
++        }
++        const size_t nw = fwrite(kv.second.g.data(), sizeof(float), kv.second.g.size(), f);
++        fclose(f);
++        if (nw != kv.second.g.size()) {
++            LOG_ERR("%s: short write on %s\n", __func__, path.c_str());
++            continue;
++        }
++        m_gram_written++;
++        if (!first) {
++            manifest += ",";
++        }
++        first = false;
++        manifest += "\"" + kv.first + "\":{\"n\":" + std::to_string(kv.second.n) +
++                    ",\"blocks\":" + std::to_string(kv.second.blocks) +
++                    ",\"count\":" + std::to_string(kv.second.count) + "}";
++    }
++    manifest += "}";
++    std::string mpath = std::string(dir) + "/grams.json";
++    FILE * f = fopen(mpath.c_str(), "wb");
++    if (f) {
++        fwrite(manifest.data(), 1, manifest.size(), f);
++        fclose(f);
++    } else {
++        // consumers need the manifest, so a missing one voids the capture
++        LOG_ERR("%s: cannot write %s\n", __func__, mpath.c_str());
++        m_gram_written = 0;
++    }
++}
++
+ void IMatrixCollector::save_imatrix_legacy(int32_t ncall) const {
+     auto fname = m_params.out_file;
+ 
+@@ -511,6 +709,8 @@ void IMatrixCollector::save_imatrix_legacy(int32_t ncall) const {
+ }
+ 
+ void IMatrixCollector::save_imatrix(int32_t n_chunk) const {
++    gram_save();
++
+     auto fname = m_params.out_file;
+     int8_t use_legacy_format = m_params.imat_dat;
+ 
+@@ -1165,6 +1365,11 @@ int main(int argc, char ** argv) {
+ 
+     g_collector.save_imatrix();
+ 
++    if (gram_dir() && g_collector.gram_written() <= 0) {
++        LOG_ERR("%s: LLAMA_IMATRIX_GRAM_DIR is set but no Gram files were written to %s\n", __func__, gram_dir());
++        return 1;
++    }
++
+     LOG("\n");
+     llama_perf_context_print(ctx);
+ 
+-- 
+2.55.0
+
