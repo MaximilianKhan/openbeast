@@ -183,19 +183,90 @@ update_python() {
   # `-U -r` would just reinstall the pins. --python is the SANCTIONED bump
   # path: upgrade the packages themselves, then rewrite the pins to match
   # what's now installed, so the next fresh install gets what we validated.
-  python3 -m pip install --user $pip_flags -q -U huggingface_hub openai mcp fastapi uvicorn PyJWT
+  #
+  # "validated" is the load-bearing word, and it used to be a lie: this
+  # function upgraded across ANY version jump, then immediately overwrote the
+  # known-good pins — erasing the only record of what actually worked — and
+  # reported success without importing a single line of our code. On
+  # 2026-08-14 that shipped mcp 1.28.1 -> 2.0.0, which deleted the FastMCP
+  # class agents/mcp_server.py is built on. The next `./start.sh` died on
+  # ModuleNotFoundError and took the whole stack down with it.
+  #
+  # So the bump now has to earn the pin rewrite: snapshot what works, upgrade,
+  # import the modules that matter, and roll back automatically if they break.
+  local req="$REPO_DIR/agents/requirements.txt"
+  local pkgs=(openai mcp fastapi uvicorn PyJWT)
+
+  # Snapshot the rollback target BEFORE anything is touched.
+  local req_backup; req_backup="$(mktemp)"
+  cp "$req" "$req_backup"
+  local before_spec=() p v
+  for p in "${pkgs[@]}"; do
+    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
+    [[ -n "$v" ]] && before_spec+=("${p}==${v}")
+  done
+
+  _py_restore() {
+    cp "$req_backup" "$req"
+    if ((${#before_spec[@]})); then
+      python3 -m pip install --user $pip_flags -q "${before_spec[@]}" \
+        || warn "automatic rollback FAILED — reinstall by hand: pip install --user $pip_flags -r agents/requirements.txt"
+    fi
+  }
+
+  if ! python3 -m pip install --user $pip_flags -q -U huggingface_hub "${pkgs[@]}"; then
+    _py_restore
+    die "pip upgrade failed — rolled back to the previous pins"
+  fi
+
+  # Report what moved, and shout about major jumps: those are where APIs get
+  # deleted, and they are the ones worth a human's attention before committing.
+  local majors=0 spec name old new
+  for spec in "${before_spec[@]}"; do
+    name="${spec%%==*}"; old="${spec##*==}"
+    new=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version:/{print $2}')
+    [[ -z "$new" || "$new" == "$old" ]] && continue
+    if [[ "${old%%.*}" != "${new%%.*}" ]]; then
+      warn "MAJOR bump ${name} ${old} -> ${new} — APIs may have been removed"
+      majors=$((majors + 1))
+    else
+      ok "${name} ${old} -> ${new}"
+    fi
+  done
+
+  # The gate. Import the modules that actually consume these packages — the
+  # same ones start.sh launches — so a removed API fails HERE, in a command
+  # the user is watching, instead of at the next boot.
+  if ! python3 - "$REPO_DIR" <<'PY' >/dev/null 2>&1
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "agents"))
+import mcp_server     # noqa: F401  — the FastMCP consumer
+import openapi_tools  # noqa: F401  — the identity tool server start.sh runs
+PY
+  then
+    warn "the upgraded packages BREAK our tool server — agents/ failed to import"
+    _py_restore
+    warn "rolled back to: $(printf '%s ' "${before_spec[@]}")"
+    die "no pins were rewritten. Migrate the code first, then re-run --python."
+  fi
+
   {
     echo "# Pinned to the exact versions validated on the reference box (supply-chain"
     echo "# anchoring: an unpinned install would pull whatever PyPI has newest,"
-    echo "# including a compromised release). scripts/update.sh --python bumps these."
-    for _pkg in openai mcp fastapi uvicorn PyJWT; do
-      _ver=$(python3 -m pip show "$_pkg" 2>/dev/null | awk '/^Version:/{print $2}')
-      [[ -n "$_ver" ]] && echo "${_pkg}==${_ver}"
+    echo "# including a compromised release). scripts/update.sh --python bumps these,"
+    echo "# but only after agents/ imports cleanly against them."
+    for p in "${pkgs[@]}"; do
+      v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
+      [[ -n "$v" ]] && echo "${p}==${v}"
     done
-  } > "$REPO_DIR/agents/requirements.txt"
-  ok "upgraded + pins rewritten: $(grep -v '^#' "$REPO_DIR/agents/requirements.txt" | tr '\n' ' ')"
+  } > "$req"
+  rm -f "$req_backup"
+  ok "agents/ imports cleanly against the new versions"
+  ok "upgraded + pins rewritten: $(grep -v '^#' "$req" | tr '\n' ' ')"
+  (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before committing"
   warn "a running MCPO/mcp_server keeps old code until restarted"
   warn "commit the requirements.txt pin bump after verifying the stack"
+  return 0
 }
 
 # ---- OpenCode ---------------------------------------------------------------
