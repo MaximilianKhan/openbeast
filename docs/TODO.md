@@ -83,6 +83,30 @@ sentences in `README.md`, `docs/MODELS.md`, and `docs/FEATURES.md`, which still
 name Qwen3.6-27B Uncensored Q5_K_P and are already stale against the current Q6
 default.
 
+## 🐍 MIGRATE agents/ TO mcp 2.0 — deferred 2026-08-14
+
+`mcp 2.0.0` removes the `FastMCP` class that `agents/mcp_server.py:65` is built
+on (it is `MCPServer` in `mcp.server.mcpserver` now). `update.sh --python`
+installed it on 2026-08-14 and the next `./start.sh` died on
+`ModuleNotFoundError`, taking the stack down.
+
+Held at `mcp==1.28.1`, and `update.sh` now refuses to bump past it (the import
+gate added in `4bc72e6` rolls back and exits 1). **That is a hold, not a fix** —
+we are pinned to a superseded major version and will drift further.
+
+Same story for `openai` 2.46.0 → 3.0.0, which the same run tried to install.
+Both migrations are gated behind the import check, so neither can land silently;
+they need doing deliberately:
+
+1. Port `agents/mcp_server.py` from `FastMCP` to the 2.0 `MCPServer` API —
+   note `agents/openapi_tools.py` imports it and re-uses the decorated
+   callables, so both surfaces move together (that shared-import design is what
+   keeps them from drifting — don't break it).
+2. Check the `openai` 3.0 client surface used by `agents/runner.py` and the
+   evals.
+3. Re-run `./scripts/update.sh --python`; it rewrites the pins only once
+   `import mcp_server, openapi_tools` succeeds against the new versions.
+
 ## ⬆️ PROMOTE THE REBASED llama.cpp BUILD — staged 2026-08-14
 
 The beast-rank research kernels were uncommitted in the llama.cpp working tree
