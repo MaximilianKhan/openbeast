@@ -83,6 +83,36 @@ sentences in `README.md`, `docs/MODELS.md`, and `docs/FEATURES.md`, which still
 name Qwen3.6-27B Uncensored Q5_K_P and are already stale against the current Q6
 default.
 
+## ⬆️ PROMOTE THE REBASED llama.cpp BUILD — staged 2026-08-14
+
+The beast-rank research kernels were uncommitted in the llama.cpp working tree
+and blocking `git pull` (14 modified files + `tools/gradmatrix/`, 1,367 lines,
+never saved anywhere — `llama.cpp/` is gitignored, so no OpenBeast commit ever
+captured them). Now saved twice: local branch `beast-rank-kernels` and a patch
+vendored at [`research/lowrank/kernels/`](../research/lowrank/kernels/).
+
+**Rebased b10254 → b10434 (180 commits) and it works.** 3 files / 4 hunks
+conflicted, all resolved; every CUDA kernel auto-merged. Builds clean.
+Qwen3.8 + MTP n4 measures 121.8 tok/s vs 123.7 pre-rebase with identical draft
+counts — noise, no #25489 regression. Full detail in that README.
+
+**Still to do before the new build goes live:**
+
+1. **tok/s check on the DEFAULT model.** Only Qwen3.8 (`qwen35`) was measured.
+   The default is Heretic v2 27B MTP Q6 (`qwen3.6`), and #25489 targets MTP —
+   measure it against the ~139 tok/s baseline in [`MODELS.md`](MODELS.md).
+2. **Promote the build.** The rebased tree is in `llama.cpp/build-rebase/`;
+   `serve.sh` still points at `llama.cpp/build/` (2026-08-04). Swap only after
+   step 1 passes. Keep the old `build/` until the new one has served a real
+   session — rollback pin is b10066 (`86a9c79f8`) per `LLAMACPP_WATCH.md`.
+3. **Re-verify the research kernels themselves.** The rebase proved the *serving*
+   path is unchanged; it did NOT re-measure the +79% 0.6B kernel trilogy or the
+   gradmatrix extraction. Re-run those before trusting the rebased tree for new
+   campaign work.
+4. **`git checkout master` in llama.cpp is now safe** — it is clean, and the
+   research work is on `beast-rank-kernels`. Future upstream pulls should be
+   `git pull` on master, then `git rebase master beast-rank-kernels`.
+
 ## 🔭 UPSTREAM WATCH — llama.cpp (recon 2026-08-03)
 
 Full brief: [`LLAMACPP_WATCH.md`](LLAMACPP_WATCH.md). Short version: default

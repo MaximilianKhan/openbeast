@@ -45,10 +45,39 @@ To port onto a newer upstream instead, apply at the base as above and then
 several of these files (9 of the 14 had diverged within 180 commits of the
 base). `git apply --3way` is the fallback if `git am` refuses.
 
-## Rebase status
+## Rebase status — ✅ DONE 2026-08-14, onto b10434
 
-Recorded here so the next session doesn't re-derive it:
+The patch above is the **pre-rebase** rescue copy (base `b10254`). It has since
+been carried forward 180 commits to upstream `b10434`, living on the local
+llama.cpp branch `beast-rank-kernels` at `7ffa5cb9c`.
 
-- **2026-08-14** — saved and committed; rebase onto current upstream attempted.
-  See [`../../../docs/TODO.md`](../../../docs/TODO.md) for the outcome and
-  whether a port is still outstanding.
+**Conflicts: 3 files, 4 hunks.** All 11 other files — including every CUDA
+kernel (`mmvq.cu`, `quantize.cu`, `ggml-cuda.cu`, `common.cuh`) — auto-merged.
+
+| File | Conflict | Resolution |
+|------|----------|------------|
+| `ggml/src/ggml.c` | upstream added `ggml_build_forward_order()` at the same spot as our `ggml_gradmatrix_cut_op()` | kept both — independent additions |
+| `src/llama-context.cpp` (1) | upstream introduced `uint32_t res;` where we declare `gradmatrix_scale` | kept both declarations |
+| `src/llama-context.cpp` (2) | upstream restructured early-returns into one accumulated `res` | **took upstream's structure and did NOT re-apply the scale here** — the final `return gradmatrix_scale*res;` already covers both branches; scaling in both places would compound to 64× |
+| `tools/imatrix/imatrix.cpp` | upstream added a non-finite check where we call `gram_accumulate()` | kept both, finite check **first**, so bad activations abort before polluting the Gram matrix |
+
+Verified beyond compiling — built clean (0 errors, all binaries including
+`llama-gradmatrix`) and measured against the pre-rebase numbers on
+Qwen3.8-27B Q5 + MTP n4 @ 262144:
+
+| | Decode | Draft acceptance | VRAM |
+|---|---|---|---|
+| pre-rebase (b10254) | 123.7 tok/s | 196/407 = 48% | 28,852 MiB |
+| **post-rebase (b10434)** | **121.8 tok/s** | **196/407 = 48%** | 28,843 MiB |
+
+−1.5% is run-to-run noise, and the draft counts are *byte-identical* at
+temperature 0 — the compute path is unchanged. This also served as the
+mandatory post-rebuild tok/s check for the open upstream MTP throughput
+regression (#25489, see [`../../../docs/LLAMACPP_WATCH.md`](../../../docs/LLAMACPP_WATCH.md));
+no sign of it.
+
+⚠️ **The rebased tree is NOT the active build.** It lives in
+`llama.cpp/build-rebase/`; `llama.cpp/build/` (2026-08-04) is still what
+`serve.sh` uses. Promoting it needs a tok/s check on the *default* model
+(Heretic v2 27B MTP Q6) first — #25489 targets MTP, and only Qwen3.8 has been
+checked. See `docs/TODO.md`.
