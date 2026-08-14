@@ -1,5 +1,35 @@
 # TODO
 
+## 🆕 BENCHMARK Qwen3.8-27B — staged 2026-08-14, sweep not yet run
+
+Four configs are integrated, VRAM/speed-measured, and registered in
+`evals/benchmark_all.py` with **deliberately empty leaderboard entries**.
+Weights are pinned in `scripts/weights.registry`. Full profile + architecture
+notes: [`MODELS.md`](MODELS.md#qwen38-27b-qwen--unsloth--added--profiled-2026-08-14--not-yet-benchmarked).
+
+Run the sweep (~3 h at ~45 min/model):
+
+```bash
+python evals/benchmark_all.py --models qwen38-27b-q5,qwen38-27b-mtp-q5,qwen38-27b-q6,qwen38-27b-mtp-q6
+```
+
+Open questions the sweep should settle:
+
+1. **`--reasoning-preserve`.** llama-server reports this model's chat template
+   supports it and Qwen defaults `preserve_thinking` *on*; our scripts leave it
+   off to match the rest of the lineup. This is the highest-value A/B — Qwen's
+   own headline numbers are multi-turn agentic benchmarks, exactly where
+   retained reasoning context would matter. Measure both ways before picking a
+   default.
+2. **Does it displace the default?** Qwen claims SWE-bench Pro 61.7 /
+   OSWorld-Verified 84.3 vs Opus 4.6 Max's 53.4 / 72.7 (vendor-reported, on
+   benchmarks our suite does not run). Our v4 board is the arbiter.
+3. **Q5 vs Q6 accuracy-per-byte.** Q6 costs 2.7 GB and ~9% decode for whatever
+   fidelity it buys; the equal-byte findings from the beast-rank campaign make
+   this the interesting rung.
+4. **Vision.** The GGUF carries multimodal rope but no vision tower — decide
+   whether to pull an `mmproj` (note MTP does not support `--mmproj`).
+
 ## 🔭 UPSTREAM WATCH — llama.cpp (recon 2026-08-03)
 
 Full brief: [`LLAMACPP_WATCH.md`](LLAMACPP_WATCH.md). Short version: default

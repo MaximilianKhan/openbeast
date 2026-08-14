@@ -1,6 +1,6 @@
 # Models
 
-OpenBeast ships **17 pre-configured models**, every one VRAM/context-measured on
+OpenBeast ships **21 pre-configured models**, every one VRAM/context-measured on
 the RTX 5090 reference card. Swap any of them in with one argument to
 `start.sh` (e.g. `./start.sh serve-qwen-27b-q5.sh`) or set your `beastup`
 default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
@@ -52,6 +52,83 @@ MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draf
 | Heretic v2 27B **MTP** | Q6_K | **208K** | 30.4 GB / 2.25 GB | **~139 tok/s** (n4, 60% acc) | `serve-heretic-v2-27b-mtp-q6.sh` |
 
 **These are the fastest MTP builds in the lineup** — 136–139 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth. The optimum draft depth differs by quant (Q5 a flat plateau topping at **n8**, Q6 a sharp peak at **n4** — profiled with `scripts/profile-heretic-v2-mtp.sh {q5,q6}`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard.
+
+## Qwen3.8-27B (Qwen / unsloth) — added + profiled 2026-08-14 ⚠️ NOT YET BENCHMARKED
+
+[Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) ·
+[unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) —
+Qwen's newest 27B. **This is a new architecture, not a Qwen3.6 respin.** The
+GGUF declares `general.architecture = qwen35`: a hybrid Gated-DeltaNet stack of
+64 trunk layers laid out as 16 × (3 × DeltaNet → 1 × full attention), i.e.
+`full_attention_interval = 4`. Only **16 of the 64 layers carry a real KV
+cache**; the other 48 hold a constant-size recurrent state. Native context is
+**262,144** (Qwen documents YaRN extension to 1M — we do not enable it).
+
+**Requires a llama.cpp with `LLM_ARCH_QWEN35`.** Ours already has it (build
+2026-08-04, `b10066-188-g0ef6e55ed`) — **no upgrade and no vLLM needed**.
+
+**Measured on the RTX 5090** (q4_0 KV, greedy 300-token decode, 2026-08-14):
+
+| Model | Quant | Context | VRAM used / free | Decode (greedy) | Serve script |
+|-------|-------|---------|------------------|-----------------|--------------|
+| Qwen3.8 27B | UD-Q5_K_XL | **262K** (native) | 26.1 GB / **5.77 GB** | 67.6 tok/s | `serve-qwen38-27b-q5.sh` |
+| Qwen3.8 27B **MTP** | UD-Q5_K_XL | **262K** (native) | 28.2 GB / 3.67 GB | **123.7 tok/s** (n4, 48% acc) | `serve-qwen38-27b-mtp-q5.sh` |
+| Qwen3.8 27B | Q6_K | **262K** (native) | 28.2 GB / 3.65 GB | 61.5 tok/s | `serve-qwen38-27b-q6.sh` |
+| Qwen3.8 27B **MTP** | Q6_K | 192K | 28.9 GB / 2.90 GB | **113.6 tok/s** (n4, 47% acc) | `serve-qwen38-27b-mtp-q6.sh` |
+
+**The headline is context, not speed.** Three of the four configs hold the
+model's *full native 262K* — including Q6_K, where every other 27B-class Q6 we
+ship had to give ground (Fable-Fusion Q6 = 240K, Heretic v2 Q6 MTP = 208K). The
+hybrid KV costs ~18 KB/token against Qwen3.6-27B's ~28 KB/token, and the Q5
+non-MTP config leaves **5.8 GB free — the roomiest headroom in the lineup**.
+Only Q6+MTP gives anything up: it loads at the full 262K (113.9 tok/s) but at
+1,559 MiB free, inside the sustained-load crash zone that cost us Gemma at 220K
+and Qwopus at 352K, so it ships one notch down at 192K.
+
+**MTP heads ship inside the standard GGUF** (`qwen35.nextn_predict_layers = 1`,
+tensors at `blk.64.nextn.*`; `block_count` is 65 = 64 trunk + 1 nextn). There is
+**no separate `-MTP-GGUF` repo to download**, unlike Qwen3.6 — the MTP serve
+scripts load the *same file* as their non-MTP twins and differ only in launch
+flags. Served without `--spec-type`, those tensors log `unused tensor blk.64.*`
+at startup; that is expected and harmless.
+
+**Tuned draft depth** (measured sweep, both quants):
+
+| n-max | Q5 decode | Q5 acceptance | Q6 decode | Q6 acceptance |
+|-------|-----------|---------------|-----------|---------------|
+| 2 | 116.5 tok/s | 63% | 112.4 tok/s | 67% |
+| **4** | **123.7 tok/s** | 48% | **113.6 tok/s** | 47% |
+| 6 | 107.7 tok/s | 36% | — | — |
+| 8 | 106.6 tok/s | 28% | 111.0 tok/s | 32% |
+
+Both ship **`n-max 4`** — a 1.83× (Q5) / 1.85× (Q6) lossless speedup. Note this
+peaks **earlier than Qwen3.6-27B's n8**: Qwen3.8's acceptance falls off faster
+with depth, so don't copy the 3.6 config across. The Q6 curve is essentially
+flat (111–114 tok/s across the whole grid) — at 6-bit the model is
+bandwidth-bound and draft depth barely matters. As with every MTP build, `-np 1`
+is forced (no parallel slots) and `p-min 0.0` does not affect output quality.
+
+**Recommended samplers** (client-side, per Qwen's card): thinking `temp 1.0 /
+top_p 0.95 / top_k 20 / min_p 0.0 / presence_penalty 0.0`; non-thinking `temp
+0.7 / top_p 0.80 / top_k 20 / presence_penalty 1.5`. Thinking is **on by
+default** and the model exposes a `reasoning_effort` control (`xhigh` default /
+`medium` / `low`) plus `preserve_thinking`. Two open items we have **not**
+resolved: (1) llama-server reports the chat template supports
+`--reasoning-preserve`, which Qwen defaults *on* — our scripts leave it off to
+match the rest of the lineup, and it is the first thing to A/B when
+benchmarking, since it plausibly matters most on the multi-turn agentic tasks
+Qwen's own numbers lean on; (2) the GGUF carries multimodal rope
+(`rope.dimension_sections = [11, 11, 10, 0]`) but **no vision tower** — an
+`mmproj` file would have to be downloaded separately for image input, and MTP
+does not support `--mmproj` regardless.
+
+**Benchmarks are deliberately empty.** All four rows are registered in
+`evals/benchmark_all.py` with no leaderboard entry. Run them with
+`python evals/benchmark_all.py --models qwen38-27b-q5,qwen38-27b-mtp-q5,qwen38-27b-q6,qwen38-27b-mtp-q6`.
+Qwen's card claims SWE-bench Pro 61.7 and OSWorld-Verified 84.3 against Opus 4.6
+Max's 53.4 / 72.7 (losing Terminal Bench 2.1, 73.0 vs 78.2) — vendor-reported,
+on benchmarks our suite does not run. Treat as unverified until our own sweep
+lands.
 
 ## Where model weights live
 

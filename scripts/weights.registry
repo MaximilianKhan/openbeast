@@ -31,3 +31,8 @@ f1e1b337fda4ec8e39974f69a385f970381488e9bb41d039d85959aeb5350457	23582384672	Qwe
 9d309b8fadd5788bfa8ee26cd34c37b26df0205613a3be34394ba4da7d5a4285	19745091680	Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf	llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF	-
 bac53ccfa45c6a1cdfb5185a847214c095ff4940592f32bca4a2e43643e8ea35	22802407520	Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf	llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF	-
 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031	639446688	Qwen3-0.6B-Q8_0.gguf	unsloth/Qwen3-0.6B-GGUF	-
+# Qwen3.8-27B (arch `qwen35`, hybrid Gated-DeltaNet) — added + hashed on the
+# reference box 2026-08-14. One repo serves both quants, and the MTP head is
+# baked into each file (no separate -MTP-GGUF repo, unlike Qwen3.6).
+176a6a3f034e9cdc447c10cd00329fc9b31002e6589b9295f2ad4f1eefe0f6ab	20218178624	Qwen3.8-27B-UD-Q5_K_XL.gguf	unsloth/Qwen3.8-27B-GGUF	-
+562fbf760503008f118e5df38de5b3e97992d1f693f475815631198547486727	22884408288	Qwen3.8-27B-Q6_K.gguf	unsloth/Qwen3.8-27B-GGUF	-
