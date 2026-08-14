@@ -1,0 +1,9 @@
+{
+ "quant": "bfac8bce038dbe5a",
+ "gram_dir": "/home/max/Documents/openbeast/research/lowrank/data/gram08b",
+ "algo": "lloyd-v1-dmin-refit",
+ "damp": 0.01,
+ "ridge": 1e-08,
+ "max_iters": 8,
+ "j_rtol": 1e-05
+}

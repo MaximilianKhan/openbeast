@@ -454,11 +454,13 @@ verification checklist: [`docs/REMOTE_ACCESS_PLAN.md`](docs/REMOTE_ACCESS_PLAN.m
 
 ## Models
 
-Seventeen models ship pre-configured, every one measured for VRAM and context
+Twenty-three models ship pre-configured, every one measured for VRAM and context
 on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
 Blackwell NVFP4, and community MTP builds. The default is **Qwen3.6-27B
 Uncensored Q5_K_P**; the dense **Qwen3.6-27B Q5_K_XL** tops the capability
-board; the **Heretic v2 MTP** builds are the fastest at 136–139 tok/s.
+board; the **Heretic v2 MTP** builds are the fastest at 136–139 tok/s. Newest
+in: **Qwen3.8-27B** (hybrid Gated-DeltaNet), which holds its full native 262K
+context in three of its four configs — not yet benchmarked.
 
 **Full lineup, per-variant VRAM/context/speed, and MTP tuning → [docs/MODELS.md](docs/MODELS.md).**
 
@@ -530,6 +532,7 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 | Doc | What's in it |
 |---|---|
 | [UPDATING.md](docs/UPDATING.md) | Update every pulled-in component with one command |
+| [LLAMACPP_WATCH.md](docs/LLAMACPP_WATCH.md) | Upstream llama.cpp changes we must plan for, and per-upgrade tripwires |
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
 | [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
 | [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |

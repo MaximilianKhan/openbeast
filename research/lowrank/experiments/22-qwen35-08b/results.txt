@@ -1,0 +1,10 @@
+q35-08b-Q2_K bytes=436408832 ppl=33.0877 Mean    KLD:   0.490179 Same top p: 66.422 
+q35-08b-Q3_K_M bytes=480304128 ppl=23.2750 Mean    KLD:   0.166761 Same top p: 79.176 
+q35-08b-IQ3_XXS bytes=412082176 ppl=23.9504 Mean    KLD:   0.257322 Same top p: 74.275 
+q35-08b-Q4_K_M bytes=543378944 ppl=19.7863 Mean    KLD:   0.039597 Same top p: 89.441 
+vendor-Q4_K_XL bytes=572984736 ppl=18.9352 Mean    KLD:   0.027234 Same top p: 90.696 
+Q2_K+fc-r64 total=518MB ppl=24.6091 Mean    KLD:   0.222673 Same top p: 77.000 
+Q2_K+fc-r128q8 total=523MB ppl=23.0310 Mean    KLD:   0.168461 Same top p: 79.402 
+Q2_K+fc-2side-r64 total=436MB ppl= 
+ALT1+fc-r128q8 ppl=22.7859 Mean    KLD:   0.146664 Same top p: 81.098  (round-0: 23.03/0.168; Q3_K_M: 23.28/0.167)
+Q2_K+fc-2side-r64 ppl=24.1569 Mean    KLD:   0.206604 Same top p: 78.088  (one-sided r64: 24.61/0.223)

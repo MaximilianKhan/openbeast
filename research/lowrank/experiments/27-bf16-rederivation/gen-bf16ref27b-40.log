@@ -1,0 +1,27 @@
+0.01.083.201 W model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring
+0.01.083.207 W model has unused tensor blk.64.post_attention_norm.weight (size = 20480 bytes) -- ignoring
+0.01.083.211 W model has unused tensor blk.64.attn_q.weight (size = 125829120 bytes) -- ignoring
+0.01.083.213 W model has unused tensor blk.64.attn_k.weight (size = 10485760 bytes) -- ignoring
+0.01.083.215 W model has unused tensor blk.64.attn_v.weight (size = 10485760 bytes) -- ignoring
+0.01.083.222 W model has unused tensor blk.64.attn_output.weight (size = 62914560 bytes) -- ignoring
+0.01.083.224 W model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.01.083.226 W model has unused tensor blk.64.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.01.083.228 W model has unused tensor blk.64.ffn_gate.weight (size = 178257920 bytes) -- ignoring
+0.01.083.230 W model has unused tensor blk.64.ffn_down.weight (size = 178257920 bytes) -- ignoring
+0.01.083.232 W model has unused tensor blk.64.ffn_up.weight (size = 178257920 bytes) -- ignoring
+0.01.083.236 W model has unused tensor blk.64.nextn.eh_proj.weight (size = 104857600 bytes) -- ignoring
+0.01.083.238 W model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring
+0.01.083.240 W model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring
+0.01.083.246 W model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring
+0.03.909.313 W resolve_fused_ops: layer 0 is assigned to device CPU but fused Gated Delta Net (chunked) is assigned to device CUDA0 (usually due to missing support)
+0.03.909.317 W resolve_fused_ops: fused Gated Delta Net (chunked) not supported, set to disabled
+0.03.924.594 I 
+0.03.924.670 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.03.924.787 I perplexity: saving all logits to research/lowrank/data/bf16ref27b-40.logits
+0.03.924.791 I perplexity: tokenizing the input ..
+0.04.269.212 I perplexity: tokenization took 344.413 ms
+0.04.269.328 I perplexity: calculating perplexity over 40 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.18.900.510 I perplexity: 14.59 seconds per pass - ETA 2.42 minutes
+[1]4.2656,[2]6.3090,[3]5.5763,[4]5.6212,[5]5.6546,[6]5.9769,[7]6.1275,[8]6.5546,[9]6.9542,[10]7.3137,[11]7.2007,[12]7.2917,[13]7.7250,[14]7.3119,[15]7.2717,[16]7.5189,[17]7.0831,[18]7.1012,[19]7.0362,[20]6.9793,[21]6.7459,[22]6.6395,[23]6.4113,[24]6.1437,[25]6.0431,[26]5.8918,[27]5.8331,[28]5.7371,[29]5.7227,[30]5.6800,[31]5.6345,[32]5.6374,[33]5.6230,[34]5.6745,[35]5.7503,[36]5.8874,[37]5.9799,[38]5.9555,[39]5.9830,[40]6.0270,
+2.18.762.806 I Final estimate: PPL = 6.0270 +/- 0.14548
+

@@ -1,5 +1,128 @@
 # TODO
 
+## 🆕 BENCHMARK Qwen3.8-27B — staged 2026-08-14, sweep not yet run
+
+Four configs are integrated, VRAM/speed-measured, and registered in
+`evals/benchmark_all.py` with **deliberately empty leaderboard entries**.
+Weights are pinned in `scripts/weights.registry`. Full profile + architecture
+notes: [`MODELS.md`](MODELS.md#qwen38-27b-qwen--unsloth--added--profiled-2026-08-14--not-yet-benchmarked).
+
+Run the sweep (~3 h at ~45 min/model):
+
+```bash
+python evals/benchmark_all.py --models qwen38-27b-q5,qwen38-27b-mtp-q5,qwen38-27b-q6,qwen38-27b-mtp-q6
+```
+
+Open questions the sweep should settle:
+
+1. **`--reasoning-preserve`.** llama-server reports this model's chat template
+   supports it and Qwen defaults `preserve_thinking` *on*; our scripts leave it
+   off to match the rest of the lineup. This is the highest-value A/B — Qwen's
+   own headline numbers are multi-turn agentic benchmarks, exactly where
+   retained reasoning context would matter. Measure both ways before picking a
+   default.
+2. **Does it displace the default?** Qwen claims SWE-bench Pro 61.7 /
+   OSWorld-Verified 84.3 vs Opus 4.6 Max's 53.4 / 72.7 (vendor-reported, on
+   benchmarks our suite does not run). Our v4 board is the arbiter.
+3. **Q5 vs Q6 accuracy-per-byte.** Q6 costs 2.7 GB and ~9% decode for whatever
+   fidelity it buys; the equal-byte findings from the beast-rank campaign make
+   this the interesting rung.
+4. ✅ **Vision — DONE 2026-08-14.** `mmproj-F16.gguf` downloaded, pinned, and
+   verified reading a synthetic test image; two vision serve scripts shipped.
+   Loads under the existing `PROJECTOR_TYPE_QWEN3VL` graph, no llama.cpp change.
+   Details in [`MODELS.md`](MODELS.md). Two follow-ups left: **video** input is
+   untested (the chat template renders `<|video_pad|>`), and the vision configs
+   are not in `benchmark_all.py` (our eval suite is text-only — adding vision
+   tasks is its own project).
+
+## 🔁 RETEST — is the MTP + `--mmproj` ban actually lifted? (2026-08-14)
+
+Every MTP serve script we ship asserts "`--mmproj` is not yet supported with
+MTP", inherited from a 2026-05-22 upstream limitation. On 2026-08-14 that was
+**disproven for arch `qwen35`**: no such guard exists in the current llama.cpp
+source, and Qwen3.8 + `--mmproj` + `--spec-type draft-mtp` ran correctly with
+the draft path live at 64.6% acceptance.
+
+The Qwen3.6-era scripts (`serve-qwen-27b-mtp-q5.sh`, the Fable-Fusion and
+Heretic v2 MTP scripts, etc.) still carry the old claim in their headers and
+were **not** retested. If it is lifted for them too, several models gain vision
+they are currently documented as not having. Cheap to settle: load one Qwen3.6
+MTP script with a matching `mmproj` and send an image. Fix the headers either
+way — right now they state as fact something we know is false for at least one
+architecture.
+
+## 🎛️ DEFAULT MODEL SWAP — Heretic v2 Q6 -> Q5 (Max, 2026-08-14)
+
+Max's call: the current default (`serve-heretic-v2-27b-mtp-q6.sh`, `-c 212992`
+= 208K) is excellent but its context is too small for his typical use. Swap the
+default to the **Q5_K_M** sibling, conditional on the context gain being more
+than marginal.
+
+**Condition met — the gain is real, and Q5 is already maxed out:**
+
+| | Context | VRAM used / free | Decode |
+|---|---|---|---|
+| Q6_K (current default) | 208K (`-c 212992`) | 30.4 GB / 2.25 GB | ~139 tok/s (n4) |
+| **Q5_K_M (proposed)** | **256K (`-c 262144`)** | 29.6 GB / 2.97 GB | ~136 tok/s (n8) |
+
+**+49,152 tokens (+23%)**, and it also buys ~0.7 GB more headroom for ~2% less
+decode. Note "push the context as far as we can take it" is already satisfied:
+262144 is Qwen3.6's **native ceiling**, and `serve-heretic-v2-27b-mtp-q5.sh`
+already ships exactly there — going higher needs YaRN rope scaling, which is
+untested on this fine-tune and risks silent quality loss past ~128K. So this is
+a one-line config change, not a script change:
+
+```
+# openbeast.conf line 26
+SERVE_SCRIPT=serve-heretic-v2-27b-mtp-q5.sh
+```
+
+Not applied yet — `openbeast.conf` is gitignored local config and the running
+stack would need a restart to pick it up. Also update the "default is …"
+sentences in `README.md`, `docs/MODELS.md`, and `docs/FEATURES.md`, which still
+name Qwen3.6-27B Uncensored Q5_K_P and are already stale against the current Q6
+default.
+
+## 🔭 UPSTREAM WATCH — llama.cpp (recon 2026-08-03)
+
+Full brief: [`LLAMACPP_WATCH.md`](LLAMACPP_WATCH.md). Short version: default
+port 8080→9931 is announced upstream (we pass `--port` everywhere — docs-only
+change when it lands, recommendation is to keep 8080); llama-server is heading
+toward daemon/router mode (re-evaluate the deferred beast-slot fleet router
+against it before building ours); an OPEN 15-20% MTP throughput regression
+(#25489) makes a tok/s baseline check mandatory after every rebuild. Rollback
+pin recorded there: b10066 (`86a9c79f8`).
+
+## 🧪 EXPERIMENT — serve with vLLM instead of llama.cpp (Max, 2026-08-04)
+
+Evaluate vLLM as the serving engine for our weights. Motivation: vLLM
+has shipped TurboQuant KV-cache quantization (fused Triton backend,
+extended to hybrid-attention Qwen3.5-class models via PR #39931) while
+llama.cpp has only an open feature request (#20977); its issue traffic
+shows active Qwen3.6-27B + NVFP4 + Blackwell usage — exactly our
+territory. Test matrix: (a) serve the production 27B (and the beast-rank
+corrected artifacts — vLLM's GGUF support is partial; may need HF/
+safetensors weights + separate LoRA loading for our corrections.
+Post-E27 scope note (2026-08-04, research/lowrank coherence-audit
+P3.8): at ≥2.5 bpw the equal-byte winners are PURE-QUANT GGUFs
+(mixed-TYPE control, byte-compatible re-rounded files) — no LoRA
+needed, which simplifies this matrix; adapter plumbing only matters
+for the sub-2.5-bpw lane);
+(b) single-stream tok/s + VRAM vs our llama.cpp numbers (llama.cpp wins
+today on MTP speculative decoding — check vLLM's spec-decode support
+for this model family); (c) multi-client throughput (vLLM's home turf —
+relevant to beast-slot); (d) integration cost: OpenAI-compat surface,
+beast-gate/identity-server compatibility, streaming, the /api/slot
+contract. Outcome: a measured recommendation, not a migration — the
+stack stays llama.cpp unless vLLM wins on our actual workload.
+Recon addendum (2026-08-11): vLLM v0.27 ships QuTLASS FP4 + a fused
+one-graph AR speculator, and FlashInfer v0.6.16+ has SM120 (RTX
+5090-class) NVFP4 dense GEMM + fused FP4 MoE — desktop-Blackwell FP4
+is no longer second-class outside llama.cpp, which strengthens the
+case for running this experiment and gives the beast-rank NVFP4 work
+a second serving substrate. Details:
+research/lowrank/prior-art/recon-2026-08-11.md (CONTEXT section).
+
 ## 🔌 ODS ABSORPTION — decided 2026-07-17 (Max)
 
 Reviewed [Osmantic/ODS](https://github.com/Osmantic/ODS) (a kitchen-sink

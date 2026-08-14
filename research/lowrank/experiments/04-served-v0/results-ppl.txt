@@ -1,0 +1,18 @@
+Q8_0-ref  PPL=21.9438 +/- 0.19160  model_bytes=639446688
+Q2_K-bare  PPL=258.0738 +/- 2.82809  model_bytes=296237728
+Q2_K-imat-bare  PPL=43.3339 +/- 0.38435  model_bytes=296237984
+IQ2_M  PPL=65.7033 +/- 0.65334  model_bytes=264908736
+IQ3_XXS  PPL=43.2723 +/- 0.41004  model_bytes=279015360
+Q3_K_M  PPL=26.0598 +/- 0.23263  model_bytes=347126720
+Q4_K_M  PPL=23.1422 +/- 0.20404  model_bytes=396704704
+Q2_K+r16  PPL=38.6309 +/- 0.34102  adapter_bytes=20211904
+Q2_K+r64  PPL=32.7039 +/- 0.28716  adapter_bytes=80767168
+Q2_K+r32  PPL=36.0024 +/- 0.31638  adapter_bytes=40396992
+Q2_K+r128  PPL=29.6615 +/- 0.26001  adapter_bytes=161507520
+0.32.098.310 I Final estimate: PPL = 22.0748 +/- 0.19281
+Q2_K-imat+r32  PPL=33.6330 +/- 0.29544
+Q2_K-imat+r64  PPL=31.2865 +/- 0.27402
+Q2_K-imat+r128  PPL=28.4829 +/- 0.24941
+Q2_K-imat+r64-Q8factors  PPL=31.2602 +/- 0.27361  (F16 twin: 31.29)
+Q2_K-imat+r128-Q8factors  PPL=28.4613 +/- 0.24915  (r64-F16 at same bytes: 31.29; r128-F16 at 2x bytes: 28.48)
+T1.12 kron-CLEAN-grams 0.6B: PPL=50.5287 +/- 0.48200 Mean    KLD:   0.865697 Same top p: 57.961  (input-only RR baseline: 35.54/0.556/64.0)

@@ -1,0 +1,25 @@
+[lloyd] blk.12.ffn_gate.weight (3584x1024) iters=8 J 16.66->16.25 (2.47% off) guard=0 128.3s
+[lloyd] blk.12.ffn_up.weight (3584x1024) iters=8 J 7.584->7.356 (3.00% off) guard=0 105.3s
+[lloyd] blk.13.ffn_gate.weight (3584x1024) iters=8 J 18.21->17.78 (2.37% off) guard=0 172.7s
+[lloyd] blk.13.ffn_up.weight (3584x1024) iters=8 J 7.898->7.682 (2.73% off) guard=0 172.5s
+[lloyd] blk.14.ffn_gate.weight (3584x1024) iters=8 J 26.15->25.48 (2.57% off) guard=0 164.2s
+[lloyd] blk.14.ffn_up.weight (3584x1024) iters=8 J 9.486->9.212 (2.89% off) guard=0 162.7s
+[lloyd] blk.15.ffn_gate.weight (3584x1024) iters=8 J 33.31->32.51 (2.42% off) guard=0 157.3s
+[lloyd] blk.15.ffn_up.weight (3584x1024) iters=8 J 12.29->11.95 (2.81% off) guard=0 162.6s
+[lloyd] blk.16.ffn_gate.weight (3584x1024) iters=8 J 39.12->38.2 (2.35% off) guard=0 163.1s
+[lloyd] blk.16.ffn_up.weight (3584x1024) iters=8 J 12.42->12.09 (2.66% off) guard=0 162.4s
+[lloyd] blk.17.ffn_gate.weight (3584x1024) iters=8 J 48.61->47.57 (2.14% off) guard=0 163.6s
+[lloyd] blk.17.ffn_up.weight (3584x1024) iters=8 J 13.3->12.94 (2.69% off) guard=0 132.0s
+[lloyd] blk.18.ffn_gate.weight (3584x1024) iters=8 J 57.84->56.49 (2.32% off) guard=0 139.7s
+[lloyd] blk.18.ffn_up.weight (3584x1024) iters=8 J 14.7->14.3 (2.73% off) guard=0 148.8s
+[lloyd] blk.19.ffn_gate.weight (3584x1024) iters=8 J 50.65->49.57 (2.13% off) guard=0 151.4s
+[lloyd] blk.19.ffn_up.weight (3584x1024) iters=8 J 14.68->14.3 (2.58% off) guard=0 166.7s
+[lloyd] blk.20.ffn_gate.weight (3584x1024) iters=8 J 45.69->44.7 (2.15% off) guard=0 155.2s
+[lloyd] blk.20.ffn_up.weight (3584x1024) iters=8 J 14.14->13.78 (2.53% off) guard=0 133.7s
+[lloyd] blk.21.ffn_gate.weight (3584x1024) iters=8 J 47.43->46.32 (2.34% off) guard=0 98.0s
+[lloyd] blk.21.ffn_up.weight (3584x1024) iters=8 J 15.1->14.7 (2.64% off) guard=0 100.5s
+[lloyd] blk.22.ffn_gate.weight (3584x1024) iters=8 J 48.95->47.8 (2.35% off) guard=0 100.5s
+[lloyd] blk.22.ffn_up.weight (3584x1024) iters=8 J 15.75->15.33 (2.64% off) guard=0 97.6s
+[lloyd] blk.23.ffn_gate.weight (3584x1024) iters=8 J 46.39->45.38 (2.18% off) guard=0 91.9s
+[lloyd] blk.23.ffn_up.weight (3584x1024) iters=8 J 15.93->15.51 (2.61% off) guard=0 91.2s
+[compute-only]: 41 tensors Lloyd-refit, iters min/med/max = 6/8/8, 3333s

@@ -1,0 +1,2 @@
+NVFP4+fc-r128q8 (16.69GB)  PPL20=7.3652 +/- 0.26471 (bare: 7.262)
+NVFP4+fc vsQ6 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.062524 ±   0.004869 Same top p: 89.922 ± 0.422 % 

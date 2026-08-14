@@ -1,0 +1,6 @@
+wikiA on wikiEval: PPL=27.5836 +/- 0.24002
+wikiA on codeEval: PPL=3.0614 +/- 0.02986
+codeA on wikiEval: PPL=34.9002 +/- 0.30766
+codeA on codeEval: PPL=2.7462 +/- 0.02586
+bare on wikiEval: PPL=43.3339 +/- 0.38435
+bare on codeEval: PPL=3.7943 +/- 0.03961

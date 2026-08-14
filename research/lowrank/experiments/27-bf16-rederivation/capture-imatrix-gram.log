@@ -1,0 +1,29 @@
+0.01.056.201 W model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring
+0.01.056.206 W model has unused tensor blk.64.post_attention_norm.weight (size = 20480 bytes) -- ignoring
+0.01.056.209 W model has unused tensor blk.64.attn_q.weight (size = 125829120 bytes) -- ignoring
+0.01.056.211 W model has unused tensor blk.64.attn_k.weight (size = 10485760 bytes) -- ignoring
+0.01.056.212 W model has unused tensor blk.64.attn_v.weight (size = 10485760 bytes) -- ignoring
+0.01.056.217 W model has unused tensor blk.64.attn_output.weight (size = 62914560 bytes) -- ignoring
+0.01.056.218 W model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.01.056.219 W model has unused tensor blk.64.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.01.056.220 W model has unused tensor blk.64.ffn_gate.weight (size = 178257920 bytes) -- ignoring
+0.01.056.222 W model has unused tensor blk.64.ffn_down.weight (size = 178257920 bytes) -- ignoring
+0.01.056.223 W model has unused tensor blk.64.ffn_up.weight (size = 178257920 bytes) -- ignoring
+0.01.056.225 W model has unused tensor blk.64.nextn.eh_proj.weight (size = 104857600 bytes) -- ignoring
+0.01.056.227 W model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring
+0.01.056.228 W model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring
+0.01.056.233 W model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring
+0.22.103.748 W resolve_fused_ops: layer 0 is assigned to device CPU but fused Gated Delta Net (chunked) is assigned to device CUDA0 (usually due to missing support)
+0.22.103.751 W resolve_fused_ops: fused Gated Delta Net (chunked) not supported, set to disabled
+0.22.120.388 I 
+0.22.120.479 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.22.120.488 I compute_imatrix: tokenizing the input ..
+0.26.086.644 I compute_imatrix: tokenization took 3966.15 ms
+0.26.089.464 I compute_imatrix: computing over 48 chunks, n_ctx=512, batch_size=2048, n_seq=4
+3.21.844.146 I compute_imatrix: 175.75 seconds per pass - ETA 35.15 minutes
+[1]4.1258,[2]6.3748,[3]7.6755,[4]7.3106,[5]7.9497,[6]7.9901,[7]8.7851,[8]9.0145,[9]8.3552,[10]7.9144,[11]8.0667,[12]8.1170,[13]7.8442,[14]8.1738,[15]8.2232,[16]8.1429,[17]8.1129,[18]7.9633,[19]7.9847,[20]8.0229,
+[21]8.1061,[22]8.0783,[23]8.2389,[24]8.2395,[25]7.9033,[26]7.8721,[27]7.7576,[28]7.7448,[29]7.5768,[30]7.6315,[31]7.3884,[32]7.3818,[33]7.2955,[34]7.2365,[35]7.4355,[36]7.4844,[37]7.4737,[38]7.4420,[39]7.4712,[40]7.4290,[41]7.4429,[42]7.5423,[43]7.5690,[44]7.5974,
+[45]7.5581,[46]7.5543,[47]7.4617,[48]7.4021,
+Final estimate: PPL = 7.4021 +/- 0.17204
+
+

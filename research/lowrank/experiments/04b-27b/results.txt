@@ -1,0 +1,27 @@
+heretic27b-Q2_K  PPL20=7.8909 +/- 0.28833  bytes=10864595360
+heretic27b-Q2_K :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.152871 ±   0.006485 Same top p: 83.608 ± 0.518 % 
+heretic27b-Q3_K_M  PPL20=7.2429 +/- 0.26031  bytes=13500740000
+heretic27b-Q3_K_M :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.055541 ±   0.002936 Same top p: 90.118 ± 0.418 % 
+adapter bytes: 870372992
+Q2_K+r64  PPL20=7.8693 +/- 0.28821
+Q2_K+r64 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.146044 ±   0.006295 Same top p: 84.373 ± 0.509 % 
+Q2_K+r64 :: VRAM=13800MiB decode=66.5tok/s
+alloc27b-meas-870-q8  PPL20=7.7629 +/- 0.28250  bytes=866690560
+alloc27b-meas-870-q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.141522 ±   0.006318 Same top p: 84.588 ± 0.506 % 
+alloc27b-meas-2640-q8  PPL20=7.7645 +/- 0.28335  bytes=960071296
+alloc27b-meas-2640-q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.141998 ±   0.006507 Same top p: 84.745 ± 0.504 % 
+flagship Q2_K+alloc-870-q8 :: VRAM=13849MiB decode=81.0tok/s
+col27b-r64  PPL20=7.7787 +/- 0.28295  bytes=870372992
+col27b-r64 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.144703 ±   0.006077 Same top p: 84.588 ± 0.506 % heretic27b-IQ2_XS  PPL20=  bytes=9090595232
+heretic27b-IQ2_XS(mtp-q5k)  PPL20=8.8541 +/- 0.32492  bytes=9382662560
+heretic27b-IQ2_XS :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.264241 ±   0.008375 Same top p: 78.471 ± 0.576 % iq2-meas-870-q8  PPL20=8.4039 +/- 0.30744  bytes=865681440
+iq2-meas-870-q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.217529 ±   0.007321 Same top p: 80.608 ± 0.554 % 
+iq2-meas-1500-q8  PPL20=8.4190 +/- 0.30816  bytes=924767872
+iq2-meas-1500-q8 :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.215281 ±   0.007285 Same top p: 80.353 ± 0.556 % 
+IQ2_XS+alloc-q8 :: VRAM=12431MiB decode=88.2tok/s
+heretic27b-IQ3_XXS  PPL20=7.5116 +/- 0.26747  bytes=11478442400
+heretic27b-IQ3_XXS :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.096223 ±   0.004280 Same top p: 87.863 ± 0.457 % heretic27b-Q3_K_S  PPL20=7.4861 +/- 0.27025  bytes=12366025120
+heretic27b-Q3_K_S :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.087248 ±   0.004605 Same top p: 88.039 ± 0.454 % heretic27b-IQ3_XS  PPL20=7.2752 +/- 0.25471  bytes=12259201440
+heretic27b-IQ3_XS :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.065568 ±   0.002556 Same top p: 89.392 ± 0.431 % IQ1_S bare  PPL20=16.4213 +/- 0.68252
+IQ1_S bare :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.890802 ±   0.017584 Same top p: 61.922 ± 0.680 % NVFP4 bare (15.77GB)  PPL20=7.2621 +/- 0.25742
+NVFP4 bare :: chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.080513 ±   0.003373 Same top p: 88.490 ± 0.447 % Q4_K_M vsQ6 :: bytes=16839471520 chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p Mean    KLD:   0.021148 ±   0.002062 Same top p: 94.431 ± 0.321 % 

@@ -89,6 +89,27 @@ MODELS = [
     {"slug": "qwen-35b-a3b-nvfp4-mtp",
      "name": "Qwen 35B-A3B NVFP4 MTP",
      "serve": "scripts/serve-qwen-35b-a3b-nvfp4-mtp.sh"},
+    # Qwen3.8-27B rows added 2026-08-14 — NOT YET BENCHMARKED (no leaderboard
+    # entry until a sweep runs; `--models qwen38-27b-q5,...` runs just these).
+    # New architecture, not a Qwen3.6 respin: GGUF arch is `qwen35`, the hybrid
+    # Gated-DeltaNet stack (16 x [3 x DeltaNet -> 1 x full attention]). Only 16
+    # of 64 layers hold KV, so all four configs sit at or near the model's full
+    # native 262K context — no context sacrifice, unlike the Qwen3.6 lineup.
+    # MTP heads are baked into the SAME GGUF (blk.64.nextn.*), so the MTP rows
+    # reuse the non-MTP weight file and differ only in launch flags. n-max
+    # values are tuned per quant by measured sweep — see the serve scripts.
+    {"slug": "qwen38-27b-q5",
+     "name": "Qwen3.8 27B Q5_K_XL",
+     "serve": "scripts/serve-qwen38-27b-q5.sh"},
+    {"slug": "qwen38-27b-mtp-q5",
+     "name": "Qwen3.8 27B MTP Q5_K_XL",
+     "serve": "scripts/serve-qwen38-27b-mtp-q5.sh"},
+    {"slug": "qwen38-27b-q6",
+     "name": "Qwen3.8 27B Q6_K",
+     "serve": "scripts/serve-qwen38-27b-q6.sh"},
+    {"slug": "qwen38-27b-mtp-q6",
+     "name": "Qwen3.8 27B MTP Q6_K",
+     "serve": "scripts/serve-qwen38-27b-mtp-q6.sh"},
 ]
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"

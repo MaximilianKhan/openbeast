@@ -1,0 +1,89 @@
+# E26 Lloyd + gauge, Qwen3.5-0.8B, 2026-08-04/05. All vs BF16 truth
+# (data/bf16ref08b-40.logits, 40 chunks); PPL = full wikitext-2-test,
+# 580 chunks x 512, -c 512 -ngl 99. All model files exactly 436408832
+# bytes, stock-servable Q2_K.
+
+## Reproduction gate (pre-registered prerequisite)
+recipe check: llama-quantize --imatrix data/gram08b/diag.imatrix.gguf
+  --tensor-type 'blk\.24\.=q5_k' BF16 -> Q2_K reproduces
+  experiments/22-qwen35-08b/q35-08b-Q2_K.gguf with 335/335 tensors
+  byte-identical (only the imatrix-path KV string differs).
+RR-input rebuild: fresh e13b sweep (fresh codes dir) -> byte-identical
+  to experiments/24-yaqa-lite/q35-08b-Q2K-rr-input.gguf; re-eval:
+  ppl=28.0902 +/- 0.23730  KLD 0.323369 +/- 0.004774  top-1 72.686
+  == published E24 baseline exactly. GATE PASSED.
+
+## M5 — gauge-fixing (measured first; M4 sweep ran concurrently on CPU)
+graph analysis (src/models/qwen35.cpp): only DIAGONAL scaling folds
+  exactly through the learnable RMSNorm gammas; rotations would require
+  a QuaRot-style residual-stream rewrite (embedding + every reader/
+  writer + conv/recurrent state paths) -> out of scope. So M5 is
+  EQUALIZATION, not rotation, by architecture fact.
+config (pre-registered, single, no sweep): s_j = nearest power of two
+  to sqrt(diag(S)_j / geomean), folded gamma'=gamma/s (F32 exact),
+  W' cols *= s (BF16 bit-exact, hard-verified); imatrix transformed
+  exactly (in_sum2/s^2); consumers: attn_norm -> {attn_q,attn_k,attn_v}
+  | {attn_qkv,attn_gate,ssm_beta,ssm_alpha}; post_attention_norm ->
+  {ffn_up,ffn_gate}; 24 trunk layers; blk.24 MTP skipped (no Grams).
+  s range [0.5, 16].
+gauge gate: equalized BF16 vs BF16 logits: KLD 0.000000, top-1 100.000%
+  -> exact gauge transformation, verified end-to-end on GPU.
+requant: identical per-tensor type layout as bare Q2_K; 436408832 bytes.
+
+q35-08b-Q2K-eq  ppl=41.7311 +/- 0.37778  KLD 0.684399 +/- 0.007244  top-1 61.529 +/- 0.482
+(bare Q2_K      ppl=33.0877              KLD 0.490179              top-1 66.422)
+
+paired per-chunk (eq vs bare; positive = eq worse):
+  dNLL(580) +0.232085 +/- 0.003883 (t=+59.8, eq better on 2/580)
+  dKLD(40)  +0.194220 +/- 0.006873 (t=+28.3, eq better on 0/40)
+  dtop(40)  -4.893pt  +/- 0.422    (t=-11.6, eq better on 1/40)
+
+mechanism diagnostic (imatrix-weighted quant error, mapped back to the
+original gauge; ratio eq/bare): attn_gate.0 1.119, ffn_up.0 1.063,
+ffn_gate.0 1.214, ffn_up.12 1.150, attn_q.3 1.684, ffn_up.23 1.248,
+ssm_out.12 1.000 (untouched control, exact) -> the quantizer's OWN
+weighted objective degrades: with the imatrix already weighting the
+fit, folding sqrt(diag) importance into the columns double-counts
+importance and adds up to 32x dynamic range inside 16-element
+sub-blocks that Q2_K's shared 4-bit sub-scales cannot span.
+VERDICT M5: full-strength diagonal equalization is ANTI-HELPFUL on
+imatrix-weighted K-quants (t = +28..+60 paired). Weaker exponents
+(alpha < 1) not run (would be a post-hoc sweep; F7).
+
+## M4 — Fisher-Lloyd fixed point (codes <-> servable d/dmin refit)
+config (pre-registered): codes-step = E13 input-only GPTQ sweep;
+  scales-step = per-row joint GLS refit of fp16 d/dmin per superblock
+  (4-bit sc/m frozen) under the SAME damped whitened metric
+  H = S + 0.01*mean(diag)*I; ridge 1e-8; guards keep-old on d<0 or
+  non-finite; stop at codes fixed point, |dJ|/J < 1e-5, or 8 iters.
+validation (test_lloyd.py, all green): expand_grid == E13 decoder on
+  real bytes; pack_full byte-roundtrip; scales_step == explicit
+  whitened lstsq (10 trials) and descends J.
+
+convergence: NO tensor reached a codes fixed point. 92/96 ran to the
+  8-iteration cap, 3 stopped at 6 and 1 at 5 via the J-plateau rule.
+  Universal shape: J drops for 3-4 iterations then enters a ~0.1%-
+  amplitude LIMIT CYCLE (greedy codes-step + fp16 scale rounding are
+  non-monotone at the floor). Iteration 1 captures 70% (median 68%) of
+  the total drop. Whitened-objective gain vs the single-pass RR grid:
+  mean 2.61%, median 2.55%, max 4.74%. Guards fired: 0.
+
+q35-08b-Q2K-lloyd  bytes=436408832 ppl=28.1153 +/- 0.23644  KLD 0.324835 +/- 0.004538  top-1 72.137 +/- 0.444
+(RR-input          bytes=436408832 ppl=28.0902 +/- 0.23730  KLD 0.323369 +/- 0.004774  top-1 72.686)
+
+paired per-chunk (lloyd vs single-pass RR-input):
+  dNLL(580) +0.000893 +/- 0.002217 (t=+0.40, lloyd better on 296/580)
+  dKLD(40)  +0.001470 +/- 0.003433 (t=+0.43, 18/40)
+  dNLL(40)  +0.005849 +/- 0.008108 (t=+0.72, 19/40)
+  dtop(40)  -0.549pt  +/- 0.415    (t=-1.32, 18/40)
+  -> ALL UNRESOLVED. 2.6% surrogate gain, zero end-to-end effect.
+paired per-chunk (lloyd vs bare, sanity: the big RR win is intact):
+  dNLL(580) -0.162848 +/- 0.003433 (t=-47.4, 562/580)
+  dKLD(40)  -0.165340 +/- 0.006063 (t=-27.3, 40/40)
+
+VERDICT M4: the honest servable Lloyd is a NULL. The fixed point the
+mission hypothesized does not exist on frozen sc/m grids — the
+alternation wanders a shallow (~2.6%-deep) basin as a limit cycle, and
+the extra surrogate descent buys nothing measurable end-to-end (4th
+surrogate!=outcome datapoint, after E24's Kronecker T). Deployment
+recipe unchanged: single-pass RR-input for zero-byte serving.
