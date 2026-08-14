@@ -456,11 +456,11 @@ verification checklist: [`docs/REMOTE_ACCESS_PLAN.md`](docs/REMOTE_ACCESS_PLAN.m
 
 Twenty-three models ship pre-configured, every one measured for VRAM and context
 on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
-Blackwell NVFP4, and community MTP builds. The default is **Qwen3.6-27B
-Uncensored Q5_K_P**; the dense **Qwen3.6-27B Q5_K_XL** tops the capability
+Blackwell NVFP4, and community MTP builds. The default is **Heretic v2 27B MTP
+Q5_K_M** at 256K context; the dense **Qwen3.6-27B Q5_K_XL** tops the capability
 board; the **Heretic v2 MTP** builds are the fastest at 136–139 tok/s. Newest
-in: **Qwen3.8-27B** (hybrid Gated-DeltaNet), which holds its full native 262K
-context in three of its four configs — not yet benchmarked.
+in: **Qwen3.8-27B**, which holds its full native 262K context in three of its
+four configs — not yet benchmarked.
 
 **Full lineup, per-variant VRAM/context/speed, and MTP tuning → [docs/MODELS.md](docs/MODELS.md).**
 

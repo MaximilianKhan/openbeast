@@ -51,6 +51,29 @@ MTP script with a matching `mmproj` and send an image. Fix the headers either
 way — right now they state as fact something we know is false for at least one
 architecture.
 
+## ✅ DEFAULT MODEL SWAP — DONE 2026-08-14
+
+Applied: `openbeast.conf` now sets `SERVE_SCRIPT=serve-heretic-v2-27b-mtp-q5.sh`.
+Stack restarted and verified serving `Heretic v2 27B MTP Q5` at `n_ctx 262144`,
+29,282 MiB used / 3,325 MiB free, all three services healthy.
+
+**"Maximum context" was measured, not assumed.** 262,144 is both the GGUF's
+declared ceiling and the practical VRAM limit for this config:
+
+| Context | VRAM at load | Free | Verdict |
+|---------|--------------|------|---------|
+| **262,144** | 29,282 MiB | **3,325 MiB** | shipped — 3,307 MiB free even under load |
+| 294,912 | 30,214 MiB | 2,393 MiB | **rejected** — climbs to 30,717 MiB under load, leaving 1,890 MiB, below the Gemma crash point |
+| 327,680 | 31,146 MiB | 1,461 MiB | rejected outright |
+
+288K also measured **no faster** (87.3 vs 89.0 tok/s), so it bought 1.4 GB of
+risk for nothing. Going beyond 262,144 safely would need rope extension *and*
+freeing VRAM — see the note in `MODELS.md` about Qwen3.6-class scripts running
+past their declared `context_length`. Not attempted; unvalidated on this
+fine-tune.
+
+Original analysis retained below.
+
 ## 🎛️ DEFAULT MODEL SWAP — Heretic v2 Q6 -> Q5 (Max, 2026-08-14)
 
 Max's call: the current default (`serve-heretic-v2-27b-mtp-q6.sh`, `-c 212992`

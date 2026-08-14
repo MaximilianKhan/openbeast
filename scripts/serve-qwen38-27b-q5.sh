@@ -1,14 +1,18 @@
 #!/bin/bash
 # Serve Qwen3.8-27B UD-Q5_K_XL as OpenAI-compatible API on RTX 5090
 #
-# NEW ARCHITECTURE (added 2026-08-14). Qwen3.8 is NOT a Qwen3.6 respin — the
-# GGUF declares `general.architecture = qwen35`, the hybrid Gated-DeltaNet
-# stack: 64 trunk layers laid out as 16 x (3 x DeltaNet -> 1 x full attention),
-# i.e. `full_attention_interval = 4`. Only 16 of the 64 layers carry a real KV
-# cache; the other 48 hold a constant-size recurrent state. That is why this
-# model holds its FULL native 262,144 context with room to spare while the
-# Qwen3.6-27B Q5 of the same file size had to be cut to 350K/288K — KV here is
-# ~18 KB/token against Qwen3.6's ~28 KB/token.
+# Added 2026-08-14. The GGUF declares `general.architecture = qwen35`, the
+# hybrid Gated-DeltaNet stack: 64 trunk layers laid out as 16 x (3 x DeltaNet
+# -> 1 x full attention), i.e. `full_attention_interval = 4`. Only 16 of the 64
+# layers carry a real KV cache; the other 48 hold a constant-size recurrent
+# state, which is why KV is only ~18 KB/token at q4_0.
+#
+# CORRECTED same day: this header first claimed Qwen3.8 was a NEW architecture
+# vs Qwen3.6 and that its KV was cheaper (~18 vs ~28 KB/token). Both wrong.
+# Qwen3.6-27B reports the SAME qwen35 arch, same 64 trunk layers, same
+# full_attention_interval=4, same head_count_kv/key_length/value_length — and
+# therefore the same ~18 KB/token. Qwen3.8 is an architecturally identical,
+# newly-trained model. The measurements below were taken empirically and stand.
 #
 # Requires a llama.cpp with LLM_ARCH_QWEN35. Ours has it (build 2026-08-04,
 # b10066-188-g0ef6e55ed) — no upgrade needed.

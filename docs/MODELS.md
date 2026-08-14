@@ -7,7 +7,9 @@ default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 [`evals/README.md`](../evals/README.md).
 
-The default is **Qwen3.6-27B Uncensored Q5_K_P**; the dense **Qwen3.6-27B
+The default is **Heretic v2 27B MTP Q5_K_M** at 256K context (changed
+2026-08-14 from the Q6_K sibling, which was capped at 208K); the dense
+**Qwen3.6-27B
 Q5_K_XL** tops the capability board, and the **35B-A3B MoE** variants trade a
 little accuracy for 30–50% more speed per token.
 
@@ -57,12 +59,25 @@ MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draf
 
 [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) ·
 [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) —
-Qwen's newest 27B. **This is a new architecture, not a Qwen3.6 respin.** The
-GGUF declares `general.architecture = qwen35`: a hybrid Gated-DeltaNet stack of
-64 trunk layers laid out as 16 × (3 × DeltaNet → 1 × full attention), i.e.
-`full_attention_interval = 4`. Only **16 of the 64 layers carry a real KV
-cache**; the other 48 hold a constant-size recurrent state. Native context is
-**262,144** (Qwen documents YaRN extension to 1M — we do not enable it).
+Qwen's newest 27B. The GGUF declares `general.architecture = qwen35`: a hybrid
+Gated-DeltaNet stack of 64 trunk layers laid out as 16 × (3 × DeltaNet → 1 ×
+full attention), i.e. `full_attention_interval = 4`. Only **16 of the 64 layers
+carry a real KV cache**; the other 48 hold a constant-size recurrent state.
+Native context is **262,144** (Qwen documents YaRN extension to 1M — we do not
+enable it).
+
+> **Correction (2026-08-14, same day).** This section originally called that
+> "a new architecture, not a Qwen3.6 respin," and credited it for Qwen3.8
+> holding more context than our older models. **That was wrong.** Qwen3.6-27B
+> reports the *same* `qwen35` architecture with the *same* 64 trunk layers,
+> `full_attention_interval = 4`, 16 full-attention layers, and identical
+> `head_count_kv=4 / key_length=256 / value_length=256`. Both cost **~18
+> KB/token** at `q4_0` — the "~28 KB/token" figure previously quoted for
+> Qwen3.6 was carried over from older docs and is not what the GGUF describes.
+> Qwen3.8 is an architecturally identical, newly-trained model. Every
+> *measurement* below stands (they were taken empirically); only the
+> architectural-novelty explanation was wrong. The one genuine structural
+> difference is the MTP head — see below.
 
 **Requires a llama.cpp with `LLM_ARCH_QWEN35`.** Ours already has it (build
 2026-08-04, `b10066-188-g0ef6e55ed`) — **no upgrade and no vLLM needed**.
@@ -76,14 +91,21 @@ cache**; the other 48 hold a constant-size recurrent state. Native context is
 | Qwen3.8 27B | Q6_K | **262K** (native) | 28.2 GB / 3.65 GB | 61.5 tok/s | `serve-qwen38-27b-q6.sh` |
 | Qwen3.8 27B **MTP** | Q6_K | 192K | 28.9 GB / 2.90 GB | **113.6 tok/s** (n4, 47% acc) | `serve-qwen38-27b-mtp-q6.sh` |
 
-**The headline is context, not speed.** Three of the four configs hold the
-model's *full native 262K* — including Q6_K, where every other 27B-class Q6 we
-ship had to give ground (Fable-Fusion Q6 = 240K, Heretic v2 Q6 MTP = 208K). The
-hybrid KV costs ~18 KB/token against Qwen3.6-27B's ~28 KB/token, and the Q5
-non-MTP config leaves **5.8 GB free — the roomiest headroom in the lineup**.
-Only Q6+MTP gives anything up: it loads at the full 262K (113.9 tok/s) but at
-1,559 MiB free, inside the sustained-load crash zone that cost us Gemma at 220K
-and Qwopus at 352K, so it ships one notch down at 192K.
+Three of the four configs hold the model's full native 262K, and the Q5 non-MTP
+config leaves **5.8 GB free — the roomiest headroom in the lineup**. Only
+Q6+MTP gives anything up: it loads at the full 262K (113.9 tok/s) but at 1,559
+MiB free, inside the sustained-load crash zone that cost us Gemma at 220K and
+Qwopus at 352K, so it ships one notch down at 192K.
+
+Do **not** read that as an architectural win over the Qwen3.6 lineup — the KV
+cost is the same ~18 KB/token on both (see the correction above). The context
+differences across our 27B configs come from **file size and draft buffers**,
+not architecture: a Q6 weighs ~2.7 GB more than a Q5, and MTP draft buffers
+cost another ~0.7-1.7 GB, so each config lands where the 32 GB card allows.
+Where Qwen3.6-class scripts run *past* 262,144 (the stock Qwen3.6-27B Q5 ships
+`-c 358400`), they are exceeding the GGUF's declared `context_length` via rope
+extension — a lever available to Qwen3.8 too, and one we have not exercised
+or validated here.
 
 **MTP heads ship inside the standard GGUF** (`qwen35.nextn_predict_layers = 1`,
 tensors at `blk.64.nextn.*`; `block_count` is 65 = 64 trunk + 1 nextn). There is
