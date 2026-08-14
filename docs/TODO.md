@@ -1,5 +1,70 @@
 # TODO
 
+## 🕵️ EMPTY RESPONSES — partially fixed, root cause NOT yet confirmed (2026-08-14)
+
+Max reports: the model "thinks for 0.5s or 10s, then quits and never gives a
+response." Investigated at length. **A real empty-response mode was found and
+reproduced, but it is probably not the one Max is hitting.** Recording
+everything so the next session doesn't re-walk it.
+
+### Applied
+
+`REASONING_BUDGET=4096` in `openbeast.conf` → `--reasoning-budget 4096` on
+llama-server (verified on the process command line). It works: on a
+long-reasoning prompt, thinking capped at ~3,635 and ~2,365 tokens and content
+was returned both times. Worth keeping regardless — completion length on this
+rig has p50 238 / p90 2,655 / **p99 72,180** tokens, so the tail was
+pathological and is now bounded.
+
+### Reproduced, but does not match Max's path
+
+Small `max_tokens` → generation is cut off MID-REASONING → `finish_reason:
+length`, `reasoning_content` populated, **`content` empty**. Confirmed on
+:8080 and :8088, streaming and not.
+
+**The reasoning budget does NOT fix this**, and the first attempt to claim it
+did was wrong: with `max_tokens=200` the request hits its own wall long before
+a 4096-token budget engages. A budget only helps when it is *below* the
+client's cap.
+
+But **Open WebUI sends no token caps at all** — checked every row of
+`model.params` in `webui.db`; not one sets `max_tokens`/`num_predict`. So this
+mode cannot be what Max sees in the browser. It would bite a client that does
+set a small cap.
+
+### Ruled out, with evidence
+
+- **Agent router / pre-flight classify.** Fires only on hint words
+  (`background`, `agents`, `in parallel`, …); ~1,850 calls in the log. Fails
+  safe by design, and **zero agents have ever been spawned**
+  (`agents/logs/` empty), so the spawn-intercept path has never run. Tested 4
+  hint-triggering prompts through :8088 — all returned full content. It *does*
+  cost real latency (17.8s / 45.2s vs 15.1s no-hint) because it occupies the
+  single MTP slot first, and it is the likely source of the sub-second
+  "thinking" Max sees.
+- **Stuck slot / queue.** `requests_deferred: 0`; a `requests_processing: 1`
+  that looked stuck was a live request — GPU went 93% → 1% when it finished.
+- **Tool server.** 401 without key, 200 with admin and guest, `openapi.json`
+  200.
+- **Denied tool calls.** The `denied` rows in `.run/tool-audit.jsonl` are the
+  pytest RBAC suite (all at one timestamp, `args_bytes: 2` = `{}`, cycling
+  401/403/404), not real turns.
+
+### Top remaining hypothesis
+
+Tool calls return **`finish_reason: tool_calls` with `content: 0`** — correct
+OpenAI protocol, and verified working at the model level (it emitted
+`web_search({"query":...})` and `read_file({"path":...})` correctly). But if
+the frontend's tool round-trip fails or never loops back, that renders as
+exactly the reported symptom, and it would be intermittent because only some
+turns trigger a tool. WebUI has `function_calling: native` set on these models.
+
+**To confirm, capture a failing turn.** Next time it happens, note the wall
+time and check: (a) `.run/stack.log` for that turn's `print_timing` line and
+predicted-token count, (b) `.run/tool-audit.jsonl` for a tool invocation at the
+same second. A turn that logs a completion but no audit row, on a
+tool-shaped prompt, confirms it.
+
 ## 🔬 GATE THE EVAL SWEEP — prove the research kernels don't perturb inference (2026-08-14)
 
 **The live `build/` has carried the beast-rank CUDA kernels since 2026-08-04
