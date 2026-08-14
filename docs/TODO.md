@@ -1,5 +1,76 @@
 # TODO
 
+## 🔬 GATE THE EVAL SWEEP — prove the research kernels don't perturb inference (2026-08-14)
+
+**The live `build/` has carried the beast-rank CUDA kernels since 2026-08-04
+12:03.** Confirmed by fingerprinting string literals the patch introduces:
+`GGML_CUDA_DISABLE_LORA_TQ` and `GGML_CUDA_LORA_TQ_MIN_ROWS` are present in
+`build/bin/libggml-cuda.so.0` (and in `build-rebase/`), while
+`LLAMA_GRADMATRIX_DIR` is present ONLY in `build-rebase/`. So the *kernel* work
+has been serving production for 10 days; the *gradmatrix instrumentation* never
+was, and `llama-gradmatrix` was never built into `build/` at all (the tool was
+authored at 13:18, after the 12:03 build).
+
+The existing leaderboard is unaffected — every entry ran 2026-05-08 →
+2026-07-11, all before that build. **But the Qwen3.8 sweep would be the first
+scored run on patched kernels**, and would be compared against a board measured
+on stock code. Settle this first.
+
+1. **Cheap static check (~10 min, no GPU).** Read the dispatch in
+   `ggml/src/ggml-cuda/mmvq.cu` and decide whether `use_lora` can ever be true
+   with no adapter loaded. The patch comments claim the LoRA epilogue is a
+   separate template instantiation precisely so the normal path doesn't pay for
+   it — verify that's what the gate actually enforces. Not proof, but it aims
+   the real test.
+2. **The real gate (~1 h, GPU).** Build **stock upstream at `b10434`** — no
+   patch — and compare against `build-rebase/` (same commit + patch). Use
+   `b10434`, NOT the live `build/`: comparing against b10254+patch would
+   confound the patch with 180 upstream commits.
+3. **Measure perplexity, not tok/s.** Speed is too noisy to reveal a numerical
+   change; PPL is a float over thousands of matmuls and hammers the modified
+   `mul_mat_vec_q`. Run `llama-perplexity` on a fixed corpus through both
+   binaries. **Bit-identical PPL ⇒ the non-LoRA path is untouched.** Any drift,
+   even 4th decimal, means the patch changes normal inference. Add a greedy
+   temperature-0 generation diffed byte-for-byte as a second check.
+4. Cover **Heretic v2 Q5** (the default) and **Qwen3.8 Q6** so both quant types
+   that hit `mmvq` are exercised.
+
+If PPL drifts, the sweep must run on a stock build, and the kernels become a
+research-only tree rather than the serving default.
+
+## 🔌 opencode.json DRIFTS FROM THE RIG — client model table (2026-08-14)
+
+`/api/slot` is **correct and live** — it reported `Heretic v2 27B MTP Q5 / ctx
+262144` within seconds of the default swap, with `ctx_total` and
+`serving_profile` right. Nothing to fix there.
+
+The problem is that **nothing consumes it for configuration.**
+`scripts/setup-client.sh` copies the model table out of the checkout's
+`opencode.json` into `~/.config/opencode/opencode.json` at *setup time*, and
+reads `/api/slot` only informationally ("tells you what the rig has loaded").
+So every remote client runs on a static snapshot that never re-syncs.
+
+Concrete gaps right now:
+
+1. **Qwen3.8 is entirely absent** — 0 entries. 23 serve scripts ship, only 15
+   are in the client table; the 8 missing are the 6 Qwen3.8 configs (added
+   today, my omission) and the 2 NVFP4 ones (pre-existing). Remote OpenCode
+   clients cannot select any of them.
+2. **`heretic-v2-27b-mtp-q6` still says `context: 212992`** — accurate for that
+   script, but any client still pointed at the old default under-uses the rig
+   by 49K tokens.
+3. **Stale label:** `qwen-27b-uncensored-q5` is still named
+   "Qwen3.6-27B Uncensored Q5_K_P (default)". It is not the default.
+4. The current default's entry (`heretic-v2-27b-mtp-q5: 262144`) **is correct**
+   — but by the table happening to be right, not by any mechanism.
+
+Fix in two steps: (a) add the missing 8 entries and correct the label —
+mechanical; (b) decide whether the table should be *generated* from the serve
+scripts (there is already a test asserting every serve script is registry-
+pinned; an analogous one could assert every serve script has an opencode
+entry), or whether the client should read `ctx` from `/api/slot` at runtime and
+stop duplicating it. (b) is the real fix; (a) stops the bleeding.
+
 ## 🆕 BENCHMARK Qwen3.8-27B — staged 2026-08-14, sweep not yet run
 
 Four configs are integrated, VRAM/speed-measured, and registered in
