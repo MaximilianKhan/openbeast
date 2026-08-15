@@ -81,12 +81,27 @@ The existing leaderboard is unaffected — every entry ran 2026-05-08 →
 scored run on patched kernels**, and would be compared against a board measured
 on stock code. Settle this first.
 
-1. **Cheap static check (~10 min, no GPU).** Read the dispatch in
-   `ggml/src/ggml-cuda/mmvq.cu` and decide whether `use_lora` can ever be true
-   with no adapter loaded. The patch comments claim the LoRA epilogue is a
-   separate template instantiation precisely so the normal path doesn't pay for
-   it — verify that's what the gate actually enforces. Not proof, but it aims
-   the real test.
+1. ✅ **Static check — DONE 2026-08-15. Every modified path is gated; the
+   serving path looks untouched.** Read on the `beast-rank-kernels` branch:
+
+   | File | Gate | With no adapter loaded |
+   |------|------|------------------------|
+   | `ggml-cuda/mmvq.cu` | `has_lora` is a **template parameter**; host dispatch sets it true only when `fusion.lora_b != nullptr` | falls through to `mul_mat_vec_q<type, ncols, false, small_k>` — every LoRA block removed by `if constexpr` at compile time |
+   | `ggml-cuda/quantize.cu` | same `template <bool has_lora>` pattern | normal call site launches `quantize_q8_1<false>` with null LoRA pointers |
+   | `ggml-cuda/ggml-cuda.cu` | graph-fusion pass that pattern-matches a 5-op subgraph (`MUL_MAT ×3, SCALE, ADD`) — the LoRA shape | that subgraph does not exist without an adapter, so the fusion never fires |
+   | `llama-graph.cpp` | `getenv("LLAMA_GRADMATRIX_DIR")` | unset in normal serving → normal path; the added null-guards are no-ops when buffers exist |
+   | `ggml-alloc.c` | `galloc->defer_frees` | false → calls `ggml_dyn_tallocr_free_bytes` exactly as upstream |
+   | `ggml.c` | `ggml_gradmatrix_cut_op` | backward-pass only; never reached during inference |
+
+   The only residue on the non-LoRA path is a **1-float `__shared__` array**
+   (`lora_row_sum[has_lora ? rows_per_cuda_block : 1]`) that is never written or
+   read, plus `GGML_UNUSED_VARS` no-ops. Neither can change numerics; the 4
+   bytes of shared memory could in principle nudge occupancy, which is a *speed*
+   effect, not a correctness one.
+
+   **This downgrades the perplexity run from an investigation to a
+   confirmation** — still worth doing before the first scored sweep, but the
+   prior is now strongly "no drift."
 2. **The real gate (~1 h, GPU).** Build **stock upstream at `b10434`** — no
    patch — and compare against `build-rebase/` (same commit + patch). Use
    `b10434`, NOT the live `build/`: comparing against b10254+patch would
