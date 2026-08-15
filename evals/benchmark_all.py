@@ -110,7 +110,46 @@ MODELS = [
     {"slug": "qwen38-27b-mtp-q6",
      "name": "Qwen3.8 27B MTP Q6_K",
      "serve": "scripts/serve-qwen38-27b-mtp-q6.sh"},
+    # Community fine-tunes, registered 2026-08-15. These shipped as serve
+    # scripts on 2026-07-17 but were never added here, so they could not be
+    # benchmarked at all — and one of them is the DEFAULT the rig serves, which
+    # doctor was warning about ("you are serving an unevaluated model
+    # knowingly"). Contexts and tuned MTP depths are in the serve scripts.
+    {"slug": "fable-fusion-27b-q5",
+     "name": "Fable-Fusion 27B Q5_K_M",
+     "serve": "scripts/serve-fable-fusion-27b-q5.sh"},
+    {"slug": "fable-fusion-27b-mtp-q5",
+     "name": "Fable-Fusion 27B MTP Q5_K_M",
+     "serve": "scripts/serve-fable-fusion-27b-mtp-q5.sh"},
+    {"slug": "fable-fusion-27b-q6",
+     "name": "Fable-Fusion 27B Q6_K",
+     "serve": "scripts/serve-fable-fusion-27b-q6.sh"},
+    {"slug": "fable-fusion-27b-mtp-q6",
+     "name": "Fable-Fusion 27B MTP Q6_K",
+     "serve": "scripts/serve-fable-fusion-27b-mtp-q6.sh"},
+    {"slug": "heretic-v2-27b-mtp-q5",
+     "name": "Heretic v2 27B MTP Q5_K_M",
+     "serve": "scripts/serve-heretic-v2-27b-mtp-q5.sh"},
+    {"slug": "heretic-v2-27b-mtp-q6",
+     "name": "Heretic v2 27B MTP Q6_K",
+     "serve": "scripts/serve-heretic-v2-27b-mtp-q6.sh"},
 ]
+
+# Serve scripts deliberately NOT benchmarked, with the reason. This exists so
+# that "missing from MODELS" is always a decision someone made rather than an
+# oversight — tests/test_scripts.sh asserts every shipped serve script is
+# either in MODELS or listed here. Removing a script from both is a test
+# failure, which is how the Heretic v2 and Fable-Fusion gaps above went
+# unnoticed for a month.
+BENCH_EXCLUDED = {
+    "scripts/serve-qwen38-27b-vision-q5.sh":
+        "same weights as qwen38-27b-q5, differing only by --mmproj; our eval "
+        "suite is text-only, so this would burn ~45 min to reproduce its "
+        "twin's score. Register it when the suite gains vision tasks.",
+    "scripts/serve-qwen38-27b-vision-mtp-q5.sh":
+        "same as above against qwen38-27b-mtp-q5 (also runs at 224K, not the "
+        "twin's 262K, so its numbers would not even be directly comparable).",
+}
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
 LLAMA_PORT = 8080

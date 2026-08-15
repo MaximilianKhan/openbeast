@@ -19,7 +19,7 @@
       },
       "models": {
         "qwen-27b-uncensored-q5": {
-          "name": "Qwen3.6-27B Uncensored Q5_K_P (default)",
+          "name": "Qwen3.6-27B Uncensored Q5_K_P",
           "limit": {
             "context": 358400,
             "output": 32768
@@ -110,7 +110,7 @@
           }
         },
         "heretic-v2-27b-mtp-q5": {
-          "name": "Heretic v2 27B MTP Q5_K_M (single-slot, speculative)",
+          "name": "Heretic v2 27B MTP Q5_K_M (default; single-slot, speculative)",
           "limit": {
             "context": 262144,
             "output": 32768
@@ -120,6 +120,62 @@
           "name": "Heretic v2 27B MTP Q6_K (single-slot, speculative)",
           "limit": {
             "context": 212992,
+            "output": 32768
+          }
+        },
+        "qwen-27b-nvfp4-mtp": {
+          "name": "Qwen3.6-27B NVFP4 MTP (Blackwell FP4, single-slot)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen-35b-a3b-nvfp4-mtp": {
+          "name": "Qwen3.6-35B-A3B NVFP4 MTP MoE (Blackwell FP4, single-slot)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-q5": {
+          "name": "Qwen3.8-27B Q5_K_XL",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-mtp-q5": {
+          "name": "Qwen3.8-27B MTP Q5_K_XL (single-slot, speculative)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-q6": {
+          "name": "Qwen3.8-27B Q6_K",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-mtp-q6": {
+          "name": "Qwen3.8-27B MTP Q6_K (single-slot, speculative)",
+          "limit": {
+            "context": 196608,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-vision-q5": {
+          "name": "Qwen3.8-27B Vision Q5_K_XL (image input)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-vision-mtp-q5": {
+          "name": "Qwen3.8-27B Vision MTP Q5_K_XL (image input, single-slot)",
+          "limit": {
+            "context": 229376,
             "output": 32768
           }
         }

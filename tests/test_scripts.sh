@@ -743,7 +743,12 @@ fi
 # is unusable out of the box.
 UNPINNED=""
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
-  _g=$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | head -1); _g="${_g##*/}"
+  # `|| true` is load-bearing: under `set -euo pipefail` a serve script with no
+  # $WEIGHTS_DIR/*.gguf line makes grep exit 1, and a bare `_g=$(...)` then
+  # kills the ENTIRE suite mid-run rather than reporting a failure — the same
+  # set -e trap already fixed once in serve.sh's ob_scale_context call.
+  # Surfaced 2026-08-15 by the negative test for the drift guards below.
+  _g=$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | head -1 || true); _g="${_g##*/}"
   [[ -n "$_g" ]] || continue
   awk -F'\t' -v n="$_g" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
     "$REPO_DIR/scripts/weights.registry" || UNPINNED="$UNPINNED $(basename "$_ss")"
@@ -752,6 +757,39 @@ if [[ -z "$UNPINNED" ]]; then
   pass "every shipped serve script targets a registry-pinned weight"
 else
   fail "serve scripts targeting unpinned weights:$UNPINNED"
+fi
+
+# Two more tables that are supposed to mirror the serve scripts and silently
+# did not. Both drifted unnoticed: on 2026-08-15, 8 of 23 serve scripts had no
+# opencode.json entry (so remote clients could not select them at all, and the
+# six Qwen3.8 configs were invisible the day after shipping), and 8 had no
+# benchmark_all.py entry — including the DEFAULT the rig serves, which doctor
+# had been warning about for weeks. Hand-maintained mirrors rot; assert them.
+MISSING_OC=""
+for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
+  [[ "$(basename "$_ss")" == "serve-bootstrap.sh" ]] && continue
+  _slug="$(basename "$_ss" .sh)"; _slug="${_slug#serve-}"
+  grep -q "\"$_slug\"[[:space:]]*:" "$REPO_DIR/opencode.json" \
+    || MISSING_OC="$MISSING_OC $_slug"
+done
+if [[ -z "$MISSING_OC" ]]; then
+  pass "every shipped serve script has an opencode.json model entry"
+else
+  fail "serve scripts missing from opencode.json (remote clients cannot select them):$MISSING_OC"
+fi
+
+# MODELS or BENCH_EXCLUDED — either is fine, but it has to be a decision.
+MISSING_BENCH=""
+for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
+  [[ "$(basename "$_ss")" == "serve-bootstrap.sh" ]] && continue
+  _rel="scripts/$(basename "$_ss")"
+  grep -q "\"$_rel\"" "$REPO_DIR/evals/benchmark_all.py" \
+    || MISSING_BENCH="$MISSING_BENCH $(basename "$_ss")"
+done
+if [[ -z "$MISSING_BENCH" ]]; then
+  pass "every shipped serve script is in benchmark_all.py MODELS or BENCH_EXCLUDED"
+else
+  fail "serve scripts absent from both MODELS and BENCH_EXCLUDED:$MISSING_BENCH"
 fi
 
 if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then
