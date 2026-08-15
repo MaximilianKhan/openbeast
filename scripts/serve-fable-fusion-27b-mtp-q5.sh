@@ -27,7 +27,13 @@
 #   ~50% (see the server log's "draft acceptance"), use the non-MTP Q5 build.
 #
 # CONSTRAINTS (MTP, upstream): -np 1 forced (one slot; concurrent requests
-# serialize); --mmproj vision unsupported.
+# serialize).
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # MEASURED on the 5090 (2026-07-17): -c 262144 (native ceiling) at n-max 2
 # uses 29,885 MiB / 2,722 MiB free — above the 2 GB rule. Decode ~108 tok/s

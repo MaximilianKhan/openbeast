@@ -25,8 +25,13 @@
 # (set client-side), else draft acceptance and speed degrade; if acceptance
 # stays under ~50% (server log), use a non-MTP quant.
 #
-# CONSTRAINTS (MTP, upstream): -np 1 forced; --mmproj vision unsupported (the
-# repo ships a separate mmproj, incompatible with MTP anyway).
+# CONSTRAINTS (MTP, upstream): -np 1 forced.
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # MEASURED on the 5090 (2026-07-17, n-max 8): -c 262144 (native ceiling) uses
 # 29,633 MiB / 2,974 MiB free — safe. Decode ~136 tok/s greedy — the FASTEST

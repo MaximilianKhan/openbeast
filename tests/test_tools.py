@@ -10,11 +10,13 @@ Run: python -m pytest tests/test_tools.py -v
   or: ./tests/run_tests.sh
 """
 
+import functools
 import os
 import sys
 import tempfile
 import shutil
 import unittest
+import urllib.request
 
 # Add agents/ to the path so we can import tools
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agents"))
@@ -282,7 +284,50 @@ class TestGrep(unittest.TestCase):
 
 @unittest.skipIf(os.environ.get("OPENBEAST_SKIP_NETWORK_TESTS") == "1",
                  "network tests disabled (OPENBEAST_SKIP_NETWORK_TESTS=1)")
+@functools.lru_cache(maxsize=1)
+def _httpbin_up():
+    """Is httpbin.org actually serving? Probed once per run, not per test.
+
+    On 2026-08-15 httpbin returned 503 for hours and took four of these tests
+    red with nothing wrong in our code — an external outage reported as a
+    local failure, which is the worst kind of red because it trains you to
+    ignore the suite.
+
+    A local fixture server is the usual fix and is NOT available here: fetch()
+    deliberately refuses loopback, private and link-local addresses
+    (agents/tools.py `_ip_blocked`), which is exactly the SSRF hardening we
+    want and will not be weakened for a test. So keep the real-network
+    coverage — it exercises DNS pinning, redirect re-validation and HTML
+    stripping for real — and skip, rather than fail, when the dependency is
+    down.
+    """
+    try:
+        req = urllib.request.Request(
+            "https://httpbin.org/status/200", headers={"User-Agent": "openbeast-tests"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+_HTTPBIN_SKIP = "httpbin.org unreachable or erroring — external dependency, not a code failure"
+
+
 class TestFetch(unittest.TestCase):
+    """Fetch tests with no third-party dependency."""
+
+    def test_fetch_invalid_url(self):
+        result = fetch("https://this-domain-does-not-exist-xyz.invalid/")
+        self.assertIn("error", result.lower())
+
+
+class TestFetchHttpbin(unittest.TestCase):
+    """Fetch tests that need httpbin.org up. Skipped, not failed, when it isn't."""
+
+    def setUp(self):
+        if not _httpbin_up():
+            self.skipTest(_HTTPBIN_SKIP)
+
     def test_fetch_json(self):
         result = fetch("https://httpbin.org/get")
         self.assertIn("headers", result)
@@ -301,10 +346,6 @@ class TestFetch(unittest.TestCase):
     def test_fetch_404(self):
         result = fetch("https://httpbin.org/status/404")
         self.assertIn("404", result)
-
-    def test_fetch_invalid_url(self):
-        result = fetch("https://this-domain-does-not-exist-xyz.invalid/")
-        self.assertIn("error", result.lower())
 
 
 class TestWebSearch(unittest.TestCase):

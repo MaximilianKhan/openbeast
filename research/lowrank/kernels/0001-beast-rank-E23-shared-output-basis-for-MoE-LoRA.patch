@@ -1,0 +1,63 @@
+From 7c6b835b4749c9c94cba53cf47f05b5b6f1aa7d5 Mon Sep 17 00:00:00 2001
+From: Maximilian Khan <maxjkh@gmail.com>
+Date: Sat, 15 Aug 2026 09:08:17 -0700
+Subject: [PATCH] beast-rank E23: shared output basis for MoE LoRA
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+build_lora_mm_id() applied lora_b per-expert unconditionally via
+ggml_mul_mat_id. This adds the shared-basis case: when lora_b is 2D
+(ne[2] == 1) while the base weight is per-expert (ne[2] > 1), apply a single
+output basis across all experts with a plain ggml_mul_mat instead.
+
+That is the adapter shape the E28/E29 bytes work needs — a shared basis is
+what lets rank be spent once rather than once per expert, which is where the
+"-16.6% adapter bytes at tied KLD" result comes from. Without this branch the
+graph builder cannot express it and shared-basis adapters simply fail to load
+against an MoE base.
+
+Developed in the .wt-e23 worktree on 2026-08-04 against 0ef6e55ed (b10254) and
+left uncommitted there for 11 days — gitignored, unreachable from any branch,
+and NOT captured by the beast-rank-kernels rescue on 2026-08-14, whose
+llama-graph.cpp differs. Committed now as a rescue point; a patch export is
+vendored in the openbeast repo under research/lowrank/kernels/.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/llama-graph.cpp | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 9dde345df..c820c7eb4 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1539,11 +1539,20 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
+         const float rank  = (float) lw->b->ne[0];
+         const float scale = alpha ? lora.second * alpha / rank : lora.second;
+ 
+-        ggml_tensor * ab_cur = ggml_mul_mat_id(
+-                ctx0, lw->b,
+-                ggml_mul_mat_id(ctx0, lw->a, cur, ids),
+-                ids
+-                );
++        ggml_tensor * ab_cur;
++        if (lw->b->ne[2] == 1 && w->ne[2] > 1) {
++            // shared output basis: 2D lora_b applied to all experts
++            ab_cur = ggml_mul_mat(
++                    ctx0, lw->b,
++                    ggml_mul_mat_id(ctx0, lw->a, cur, ids)
++                    );
++        } else {
++            ab_cur = ggml_mul_mat_id(
++                    ctx0, lw->b,
++                    ggml_mul_mat_id(ctx0, lw->a, cur, ids),
++                    ids
++                    );
++        }
+ 
+         ab_cur = ggml_scale(ctx0, ab_cur, scale);
+         res = ggml_add(ctx0, res, ab_cur);
+-- 
+2.55.0
+

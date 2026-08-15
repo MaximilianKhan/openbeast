@@ -23,7 +23,13 @@
 #   -ctkd/-ctvd q4_0         draft KV cache quant (main KV = q4_0 via serve.sh)
 #   -fa on                   flash attention
 #
-# CONSTRAINTS (MTP, upstream): -np 1 forced (one slot); --mmproj unsupported.
+# CONSTRAINTS (MTP, upstream): -np 1 forced (one slot).
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # CONTEXT: -c 262144 — the model's FULL native n_ctx_train. MEASURED 2026-07-10
 # at n=2: 29527 MiB used / 3080 MiB free after live gen — safe (the MoE's KV is

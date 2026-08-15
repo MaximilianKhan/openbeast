@@ -19,7 +19,13 @@
 #   Set client-side. If draft acceptance drops below ~50% (server log), fall
 #   back to the non-MTP Q6 build.
 #
-# CONSTRAINTS (MTP, upstream): -np 1 forced; --mmproj vision unsupported.
+# CONSTRAINTS (MTP, upstream): -np 1 forced.
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # MEASURED on the 5090 (2026-07-17, n-max 2): the tightest of the four —
 # ~24 GB weights + MTP draft buffers. -c 180224 uses 30,116 MiB / 2,491 MiB

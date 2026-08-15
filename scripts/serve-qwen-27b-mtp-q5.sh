@@ -16,7 +16,13 @@
 # **CRITICAL CONSTRAINTS (upstream limitations, 2026-05-22):**
 #   - **`-np 1` is forced** — MTP does not yet support more than one parallel
 #     slot. Concurrent requests serialize.
-#   - **`--mmproj` is not yet supported with MTP** — no vision input.
+#   - **`--mmproj` + MTP: status UNKNOWN, not impossible.**
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # Context: 288K (-c 294912) — measured 2026-07-07 at the tuned n-max 8:
 # 30,063 MiB used / 2,544 MiB headroom on the 32 GB card. n8's draft buffers

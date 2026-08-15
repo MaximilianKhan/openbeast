@@ -19,7 +19,13 @@
 # ⚠️ MTP REQUIREMENTS: temperature ≤ 1.0, repetition_penalty = 1.0 (client-side),
 # or acceptance/speed degrade; <50% acceptance → use a non-MTP quant.
 #
-# CONSTRAINTS (MTP): -np 1 forced; --mmproj unsupported.
+# CONSTRAINTS (MTP): -np 1 forced.
+# --mmproj was long documented as incompatible with MTP (2026-05-22 upstream
+# note). DISPROVEN for arch qwen35 on our build 2026-08-14: Qwen3.8 +
+# --mmproj + --spec-type draft-mtp ran correctly with the draft path live at
+# 64.6% acceptance, and no such guard exists in the current llama.cpp source.
+# UNTESTED for this model — treat as unknown, not impossible. See
+# docs/TODO.md.
 #
 # MEASURED on the 5090 (2026-07-17, n-max 4): -c 212992 uses 30,360 MiB /
 # 2,247 MiB free — safe. The ladder above breached the 2 GB rule (229376 =

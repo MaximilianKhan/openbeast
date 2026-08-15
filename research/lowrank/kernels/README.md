@@ -25,6 +25,31 @@ it with nothing to recover from. The patch here is the durable copy.
 | llama | `llama-graph.cpp` (+40), `llama-context.cpp` (+7) |
 | tooling | `tools/imatrix/imatrix.cpp` (+205), `tools/gradmatrix/` (NEW, 422 lines) |
 
+## `0001-beast-rank-E23-shared-output-basis-for-MoE-LoRA.patch`
+
+A second, independent rescue — found 2026-08-15 in the `.wt-e23` worktree, one
+day after the rescue above and by the same failure mode.
+
+`build_lora_mm_id()` applied `lora_b` per-expert unconditionally via
+`ggml_mul_mat_id`. The patch adds the shared-basis case: when `lora_b` is 2D
+(`ne[2] == 1`) while the base weight is per-expert (`ne[2] > 1`), apply a single
+output basis across every expert with a plain `ggml_mul_mat`. 14 insertions,
+one file.
+
+This is the adapter *shape* the E28/E29 bytes results depend on — a shared basis
+is what lets rank be spent once instead of once per expert, which is where
+"−16.6% adapter bytes at tied KLD" comes from. Without it the graph builder
+cannot express that adapter at all against an MoE base.
+
+- **Developed against:** `0ef6e55ed` (tag `b10254`), 2026-08-04
+- **Committed:** `7c6b835b4` on llama.cpp branch `beast-rank-moe-shared-basis`
+- **Not** included in the kernels patch above — that branch's `llama-graph.cpp`
+  differs, so the 2026-08-14 rescue did not capture this.
+
+⚠️ **Not rebased.** Unlike the kernels patch, this still sits on `b10254`.
+Porting it to current upstream is untried; it touches `build_lora_mm_id`, which
+upstream may have moved.
+
 ## Provenance
 
 - **Developed against:** `0ef6e55edb306fcbcf73e6f1f41923cccb9cf7f8` (tag `b10254`)
