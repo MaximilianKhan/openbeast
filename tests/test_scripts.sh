@@ -792,6 +792,53 @@ else
   fail "serve scripts absent from both MODELS and BENCH_EXCLUDED:$MISSING_BENCH"
 fi
 
+# The DEFAULT model is declared in four independent places, and openbeast.conf
+# (where a rig actually overrides it) is gitignored — so a maintainer running a
+# different default locally cannot see the shipped one drift. It did: on
+# 2026-08-15 the docs claimed a default that conf.sh, openbeast.conf.example
+# and bootstrap.sh had never heard of, because the docs were edited to match
+# one machine's private override. Pin all four to each other.
+DEFAULT_EXPECT="serve-heretic-v2-27b-mtp-q5.sh"
+DEFAULT_WEIGHT="Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf"
+
+_d_conf="$(grep -oE 'echo serve-[a-z0-9.\-]+\.sh' "$REPO_DIR/scripts/lib/conf.sh" | head -1 | sed 's/^echo //')"
+_d_example="$(grep -oE '^#?SERVE_SCRIPT=serve-[a-z0-9.\-]+\.sh' "$REPO_DIR/openbeast.conf.example" | head -1 | sed 's/.*=//')"
+_d_weight="$(grep -oE '^WEIGHT_FILE="[^"]+"' "$REPO_DIR/bootstrap.sh" | head -1 | sed 's/^WEIGHT_FILE="//;s/"$//')"
+
+DEFAULT_BAD=""
+[[ "$_d_conf"    == "$DEFAULT_EXPECT" ]] || DEFAULT_BAD="$DEFAULT_BAD conf.sh=$_d_conf"
+[[ "$_d_example" == "$DEFAULT_EXPECT" ]] || DEFAULT_BAD="$DEFAULT_BAD conf.example=$_d_example"
+[[ "$_d_weight"  == "$DEFAULT_WEIGHT" ]] || DEFAULT_BAD="$DEFAULT_BAD bootstrap-weight=$_d_weight"
+# The default serve script must exist, and must load the weight bootstrap fetches.
+[[ -x "$REPO_DIR/scripts/$DEFAULT_EXPECT" ]] || DEFAULT_BAD="$DEFAULT_BAD missing-script"
+grep -q "$DEFAULT_WEIGHT" "$REPO_DIR/scripts/$DEFAULT_EXPECT" \
+  || DEFAULT_BAD="$DEFAULT_BAD script-loads-a-different-weight"
+# ...and that weight must be registry-pinned, or a fresh install cannot verify it.
+awk -F'\t' -v n="$DEFAULT_WEIGHT" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
+  "$REPO_DIR/scripts/weights.registry" || DEFAULT_BAD="$DEFAULT_BAD weight-not-pinned"
+
+if [[ -z "$DEFAULT_BAD" ]]; then
+  pass "default model agrees across conf.sh, conf.example, bootstrap, and the serve script"
+else
+  fail "default model disagrees (want $DEFAULT_EXPECT /$DEFAULT_WEIGHT):$DEFAULT_BAD"
+fi
+
+# The user-facing docs must name the same default. These drifted for weeks
+# while pointing at a model that was no longer served.
+# Whitespace-normalised: prose wraps, and a doc test that silently depends on
+# where a line breaks is a trap for whoever reflows the paragraph. README.md
+# genuinely wraps this phrase mid-name.
+DOC_BAD=""
+for _doc in README.md docs/MODELS.md docs/FEATURES.md; do
+  tr '\n' ' ' < "$REPO_DIR/$_doc" | tr -s ' ' \
+    | grep -qi "Heretic v2 27B MTP Q5" || DOC_BAD="$DOC_BAD $_doc"
+done
+if [[ -z "$DOC_BAD" ]]; then
+  pass "README/MODELS/FEATURES name the shipped default model"
+else
+  fail "docs do not name the shipped default (Heretic v2 27B MTP Q5):$DOC_BAD"
+fi
+
 if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then
   pass "logrotate covers the inference audit stream"
 else

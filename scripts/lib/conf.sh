@@ -63,7 +63,7 @@ GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)
 # Serve script launched when start.sh gets no positional arg — also what
 # healthcheck.sh --restart falls back to when no supervisor (and no
 # .run/serve-script record) exists. Conf key SERVE_SCRIPT.
-DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT || echo serve-qwen-27b-uncensored-q5.sh)}"
+DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT || echo serve-heretic-v2-27b-mtp-q5.sh)}"
 # Fast boot (ODS-absorbed, docs/TODO.md): when true, start.sh serves the tiny
 # Qwen3-0.6B bridge on :8080 for instant chat, brings up the full stack, then
 # hot-swaps to DEFAULT_SERVE_SCRIPT once its weights are warmed. Off by default

@@ -259,12 +259,12 @@ preflight_extras() {
     warn "weights dir resolves to $resolved but free space on $probe could not be measured"
   elif [[ "$avail_gb" -ge 25 ]]; then
     if [[ -d "$resolved" ]]; then
-      ok "weights dir: $resolved — ${avail_gb} GB free (default 27B weight needs ~21 GB)"
+      ok "weights dir: $resolved — ${avail_gb} GB free (default 27B weight needs ~20 GB)"
     else
       ok "weights dir will be $resolved (created by bootstrap) — ${avail_gb} GB free (need ~25 GB)"
     fi
   else
-    warn "weights dir $resolved has only ${avail_gb} GB free — the default 27B weight needs ~21 GB (~25 GB recommended). Point WEIGHTS_DIR at a bigger disk (openbeast.conf)."
+    warn "weights dir $resolved has only ${avail_gb} GB free — the default 27B weight needs ~20 GB (~25 GB recommended). Point WEIGHTS_DIR at a bigger disk (openbeast.conf)."
   fi
 }
 
@@ -355,7 +355,7 @@ command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
   || warn "hf CLI not on PATH — add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell rc"
 
 # ---- 4. default model weight (skip if present) -----------------------------
-step "Default model weight (~21 GB — the one big download)"
+step "Default model weight (~20 GB — the one big download)"
 # Resolve the weights dir the same way the serve scripts do. On a fresh
 # machine no weights dir exists anywhere and weights.sh would hard-exit with
 # its "point OpenBeast at your weights" guidance — correct for serve scripts,
@@ -365,8 +365,8 @@ step "Default model weight (~21 GB — the one big download)"
 export OPENBEAST_WEIGHTS_MKDIR=1
 source "$REPO_DIR/scripts/lib/weights.sh"
 unset OPENBEAST_WEIGHTS_MKDIR
-WEIGHT_FILE="Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
-HF_REPO="HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive"
+WEIGHT_FILE="Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf"
+HF_REPO="llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF"
 # Supply-chain pin for the one mandatory download, read from the weight
 # registry (scripts/weights.registry — pins EVERY shipped GGUF, same
 # discipline as the digest-pinned container images). A silent swap in the
@@ -382,7 +382,7 @@ else
   [[ -n "$HF_BIN" ]] || die "hf CLI not found after install; add ~/.local/bin to PATH and re-run"
   "$HF_BIN" download "$HF_REPO" "$WEIGHT_FILE" --local-dir "$WEIGHTS_DIR"
   [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] || die "download failed"
-  echo "  verifying checksum (~1 min for 21 GB)..."
+  echo "  verifying checksum (~1 min for 20 GB)..."
   got_sha="$(sha256sum "$WEIGHTS_DIR/$WEIGHT_FILE" | awk '{print $1}')"
   if [[ "$got_sha" == "$WEIGHT_SHA256" ]]; then
     ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
@@ -403,7 +403,7 @@ chmod +x "$REPO_DIR"/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/tests/*.sh 2>/dev
 if [[ $MINIMAL -eq 1 ]]; then
   step "${c_grn}Tier 0 ready${c_rst}"
   echo "  Start just the model server (no Docker, no auth, no tools):"
-  echo "      ${c_bold}./scripts/serve-qwen-27b-uncensored-q5.sh${c_rst}"
+  echo "      ${c_bold}./scripts/serve-heretic-v2-27b-mtp-q5.sh${c_rst}"
   echo "  Then talk to it:"
   echo "      curl http://localhost:8080/v1/models"
   echo "      point any OpenAI-compatible client at http://localhost:8080/v1"
