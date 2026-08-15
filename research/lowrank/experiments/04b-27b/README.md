@@ -1,4 +1,21 @@
 > ⚠ see review/ corrections 2026-08-04
+>
+> 🗑️ **ARTIFACTS DELETED 2026-08-15 — 125 GB of `.gguf` reclaimed.** The
+> measurements survive: `results.txt` (cited by `review/adversarial-code.md:94`
+> and `review/adversarial-stats.md:53,236`) and this README are untouched. Only
+> the binaries went.
+>
+> Deleted because this ladder is **superseded**, per `RESULTS_ROLLUP.md:97`
+> ("LEGACY TABLE (requant-of-Q6, Q6-referenced logits) — SUPERSEDED"). Every
+> base here was a requant of the *served Q6_K* rather than one clean step from
+> the BF16 reference — the exact provenance flaw that
+> `../27-bf16-rederivation/` was built to correct. Do not rebuild on these
+> numbers; use E27's.
+>
+> To regenerate anyway, both bases are still in `weights/`:
+> `...heretic-v2-Native-MTP-Preserved-BF16.gguf` and its `-Q6_K.gguf`. Stock
+> `llama-quantize` reproduces the plain rungs; the MIXED/adapter variants need
+> the patched build (see `../../kernels/`).
 
 # E04c — scale replication on the production 27B
 
