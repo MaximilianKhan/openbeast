@@ -46,13 +46,6 @@
             "output": 32768
           }
         },
-        "gemma-4-31b-q5": {
-          "name": "Gemma 4 31B Q5_K_XL",
-          "limit": {
-            "context": 225280,
-            "output": 32768
-          }
-        },
         "qwen-27b-mtp-q5": {
           "name": "Qwen3.6-27B MTP Q5_K_XL (single-slot, speculative)",
           "limit": {
@@ -64,48 +57,6 @@
           "name": "Qwen3.6-35B-A3B MTP MoE (single-slot, speculative)",
           "limit": {
             "context": 393216,
-            "output": 32768
-          }
-        },
-        "qwopus-27b-v2-q5": {
-          "name": "Qwopus3.6-27B-v2 Q5_K_M (Jackrong SFT, reasoning-enhanced)",
-          "limit": {
-            "context": 358400,
-            "output": 32768
-          }
-        },
-        "qwopus-27b-v2-mtp-q5": {
-          "name": "Qwopus3.6-27B-v2 MTP Q5_K_M (single-slot, speculative)",
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          }
-        },
-        "fable-fusion-27b-q5": {
-          "name": "Fable-Fusion 27B Q5_K_M (DavidAU)",
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          }
-        },
-        "fable-fusion-27b-mtp-q5": {
-          "name": "Fable-Fusion 27B MTP Q5_K_M (single-slot, speculative)",
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          }
-        },
-        "fable-fusion-27b-q6": {
-          "name": "Fable-Fusion 27B Q6_K (DavidAU, near-lossless)",
-          "limit": {
-            "context": 245760,
-            "output": 32768
-          }
-        },
-        "fable-fusion-27b-mtp-q6": {
-          "name": "Fable-Fusion 27B MTP Q6_K (single-slot, speculative)",
-          "limit": {
-            "context": 180224,
             "output": 32768
           }
         },

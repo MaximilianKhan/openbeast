@@ -533,6 +533,16 @@ else
   echo "      $CLIENT_REPO/scripts/client.sh status"
 fi
 
+# ---- 5b. add the live-rig row -----------------------------------------------
+# Step 5 wrote the STATIC catalog copied from the checkout. This asks the rig
+# what it is actually serving and pins that as the default, so a fresh install
+# and an `openbeast-client update` land on an identical config instead of
+# differing by one row. Best-effort by design — a rig that is down at install
+# time just leaves the static catalog, and `openbeast-client refresh-config`
+# fills it in later.
+"$CLIENT_REPO/scripts/client.sh" refresh-config 2>/dev/null \
+  || echo "  ! could not probe the rig for its live model — run 'openbeast-client refresh-config' once it is up"
+
 # ---- 6. report --------------------------------------------------------------
 echo ""
 echo "Client mode ready. Use it:"
