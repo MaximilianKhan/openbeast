@@ -20,6 +20,45 @@ unbenchmarked) — that gives a clean abliterated-vs-stock delta on the same bas
 model and same suite, which is the actual question. Until then the honest claim
 is "fastest thing we ship," not "best."
 
+### Context beyond 262K — measured 2026-08-19, verdict: DON'T ship it
+
+262144 is the model's **native ceiling** (`qwen35.context_length`). Going past
+it needs YaRN rope scaling. Probed every rung on the 32 GB card (`-ctk/-ctv
+q4_0`, `--kv-unified`; 2,048 MiB free is the known sustained-load crash zone
+that forced Gemma 4 31B down from 220K):
+
+| Config | Context | VRAM used | Free | Loads? |
+|---|---|---|---|---|
+| MTP n4, native | 262,144 | 27,765 MiB | **4,842** | ✅ shipped |
+| MTP n4, YaRN 1.25× | 327,680 | 29,575 MiB | 3,032 | ✅ |
+| MTP n4, YaRN 1.5× | 393,216 | 31,361 MiB | 1,246 | ⚠️ deep in crash zone |
+| MTP n4, YaRN 2× | 524,288 | — | — | ❌ OOM at load |
+| non-MTP `-np 6`, YaRN 1.5× | 393,216 | 29,259 MiB | 3,348 | ✅ |
+| non-MTP `-np 6`, YaRN 2× | 524,288 | — | — | ❌ OOM at load |
+| non-MTP `-np 1`, YaRN 2× | 524,288 | 31,453 MiB | 1,154 | ⚠️ deep in crash zone |
+
+**Why not ship the 1.25× rung** even though it fits: YaRN rescales rope for
+*all* positions, not just the extended tail, and Qwen's own guidance is to
+enable it only when the long window is actually needed. The probe only proved
+each config *answers correctly on a short prompt* — that rules out "broken,"
+not "degraded." Shipping it would trade a proven 4.8 GB safety margin and
+known-good short-context quality for +25% context that nobody has validated,
+on the model every fresh install now serves. Not a good trade by default.
+
+If a specific job genuinely needs >262K, the safest extended config is
+**non-MTP `-np 6` at 393,216 / YaRN 1.5×** (3,348 MiB free, keeps the 6 slots),
+at half the tokens/s. Validate before trusting it: needle-in-haystack at depth
+*plus* a short-context regression check against the native config.
+
+⚠️ **KV cost discrepancy found while probing.** `docs/MODELS.md` and the
+Qwen3.8 serve-script headers claim **~18 KB/token** at q4_0 for this
+architecture. Measured on this model from the context deltas above:
+**~24 KB/token** non-MTP, **~28 KB/token** with MTP n4 (the draft context
+scales with `-c` too). The 18 figure is inherited from the 2026-08-14 stock
+Qwen3.8 work and was never re-derived. Either it was estimated rather than
+measured, or something changed — worth re-measuring the stock rows before
+trusting any context headroom math built on it.
+
 Follow-ups, cheap:
 - Vision. The `-vision-` pair exists for stock Qwen3.8 and works with `--mmproj`
   (proven 2026-08-14, MTP included). The uncensored repo ships its own
