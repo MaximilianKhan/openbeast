@@ -1,0 +1,28 @@
+# Serve scripts deliberately ABSENT from opencode.json's model catalog.
+#
+# opencode.json is strict JSON and cannot carry comments, so the reasoning
+# lives here. Same discipline as BENCH_EXCLUDED in evals/benchmark_all.py:
+# a serve script missing from the catalog must be a DECISION someone recorded,
+# never an oversight. tests/test_scripts.sh asserts every shipped serve script
+# is in exactly one of the two places, and that opencode.json contains no entry
+# without a matching serve script.
+#
+# Tab-separated: slug <TAB> reason
+#
+# WHY THIS FILE EXISTS (2026-08-19): opencode listed Fable-Fusion, Qwopus and
+# Gemma 4 rows long after their weights were deleted from the reference rig, so
+# the picker offered models that could not possibly load. The old assertion was
+# one-way — it caught "script with no entry" but never "entry with no script" —
+# so stale rows accumulated silently. Both directions are now asserted.
+#
+# NOTE these are not deletions. The serve scripts, registry pins, docs and
+# benchmark rows all remain, so re-downloading the weights (docs/INSTALL.md)
+# makes each one work again immediately with no repo change. Removing the slug
+# from this file is all that is needed to put it back in the picker.
+fable-fusion-27b-q5	weights not on the reference rig (deleted to reclaim disk); DavidAU Fable-Fusion 711 — re-download per docs/INSTALL.md to restore
+fable-fusion-27b-mtp-q5	same weights as fable-fusion-27b-q5's MTP twin, also absent
+fable-fusion-27b-q6	same family, weights absent
+fable-fusion-27b-mtp-q6	same family, weights absent
+qwopus-27b-v2-q5	weights not on the reference rig (deleted to reclaim disk); Jackrong Qwopus3.6-27B-v2 — re-download per docs/INSTALL.md to restore
+qwopus-27b-v2-mtp-q5	same family, weights absent
+gemma-4-31b-q5	weights not on the reference rig (deleted to reclaim disk); unsloth gemma-4-31B-it — re-download per docs/INSTALL.md to restore

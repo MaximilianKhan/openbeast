@@ -386,6 +386,80 @@ else
 fi
 cp "$TMPROOT/good.json" "$REG"
 
+# --- 12. `update` re-syncs the opencode catalog (2026-08-19) ---
+# Regression: setup-client.sh copied the model list ONCE at install, and update
+# only pulled source + deps — so the client picker froze on install day. A model
+# added to the rig never appeared, and models whose weights were deleted never
+# left. Both were live simultaneously. The refresh must also be SURGICAL: it
+# runs on every update, so it can never clobber the baseURL, the key, the MCP
+# block, or the user's own config, and must not widen a 0600 file.
+echo ""
+echo "opencode catalog refresh:"
+OCDIR="$TMPROOT/oc"; mkdir -p "$OCDIR"; OCFG="$OCDIR/opencode.json"
+python3 -c "
+import json,sys
+json.dump({'\$schema':'https://opencode.ai/config.json',
+ 'mcp':{'openbeast-tools':{'environment':{'OPENBEAST_API_KEY':'SEKRIT'}}},
+ 'provider':{'openbeast-rig':{'options':{'baseURL':'http://127.0.0.1:59999/v1','apiKey':'not-needed'},
+   'models':{'ghost-deleted-model':{'name':'gone'}}}},
+ 'model':'openbeast-rig/ghost-deleted-model','theme':'user-choice'},
+ open(sys.argv[1],'w'),indent=2)" "$OCFG"
+chmod 600 "$OCFG"
+# Drive the function in isolation (no git pull, no venv) against a dead rig, so
+# the assertion is about the catalog merge and not about network reachability.
+RF="$(sed -n '/^_refresh_oc_catalog() {/,/^}/p' "$REPO_DIR/scripts/client.sh")"
+bash -c "OC_CONFIG='$OCFG'; REPO='$REPO_DIR'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" >/dev/null 2>&1
+
+_ocq() { python3 -c "
+import json,sys
+c=json.load(open('$OCFG')); print(eval(sys.argv[1]))" "$1"; }
+
+if [[ "$(_ocq "'ghost-deleted-model' in c['provider']['openbeast-rig']['models']")" == "False" ]]; then
+  pass "refresh drops catalog entries the checkout no longer ships"
+else
+  fail "a model absent from the checkout survived the refresh"
+fi
+if [[ "$(_ocq "'qwen38-27b-uncensored-mtp-q5' in c['provider']['openbeast-rig']['models']")" == "True" ]]; then
+  pass "refresh picks up models added to the checkout since install"
+else
+  fail "refresh did not add the checkout's current models"
+fi
+if [[ "$(_ocq "c['mcp']['openbeast-tools']['environment']['OPENBEAST_API_KEY']")" == "SEKRIT" \
+   && "$(_ocq "c['provider']['openbeast-rig']['options']['baseURL']")" == "http://127.0.0.1:59999/v1" \
+   && "$(_ocq "c.get('theme')")" == "user-choice" ]]; then
+  pass "refresh preserves baseURL, the API key, and unrelated user config"
+else
+  fail "refresh clobbered config it has no business touching"
+fi
+if [[ "$(stat -c%a "$OCFG" 2>/dev/null || stat -f%Lp "$OCFG")" == "600" ]]; then
+  pass "refresh preserves a keyed config's 0600 mode"
+else
+  fail "refresh widened the file mode on a keyed config"
+fi
+if [[ "$(_ocq "c['model'].split('/')[1] in c['provider']['openbeast-rig']['models']")" == "True" ]]; then
+  pass "refresh repoints a default that pointed at a now-gone model"
+else
+  fail "default model still points at an entry that no longer exists"
+fi
+# An unreadable checkout must leave the config alone rather than blank the list.
+cp "$OCFG" "$TMPROOT/oc-before.json"
+bash -c "OC_CONFIG='$OCFG'; REPO='/nonexistent-repo'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" >/dev/null 2>&1
+if diff -q "$OCFG" "$TMPROOT/oc-before.json" >/dev/null; then
+  pass "unreadable checkout leaves the client catalog untouched"
+else
+  fail "a bad checkout path modified the client catalog"
+fi
+if grep -q '_refresh_oc_catalog' "$REPO_DIR/scripts/client.sh" \
+   && sed -n '/^  update)/,/^    ;;/p' "$REPO_DIR/scripts/client.sh" | grep -q '_refresh_oc_catalog'; then
+  pass "client.sh update actually calls the refresh"
+else
+  fail "client.sh update does not call _refresh_oc_catalog (the original bug)"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

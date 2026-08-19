@@ -264,6 +264,39 @@ usual: abliteration is the one edit that plausibly costs capability, and this
 is now what every fresh install serves. Run it with
 `python evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5`.
 
+## What the opencode picker shows (and what it doesn't)
+
+Two things about the model list in opencode are worth knowing, because both
+have caused confusion:
+
+**1. llama-server serves exactly one model, and ignores the `model` id you
+send.** `/v1/models` returns a single entry — whatever `start.sh` loaded.
+Requesting a different id does not switch models; it is answered by the loaded
+one, which reports its real name back. Switching models is a *rig-side* action
+(`./start.sh serve-<something>.sh`), never a client-side pick. The catalog rows
+exist to carry per-model `limit.context` and a readable label, not to route.
+
+**2. The catalog is curated, and not every serve script is in it.** Models
+whose weights are not on the reference rig are listed in
+[`scripts/opencode-excluded.txt`](../scripts/opencode-excluded.txt) with a
+reason, and omitted from `opencode.json` — otherwise the picker offers models
+that cannot load. Their serve scripts, registry pins, benchmark rows and the
+documentation above all remain: re-download the weights per
+[INSTALL.md](INSTALL.md), delete the slug from that file, and the model is back
+in the picker with no other change. `tests/test_scripts.sh` asserts every serve
+script sits in exactly one of the two places, **and** that no catalog entry
+lacks a serve script — the second direction is what let deleted models linger.
+
+Currently excluded: Fable-Fusion 711 (×4), Qwopus3.6-27B-v2 (×2), Gemma 4 31B.
+
+**On a client**, the catalog is a copy taken from the rig's checkout. It is
+refreshed by `openbeast-client update`, or on its own with
+`openbeast-client refresh-config` — which also probes the rig and adds a
+`rig-live` row naming the model actually loaded, with its true `n_ctx`. That
+row is the only one guaranteed correct, so it is pinned as the default. Before
+2026-08-19 the client catalog was frozen at install time and neither command
+existed, which is why newly added models never appeared.
+
 ## Where model weights live
 
 Weights are large (10s of GB each), so OpenBeast never requires you to store

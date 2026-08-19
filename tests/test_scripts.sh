@@ -765,17 +765,47 @@ fi
 # six Qwen3.8 configs were invisible the day after shipping), and 8 had no
 # benchmark_all.py entry — including the DEFAULT the rig serves, which doctor
 # had been warning about for weeks. Hand-maintained mirrors rot; assert them.
-MISSING_OC=""
+# opencode.json OR scripts/opencode-excluded.txt — either is fine, but it has
+# to be a decision. Asserted in BOTH directions since 2026-08-19: the old
+# one-way check only caught "script with no entry", so when the Fable-Fusion,
+# Qwopus and Gemma 4 weights were deleted their catalog rows lingered and
+# opencode kept offering models that could not load. An entry with no script is
+# now a failure too.
+_oc_excl() { # $1 = slug -> 0 if deliberately excluded
+  awk -F'\t' -v s="$1" '$0 !~ /^#/ && $1 == s {found=1} END{exit !found}' \
+    "$REPO_DIR/scripts/opencode-excluded.txt"
+}
+MISSING_OC=""; BOTH_OC=""
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
   [[ "$(basename "$_ss")" == "serve-bootstrap.sh" ]] && continue
   _slug="$(basename "$_ss" .sh)"; _slug="${_slug#serve-}"
-  grep -q "\"$_slug\"[[:space:]]*:" "$REPO_DIR/opencode.json" \
-    || MISSING_OC="$MISSING_OC $_slug"
+  if grep -q "\"$_slug\"[[:space:]]*:" "$REPO_DIR/opencode.json"; then
+    _oc_excl "$_slug" && BOTH_OC="$BOTH_OC $_slug"
+  else
+    _oc_excl "$_slug" || MISSING_OC="$MISSING_OC $_slug"
+  fi
 done
-if [[ -z "$MISSING_OC" ]]; then
-  pass "every shipped serve script has an opencode.json model entry"
+if [[ -n "$MISSING_OC" ]]; then
+  fail "serve scripts in neither opencode.json nor opencode-excluded.txt:$MISSING_OC"
+elif [[ -n "$BOTH_OC" ]]; then
+  fail "serve scripts both advertised AND excluded (pick one):$BOTH_OC"
 else
-  fail "serve scripts missing from opencode.json (remote clients cannot select them):$MISSING_OC"
+  pass "every shipped serve script is in opencode.json or opencode-excluded.txt"
+fi
+
+# The reverse direction: a catalog entry with no serve script behind it. This
+# is what let deleted models keep showing up in the picker for weeks.
+ORPHAN_OC="$(python3 -c '
+import json,sys,os
+repo=sys.argv[1]
+models=json.load(open(os.path.join(repo,"opencode.json")))["provider"]["llama-cpp"]["models"]
+print(" ".join(s for s in models
+      if not os.path.exists(os.path.join(repo,"scripts","serve-%s.sh"%s))))
+' "$REPO_DIR" 2>/dev/null)"
+if [[ -z "$ORPHAN_OC" ]]; then
+  pass "every opencode.json entry has a serve script behind it (no phantom models)"
+else
+  fail "opencode.json advertises models with no serve script:$ORPHAN_OC"
 fi
 
 # MODELS or BENCH_EXCLUDED — either is fine, but it has to be a decision.

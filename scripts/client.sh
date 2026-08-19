@@ -8,7 +8,11 @@
 #   client.sh agent [args…]      run a CLI agent HERE against the rig's model
 #                                (files/shell act on this machine)
 #   client.sh search up|down     start/stop the local SearXNG container
-#   client.sh update             refresh the checkout + pinned deps
+#   client.sh refresh-config     re-sync the opencode model catalog only
+#                                (no git pull, no dependency install)
+#   client.sh update             refresh the checkout + pinned deps + the
+#                                opencode model catalog (adds models the rig
+#                                gained, drops ones it no longer serves)
 #   client.sh uninstall          remove client mode entirely
 #
 # Deliberately does NOT source scripts/lib/conf.sh — that file is rig-shaped
@@ -61,6 +65,103 @@ TS_BIN="$(_find_ts || true)"
 # setup-client.sh built it with a vetted one.
 if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
 else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi
+
+# Re-sync the opencode model catalog from the checkout into the installed
+# config. WHY THIS EXISTS: setup-client.sh copies the model list ONCE at install
+# time, and `update` used to pull source + deps and stop — so the catalog froze
+# on install day. A model added to the rig never appeared in the client picker,
+# and models whose weights were later deleted never left it. Both were live on
+# 2026-08-19.
+#
+# Deliberately surgical: it replaces provider.openbeast-rig.models and nothing
+# else. baseURL, apiKey, the openbeast-tools MCP block and any config of the
+# user's own are left exactly as they were — this runs on every update, so it
+# must never be able to clobber a working install (or leak the key by widening
+# the file mode).
+_refresh_oc_catalog() {
+  [ -f "$OC_CONFIG" ] || { echo "  ! no opencode config at $OC_CONFIG — run scripts/setup-client.sh"; return 0; }
+  "$PY_BIN" - "$OC_CONFIG" "$REPO" <<'PYEOF' || echo "  ! catalog refresh failed (config left untouched)"
+import json, os, stat, sys, urllib.request
+oc_path, repo = sys.argv[1], sys.argv[2]
+cfg = json.load(open(oc_path))
+prov = cfg.get("provider", {}).get("openbeast-rig")
+if prov is None:
+    print("  ! opencode.json has no 'openbeast-rig' provider — run scripts/setup-client.sh")
+    raise SystemExit(0)
+try:
+    models = json.load(open(os.path.join(repo, "opencode.json")))["provider"]["llama-cpp"]["models"]
+except Exception as e:
+    print("  ! could not read the checkout's opencode.json (%s) — catalog unchanged" % e)
+    raise SystemExit(0)
+if not models:
+    print("  ! checkout catalog is empty — refusing to blank the client's list")
+    raise SystemExit(0)
+before = set(prov.get("models") or {})
+after = set(models)
+
+# The rig serves ONE model and ignores the model id in the request, so every
+# catalog row resolves to whatever is loaded right now. Ask it what that is and
+# pin a row that is true by construction, carrying the REAL n_ctx rather than a
+# hand-maintained number that drifts. Best-effort: a rig that is down or
+# unreachable just leaves the static catalog in place.
+live = None
+base = (prov.get("options") or {}).get("baseURL", "").rstrip("/")
+key = (prov.get("options") or {}).get("apiKey") or ""
+if base:
+    def _get(url):
+        r = urllib.request.Request(url)
+        if key and key != "not-needed":
+            r.add_header("Authorization", "Bearer " + key)
+        return json.load(urllib.request.urlopen(r, timeout=6))
+    try:
+        alias = _get(base + "/models")["data"][0]["id"]
+        # /props carries the real n_ctx, but it lives at the SERVER root (not
+        # under /v1) and beast-gate's path allowlist deliberately blocks it on
+        # gated installs — so this is strictly best-effort. No n_ctx just means
+        # the live row ships without a context limit.
+        root = base[:-3] if base.endswith("/v1") else base
+        try:
+            n_ctx = _get(root + "/props")["default_generation_settings"]["n_ctx"]
+        except Exception:
+            n_ctx = None
+        live = (alias, n_ctx)
+    except Exception:
+        live = None
+
+models = dict(models)
+if live:
+    alias, n_ctx = live
+    row = {"name": "%s  [live on rig]" % alias}
+    if n_ctx:
+        row["limit"] = {"context": n_ctx, "output": 32768}
+    models["rig-live"] = row
+prov["models"] = models
+
+# Keep the default pointed at something that exists. Prefer the live row.
+want = "openbeast-rig/rig-live" if live else None
+cur = cfg.get("model", "")
+if want and (cur.startswith("openbeast-rig/") or not cur):
+    cfg["model"] = want
+    cfg.setdefault("small_model", want)
+elif cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] not in models:
+    cfg["model"] = "openbeast-rig/" + next(iter(models))
+
+mode = stat.S_IMODE(os.stat(oc_path).st_mode)
+json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
+os.chmod(oc_path, mode)   # keyed installs are 0600 — never widen it
+
+added, gone = sorted(after - before), sorted(before - after - {"rig-live"})
+print("  ok opencode catalog refreshed: %d models%s%s" % (
+    len(models),
+    (" (+%s)" % ", ".join(added)) if added else "",
+    (" (-%s)" % ", ".join(gone)) if gone else ""))
+if live:
+    print("  ok rig is serving '%s'%s — pinned as the default" % (
+        live[0], (" at %d ctx" % live[1]) if live[1] else ""))
+else:
+    print("  ! rig unreachable — catalog updated, live model not probed")
+PYEOF
+}
 
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
@@ -289,11 +390,23 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
         exit 1
       fi
     fi
+    # Always refresh, even when the pull was a no-op: the catalog can be stale
+    # against an already-current checkout (e.g. the install predates a model
+    # that the checkout has had for weeks).
+    _refresh_oc_catalog
     if [ "$_pulled" -eq 1 ]; then
-      echo "client updated (source + dependencies)."
+      echo "client updated (source + dependencies + opencode catalog)."
     else
-      echo "dependencies reinstalled; SOURCE NOT UPDATED."
+      echo "dependencies reinstalled and catalog refreshed; SOURCE NOT UPDATED."
     fi
+    ;;
+
+  refresh-config)
+    # Catalog re-sync WITHOUT touching the checkout or deps. `update` runs this
+    # too; this is the standalone door for "the rig gained/lost a model and I
+    # already have the source" (and what setup-client.sh calls on a fresh
+    # install, so both paths produce an identical config).
+    _refresh_oc_catalog
     ;;
 
   uninstall)
@@ -305,7 +418,7 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     ;;
 
   *)
-    echo "unknown command: $CMD (status|agent|search|update|uninstall)" >&2
+    echo "unknown command: $CMD (status|agent|search|update|refresh-config|uninstall)" >&2
     exit 2
     ;;
 esac
