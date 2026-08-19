@@ -166,7 +166,27 @@ default); substitute your chosen directory if different.
 mkdir -p weights
 ```
 
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB) — DEFAULT
+### Qwen3.8-27B-Uncensored (JonathanColetti) -- Q5_K_M (~19.5GB) — DEFAULT
+
+The one `bootstrap.sh` downloads automatically. Abliterated Qwen3.8-27B with
+the MTP draft head baked into the same file — one download serves both the
+default MTP config and its non-MTP twin.
+
+```bash
+hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
+   Qwen3.8-27B-Uncensored-Q5_K_M.gguf --local-dir weights/
+rm -rf weights/.cache   # hf leaves a cache subdir behind
+```
+
+Serve with `serve-qwen38-27b-uncensored-mtp-q5.sh` (the default: 262K native
+context, `--spec-draft-n-max 4`, **140 tok/s**, 4.76 GB VRAM free) or
+`serve-qwen38-27b-uncensored-q5.sh` (same file, MTP off, 69.9 tok/s, but 6
+parallel slots instead of the MTP-mandated 1). To re-profile on different
+hardware: `./scripts/profile-qwen38-uncensored-mtp.sh`, then
+`./scripts/measure-vram.sh` for the context ceiling. Do **not** grab the repo's
+`-noMTP-` variants — this file is a strict superset of them.
+
+### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB)
 
 ```bash
 hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
@@ -407,13 +427,16 @@ No other manual config needed — the mounted file handles the rest.
 
 ## 5. Start the stack
 
-The default model is **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive) — an
-uncensored fine-tune that scores 96.16 % on the v3.5 sweep (#2 overall). Swap in
-another model with a single arg (below): the dense 27B Q5 for top accuracy, or a
-35B-A3B MoE when interactive speed matters more.
+The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
+abliteration) — 140 tok/s at the full native 262K context, the fastest config
+we ship. It pins `-np 1` (an upstream MTP constraint: concurrent requests
+serialize), so a multi-user rig wants `serve-qwen38-27b-uncensored-q5.sh`
+instead — same weight file, MTP off, 6 slots back. Swap in any other model with
+a single arg (below): the dense Qwen3.6-27B Q5 for top benchmarked accuracy, or
+a 35B-A3B MoE when interactive speed matters more.
 
 ```bash
-./start.sh                                       # default model (27B Uncensored Q5) + identity tool server + Open WebUI + SearXNG
+./start.sh                                       # default model (Qwen3.8 27B Uncensored MTP Q5) + identity tool server + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top accuracy (97.85%)
 ./start.sh serve-qwen-35b-a3b.sh                 # standard 35B-A3B MoE (30–50% faster tokens)
 ./start.sh serve-qwen-35b-a3b-uncensored-q4.sh   # 35B-A3B Uncensored MoE (fastest wall-clock)

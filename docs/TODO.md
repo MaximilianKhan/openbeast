@@ -1,5 +1,35 @@
 # TODO
 
+## 🏁 Benchmark the new default — Qwen3.8 27B Uncensored (2026-08-19)
+
+`serve-qwen38-27b-uncensored-mtp-q5.sh` became the shipped default on
+2026-08-19 on **speed and headroom evidence only** (140.2 tok/s = 2.0× its own
+no-MTP baseline; 4.76 GB VRAM free at the full native 262K, vs Heretic v2's
+2.97 GB). It has **no leaderboard row** — doctor warns about this correctly.
+
+Abliteration is the one edit that plausibly costs capability, and this is now
+what every fresh install serves, so the eval matters more than the usual
+"not yet benchmarked" backlog item:
+
+```bash
+python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5
+```
+
+Worth pairing with the stock `qwen38-27b-q5` / `qwen38-27b-mtp-q5` rows (also
+unbenchmarked) — that gives a clean abliterated-vs-stock delta on the same base
+model and same suite, which is the actual question. Until then the honest claim
+is "fastest thing we ship," not "best."
+
+Follow-ups, cheap:
+- Vision. The `-vision-` pair exists for stock Qwen3.8 and works with `--mmproj`
+  (proven 2026-08-14, MTP included). The uncensored repo ships its own
+  `Qwen3.8-27B-Uncensored-vision-f16.gguf`, untested and unpinned — a
+  `serve-qwen38-27b-uncensored-vision-mtp-q5.sh` is a ~20-minute job once that
+  projector is downloaded and hashed.
+- Q6_K. The repo ships one (~22.9 GB). Given this Q5 leaves 4.76 GB free, a Q6
+  MTP config would likely hold 262K too — the first time a Q6 in this lineup
+  wouldn't have to give up context.
+
 ## 🕵️ EMPTY RESPONSES — partially fixed, root cause NOT yet confirmed (2026-08-14)
 
 Max reports: the model "thinks for 0.5s or 10s, then quits and never gives a

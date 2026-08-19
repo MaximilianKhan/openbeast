@@ -110,7 +110,7 @@
           }
         },
         "heretic-v2-27b-mtp-q5": {
-          "name": "Heretic v2 27B MTP Q5_K_M (default; single-slot, speculative)",
+          "name": "Heretic v2 27B MTP Q5_K_M (single-slot, speculative)",
           "limit": {
             "context": 262144,
             "output": 32768
@@ -176,6 +176,20 @@
           "name": "Qwen3.8-27B Vision MTP Q5_K_XL (image input, single-slot)",
           "limit": {
             "context": 229376,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-uncensored-q5": {
+          "name": "Qwen3.8-27B Uncensored Q5_K_M",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "qwen38-27b-uncensored-mtp-q5": {
+          "name": "Qwen3.8-27B Uncensored MTP Q5_K_M (default; single-slot, speculative)",
+          "limit": {
+            "context": 262144,
             "output": 32768
           }
         }

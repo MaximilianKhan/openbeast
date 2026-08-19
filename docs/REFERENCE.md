@@ -602,13 +602,20 @@ model to invoke `skill(name)` for non-trivial work.
 
 ### Full stack
 
-The default model is **Qwen3.6-27B Uncensored Q5_K_P** (HauhauCS Aggressive
-uncensored fine-tune) — chosen for the uncensored behavior, not for a
-leaderboard position; it has not been re-run since v4 and its last score is
-the legacy v3.5 board (#2, 96.16 % accuracy). On the current **v4 capability
-board** (`SCORE = 0.75·problem-solving + 0.25·language-breadth`) the dense
-27B Q5_K_XL leads at **98.7 %**, and the 35B-A3B MoEs are faster — each is
-one `./start.sh <serve-script>` away. Full board: `docs/RESULTS.md`.
+The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
+abliteration, `serve-qwen38-27b-uncensored-mtp-q5.sh`) — chosen for uncensored
+behavior and measured speed, not for a leaderboard position: it has **no v4
+score yet** (see `docs/TODO.md`). It runs 140 tok/s at the full native 262K
+context and leaves 4.76 GB of VRAM free, the roomiest default we have shipped.
+On the current **v4 capability board** (`SCORE = 0.75·problem-solving +
+0.25·language-breadth`) the dense Qwen3.6-27B Q5_K_XL leads at **98.7 %**, and
+the 35B-A3B MoEs are faster per token — each is one `./start.sh <serve-script>`
+away. Full board: `docs/RESULTS.md`.
+
+Note the MTP trade: the default pins `-np 1` (upstream constraint — speculative
+decoding does not support multiple slots), so concurrent requests serialize.
+`./start.sh serve-qwen38-27b-uncensored-q5.sh` serves the same weight file with
+MTP off and the 6 parallel slots restored, at half the tokens/s.
 
 ```bash
 ./start.sh                                      # default model + MCP tools + Open WebUI + SearXNG

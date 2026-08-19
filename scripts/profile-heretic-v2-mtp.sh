@@ -83,7 +83,11 @@ run_one() { # $1 = n-max
   local vram toks acc
   vram=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
   toks=$(grep 'tokens per second' "$logf" | grep -v 'prompt eval' | tail -1 | sed -E 's/.*, *([0-9.]+) tokens per second.*/\1/')
-  acc=$(grep 'draft acceptance' "$logf" | tail -1 | sed -E 's/.*draft acceptance = ([0-9.]+).*mean acceptance length = *([0-9.]+).*/acc=\1 meanlen=\2/')
+  # llama-server renamed this field: it printed "mean acceptance length" when
+  # these profilers were written and prints "mean len" as of build 10254. The
+  # old pattern silently failed to substitute, so `acc` kept the WHOLE log line
+  # and the results table came out garbled (caught 2026-08-19). Accept both.
+  acc=$(grep 'draft acceptance' "$logf" | tail -1 | sed -E 's/.*draft acceptance = ([0-9.]+).*mean (acceptance length|len) = *([0-9.]+).*/acc=\1 meanlen=\3/')
   printf 'n=%-2s  decode=%-7s tok/s  %-28s VRAM=%s MiB\n' "$N" "${toks:-?}" "${acc:-acc=?}" "${vram:-?}" | tee -a "$RESULTS"
   kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
   sleep 2
