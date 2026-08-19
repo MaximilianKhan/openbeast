@@ -1,5 +1,50 @@
 # TODO
 
+## 🔤 opencode LSP — the gap is missing BINARIES, not missing config (2026-08-19)
+
+Investigated because `opencode.json` has no `lsp` block. **It does not need
+one.** opencode 1.18.18 ships built-in LSP server definitions for every
+language we care about — verified by probing the binary directly (`zls`,
+`clangd`, `pyright`/`pyright-langserver`, `gopls`, `rust-analyzer`,
+`bash-language-server`, `typescript-language-server`, plus the protocol
+machinery: `textDocument/didOpen`, `textDocument/publishDiagnostics`,
+`initializationOptions`, 342 `lsp` references).
+
+What is missing is the **servers themselves**. On the rig only `clangd` is on
+PATH, and `~/.cache/opencode/bin/` is empty, so nothing has been auto-fetched:
+
+| Language | Server | On rig | Notes |
+|---|---|---|---|
+| C / C++ | `clangd` | ✅ | the only one that works today |
+| Python | `pyright` | ❌ | 130 `.py` files in this repo |
+| **Bash** | `bash-language-server` | ❌ | **99 `.sh` files — the product IS shell** |
+| **Zig** | `zls` | ❌ | **most discriminating eval language (29/31 units)** |
+| Go | `gopls` | ❌ | 2nd most discriminating (14/31) |
+| Rust | `rust-analyzer` | ❌ | least discriminating (5/31) |
+
+Install (Arch):
+```bash
+sudo pacman -S --needed gopls rust-analyzer zls pyright
+npm i -g bash-language-server        # not in the repos
+```
+
+Priority order on the evidence: **bash** first (the repo is 99 shell files and
+`shellcheck -S error` is a CI gate, so diagnostics in-editor pay for
+themselves), then **zig** and **go** (the two languages where models actually
+separate, per docs/EVAL_FAST_SUITE_PROPOSAL.md), then python. Rust is last.
+
+Only add an explicit `lsp` block to `opencode.json` if a server needs
+non-default flags or a pinned path — the built-ins resolve from PATH. Not done
+yet: installing system packages is Max's call, and an `lsp` block naming
+binaries that do not exist is worse than no block.
+
+⚠️ Correction worth recording: an earlier pass concluded opencode had "36
+pyright references" and full built-in Python support. That was a false positive
+— the pattern was matching inside **copy·right·**. Word-boundary matching gave
+1 real `clangd` hit; the true picture above came from probing the binary
+directly. Grep for server names without `\b` and every file with a licence
+header looks like a Python LSP.
+
 ## 🏁 Benchmark the new default — Qwen3.8 27B Uncensored (2026-08-19)
 
 `serve-qwen38-27b-uncensored-mtp-q5.sh` became the shipped default on
