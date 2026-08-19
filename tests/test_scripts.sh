@@ -798,8 +798,8 @@ fi
 # 2026-08-15 the docs claimed a default that conf.sh, openbeast.conf.example
 # and bootstrap.sh had never heard of, because the docs were edited to match
 # one machine's private override. Pin all four to each other.
-DEFAULT_EXPECT="serve-heretic-v2-27b-mtp-q5.sh"
-DEFAULT_WEIGHT="Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf"
+DEFAULT_EXPECT="serve-qwen38-27b-uncensored-mtp-q5.sh"
+DEFAULT_WEIGHT="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
 
 _d_conf="$(grep -oE 'echo serve-[a-z0-9.\-]+\.sh' "$REPO_DIR/scripts/lib/conf.sh" | head -1 | sed 's/^echo //')"
 _d_example="$(grep -oE '^#?SERVE_SCRIPT=serve-[a-z0-9.\-]+\.sh' "$REPO_DIR/openbeast.conf.example" | head -1 | sed 's/.*=//')"
@@ -831,12 +831,12 @@ fi
 DOC_BAD=""
 for _doc in README.md docs/MODELS.md docs/FEATURES.md; do
   tr '\n' ' ' < "$REPO_DIR/$_doc" | tr -s ' ' \
-    | grep -qi "Heretic v2 27B MTP Q5" || DOC_BAD="$DOC_BAD $_doc"
+    | grep -qi "Qwen3.8 27B Uncensored MTP Q5" || DOC_BAD="$DOC_BAD $_doc"
 done
 if [[ -z "$DOC_BAD" ]]; then
   pass "README/MODELS/FEATURES name the shipped default model"
 else
-  fail "docs do not name the shipped default (Heretic v2 27B MTP Q5):$DOC_BAD"
+  fail "docs do not name the shipped default (Qwen3.8 27B Uncensored MTP Q5):$DOC_BAD"
 fi
 
 if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then

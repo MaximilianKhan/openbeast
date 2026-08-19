@@ -47,7 +47,7 @@
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
-#SERVE_SCRIPT=serve-heretic-v2-27b-mtp-q5.sh
+#SERVE_SCRIPT=serve-qwen38-27b-uncensored-mtp-q5.sh
 
 # Fast boot: serve the tiny Qwen3-0.6B bridge on :8080 for instant chat, then
 # hot-swap to SERVE_SCRIPT once the stack is up and its weights are warmed.

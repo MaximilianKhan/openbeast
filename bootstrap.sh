@@ -365,8 +365,8 @@ step "Default model weight (~20 GB — the one big download)"
 export OPENBEAST_WEIGHTS_MKDIR=1
 source "$REPO_DIR/scripts/lib/weights.sh"
 unset OPENBEAST_WEIGHTS_MKDIR
-WEIGHT_FILE="Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf"
-HF_REPO="llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF"
+WEIGHT_FILE="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
+HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 # Supply-chain pin for the one mandatory download, read from the weight
 # registry (scripts/weights.registry — pins EVERY shipped GGUF, same
 # discipline as the digest-pinned container images). A silent swap in the
@@ -403,7 +403,7 @@ chmod +x "$REPO_DIR"/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/tests/*.sh 2>/dev
 if [[ $MINIMAL -eq 1 ]]; then
   step "${c_grn}Tier 0 ready${c_rst}"
   echo "  Start just the model server (no Docker, no auth, no tools):"
-  echo "      ${c_bold}./scripts/serve-heretic-v2-27b-mtp-q5.sh${c_rst}"
+  echo "      ${c_bold}./scripts/serve-qwen38-27b-uncensored-mtp-q5.sh${c_rst}"
   echo "  Then talk to it:"
   echo "      curl http://localhost:8080/v1/models"
   echo "      point any OpenAI-compatible client at http://localhost:8080/v1"

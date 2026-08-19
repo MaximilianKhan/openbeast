@@ -133,6 +133,19 @@ MODELS = [
     {"slug": "heretic-v2-27b-mtp-q6",
      "name": "Heretic v2 27B MTP Q6_K",
      "serve": "scripts/serve-heretic-v2-27b-mtp-q6.sh"},
+    # Qwen3.8-27B-Uncensored (JonathanColetti abliteration), added + profiled
+    # 2026-08-19, and promoted to the shipped DEFAULT the same day. Same
+    # `qwen35` arch and same baked-in MTP head as the stock Qwen3.8 rows above,
+    # so the MTP row reuses the non-MTP weight file and differs only in launch
+    # flags. Benchmarking the MTP row matters more than usual here: abliteration
+    # is the one edit that plausibly costs capability, and this is now what
+    # every fresh install serves. NOT YET BENCHMARKED.
+    {"slug": "qwen38-27b-uncensored-q5",
+     "name": "Qwen3.8 27B Uncensored Q5_K_M",
+     "serve": "scripts/serve-qwen38-27b-uncensored-q5.sh"},
+    {"slug": "qwen38-27b-uncensored-mtp-q5",
+     "name": "Qwen3.8 27B Uncensored MTP Q5_K_M",
+     "serve": "scripts/serve-qwen38-27b-uncensored-mtp-q5.sh"},
 ]
 
 # Serve scripts deliberately NOT benchmarked, with the reason. This exists so

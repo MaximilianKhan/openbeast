@@ -1,17 +1,17 @@
 # Models
 
-OpenBeast ships **23 pre-configured models**, every one VRAM/context-measured on
+OpenBeast ships **25 pre-configured models**, every one VRAM/context-measured on
 the RTX 5090 reference card. Swap any of them in with one argument to
 `start.sh` (e.g. `./start.sh serve-qwen-27b-q5.sh`) or set your `beastup`
 default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 [`evals/README.md`](../evals/README.md).
 
-The default is **Heretic v2 27B MTP Q5_K_M** at 256K context (changed
-2026-08-14 from the Q6_K sibling, which was capped at 208K); the dense
-**Qwen3.6-27B
-Q5_K_XL** tops the capability board, and the **35B-A3B MoE** variants trade a
-little accuracy for 30–50% more speed per token.
+The default is **Qwen3.8 27B Uncensored MTP Q5_K_M** at the full native 262K
+context (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
+speed *and* headroom — see the Qwen3.8-27B-Uncensored section below); the dense
+**Qwen3.6-27B Q5_K_XL** tops the capability board, and the **35B-A3B MoE**
+variants trade a little accuracy for 30–50% more speed per token.
 
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
@@ -191,6 +191,78 @@ Qwen's card claims SWE-bench Pro 61.7 and OSWorld-Verified 84.3 against Opus 4.6
 Max's 53.4 / 72.7 (losing Terminal Bench 2.1, 73.0 vs 78.2) — vendor-reported,
 on benchmarks our suite does not run. Treat as unverified until our own sweep
 lands.
+
+## Qwen3.8-27B-Uncensored (JonathanColetti) — added + profiled 2026-08-19 ⭐ THE DEFAULT
+
+[JonathanColetti/Qwen3.8-27B-Uncensored-GGUF](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF)
+— Qwen3.8-27B with the refusal direction abliterated out of `self_attn.o_proj`
+and `mlp.down_proj`, then imatrix-quantized (496 entries / 200 chunks). Same
+`qwen35` hybrid Gated-DeltaNet architecture as the stock Qwen3.8 rows above;
+abliteration edits weight *values*, not shapes, so nothing about the KV math
+changes. **Measured on the RTX 5090** (q4_0 KV, greedy, seed 42, 2026-08-19):
+
+| Model | Quant | Context | VRAM used / free | Decode (greedy) | Serve script |
+|-------|-------|---------|------------------|-----------------|--------------|
+| Qwen3.8 27B Uncensored | Q5_K_M | **262K** (native) | 25.6 GB / **6.25 GB** | 69.9 tok/s | `serve-qwen38-27b-uncensored-q5.sh` |
+| **Qwen3.8 27B Uncensored MTP** ⭐ | Q5_K_M | **262K** (native) | 27.1 GB / **4.76 GB** | **140.2 tok/s** (n4, 56% acc) | `serve-qwen38-27b-uncensored-mtp-q5.sh` |
+
+**Why this replaced Heretic v2 as the default (2026-08-19).** It is the first
+swap that cost nothing on any axis:
+
+| | Heretic v2 MTP Q5 (old) | Qwen3.8 Uncensored MTP Q5 (new) |
+|---|---|---|
+| Decode | ~136 tok/s | **140.2 tok/s** |
+| Context | 262K native | 262K native (tie) |
+| VRAM free | 2.97 GB | **4.76 GB** |
+| Base model | Qwen3.6-27B | Qwen3.8-27B (newer) |
+
+The headroom is the part that matters most. Heretic v2 shipped at 2.97 GB free,
+which sits inside the sustained-load crash zone that forced Gemma 4 31B down
+from 220K to 192K at 2,080 MiB (see the core lineup notes above). This config
+leaves nearly 5 GB — the roomiest default we have ever shipped.
+
+**MTP tuning.** The head ships *inside* the standard GGUF
+(`qwen35.nextn_predict_layers = 1`, tensors at `blk.64.nextn.*`, block_count 65
+= 64 trunk + 1 nextn), so the MTP and non-MTP rows are the **same weight file**
+and differ only in launch flags. Full sweep at the native 262K
+(`scripts/profile-qwen38-uncensored-mtp.sh`, results in
+`.run/qwen38-uncensored-mtp-results.txt`):
+
+| `n-max` | Decode | Draft acceptance | Mean accepted len | VRAM |
+|---------|--------|------------------|-------------------|------|
+| off | 69.9 tok/s | — | — | 25,476 MiB |
+| 1 | 111.8 tok/s | 87.9% | 1.88 | 27,282 MiB |
+| 2 | 132.4 tok/s | 71.4% | 2.43 | 27,432 MiB |
+| **4** | **140.2 tok/s** | **56.1%** | **3.24** | **27,732 MiB** |
+| 6 | 128.3 tok/s | 45.0% | 3.70 | 28,030 MiB |
+| 8 | 120.9 tok/s | 31.9% | 3.54 | 28,330 MiB |
+| 10 | 112.1 tok/s | 25.5% | 3.54 | 28,629 MiB |
+
+**Abliteration moved the acceptance curve up but not sideways.** The peak sits
+at **n4**, exactly where stock Qwen3.8-27B peaks — but at 56% acceptance and
+140 tok/s versus stock's 48% and 123.7. This was worth measuring rather than
+inheriting: the nextn head drafts out of the residual stream that abliteration
+edits, so a *degraded* draft path was the live hypothesis going in. It got
+better instead. (Do not copy the Qwen3.6-era `n8` config here — that optimum
+belongs to a different base model, not to the architecture.)
+
+The upstream repo also ships `-noMTP-` twins with the head stripped
+(block_count 64). We deliberately do not use them: the MTP file is a strict
+superset — served without `--spec-type` the extra tensors load and are ignored,
+which is exactly what `serve-qwen38-27b-uncensored-q5.sh` does. Both files are
+pinned in `scripts/weights.registry`, and both sha256 values were cross-checked
+against the published HF LFS oids and match byte-for-byte.
+
+Standard MTP constraints apply: `-np 1` is forced (concurrent requests
+serialize — use the non-MTP script for a multi-user rig), temperature ≤ 1.0,
+`repetition_penalty = 1.0`. Acceptance at 56% is comfortably above the ~50%
+floor below which a non-MTP quant is the better trade.
+
+⚠️ **Not yet benchmarked.** Both rows are registered in
+`evals/benchmark_all.py` with no leaderboard entry. This matters more than
+usual: abliteration is the one edit that plausibly costs capability, and this
+is now what every fresh install serves. Run it with
+`python evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5`.
 
 ## Where model weights live
 

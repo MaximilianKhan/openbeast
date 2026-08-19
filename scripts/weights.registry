@@ -40,3 +40,13 @@ bac53ccfa45c6a1cdfb5185a847214c095ff4940592f32bca4a2e43643e8ea35	22802407520	Qwe
 # passed via --mmproj alongside a Qwen3.8 language GGUF. Downloaded + hashed
 # 2026-08-14; verified reading a synthetic test image.
 cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e	927607488	mmproj-F16.gguf	unsloth/Qwen3.8-27B-GGUF	-
+# Qwen3.8-27B-Uncensored (JonathanColetti) — abliterated Qwen3.8-27B, arch
+# `qwen35`, MTP head preserved (block_count 65, blk.64.nextn.*). Added + hashed
+# on the reference box 2026-08-19; both sha256 values were cross-checked
+# against the published LFS oids on the HF side and match byte-for-byte.
+# The repo also ships `-noMTP-` twins (block_count 64, head stripped); we pin
+# the one we downloaded so verify-weights.sh can check it, but ship no serve
+# script for it — the MTP file is a strict superset, ignored unless
+# --spec-type draft-mtp is passed.
+24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547	19535701408	Qwen3.8-27B-Uncensored-Q5_K_M.gguf	JonathanColetti/Qwen3.8-27B-Uncensored-GGUF	-
+07d72bc40ab0c105f7a5a3e5218ca07fa995a59f8d8902dba9223ae1db1118bf	19231099360	Qwen3.8-27B-Uncensored-noMTP-Q5_K_M.gguf	JonathanColetti/Qwen3.8-27B-Uncensored-GGUF	-
