@@ -14,11 +14,9 @@
 # weights.sh treats PENDING as "nothing to verify yet"; replace it with a real
 # sha256 + byte size (sha256sum + stat -c%s) once the file is in place.
 ac310abf2895aa397121bad6c0be89466af41f0f1606a21c1131b110eeb19d0e	20038256864	Qwen3.6-27B-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-GGUF	-
-9b123d76df5b5af1328c65d963d1450c4279e9bd01d98d7091aa64c4f2cb38d5	20812953056	Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf	HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive	-
 5a3c61033581754d507ffdcbf0629214cbfbd58a2edbec80d93f6ec2af44d227	20350682240	Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf	unsloth/Qwen3.6-27B-MTP-GGUF	Qwen3.6-27B-UD-Q5_K_XL.gguf
 ddce600959ed99c16092ef24e8885ae18fd0d0b8a53ef92976be1a395194fbd3	23172466080	Qwen3.6-27B-NVFP4-MTP.gguf	neko-legends/Qwen3.6-27B-NVFP4-MTP-GGUF	qwen3.6-27b-unsloth-nvfp4-mtp-gguf.gguf
 ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61	22134528992	Qwen3.6-35B-A3B-UD-Q4_K_M.gguf	unsloth/Qwen3.6-35B-A3B-GGUF	-
-bbef58c37ce88820be9d98b6437f1cf4bac890c947bd55fc7b68e22098574231	21166758016	Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf	HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive	-
 0b21525e972670ed59e1812e170b27c26355381f0656ecc4e25617ece7dac58b	22663387424	Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf	unsloth/Qwen3.6-35B-A3B-MTP-GGUF	Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 923ab9a153cb21bb78adb5a98c4193c034f940d56d83a90714b3f6881da6fb92	26138950304	Qwen3.6-35B-A3B-NVFP4-MTP.gguf	neko-legends/Qwen3.6-35B-A3B-NVFP4-MTP-GGUF	qwen3.6-35b-a3b-unsloth-nvfp4-mtp-gguf.gguf
 f46afb90494f266cf7f661d98f5dc8d9689d5e1583ee8e8bab02fa4fc8cc50d3	21890427904	gemma-4-31B-it-UD-Q5_K_XL.gguf	unsloth/gemma-4-31B-it-GGUF	-
@@ -29,7 +27,6 @@ c0f73caef72a1f546092f93f0d8db6f4939ad121ac5e6e3665f0829657b86d7d	21182275040	Qwe
 f1e1b337fda4ec8e39974f69a385f970381488e9bb41d039d85959aeb5350457	23582384672	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q6_K.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-
 2e8a9bdb478cad4ad53a3b02568ed6f5a6c7f8f569e8c030e4806438ca49828e	24033705440	Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q6_K.gguf	DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF	-
 9d309b8fadd5788bfa8ee26cd34c37b26df0205613a3be34394ba4da7d5a4285	19745091680	Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf	llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF	-
-bac53ccfa45c6a1cdfb5185a847214c095ff4940592f32bca4a2e43643e8ea35	22802407520	Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf	llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF	-
 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031	639446688	Qwen3-0.6B-Q8_0.gguf	unsloth/Qwen3-0.6B-GGUF	-
 # Qwen3.8-27B (arch `qwen35`, hybrid Gated-DeltaNet) — added + hashed on the
 # reference box 2026-08-14. One repo serves both quants, and the MTP head is
@@ -44,9 +41,7 @@ cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e	927607488	mmpro
 # `qwen35`, MTP head preserved (block_count 65, blk.64.nextn.*). Added + hashed
 # on the reference box 2026-08-19; both sha256 values were cross-checked
 # against the published LFS oids on the HF side and match byte-for-byte.
-# The repo also ships `-noMTP-` twins (block_count 64, head stripped); we pin
-# the one we downloaded so verify-weights.sh can check it, but ship no serve
-# script for it — the MTP file is a strict superset, ignored unless
-# --spec-type draft-mtp is passed.
+# The repo also ships `-noMTP-` twins (block_count 64, head stripped); we do
+# NOT keep them — the MTP file is a strict superset, ignored unless
+# --spec-type draft-mtp is passed (local noMTP copy pruned 2026-08-20).
 24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547	19535701408	Qwen3.8-27B-Uncensored-Q5_K_M.gguf	JonathanColetti/Qwen3.8-27B-Uncensored-GGUF	-
-07d72bc40ab0c105f7a5a3e5218ca07fa995a59f8d8902dba9223ae1db1118bf	19231099360	Qwen3.8-27B-Uncensored-noMTP-Q5_K_M.gguf	JonathanColetti/Qwen3.8-27B-Uncensored-GGUF	-

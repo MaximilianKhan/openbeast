@@ -82,10 +82,10 @@ your main conversation stays responsive while the sub-agent grinds.
 
 ### Default model
 
-`Qwen3.6-27B Uncensored Q5_K_P` (HauhauCS Aggressive uncensored fine-tune),
-launched by `./start.sh` with no args — picked for the uncensored behavior, not
-a leaderboard slot; it hasn't been re-run since v4, so its last score is the
-legacy v3.5 board (#2, 96.16% accuracy).
+`Qwen3.8 27B Uncensored MTP Q5_K_M` (JonathanColetti abliterated Qwen3.8,
+`serve-qwen38-27b-uncensored-mtp-q5.sh`), launched by `./start.sh` with no
+args — picked for uncensored behavior plus speed/headroom (140 tok/s, 262K
+native, 4.76 GB free), not a leaderboard slot; it has no leaderboard row yet.
 
 Ranking is by the **v4 SCORE** metric (`SCORE = 0.75·problem-solving +
 0.25·language-breadth`), not raw accuracy. The dense `Qwen3.6-27B Q5_K_XL`

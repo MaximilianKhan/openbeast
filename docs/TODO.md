@@ -66,6 +66,50 @@ run_eval clamps it to each server's `/props total_slots`, so the MTP configs
 (6 slots) get the ~4× win. The projected parallel multiplier is still
 unmeasured — this run is the measurement.
 
+### The campaign plan (2026-08-20) — phases, commands, ETAs
+
+Wall-clock estimates scale the measured baselines (full v4 non-MTP 27B =
+5.58 h at 66.8 tok/s; full v4 MTP 27B = 3.83 h at 184 tok/s; ~80% of
+wall-clock is decode) by each config's measured tok/s, at the proposal's
+conservative 70% parallel efficiency. Treat them as ±25% until Phase A
+measures the real multiplier.
+
+**Phase A — the abliteration answer + the multiplier measurement (~4 h GPU):**
+```bash
+python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-q5 --jobs 4
+```
+Two non-MTP rows on full v4 (leaderboard-comparable), ~2.0 h each at
+`--jobs 4` (~1.3 h each at `--jobs 6` if the scaling holds). This alone
+answers abliterated-vs-stock AND gives the default family its first
+leaderboard presence via the non-MTP twin.
+
+**Phase B — MTP leaderboard rows (optional, ~9–10 h GPU, sequential):**
+```bash
+python3 evals/benchmark_all.py --models qwen38-27b-uncensored-mtp-q5,qwen38-27b-mtp-q5
+```
+~4.5–5 h per row (MTP forces `-np 1`; 140/124 tok/s). Qwen3.6 measured
+MTP as a statistical capability tie with its non-MTP twin, so expected
+information is low — run only if Phase A surprises or the leaderboard
+should show the exact shipped config.
+
+**Phase C — pin `v5-fast` (CPU-only, can be built while Phase A runs):**
+Generate the 106-unit suite (86 discriminating + 20 tripwires) from the
+7 v4 runs, pin the unit list under `evals/` (reproducible, not recomputed),
+add a `--suite` selector, and re-verify Kendall τ against the full
+`scoring.py` capability metric — then re-verify again once the Phase A
+rows exist (the discrimination analysis predates Qwen3.8). After this,
+routine model comparisons cost **~0.85 h** (v5-fast + `--jobs 4`)
+instead of ~5.6 h.
+
+**Phase D — second prune gate (no GPU):** if Phase A/B put Qwen3.8-Uncensored
+at ≥ ~97.5 capability, prune Heretic v2 Q5 (19 GB, the uncensored fallback),
+Qwen3.6-27B MTP (19 GB, kept as the 184 tok/s throughput king), and — once
+dethroned on the same suite — the Qwen3.6-27B non-MTP champion (19 GB) and
+Qwen3.8 Q6_K (22 GB). Decided 2026-08-20 with the first prune (131 GB
+reclaimed: Heretic BF16 + Q6, HauhauCS ×2, noMTP twin). NVFP4 pair kept
+pending Max's call — its batched `-np 8` fleet niche is measured (+22% over
+K-quant) and upstream #25730 may flip the single-stream verdict.
+
 Worth pairing with the stock `qwen38-27b-q5` / `qwen38-27b-mtp-q5` rows (also
 unbenchmarked) — that gives a clean abliterated-vs-stock delta on the same base
 model and same suite, which is the actual question. Until then the honest claim
