@@ -57,8 +57,14 @@ what every fresh install serves, so the eval matters more than the usual
 "not yet benchmarked" backlog item:
 
 ```bash
-python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5
+python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5 --jobs 4
 ```
+
+`--jobs` landed 2026-08-20 (step 1 of `docs/EVAL_FAST_SUITE_PROPOSAL.md`):
+run_eval clamps it to each server's `/props total_slots`, so the MTP configs
+(`-np 1`) fall back to sequential automatically while the non-MTP configs
+(6 slots) get the ~4× win. The projected parallel multiplier is still
+unmeasured — this run is the measurement.
 
 Worth pairing with the stock `qwen38-27b-q5` / `qwen38-27b-mtp-q5` rows (also
 unbenchmarked) — that gives a clean abliterated-vs-stock delta on the same base

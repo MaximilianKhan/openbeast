@@ -129,9 +129,15 @@ Two suites, not one — because the saturated units still have a job:
 
 Order of work, highest value first:
 
-1. **Add `--jobs N` to `run_eval.py`.** Biggest win, zero fidelity cost, helps
-   every future suite. Needs care: tasks share `/tmp/eval_*` setup paths, so
-   each worker needs an isolated workspace or the parallel runs will collide.
+1. **Add `--jobs N` to `run_eval.py`.** ✅ **DONE 2026-08-20.** Biggest win,
+   zero fidelity cost, helps every future suite. Isolation is by *scheduling*,
+   not per-worker workspaces: every `/tmp/eval_*` fixture dir belongs to
+   exactly one task file (verified, and now enforced by
+   `tests/test_eval_jobs.py`), so units are grouped by base task — variants
+   serialize on one worker, distinct tasks parallelize. Prompts, validations,
+   and cache keys are untouched, so parallel scores stay comparable to every
+   sequential run. `--jobs` is clamped to the server's `/props total_slots`
+   (MTP = `-np 1` clamps to sequential). Plumbed through `benchmark_all.py`.
 2. **Generate `v5-fast` from the discrimination analysis** and pin the unit list
    in `evals/` so it is reproducible rather than recomputed.
 3. **Re-examine the language mix on evidence** — add zig variants, consider
