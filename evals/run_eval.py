@@ -314,8 +314,17 @@ def _parse_tokens(stdout: str) -> dict:
     return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
 
 
-def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -> dict:
-    """Run the agent against a task. Returns timing, iteration, and token info."""
+def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
+              timeout_scale: float = 1.0) -> dict:
+    """Run the agent against a task. Returns timing, iteration, and token info.
+
+    timeout_scale: multiplier on the per-iteration wall budget. Under --jobs
+    parallelism, per-stream decode drops (streams share GPU bandwidth), so the
+    single-stream-calibrated 60 s/iteration budget silently shrinks in
+    effective tokens — slow-but-progressing units get killed as "timeouts"
+    (measured 2026-08-20: 3 spurious fails in the first 134 units of a
+    --jobs 4 run). Scaling the budget restores sequential-equivalent
+    semantics; the timeout exists to catch hung agents, not slow ones."""
     max_iter = max_iter_override or task.get("max_iter", 15)
     start_time = time.time()
 
@@ -338,7 +347,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -
         start_new_session=True,
     )
     try:
-        stdout, stderr = proc.communicate(timeout=max_iter * 60)  # rough timeout: 1 min per iteration max
+        # Rough budget: 1 min per iteration at single-stream decode, scaled up
+        # under parallel contention (see timeout_scale in the docstring).
+        stdout, stderr = proc.communicate(timeout=int(max_iter * 60 * timeout_scale))
         elapsed = time.time() - start_time
         tokens = _parse_tokens(stdout)
         return {
@@ -506,6 +517,12 @@ def run_eval(
                   f"running --jobs {jobs} unclamped; against an -np 1 (MTP) server "
                   f"this queues and trips per-task timeouts")
 
+    # Per-iteration wall budget scales with contention: N concurrent streams
+    # share GPU bandwidth, so per-stream decode slows with N (measured ~1.6×
+    # at jobs=4). Linear ramp with margin — jobs=4 → 2.0× — restores
+    # sequential-equivalent budgets; see run_agent's docstring.
+    timeout_scale = 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     results_path = os.path.join(RESULTS_DIR, f"eval-{model_slug}-{timestamp}.json")
@@ -514,7 +531,8 @@ def run_eval(
     print(f"Model:  {model_name}")
     print(f"Server: {base_url}")
     if jobs > 1:
-        print(f"Jobs:   {jobs} parallel workers (same-base variants stay sequential)")
+        print(f"Jobs:   {jobs} parallel workers (same-base variants stay sequential; "
+              f"per-iteration timeout ×{timeout_scale:.2f} for contention)")
     if gpu_info:
         print(f"GPU:    {gpu_info.get('name', '?')} ({gpu_info.get('memory_total_mib', '?')} MiB, driver {gpu_info.get('driver_version', '?')})")
     if engine_info and engine_info.get("build"):
@@ -650,7 +668,8 @@ def run_eval(
 
         # Run agent
         log("  Running agent...")
-        agent_result = run_agent(task, base_url, max_iter_override)
+        agent_result = run_agent(task, base_url, max_iter_override,
+                                 timeout_scale=timeout_scale)
         log(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
         # Re-assert fixtures (no-op unless task declares pre_validate).

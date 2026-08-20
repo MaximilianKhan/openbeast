@@ -76,8 +76,10 @@ class _Tracker:
         self.max_concurrent = 0
         self.group_violation = False
         self.saw_overlap = False
+        self.timeout_scales: set = set()
 
-    def run_agent(self, task, base_url, max_iter_override=None):
+    def run_agent(self, task, base_url, max_iter_override=None, timeout_scale=1.0):
+        self.timeout_scales.add(timeout_scale)
         group = task.get("base_id", task["id"])
         with self.lock:
             self.active_per_group[group] = self.active_per_group.get(group, 0) + 1
@@ -115,6 +117,14 @@ def test_parallel_respects_fixture_groups(tmp_path):
     assert tracker.max_concurrent <= 4
     assert results["summary"]["passed"] == 7
     assert results["jobs"] == 4
+    # Contention-scaled per-iteration budget: jobs=4 -> 2.0x (linear ramp).
+    assert tracker.timeout_scales == {2.0}
+
+
+def test_sequential_keeps_unscaled_timeout(tmp_path):
+    tracker = _Tracker(delay=0.01)
+    _run(_load_run_eval(tmp_path, server_slots=8), jobs=1, tracker=tracker)
+    assert tracker.timeout_scales == {1.0}
 
 
 def test_parallel_matches_sequential_order(tmp_path):
