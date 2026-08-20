@@ -463,7 +463,7 @@ cfg.setdefault("mcp", {})["openbeast-tools"] = {
 
 # Model list: copy from the checkout's opencode.json (kept current with the
 # rig's serve scripts); fall back to the default model alone.
-models = {"qwen-27b-uncensored-q5": {"name": "Qwen3.6-27B Uncensored (default)"}}
+models = {"qwen38-27b-uncensored-mtp-q5": {"name": "Qwen3.8-27B Uncensored MTP Q5_K_M (default)"}}
 try:
     models = json.load(open(os.path.join(repo, "opencode.json")))["provider"]["llama-cpp"]["models"]
 except Exception:

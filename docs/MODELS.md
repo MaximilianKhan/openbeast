@@ -18,9 +18,7 @@ variants trade a little accuracy for 30–50% more speed per token.
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
 |-------|-------|---------|---------|-----------------|-------|
 | **Qwen3.6-27B** | **Q5_K_XL** | **19 GB** | **350K** | **~29.5 GB** | **Top accuracy**: 97.85% on v3.5, **96.62% on v4** (271/291, landed 2026-07-09) — a statistical tie with its MTP twin (see leaderboard). Slower per-token than the MoEs. |
-| Qwen3.6-27B Uncensored | Q5_K_P | 21 GB | 350K | ~30.0 GB | Uncensored fine-tune (HauhauCS Aggressive); 96.16% on v3.5 (benchmarked at 380K) |
 | Qwen3.6-35B-A3B (MoE) | Q4_K_M | 20 GB | 512K | 27.8 GB | Fast MoE (3B active); 93.74% on v3.5; ~4.3 GB headroom (measured) |
-| Qwen3.6-35B-A3B Uncensored | Q4_K_M | 20 GB | 512K | 27.1 GB | Fastest of the lineup but trails on accuracy (90.33% on v3.5) |
 | Gemma 4 31B-it | Q5_K_XL | 20 GB | 192K | ~28.5 GB | Different family; KV cost rises with context (20→25 KB/token); reduced from 220K on 2026-05-08 after a sustained-load crash at the tight 2,080 MiB headroom |
 | Qwen3.6-27B **MTP** | Q5_K_XL | 20.4 GB | 288K | 29.4 GB | MTP draft heads baked in; tuned `n-max 8 / p-min 0.0` measures **184 tok/s vs 66.8 baseline (2.75×)**. Forces `-np 1` (no parallel slots); the old "no `--mmproj`" claim is unverified — see the retest item in TODO.md. 2.5 GB headroom at the tuned config. **95.63% on v4** (273/291) — a statistical tie with the non-MTP Qwen 27B (96.62%) at **2.75× the token throughput**; lossless speedup, exactly as MTP promises. |
 | Qwen3.6-35B-A3B **MTP** (MoE) | Q4_K_M | 22.7 GB | 512K | 28.8 GB | Same as above for the MoE; tuned `n-max 4 / p-min 0.0` measures **379 tok/s vs 259 baseline (1.46×)**. Same `-np 1` constraint; matches the non-MTP MoE's 512K ceiling (3.1 GB headroom). 93.76% on v4 (254/291). |
@@ -29,7 +27,24 @@ variants trade a little accuracy for 30–50% more speed per token.
 | Qwen3.6-27B **NVFP4** MTP | NVFP4 | 21.6 GB | 262K | 30.0 GB | **Blackwell-only** (native FP4 tensor cores, sm_120+; needs a GGML_TYPE_NVFP4 build). Tuned `n-max 4` measures ~115 tok/s decode; 95.7 v4 Score. Slower single-stream than its Q5 K-quant sibling — NVFP4's win is batched `-np 8` serving (see leaderboard notes). |
 | Qwen3.6-35B-A3B **NVFP4** MTP (MoE) | NVFP4 | 24.3 GB | 262K | 29.5 GB | Same Blackwell-only constraint. Tuned `n-max 2` measures ~317 tok/s decode; 96.3 v4 Score. Same story vs its Q4_K_M sibling: K-quant wins single-stream, NVFP4 wins batched worker-fleet serving. |
 
-All eleven rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07, the two NVFP4 rows 2026-07-10; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`REFERENCE.md`](REFERENCE.md) for per-variant details and [`RESEARCH_FINDINGS.md`](RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
+All nine rows have their contexts and VRAM measured against the 2GB OS-headroom rule on a 32GB card (the four MTP/Qwopus rows measured 2026-07-07, the two NVFP4 rows 2026-07-10; VRAM column shows total GPU usage at max context, which includes ~1.3 GB of desktop baseline). See [`REFERENCE.md`](REFERENCE.md) for per-variant details and [`RESEARCH_FINDINGS.md`](RESEARCH_FINDINGS.md) §3 for the v4 MTP benchmark results.
+
+**Pruned 2026-08-20** (Qwen3.6-era cleanup after Qwen3.8 landed; weight files
+deleted from the reference rig, serve scripts and catalog rows removed,
+leaderboard history retained — restore any of them by re-downloading from the
+HF repos named below):
+
+- **Qwen3.6-27B Uncensored (HauhauCS Aggressive) Q5_K_P** — 96.16% v3.5;
+  double-displaced as the uncensored pick (HauhauCS → Heretic v2 → Qwen3.8
+  Uncensored). `HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive`.
+- **Qwen3.6-35B-A3B Uncensored Q4_K_M** — 90.33% v3.5, lowest score in the
+  fleet; role covered by the stock MoE + the new uncensored default.
+  `HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive`.
+- **Heretic v2 Q6_K** and the **BF16 archive** — Q6 dominated by its own Q5
+  twin; the 51 GB BF16 had no serve script and was never used for custom
+  quants. `llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF`.
+- **Qwen3.8-Uncensored `-noMTP-` twin** — the MTP file is a strict superset;
+  no script ever referenced it.
 
 ## Fable-Fusion 711 (DavidAU) — added + profiled 2026-07-17
 
@@ -51,9 +66,8 @@ MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draf
 | Model | Quant | Context | VRAM used / free | Decode (greedy) | Serve script |
 |-------|-------|---------|------------------|-----------------|--------------|
 | Heretic v2 27B **MTP** | Q5_K_M | **262K** (native) | 29.6 GB / 2.97 GB | **~136 tok/s** (n8, 39% acc) | `serve-heretic-v2-27b-mtp-q5.sh` |
-| Heretic v2 27B **MTP** | Q6_K | **208K** | 30.4 GB / 2.25 GB | **~139 tok/s** (n4, 60% acc) | `serve-heretic-v2-27b-mtp-q6.sh` |
 
-**These are the fastest MTP builds in the lineup** — 136–139 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth. The optimum draft depth differs by quant (Q5 a flat plateau topping at **n8**, Q6 a sharp peak at **n4** — profiled with `scripts/profile-heretic-v2-mtp.sh {q5,q6}`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard.
+**The fastest Qwen3.6-era MTP build** — 136 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth (a flat plateau topping at **n8**, profiled with `scripts/profile-heretic-v2-mtp.sh q5`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard. Kept as the fallback uncensored until the Qwen3.8-Uncensored default earns a clean leaderboard row. *The Q6_K twin (208K, 2.25 GB headroom, ~139 tok/s at n4) was pruned 2026-08-20 — dominated by this Q5 within its own family; re-download from the llmfan46 HF repo if ever needed.*
 
 ## Qwen3.8-27B (Qwen / unsloth) — added + profiled 2026-08-14 ⚠️ NOT YET BENCHMARKED
 

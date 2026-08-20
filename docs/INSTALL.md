@@ -49,9 +49,9 @@ pip install --user --break-system-packages huggingface-hub -r agents/requirement
 # pip installs the `hf` CLI to ~/.local/bin — make sure it's on PATH:
 export PATH="$HOME/.local/bin:$PATH"   # add to your shell rc to persist
 
-# Default model — uncensored 27B fine-tune (#2 on the v3.5 leaderboard, 96.16%)
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
+# Default model — Qwen3.8 27B Uncensored (abliterated, MTP head baked in)
+hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
+   Qwen3.8-27B-Uncensored-Q5_K_M.gguf --local-dir weights/
 
 # Frontends
 curl -fsSL https://opencode.ai/install | bash
@@ -186,24 +186,10 @@ hardware: `./scripts/profile-qwen38-uncensored-mtp.sh`, then
 `./scripts/measure-vram.sh` for the context ceiling. Do **not** grab the repo's
 `-noMTP-` variants — this file is a strict superset of them.
 
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive) -- Q5_K_P (~21GB)
-
-```bash
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
-```
-
 ### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top accuracy (97.85%)
 
 ```bash
 hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
-```
-
-### Qwen3.6-35B-A3B Uncensored (HauhauCS Aggressive) -- Q4_K_M (~20GB)
-
-```bash
-hf download HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive \
-   Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf --local-dir weights/
 ```
 
 ### Qwen3.6-35B-A3B (standard MoE) -- Q4_K_M (~20GB)
@@ -439,7 +425,6 @@ a 35B-A3B MoE when interactive speed matters more.
 ./start.sh                                       # default model (Qwen3.8 27B Uncensored MTP Q5) + identity tool server + Open WebUI + SearXNG
 ./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top accuracy (97.85%)
 ./start.sh serve-qwen-35b-a3b.sh                 # standard 35B-A3B MoE (30–50% faster tokens)
-./start.sh serve-qwen-35b-a3b-uncensored-q4.sh   # 35B-A3B Uncensored MoE (fastest wall-clock)
 ./start.sh serve-gemma-4-31b-q5.sh               # Gemma 4 31B
 ```
 

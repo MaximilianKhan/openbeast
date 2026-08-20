@@ -51,15 +51,9 @@ MODELS = [
     {"slug": "qwen-27b-q5",
      "name": "Qwen 27B Q5_K_XL",
      "serve": "scripts/serve-qwen-27b-q5.sh"},
-    {"slug": "qwen-27b-uncensored-q5",
-     "name": "Qwen 27B Uncensored Q5_K_P",
-     "serve": "scripts/serve-qwen-27b-uncensored-q5.sh"},
     {"slug": "qwen-35b-a3b",
      "name": "Qwen 35B-A3B MoE Q4_K_M",
      "serve": "scripts/serve-qwen-35b-a3b.sh"},
-    {"slug": "qwen-35b-a3b-uncensored-q4",
-     "name": "Qwen 35B-A3B Uncensored Q4_K_M",
-     "serve": "scripts/serve-qwen-35b-a3b-uncensored-q4.sh"},
     {"slug": "gemma-4-31b-q5",
      "name": "Gemma 4 31B-it Q5_K_XL",
      "serve": "scripts/serve-gemma-4-31b-q5.sh"},
@@ -130,9 +124,8 @@ MODELS = [
     {"slug": "heretic-v2-27b-mtp-q5",
      "name": "Heretic v2 27B MTP Q5_K_M",
      "serve": "scripts/serve-heretic-v2-27b-mtp-q5.sh"},
-    {"slug": "heretic-v2-27b-mtp-q6",
-     "name": "Heretic v2 27B MTP Q6_K",
-     "serve": "scripts/serve-heretic-v2-27b-mtp-q6.sh"},
+    # heretic-v2-27b-mtp-q6 removed 2026-08-20: weights pruned (dominated by
+    # its own Q5 twin — 262K native + 2.97 GB headroom vs Q6's 208K + 2.25 GB).
     # Qwen3.8-27B-Uncensored (JonathanColetti abliteration), added + profiled
     # 2026-08-19, and promoted to the shipped DEFAULT the same day. Same
     # `qwen35` arch and same baked-in MTP head as the stock Qwen3.8 rows above,

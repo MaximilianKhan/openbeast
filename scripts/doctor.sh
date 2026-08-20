@@ -172,10 +172,10 @@ if [[ -n "$_gguf" && -f "$REPO_DIR/scripts/weights.registry" ]]; then
 fi
 # Eval quality gate: promotion by evidence.
 # THREE namespaces exist and conflating them produces permanent false alarms:
-#   serve script  -a "Qwen 27B Uncensored"        (display alias)
-#   MODELS[].name "Qwen 27B Uncensored Q5_K_P"    -> slugified into the
-#                                                   leaderboard's model_slug
-#   MODELS[].slug "qwen-27b-uncensored-q5"        -> what --models accepts
+#   serve script  -a "Qwen3.8 27B Uncensored MTP Q5"   (display alias)
+#   MODELS[].name "Qwen3.8 27B Uncensored MTP Q5_K_M"  -> slugified into the
+#                                                        leaderboard's model_slug
+#   MODELS[].slug "qwen38-27b-uncensored-mtp-q5"       -> what --models accepts
 # The leaderboard key comes from MODELS[].name, NOT the serve alias, so
 # resolve through benchmark_all.py's registry instead of guessing.
 if [[ -f "$REPO_DIR/evals/leaderboard.json" && -f "$REPO_DIR/evals/benchmark_all.py" ]]; then

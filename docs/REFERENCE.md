@@ -29,7 +29,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEIGHTS_DIR` | `OPENBEAST_WEIGHTS_DIR` | `./weights` if present, else `../weights` | Where the `.gguf` model weights live (NVMe / USB / NAS; `~` and relative paths OK) |
 | `GPU_BACKEND` | `OPENBEAST_GPU_BACKEND` | `auto` | llama.cpp build backend: `auto` \| `cuda` \| `hip` \| `sycl` \| `cpu`. `auto` maps the detected GPU vendor (NVIDIA→cuda, AMD→hip, Intel→sycl, none→cpu). Only cuda is measured; `bootstrap.sh` persists the resolved value |
 | `MEM_LIMIT_PCT` | `OPENBEAST_MEM_LIMIT_PCT` | `75` | Daemon-mode (`./start.sh -d`) memory cap as a percent of physical RAM, recomputed at every launch — a runaway process OOMs the stack's scope, never the box. Swap inside the scope is additionally capped at 8G |
-| `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen-27b-uncensored-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
+| `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen38-27b-uncensored-mtp-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
 | `FAST_BOOT` | `OPENBEAST_FAST_BOOT` | `false` | Serve the tiny Qwen3-0.6B bridge (`serve-bootstrap.sh`) on `:8080` for instant chat, bring the stack up, then hot-swap to `SERVE_SCRIPT` once its weights are warmed |
 | `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. `false` hard-fails |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
@@ -99,20 +99,6 @@ on 2026-05-22. v3.5 benchmark accuracy (97.85%) was measured at 416K and stands.
 | **350K** (default, 2026-05-22) | **~29,500 MiB** (est.) | **~3,200 MiB** (est.) | **current default — comfortable headroom, removes crash mode** |
 | 408K    | ~30,560 MiB    | ~2,200 MiB           | comparable to other models' margin |
 | 416K (prior default, benchmarked at) | **30,711 MiB** | **2,057 MiB** | measured — 9 MiB above 2GB rule (tight); crashes observed under sustained load |
-
-**Uncensored (HauhauCS Aggressive) Q5_K_P (~21GB weights)**
-
-Re-measured 2026-05-05: actual KV cost runs denser than the original 18 KB/token
-estimate (closer to ~20 KB at high context). The original 416K default was too
-tight; an interim 380K default still crashed intermittently. Operational default
-dropped to **350K** on 2026-05-22 to clear the crash mode. v3.5 benchmark accuracy
-(96.16%) was measured at 380K and stands.
-
-| Context | **Total Used** | Headroom (32GB card) | Status |
-|---------|----------------|----------------------|--------|
-| **350K** (default, 2026-05-22) | **~30,000 MiB** (est.) | **~2,800 MiB** (est.) | **current default — clears the crash mode at 380K** |
-| 380K (prior default, benchmarked at) | **30,648 MiB** | **2,120 MiB** | measured — meets 2GB rule on paper; crashed intermittently under sustained load |
-| 416K    | **31,405 MiB** | 1,363 MiB            | below 2GB rule — OOM risk on OS spikes |
 
 ### Gemma 4 31B-it — measured KV cost (non-linear, grows with context)
 
@@ -356,17 +342,6 @@ hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir wei
 - Native max: 262K, extended via YaRN to ~1M
 - Real-world KV cost: **~18 KB/token** (llama.cpp allocates KV for all 64 layers)
 - **Q5_K_XL** (~19GB): default **350K** context, ~29.5GB total — higher weight fidelity (reduced from 416K on 2026-05-22 after crashes; v3.5 benchmark numbers were measured at 416K)
-
-### Qwen3.6-27B Uncensored (HauhauCS Aggressive)
-
-```bash
-hf download HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf --local-dir weights/
-```
-
-- Source: https://huggingface.co/HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive
-- Same base architecture as Qwen3.6-27B (64 layers, ~18 KB/token KV cost)
-- Fine-tuned with safety filters removed
-- **Q5_K_P** (~21GB): default **350K** context, ~30.0GB total (reduced from 380K on 2026-05-22 after intermittent crashes; v3.5 benchmark numbers were measured at 380K)
 
 ### Gemma 4 31B-it (Q5_K_XL — 20.4GB)
 
@@ -636,7 +611,6 @@ and snippets. Models can also use `fetch` to read full page content from search 
 
 ```bash
 ./scripts/run-qwen-27b-q5.sh       # Qwen 27B Q5_K_XL (350K ctx, ~29.5GB VRAM)
-./scripts/run-qwen-27b-uncensored-q5.sh  # Qwen 27B Uncensored Q5_K_P (350K ctx, ~30.0GB VRAM)
 ./scripts/run-qwen-35b-a3b.sh      # Qwen 35B-A3B MoE (512K ctx, ~27.8 GB VRAM)
 ./scripts/run-qwen-27b-mtp-q5.sh   # Qwen 27B MTP Q5_K_XL (288K ctx, single-slot speculative)
 ./scripts/run-qwen-35b-a3b-mtp.sh  # Qwen 35B-A3B MTP MoE (512K ctx, single-slot speculative)
@@ -649,7 +623,6 @@ and snippets. Models can also use `fetch` to read full page content from search 
 
 ```bash
 ./scripts/serve-qwen-27b-q5.sh     # http://localhost:8080/v1/chat/completions
-./scripts/serve-qwen-27b-uncensored-q5.sh  # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-35b-a3b.sh    # http://localhost:8080/v1/chat/completions
 ./scripts/serve-qwen-27b-mtp-q5.sh   # MTP variant — single-slot, --spec-type draft-mtp
 ./scripts/serve-qwen-35b-a3b-mtp.sh  # MTP variant — single-slot, --spec-type draft-mtp

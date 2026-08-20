@@ -33,15 +33,11 @@ echo "Scripts directory:"
 EXPECTED_SCRIPTS=(
   serve.sh run.sh configure-webui.sh healthcheck.sh setup-tailscale.sh
   update.sh doctor.sh setup-mcpo-keys.sh clients.sh client.sh setup-client.sh
-  serve-qwen-27b-q5.sh
-  serve-qwen-27b-uncensored-q5.sh serve-qwen-35b-a3b.sh
-  serve-qwen-35b-a3b-uncensored-q4.sh
+  serve-qwen-27b-q5.sh serve-qwen-35b-a3b.sh
   serve-qwen-27b-mtp-q5.sh serve-qwen-35b-a3b-mtp.sh
   serve-qwopus-27b-v2-q5.sh serve-qwopus-27b-v2-mtp-q5.sh
   serve-gemma-4-31b-q5.sh
-  run-qwen-27b-q5.sh
-  run-qwen-27b-uncensored-q5.sh run-qwen-35b-a3b.sh
-  run-qwen-35b-a3b-uncensored-q4.sh
+  run-qwen-27b-q5.sh run-qwen-35b-a3b.sh
   run-qwen-27b-mtp-q5.sh run-qwen-35b-a3b-mtp.sh
   run-qwopus-27b-v2-q5.sh run-qwopus-27b-v2-mtp-q5.sh
   run-gemma-4-31b-q5.sh

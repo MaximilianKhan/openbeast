@@ -18,24 +18,10 @@
         "baseURL": "http://localhost:8080/v1"
       },
       "models": {
-        "qwen-27b-uncensored-q5": {
-          "name": "Qwen3.6-27B Uncensored Q5_K_P",
-          "limit": {
-            "context": 358400,
-            "output": 32768
-          }
-        },
         "qwen-27b-q5": {
           "name": "Qwen3.6-27B Q5_K_XL",
           "limit": {
             "context": 358400,
-            "output": 32768
-          }
-        },
-        "qwen-35b-a3b-uncensored-q4": {
-          "name": "Qwen3.6-35B-A3B Uncensored Q4_K_M",
-          "limit": {
-            "context": 524288,
             "output": 32768
           }
         },
@@ -64,13 +50,6 @@
           "name": "Heretic v2 27B MTP Q5_K_M (single-slot, speculative)",
           "limit": {
             "context": 262144,
-            "output": 32768
-          }
-        },
-        "heretic-v2-27b-mtp-q6": {
-          "name": "Heretic v2 27B MTP Q6_K (single-slot, speculative)",
-          "limit": {
-            "context": 212992,
             "output": 32768
           }
         },
