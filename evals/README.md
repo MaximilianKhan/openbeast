@@ -20,6 +20,7 @@ ranks models in a leaderboard keyed by (host_id, model_slug).
 python3 evals/run_eval.py --list                     # list every task
 python3 evals/run_eval.py                            # run all tasks against the live server on :8080
 python3 evals/run_eval.py --tasks 145,146            # run a subset
+python3 evals/run_eval.py --jobs 4                   # 4 parallel workers — needs a server with -np >= 4 (clamped to /props total_slots; MTP configs are -np 1)
 python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
 python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
 python3 evals/benchmark_all.py                       # full sweep across configured models

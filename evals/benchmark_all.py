@@ -293,7 +293,8 @@ def restart_server(serve_script: str, slug: str,
 def benchmark_model(model: dict, task_filter: list[str] | None,
                     max_iter_override: int | None,
                     use_cache: bool = True,
-                    cache_only: bool = False) -> dict:
+                    cache_only: bool = False,
+                    jobs: int = 1) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
@@ -350,6 +351,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
             use_cache=use_cache,
             health_check=ping_health,
             recover_cb=_recover,
+            jobs=jobs,
         )
     except Exception as e:
         stop_llama_server()
@@ -374,7 +376,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
               max_iter_override: int | None,
               use_cache: bool = True,
               cache_only: bool = False,
-              update_leaderboard: bool = True) -> dict:
+              update_leaderboard: bool = True,
+              jobs: int = 1) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -388,7 +391,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
     for i, model in enumerate(models, 1):
         print(f"\n[{i}/{len(models)}] Starting model")
         outcome = benchmark_model(model, task_filter, max_iter_override,
-                                   use_cache=use_cache, cache_only=cache_only)
+                                   use_cache=use_cache, cache_only=cache_only,
+                                   jobs=jobs)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -460,6 +464,10 @@ def main():
                              "smoke tests / partial-suite runs: the leaderboard must only "
                              "ever contain full-suite sweeps, or its accuracy numbers "
                              "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Parallel eval workers per model (default 1). run_eval clamps "
+                             "to each server's /props total_slots, so MTP (-np 1) models "
+                             "fall back to sequential automatically.")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
@@ -501,7 +509,8 @@ def main():
     summary = run_sweep(models, task_filter, args.max_iter,
                          use_cache=not args.no_cache,
                          cache_only=args.cache_only,
-                         update_leaderboard=not args.no_leaderboard)
+                         update_leaderboard=not args.no_leaderboard,
+                         jobs=args.jobs)
     summary_path = save_sweep_summary(summary)
 
     # Final report

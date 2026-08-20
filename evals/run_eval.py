@@ -20,6 +20,7 @@ Usage:
   python evals/run_eval.py                          # run all tasks
   python evals/run_eval.py --tasks 01,02,03         # run specific tasks
   python evals/run_eval.py --max-iter 5             # override max iterations
+  python evals/run_eval.py --jobs 4                 # 4 parallel workers (server must run -np >= 4)
   python evals/run_eval.py --base-url http://...:8080/v1  # different server
 
 Requires: llama.cpp server running on port 8080.
@@ -33,8 +34,10 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -67,6 +70,25 @@ def detect_model(base_url: str) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _fetch_server_slots(base_url: str) -> int | None:
+    """Number of parallel slots (-np) on the llama.cpp server, from /props.
+
+    /props lives at the SERVER ROOT, not under /v1 — and beast-gate's path
+    allowlist blocks it on gated installs, so this is best-effort. Returns
+    None when unreadable."""
+    try:
+        root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        req = urllib.request.Request(root + "/props", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        n = data.get("total_slots")
+        return int(n) if n else None
+    except Exception:
+        return None
 
 
 def slugify(name: str) -> str:
@@ -259,7 +281,7 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     return run_reaped(shell_cmd, timeout)
 
 
-def run_setup(task: dict) -> bool:
+def run_setup(task: dict, log=print) -> bool:
     """Run task setup command. Returns True on success. Timeouts and
     unexpected errors are recorded as failures, not crashes — a single bad
     fixture must not abort the whole sweep (mirrors run_validation)."""
@@ -269,13 +291,13 @@ def run_setup(task: dict) -> bool:
     try:
         returncode, output = _run_reaped(setup, timeout=30, shell=True)
     except subprocess.TimeoutExpired:
-        print("  Setup timed out")
+        log("  Setup timed out")
         return False
     except Exception as e:
-        print(f"  Setup error: {e}")
+        log(f"  Setup error: {e}")
         return False
     if returncode != 0:
-        print(f"  Setup failed: {output[:200]}")
+        log(f"  Setup failed: {output[:200]}")
         return False
     return True
 
@@ -346,7 +368,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None) -
         }
 
 
-def run_pre_validate(task: dict):
+def run_pre_validate(task: dict, log=print):
     """Re-assert harness fixtures right before validation.
 
     Agents have full bash access and can corrupt fixture files during their
@@ -361,9 +383,9 @@ def run_pre_validate(task: dict):
     try:
         _run_reaped(cmd, timeout=30, shell=True)
     except subprocess.TimeoutExpired:
-        print("  (pre_validate timed out — continuing to validation)")
+        log("  (pre_validate timed out — continuing to validation)")
     except Exception as e:
-        print(f"  (pre_validate error: {e} — continuing to validation)")
+        log(f"  (pre_validate error: {e} — continuing to validation)")
 
 
 def run_validation(task: dict) -> tuple[bool, str]:
@@ -390,7 +412,7 @@ def run_validation(task: dict) -> tuple[bool, str]:
         return False, f"Validation error: {e}"
 
 
-def run_cleanup(task: dict):
+def run_cleanup(task: dict, log=print):
     """Run cleanup command. Failures are logged, never fatal — leftover /tmp
     fixtures are annoying, a crashed sweep is worse."""
     cleanup = task.get("cleanup")
@@ -399,9 +421,9 @@ def run_cleanup(task: dict):
     try:
         _run_reaped(cleanup, timeout=30, shell=True)
     except subprocess.TimeoutExpired:
-        print("  (cleanup timed out)")
+        log("  (cleanup timed out)")
     except Exception as e:
-        print(f"  (cleanup error: {e})")
+        log(f"  (cleanup error: {e})")
 
 
 def _write_results(results_path: str, results: dict) -> None:
@@ -423,6 +445,7 @@ def run_eval(
     cache_only: bool = False,
     health_check=None,
     recover_cb=None,
+    jobs: int = 1,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
@@ -435,7 +458,19 @@ def run_eval(
     False, `recover_cb()` is invoked to kill+restart the serve script. If
     recovery fails the task is recorded as `server_unhealthy` (not cached)
     and the eval aborts — silently grinding through hundreds of dead-server
-    tasks is what produced the v3.5 Gemma 24% phantom result."""
+    tasks is what produced the v3.5 Gemma 24% phantom result.
+
+    jobs: parallel workers. Fixture isolation is by SCHEDULING, not path
+    rewriting: every /tmp/eval_* fixture dir belongs to exactly one task
+    file (verified across all 141 dirs, enforced by tests/test_eval_jobs.py),
+    and variants of the same base task share theirs — so units are grouped
+    by base task, each group runs sequentially on one worker, and distinct
+    groups run in parallel. Prompts, validations, and cache keys are
+    untouched, so parallel scores are directly comparable to every
+    sequential run ever recorded. Clamped to the server's /props
+    total_slots when readable: excess workers would queue server-side and
+    the wait would count against per-task wall-clock timeouts (MTP configs
+    force -np 1, so they clamp to sequential)."""
     import cache  # local import — keeps run_eval importable in environments without cache.py
     if cache_only and not use_cache:
         raise ValueError("cache_only requires use_cache=True (cache_only is meaningless without cache lookup)")
@@ -455,6 +490,22 @@ def run_eval(
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
 
+    jobs = max(1, int(jobs))
+    if cache_only and jobs > 1:
+        print(f"--jobs {jobs} ignored in --cache-only mode (replay is disk-bound)")
+        jobs = 1
+    if jobs > 1:
+        slots = _fetch_server_slots(base_url)
+        if slots is not None and jobs > slots:
+            print(f"--jobs {jobs} clamped to {slots}: the server exposes {slots} slot(s) (-np); "
+                  f"excess workers would queue server-side and the wait would count "
+                  f"against per-task timeouts (MTP configs force -np 1)")
+            jobs = slots
+        elif slots is None:
+            print(f"WARNING: could not read /props total_slots (gated install?) — "
+                  f"running --jobs {jobs} unclamped; against an -np 1 (MTP) server "
+                  f"this queues and trips per-task timeouts")
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     results_path = os.path.join(RESULTS_DIR, f"eval-{model_slug}-{timestamp}.json")
@@ -462,6 +513,8 @@ def run_eval(
     print(f"Eval started — {len(tasks)} tasks")
     print(f"Model:  {model_name}")
     print(f"Server: {base_url}")
+    if jobs > 1:
+        print(f"Jobs:   {jobs} parallel workers (same-base variants stay sequential)")
     if gpu_info:
         print(f"GPU:    {gpu_info.get('name', '?')} ({gpu_info.get('memory_total_mib', '?')} MiB, driver {gpu_info.get('driver_version', '?')})")
     if engine_info and engine_info.get("build"):
@@ -480,19 +533,54 @@ def run_eval(
         "gpu": gpu_info,
         "inference_engine": engine_info,
         "runtime": capture_runtime_info(),
+        "jobs": jobs,
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
 
-    cache_hits = 0
-    cache_misses_skipped = 0
-    for i, task in enumerate(tasks, 1):
+    state_lock = threading.Lock()   # results dict + counters + results file
+    print_lock = threading.Lock()   # whole-task output blocks in parallel mode
+    health_lock = threading.Lock()  # one recovery attempt at a time
+    abort = threading.Event()       # set on failed recovery — stop starting units
+    indexed: dict[int, dict] = {}   # original task index → recorded result
+    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0}
+
+    def process(idx: int, task: dict, log) -> dict | None:
+        """One unit end-to-end: cache check → health → setup → agent →
+        validate → record → cache → cleanup. Returns the recorded result,
+        or None when skipped because the run aborted. `log` collects output
+        lines in parallel mode so each unit's block prints contiguously."""
+        if abort.is_set():
+            with state_lock:
+                counters["aborted_skips"] += 1
+            return None
+
         task_id = task["id"]
         task_name = task.get("name", task_id)
         difficulty = task.get("difficulty", "?")
 
-        print(f"\n[{i}/{len(tasks)}] {task_name} ({difficulty})")
-        print(f"  Task: {task['task'][:80]}...")
+        log(f"\n[{idx + 1}/{len(tasks)}] {task_name} ({difficulty})")
+        log(f"  Task: {task['task'][:80]}...")
+
+        def record(result: dict) -> dict:
+            # Variant metadata, only present for tasks that declared `variants`
+            if "base_id" in task:
+                result.setdefault("base_id", task["base_id"])
+                result.setdefault("variant_id", task["variant_id"])
+                result.setdefault("language", task["language"])
+                result.setdefault("variant_count", task["variant_count"])
+            with state_lock:
+                indexed[idx] = result
+                if result.get("passed"):
+                    results["summary"]["passed"] += 1
+                else:
+                    results["summary"]["failed"] += 1
+                # Keep results in task order regardless of completion order,
+                # and persist incrementally — a crash mid-sweep must not lose
+                # the tasks already completed.
+                results["tasks"] = [indexed[k] for k in sorted(indexed)]
+                _write_results(results_path, results)
+            return result
 
         # The iteration budget the agent will actually run with — part of
         # the cache key (a 5-iter capped run is a different experiment from
@@ -503,100 +591,77 @@ def run_eval(
         # agent context = same answer. Saves the agent run and the validation
         # step. Setup/cleanup still run on the live path so /tmp fixtures
         # land for any downstream inspection.
+        ck = None
         if use_cache:
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
                 cached["from_cache"] = True
-                results["tasks"].append(cached)
-                if cached.get("passed"):
-                    results["summary"]["passed"] += 1
-                else:
-                    results["summary"]["failed"] += 1
-                cache_hits += 1
+                with state_lock:
+                    counters["cache_hits"] += 1
                 tag = "PASS" if cached.get("passed") else "FAIL"
-                print(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
-                _write_results(results_path, results)
-                continue
+                log(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
+                return record(cached)
 
         # cache_only: never invoke the agent. Record a skipped placeholder.
         if cache_only:
-            result = {
+            with state_lock:
+                counters["cache_misses_skipped"] += 1
+            log("  SKIPPED (cache miss; --cache-only mode)")
+            return record({
                 "id": task_id, "name": task_name, "difficulty": difficulty,
                 "model": model_name, "passed": False,
                 "reason": "skipped_cache_miss",
                 "elapsed_seconds": 0,
                 "from_cache": False,
-            }
-            if "base_id" in task:
-                result["base_id"] = task["base_id"]
-                result["variant_id"] = task["variant_id"]
-                result["language"] = task["language"]
-                result["variant_count"] = task["variant_count"]
-            results["tasks"].append(result)
-            results["summary"]["failed"] += 1
-            cache_misses_skipped += 1
-            print("  SKIPPED (cache miss; --cache-only mode)")
-            _write_results(results_path, results)
-            continue
+            })
 
         # Health check + recovery before each live task. If the server is
-        # gone, restart it once; if it still won't come back, abort the run.
-        if health_check is not None and not health_check():
-            print("  Server unhealthy before task — attempting recovery...")
-            recovered = bool(recover_cb and recover_cb())
-            if not recovered:
-                result = {
-                    "id": task_id, "name": task_name, "difficulty": difficulty,
-                    "model": model_name, "passed": False,
-                    "reason": "server_unhealthy",
-                    "elapsed_seconds": 0,
-                    "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
-                }
-                if "base_id" in task:
-                    result["base_id"] = task["base_id"]
-                    result["variant_id"] = task["variant_id"]
-                    result["language"] = task["language"]
-                    result["variant_count"] = task["variant_count"]
-                results["tasks"].append(result)
-                results["summary"]["failed"] += 1
-                _write_results(results_path, results)
-                print(f"  ABORT: server unreachable; remaining {len(tasks)-i} tasks skipped")
-                break
+        # gone, restart it once (one worker at a time); if it still won't
+        # come back, abort the whole run.
+        if health_check is not None:
+            with health_lock:
+                if abort.is_set():
+                    with state_lock:
+                        counters["aborted_skips"] += 1
+                    return None
+                if not health_check():
+                    log("  Server unhealthy before task — attempting recovery...")
+                    if not (recover_cb and recover_cb()):
+                        abort.set()
+                        log("  ABORT: server unreachable; skipping all remaining tasks")
+                        return record({
+                            "id": task_id, "name": task_name, "difficulty": difficulty,
+                            "model": model_name, "passed": False,
+                            "reason": "server_unhealthy",
+                            "elapsed_seconds": 0,
+                            "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
+                        })
 
         # Setup
-        if not run_setup(task):
-            result = {
+        if not run_setup(task, log=log):
+            log("  FAIL (setup failed)")
+            return record({
                 "id": task_id, "name": task_name, "difficulty": difficulty,
                 "passed": False, "reason": "setup_failed",
                 "elapsed_seconds": 0,
-            }
-            if "base_id" in task:
-                result["base_id"] = task["base_id"]
-                result["variant_id"] = task["variant_id"]
-                result["language"] = task["language"]
-                result["variant_count"] = task["variant_count"]
-            results["tasks"].append(result)
-            results["summary"]["failed"] += 1
-            print("  FAIL (setup failed)")
-            _write_results(results_path, results)
-            continue
+            })
 
         # Run agent
-        print("  Running agent...")
+        log("  Running agent...")
         agent_result = run_agent(task, base_url, max_iter_override)
-        print(f"  Agent finished in {agent_result['elapsed_seconds']}s")
+        log(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
         # Re-assert fixtures (no-op unless task declares pre_validate).
-        run_pre_validate(task)
+        run_pre_validate(task, log=log)
 
         # Validate
         passed, validation_output = run_validation(task)
 
         # Record result
         tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
-        result = {
+        result = record({
             "id": task_id,
             "name": task_name,
             "difficulty": difficulty,
@@ -608,25 +673,12 @@ def run_eval(
             "tokens_prompt": tokens["prompt"],
             "tokens_completion": tokens["completion"],
             "tokens_total": tokens["total"],
-        }
-        # Variant metadata, only present for tasks that declared `variants`
-        if "base_id" in task:
-            result["base_id"] = task["base_id"]
-            result["variant_id"] = task["variant_id"]
-            result["language"] = task["language"]
-            result["variant_count"] = task["variant_count"]
-        results["tasks"].append(result)
+        })
 
         if passed:
-            results["summary"]["passed"] += 1
-            print(f"  PASS ({agent_result['elapsed_seconds']}s)")
+            log(f"  PASS ({agent_result['elapsed_seconds']}s)")
         else:
-            results["summary"]["failed"] += 1
-            print(f"  FAIL: {validation_output[:100]}")
-
-        # Incremental persist — a crash later in the sweep must not lose
-        # the tasks already completed.
-        _write_results(results_path, results)
+            log(f"  FAIL: {validation_output[:100]}")
 
         # Cache the result for future reruns. We cache both PASS and
         # deterministic FAIL — replaying a known fail is replay-safe.
@@ -636,10 +688,39 @@ def run_eval(
             try:
                 cache.cache_put(ck, result)
             except Exception as e:
-                print(f"  (cache write failed: {e})")
+                log(f"  (cache write failed: {e})")
 
         # Cleanup
-        run_cleanup(task)
+        run_cleanup(task, log=log)
+        return result
+
+    if jobs == 1:
+        for idx, task in enumerate(tasks):
+            process(idx, task, log=print)
+            if abort.is_set():
+                remaining = len(tasks) - (idx + 1)
+                if remaining:
+                    print(f"  ({remaining} remaining tasks skipped)")
+                break
+    else:
+        # Units grouped by base task: variants share a /tmp/eval_* fixture
+        # dir, so each group serializes on one worker; distinct groups
+        # parallelize. Dict order preserves the original task order.
+        groups: dict[str, list[tuple[int, dict]]] = {}
+        for idx, task in enumerate(tasks):
+            groups.setdefault(task.get("base_id", task["id"]), []).append((idx, task))
+
+        def run_group(units: list[tuple[int, dict]]) -> None:
+            for idx, task in units:
+                lines: list[str] = []
+                process(idx, task, log=lines.append)
+                if lines:
+                    with print_lock:
+                        print("\n".join(lines))
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            for fut in [pool.submit(run_group, g) for g in groups.values()]:
+                fut.result()
 
     # Final save (atomic; also covers the zero-task edge case)
     _write_results(results_path, results)
@@ -648,10 +729,14 @@ def run_eval(
     s = results["summary"]
     print(f"\n{'=' * 60}")
     print(f"Results: {s['passed']}/{s['total']} passed, {s['failed']} failed")
+    cache_hits = counters["cache_hits"]
+    cache_misses_skipped = counters["cache_misses_skipped"]
     if use_cache and cache_hits:
         print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
     if cache_only and cache_misses_skipped:
         print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
+    if counters["aborted_skips"]:
+        print(f"Aborted: {counters['aborted_skips']} tasks skipped after server loss")
     print(f"Saved to: {results_path}")
     print(f"{'=' * 60}")
 
@@ -668,7 +753,15 @@ def main():
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — skip live runs entirely. Cache misses recorded as 'skipped_cache_miss'.")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Parallel eval workers (default 1). Needs a server with -np >= N "
+                             "(clamped to /props total_slots when readable; MTP configs are -np 1). "
+                             "Variants of the same base task always run sequentially — they share "
+                             "/tmp fixtures — so scores stay comparable to sequential runs.")
     args = parser.parse_args()
+
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
 
     if args.list:
         tasks = load_tasks()
@@ -688,6 +781,7 @@ def main():
         model_name=args.model_name,
         use_cache=not args.no_cache,
         cache_only=args.cache_only,
+        jobs=args.jobs,
     )
 
     # Exit with failure if any task failed
