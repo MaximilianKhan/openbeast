@@ -1,5 +1,39 @@
 # TODO
 
+## 🧭 ROUTER CLASSIFY SIDECAR — staged 2026-08-21, experiment-gated (Max)
+
+Move the agent-router's pre-flight classify off the primary model onto a
+CPU-resident `Qwen3.5-0.8B-UD-Q4_K_XL` sidecar (loopback :8081,
+`CUDA_VISIBLE_DEVICES=` + `-ngl 0`, ~1.5 GB RAM, zero VRAM). Kills the
+measured 2.7–30 s hint-turn penalty from the classify occupying the MTP
+default's single slot. Full design, sidecar config sketch, validation gate,
+and the applied security+performance adversarial reviews:
+**[`ROUTER_SIDECAR_PLAN.md`](ROUTER_SIDECAR_PLAN.md)**.
+
+Adversarial reviews found 3 HIGHs — all folded into the plan; the ones that
+change the build: the sidecar MUST route through `serve.sh` (key + pin
+enforcement; a direct llama-server exec ships a keyless unpinned listener),
+the 0.8B weight is NOT yet registry-pinned (rollout step 0), :8081 needs a
+pre-bind check (port-squat = classifier substitution → admin-keyed MCPO
+spawn), and the 0.8B's `qwen35` hybrid arch gets NO prompt-cache reuse
+(full re-prefill every classify) — so `Qwen3-0.6B-Q8_0` (classic
+transformer, already pinned) is a co-candidate, not a fallback.
+
+Order of work when Max green-lights the experiment:
+0. Pin `Qwen3.5-0.8B-UD-Q4_K_XL` (+ BF16 sibling) in weights.registry.
+1. Router env split + sidecar-path caps (`max_tokens 160`,
+   `task.maxLength 600`, p99×3 timeout) — inert alone.
+2. `serve-router-classify.sh` **through serve.sh** + start.sh pre-bind
+   check/pidfile + stop.sh teardown + doctor.sh port check.
+3. **Validation gate** (plan §6) on BOTH small models: 16/16 positives AND
+   zero false-positive spawns (adversarial negatives + truncation-path
+   repeats), latency/placement matrix, both-directions interference,
+   thinking-suppression assert. No gate pass → no wiring.
+
+Rollback is env-unset. Chosen over BF16 (3× bandwidth for nothing — quant ≠
+fine-tune, same weights) and over a GPU sidecar (wrong resource: VRAM
+headroom is the thing we optimize).
+
 ## 🔤 opencode LSP — the gap is missing BINARIES, not missing config (2026-08-19)
 
 Investigated because `opencode.json` has no `lsp` block. **It does not need
