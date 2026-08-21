@@ -73,7 +73,26 @@ wall-clock is decode) by each config's measured tok/s, at the proposal's
 conservative 70% parallel efficiency. Treat them as ±25% until Phase A
 measures the real multiplier.
 
-**Phase A — ✅ DONE 2026-08-21.** Both non-MTP rows on full v4 at `--jobs 4`:
+**Phase A′ — RERUN REQUIRED, ready to launch (Max-triggered, ~10–14 h GPU).**
+Discovered 2026-08-21: the Phase A Qwen3.8 rows ran under a gitignored local
+`REASONING_BUDGET=4096` (openbeast.conf) while the Qwen3.6 champion ran
+uncapped — an unfair fight AND a non-shipped config (the shipped default has
+no budget). The conf line is now removed (history + rollback note kept in the
+conf), and server flags are stamped into results provenance so this class of
+silent asymmetry can't recur. To rerun (cache for both slugs must be cleared
+first or the capped answers replay — server-side flags are invisible to the
+cache key; clearing was done 2026-08-21, listed here for reruns elsewhere):
+```bash
+python3 evals/cache_cli.py clear --model qwen3-8-27b-q5-k-xl
+python3 evals/cache_cli.py clear --model qwen3-8-27b-uncensored-q5-k-m
+OPENBEAST_REASONING_BUDGET=-1 python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-q5 --jobs 4
+```
+(`-1` = explicit unlimited ≡ the champion's flagless default.) New rows
+supersede the capped ones; capped results files stay archived. Until the
+rerun lands, treat the board's #2/#3 rows as lower bounds for Qwen3.8.
+
+**Phase A — ✅ DONE 2026-08-21 (superseded by A′ above — rows were capped).**
+Both non-MTP rows on full v4 at `--jobs 4`:
 - **Abliteration cost ≈ ZERO**: uncensored 98.38 (259/291) vs stock 98.44
   (261/291), identical 99.1 solve — the default is vindicated.
 - **Qwen3.6-27B keeps the crown** (98.7, 271/291). The whole generational

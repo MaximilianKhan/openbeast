@@ -169,6 +169,24 @@ def test_runtime_provenance_stamps_repo_sha():
     assert isinstance(info.get("openbeast_dirty"), bool)
 
 
+def test_server_flag_parsing():
+    """Serve flags are experiment config (the 2026-08-20 rows ran under an
+    unrecorded local REASONING_BUDGET) — the parser must recover them."""
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    run_eval = importlib.import_module("run_eval")
+    cmd = ("/x/llama-server -m /w/m.gguf -a Alias Name -ngl 99 -c 262144 "
+           "-np 6 --kv-unified -ctk q4_0 -ctv q4_0 --reasoning-budget 4096")
+    info = run_eval._parse_server_flags(cmd)
+    assert info["reasoning_budget"] == "4096"
+    assert info["parallel_slots"] == "6"
+    assert info["context"] == "262144"
+    assert info["kv_cache_type"] == "q4_0"
+    assert "reasoning" not in info  # --reasoning flag absent -> key absent
+    uncapped = run_eval._parse_server_flags(cmd.replace(" --reasoning-budget 4096", ""))
+    assert "reasoning_budget" not in uncapped
+
+
 def test_fixture_dirs_unique_per_task_file():
     """The precondition scheduling-isolation rests on: no /tmp/eval_* dir is
     referenced by more than one task file. A new task reusing another task's
