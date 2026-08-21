@@ -45,16 +45,15 @@ pyright references" and full built-in Python support. That was a false positive
 directly. Grep for server names without `\b` and every file with a licence
 header looks like a Python LSP.
 
-## 🏁 Benchmark the new default — Qwen3.8 27B Uncensored (2026-08-19)
+## 🏁 Benchmark the new default — Qwen3.8 27B Uncensored ✅ ANSWERED 2026-08-21
 
 `serve-qwen38-27b-uncensored-mtp-q5.sh` became the shipped default on
-2026-08-19 on **speed and headroom evidence only** (140.2 tok/s = 2.0× its own
-no-MTP baseline; 4.76 GB VRAM free at the full native 262K, vs Heretic v2's
-2.97 GB). It has **no leaderboard row** — doctor warns about this correctly.
-
-Abliteration is the one edit that plausibly costs capability, and this is now
-what every fresh install serves, so the eval matters more than the usual
-"not yet benchmarked" backlog item:
+2026-08-19 on speed and headroom evidence only. **Phase A closed the gap:
+the non-MTP twin scored 98.38 (#3 on v4), statistically identical to stock
+Qwen3.8 (98.44) — abliteration cost ≈ zero, default vindicated.** The MTP
+row itself is still unbenchmarked (Phase B, optional; 3.6 precedent says
+capability ties the twin), so doctor may still note the exact shipped
+config's missing row. History of the plan:
 
 ```bash
 python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5 --jobs 4
@@ -74,14 +73,20 @@ wall-clock is decode) by each config's measured tok/s, at the proposal's
 conservative 70% parallel efficiency. Treat them as ±25% until Phase A
 measures the real multiplier.
 
-**Phase A — the abliteration answer + the multiplier measurement (~4 h GPU):**
-```bash
-python3 evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-q5 --jobs 4
-```
-Two non-MTP rows on full v4 (leaderboard-comparable), ~2.0 h each at
-`--jobs 4` (~1.3 h each at `--jobs 6` if the scaling holds). This alone
-answers abliterated-vs-stock AND gives the default family its first
-leaderboard presence via the non-MTP twin.
+**Phase A — ✅ DONE 2026-08-21.** Both non-MTP rows on full v4 at `--jobs 4`:
+- **Abliteration cost ≈ ZERO**: uncensored 98.38 (259/291) vs stock 98.44
+  (261/291), identical 99.1 solve — the default is vindicated.
+- **Qwen3.6-27B keeps the crown** (98.7, 271/291). The whole generational
+  gap is **zig ports** (champ 11 zig fails, stock 22, uncensored 24;
+  non-zig fails 9/8/8 — Qwen3.8 is equal-or-better outside zig).
+- **Qwen3.8 is ~2× more verbose** (26.6M/25.7M tokens vs champ's 14.0M),
+  which doubled the projected wall-clock. Measured multiplier: ~3.9×
+  slot-concurrency, **~2.2× true wall-clock** vs single-stream sequential
+  (contention halves per-stream decode); uncensored's fully-live 291 units
+  took 5.8 h instead of ~13 h sequential.
+- Timeout-scale patch (PR #23) verified: 0 timeouts in the stock run, 1 in
+  uncensored (`27_brainfuck_interpreter_c`, uncached — a lone cleanup
+  candidate; the 3.6 champ's own run also had exactly 1 timeout).
 
 **Phase B — MTP leaderboard rows (optional, ~9–10 h GPU, sequential):**
 ```bash
@@ -101,14 +106,18 @@ rows exist (the discrimination analysis predates Qwen3.8). After this,
 routine model comparisons cost **~0.85 h** (v5-fast + `--jobs 4`)
 instead of ~5.6 h.
 
-**Phase D — second prune gate (no GPU):** if Phase A/B put Qwen3.8-Uncensored
-at ≥ ~97.5 capability, prune Heretic v2 Q5 (19 GB, the uncensored fallback),
-Qwen3.6-27B MTP (19 GB, kept as the 184 tok/s throughput king), and — once
-dethroned on the same suite — the Qwen3.6-27B non-MTP champion (19 GB) and
-Qwen3.8 Q6_K (22 GB). Decided 2026-08-20 with the first prune (131 GB
-reclaimed: Heretic BF16 + Q6, HauhauCS ×2, noMTP twin). NVFP4 pair kept
-pending Max's call — its batched `-np 8` fleet niche is measured (+22% over
-K-quant) and upstream #25730 may flip the single-stream verdict.
+**Phase D — second prune gate: TRIGGERED, Max's call pending (2026-08-21).**
+Qwen3.8-Uncensored scored 98.38 ≥ the 97.5 gate:
+- **Heretic v2 Q5 (19 GB): prune case now complete** — the uncensored
+  fallback role is obsolete (abliteration measured at zero cost on 3.8).
+- **Qwen3.6-27B MTP (19 GB): judgment call** — 97.5 capability < the
+  default's 98.4, but still the fleet's 184 tok/s throughput king.
+- **Qwen3.8 Q6_K (22 GB): lean prune** — the Q5_K_XL twin now has a 98.4
+  row; Q6's marginal-quality question is answerable later if ever needed.
+- **Qwen3.6-27B champion (19 GB): STAYS** — not dethroned (98.7 > 98.4);
+  it remains the accuracy crown and the ranking anchor.
+- NVFP4 pair: KEEP (Max, 2026-08-20) — measured +22% batched `-np 8` fleet
+  niche; upstream #25730 may flip single-stream. Revisit on fleet news.
 
 Worth pairing with the stock `qwen38-27b-q5` / `qwen38-27b-mtp-q5` rows (also
 unbenchmarked) — that gives a clean abliterated-vs-stock delta on the same base

@@ -477,13 +477,15 @@ self-contained with deterministic checks, and the multi-model runner produces a
 | # | Model | Score | Spd t/s |
 |---:|---|---:|---:|
 | 1 | **Qwen 27B Q5_K_XL** | **98.7%** | 60 |
-| 2 | Qwen 27B MTP Q5_K_XL | 97.5% | 164 |
-| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 97.5% | **359** |
-| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 152 |
-| 5 | Qwen 35B-A3B NVFP4 MTP | 96.3% | 302 |
+| 2 | Qwen3.8 27B Q5_K_XL | 98.4% | 39 |
+| 3 | Qwen3.8 27B Uncensored Q5_K_M | 98.4% | 40 |
+| 4 | Qwen 27B MTP Q5_K_XL | 97.5% | 164 |
+| 5 | Qwen 35B-A3B MTP MoE Q4_K_M | 97.5% | **359** |
 
 **Takeaway:** the dense Qwen 27B is the strongest problem-solver; MTP is a free,
-lossless speed-up (always ship it). Schema, scoring, per-category/per-language
+lossless speed-up (always ship it); and abliteration (Qwen3.8 Uncensored, the
+shipped default) measures at zero capability cost against its stock twin.
+Schema, scoring, per-category/per-language
 breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 **[docs/RESULTS.md](docs/RESULTS.md)**.
 

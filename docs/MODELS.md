@@ -69,7 +69,7 @@ MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draf
 
 **The fastest Qwen3.6-era MTP build** — 136 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth (a flat plateau topping at **n8**, profiled with `scripts/profile-heretic-v2-mtp.sh q5`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard. Kept as the fallback uncensored until the Qwen3.8-Uncensored default earns a clean leaderboard row. *The Q6_K twin (208K, 2.25 GB headroom, ~139 tok/s at n4) was pruned 2026-08-20 — dominated by this Q5 within its own family; re-download from the llmfan46 HF repo if ever needed.*
 
-## Qwen3.8-27B (Qwen / unsloth) — added + profiled 2026-08-14 ⚠️ NOT YET BENCHMARKED
+## Qwen3.8-27B (Qwen / unsloth) — added 2026-08-14, benchmarked 2026-08-21
 
 [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) ·
 [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) —
@@ -198,9 +198,16 @@ for them without measuring.
 Untested: **video** input (the template renders `<|video_pad|>` blocks), and
 the `mmproj-BF16.gguf` variant.
 
-**Benchmarks are deliberately empty.** All four rows are registered in
-`evals/benchmark_all.py` with no leaderboard entry. Run them with
-`python evals/benchmark_all.py --models qwen38-27b-q5,qwen38-27b-mtp-q5,qwen38-27b-q6,qwen38-27b-mtp-q6`.
+**Benchmarked 2026-08-21 (v4, `--jobs 4`): capability 98.4 (solve 99.1 /
+lang 96.5), 261/291 — leaderboard #2**, behind the Qwen3.6-27B champion
+(98.7, 271/291). The generational story: identical 99.1 solve rate, and the
+entire gap is **zig ports** (22 zig fails vs the champion's 11; non-zig
+fails 8 vs 9 — Qwen3.8 is equal-or-better everywhere except zig). Note the
+run's tokens: 26.6M vs the champion's 14.0M — Qwen3.8 reasons ~2× more
+verbosely per task, which is a real interactive-latency cost that the tok/s
+column doesn't show. The MTP and Q6 rows remain unbenchmarked
+(`python evals/benchmark_all.py --models qwen38-27b-mtp-q5,qwen38-27b-q6,qwen38-27b-mtp-q6`);
+Qwen3.6 precedent says MTP is a statistical capability tie with its twin.
 Qwen's card claims SWE-bench Pro 61.7 and OSWorld-Verified 84.3 against Opus 4.6
 Max's 53.4 / 72.7 (losing Terminal Bench 2.1, 73.0 vs 78.2) — vendor-reported,
 on benchmarks our suite does not run. Treat as unverified until our own sweep
@@ -272,11 +279,15 @@ serialize — use the non-MTP script for a multi-user rig), temperature ≤ 1.0,
 `repetition_penalty = 1.0`. Acceptance at 56% is comfortably above the ~50%
 floor below which a non-MTP quant is the better trade.
 
-⚠️ **Not yet benchmarked.** Both rows are registered in
-`evals/benchmark_all.py` with no leaderboard entry. This matters more than
-usual: abliteration is the one edit that plausibly costs capability, and this
-is now what every fresh install serves. Run it with
-`python evals/benchmark_all.py --models qwen38-27b-uncensored-q5,qwen38-27b-uncensored-mtp-q5`.
+✅ **Benchmarked 2026-08-21 (v4, `--jobs 4`, non-MTP row): capability 98.38
+(solve 99.1 / lang 96.2), 259/291 — leaderboard #3.** The abliteration
+question is answered: **zero measurable capability cost** — stock Qwen3.8
+scored 98.44 / 261/291 on the same suite (identical 99.1 solve rate; the
+2-unit gap is inside zig-port noise). The default ships vindicated: same
+capability as stock, 140 tok/s with MTP, best-in-fleet headroom. The MTP
+row itself is still unbenchmarked
+(`python evals/benchmark_all.py --models qwen38-27b-uncensored-mtp-q5`);
+Qwen3.6 precedent says MTP ties its non-MTP twin on capability.
 
 ## What the opencode picker shows (and what it doesn't)
 
