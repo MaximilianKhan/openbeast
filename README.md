@@ -472,19 +472,32 @@ ML/LLM internals, distributed systems, security, and more. Every task is
 self-contained with deterministic checks, and the multi-model runner produces a
 **capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
 
-**v4 leaderboard** (RTX 5090 ×1, top 5 — full board + methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
+**v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
 
-| # | Model | Score | Spd t/s |
-|---:|---|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | **98.7%** | 60 |
-| 2 | Qwen3.8 27B Q5_K_XL | 98.4% | 39 |
-| 3 | Qwen3.8 27B Uncensored Q5_K_M | 98.4% | 40 |
-| 4 | Qwen 27B MTP Q5_K_XL | 97.5% | 164 |
-| 5 | Qwen 35B-A3B MTP MoE Q4_K_M | 97.5% | **359** |
+| # | Model | Quant | Variant | Ctx | 1-stream t/s | Score | Harness | Tokens | Avg compl/unit | Σ unit time |
+|---:|---|---|---|---:|---:|---:|---|---:|---:|---:|
+| 1 | **Qwen3.6 27B** | Q5_K_XL | dense | 350K | 67 | **98.7%** | seq | 14.0M | 4.9k | 8.2 h |
+| 2 | Qwen3.8 27B | Q5_K_XL | dense | 262K | 68 | 98.4% | jobs 4 | 26.6M | 10.9k | 25.5 h |
+| 3 | Qwen3.8 27B Uncensored | Q5_K_M | abliterated | 262K | 70 | 98.4% | jobs 4 | 25.7M | 9.7k | 22.8 h |
+| 4 | Qwen3.6 27B MTP | Q5_K_XL | dense+MTP | 288K | **184** | 97.5% | seq | 13.3M | 6.0k | 3.8 h |
+| 5 | Qwen3.6 35B-A3B MTP | Q4_K_M | MoE+MTP | 512K | **379** | 97.5% | seq | 20.6M | 7.6k | 4.3 h |
+| 6 | Qwopus3.6 27B v2 MTP | Q5_K_M | SFT+MTP | 336K | 147 | 96.4% | seq | 15.4M | 6.0k | 4.6 h |
+| 7 | Qwen3.6 35B-A3B NVFP4 MTP | NVFP4 | MoE+MTP | 262K | 317 | 96.3% | seq | 17.8M | 8.0k | 6.6 h |
+| 8 | Qwen3.6 27B NVFP4 MTP | NVFP4 | dense+MTP | 262K | 115 | 95.7% | seq | 16.1M | 6.3k | 5.4 h |
+| 9 | Qwen3.6 35B-A3B | Q4_K_M | MoE | 512K | 259 | 95.0% | seq | 19.0M | 9.3k | 6.1 h |
 
-**Takeaway:** the dense Qwen 27B is the strongest problem-solver; MTP is a free,
-lossless speed-up (always ship it); and abliteration (Qwen3.8 Uncensored, the
-shipped default) measures at zero capability cost against its stock twin.
+Ctx = served context. 1-stream t/s = measured single-stream decode (serve-script
+config). Harness = eval concurrency (`seq` = sequential; `jobs 4` = 4-way
+parallel with contention-scaled timeouts — Σ unit time is inflated by shared-GPU
+contention in those rows). Tokens = prompt+completion for the full 291-unit run;
+avg compl/unit measures how verbosely the model reasons. Rows from different
+dates are score-comparable — the v4 suite (tasks, validation, scoring) is
+frozen and CI-guarded; speed columns carry each run's own conditions.
+
+**Takeaway:** the dense Qwen3.6 27B is the strongest problem-solver; MTP is a
+free, lossless speed-up (always ship it); abliteration (Qwen3.8 Uncensored, the
+shipped default) measures at zero capability cost against its stock twin; and
+Qwen3.8 reasons ~2× more verbosely than 3.6 for the same answers.
 Schema, scoring, per-category/per-language
 breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 **[docs/RESULTS.md](docs/RESULTS.md)**.
