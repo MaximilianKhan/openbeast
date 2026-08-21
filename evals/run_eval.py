@@ -189,6 +189,43 @@ def capture_inference_engine_info() -> dict:
     return info
 
 
+def _parse_server_flags(cmdline: str) -> dict:
+    """Pull the provenance-relevant flags out of a llama-server command line.
+
+    Server flags ARE experiment config — reasoning budget, slot count, KV
+    quant — assembled at launch from serve.sh + openbeast.conf + env, and
+    otherwise invisible to results: the 2026-08-20 Qwen3.8 rows ran under a
+    gitignored local REASONING_BUDGET=4096 that no file recorded, while the
+    Qwen3.6 champion ran uncapped."""
+    info: dict = {"cmdline": cmdline}
+    toks = cmdline.split()
+    for flag, key in (("--reasoning-budget", "reasoning_budget"),
+                      ("--reasoning", "reasoning"),
+                      ("-np", "parallel_slots"),
+                      ("-c", "context"),
+                      ("-ctk", "kv_cache_type")):
+        if flag in toks:
+            i = toks.index(flag)
+            if i + 1 < len(toks):
+                info[key] = toks[i + 1]
+    return info
+
+
+def capture_server_config() -> dict:
+    """Best-effort snapshot of the live llama-server invocation (local host
+    only — empty when the server runs elsewhere or isn't up)."""
+    try:
+        out = subprocess.run(["pgrep", "-ax", "llama-server"],
+                             capture_output=True, text=True, timeout=5)
+        lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
+        if not lines:
+            return {}
+        _, _, cmdline = lines[0].partition(" ")
+        return _parse_server_flags(cmdline.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+
+
 def capture_suite_version() -> str:
     """The eval-suite version from evals/SUITE_VERSION (e.g. 'v4').
 
@@ -522,6 +559,7 @@ def run_eval(
     model_slug = slugify(model_name)
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
+    server_info = capture_server_config() if not cache_only else None
 
     jobs = max(1, int(jobs))
     if cache_only and jobs > 1:
@@ -561,6 +599,10 @@ def run_eval(
         head = (engine_info.get("source_head") or "")[:9]
         head_note = f"; source HEAD {head}" if head and head != engine_info.get("commit", "") else ""
         print(f"Engine: llama.cpp {engine_info.get('build', '?')} ({engine_info.get('commit', '?')}){head_note}")
+    if server_info:
+        rb = server_info.get("reasoning_budget", "unlimited (default)")
+        print(f"Serve:  -np {server_info.get('parallel_slots', '?')} -c {server_info.get('context', '?')} "
+              f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
     print(f"Results: {results_path}")
     print("=" * 60)
 
@@ -572,6 +614,7 @@ def run_eval(
         "suite_version": capture_suite_version(),
         "gpu": gpu_info,
         "inference_engine": engine_info,
+        "server": server_info,
         "runtime": capture_runtime_info(),
         "jobs": jobs,
         "tasks": [],
