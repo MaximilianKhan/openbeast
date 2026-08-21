@@ -203,7 +203,11 @@ def capture_suite_version() -> str:
 
 def capture_runtime_info() -> dict:
     """Agent-runtime provenance: the Python + client-library versions that
-    drove the model. Each field best-effort; empty on failure."""
+    drove the model, plus OpenBeast's own commit. The agent harness
+    (agents/runner.py, agents/tools.py, prompts) drives the model and drifts
+    independently of the inference engine — without the repo SHA no
+    leaderboard row can say which harness it ran under. Each field
+    best-effort; empty on failure."""
     import platform
     info = {"python": platform.python_version(), "platform": platform.platform()}
     for pkg in ("openai", "mcp"):
@@ -212,6 +216,24 @@ def capture_runtime_info() -> dict:
             info[pkg] = version(pkg)
         except Exception:
             pass
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            info["openbeast_commit"] = result.stdout.strip()
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            # True = the run used uncommitted local changes; the SHA alone
+            # can't reproduce that harness.
+            info["openbeast_dirty"] = bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
     return info
 
 

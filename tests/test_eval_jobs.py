@@ -153,6 +153,22 @@ def test_jobs_clamped_to_server_slots(tmp_path):
     assert results["summary"]["passed"] == 7
 
 
+def test_runtime_provenance_stamps_repo_sha():
+    """Every results file must record which OpenBeast harness produced it —
+    the agent runner drifts independently of the inference engine."""
+    import subprocess
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    run_eval = importlib.import_module("run_eval")
+    info = run_eval.capture_runtime_info()
+    head = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=5,
+    ).stdout.strip()
+    assert info.get("openbeast_commit") == head
+    assert isinstance(info.get("openbeast_dirty"), bool)
+
+
 def test_fixture_dirs_unique_per_task_file():
     """The precondition scheduling-isolation rests on: no /tmp/eval_* dir is
     referenced by more than one task file. A new task reusing another task's
