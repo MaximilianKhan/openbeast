@@ -324,6 +324,23 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
+def cacheable_result(result: dict) -> bool:
+    """A result row may enter the cache only if it is a genuine verdict.
+    Environmental deaths must retry clean on the next run:
+      exit < 0 — the agent died to a signal (-1 harness wall-timeout,
+        -15 a Ctrl-C'd sweep, -9 the OOM reaper). The 2026-08-22 interrupt
+        banked four SIGTERM'd in-flight units as 0-token "failures" that
+        silently replayed in the 2026-09-08 Phase A' rerun.
+      0 completion tokens + failed — the model never produced anything
+        (server crash/restart window, dead endpoint); a capability verdict
+        requires the model to have actually spoken."""
+    if (result.get("agent_exit_code") or 0) < 0:
+        return False
+    if not result.get("passed") and not result.get("tokens_completion"):
+        return False
+    return True
+
+
 SUITES_DIR = os.path.join(EVALS_DIR, "suites")
 
 
@@ -810,9 +827,16 @@ def run_eval(
 
         # Cache the result for future reruns. We cache both PASS and
         # deterministic FAIL — replaying a known fail is replay-safe.
-        # We do NOT cache timeouts (agent_exit_code == -1): those are
-        # environmental, not deterministic, and we want a clean retry.
-        if use_cache and result.get("agent_exit_code") != -1:
+        # We do NOT cache environmental deaths — they must retry clean:
+        #   exit == -1: harness wall-timeout.
+        #   exit < 0 generally: the agent died to a SIGNAL (-15 = the user
+        #     Ctrl-C'ing a sweep; -9 = OOM reaper). The 2026-08-22 interrupt
+        #     banked four SIGTERM'd in-flight units as 0-token "failures"
+        #     that silently replayed in the 2026-09-08 Phase A' rerun.
+        #   0 completion tokens + failed: the model never produced anything
+        #     (server crash/restart window, dead endpoint) — a capability
+        #     verdict needs the model to have actually spoken.
+        if use_cache and cacheable_result(result):
             try:
                 cache.cache_put(ck, result)
             except Exception as e:
