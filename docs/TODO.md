@@ -150,14 +150,17 @@ MTP as a statistical capability tie with its non-MTP twin, so expected
 information is low — run only if Phase A surprises or the leaderboard
 should show the exact shipped config.
 
-**Phase C — pin `v5-fast` (CPU-only, can be built while Phase A runs):**
-Generate the 106-unit suite (86 discriminating + 20 tripwires) from the
-7 v4 runs, pin the unit list under `evals/` (reproducible, not recomputed),
-add a `--suite` selector, and re-verify Kendall τ against the full
-`scoring.py` capability metric — then re-verify again once the Phase A
-rows exist (the discrimination analysis predates Qwen3.8). After this,
-routine model comparisons cost **~0.85 h** (v5-fast + `--jobs 4`)
-instead of ~5.6 h.
+**Phase C — pin `v5-fast`: ✅ BUILT 2026-09-08 (overnight session).**
+`evals/suites/v5-fast.json` (86 discriminating + 20 tripwires, generated
+from the 7 pre-Qwen3.8 reference runs, tainted rows excluded) +
+`make_fast_suite.py` + `--suite` on run_eval/benchmark_all. The τ
+re-verification MATTERED: on the full capability metric suite F only
+scored τ = +0.810 (proposal's +1.000 was on weighted pass rate — §7's
+caveat was real), so the shipped design scores by IMPUTATION (measured
+106 + assumed 185 saturated) which equals full-291 capability exactly
+for in-family models; tripwire failures flag the rest. Remaining: re-pin
+with the Phase A′ rows as references once they land (deliberate
+`--generate` act; the drift check reminds you).
 
 **Phase D — second prune gate: TRIGGERED, Max's call pending (2026-08-21).**
 Qwen3.8-Uncensored scored 98.38 ≥ the 97.5 gate:

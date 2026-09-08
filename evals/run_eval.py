@@ -324,6 +324,34 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
+SUITES_DIR = os.path.join(EVALS_DIR, "suites")
+
+
+def load_suite(name: str) -> dict:
+    """Load a pinned suite subset from evals/suites/{name}.json and validate
+    it against the task specs: units + assumed_passed + assumed_failed must
+    exactly cover the effective unit set, or the pin has drifted from
+    evals/tasks/ and running it would silently mis-score."""
+    path = os.path.join(SUITES_DIR, f"{name}.json")
+    if not os.path.isfile(path):
+        avail = sorted(os.path.splitext(f)[0] for f in os.listdir(SUITES_DIR)
+                       if f.endswith(".json")) if os.path.isdir(SUITES_DIR) else []
+        raise SystemExit(f"unknown suite {name!r} (available: {', '.join(avail) or 'none'})")
+    with open(path) as f:
+        suite = json.load(f)
+    pinned = set(suite["units"]) | set(suite.get("assumed_passed", [])) | set(suite.get("assumed_failed", []))
+    actual = {t["id"] for t in load_tasks(None)}
+    if pinned != actual:
+        missing = sorted(actual - pinned)[:5]
+        stale = sorted(pinned - actual)[:5]
+        raise SystemExit(
+            f"suite {name!r} has drifted from evals/tasks/ "
+            f"({len(actual - pinned)} unpinned units e.g. {missing}; "
+            f"{len(pinned - actual)} stale pins e.g. {stale}). "
+            f"Regenerate with evals/make_fast_suite.py --generate (deliberate act).")
+    return suite
+
+
 def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
@@ -516,6 +544,7 @@ def run_eval(
     health_check=None,
     recover_cb=None,
     jobs: int = 1,
+    suite: str | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
@@ -544,7 +573,16 @@ def run_eval(
     import cache  # local import — keeps run_eval importable in environments without cache.py
     if cache_only and not use_cache:
         raise ValueError("cache_only requires use_cache=True (cache_only is meaningless without cache lookup)")
+    suite_pin = None
+    if suite:
+        if task_filter is not None:
+            raise ValueError("--suite and --tasks are mutually exclusive")
+        suite_pin = load_suite(suite)
+        task_filter = list(suite_pin["units"])
     tasks = load_tasks(task_filter)
+    if suite_pin and len(tasks) != suite_pin["counts"]["units"]:
+        raise SystemExit(f"suite {suite!r} resolved to {len(tasks)} units, "
+                         f"pin declares {suite_pin['counts']['units']} — pin/tasks drift")
     if not tasks:
         print("No tasks found.")
         return {}
@@ -603,6 +641,11 @@ def run_eval(
         rb = server_info.get("reasoning_budget", "unlimited (default)")
         print(f"Serve:  -np {server_info.get('parallel_slots', '?')} -c {server_info.get('context', '?')} "
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
+    if suite_pin:
+        c = suite_pin["counts"]
+        print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
+              f"+ {c['tripwires']} tripwires; {c['assumed_passed'] + c['assumed_failed']} imputed; "
+              f"leaderboard-ineligible partial of v4)")
     print(f"Results: {results_path}")
     print("=" * 60)
 
@@ -617,6 +660,7 @@ def run_eval(
         "server": server_info,
         "runtime": capture_runtime_info(),
         "jobs": jobs,
+        "suite_selection": suite,
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -821,6 +865,28 @@ def run_eval(
         print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
     if counters["aborted_skips"]:
         print(f"Aborted: {counters['aborted_skips']} tasks skipped after server loss")
+    if suite_pin and not counters["aborted_skips"]:
+        import scoring  # local import, like cache — keeps import surface lazy
+        trip_failed = [t["id"] for t in results["tasks"]
+                       if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]
+        imputed = scoring.impute_suite_tasks(results["tasks"], suite_pin)
+        solve, lang, cap = scoring.compute_solve_breadth(imputed)
+        results["fast_suite"] = {
+            "suite": suite,
+            "capability_imputed": cap,
+            "problem_solving_imputed": solve,
+            "language_breadth_imputed": lang,
+            "imputed_units": len(imputed) - len(results["tasks"]),
+            "tripwire_failures": trip_failed,
+        }
+        _write_results(results_path, results)
+        print(f"Imputed capability (v4-leaderboard scale): {cap:.2f} "
+              f"(solve {solve:.2f} / breadth {lang:.2f}; "
+              f"{results['fast_suite']['imputed_units']} saturated units imputed)")
+        if trip_failed:
+            print(f"TRIPWIRE FAILURES ({len(trip_failed)}): {', '.join(trip_failed)}")
+            print("  This model breaks the suite's saturation assumption — the imputed "
+                  "score above is NOT trustworthy. Run the full v4 suite.")
     print(f"Saved to: {results_path}")
     print(f"{'=' * 60}")
 
@@ -837,6 +903,9 @@ def main():
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — skip live runs entirely. Cache misses recorded as 'skipped_cache_miss'.")
+    parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
+                        "(e.g. v5-fast). Mutually exclusive with --tasks; results are "
+                        "leaderboard-ineligible and scored via imputation on the v4 scale.")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel eval workers (default 1). Needs a server with -np >= N "
                              "(clamped to /props total_slots when readable; MTP configs are -np 1). "
@@ -855,6 +924,9 @@ def main():
         return
 
     task_filter = args.tasks.split(",") if args.tasks else None
+    if args.suite and args.tasks:
+        print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
@@ -866,6 +938,7 @@ def main():
         use_cache=not args.no_cache,
         cache_only=args.cache_only,
         jobs=args.jobs,
+        suite=args.suite,
     )
 
     # Exit with failure if any task failed

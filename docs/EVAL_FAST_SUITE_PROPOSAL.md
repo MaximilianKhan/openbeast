@@ -1,5 +1,18 @@
 # A faster eval suite — measured proposal (2026-08-19)
 
+> **STATUS 2026-09-08: BUILT (Phase C).** `--jobs` landed 2026-08-20 (PR #21);
+> the pinned suite + `--suite` selector landed as `evals/suites/v5-fast.json` +
+> `evals/make_fast_suite.py`. **One design change, forced by measurement:** §7's
+> caveat was real — re-verifying fidelity on the FULL v2 capability metric
+> (not weighted pass rate) gave suite F only **τ = +0.810** and flipped the
+> near-tied #4–#6 ranks; renormalizing variant counts made it worse (+0.619)
+> and base-complete closure destroyed the speedup (85% of full runtime). The
+> shipped design scores fast runs by **imputation** instead: measured 106 units
+> + assumed outcomes for the 185 saturated units = EXACTLY the full-291
+> capability for in-family models (verified as an identity on all reference
+> runs), with tripwire failures flagging models where the assumption is unsafe.
+> See `evals/README.md` § v5-fast.
+
 Target: run the capability eval in **1/3 to 1/4** of current wall-clock.
 
 Everything below is measured against the **7 completed v4 runs** in

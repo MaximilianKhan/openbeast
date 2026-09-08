@@ -287,7 +287,8 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                     max_iter_override: int | None,
                     use_cache: bool = True,
                     cache_only: bool = False,
-                    jobs: int = 1) -> dict:
+                    jobs: int = 1,
+                    suite: str | None = None) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
@@ -305,6 +306,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                 model_name=model["name"],
                 use_cache=True,
                 cache_only=True,
+                suite=suite,
             )
         except Exception as e:
             return {"slug": model["slug"], "name": model["name"],
@@ -345,6 +347,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
             health_check=ping_health,
             recover_cb=_recover,
             jobs=jobs,
+            suite=suite,
         )
     except Exception as e:
         stop_llama_server()
@@ -370,7 +373,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
               use_cache: bool = True,
               cache_only: bool = False,
               update_leaderboard: bool = True,
-              jobs: int = 1) -> dict:
+              jobs: int = 1,
+              suite: str | None = None) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -385,7 +389,7 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
         print(f"\n[{i}/{len(models)}] Starting model")
         outcome = benchmark_model(model, task_filter, max_iter_override,
                                    use_cache=use_cache, cache_only=cache_only,
-                                   jobs=jobs)
+                                   jobs=jobs, suite=suite)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -457,6 +461,10 @@ def main():
                              "smoke tests / partial-suite runs: the leaderboard must only "
                              "ever contain full-suite sweeps, or its accuracy numbers "
                              "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
+    parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
+                        "(e.g. v5-fast) instead of the full task set. Implies "
+                        "--no-leaderboard: fast-suite scores are imputed readouts, "
+                        "never leaderboard rows.")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel eval workers per model (default 1). run_eval clamps "
                              "to each server's /props total_slots, so MTP (-np 1) models "
@@ -494,6 +502,14 @@ def main():
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
+    if args.suite and args.tasks:
+        print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+    update_lb = not args.no_leaderboard
+    if args.suite and update_lb:
+        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
+              f"scores are imputed readouts, never leaderboard rows).")
+        update_lb = False
     if args.tasks and not args.no_leaderboard:
         print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
               "will be recorded in leaderboard.json and mix incomparably with "
@@ -502,8 +518,9 @@ def main():
     summary = run_sweep(models, task_filter, args.max_iter,
                          use_cache=not args.no_cache,
                          cache_only=args.cache_only,
-                         update_leaderboard=not args.no_leaderboard,
-                         jobs=args.jobs)
+                         update_leaderboard=update_lb,
+                         jobs=args.jobs,
+                         suite=args.suite)
     summary_path = save_sweep_summary(summary)
 
     # Final report
