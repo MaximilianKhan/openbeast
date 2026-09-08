@@ -93,7 +93,8 @@ def task_hash(task: dict[str, Any]) -> str:
 
 
 def cache_key(task: dict[str, Any], model_slug: str,
-              max_iter: int | None = None) -> str:
+              max_iter: int | None = None,
+              diag: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -103,7 +104,13 @@ def cache_key(task: dict[str, Any], model_slug: str,
     15. None (the default) omits the segment, preserving legacy key shape
     for callers that don't thread a budget."""
     mi = f".mi{max_iter}" if max_iter is not None else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}.{_context_hash_cached()}"
+    # Push-diagnostics era component (docs/LANG_AWARENESS_PLAN.md §3.4).
+    # OMITTED when diagnostics are off so legacy keys — every row banked
+    # before the feature existed — stay reachable. When on, the component
+    # carries a toolchain fingerprint, not a boolean: zig 0.16.0 vs 0.16.1
+    # emit different diagnostics → different model trajectories.
+    dg = f".{diag}" if diag else ""
+    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}.{_context_hash_cached()}"
 
 
 def cache_path(key: str) -> Path:

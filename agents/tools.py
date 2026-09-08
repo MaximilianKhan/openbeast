@@ -19,8 +19,11 @@ import resource
 import shlex
 import signal
 import socket
+import shutil
 import stat
 import subprocess
+import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -65,7 +68,7 @@ def _killpg(proc):
         pass
 
 
-def run_reaped(command, timeout, **popen_kw):
+def run_reaped(command, timeout, as_limit=None, **popen_kw):
     """subprocess.run(shell=True)-alike that (a) kills the WHOLE process group
     on timeout and (b) bounds how much output the PARENT buffers.
 
@@ -87,11 +90,12 @@ def run_reaped(command, timeout, **popen_kw):
     # on Darwin fall back to preexec_fn/setrlimit (the documented fork-safety
     # caveat is accepted only on the prlimit-less platform, and RLIMIT_AS is
     # best-effort there anyway).
+    _as_limit = as_limit or _CHILD_AS_LIMIT
     if not hasattr(resource, "prlimit"):
         def _cap_as():
             try:
                 resource.setrlimit(resource.RLIMIT_AS,
-                                   (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+                                   (_as_limit, _as_limit))
             except (OSError, ValueError):
                 pass
         popen_kw = dict(popen_kw, preexec_fn=_cap_as)
@@ -106,7 +110,7 @@ def run_reaped(command, timeout, **popen_kw):
     if hasattr(resource, "prlimit"):
         try:
             resource.prlimit(proc.pid, resource.RLIMIT_AS,
-                             (_CHILD_AS_LIMIT, _CHILD_AS_LIMIT))
+                             (_as_limit, _as_limit))
         except (OSError, ProcessLookupError, AttributeError):
             pass
     kept = bytearray()
@@ -369,6 +373,135 @@ def _manifest_log(action: str, path: str, nbytes: int) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Push-diagnostics (docs/LANG_AWARENESS_PLAN.md §3) — experiment-gated.
+# Default OFF; OPENBEAST_DIAGNOSTICS=1 opts in (set by the A/B's on-arms).
+# Every write_file/edit_file of a source file gets its language's checker
+# verdict appended to the tool result — pushed, never model-initiated.
+# Security spec (§3.3): paths shlex-quoted (run_reaped is shell=True),
+# scrubbed env, OPENBEAST_BASH_WRAPPER honored, tight AS rlimit, output cap,
+# and env hardening that closes go's toolchain-download/network channels.
+# ---------------------------------------------------------------------------
+
+_DIAG_TIMEOUT = 10
+_DIAG_MAX_LINES = 30
+_DIAG_MAX_BYTES = 2048
+_DIAG_AS_LIMIT = 4 * 1024**3   # tighter than _CHILD_AS_LIMIT (§3.3)
+_DIAG_SLOTS = threading.BoundedSemaphore(2)  # N-jobs × checkers RAM cap
+
+
+def _diag_checker(path: str):
+    """(lang, command, extra_env, scratch_dirs) for a source path, or None.
+
+    Commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
+    §3.2 — measured on the rig). A missing toolchain returns None: the
+    feature silently no-ops rather than degrading the write."""
+    ext = os.path.splitext(path)[1]
+    q = shlex.quote(path)
+    qdir = shlex.quote(os.path.dirname(path) or ".")
+    if ext == ".zig":
+        if not shutil.which("zig"):
+            return None
+        scratch = tempfile.mkdtemp(prefix="diagzig")
+        env = {"ZIG_GLOBAL_CACHE_DIR": scratch, "ZIG_LOCAL_CACHE_DIR": scratch}
+        # build-exe -fno-emit-bin runs full Sema (ast-check is AstGen-only
+        # and passes stale-std code CLEAN — measured; build-obj skips
+        # unreferenced fns). Main-less files fall back to ast-check to avoid
+        # a bogus missing-main error.
+        try:
+            with open(path, errors="replace") as f:
+                has_main = "fn main" in f.read(_DIAG_MAX_BYTES * 64)
+        except OSError:
+            has_main = True
+        cmd = (f"zig build-exe -fno-emit-bin {q}" if has_main
+               else f"zig ast-check {q}")
+        return ("zig", cmd, env, [scratch])
+    if ext == ".rs":
+        if not shutil.which("rustc"):
+            return None
+        scratch = tempfile.mkdtemp(prefix="diagrs")
+        # NOT -o /dev/null (rustc can't create temp files there — measured
+        # failing on CLEAN code). No --edition pin: mirrors the validator.
+        return ("rust", f"rustc --emit=metadata --out-dir {shlex.quote(scratch)} {q}",
+                {}, [scratch])
+    if ext == ".go":
+        if not shutil.which("go"):
+            return None
+        # File mode works module-less; vet all siblings to avoid false
+        # `undefined:` on multi-file packages. Env closes the toolchain-
+        # download (GOTOOLCHAIN), network (GOPROXY) and cgo channels.
+        env = {"GOTOOLCHAIN": "local", "GOPROXY": "off",
+               "GOFLAGS": "-mod=readonly", "CGO_ENABLED": "0"}
+        return ("go", f"cd {qdir} && go vet ./*.go", env, [])
+    if ext == ".c":
+        if not shutil.which("gcc"):
+            return None
+        return ("c", f"gcc -fsyntax-only -std=c11 -Wall -Wextra -I{qdir} {q}", {}, [])
+    if ext in (".cpp", ".cc", ".cxx"):
+        if not shutil.which("g++"):
+            return None
+        return ("c++", f"g++ -fsyntax-only -std=c++17 -Wall -Wextra -I{qdir} {q}", {}, [])
+    if ext == ".py":
+        # -I (isolated) is a SECURITY requirement: bare python executes
+        # model-writable .pth files from user site-packages at startup.
+        return ("python", f"{shlex.quote(sys.executable)} -I -m py_compile {q}", {}, [])
+    if ext == ".sh":
+        if not shutil.which("shellcheck"):
+            return None
+        return ("shell", f"shellcheck -S warning {q}", {}, [])
+    return None
+
+
+def diagnostics_enabled() -> bool:
+    """Read per-call so a server toggle needs no restart (mirrors the
+    OPENBEAST_BASH_WRAPPER pattern)."""
+    return os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+
+
+def _run_diagnostics(path: str) -> str:
+    """Checker verdict for `path`, formatted for appending to a tool result.
+    Returns "" when diagnostics are off, no checker applies, or the checker
+    itself breaks — a broken checker must never fail a write."""
+    if not diagnostics_enabled():
+        return ""
+    checker = None
+    try:
+        checker = _diag_checker(path)
+        if checker is None:
+            return ""
+        lang, cmd, extra_env, scratches = checker
+        wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
+        if wrapper:
+            cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
+        env = _scrubbed_env()
+        env.update(extra_env)
+        if not _DIAG_SLOTS.acquire(timeout=5):
+            return "\ndiagnostics: unavailable (busy)"
+        try:
+            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
+        finally:
+            _DIAG_SLOTS.release()
+        out = (out or "").strip()
+        if rc == 0 and not out:
+            return f"\ndiagnostics: OK ({lang})"
+        if rc == 0 and out:
+            # warnings only (shellcheck/-Wall) — still worth showing
+            pass
+        lines = out.splitlines()[:_DIAG_MAX_LINES]
+        block = "\n".join(lines)[:_DIAG_MAX_BYTES]
+        n = sum(1 for line in out.splitlines() if "error" in line.lower())
+        label = f"{n} error{'s' if n != 1 else ''}" if n else "warnings"
+        return (f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──")
+    except subprocess.TimeoutExpired:
+        return "\ndiagnostics: unavailable (timeout)"
+    except Exception as e:
+        return f"\ndiagnostics: unavailable ({type(e).__name__})"
+    finally:
+        if checker:
+            for d in checker[3]:
+                shutil.rmtree(d, ignore_errors=True)
+
+
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
@@ -383,7 +516,7 @@ def write_file(path: str, content: str) -> str:
         with open(path, "w") as f:
             f.write(content)
         _manifest_log("write", path, len(content))
-        return f"Wrote {len(content)} bytes to {path}"
+        return f"Wrote {len(content)} bytes to {path}" + _run_diagnostics(path)
     except Exception as e:
         return f"Error: {e}"
 
@@ -472,12 +605,15 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         new_lines = new_string.count("\n") + 1
 
         if replace_all and count > 1:
-            return f"Replaced {count} occurrences in {path} ({len(old_string)} → {len(new_string)} chars each)"
+            return (f"Replaced {count} occurrences in {path} "
+                    f"({len(old_string)} → {len(new_string)} chars each)"
+                    + _run_diagnostics(path))
         else:
             return (
                 f"Edited {path} at line {change_line}: "
                 f"replaced {old_lines} line{'s' if old_lines != 1 else ''} "
                 f"with {new_lines} line{'s' if new_lines != 1 else ''}"
+                + _run_diagnostics(path)
             )
     except Exception as e:
         return f"Error: {e}"
