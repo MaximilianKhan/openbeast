@@ -1,5 +1,34 @@
 # TODO
 
+## 🧹 SERVING/RESEARCH SEPARATION — audit 2026-09-08 (Max's ask), fix post-sweep
+
+Audit found the research campaign entangled with the serving path:
+
+1. **The LIVE serving build carries the beast-rank CUDA kernels**
+   (fingerprint strings verified in `build/bin/libggml-cuda.so.0`), the
+   llama.cpp tree sits on the `beast-rank-kernels` branch, and FOUR
+   research build dirs live beside it (build-alloc/-gradgram/-moegram/
+   -rebase). The 2026-08-14 gate ("prove the kernels don't perturb
+   inference") was never closed by measurement — every eval row since
+   08-04, including Phase A′, ran on this build. Mitigations that hold
+   today: the kernels are LoRA-TQ paths, dormant with no TQ adapter
+   loaded, and all leaderboard rows share the build (internally
+   comparable). **FIX (closes the gate BY CONSTRUCTION, bundled with
+   the already-owed ≥b10829 GDN rebase):** post-sweep, build a clean
+   upstream b10865 into the serving path with zero research patches;
+   research kernels move to a dedicated `build-research/`; serve.sh
+   never points at a patched build again. One era bump, three problems
+   solved (GDN fix + kernel purity + MoE-MTP speedup #27621).
+2. **Unpinned weights in `weights/`**: research artifacts
+   (Qwen3.5-0.8B BF16/Q4 pair, restored heretic BF16) plus two legacy
+   strays (`glm-4-9b-chat-Q8_0`, `SocratTeachLLM-Q8_0` — Max to
+   disposition). Research artifacts move under `weights/research-staging/`
+   (already holds the GSQ/T1.17 downloads) so doctor/verify-weights see
+   only registry-pinned serving weights at top level.
+3. NOT strays (checked): the NVFP4 serve scripts (deliberate KEEP),
+   `/tmp/eval_*` (live sweep fixtures), `research/lowrank/` data in the
+   main tree (git-ignored by design; documented in memory).
+
 ## 🧠 LANGUAGE AWARENESS — designed + adversarially reviewed 2026-09-08, A/B QUEUED (Max-triggered)
 
 Push compiler diagnostics into every `write_file`/`edit_file` result
