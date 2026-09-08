@@ -324,6 +324,36 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
+def diagnostics_flag() -> tuple[bool, str | None, dict]:
+    """Derive the push-diagnostics state ONCE per run (docs/
+    LANG_AWARENESS_PLAN.md §3.4): the cache-key component and the agent
+    subprocess env must come from the same read or they can disagree.
+
+    Returns (enabled, cache_component, toolchain_versions). The component
+    is a toolchain fingerprint, not a boolean — different checker
+    toolchains emit different diagnostics."""
+    enabled = os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+    if not enabled:
+        return False, None, {}
+    import hashlib
+    import shutil as _sh
+    versions = {}
+    for name, cmd in (("zig", ["zig", "version"]),
+                      ("rustc", ["rustc", "--version"]),
+                      ("go", ["go", "version"]),
+                      ("gcc", ["gcc", "-dumpfullversion"]),
+                      ("shellcheck", ["shellcheck", "--version"])):
+        if _sh.which(cmd[0]):
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True,
+                                     timeout=10).stdout.strip()
+                versions[name] = out.splitlines()[0][:60] if out else "?"
+            except Exception:
+                versions[name] = "?"
+    fp = hashlib.sha256(json.dumps(versions, sort_keys=True).encode()).hexdigest()[:8]
+    return True, f"diag1-{fp}", versions
+
+
 def cacheable_result(result: dict) -> bool:
     """A result row may enter the cache only if it is a genuine verdict.
     Environmental deaths must retry clean on the next run:
@@ -596,6 +626,10 @@ def run_eval(
             raise ValueError("--suite and --tasks are mutually exclusive")
         suite_pin = load_suite(suite)
         task_filter = list(suite_pin["units"])
+    diag_on, diag_component, diag_toolchains = diagnostics_flag()
+    # Export explicitly so the agent subprocess and the cache key agree by
+    # construction (same read, §3.4).
+    os.environ["OPENBEAST_DIAGNOSTICS"] = "1" if diag_on else "0"
     tasks = load_tasks(task_filter)
     if suite_pin and len(tasks) != suite_pin["counts"]["units"]:
         raise SystemExit(f"suite {suite!r} resolved to {len(tasks)} units, "
@@ -658,6 +692,9 @@ def run_eval(
         rb = server_info.get("reasoning_budget", "unlimited (default)")
         print(f"Serve:  -np {server_info.get('parallel_slots', '?')} -c {server_info.get('context', '?')} "
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
+    if diag_on:
+        print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
+              f"cache era {diag_component}")
     if suite_pin:
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
@@ -678,6 +715,8 @@ def run_eval(
         "runtime": capture_runtime_info(),
         "jobs": jobs,
         "suite_selection": suite,
+        "harness": {"diagnostics": diag_on,
+                    **({"toolchains": diag_toolchains} if diag_on else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -737,7 +776,8 @@ def run_eval(
         # land for any downstream inspection.
         ck = None
         if use_cache:
-            ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter)
+            ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
+                                 diag=diag_component)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
@@ -889,7 +929,7 @@ def run_eval(
         print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
     if counters["aborted_skips"]:
         print(f"Aborted: {counters['aborted_skips']} tasks skipped after server loss")
-    if suite_pin and not counters["aborted_skips"]:
+    if suite_pin and not counters["aborted_skips"] and not counters["cache_misses_skipped"]:
         import scoring  # local import, like cache — keeps import surface lazy
         trip_failed = [t["id"] for t in results["tasks"]
                        if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]

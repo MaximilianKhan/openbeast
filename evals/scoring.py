@@ -806,11 +806,29 @@ def main():
             return (is_full_suite(e), e.get("timestamp") or "")
 
         by_key: dict[tuple, dict] = {}
+        skipped_partial = 0
         for path in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
             if not path.startswith("eval-") or not path.endswith(".json"):
                 continue
             full = os.path.join(RESULTS_DIR, path)
+            # Board-ineligible files never enter the rebuild pool: a pinned
+            # fast-suite run (suite_selection set) scores garbage under raw
+            # score_run (106 hardest units, no imputation), and update_
+            # leaderboard's 291-guard doesn't run on this path — without
+            # this check, an era whose only files are fast-suite partials
+            # would seat that garbage as its best row.
+            try:
+                with open(full) as fh:
+                    raw = json.load(fh)
+                if raw.get("suite_selection"):
+                    skipped_partial += 1
+                    continue
+            except (OSError, json.JSONDecodeError):
+                continue
             entry = score_results_file(full)
+            if not is_full_suite(entry):
+                skipped_partial += 1
+                continue
             key = entry_dedup_key(entry)
             existing = by_key.get(key)
             if not existing or _preference(entry) > _preference(existing):
@@ -819,7 +837,8 @@ def main():
         _atomic_write_json(LEADERBOARD_PATH,
                            {"updated_at": datetime.now().isoformat(), "entries": entries})
         n_hosts = len({entry_host_id(e) for e in entries})
-        print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s).")
+        print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s)."
+              + (f" ({skipped_partial} partial/fast-suite file(s) excluded)" if skipped_partial else ""))
 
     if args.compare_hosts:
         entries = load_leaderboard()
