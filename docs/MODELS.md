@@ -93,6 +93,15 @@ enable it).
 > architectural-novelty explanation was wrong. The one genuine structural
 > difference is the MTP head — see below.
 
+> **Second correction (2026-08-19, recorded 2026-09-08).** The ~18 KB/token
+> figure above is *derived from the GGUF header*, and the 2026-08-19 context
+> probes measured the real cost from VRAM deltas at **~24 KB/token non-MTP
+> and ~28 KB/token with MTP n4** (the draft context scales with `-c` too).
+> The gap is real overhead the header math doesn't see. **Use the measured
+> numbers for any headroom arithmetic**; the 18 stands only as the
+> header-derived floor. (Flagged in TODO.md when the probe landed; recorded
+> here so headroom math stops inheriting the low figure.)
+
 **Requires a llama.cpp with `LLM_ARCH_QWEN35`.** Ours already has it (build
 2026-08-04, `b10066-188-g0ef6e55ed`) — **no upgrade and no vLLM needed**.
 

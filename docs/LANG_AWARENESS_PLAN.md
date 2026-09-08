@@ -1,6 +1,7 @@
 # Language awareness for the harness — push-diagnostics + awareness packs (design, 2026-09-08)
 
-> **Status: DESIGN — experiment-gated.** Nothing here is built. The A/B
+> **Status: Tier 1 BUILT (PR #37, merge held until the current eval era is
+> banked — §6.2); A/B pending.** Everything else is design. The A/B
 > experiment in §7 gates every build phase and is queued behind the
 > 2026-09-08 Phase A′ results work. A 4-agent parallel adversarial review
 > (security / eval-integrity+statistics / systems-with-measurements /
