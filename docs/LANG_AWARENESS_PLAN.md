@@ -89,7 +89,7 @@ A/B token accounting).
 | ext | checker command | measured latency | notes |
 |---|---|---|---|
 | .zig | `zig build-exe -fno-emit-bin FILE` | 0.14–0.18 s | **The load-bearing row.** `ast-check` is AstGen-only — measured passing stale `std.io`/`std.ascii` code CLEAN; it cannot see the §1 failure class and would emit *active false assurance*. `build-obj -fno-emit-bin` is also invalid (lazy analysis skips unreferenced fns — measured rc=0 on a stale call). For files without `pub fn main`, fall back to `ast-check` (build-exe would emit a bogus missing-main error). Scratch `ZIG_GLOBAL_CACHE_DIR`. |
-| .rs | `rustc --emit=metadata --out-dir SCRATCH FILE` | 0.011 s | NOT `-o /dev/null` (measured: rustc fails creating temp files in /dev → bogus error on every clean write). No `--edition` pin — the validator compiles default-edition; the checker must mirror validation flags or checker-OK/validator-fail confusion results (measured with edition-2021 async fn). Emit to scratch, never the eval dir. |
+| .rs | `rustc --emit=metadata --out-dir <mkdtemp, removed after> FILE` | 0.011 s | NOT `-o /dev/null` (measured: rustc fails creating temp files in /dev → bogus error on every clean write). No `--edition` pin — the validator compiles default-edition; the checker must mirror validation flags or checker-OK/validator-fail confusion results (measured with edition-2021 async fn). Emit to scratch, never the eval dir. |
 | .go | `go vet` on all sibling `*.go` in the file's dir | 0.025 s | Works module-less in file mode (measured — the "go.mod not found" failure is dir-mode only). Sibling globbing avoids false `undefined:` on multi-file packages. Env-hardened: `GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=readonly CGO_ENABLED=0` (§3.3). |
 | .c | `gcc -fsyntax-only -std=c11 -Wall -Wextra -I<filedir> FILE` | 0.005 s | Flags mirror validation; `-I` for fixture headers (none in the suite today; free-agent robustness). |
 | .cpp | `g++ -fsyntax-only -std=c++17 -Wall -Wextra -I<filedir> FILE` | 0.077 s | Mirrors validation. |
@@ -151,8 +151,10 @@ does not, so the cache key gains a diag component with these properties:
 
 ### 3.5 Toggle & rollback
 
-`OPENBEAST_DIAGNOSTICS=0` disables (default on only after §7 passes).
-Stamped into provenance (§6.1) and the cache key (§3.4).
+Pre-gate the feature ships **default OFF** — `OPENBEAST_DIAGNOSTICS=1`
+opts in (this is what the A/B's on-arms set). Only after §7 passes does
+the default flip to on, with `=0` as the kill switch. Stamped into
+provenance (§6.1) and the cache key (§3.4).
 
 ### 3.6 Cost model & known risks
 
@@ -317,6 +319,11 @@ zig-only mini-A/B is the next scheduled arm — not "iterate or stop."
 1. **Tier 1** + §3.3 hardening + §3.4 key + §6.3 rebuild fix + tests
    (per-language broken-file AND stale-stdlib fixtures; timeout, missing
    checker, output cap; cache-key separation + legacy-key compat).
+   Toolchain-dependent fixture tests skip cleanly where the toolchain is
+   absent (CI) and run for real on the rig. **Merge timing:** the PR may
+   go green early but MERGES only after the current era's results are
+   fully banked (§6.2) — building on a branch never touches a live
+   sweep's tree, code, or cache.
 2. **A/B (§7).** Gate.
 3. Ship default-on + `+assist` flag + docs.
 4. Tier 3 (own era bump, own mini-A/B).
