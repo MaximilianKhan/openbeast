@@ -129,3 +129,50 @@ def test_suite_and_tasks_mutually_exclusive():
 def test_pinned_suite_loads_cleanly(pin):
     loaded = run_eval.load_suite("v5-fast")
     assert loaded["counts"]["units"] == len(pin["units"])
+
+
+# --- --check-run pre-flight (LANG_AWARENESS_PLAN.md §7) ----------------------
+
+def _fake_full_run(pin, tmp_path, flip=()):
+    """A synthetic full-run results file matching the pin's assumptions,
+    with `flip` unit outcomes inverted."""
+    rows = []
+    for uid in pin["units"] + pin["assumed_passed"]:
+        rows.append({"id": uid, "passed": uid not in flip})
+    for uid in pin["assumed_failed"]:
+        rows.append({"id": uid, "passed": uid in flip})
+    p = tmp_path / "eval-fake.json"
+    p.write_text(json.dumps({"model_slug": "fake", "tasks": rows}))
+    return str(p)
+
+
+def _run_check(path):
+    import subprocess
+    r = subprocess.run([sys.executable, str(ROOT / "evals" / "make_fast_suite.py"),
+                        "--check-run", path], capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def test_check_run_clean_exits_zero(pin, tmp_path):
+    rc, out = _run_check(_fake_full_run(pin, tmp_path))
+    assert rc == 0 and "clean" in out
+
+
+def test_check_run_flags_violated_assumed_passed(pin, tmp_path):
+    bad = pin["assumed_passed"][0]
+    rc, out = _run_check(_fake_full_run(pin, tmp_path, flip=(bad,)))
+    assert rc == 1 and bad in out
+
+
+def test_check_run_flags_violated_assumed_failed(pin, tmp_path):
+    bad = pin["assumed_failed"][0]
+    rc, out = _run_check(_fake_full_run(pin, tmp_path, flip=(bad,)))
+    assert rc == 1 and bad in out
+
+
+def test_check_run_rejects_partial_run(pin, tmp_path):
+    p = tmp_path / "partial.json"
+    p.write_text(json.dumps({"model_slug": "fake",
+                             "tasks": [{"id": u, "passed": True} for u in pin["units"]]}))
+    rc, out = _run_check(str(p))
+    assert rc == 1 and "NOT A FULL RUN" in out
