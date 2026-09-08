@@ -230,8 +230,10 @@ def test_run_eval_skips_timeout_cache():
     it pins the exact guard expression so a refactor that renames the field
     (silently disabling the behavioral path) still trips something."""
     text = (ROOT / "evals" / "run_eval.py").read_text()
-    check("run_eval guards against caching timeouts (agent_exit_code != -1)",
-          "agent_exit_code\") != -1" in text or "agent_exit_code') != -1" in text)
+    check("run_eval routes cache writes through cacheable_result",
+          "cacheable_result(result)" in text)
+    check("cacheable_result excludes ALL signal deaths (exit < 0), not just -1",
+          "< 0" in text.split("def cacheable_result", 1)[1].split("def ", 1)[0])
 
 
 def test_run_eval_timeout_not_cached_behavioral(td):
@@ -339,3 +341,50 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# cacheable_result — guard against caching environmental deaths
+# (2026-09-08 regression: a Ctrl-C'd sweep banked SIGTERM'd in-flight units
+# as 0-token "failures" that silently replayed in the Phase A' rerun)
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agents"))
+import run_eval  # noqa: E402
+
+
+def _row(**kw):
+    base = {"passed": True, "agent_exit_code": 0, "tokens_completion": 100}
+    base.update(kw)
+    return base
+
+
+def test_cacheable_pass():
+    assert run_eval.cacheable_result(_row())
+
+
+def test_cacheable_genuine_fail():
+    assert run_eval.cacheable_result(_row(passed=False, tokens_completion=5000))
+
+
+def test_not_cacheable_wall_timeout():
+    assert not run_eval.cacheable_result(_row(passed=False, agent_exit_code=-1, tokens_completion=0))
+
+
+def test_not_cacheable_sigterm():
+    assert not run_eval.cacheable_result(_row(passed=False, agent_exit_code=-15, tokens_completion=0))
+
+
+def test_not_cacheable_sigkill():
+    assert not run_eval.cacheable_result(_row(passed=False, agent_exit_code=-9, tokens_completion=0))
+
+
+def test_not_cacheable_zero_token_fail():
+    # exit 0 but the model never spoke — server crash/restart window
+    assert not run_eval.cacheable_result(_row(passed=False, tokens_completion=0))
+
+
+def test_not_cacheable_zero_token_fail_missing_field():
+    row = _row(passed=False)
+    del row["tokens_completion"]
+    assert not run_eval.cacheable_result(row)
