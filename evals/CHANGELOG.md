@@ -1,5 +1,17 @@
 # Eval suite changelog
 
+## v5-fast overlay (2026-09-08) — pinned fast subset, imputation-scored
+
+NOT a new suite version — v4 stays current and frozen; v5-fast is a pinned
+SELECTION of it (`evals/suites/v5-fast.json`): the 86 units that
+discriminate between reference models + 20 all-pass tripwires. Runs via
+`--suite v5-fast`, scores by imputing the 185 saturated units, which
+reproduces full-291 capability exactly for in-family models (identity
+verified per reference run by `make_fast_suite.py`; raw-subset ranking
+measured at τ = +0.810 and rejected). Fast runs never enter the
+leaderboard and share cache keys with full runs. ~0.85 h with `--jobs 4`
+vs ~5.6 h full.
+
 ## v4 (2026-07-08) — the hardened suite (CURRENT)
 
 137 base tasks / 291 effective units across all 12 topic categories.

@@ -23,7 +23,10 @@ python3 evals/run_eval.py --tasks 145,146            # run a subset
 python3 evals/run_eval.py --jobs 4                   # 4 parallel workers — needs a server with -np >= 4 (clamped to /props total_slots; MTP configs are -np 1)
 python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
 python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
+python3 evals/run_eval.py --suite v5-fast --jobs 4   # pinned fast suite (~0.85 h vs ~5.6 h full) — scores via imputation, never enters the leaderboard
 python3 evals/benchmark_all.py                       # full sweep across configured models
+python3 evals/benchmark_all.py --models X --suite v5-fast --jobs 4  # fast comparison sweep (implies --no-leaderboard)
+python3 evals/make_fast_suite.py                     # verify the v5-fast pin (identity + drift); --generate to re-pin
 python3 evals/benchmark_all.py --cache-only          # rebuild leaderboard from cache without ever starting a server
 python3 evals/scoring.py --rebuild                   # rescore all eval-*.json files into leaderboard.json
 python3 evals/scoring.py --by-category               # per-category drilldown table
@@ -36,6 +39,34 @@ python3 evals/tool_efficiency.py                     # per-model tool-use metric
 python3 evals/tool_efficiency.py --since 2026-05-07  # only logs since this date
 python3 evals/tool_efficiency.py --model SLUG        # drill into one model's tool-call frequencies
 ```
+
+## v5-fast — the pinned fast suite (imputation-scored)
+
+`evals/suites/v5-fast.json` pins the 106 units that carry the suite's signal:
+the **86 discriminating units** (passed by some but not all of the reference
+models) plus **20 cheap all-pass "tripwire" units** kept as regression
+canaries. The other 185 units are saturated — every reference model passes
+182 of them and none passes 3 — so a fast run doesn't run them, it **imputes**
+them: scoring reconstructs the full 291-unit task list with the assumed
+outcomes and computes the standard v2 capability metric on it.
+
+**Fidelity contract:** for any model whose real outcomes match the
+assumptions, the imputed score EQUALS the full-suite capability score
+exactly — same number, same leaderboard scale. This is verified as an
+identity on every reference run by `make_fast_suite.py` (raw subset scoring
+was measured at τ = +0.810 against the full metric and rejected — it flips
+near-tie ranks; see `docs/EVAL_FAST_SUITE_PROPOSAL.md`).
+
+**The guard:** a model that fails any tripwire is breaking the saturation
+assumption — the readout prints a loud warning and the imputed score must
+not be trusted; run the full v4 suite instead. This is expected for weaker
+or differently-shaped model classes (the reference family is Qwen 27B–35B).
+
+Fast-suite runs record `suite_selection` in their results file, are refused
+by the leaderboard partial-run guard by design, and reuse the same cache
+keys as full runs — a fast run warms the cache for a later full run and
+vice versa. Regenerating the pin (`--generate`) is a deliberate act done
+when the reference-run set changes; the pin lists its source runs.
 
 ## Result cache (durable, file-backed)
 

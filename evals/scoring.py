@@ -251,6 +251,67 @@ def compute_solve_breadth(tasks: list[dict]) -> tuple[float, float, float]:
     return round(solve, 2), round(lang, 2), round(capability, 2)
 
 
+def suite_unit_meta() -> dict:
+    """Effective unit id -> {difficulty, base_id, variant_count}, flattened
+    from evals/tasks/*.json the same way run_eval.load_tasks does. Used to
+    synthesize imputed rows for pinned fast-suite scoring — deliberately
+    reads task SPECS, not results, so it works anywhere the repo checks out."""
+    meta: dict = {}
+    for fn in sorted(os.listdir(TASKS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(TASKS_DIR, fn)) as f:
+                d = json.load(f)
+        except Exception:
+            continue
+        base_id = d.get("id")
+        if not base_id:
+            continue
+        diff = d.get("difficulty", "medium")
+        variants = d.get("variants")
+        if not variants:
+            meta[base_id] = {"difficulty": diff, "base_id": None, "variant_count": 1}
+            continue
+        for v in variants:
+            meta[f"{base_id}_{v['id']}"] = {
+                "difficulty": v.get("difficulty", diff),
+                "base_id": base_id,
+                "variant_count": len(variants),
+            }
+    return meta
+
+
+def impute_suite_tasks(measured: list[dict], suite: dict) -> list[dict]:
+    """Reconstruct a full-suite task list from a pinned fast-suite run.
+
+    Measured rows pass through untouched; every unit in the pin's
+    assumed_passed / assumed_failed lists is synthesized from the task specs
+    with that outcome and marked "imputed": True. For any model whose real
+    outcomes match the assumptions (i.e. in-family — the tripwires exist to
+    catch the alternative), compute_solve_breadth on the reconstruction is
+    EXACTLY the full-291 capability score, on the leaderboard's scale.
+    Verified as an identity on all reference runs by make_fast_suite.py."""
+    meta = suite_unit_meta()
+    have = {t["id"] for t in measured}
+    out = list(measured)
+    for outcome, ids in (("assumed_passed", suite.get("assumed_passed", [])),
+                         ("assumed_failed", suite.get("assumed_failed", []))):
+        for uid in ids:
+            if uid in have:
+                continue  # actually measured — real data beats assumption
+            m = meta.get(uid)
+            if m is None:
+                raise ValueError(f"suite pin unit {uid!r} not found in evals/tasks/ "
+                                 f"— pin and task specs have drifted; regenerate the pin")
+            out.append({"id": uid, "base_id": m["base_id"],
+                        "variant_count": m["variant_count"],
+                        "difficulty": m["difficulty"],
+                        "passed": outcome == "assumed_passed",
+                        "imputed": True})
+    return out
+
+
 def compute_category_breakdown(tasks: list[dict]) -> dict:
     """Per-category accuracy + speed. Returns {category: {accuracy, speed, count, passed, subcats}}."""
     by_cat = defaultdict(lambda: {
