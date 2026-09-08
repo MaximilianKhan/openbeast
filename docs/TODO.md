@@ -1,5 +1,31 @@
 # TODO
 
+## 🧠 LANGUAGE AWARENESS — designed + adversarially reviewed 2026-09-08, A/B QUEUED (Max-triggered)
+
+Push compiler diagnostics into every `write_file`/`edit_file` result
+(Tier 1) + version-pinned stdlib awareness packs (Tier 3); the LSP
+sidecar tier was DELETED by review. Full design, measured checker table,
+security hardening spec, era policy, and the 4-agent review log:
+**[`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md)**.
+
+Evidence base: the entire 3.6→3.8 capability gap is zig stdlib drift
+(paired McNemar 13–0, p<0.001; other 5 languages a dead tie 3–4) and the
+model solves every one of those problems in other languages — staleness,
+not missing knowledge.
+
+Queue (strictly after the Phase A′ results work):
+1. **Step 0, ungated, needs Max's sudo**: `sudo pacman -S --needed gopls
+   rust-analyzer pyright` + `npm i -g bash-language-server` + zls from a
+   zig-0.16-matched release (NOT pacman — it ships 0.15.1). Lights up
+   opencode's client-side LSP; biggest user-visible win in the plan.
+2. Tier 1 build (~half day: checker table §3.2 with the MEASURED
+   commands — `zig build-exe -fno-emit-bin`, not ast-check —, §3.3
+   hardening, §3.4 cache key, §6.3 --rebuild fix, fixture tests).
+3. **A/B (~2.6 h GPU, Max-triggered)**: cells + pre-flight + ship rule in
+   plan §7 (ship = ≥7 net zig rescues at p<0.05, champion unharmed, p95
+   write latency ≤1 s). Pre-flight includes the v5-fast re-pin on A′
+   rows (already queued below) + assumed-list diff for 3.8.
+
 ## 🧭 ROUTER CLASSIFY SIDECAR — staged 2026-08-21, experiment-gated (Max)
 
 Move the agent-router's pre-flight classify off the primary model onto a
