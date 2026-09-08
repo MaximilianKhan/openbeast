@@ -157,6 +157,28 @@ def test_zig_mainless_no_bogus_main_error(tmp_path, diag_on):
 
 rustc = pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not installed")
 godep = pytest.mark.skipif(shutil.which("go") is None, reason="go not installed")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _warm_toolchains(tmp_path_factory):
+    """Cold-runner guard: the first `go vet` on a fresh CI machine compiles
+    vet's export data and can exceed the production 10s checker timeout —
+    the tool then (correctly) degrades to 'unavailable (timeout)' and the
+    behavior assertions flake. Warm the slow toolchains once, generously,
+    outside the timeout-bounded production path."""
+    d = tmp_path_factory.mktemp("warm")
+    warmups = []
+    if shutil.which("go"):
+        (d / "w.go").write_text("package main\nfunc main() {}\n")
+        warmups.append(["go", "vet", "./w.go"])
+    if shutil.which("rustc"):
+        (d / "w.rs").write_text("fn main() {}\n")
+        warmups.append(["rustc", "--emit=metadata", "--out-dir", str(d), str(d / "w.rs")])
+    for cmd in warmups:
+        try:
+            subprocess.run(cmd, cwd=d, capture_output=True, timeout=180)
+        except Exception:
+            pass  # warmup is best-effort; the real tests will tell the story
 gcc = pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not installed")
 sck = pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
 
