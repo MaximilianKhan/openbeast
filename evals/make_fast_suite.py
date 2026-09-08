@@ -217,11 +217,45 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--generate", action="store_true",
                     help=f"(re)write {os.path.relpath(SUITE_PATH)} from the reference runs")
+    ap.add_argument("--check-run", metavar="RESULTS_JSON",
+                    help="A/B pre-flight (LANG_AWARENESS_PLAN.md §7): diff a FULL-run "
+                         "results file against the pin's assumed lists. Any unit the run "
+                         "fails that the pin assumes PASSED (or vice versa) breaks the "
+                         "imputation-exactness contract for that model — exit 1 with the "
+                         "violating units listed; re-pin (--generate) before trusting "
+                         "imputed absolute scores for it.")
     ap.add_argument("--exclude-slugs", default="",
                     help="comma-separated model slugs whose runs must not count as reference "
                          "(e.g. rows known to be tainted)")
     args = ap.parse_args()
     exclude = {s.strip() for s in args.exclude_slugs.split(",") if s.strip()}
+
+    if args.check_run:
+        with open(SUITE_PATH) as f:
+            pinned = json.load(f)
+        with open(args.check_run) as f:
+            run = json.load(f)
+        outcomes = {t["id"]: bool(t.get("passed")) for t in run.get("tasks", [])}
+        n_expected = 291
+        if len(outcomes) != n_expected:
+            print(f"NOT A FULL RUN: {len(outcomes)} units recorded (need {n_expected}) — "
+                  f"the check needs the model's real outcome for every assumed unit")
+            return 1
+        bad_pass = [u for u in pinned.get("assumed_passed", [])
+                    if u in outcomes and not outcomes[u]]
+        bad_fail = [u for u in pinned.get("assumed_failed", [])
+                    if u in outcomes and outcomes[u]]
+        slug = run.get("model_slug", "?")
+        print(f"pre-flight: {slug} vs {os.path.relpath(SUITE_PATH)}")
+        print(f"  assumed_passed violated (model FAILS them): {len(bad_pass)} {bad_pass[:10]}")
+        print(f"  assumed_failed violated (model PASSES them): {len(bad_fail)} {bad_fail[:10]}")
+        if bad_pass or bad_fail:
+            print("  VERDICT: imputation is NOT exact for this model — its imputed "
+                  "absolute capability would be wrong by the violated units' weight. "
+                  "Re-pin with this run as a reference (--generate) first.")
+            return 1
+        print("  VERDICT: clean — imputed fast-suite scores are exact for this model.")
+        return 0
 
     if args.generate:
         suite = generate(exclude)
