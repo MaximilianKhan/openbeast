@@ -82,10 +82,14 @@ PATH, and `~/.cache/opencode/bin/` is empty, so nothing has been auto-fetched:
 | Go | `gopls` | ❌ | 2nd most discriminating (14/31) |
 | Rust | `rust-analyzer` | ❌ | least discriminating (5/31) |
 
-Install (Arch):
+Install (Arch) — **superseded by `LANG_AWARENESS_PLAN.md` §8 step 0**, which
+found (adversarial review, 2026-09-08) that **pacman's zls is 0.15.1 and zls
+is version-locked to the zig minor** — the rig runs zig 0.16.0, so zls must
+come from a matching release, not pacman:
 ```bash
-sudo pacman -S --needed gopls rust-analyzer zls pyright
+sudo pacman -S --needed gopls rust-analyzer pyright
 npm i -g bash-language-server        # not in the repos
+# zls: download the zig-0.16-matched release (NOT pacman — ships 0.15.1)
 ```
 
 Priority order on the evidence: **bash** first (the repo is 99 shell files and

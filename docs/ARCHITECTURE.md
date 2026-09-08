@@ -109,7 +109,7 @@ flowchart TB
     subgraph TOOLPLANE["🔑 TOOL PLANE — runs on the rig, acts on the rig · NEVER published"]
         its["<b>Identity tool server</b> · :3001<br/><code>agents/openapi_tools.py</code><br/>RBAC profile keys · per-user file shards · audit<br/><i>authenticates the HUMAN</i>"]
         mcp["<b>MCP tool surface — 15 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent"]
-        core["<b>Tool primitives</b> · <code>agents/tools.py</code><br/>bash · read/write/edit/list/grep<br/>fetch (SSRF-guarded) · web_search"]
+        core["<b>Tool primitives</b> · <code>agents/tools.py</code><br/>bash · read/write/edit/list/grep<br/>fetch (SSRF-guarded) · web_search<br/><i>+ push-diagnostics on write/edit (opt-in)</i>"]
         its --> mcp --> core
     end
 
@@ -180,6 +180,13 @@ flowchart TB
   *extension* and `EXTENSIONS` ships empty, which matters because `:8444`
   publishes the dashboard's `/api/slot` — publish it before enabling the
   extension and clients get a 502 (see [`BEAST_SLOT.md`](BEAST_SLOT.md)).
+- **Push-diagnostics (opt-in, experiment-gated).** With
+  `OPENBEAST_DIAGNOSTICS=1`, every `write_file`/`edit_file` of a source file
+  appends the language's real compiler/checker verdict to the tool result —
+  pushed automatically, so it works identically for every model and frontend
+  that reaches `tools.py`. Default OFF until its A/B gate passes; design,
+  measured checker table, and security spec:
+  [`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
   (`scripts/setup-mcpo-keys.sh`), every `:3001` tool call must present a
   profile key — **admin** reaches all 15 tools, **guest** reaches `web_search`
@@ -225,7 +232,8 @@ agents/                      # Agent framework + tool servers
   runner.py                  # Autonomous agent loop (LLM + tool use)
   router.py                  # Agent-spawn router on :8088 (opt-in via AGENT_ROUTER=true)
   tools.py                   # Tool primitives (bash/files/grep/fetch/web_search) — the shared
-                             #   core mcp_server.py wraps and runner.py imports directly
+                             #   core mcp_server.py wraps and runner.py imports directly;
+                             #   + push-diagnostics on write/edit (opt-in, LANG_AWARENESS_PLAN.md)
   requirements.txt           # openai, mcp, fastapi, uvicorn, PyJWT (pinned)
   logs/                      # Agent run logs (JSONL) [gitignored]
 
@@ -244,14 +252,20 @@ tests/                       # Test suite
   test_ssd_wear.sh           # Drive-wear math + degraded paths (stubbed smartctl)
   test_beast_slot.py         # /api/slot discovery contract (v2 capacity math)
   test_manifest.py           # Per-shard write-manifest tests
+  test_cache.py              # Eval cache: keys, context hash, cacheable_result guard
+  test_eval_jobs.py          # --jobs parallel harness scheduling invariants
+  test_fast_suite.py         # v5-fast pin integrity + imputation identity
   test_scripts.sh            # Script structure validation
   test_smoke.sh              # End-to-end stack smoke test (requires running stack)
 
 evals/                       # Eval harness — 137 tasks / 291 units + multi-model benchmark
   README.md                  # Distribution table, schema, scoring (start here)
-  run_eval.py                # Single-model eval runner (model-tagged results)
-  scoring.py                 # Accuracy / speed / tokens + per-category & per-language breakdown
-  benchmark_all.py           # Multi-model sweep orchestration
+  run_eval.py                # Single-model eval runner (--jobs N parallel workers, --suite subsets)
+  scoring.py                 # v2 capability metric + per-category & per-language breakdown
+  benchmark_all.py           # Multi-model sweep orchestration (server start/stop + recovery)
+  make_fast_suite.py         # v5-fast generator + fidelity verifier (imputation identity)
+  suites/                    # Pinned suite subsets (v5-fast: 106 units, scores impute to the v4 scale)
+  cache.py / cache_cli.py    # Durable result cache (context-hashed; never caches environmental deaths)
   tasks/                     # Per-task JSON definitions (numbered; gaps from v4 pruning) with category tags
   results/                   # Per-run results (kept all, model-tagged) [gitignored]
   leaderboard.json           # Latest score per model + per-category drilldown (auto-updated)
@@ -264,6 +278,9 @@ docs/                        # All technical documentation
   FEATURES.md                # Comprehensive feature breakdown
   REFERENCE.md               # VRAM tables, architecture, configuration
   RESULTS.md                 # Eval distribution + leaderboards + cross-host sweep results
+  LANG_AWARENESS_PLAN.md     # Push-diagnostics + awareness packs (adversarially reviewed; A/B-gated)
+  ROUTER_SIDECAR_PLAN.md     # CPU classify sidecar design (experiment-gated)
+  EVAL_FAST_SUITE_PROPOSAL.md# The measured case for v5-fast + --jobs (built; kept for the analysis)
   TODO.md                    # Roadmap and completed work
 
 skills/                      # Curated expertise packages — loaded on-demand by the model (14 total)
