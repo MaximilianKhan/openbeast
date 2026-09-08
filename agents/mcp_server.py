@@ -46,7 +46,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Shared tool implementations (single source of truth, incl. process-group
 # reaping, rlimits, output capping, and protected-path write guards).
@@ -62,11 +62,11 @@ import tools as _tools
 # follows the stack-wide bind resolver (OPENBEAST_BIND, default loopback)
 # instead of the old hardcoded 0.0.0.0. doctor.sh can only inspect the env
 # var, not a hardcoded literal, so the safe value must be the default here.
-mcp = FastMCP(
-    "local-tools",
-    host=os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1",
-    port=3001,
-)
+# mcp 2.x: transport params (host/port) moved from the constructor to run().
+# The bind stays resolved at module level so the doctrine above (env-var
+# resolver, loopback default, doctor.sh-inspectable) is unchanged.
+MCP_BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
+mcp = MCPServer("local-tools")
 
 # RBAC Phase 2 (docs/RBAC_PLAN.md): OPENBEAST_MCP_TOOLS, when set, is a
 # comma-separated allowlist — only the named tools REGISTER at all. The guest
@@ -742,7 +742,7 @@ def list_agents() -> str:
     lines.append(f"{'ID':<36}  {'STATUS':<22}  {'ITER':>6}  {'RUNTIME':>9}  TASK")
     lines.append("-" * 110)
 
-    # Snapshot: FastMCP serves tools on worker threads, so a concurrent
+    # Snapshot: MCPServer (mcp 2.x) serves tools on worker threads, so a concurrent
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
@@ -862,13 +862,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.transport == "http":
-        mcp.settings.port = args.port
-        print(f"MCP server starting on http://{mcp.settings.host}:{args.port}/mcp")
-        if mcp.settings.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")
+        if MCP_BIND not in ("127.0.0.1", "localhost", "::1"):
             print("WARNING: non-loopback bind and this transport has NO auth — "
                   "every tool (bash included) is open to that network. Prefer "
                   "the identity tool server (agents/openapi_tools.py) instead.",
                   file=sys.stderr)
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="streamable-http", host=MCP_BIND, port=args.port)
     else:
         mcp.run(transport="stdio")
