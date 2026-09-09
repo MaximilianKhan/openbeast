@@ -77,7 +77,22 @@ Queue (strictly after the Phase A′ results work):
    toolchain lines), fold the resolved version into the diag cache-era
    fingerprint (already per-version), and fixture-test the mismatch
    path. Until then the checker's honest scope is "the rig's installed
-   toolchains."
+   toolchains." **Go + C/C++ specifics (added 2026-09-09, Max's ask —
+   we test all three, 31 variants each):** (a) C/C++ have an EDITION
+   axis distinct from compiler version — one g++ serves c++11/14/17/
+   20/23/26 — and the checker HARDCODES `-std=c11`/`-std=c++17` today
+   (correct: it mirrors the eval validators' flags; wrong for any
+   foreign project on another edition — concepts/ranges under c++17
+   `-fsyntax-only` are false errors). Resolution order for projects:
+   compile_commands.json (gold source — exact `-std=` AND include
+   paths per file; `-I{dir}` alone is not enough on real trees) →
+   CMakeLists `CMAKE_CXX_STANDARD` → Makefile flags → rig default.
+   (b) Go: read go.mod `go`/`toolchain` directives, but resolution
+   MUST honor the checker's `GOTOOLCHAIN=local` security posture (the
+   network/toolchain-download channel is deliberately closed) — pinned
+   versions come from mise-installed toolchains only, never fetched by
+   the checker; absent locally → rig default + a version-mismatch note
+   in the diagnostic, not a download.
 5. **Doc-site escalation (Tier 1.5 — banked 2026-09-09, Max's ask;
    NOT yet noted or implemented anywhere)**: the model has `fetch` +
    `web_search` + `grep` but nothing aims them — and §4's measured
@@ -89,8 +104,13 @@ Queue (strictly after the Phase A′ results work):
    source at <path> (version-correct, offline, FIRST choice) or fetch
    <version-pinned docs URL>". Needs a per-language registry of
    VERSIONED doc URLs (zig: ziglang.org/documentation/<ver>/ + /std/;
-   rust: doc.rust-lang.org/<ver>/std/; go: pkg.go.dev — pinned per
-   toolchain where the site versions its docs). Zero new tools; the
+   rust: doc.rust-lang.org/<ver>/std/; go: pkg.go.dev + go.dev/doc/
+   go1.<minor> release notes, pinned per toolchain; C/C++:
+   cppreference.com is EDITION-tagged rather than URL-versioned —
+   the steering line must name the resolved edition, e.g. "this
+   project is C++17 — check feature availability tags ('since
+   C++20') on cppreference", so the model reads the tags instead of
+   assuming the newest standard). Zero new tools; the
    escalation changes agent context → own cache era + at least a
    mini-A/B before default-on (same §6.2 discipline as Tier 1).
 6. **Language-pack abstraction (banked 2026-09-09, Max's directive:
@@ -105,11 +125,18 @@ Queue (strictly after the Phase A′ results work):
    one); version command (feeds the diag cache-era fingerprint);
    stale-fails + clean-passes fixture pair; stdlib source path;
    versioned docs URL template (item 5); awareness-pack generator
-   (Tier 3); project-pin resolver (item 4)}. Adding odin = writing one
-   entry + its fixtures; tools.py, the fingerprint, fixtures, doc
-   escalation, and Tier 3 all read the same registry. The fixture pair
-   is the admission gate: no language enters the table without a
-   measured checker.
+   (Tier 3); project-pin resolver (item 4); **dialect/edition axis
+   (added 2026-09-09): a first-class field SEPARATE from toolchain
+   version — {dialect resolver, dialect → checker-flag mapping,
+   dialect-tagged docs pointer} — forced by C++ (one g++, many
+   `-std=` editions) and defaulting to a single dialect for languages
+   without the axis}**. Adding odin = writing one entry + its
+   fixtures; tools.py, the fingerprint, fixtures, doc escalation, and
+   Tier 3 all read the same registry. The fixture pair is the
+   admission gate: no language enters the table without a measured
+   checker — and for edition-axis languages the pair is per-edition
+   where behavior differs (a c++20-only construct must fail the
+   c++17-configured checker and pass the c++20 one).
 
 ## 🧭 ROUTER CLASSIFY SIDECAR — staged 2026-08-21, experiment-gated (Max)
 
