@@ -37,6 +37,15 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/weights.sh"
+# Reasoning budget 20480 (2026-09-09): per-request thinking cap for the
+# 3.8 family (2x-verbose thinker). Evidence from paired capped-4096 vs
+# uncapped eval eras: 4096 was too tight (18 task rescues needed more);
+# productive thinking tops out ~p99.5 = 17.8k tokens/request; above ~20k
+# only runaway loops were measured (0.2-0.4% of requests, correlated with
+# wall-timeout marathons and 65-77k-token failed tasks). 20480 = room for
+# every measured win, ceiling on the pathology. Global conf
+# REASONING_BUDGET (incl. -1 unlimited) still overrides — serve.sh puts
+# the global flag after this one and last-flag-wins in llama-server.
 exec "$SCRIPT_DIR/serve.sh" \
   -m "$WEIGHTS_DIR/Qwen3.8-27B-UD-Q5_K_XL.gguf" \
   -a "Qwen3.8 27B MTP Q5" \
@@ -45,4 +54,5 @@ exec "$SCRIPT_DIR/serve.sh" \
   --spec-type draft-mtp \
   --spec-draft-n-max 4 \
   --spec-draft-p-min 0.0 \
+  --reasoning-budget 20480 \
   "$@"

@@ -649,6 +649,17 @@ def run_eval(
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
     server_info = capture_server_config() if not cache_only else None
+    # Reasoning-budget cache-era component (see cache.cache_key): a finite
+    # --reasoning-budget on the live server stamps its value into every
+    # cache key so capped and uncapped rows can never replay across eras.
+    # Uncapped (absent or -1) omits the component — legacy keys unchanged.
+    # cache_only mode has no live server to ask, so it replays legacy
+    # (uncapped-era) keys only; capped rows are a miss there, disclosed.
+    rb_component = None
+    if server_info:
+        _rb = str(server_info.get("reasoning_budget", "")).strip()
+        if _rb and _rb != "-1":
+            rb_component = _rb
 
     jobs = max(1, int(jobs))
     if cache_only and jobs > 1:
@@ -777,7 +788,7 @@ def run_eval(
         ck = None
         if use_cache:
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
-                                 diag=diag_component)
+                                 diag=diag_component, rb=rb_component)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)

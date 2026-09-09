@@ -388,3 +388,36 @@ def test_not_cacheable_zero_token_fail_missing_field():
     row = _row(passed=False)
     del row["tokens_completion"]
     assert not run_eval.cacheable_result(row)
+
+
+def _cache_mod():
+    return importlib.import_module("cache")
+
+
+def test_cache_key_legacy_shape_when_uncapped():
+    # No rb component when the server is uncapped — every pre-2026-09-09
+    # banked row must stay reachable.
+    cache = _cache_mod()
+    t = {"id": "01_x", "task": "t", "validation": "v"}
+    k_legacy = cache.cache_key(t, "slug", max_iter=10)
+    k_none = cache.cache_key(t, "slug", max_iter=10, rb=None)
+    assert k_legacy == k_none
+    assert ".rb" not in k_legacy
+
+
+def test_cache_key_rb_era_component_when_capped():
+    # A finite reasoning budget is its own cache era: capped and uncapped
+    # rows must never replay across each other (the 2026-09-09 A/B trap).
+    cache = _cache_mod()
+    t = {"id": "01_x", "task": "t", "validation": "v"}
+    k_off = cache.cache_key(t, "slug", max_iter=10)
+    k_on = cache.cache_key(t, "slug", max_iter=10, rb="20480")
+    assert k_off != k_on
+    assert ".rb20480." in k_on
+
+
+def test_cache_key_rb_and_diag_compose():
+    cache = _cache_mod()
+    t = {"id": "01_x", "task": "t", "validation": "v"}
+    k = cache.cache_key(t, "slug", max_iter=10, diag="diag1-abcd1234", rb="20480")
+    assert ".diag1-abcd1234.rb20480." in k
