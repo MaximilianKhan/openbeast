@@ -1,5 +1,16 @@
 # TODO
 
+## 🌙 24/7 BESPOKE LONG-HORIZON JOBS — Max intent 2026-09-09, NOT YET ORIENTED
+Standing goal: let the default Qwen manage projects end-to-end (spawn
+subagents, run continuously). No design exists yet. Ground truth already
+banked for it (docs/MODELS.md, "the cap and long-horizon work"): the 20480
+reasoning budget is per-request and does not constrain horizon; the
+per-request `reasoning_budget_tokens` API field (verified in b10865) is the
+designed-for hook — an orchestrator can grant deeper thinking per hard call
+or per subagent. Orientation session needed before any build: job runner
+shape (systemd? beast-slot lane?), context/memory strategy across days,
+guardrails (wall/token ceilings per job), observability.
+
 ## 🧹 SERVING/RESEARCH SEPARATION — audit 2026-09-08 (Max's ask), fix post-sweep
 
 Audit found the research campaign entangled with the serving path:
