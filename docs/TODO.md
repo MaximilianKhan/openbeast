@@ -78,6 +78,38 @@ Queue (strictly after the Phase A′ results work):
    fingerprint (already per-version), and fixture-test the mismatch
    path. Until then the checker's honest scope is "the rig's installed
    toolchains."
+5. **Doc-site escalation (Tier 1.5 — banked 2026-09-09, Max's ask;
+   NOT yet noted or implemented anywhere)**: the model has `fetch` +
+   `web_search` + `grep` but nothing aims them — and §4's measured
+   finding is that models don't call optional tools unprompted, so the
+   trigger must live in the harness. Design: when a pushed diagnostic
+   repeats for the same file (2nd consecutive failure, or the same
+   unknown-symbol error twice), append one steering line to the
+   diagnostic result: "unknown symbol — grep the installed stdlib
+   source at <path> (version-correct, offline, FIRST choice) or fetch
+   <version-pinned docs URL>". Needs a per-language registry of
+   VERSIONED doc URLs (zig: ziglang.org/documentation/<ver>/ + /std/;
+   rust: doc.rust-lang.org/<ver>/std/; go: pkg.go.dev — pinned per
+   toolchain where the site versions its docs). Zero new tools; the
+   escalation changes agent context → own cache era + at least a
+   mini-A/B before default-on (same §6.2 discipline as Tier 1).
+6. **Language-pack abstraction (banked 2026-09-09, Max's directive:
+   the whole process must be drop-in for ANY language — rust, odin,
+   whatever comes)**: today the per-language knowledge is scattered —
+   `_diag_checker`'s if-chain in agents/tools.py, the §3.2 measured
+   command table, fixture tests, the zls version-lock note, Tier 3
+   generators. Promote it to ONE declarative registry per language:
+   {extensions; checker command + measured fallback (the zig
+   build-exe-vs-ast-check lesson generalizes: every entry needs a
+   measured "does it catch stale-stdlib code?" answer, not an assumed
+   one); version command (feeds the diag cache-era fingerprint);
+   stale-fails + clean-passes fixture pair; stdlib source path;
+   versioned docs URL template (item 5); awareness-pack generator
+   (Tier 3); project-pin resolver (item 4)}. Adding odin = writing one
+   entry + its fixtures; tools.py, the fingerprint, fixtures, doc
+   escalation, and Tier 3 all read the same registry. The fixture pair
+   is the admission gate: no language enters the table without a
+   measured checker.
 
 ## 🧭 ROUTER CLASSIFY SIDECAR — staged 2026-08-21, experiment-gated (Max)
 
