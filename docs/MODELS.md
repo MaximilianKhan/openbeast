@@ -13,6 +13,19 @@ speed *and* headroom — see the Qwen3.8-27B-Uncensored section below); the dens
 **Qwen3.6-27B Q5_K_XL** tops the capability board, and the **35B-A3B MoE**
 variants trade a little accuracy for 30–50% more speed per token.
 
+**Qwen3.8 reasoning budget (2026-09-09):** every 3.8 serve script bakes
+`--reasoning-budget 20480` (same mechanism as the Fable-Fusion "MAX" tunes'
+4096). The number comes from paired eval eras, not taste: a 4096 cap cost 18
+task rescues that genuinely needed longer thinking, while fully-uncapped runs
+paid 1.15–1.20× tokens and +6h wall on the *same* passes and lost tasks to
+runaway loops (65–77k-token failures, 3600–4200s wall-timeouts). Measured
+per-request productive thinking tops out around p99.5 ≈ 17.8k tokens; beyond
+~20k only pathology appears (0.2–0.4% of requests). 20480 keeps every measured
+win and caps the spiral. Override globally with `REASONING_BUDGET` in conf
+(`-1` = unlimited); per-request `enable_thinking` toggles are unaffected.
+Eval rows recorded before/after this change are different serve eras — the
+run provenance stamps the flag.
+
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
