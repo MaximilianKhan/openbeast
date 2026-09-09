@@ -65,6 +65,19 @@ Queue (strictly after the Phase A′ results work):
    plan §7 (ship = ≥7 net zig rescues at p<0.05, champion unharmed, p95
    write latency ≤1 s). Pre-flight includes the v5-fast re-pin on A′
    rows (already queued below) + assumed-list diff for 3.8.
+4. **Per-project toolchain version resolution (gap banked 2026-09-09,
+   Max's ask)**: the checker table runs the PATH toolchain (mise zig
+   0.16.0), which is correct-by-construction for evals and rig agents —
+   the same binary judges the output — but an external project pinned to
+   a different zig (e.g. `build.zig.zon` `minimum_zig_version`) would
+   receive mismatched diagnostics. Before any client-facing or 24/7
+   bespoke-job use on foreign repos (see 🌙 above): resolve the
+   project's pinned version (build.zig.zon → mise install/use per
+   checker invocation; analogous pins for rust-toolchain.toml / go.mod
+   toolchain lines), fold the resolved version into the diag cache-era
+   fingerprint (already per-version), and fixture-test the mismatch
+   path. Until then the checker's honest scope is "the rig's installed
+   toolchains."
 
 ## 🧭 ROUTER CLASSIFY SIDECAR — staged 2026-08-21, experiment-gated (Max)
 
