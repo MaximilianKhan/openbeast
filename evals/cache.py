@@ -94,7 +94,8 @@ def task_hash(task: dict[str, Any]) -> str:
 
 def cache_key(task: dict[str, Any], model_slug: str,
               max_iter: int | None = None,
-              diag: str | None = None) -> str:
+              diag: str | None = None,
+              rb: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -110,7 +111,14 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # carries a toolchain fingerprint, not a boolean: zig 0.16.0 vs 0.16.1
     # emit different diagnostics → different model trajectories.
     dg = f".{diag}" if diag else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}.{_context_hash_cached()}"
+    # Reasoning-budget era component (2026-09-09). A row generated under a
+    # thinking cap is a different experiment from an uncapped one — the
+    # 2026-09-09 A/B relaunch nearly replayed uncapped rows into a capped
+    # run because server flags were absent from the key. Same convention as
+    # diag: OMITTED when uncapped (None / -1), so every legacy row stays
+    # reachable; a finite budget stamps its value.
+    rbc = f".rb{rb}" if rb else ""
+    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}.{_context_hash_cached()}"
 
 
 def cache_path(key: str) -> Path:
