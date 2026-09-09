@@ -477,8 +477,8 @@ self-contained with deterministic checks, and the multi-model runner produces a
 | # | Model | Quant | Variant | Ctx | 1-stream t/s | Score | Harness | Tokens | Avg compl/unit | Σ unit time |
 |---:|---|---|---|---:|---:|---:|---|---:|---:|---:|
 | 1 | **Qwen3.6 27B** | Q5_K_XL | dense | 350K | 67 | **98.7%** | seq | 14.0M | 4.9k | 8.2 h |
-| 2 | Qwen3.8 27B | Q5_K_XL | dense | 262K | 68 | 98.4% | jobs 4 | 26.6M | 10.9k | 25.5 h |
-| 3 | Qwen3.8 27B Uncensored | Q5_K_M | abliterated | 262K | 70 | 98.4% | jobs 4 | 25.7M | 9.7k | 22.8 h |
+| 2 | Qwen3.8 27B | Q5_K_XL | dense | 262K | 68 | 97.7% | jobs 4 | 28.3M | 12.4k | 36.6 h |
+| 3 | Qwen3.8 27B Uncensored | Q5_K_M | abliterated | 262K | 70 | 97.6% | jobs 4 | 28.1M | 12.4k | 31.2 h |
 | 4 | Qwen3.6 27B MTP | Q5_K_XL | dense+MTP | 288K | **184** | 97.5% | seq | 13.3M | 6.0k | 3.8 h |
 | 5 | Qwen3.6 35B-A3B MTP | Q4_K_M | MoE+MTP | 512K | **379** | 97.5% | seq | 20.6M | 7.6k | 4.3 h |
 | 6 | Qwopus3.6 27B v2 MTP | Q5_K_M | SFT+MTP | 336K | 147 | 96.4% | seq | 15.4M | 6.0k | 4.6 h |
@@ -493,6 +493,13 @@ contention in those rows). Tokens = prompt+completion for the full 291-unit run;
 avg compl/unit measures how verbosely the model reasons. Rows from different
 dates are score-comparable — the v4 suite (tasks, validation, scoring) is
 frozen and CI-guarded; speed columns carry each run's own conditions.
+Rows 2–3 are the 2026-09-08 Phase A′ rerun (unlimited reasoning budget —
+the shipped default's configuration; environmental artifacts re-run and
+merged under a pre-declared scope, provenance in the results files).
+Notable: the earlier reasoning-capped rows scored ~0.75 higher — unbounded
+thinking bought no capability and cost a few wall-budget timeouts on
+marathon units. Solve is tied at 98.19 for both rows: abliteration remains
+measured at zero capability cost.
 
 **Takeaway:** the dense Qwen3.6 27B is the strongest problem-solver; MTP is a
 free, lossless speed-up (always ship it); abliteration (Qwen3.8 Uncensored, the

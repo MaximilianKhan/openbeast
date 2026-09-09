@@ -138,6 +138,16 @@ pyright references" and full built-in Python support. That was a false positive
 directly. Grep for server names without `\b` and every file with a licence
 header looks like a Python LSP.
 
+## 🏁 Phase A′ COMPLETE 2026-09-08 — corrected rows FINAL (see RUNBOOK)
+
+Uncapped rerun + artifact patch-up done: stock **97.68** (#2), uncensored
+**97.63** (#3), solve tied 98.19 — abliteration zero-cost CONFIRMED under
+fair conditions. New finding: the old REASONING_BUDGET=4096 rows scored
+~0.75 HIGHER — unbounded thinking bought nothing and lost wall-budget
+marathons (152_chase_lev_deque + karatsuba family = honest fails, twice).
+Consider re-adding a budget as scoring/latency insurance — ✋ Max.
+v5-fast re-pinned on the A′ rows (imputation identity holds, 9 models).
+
 ## 🏁 Benchmark the new default — Qwen3.8 27B Uncensored ✅ ANSWERED 2026-08-21
 
 `serve-qwen38-27b-uncensored-mtp-q5.sh` became the shipped default on
