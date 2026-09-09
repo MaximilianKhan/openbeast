@@ -106,3 +106,12 @@ no sign of it.
 `serve.sh` uses. Promoting it needs a tok/s check on the *default* model
 (Heretic v2 27B MTP Q6) first — #25489 targets MTP, and only Qwen3.8 has been
 checked. See `docs/TODO.md`.
+
+## Rebase 2026-09-09: base b10865 (was b10434)
+Resolved: glu_limit/lora union (common.cuh ×2), halve_iters template-param
+insertion + lora instantiation shift (mmvq.cu — the trap), SET_ROWS assert
+union (ggml.c), KIMI_K3 branch + gradmatrix_scale union (llama-context.cpp,
+scale applied once at final return). Compiles clean as b10866. Serving uses
+the PRISTINE b10865 build (llama.cpp/build/); this patch lives only in
+build-research/. Old kernel build parked at build-research-legacy (deletable
+after the new-era baseline lands).
