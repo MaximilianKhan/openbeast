@@ -29,6 +29,27 @@ globally with `REASONING_BUDGET` in conf (`-1` = unlimited); per-request
 era: run provenance stamps the flag, and the result cache keys carry an
 `rb<N>` component so capped and uncapped rows never replay across eras.
 
+**The cap and long-horizon / agentic work (verified 2026-09-09, b10865
+source):** the budget is **per generation request**, not per task or session
+— at the cap the server force-closes the think tag and the model answers;
+the request is never killed and the answer never truncated. Every turn of a
+long agent loop gets a fresh 20,480-token thinking allowance (a 500-turn
+orchestration has 500 budgets; each spawned subagent's requests carry their
+own), cross-request reasoning accumulation is untouched (our own eval agent
+loop passed its deepest 45k+-total thinkers 10/10 — that thinking was spread
+across requests; per-request productive thinking never exceeded ~18k even
+uncapped), and reasoning externalized to files/notes between steps is answer
+content, uncapped by definition. Long-horizon work actually *benefits*: one
+runaway request can no longer stall a pipeline, and since the chat template
+preserves reasoning across turns by default, capping trims per-turn context
+bloat — context pressure arrives later, the horizon extends. For the rare
+single decision that needs deeper continuous thought, the API body accepts
+**`reasoning_budget_tokens` per request** (verified in the b10865 request
+schema; defaults to the server flag) — an orchestrator can raise or drop the
+cap for exactly one hard call, or grant a subagent a bigger budget, without
+touching the server. This is the designed-for hook for future always-on
+long-horizon jobs.
+
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |
