@@ -113,6 +113,15 @@ _BASH_WRAPPER="${OPENBEAST_BASH_WRAPPER:-$(_ob_conf_value BASH_WRAPPER || true)}
 if [[ -n "$_BASH_WRAPPER" ]]; then
   export OPENBEAST_BASH_WRAPPER="$_BASH_WRAPPER"
 fi
+# beast-assist (compiler feedback in the agent loop, docs/FEATURES.md).
+# agents/tools.py reads BEAST_ASSIST per-call; forward the conf key only
+# when non-empty, same pattern as BASH_WRAPPER above. Eval arms override
+# this explicitly per-cell (run_eval pins both spellings), so a rig-wide
+# enable never leaks into diag-OFF baselines.
+_BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || true)}"
+if [[ -n "$_BEAST_ASSIST" ]]; then
+  export BEAST_ASSIST="$_BEAST_ASSIST"
+fi
 # fetch() blocks Tailscale CGNAT (100.64.0.0/10) targets by default — pinned
 # explicitly in agents/tools.py because CPython's is_private classification of
 # that range changed across versions. Opt in (true) when the model should fetch

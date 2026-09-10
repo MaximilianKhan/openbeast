@@ -631,6 +631,9 @@ def run_eval(
     # Export explicitly so the agent subprocess and the cache key agree by
     # construction (same read, §3.4).
     os.environ["OPENBEAST_DIAGNOSTICS"] = "1" if diag_on else "0"
+    # Pin BOTH spellings: an ambient rig-wide BEAST_ASSIST=1 (conf-enabled)
+    # must never leak into a diag-OFF arm through the alias.
+    os.environ["BEAST_ASSIST"] = "1" if diag_on else "0"
     # beast-assist per-write latency capture (ship-rule clause that was
     # unmeasurable in A/B rounds 1-2): point the agent's checker at a
     # per-run JSONL; summarized into provenance at save time.

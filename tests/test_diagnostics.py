@@ -276,3 +276,12 @@ def test_timing_log_written_when_pointed(tmp_path, diag_on, monkeypatch):
 def test_timing_log_absent_when_unset(tmp_path, diag_on, monkeypatch):
     monkeypatch.delenv("OPENBEAST_DIAG_TIMING_LOG", raising=False)
     _write(tmp_path, "untimed.py", "x = 1\n")  # must not raise
+
+
+def test_eval_arm_pins_both_spellings(monkeypatch):
+    # A rig-wide BEAST_ASSIST=1 must not leak into a diag-OFF eval arm:
+    # run_eval pins both env spellings to the arm's own state.
+    monkeypatch.setenv("BEAST_ASSIST", "1")
+    monkeypatch.delenv("OPENBEAST_DIAGNOSTICS", raising=False)
+    src = (ROOT / "evals" / "run_eval.py").read_text()
+    assert 'os.environ["BEAST_ASSIST"] = "1" if diag_on else "0"' in src
