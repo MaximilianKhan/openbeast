@@ -647,7 +647,8 @@ def write_file(path: str, content: str) -> str:
         with open(path, "w") as f:
             f.write(content)
         _manifest_log("write", path, len(content))
-        return f"Wrote {len(content)} bytes to {path}" + _run_diagnostics(path)
+        return (f"Wrote {len(content)} bytes to {path}"
+                + _path_guard_note(path) + _run_diagnostics(path))
     except Exception as e:
         return f"Error: {e}"
 
@@ -776,13 +777,13 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         if replace_all and count > 1:
             return (f"Replaced {count} occurrences in {path} "
                     f"({len(old_string)} → {len(new_string)} chars each)"
-                    + _run_diagnostics(path))
+                    + _path_guard_note(path) + _run_diagnostics(path))
         else:
             return (
                 f"Edited {path} at line {change_line}: "
                 f"replaced {old_lines} line{'s' if old_lines != 1 else ''} "
                 f"with {new_lines} line{'s' if new_lines != 1 else ''}"
-                + _run_diagnostics(path)
+                + _path_guard_note(path) + _run_diagnostics(path)
             )
     except Exception as e:
         return f"Error: {e}"
@@ -1052,8 +1053,57 @@ def web_search(query: str, max_results: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _task_expected_paths() -> list[str]:
+    """Expected file paths for the current task (R1 path guard, 2026-09-10).
+
+    The eval harness extracts /tmp/eval* paths from the task spec and
+    passes them via OPENBEAST_TASK_PATHS (JSON list). Empty/absent = the
+    guard is inert (production agents, non-eval use). Measured basis: 25%
+    of the diagnostics-A/B campaign's zig failures were FileNotFound at
+    validation — the model wrote correct code somewhere validation never
+    looks — identical with diagnostics on or off."""
+    raw = os.environ.get("OPENBEAST_TASK_PATHS", "").strip()
+    if not raw:
+        return []
+    try:
+        paths = json.loads(raw)
+        return [p for p in paths if isinstance(p, str)]
+    except json.JSONDecodeError:
+        return []
+
+
+def _path_guard_note(written: str) -> str:
+    """Warning to append when a write lands at the wrong place: same
+    basename as an expected task file, different location."""
+    expected = _task_expected_paths()
+    if not expected:
+        return ""
+    wp = os.path.realpath(written)
+    if any(wp == os.path.realpath(e) for e in expected):
+        return ""
+    base = os.path.basename(wp)
+    hits = [e for e in expected if os.path.basename(e) == base]
+    if hits:
+        return (f"\n⚠ path check: the task expects this file at {hits[0]} "
+                f"— you wrote {written}. Validation will only look at the "
+                f"expected path.")
+    return ""
+
+
 def task_done(summary: str) -> str:
     """Signal that the task is complete."""
+    # R1 path guard: refuse completion while expected task files (with a
+    # file extension — extensionless paths are usually build artifacts the
+    # validator compiles itself) do not exist. Catches both never-wrote
+    # and wrote-elsewhere with iterations left to fix it.
+    expected = _task_expected_paths()
+    missing = [e for e in expected
+               if "." in os.path.basename(e) and not os.path.exists(e)]
+    if missing:
+        return ("NOT DONE — the task expects these files, which do not "
+                "exist yet: " + ", ".join(sorted(missing)) +
+                ". Create them at exactly these paths, then call task_done "
+                "again.")
     return f"TASK_DONE: {summary}"
 
 
