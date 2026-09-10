@@ -343,14 +343,26 @@ def run_agent(
         # Execute tool calls
         for tc in message.tool_calls:
             fn_name = tc.function.name
+            parse_err = None
             try:
                 fn_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                # 2026-09-10 hardening: silently substituting {} produced a
+                # "missing argument" error that taught the model to fix the
+                # WRONG thing — the #1 local-model tool-call failure mode.
+                # Teach the actual failure: the JSON error + the raw text.
                 fn_args = {}
+                raw = (tc.function.arguments or "")[:300]
+                parse_err = (f"Error: tool arguments were not valid JSON "
+                             f"({e}). Raw arguments received: {raw!r}. "
+                             f"Re-issue the call with valid JSON.")
 
             handler = TOOL_HANDLERS.get(fn_name)
-            if not handler:
-                result = f"Error: unknown tool '{fn_name}'"
+            if parse_err:
+                result = parse_err
+            elif not handler:
+                result = (f"Error: unknown tool '{fn_name}'. Available tools: "
+                          f"{', '.join(sorted(TOOL_HANDLERS))}")
             else:
                 print(f"  > {fn_name}: {_tool_summary(fn_name, fn_args)}")
                 # Local models routinely emit imperfect tool calls (missing

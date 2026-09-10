@@ -83,9 +83,12 @@ class TestBash(unittest.TestCase):
         self.assertIn("timed out", result)
 
     def test_output_truncated(self):
-        # Generate output larger than 50k chars
+        # Output larger than 50k chars is head+tail-trimmed with a visible
+        # elision marker (2026-09-10: a plain [:50_000] slice discarded the
+        # tail, where verdicts live, and ate the marker itself).
         result = bash("python3 -c \"print('x' * 60000)\"", timeout=5)
-        self.assertLessEqual(len(result), 50_001)
+        self.assertLessEqual(len(result), 51_000)
+        self.assertIn("elided", result)
 
 
 class TestReadFile(unittest.TestCase):

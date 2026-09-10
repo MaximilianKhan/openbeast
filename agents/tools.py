@@ -109,12 +109,27 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         **popen_kw,
     )
     if hasattr(resource, "prlimit"):
-        try:
-            resource.prlimit(proc.pid, resource.RLIMIT_AS,
-                             (_as_limit, _as_limit))
-        except (OSError, ProcessLookupError, AttributeError):
-            pass
-    kept = bytearray()
+        # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
+        # disk-fill, and pure-CPU spins previously ran free until the wall
+        # timeout. Generous ceilings — real builds fork hundreds of procs and
+        # write big artifacts; these stop bombs, not work.
+        _limits = ((resource.RLIMIT_AS, _as_limit),
+                   (resource.RLIMIT_NPROC, 2048),
+                   (resource.RLIMIT_FSIZE, 8 * 1024**3),
+                   (resource.RLIMIT_CPU, 1800))
+        for _res, _cap in _limits:
+            try:
+                resource.prlimit(proc.pid, _res, (_cap, _cap))
+            except (OSError, ProcessLookupError, AttributeError, ValueError):
+                pass
+    # Head+tail capture (2026-09-10 hardening): the FINAL lines of long
+    # output are where verdicts live (pytest summaries, linker errors) —
+    # keeping only the head silently discarded exactly what the model
+    # needed. Head gets half the budget, tail a ring over the other half.
+    _HEAD = _MAX_CAPTURE_BYTES // 2
+    _TAIL = _MAX_CAPTURE_BYTES - _HEAD
+    head = bytearray()
+    tail = bytearray()
     total = [0]
 
     def _drain():
@@ -123,8 +138,23 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
             if not chunk:
                 break
             total[0] += len(chunk)
-            if len(kept) < _MAX_CAPTURE_BYTES:
-                kept.extend(chunk[: _MAX_CAPTURE_BYTES - len(kept)])
+            if len(head) < _HEAD:
+                take = min(_HEAD - len(head), len(chunk))
+                head.extend(chunk[:take])
+                chunk = chunk[take:]
+            if chunk:
+                tail.extend(chunk)
+                if len(tail) > _TAIL:
+                    del tail[: len(tail) - _TAIL]
+
+    def _assemble() -> str:
+        if not tail:
+            return head.decode("utf-8", errors="replace")
+        elided = total[0] - len(head) - len(tail)
+        marker = (f"\n[... {elided} bytes elided — head and tail kept ...]\n"
+                  if elided > 0 else "")
+        return (head.decode("utf-8", errors="replace") + marker
+                + tail.decode("utf-8", errors="replace"))
 
     reader = threading.Thread(target=_drain, daemon=True)
     reader.start()
@@ -132,7 +162,11 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _killpg(proc)
-        raise
+        # Hand the partial output to the caller — "which test hung?" is
+        # answerable only from what was printed before the kill.
+        reader.join(timeout=2)
+        raise subprocess.TimeoutExpired(command, timeout,
+                                        output=_assemble()) from None
     finally:
         reader.join(timeout=5)
         if reader.is_alive():
@@ -154,9 +188,10 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
             proc.stdout.close()
         except Exception:
             pass
-    out = kept.decode("utf-8", errors="replace")
-    if total[0] > len(kept):
-        out += f"\n[output truncated — {total[0]} bytes produced, kept {len(kept)}]"
+    out = _assemble()
+    kept_bytes = len(head) + len(tail)
+    if total[0] > kept_bytes:
+        out += f"\n[output truncated — {total[0]} bytes produced, kept {kept_bytes}]"
     return proc.returncode, out
 
 
@@ -220,10 +255,19 @@ def _scrubbed_env() -> dict:
     names containing KEY/SECRET/PASSWORD are dropped; the user's own
     unrelated env vars are left alone."""
     env = dict(os.environ)
+    # Exact-name denylist (2026-09-10 hardening): OPENAI_API_KEY is the very
+    # credential runner.py's _key_endpoint_trusted guards against
+    # exfiltration — yet the stack-prefix filter above left it in the env of
+    # every model-authored command. TOKEN joins the secret-shaped substrings.
+    _DENY_EXACT = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN",
+                   "GITHUB_TOKEN", "GH_TOKEN"}
     for name in list(env):
         up = name.upper()
+        if up in _DENY_EXACT:
+            env.pop(name)
+            continue
         if (up.startswith(("OPENBEAST_", "WEBUI_", "LLAMA_", "SEARXNG_"))
-                and any(t in up for t in ("KEY", "SECRET", "PASSWORD"))):
+                and any(t in up for t in ("KEY", "SECRET", "PASSWORD", "TOKEN"))):
             env.pop(name)
     return env
 
@@ -251,9 +295,28 @@ def bash(command: str, timeout: int = 120) -> str:
         )
         if not output.strip():
             output = f"(exit code {returncode})"
-        return output[:50_000]  # cap output size
-    except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {timeout}s"
+        elif returncode != 0:
+            # A nonzero exit was invisible whenever the command printed
+            # anything — the model's one machine-stable failure token.
+            output += f"\n(exit code {returncode})"
+        if len(output) > 50_000:
+            # Head+tail at the string layer too: the tail holds the verdict,
+            # and a plain [:50_000] slice also destroyed run_reaped's own
+            # truncation marker.
+            output = (output[:25_000]
+                      + f"\n[... {len(output) - 50_000} chars elided — head and tail kept; "
+                      f"re-run with | tail / | grep to narrow ...]\n"
+                      + output[-25_000:])
+        return output
+    except subprocess.TimeoutExpired as e:
+        partial = (e.output or "")
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        tail_note = ""
+        if partial.strip():
+            tail_note = ("\n--- partial output before the kill (tail) ---\n"
+                         + partial[-10_000:])
+        return f"Error: command timed out after {timeout}s{tail_note}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -292,10 +355,24 @@ def _guard_write_path(path: str):
             return f"Error: refusing to write inside a credential store ({rp})"
         if rel in _PROTECTED_BASENAMES:
             return f"Error: refusing to write protected file {rp}"
+    if inside_home:
+        # Persistence/execution targets (2026-09-10 hardening): a hook fires
+        # on the next git command, autostart/systemd-user on next login, and
+        # ~/.local/bin shadows real binaries on PATH.
+        _persist = (os.path.join(".config", "systemd", "user"),
+                    os.path.join(".config", "autostart"),
+                    os.path.join(".local", "bin"))
+        for pfx in _persist:
+            if rel == pfx or rel.startswith(pfx + os.sep):
+                return f"Error: refusing to write a persistence target ({rp})"
     if rp == "/etc" or rp.startswith("/etc/"):
         return f"Error: refusing to write under /etc ({rp})"
     if rp.endswith(f"{os.sep}.git{os.sep}config"):
         return f"Error: refusing to write a git config ({rp})"
+    if f"{os.sep}.git{os.sep}hooks{os.sep}" in rp or rp.endswith(f"{os.sep}.git{os.sep}hooks"):
+        # A hook is arbitrary code execution on the next git invocation —
+        # strictly worse than .git/config, which was already blocked.
+        return f"Error: refusing to write a git hook ({rp})"
     return None
 
 
@@ -330,11 +407,34 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         truncated = len(data) > _MAX_READ_BYTES
         lines = data[:_MAX_READ_BYTES].splitlines(keepends=True)
         total = len(lines)
+        if offset >= total and total > 0:
+            # An offset past EOF used to return an empty SUCCESS ("lines
+            # 801-800 of 600") — teach instead of confusing.
+            return (f"Error: offset {offset} is past the end of {path} "
+                    f"({total} lines) — last page: offset={max(0, total - limit)}")
         selected = lines[offset : offset + limit]
-        numbered = [f"{i + offset + 1}\t{line}" for i, line in enumerate(selected)]
+        # Context-bomb caps (2026-09-10 hardening): the file-size cap bounded
+        # DISK reads, but the RETURNED STRING was unbounded — one minified
+        # line could dump megabytes into a 27B's context. Clamp per-line and
+        # per-call, and always say how to resume.
+        _LINE_CLAMP, _CALL_CAP = 2000, 50_000
+        numbered, used, shown = [], 0, 0
+        for i, line in enumerate(selected):
+            if len(line) > _LINE_CLAMP:
+                line = line[:_LINE_CLAMP] + f"…[line truncated, {len(line)} chars total]\n"
+            row = f"{i + offset + 1}\t{line}"
+            if used + len(row) > _CALL_CAP:
+                break
+            numbered.append(row)
+            used += len(row)
+            shown += 1
         note = f" (+ more; read capped at {_MAX_READ_BYTES} bytes)" if truncated else ""
-        header = f"[{path}] lines {offset + 1}-{offset + len(selected)} of {total}{note}\n"
-        return header + "".join(numbered)
+        header = f"[{path}] lines {offset + 1}-{offset + shown} of {total}{note}\n"
+        resume = ""
+        if offset + shown < total:
+            resume = (f"\n[{total - offset - shown} more lines — continue with "
+                      f"read_file(path, offset={offset + shown}, limit={limit})]")
+        return header + "".join(numbered) + resume
     except Exception as e:
         return f"Error: {e}"
 
@@ -411,7 +511,12 @@ def _diag_checker(path: str):
         # a bogus missing-main error.
         try:
             with open(path, errors="replace") as f:
-                has_main = "fn main" in f.read(_DIAG_MAX_BYTES * 64)
+                # \b + pub fn main( — the bare substring false-positived on
+                # `fn mainLoop`/comments, selecting build-exe on library code
+                # and FABRICATING "no member named main" errors (2026-09-10
+                # review; attenuated the diagnostics A/B treatment).
+                has_main = re.search(r"\bpub\s+fn\s+main\s*\(",
+                                     f.read(_DIAG_MAX_BYTES * 64)) is not None
         except OSError:
             has_main = True
         cmd = (f"zig build-exe -fno-emit-bin {q}" if has_main
@@ -563,18 +668,56 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
         return f"Error: {e}"
 
 
-def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
-    """Search file contents for a regex pattern."""
+def grep(pattern: str, path: str = ".", file_glob: str = "",
+         context_lines: int = 0, ignore_case: bool = False,
+         max_results: int = 500) -> str:
+    """Search file contents for a regex pattern (POSIX ERE).
+
+    2026-09-10 hardening: the pattern rides behind `-e ... --` so a
+    leading-dash pattern can never be parsed as a grep option (live-
+    verified: a `-v` pattern flipped invert-match and recursed the whole
+    tree); binary files and VCS/build dirs are skipped; the search path
+    goes through _resolve() so `~` works; and the sandbox wrapper +
+    scrubbed env apply — this was the one exec path that bypassed both."""
     try:
-        cmd = f"grep -rn --include='*' -E {shlex.quote(pattern)} {shlex.quote(path)}"
+        path = _resolve(path)
+        flags = ["-rn", "-I", "-H",
+                 "--exclude-dir=.git", "--exclude-dir=node_modules",
+                 "--exclude-dir=__pycache__", "--exclude-dir=build",
+                 "--exclude-dir=.cache"]
+        if ignore_case:
+            flags.append("-i")
+        if context_lines:
+            flags.append(f"-C{max(0, min(int(context_lines), 10))}")
         if file_glob:
-            cmd = f"grep -rn --include={shlex.quote(file_glob)} -E {shlex.quote(pattern)} {shlex.quote(path)}"
-        _, output = run_reaped(
-            cmd, 30, cwd=_base_dir(),
-        )
-        return (output or "(no matches)")[:50_000]
+            flags.append(f"--include={shlex.quote(file_glob)}")
+        cmd = (f"grep {' '.join(flags)} -E -e {shlex.quote(pattern)} -- "
+               f"{shlex.quote(path)}")
+        wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
+        if wrapper:
+            cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
+        _, output = run_reaped(cmd, 30, cwd=_base_dir(), env=_scrubbed_env())
+        # "No matches" means no path:lineno: rows — grep may still have
+        # printed warnings (e.g. "stray \ before d"), which we keep visible.
+        has_match = re.search(r"^[^\n:]+:\d+:", output or "", re.M)
+        if not has_match:
+            hint = ""
+            if re.search(r"\\d|\\w|\\s|\(\?", pattern):
+                hint = ("\n(note: this tool speaks POSIX ERE — \\d/\\w/\\s and "
+                        "lookarounds are PCRE and match literally; use [0-9], "
+                        "[A-Za-z0-9_], [[:space:]])")
+            warn = ("\n" + output.strip()) if output.strip() else ""
+            return "(no matches)" + warn + hint
+        lines = output.splitlines()
+        cap = max(1, min(int(max_results), 2000))
+        if len(lines) > cap:
+            output = "\n".join(lines[:cap]) + (
+                f"\n[... {len(lines) - cap} more matching lines elided — "
+                f"narrow the pattern, path, or file_glob ...]")
+        return output[:50_000]
     except subprocess.TimeoutExpired:
-        return "Error: grep timed out"
+        return ("Error: grep timed out after 30s — narrow the path or add "
+                "file_glob (VCS/build dirs are already skipped)")
     except Exception as e:
         return f"Error: {e}"
 
@@ -1000,13 +1143,16 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search file contents for a regex pattern. Returns matching lines with file paths and line numbers.",
+                "description": "Search file contents for a regex pattern (POSIX ERE — use [0-9] not \\d, no lookaheads). Returns matching lines as path:lineno:text (line numbers are 1-based, same as read_file display). Skips binary files and .git/build dirs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                        "pattern": {"type": "string", "description": "POSIX ERE regex to search for"},
                         "path": {"type": "string", "description": "File or directory to search in", "default": "."},
                         "file_glob": {"type": "string", "description": "Filter files by glob (e.g. '*.py')"},
+                        "context_lines": {"type": "integer", "description": "Lines of context around each match (0-10)", "default": 0},
+                        "ignore_case": {"type": "boolean", "description": "Case-insensitive search", "default": False},
+                        "max_results": {"type": "integer", "description": "Cap on matching lines returned (default 500)", "default": 500},
                     },
                     "required": ["pattern"],
                 },
