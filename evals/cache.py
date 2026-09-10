@@ -95,7 +95,8 @@ def task_hash(task: dict[str, Any]) -> str:
 def cache_key(task: dict[str, Any], model_slug: str,
               max_iter: int | None = None,
               diag: str | None = None,
-              rb: str | None = None) -> str:
+              rb: str | None = None,
+              greedy: bool = False) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -118,7 +119,10 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # diag: OMITTED when uncapped (None / -1), so every legacy row stays
     # reachable; a finite budget stamps its value.
     rbc = f".rb{rb}" if rb else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}.{_context_hash_cached()}"
+    # Greedy-decode era (2026-09-10): greedy and sampled rows are different
+    # experiments; omitted when off so every legacy row stays reachable.
+    gr = ".greedy" if greedy else ""
+    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}.{_context_hash_cached()}"
 
 
 def cache_path(key: str) -> Path:

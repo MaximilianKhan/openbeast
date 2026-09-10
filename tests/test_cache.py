@@ -421,3 +421,11 @@ def test_cache_key_rb_and_diag_compose():
     t = {"id": "01_x", "task": "t", "validation": "v"}
     k = cache.cache_key(t, "slug", max_iter=10, diag="diag1-abcd1234", rb="20480")
     assert ".diag1-abcd1234.rb20480." in k
+
+
+def test_cache_key_greedy_era_component():
+    cache = _cache_mod()
+    t = {"id": "01_x", "task": "t", "validation": "v"}
+    k_off = cache.cache_key(t, "slug", max_iter=10)
+    k_on = cache.cache_key(t, "slug", max_iter=10, greedy=True)
+    assert k_off != k_on and ".greedy." in k_on and ".greedy" not in k_off

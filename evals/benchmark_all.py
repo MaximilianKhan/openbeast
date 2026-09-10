@@ -469,6 +469,9 @@ def main():
                         help="Parallel eval workers per model (default 1). run_eval clamps "
                              "to each server's /props total_slots, so MTP (-np 1) models "
                              "fall back to sequential automatically.")
+    parser.add_argument("--greedy", action="store_true",
+                        help="Low-churn eval mode: greedy decoding (own cache "
+                             "era; leaderboard-ineligible experiment rows)")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
@@ -489,6 +492,8 @@ def main():
     else:
         models = MODELS
 
+    if args.greedy:
+        os.environ["OPENBEAST_EVAL_GREEDY"] = "1"
     task_filter = args.tasks.split(",") if args.tasks else None
 
     # Cleanup handler — make sure we don't leave llama-server running

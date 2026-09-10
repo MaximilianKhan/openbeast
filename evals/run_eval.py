@@ -486,6 +486,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         child_env["OPENBEAST_TASK_PATHS"] = json.dumps(expected)
     else:
         child_env.pop("OPENBEAST_TASK_PATHS", None)
+    # Low-churn eval mode rides the same env read the runner uses.
+    if os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1":
+        child_env["OPENBEAST_EVAL_GREEDY"] = "1"
 
     # start_new_session so an agent timeout SIGKILLs the runner's whole
     # process group, not just the runner (its bash-tool children reap their
@@ -686,6 +689,10 @@ def run_eval(
     # Uncapped (absent or -1) omits the component — legacy keys unchanged.
     # cache_only mode has no live server to ask, so it replays legacy
     # (uncapped-era) keys only; capped rows are a miss there, disclosed.
+    # Low-churn eval mode (2026-09-10): greedy decoding, own cache era,
+    # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
+    # --greedy CLI flag (benchmark_all passes it through as env).
+    greedy_mode = os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1"
     rb_component = None
     if server_info:
         _rb = str(server_info.get("reasoning_budget", "")).strip()
@@ -734,6 +741,8 @@ def run_eval(
         rb = server_info.get("reasoning_budget", "unlimited (default)")
         print(f"Serve:  -np {server_info.get('parallel_slots', '?')} -c {server_info.get('context', '?')} "
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
+    if greedy_mode:
+        print("Decode: GREEDY (low-churn eval mode — leaderboard-ineligible era)")
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
@@ -758,6 +767,7 @@ def run_eval(
         "jobs": jobs,
         "suite_selection": suite,
         "harness": {"diagnostics": diag_on,
+                    "greedy": greedy_mode,
                     **({"toolchains": diag_toolchains} if diag_on else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
@@ -819,7 +829,8 @@ def run_eval(
         ck = None
         if use_cache:
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
-                                 diag=diag_component, rb=rb_component)
+                                 diag=diag_component, rb=rb_component,
+                                 greedy=greedy_mode)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)

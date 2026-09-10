@@ -294,7 +294,13 @@ def run_agent(
                 model=model,
                 messages=messages,
                 tools=TOOL_SCHEMAS,
-                temperature=0.6,
+                # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode, 2026-09-10):
+                # unseeded temperature-0.6 sampling was the measured ±5-14
+                # task-flip churn floor's primary engine. Greedy decoding is
+                # an EXPERIMENT mode — the 0.6 default is serving reality
+                # and stays for leaderboard rows.
+                temperature=(0.0 if os.environ.get(
+                    "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
             )
         except Exception as e:
             print(f"  API error: {e}")
