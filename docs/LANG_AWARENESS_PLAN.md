@@ -369,3 +369,60 @@ Four parallel reviewers; every HIGH and all actionable MEDs folded:
 - Conflict resolved: eval-integrity's `build-obj -fno-emit-bin`
   recommendation lost to systems' deeper test (unreferenced-fn hole);
   `build-exe -fno-emit-bin` + main-less ast-check fallback stands.
+
+---
+
+# RESULTS ADDENDUM — the A/B campaign, final (2026-09-09/10)
+
+*Written per Max's directive: "We want to be honest about our results.
+We don't need this to yield massive results — the happy piece is that
+we showed SOME progress." Full experimental record: the langaware
+research journal (research branch).*
+
+**Design run:** seven paired cells over two days — B-arm (Qwen3.8-
+Uncensored) off/on ×2 full replicates, A-arm (Qwen3.6 champion) off/on
+×2 full replicates, plus three untreated replicate pairs that measured
+the suite's own noise. All cells: pristine llama.cpp b10865, reasoning
+budget 20480, v5-fast 112 units + the 2 assumed-failed minis, paired
+same-day arms, own cache eras, `--no-cache` replicates.
+
+## What we can assert
+
+1. **The mechanism works, replicated on both models.** The flagship
+   stale-stdlib failure (`bst.zig`'s `trimRight`) converts under
+   diagnostics in every treated run and never untreated; failure modes
+   migrate from compile-death to logic exactly where the compiler
+   speaks; several rescues arrived faster and cheaper than the
+   baseline's failures.
+2. **Zero harm, everywhere.** No treated cell regressed any non-target
+   language in any run (guards p=0.77-0.82); the checker no-ops on
+   non-source files and missing toolchains by construction.
+3. **The capability effect is small: ≈ +2 to +5 net task units per
+   run, confined to the targeted language.** B-arm combined over two
+   replicates: zig +17/−11, net +6, p=0.345. Champion arm: flat-null
+   (run 2 paired net −2, p=0.82).
+4. **The suite's untreated churn floor is ±5-14 task flips per
+   re-roll** — measured three times, both models (B0'↔B0'': 21 flips;
+   A0'↔A0'': 22 flips; imputed swings up to ±0.75). This floor, not
+   the treatment, explains round-2's apparent champion record (98.92
+   diag-ON vs 98.89 untreated the next morning) and most single-run
+   "rescues." Any future tool-effect claim on this suite needs paired
+   same-day arms minimum, replicates by default, and either effects
+   ≥ ~15 net units or a lower-churn eval mode.
+5. **Two confounds found and owned:** the reasoning-budget change
+   (PR #45) independently unlocked marathon-class zig units the
+   diagnostics were initially credited for; and the zig checker's
+   `has_main` substring bug pushed occasional false errors into the
+   treated arms (fixed in the tools-hardening PR), attenuating the
+   measured effect.
+
+## The decision this supports
+
+beast-assist ships **default-OFF as a documented opt-in** (v1.2.0):
+free when idle, token-saving when active, provably harmless, honestly
+sized. The decisive next arms are pre-committed: **Tier 3 awareness
+packs** (proactive staleness fix — structurally larger expected
+effect), the **fixed checker** as the new era's baseline, and a
+**low-churn eval mode** (greedy single-slot) to shrink the floor
+itself. Progress: real, small, and measured to its exact size — which
+is the only kind of progress a measurement stack should claim.
