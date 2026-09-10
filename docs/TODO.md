@@ -61,10 +61,17 @@ Queue (strictly after the Phase A′ results work):
 2. Tier 1 build (~half day: checker table §3.2 with the MEASURED
    commands — `zig build-exe -fno-emit-bin`, not ast-check —, §3.3
    hardening, §3.4 cache key, §6.3 --rebuild fix, fixture tests).
-3. **A/B (~2.6 h GPU, Max-triggered)**: cells + pre-flight + ship rule in
-   plan §7 (ship = ≥7 net zig rescues at p<0.05, champion unharmed, p95
-   write latency ≤1 s). Pre-flight includes the v5-fast re-pin on A′
-   rows (already queued below) + assumed-list diff for 3.8.
+3. ~~A/B~~ **RUN 2026-09-09/10, two B-replicates + verdict SEALED:**
+   zig net +6 combined, p=0.345 — direction unanimous (every assist-ON
+   cell out-passed its OFF twin), harm excluded, magnitude within the
+   measured ±5–11 within-era churn floor. NO default-ON; shipped as
+   default-OFF opt-in **beast-assist** (`BEAST_ASSIST=1`, PR #50, with
+   per-write latency telemetry). Champion pair replicate in flight
+   (L7: feedback-scales-with-skill). Discoveries banked: true churn
+   floor; reasoning-cap may deserve marathon-unlock credit
+   (cap-confound hypothesis). Full record: research langaware journal.
+   **NEXT ZIG ARM: Tier 3 awareness packs (§5)** — attacks staleness
+   proactively; own era bump + mini-A/B per plan.
 4. **Per-project toolchain version resolution (gap banked 2026-09-09,
    Max's ask)**: the checker table runs the PATH toolchain (mise zig
    0.16.0), which is correct-by-construction for evals and rig agents —

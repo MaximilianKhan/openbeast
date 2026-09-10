@@ -1,5 +1,7 @@
 # Language awareness for the harness — push-diagnostics + awareness packs (design, 2026-09-08)
 
+> **NAMING (locked by Max 2026-09-09): the shipped feature is BEAST-ASSIST** (`BEAST_ASSIST=1`, alias of `OPENBEAST_DIAGNOSTICS=1`); "push-diagnostics" remains the mechanism term in this doc. A/B rounds 1–2 + B-replicate verdict (2026-09-10): direction unanimous, magnitude within churn at n=2, harm excluded → ships default-OFF documented opt-in; Tier 3 is the next zig arm. Full record: research langaware journal.
+
 > **Status: Tier 1 BUILT (PR #37, merge held until the current eval era is
 > banked — §6.2); A/B pending.** Everything else is design. The A/B
 > experiment in §7 gates every build phase and is queued behind the
