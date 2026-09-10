@@ -281,8 +281,6 @@ def test_timing_log_absent_when_unset(tmp_path, diag_on, monkeypatch):
 def test_eval_arm_pins_both_spellings(monkeypatch):
     # A rig-wide BEAST_ASSIST=1 must not leak into a diag-OFF eval arm:
     # run_eval pins both env spellings to the arm's own state.
-    import importlib, sys as _sys
-    _sys.path.insert(0, str(ROOT / "evals"))
     monkeypatch.setenv("BEAST_ASSIST", "1")
     monkeypatch.delenv("OPENBEAST_DIAGNOSTICS", raising=False)
     src = (ROOT / "evals" / "run_eval.py").read_text()
