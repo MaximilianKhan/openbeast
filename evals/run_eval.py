@@ -332,7 +332,8 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
     Returns (enabled, cache_component, toolchain_versions). The component
     is a toolchain fingerprint, not a boolean — different checker
     toolchains emit different diagnostics."""
-    enabled = os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+    enabled = (os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+               or os.environ.get("BEAST_ASSIST", "").strip() == "1")
     if not enabled:
         return False, None, {}
     import hashlib
@@ -630,6 +631,16 @@ def run_eval(
     # Export explicitly so the agent subprocess and the cache key agree by
     # construction (same read, §3.4).
     os.environ["OPENBEAST_DIAGNOSTICS"] = "1" if diag_on else "0"
+    # beast-assist per-write latency capture (ship-rule clause that was
+    # unmeasurable in A/B rounds 1-2): point the agent's checker at a
+    # per-run JSONL; summarized into provenance at save time.
+    diag_timing_log = None
+    if diag_on:
+        diag_timing_log = os.path.join(
+            RESULTS_DIR, f"diag-timing-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
+        os.environ["OPENBEAST_DIAG_TIMING_LOG"] = diag_timing_log
+    else:
+        os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
     tasks = load_tasks(task_filter)
     if suite_pin and len(tasks) != suite_pin["counts"]["units"]:
         raise SystemExit(f"suite {suite!r} resolved to {len(tasks)} units, "
@@ -926,6 +937,23 @@ def run_eval(
                 fut.result()
 
     # Final save (atomic; also covers the zero-task edge case)
+    # beast-assist latency summary (ship-rule clause: p95 per-write <= 1s).
+    # Read back the agent-side JSONL, fold percentiles into provenance.
+    if diag_timing_log and os.path.exists(diag_timing_log):
+        try:
+            _ms = sorted(json.loads(ln)["ms"] for ln in open(diag_timing_log)
+                         if ln.strip())
+            if _ms:
+                def _pct(q: float) -> float:
+                    return _ms[min(len(_ms) - 1, int(q * len(_ms)))]
+                results["harness"]["diag_latency_ms"] = {
+                    "n": len(_ms), "p50": _pct(.5), "p95": _pct(.95),
+                    "p99": _pct(.99), "max": _ms[-1]}
+                print(f"Diag latency: n={len(_ms)} p50={_pct(.5):.0f}ms "
+                      f"p95={_pct(.95):.0f}ms p99={_pct(.99):.0f}ms max={_ms[-1]:.0f}ms")
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            print(f"Diag latency summary unavailable: {e}")
+
     _write_results(results_path, results)
 
     # Print summary

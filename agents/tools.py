@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -454,8 +455,27 @@ def _diag_checker(path: str):
 
 def diagnostics_enabled() -> bool:
     """Read per-call so a server toggle needs no restart (mirrors the
-    OPENBEAST_BASH_WRAPPER pattern)."""
-    return os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+    OPENBEAST_BASH_WRAPPER pattern). BEAST_ASSIST is the user-facing
+    name (locked 2026-09-09); OPENBEAST_DIAGNOSTICS remains the
+    internal/mechanism spelling — either enables the feature."""
+    return (os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+            or os.environ.get("BEAST_ASSIST", "").strip() == "1")
+
+
+def _diag_log_timing(lang: str, ms: float, status: str) -> None:
+    """Append one JSONL timing row when OPENBEAST_DIAG_TIMING_LOG is set.
+    The per-write latency clause of the beast-assist ship rule was
+    unmeasurable in the first A/B rounds — this closes that gap. Must
+    never raise: timing is telemetry, not behavior."""
+    log = os.environ.get("OPENBEAST_DIAG_TIMING_LOG", "").strip()
+    if not log:
+        return
+    try:
+        with open(log, "a") as f:
+            f.write(json.dumps({"ts": time.time(), "lang": lang,
+                                "ms": round(ms, 1), "status": status}) + "\n")
+    except OSError:
+        pass
 
 
 def _run_diagnostics(path: str) -> str:
@@ -465,6 +485,8 @@ def _run_diagnostics(path: str) -> str:
     if not diagnostics_enabled():
         return ""
     checker = None
+    t0 = time.monotonic()
+    lang = "?"
     try:
         checker = _diag_checker(path)
         if checker is None:
@@ -476,11 +498,13 @@ def _run_diagnostics(path: str) -> str:
         env = _scrubbed_env()
         env.update(extra_env)
         if not _DIAG_SLOTS.acquire(timeout=5):
+            _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "busy")
             return "\ndiagnostics: unavailable (busy)"
         try:
             rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
         finally:
             _DIAG_SLOTS.release()
+        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok")
         out = (out or "").strip()
         if rc == 0 and not out:
             return f"\ndiagnostics: OK ({lang})"
@@ -493,8 +517,10 @@ def _run_diagnostics(path: str) -> str:
         label = f"{n} error{'s' if n != 1 else ''}" if n else "warnings"
         return (f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──")
     except subprocess.TimeoutExpired:
+        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"
     except Exception as e:
+        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, type(e).__name__)
         return f"\ndiagnostics: unavailable ({type(e).__name__})"
     finally:
         if checker:

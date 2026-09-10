@@ -243,3 +243,36 @@ def test_diagnostics_flag_on_fingerprints_toolchains(monkeypatch):
     import run_eval
     on, comp, tc = run_eval.diagnostics_flag()
     assert on and comp.startswith("diag1-") and len(comp) == len("diag1-") + 8
+
+
+# --- beast-assist: alias + latency telemetry (2026-09-10) ------------------
+
+def test_beast_assist_alias_enables(tmp_path, monkeypatch):
+    # BEAST_ASSIST=1 is the user-facing name; must enable without the
+    # internal OPENBEAST_DIAGNOSTICS spelling.
+    monkeypatch.delenv("OPENBEAST_DIAGNOSTICS", raising=False)
+    monkeypatch.setenv("BEAST_ASSIST", "1")
+    out = _write(tmp_path, "alias.py", "x = 1\n")
+    assert "diagnostics: OK (python)" in out
+
+
+def test_beast_assist_alias_off_when_neither_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENBEAST_DIAGNOSTICS", raising=False)
+    monkeypatch.delenv("BEAST_ASSIST", raising=False)
+    out = _write(tmp_path, "noalias.py", "def broken(:\n")
+    assert "diagnostics" not in out
+
+
+def test_timing_log_written_when_pointed(tmp_path, diag_on, monkeypatch):
+    import json as _json
+    log = tmp_path / "diag-timing.jsonl"
+    monkeypatch.setenv("OPENBEAST_DIAG_TIMING_LOG", str(log))
+    _write(tmp_path, "timed.py", "x = 1\n")
+    rows = [_json.loads(ln) for ln in log.read_text().splitlines() if ln.strip()]
+    assert rows and rows[0]["lang"] == "python" and rows[0]["status"] == "ok"
+    assert rows[0]["ms"] >= 0
+
+
+def test_timing_log_absent_when_unset(tmp_path, diag_on, monkeypatch):
+    monkeypatch.delenv("OPENBEAST_DIAG_TIMING_LOG", raising=False)
+    _write(tmp_path, "untimed.py", "x = 1\n")  # must not raise
