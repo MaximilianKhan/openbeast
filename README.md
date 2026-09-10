@@ -464,6 +464,40 @@ capability board; the Qwen3.8 family is not yet benchmarked.
 
 **Full lineup, per-variant VRAM/context/speed, and MTP tuning → [docs/MODELS.md](docs/MODELS.md).**
 
+## beast-assist 🔧 — the compiler joins the agent loop
+
+*(Shipped in v1.2.0, opt-in: `BEAST_ASSIST=1` — env or `openbeast.conf`.)*
+
+When enabled, every `write_file`/`edit_file` by an agent runs the language's
+real checker (zig full-Sema, rustc, `go vet`, gcc/g++, py_compile, shellcheck)
+and pushes its diagnostics into the tool result — the model learns *at write
+time* that its stale-stdlib call won't compile, instead of at the end, or
+never. Non-source files never touch a checker (extension allowlist), missing
+toolchains no-op silently, and per-write latency is recorded into run
+provenance.
+
+**The honest results** (two-day, seven-cell pre-registered A/B campaign,
+2026-09: full numbers in
+[`docs/LANG_AWARENESS_PLAN.md`](docs/LANG_AWARENESS_PLAN.md)):
+
+- **What worked:** the mechanism replicated on *both* tested models — the
+  flagship stale-API failure class converts under diagnostics in every
+  treated run and never untreated; failure modes migrate from compile-death
+  to honest logic errors exactly where the compiler speaks; completion
+  tokens dropped 2–4% in most treated cells; **zero regressions anywhere**.
+- **What didn't:** the *suite-level* capability effect is small — roughly
+  +2–5 net tasks per run, confined to the targeted language — and sits
+  inside a run-to-run churn floor of ±5–14 task flips that we measured
+  three separate times. Two early "wins" (a record champion score, a
+  never-passed task falling) dissolved under replication, and we say so.
+- **Why it still ships:** free when idle, token-saving when active,
+  provably harmless, and mechanistically real. The default stays OFF until
+  the pre-committed next arms (proactive stdlib "awareness packs," the
+  fixed checker era, a low-churn eval mode) can measure a decisive effect.
+
+We publish the misses alongside the hits on purpose: a measurement stack
+that only reports victories isn't one.
+
 ## Evals & benchmarking
 
 A reproducible suite of **291 test units** (137 base tasks, 31 with variants
