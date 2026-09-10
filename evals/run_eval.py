@@ -471,6 +471,22 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         task["task"],
     ]
 
+    # R1 path guard (2026-09-10): 25% of the diagnostics-A/B campaign's
+    # zig failures were FileNotFound at validation — right code, wrong
+    # place. Extract the task's /tmp/eval* paths and hand them to the
+    # agent's tool layer (OPENBEAST_TASK_PATHS), which warns on
+    # wrong-place writes and refuses task_done while expected files are
+    # missing. Passed via env= (NOT os.environ mutation) so --jobs
+    # parallel tasks cannot race each other's path sets.
+    spec_text = " ".join(str(task.get(k, ""))
+                         for k in ("task", "validation", "setup", "cleanup"))
+    expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
+    child_env = dict(os.environ)
+    if expected:
+        child_env["OPENBEAST_TASK_PATHS"] = json.dumps(expected)
+    else:
+        child_env.pop("OPENBEAST_TASK_PATHS", None)
+
     # start_new_session so an agent timeout SIGKILLs the runner's whole
     # process group, not just the runner (its bash-tool children reap their
     # own groups — see agents/tools.py run_reaped).
@@ -480,6 +496,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        env=child_env,
     )
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
