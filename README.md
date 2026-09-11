@@ -454,9 +454,10 @@ verification checklist: [`docs/REMOTE_ACCESS_PLAN.md`](docs/REMOTE_ACCESS_PLAN.m
 
 ## Models
 
-Twenty-five models ship pre-configured, every one measured for VRAM and context
+Twenty-six models ship pre-configured, every one measured for VRAM and context
 on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
-Blackwell NVFP4, and community MTP builds. The default is **Qwen3.8 27B
+Blackwell NVFP4, community MTP builds, and (new) a **177B Qwen3.8-Flash-Next
+MoE** that runs with its experts in system RAM at ~35 tok/s. The default is **Qwen3.8 27B
 Uncensored MTP Q5_K_M** at the full native 262K context — 140 tok/s (2.0× its
 own no-MTP baseline), the fastest thing we ship, and the only default that has
 ever left ~6 GB of VRAM free. The dense **Qwen3.6-27B Q5_K_XL** still tops the
@@ -576,7 +577,7 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 
 | Doc | What's in it |
 |---|---|
-| [MODELS.md](docs/MODELS.md) | The 17-model lineup, with measured VRAM, context and speed |
+| [MODELS.md](docs/MODELS.md) | The full lineup, with measured VRAM, context and speed |
 | [REFERENCE.md](docs/REFERENCE.md) | Config keys, measured VRAM tables, per-variant details |
 | [TOOLS.md](docs/TOOLS.md) | Every tool a model can call: inventory, provenance, hardening, RBAC |
 | [HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md) | GPU detection and per-tier configs |

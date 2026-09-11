@@ -186,6 +186,26 @@ hardware: `./scripts/profile-qwen38-uncensored-mtp.sh`, then
 `./scripts/measure-vram.sh` for the context ceiling. Do **not** grab the repo's
 `-noMTP-` variants — this file is a strict superset of them.
 
+### Qwen3.8-Flash-Next-Uncensored (orcarouter) -- IQ4_XS (~97 GB, 3 shards) — 177B MoE, needs ≥ 96 GB free RAM
+
+The first model in the lineup that does not fit in VRAM: 177B-parameter MoE
+whose expert weights live in system RAM (`--n-cpu-moe 35`). Requires ~97 GB of
+disk, ≥ 96 GB of free RAM and the 5090; decodes at ~35 tok/s. Three shards —
+keep all three together under their original names and point at shard 1 (the
+serve script already does).
+
+```bash
+hf download orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF \
+   --include 'Qwen3.8-Flash-Next-Uncensored-IQ4_XS-*.gguf' --local-dir weights/
+# optional, both untested (see docs/MODELS.md): MTP draft head + vision projector
+hf download orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF \
+   Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf --local-dir weights/
+rm -rf weights/.cache
+```
+
+Serve with `serve-qwen38-flash-next-unc-iq4xs.sh` (262K native context, single
+slot, ~38 tok/s decode / ~700 tok/s prompt, 23–27 GB VRAM, ~65 GB RAM).
+
 ### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top accuracy (97.85%)
 
 ```bash

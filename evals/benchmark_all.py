@@ -148,6 +148,11 @@ MODELS = [
 # failure, which is how the Heretic v2 and Fable-Fusion gaps above went
 # unnoticed for a month.
 BENCH_EXCLUDED = {
+    "scripts/serve-qwen38-flash-next-unc-iq4xs.sh":
+        "Qwen3.8-Flash-Next-Uncensored IQ4_XS (177B MoE, CPU-offloaded experts, "
+        "single slot, ~35 tok/s): a v5-fast row is a ~1-day GPU+CPU job that "
+        "starves every other queue item. Baselined by hand 2026-09-11 (see "
+        "docs/MODELS.md); register it when Max schedules the run.",
     "scripts/serve-qwen38-27b-vision-q5.sh":
         "same weights as qwen38-27b-q5, differing only by --mmproj; our eval "
         "suite is text-only, so this would burn ~45 min to reproduce its "

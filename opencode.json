@@ -122,6 +122,13 @@
             "context": 262144,
             "output": 32768
           }
+        },
+        "qwen38-flash-next-unc-iq4xs": {
+          "name": "Qwen3.8-Flash-Next Uncensored IQ4_XS (177B MoE, CPU-offload, single-slot)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
         }
       }
     }
