@@ -355,6 +355,89 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
     return True, f"diag2-{fp}", versions
 
 
+PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
+# Language → pack file. Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig
+# has a pack today; every other language gets nothing — its agent command
+# line is byte-identical with packs on or off.
+PACK_FILES = {"zig": "zig-0.16.md"}
+_PACK_HEADER_RE = re.compile(
+    r"^\(2\) GENERATED signature digest — zig (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
+    re.MULTILINE)
+
+
+def _verify_pack(lang: str, path: str, data: bytes) -> None:
+    """Drift-abort at run start (roadmap R2): the generated section's
+    stamped sha must match its bytes, and the pack's zig version must
+    match the installed compiler — a pack generated against another
+    stdlib is a different experiment and must never run under this era."""
+    import hashlib
+    import shutil as _sh
+    text = data.decode("utf-8", errors="replace")
+    m = _PACK_HEADER_RE.search(text)
+    if not m:
+        raise SystemExit(f"pack {path}: no generated-section header — regenerate with "
+                         f"agents/packs/gen_zig_pack.py")
+    version, _n, stamped = m.group(1), m.group(2), m.group(3)
+    digest = text[m.end():].split("\n", 1)[1] if "\n" in text[m.end():] else ""
+    actual = hashlib.sha256(digest.encode()).hexdigest()[:16]
+    if actual != stamped:
+        raise SystemExit(f"pack {path}: generated section drifted (stamped {stamped}, "
+                         f"actual {actual}) — regenerate with agents/packs/gen_zig_pack.py")
+    if lang == "zig" and _sh.which("zig"):
+        try:
+            installed = subprocess.run(["zig", "version"], capture_output=True, text=True,
+                                       timeout=10).stdout.strip()
+        except Exception:
+            installed = ""
+        if installed and installed != version:
+            raise SystemExit(f"pack {path}: generated for zig {version} but zig {installed} is "
+                             f"installed — regenerate with agents/packs/gen_zig_pack.py")
+
+
+def packs_flag() -> tuple[bool, str | None, dict]:
+    """Derive the awareness-pack state ONCE per run (same rule as
+    diagnostics_flag: the cache-key component and what the agent sees must
+    come from one read). Enabled by BEAST_PACKS=1 (user-facing) or
+    OPENBEAST_PACKS=1 (internal), or run_eval/benchmark_all --packs.
+
+    Returns (enabled, cache_component, meta) where cache_component is
+    `pack1-<sha8 of the pack file bytes>` (packs concatenated in language
+    order when there is more than one) and meta = {"sha": {lang: sha8},
+    "paths": {lang: abs_path}}."""
+    enabled = (os.environ.get("BEAST_PACKS", "").strip() == "1"
+               or os.environ.get("OPENBEAST_PACKS", "").strip() == "1")
+    if not enabled:
+        return False, None, {}
+    import hashlib
+    shas, paths = {}, {}
+    h = hashlib.sha256()
+    for lang, fn in sorted(PACK_FILES.items()):
+        p = os.path.abspath(os.path.join(PACKS_DIR, fn))
+        with open(p, "rb") as f:
+            data = f.read()
+        _verify_pack(lang, p, data)
+        shas[lang] = hashlib.sha256(data).hexdigest()[:8]
+        paths[lang] = p
+        h.update(data)
+    return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
+
+
+_ITER_LINE = re.compile(r"^\[iter (\d+)/(\d+)\]\s*$", re.MULTILINE)
+_DONE_LINE = re.compile(r"^Task complete \(iteration (\d+)\)\s*$", re.MULTILINE)
+
+
+def _parse_iterations(stdout: str) -> int | None:
+    """Iterations the agent actually used (co-primary Tier-3 readout:
+    iterations-to-fix). Prefers the runner's `Task complete (iteration N)`
+    line; falls back to the last `[iter N/M]` marker. None when neither is
+    in the retained stdout tail."""
+    m = _DONE_LINE.search(stdout)
+    if m:
+        return int(m.group(1))
+    its = _ITER_LINE.findall(stdout)
+    return int(its[-1][0]) if its else None
+
+
 def cacheable_result(result: dict) -> bool:
     """A result row may enter the cache only if it is a genuine verdict.
     Environmental deaths must retry clean on the next run:
@@ -468,8 +551,16 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         "--base-url", base_url,
         "--max-iter", str(max_iter),
         "--workdir", "/tmp",
-        task["task"],
     ]
+    # Tier-3 awareness pack (docs/LANG_AWARENESS_PLAN.md §5): run_eval
+    # annotates units whose language has a pack with `_context_file`
+    # (underscore key ⇒ excluded from the task hash; the pack1-<sha8> era
+    # component carries the pack identity instead). The runner puts the
+    # file into the system prompt as a delimited "Background context"
+    # block — zero runner.py edits, so the context hash is untouched.
+    if task.get("_context_file"):
+        cmd += ["--context-file", task["_context_file"]]
+    cmd.append(task["task"])
 
     # R1 path guard (2026-09-10): 25% of the diagnostics-A/B campaign's
     # zig failures were FileNotFound at validation — right code, wrong
@@ -513,6 +604,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "stdout": stdout[-2000:],  # last 2K of output
             "stderr": stderr[-1000:],
             "tokens": tokens,
+            "iterations": _parse_iterations(stdout),
         }
     except subprocess.TimeoutExpired:
         try:
@@ -531,6 +623,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "stdout": "(timed out)",
             "stderr": "",
             "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "iterations": None,
         }
 
 
@@ -664,7 +757,17 @@ def run_eval(
         os.environ["OPENBEAST_DIAG_TIMING_LOG"] = diag_timing_log
     else:
         os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
+    # Tier-3 awareness packs: derived ONCE, pinned in both env spellings so
+    # an ambient rig-wide BEAST_PACKS=1 cannot leak into a packs-OFF arm.
+    packs_on, packs_component, packs_meta = packs_flag()
+    os.environ["BEAST_PACKS"] = "1" if packs_on else "0"
+    os.environ["OPENBEAST_PACKS"] = "1" if packs_on else "0"
     tasks = load_tasks(task_filter)
+    if packs_on:
+        for t in tasks:
+            pack_path = packs_meta["paths"].get(t.get("language"))
+            if pack_path:
+                t["_context_file"] = pack_path
     if suite_pin and len(tasks) != suite_pin["counts"]["units"]:
         raise SystemExit(f"suite {suite!r} resolved to {len(tasks)} units, "
                          f"pin declares {suite_pin['counts']['units']} — pin/tasks drift")
@@ -746,6 +849,11 @@ def run_eval(
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
+    if packs_on:
+        packed = sum(1 for t in tasks if t.get("_context_file"))
+        print(f"Packs:  awareness packs ON ({', '.join(f'{k}={v}' for k, v in packs_meta['sha'].items())}) — "
+              f"cache era {packs_component} on {packed}/{len(tasks)} units "
+              f"(leaderboard-ineligible experiment rows)")
     if suite_pin:
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
@@ -768,6 +876,8 @@ def run_eval(
         "suite_selection": suite,
         "harness": {"diagnostics": diag_on,
                     "greedy": greedy_mode,
+                    "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
+                    **({"packs_component": packs_component} if packs_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
@@ -830,7 +940,8 @@ def run_eval(
         if use_cache:
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
                                  diag=diag_component, rb=rb_component,
-                                 greedy=greedy_mode)
+                                 greedy=greedy_mode,
+                                 pack=packs_component if task.get("_context_file") else None)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
@@ -911,6 +1022,7 @@ def run_eval(
             "tokens_prompt": tokens["prompt"],
             "tokens_completion": tokens["completion"],
             "tokens_total": tokens["total"],
+            "iterations": agent_result.get("iterations"),
         })
 
         if passed:
@@ -1045,10 +1157,17 @@ def main():
                              "(clamped to /props total_slots when readable; MTP configs are -np 1). "
                              "Variants of the same base task always run sequentially — they share "
                              "/tmp fixtures — so scores stay comparable to sequential runs.")
+    parser.add_argument("--packs", action="store_true",
+                        help="Tier-3 language awareness packs (docs/LANG_AWARENESS_PLAN.md §5): "
+                             "inject agents/packs/<lang>.md into the agent system prompt for units "
+                             "whose language has a pack (zig only today). Own pack1-<sha8> cache "
+                             "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    if args.packs:
+        os.environ["BEAST_PACKS"] = "1"
 
     if args.list:
         tasks = load_tasks()

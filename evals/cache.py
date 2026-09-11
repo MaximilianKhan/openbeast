@@ -10,6 +10,10 @@ Hash key components:
 4. effective max_iter (optional) — the iteration budget the agent actually
    ran with (task default or --max-iter override). A different budget can
    change the outcome, so it is part of the key when supplied.
+4b. era components (each omitted when off, so legacy keys stay reachable):
+   diag (push-diagnostics toolchain fingerprint), rb (finite reasoning
+   budget), greedy (low-churn decode), pack (awareness pack sha —
+   task-scoped to the pack's language).
 5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
    opencode.json (which pins the available tools/transport), the agent
    runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
@@ -96,7 +100,8 @@ def cache_key(task: dict[str, Any], model_slug: str,
               max_iter: int | None = None,
               diag: str | None = None,
               rb: str | None = None,
-              greedy: bool = False) -> str:
+              greedy: bool = False,
+              pack: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -122,7 +127,13 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # Greedy-decode era (2026-09-10): greedy and sampled rows are different
     # experiments; omitted when off so every legacy row stays reachable.
     gr = ".greedy" if greedy else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}.{_context_hash_cached()}"
+    # Awareness-pack era (Tier 3, 2026-09-11): `pack1-<sha8 of the pack
+    # bytes>`. TASK-SCOPED by the caller — only units whose language has a
+    # pack receive the component, because a non-zig request is
+    # byte-identical with packs on or off (no --context-file is passed) and
+    # so legitimately shares the un-packed era's rows. Omitted when None.
+    pk = f".{pack}" if pack else ""
+    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}.{_context_hash_cached()}"
 
 
 def cache_path(key: str) -> Path:

@@ -1,0 +1,270 @@
+{
+  "zig": "0.16.0",
+  "verified": "2026-09-11",
+  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry",
+  "entries": [
+    {
+      "entry": "main_io",
+      "old": [],
+      "new": [
+        "main_io.new.1.zig",
+        "main_io.new.2.zig",
+        "main_io.new.3.zig"
+      ],
+      "pack_must_contain": [
+        "std.process.Init",
+        "global_single_threaded"
+      ]
+    },
+    {
+      "entry": "stdout",
+      "old": [
+        "stdout.old.1.zig",
+        "stdout.old.2.zig"
+      ],
+      "new": [
+        "stdout.new.1.zig",
+        "stdout.new.2.zig"
+      ],
+      "pack_must_contain": [
+        "std.Io.File.Writer = .init(.stdout(), io, &buf)",
+        "&fw.interface",
+        "w.flush()"
+      ]
+    },
+    {
+      "entry": "stdin",
+      "old": [
+        "stdin.old.1.zig",
+        "stdin.old.2.zig"
+      ],
+      "new": [
+        "stdin.new.1.zig",
+        "stdin.new.2.zig",
+        "stdin.new.3.zig"
+      ],
+      "pack_must_contain": [
+        "takeDelimiter('\\n')",
+        "allocRemaining(gpa, .unlimited)"
+      ]
+    },
+    {
+      "entry": "files",
+      "old": [
+        "files.old.1.zig"
+      ],
+      "new": [
+        "files.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited",
+        ".writeFile(io, .{ .sub_path",
+        "f.close(io)"
+      ]
+    },
+    {
+      "entry": "args",
+      "old": [
+        "args.old.1.zig"
+      ],
+      "new": [
+        "args.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "init.minimal.args.toSlice(init.arena.allocator())"
+      ]
+    },
+    {
+      "entry": "time_random",
+      "old": [
+        "time_random.old.1.zig",
+        "time_random.old.2.zig",
+        "time_random.old.3.zig",
+        "time_random.old.4.zig",
+        "time_random.old.5.zig"
+      ],
+      "new": [
+        "time_random.new.1.zig",
+        "time_random.new.2.zig"
+      ],
+      "pack_must_contain": [
+        "std.Io.Clock.now(.awake, io)",
+        "io.sleep(.fromMilliseconds",
+        "io.random(&buf)",
+        "DefaultPrng.init(42)"
+      ]
+    },
+    {
+      "entry": "arraylist",
+      "old": [
+        "arraylist.old.1.zig",
+        "arraylist.old.2.zig",
+        "arraylist.old.3.zig"
+      ],
+      "new": [
+        "arraylist.new.1.zig",
+        "arraylist.new.2.zig",
+        "arraylist.new.3.zig"
+      ],
+      "pack_must_contain": [
+        "std.ArrayList(T) = .empty",
+        "list.append(gpa, x)",
+        "toOwnedSlice(gpa)",
+        "`pop()` returns `?T`",
+        "std.array_list.Managed(T).init(gpa)"
+      ]
+    },
+    {
+      "entry": "arraylist_writer",
+      "old": [
+        "arraylist_writer.old.1.zig"
+      ],
+      "new": [
+        "arraylist_writer.new.1.zig",
+        "arraylist_writer.new.2.zig"
+      ],
+      "pack_must_contain": [
+        "std.Io.Writer.Allocating = .init(gpa)",
+        "aw.written()",
+        "list.print(gpa,",
+        "std.Io.Writer = .fixed(&buf)"
+      ]
+    },
+    {
+      "entry": "pq_hashmap",
+      "old": [
+        "pq_hashmap.old.1.zig"
+      ],
+      "new": [
+        "pq_hashmap.new.1.zig",
+        "pq_hashmap.new.2.zig"
+      ],
+      "pack_must_contain": [
+        "std.PriorityQueue(T, void, cmp) = .empty",
+        "pq.push(gpa, x)",
+        "AutoHashMap/StringHashMap are still managed"
+      ]
+    },
+    {
+      "entry": "math",
+      "old": [
+        "math.old.1.zig",
+        "math.old.2.zig",
+        "math.old.3.zig",
+        "math.old.4.zig"
+      ],
+      "new": [
+        "math.new.1.zig",
+        "math.new.2.zig",
+        "math.new.3.zig"
+      ],
+      "pack_must_contain": [
+        "`std.math.abs/absInt` \u2192 `@abs(x)`",
+        "`std.math.min/max` \u2192 `@min(a, b)` / `@max(a, b)`",
+        "cast(T, x) ?T",
+        "isPowerOfTwo",
+        "divCeil"
+      ]
+    },
+    {
+      "entry": "mem",
+      "old": [
+        "mem.old.1.zig",
+        "mem.old.2.zig",
+        "mem.old.3.zig",
+        "mem.old.4.zig",
+        "mem.old.5.zig",
+        "mem.old.6.zig",
+        "mem.old.7.zig"
+      ],
+      "new": [
+        "mem.new.1.zig",
+        "mem.new.2.zig",
+        "mem.new.3.zig",
+        "mem.new.4.zig"
+      ],
+      "pack_must_contain": [
+        "trimEnd/trimStart(u8, s, \" \")",
+        "tokenizeScalar(u8, s, ' ')",
+        "splitScalar",
+        "@memcpy(dst, src)",
+        "@memset(dst, 0)",
+        "std.mem.sort(T, items, {}, std.sort.asc(T))"
+      ]
+    },
+    {
+      "entry": "fmt",
+      "old": [
+        "fmt.old.1.zig",
+        "fmt.old.2.zig",
+        "fmt.old.3.zig"
+      ],
+      "new": [
+        "fmt.new.1.zig",
+        "fmt.new.2.zig",
+        "fmt.new.3.zig",
+        "fmt.new.4.zig",
+        "fmt.new.5.zig"
+      ],
+      "pack_must_contain": [
+        "`std.fmt.format(w, ..)` \u2192 `w.print(..)`",
+        "fmt.printInt(&buf, v, 10, .lower, .{})",
+        "\"{x}\"",
+        "pub fn format(self: T, w: *std.Io.Writer) std.Io.Writer.Error!void",
+        "{f}",
+        "{d:.3}"
+      ]
+    },
+    {
+      "entry": "casts",
+      "old": [
+        "casts.old.1.zig",
+        "casts.old.2.zig",
+        "casts.old.3.zig",
+        "casts.old.4.zig",
+        "casts.old.5.zig"
+      ],
+      "new": [
+        "casts.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "const f: f64 = @floatFromInt(i)",
+        "@intFromFloat(f)",
+        "const b: u8 = @intCast(x)",
+        "@intFromEnum(e)",
+        "@enumFromInt(n)",
+        "@intFromBool(b)",
+        "@as(f64, @floatFromInt(n))"
+      ]
+    },
+    {
+      "entry": "alloc_exit",
+      "old": [
+        "alloc_exit.old.1.zig",
+        "alloc_exit.old.2.zig"
+      ],
+      "new": [
+        "alloc_exit.new.1.zig",
+        "alloc_exit.new.2.zig"
+      ],
+      "pack_must_contain": [
+        "std.heap.DebugAllocator(.{}) = .init",
+        "dbg.allocator()",
+        "std.process.exit(code)"
+      ]
+    },
+    {
+      "entry": "ascii",
+      "old": [
+        "ascii.old.1.zig",
+        "ascii.old.2.zig"
+      ],
+      "new": [
+        "ascii.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "`std.ascii.isAlpha/isSpace` \u2192 `isAlphabetic/isWhitespace`"
+      ]
+    }
+  ]
+}

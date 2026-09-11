@@ -257,6 +257,63 @@ task's target language. Corrected per review:
 - Injection edits `runner.py` ⇒ full cache-era break — Tier 3 ships in
   its own era bump, never piggybacked. Own zig-only mini-A/B.
 
+**Built 2026-09-11 (zig pack, PR feat/zig-awareness-pack) — opt-in
+`BEAST_PACKS=1` / `OPENBEAST_PACKS=1` / `--packs`, default OFF, not yet
+A/B'd.** Composition of `agents/packs/zig-0.16.md` (7,880 bytes ≈ 1,970
+tokens at 4 chars/token, budget 2,000):
+- **(1) CURATED rename/idiom map, ≈1,160 tokens, 17 bullets** — main/Io
+  plumbing (`std.process.Init`, `std.Io.File.Writer/Reader.init(.stdout()/
+  .stdin(), io, &buf)`, `takeDelimiter`, `Io.Dir.cwd()`, args, Clock/random),
+  ArrayList managed→unmanaged (`.empty`, `append(gpa, x)`, `deinit(gpa)`,
+  `toOwnedSlice(gpa)`, `pop() ?T`, `Writer.Allocating`, `array_list.Managed`
+  still exists), PriorityQueue `.empty`/`push(gpa, x)`, and the removed-helper
+  class (`math.abs/min/max` → builtins, `mem.trimRight/tokenize/split/copy/set`,
+  `sort.sort`, `fmt.format/formatIntBuf/fmtSliceHexLower`, 1-arg casts,
+  `GeneralPurposeAllocator` → `DebugAllocator`, `os.exit`, `ascii.isAlpha/
+  isSpace`). Every bullet is backed by `tests/fixtures/zig016/` (39 OLD
+  fixtures that FAIL + 35 NEW fixtures that COMPILE under `zig build-exe
+  -fno-emit-bin` on zig 0.16.0, one stale idiom per OLD fixture; manifest
+  `MANIFEST.json` cross-checks pack text ↔ fixtures both ways; the test
+  suite re-runs the compiles whenever zig is installed). Dated, NOT
+  checksum-pinned. Findings that corrected the roadmap's assumptions:
+  `std.io` and `std.fs.File`/`std.fs.cwd()` are gone outright (the 0.15
+  `std.fs.File.stdout().writer(&buf)` idiom is itself stale), every I/O
+  call needs an `Io` (`init.io` or `Io.Threaded.global_single_threaded.io()`),
+  `std.time.*`/`Thread.sleep`/`crypto.random` are gone (→ `Io.Clock`,
+  `io.sleep`, `io.random`), PriorityQueue went unmanaged with `push`/`pop`,
+  the old 4-arg `format` method still compiles (so it is NOT listed as a
+  break; the `{f}` form is shown as the current idiom), and
+  AutoHashMap/StringHashMap are still managed.
+- **(2) GENERATED signature digest, ≈810 tokens, 35 lines** —
+  `agents/packs/gen_zig_pack.py` parses the INSTALLED stdlib (`zig env`
+  lib_dir: `Io/Writer.zig, Io/Reader.zig, Io/File.zig, Io/Dir.zig,
+  array_list.zig, ascii.zig, fmt.zig, mem.zig, math.zig`; `fs/File.zig`
+  does not exist in 0.16), ranks `pub fn`s by in-tree qualified reference
+  count, weighted round-robin across areas, "signature → one-line usage"
+  format, fitted to the remaining budget. Header stamps `zig 0.16.0` and
+  `sha256(digest)`; deterministic (`--check` = exit 0 when the committed
+  file matches a regeneration; tested).
+- **Injection:** `run_eval` annotates units whose language has a pack
+  (zig only) with `_context_file` → runner `--context-file` → the pack
+  lands in the system prompt as the delimited "Background context" block
+  starting `=== Language notes: zig 0.16 ===`. Zero `runner.py` edits, so
+  the context hash is untouched; non-zig units are byte-identical.
+- **Era/provenance:** cache component `pack1-<sha8 of the pack bytes>`,
+  TASK-SCOPED (only packed units carry it; unpacked units keep sharing the
+  base era). Results `harness.packs = {zig: sha8}` + `packs_component`;
+  rows are experiment rows (leaderboard-ineligible like diag/greedy).
+  Drift-abort at run start: stamped digest sha ≠ bytes, or installed
+  `zig version` ≠ pack version ⇒ `SystemExit`. `iterations` is now
+  recorded per row (co-primary readout).
+- **Mini-A/B (queued, ~1-1.25 h GPU, Max-triggered):**
+  `scratch/tier3_zig_ab.sh` — greedy, diag OFF, rb 20480, `--jobs 4`, the 30
+  zig units of v5-fast derived at script time; cells P0a/P1a/P0b(--no-cache)/
+  P1b(--no-cache) on Qwen3.8-27B-Uncensored Q5 + champion C0/C1 guard.
+  `scratch/tier3_verdict.py` — pooled-replicate McNemar (R1), tokens- and
+  iterations-to-fix (R2), champion guard (R3), P1-only pass audit list
+  (R4), Clause-1 ship rule `net ≥ 7 ∧ p < 0.05 ∧ guard clean` printed as a
+  `VERDICT:` line. Stop after this arm regardless (Clause 2).
+
 ## 6. Eval integrity, comparability, era policy
 
 ### 6.1 Provenance & leaderboard display
