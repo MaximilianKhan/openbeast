@@ -206,6 +206,12 @@ rm -rf weights/.cache
 Serve with `serve-qwen38-flash-next-unc-iq4xs.sh` (262K native context, single
 slot, ~38 tok/s decode / ~700 tok/s prompt, 23–27 GB VRAM, ~65 GB RAM).
 
+**Get IQ4_XS, not Q4_K_M.** Q4_K_M was tested on the reference box and is
+slower on every axis (31 vs 38 tok/s decode, 586 vs 714 tok/s prompt, 28 vs
+27 GB VRAM, 79 vs 65 GB RAM, 119 vs 97 GB disk): this model is bound by RAM
+bandwidth on the expert gather, so bytes per token decide speed and the
+smallest 4-bit quant wins. Full numbers in [MODELS.md](MODELS.md).
+
 ### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top accuracy (97.85%)
 
 ```bash
