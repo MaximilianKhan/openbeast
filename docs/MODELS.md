@@ -376,6 +376,16 @@ regardless of reply length, with the GPU at ~54% utilization. The 10 active
 experts per token are read from DDR5 every step; that is the ceiling, not the
 GPU. Faster RAM (more channels) is the upgrade that moves this number.
 
+**Q4_K_M tested and rejected (2026-09-11).** 119 GB, 1.84 GB of experts per
+layer, 11 layers on GPU: **31 tok/s** decode, 586 tok/s prompt, 28.1 GB VRAM,
+79 GB RAM — slower than IQ4_XS on every axis. Both quants pull ~40 GB/s from
+RAM (IQ4_XS 1.03 GB/token × 38 tok/s; Q4_K_M 1.33 GB/token × 31), so the
+scattered 10-of-512 expert gather is bandwidth-bound at ~40 GB/s effective on
+dual-channel DDR5 — well under the ~75 GB/s STREAM figure, which is why the
+CPU looks "busy" while waiting. Bytes per token decide; IQ4_XS is the
+smallest 4-bit quant and therefore the fastest. Smaller (IQ3_M/IQ2_M) would be
+faster again at a quality cost; not tested.
+
 **Context is nearly free.** KV lives on the GPU and costs ~14 KB/token (12
 attention layers × 2 KV heads × 256 dim, q4_0; the DeltaNet state is
 fixed-size): idle VRAM 23.3 GB at 32k → 23.8 at 64k → 24.5 at 128k → 26.4 at

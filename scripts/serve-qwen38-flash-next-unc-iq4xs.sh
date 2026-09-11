@@ -26,6 +26,13 @@
 #   --n-cpu-moe 32 (mmap)         39 tok/s  374 tok/s 32.0 GB  (no headroom)
 #   --n-cpu-moe 35 (mmap)         38 tok/s  334 tok/s 23.1 GB
 #   --n-cpu-moe 35 --load-mode none  38-39   714 tok/s 23.3 GB  <- this script
+# Q4_K_M TESTED 2026-09-11 and REJECTED: 119 GB, experts 1.84 GB/layer, N=37 →
+#   31 tok/s decode / 586 tok/s PP / 28.1 GB VRAM / 79 GB RAM — slower.  Both
+#   quants land at ~40 GB/s of RAM traffic (1.03 GB/token x 38 vs 1.33 x 31):
+#   the scattered 10-of-512 expert gather is bandwidth-bound at ~40 GB/s
+#   effective on dual-channel DDR5, so bytes-per-token decide, and IQ4_XS is
+#   the smallest 4-bit.  Fewer bytes (IQ3/IQ2) would be faster still, at a
+#   quality cost.
 # Lower N = more expert layers on GPU = ~+0.6 tok/s per layer, ~3 GB VRAM each.
 # N=35 leaves ~9 GB for the MTP draft head and longer contexts.
 # CONTEXT COST MEASURED 2026-09-11 (N=35, q4_0 KV, idle VRAM): 32k 23.3 GB,
