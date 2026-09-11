@@ -45,8 +45,10 @@ MCP_TOOLS = [
         "description": "Curated expertise skills. Call with no name for the index of every skill; call with a name to load that skill's full instructions, then follow them.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}},
 ]
-# Base tools minus task_done (which is runner-internal, not a WebUI tool).
-BASE = [t for t in TOOL_SCHEMAS if t["function"]["name"] != "task_done"]
+# Base tools minus the runner-internal ones (task_done, update_plan) that
+# are not WebUI tools.
+BASE = [t for t in TOOL_SCHEMAS
+        if t["function"]["name"] not in ("task_done", "update_plan")]
 TOOLS = BASE + MCP_TOOLS
 
 # (prompt, expected-tool-family). "spawn" -> start_agent; "skill" -> a skill

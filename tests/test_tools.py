@@ -109,9 +109,16 @@ class TestReadFile(unittest.TestCase):
         self.assertIn("lines 1-100 of 100", result)
 
     def test_read_with_offset(self):
+        # offset is 1-BASED (2026-09-11): offset=50 starts at the line
+        # numbered 50 in read_file/grep output.
         result = read_file(self.testfile, offset=50, limit=10)
-        self.assertIn("line 51", result)
-        self.assertIn("lines 51-60", result)
+        self.assertIn("50\tline 50", result)
+        self.assertIn("lines 50-59", result)
+        self.assertNotIn("line 60\n", result)
+
+    def test_read_offset_zero_means_top(self):
+        result = read_file(self.testfile, offset=0, limit=2)
+        self.assertIn("lines 1-2", result)
 
     def test_read_nonexistent(self):
         result = read_file("/nonexistent/path.txt")

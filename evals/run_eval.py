@@ -521,6 +521,13 @@ def run_setup(task: dict, log=print) -> bool:
 
 
 _TOKEN_LINE = re.compile(r"^TOKENS:\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\d+)\s*$", re.MULTILINE)
+_COMPACT_LINE = re.compile(r"^COMPACTIONS:\s+(\d+)\s*$", re.MULTILINE)
+
+
+def _parse_compactions(stdout: str) -> int:
+    """Context-compaction events the runner reported (0 when absent)."""
+    matches = list(_COMPACT_LINE.finditer(stdout))
+    return int(matches[-1].group(1)) if matches else 0
 
 
 def _parse_tokens(stdout: str) -> dict:
@@ -605,6 +612,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "stderr": stderr[-1000:],
             "tokens": tokens,
             "iterations": _parse_iterations(stdout),
+            "compactions": _parse_compactions(stdout),
         }
     except subprocess.TimeoutExpired:
         try:
@@ -1023,6 +1031,7 @@ def run_eval(
             "tokens_completion": tokens["completion"],
             "tokens_total": tokens["total"],
             "iterations": agent_result.get("iterations"),
+            "compactions": agent_result.get("compactions", 0),
         })
 
         if passed:

@@ -92,14 +92,34 @@ def _tool(*args, **kwargs):
 
 @_tool()
 def bash(command: str, timeout: int = 120) -> str:
-    """Run a shell command and return stdout + stderr. Use for building, testing,
-    git operations, installing packages, or any system task."""
+    """Run a shell command (/bin/sh) and return its output. Use for building,
+    testing, git operations, installing packages, or any system task.
+
+    Facts: stdout and stderr are MERGED; each call is a FRESH shell — cd,
+    exported variables and functions do not carry over (chain steps with &&
+    or cd inside the same command); output over 50 KB keeps head and tail;
+    a nonzero exit appends '(exit code N)'; background processes (servers,
+    trailing &, nohup) are killed when the command returns, so start and
+    test a server in the same command.
+
+    Args:
+        command: The shell command to execute.
+        timeout: Seconds before the whole process group is killed (default 120).
+    """
     return _tools.bash(command, timeout)
 
 
 @_tool()
-def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
-    """Read lines from a file. Returns numbered lines."""
+def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
+    """Read lines from a file as 'N<TAB>text' with 1-based line numbers — the
+    same numbering grep reports, so a grep line number can be passed straight
+    to offset. Output is capped per call and ends with a resume hint.
+
+    Args:
+        path: Path to the file.
+        offset: First line to return, 1-based (default 1 = top of file).
+        limit: Max lines to return (default 500).
+    """
     return _tools.read_file(path, offset, limit)
 
 
@@ -144,14 +164,17 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
 @_tool()
 def fetch(url: str, max_length: int = 50_000) -> str:
-    """Fetch content from a URL and return it as text.
+    """Fetch content from a PUBLIC URL and return it as text.
 
     For HTML pages, scripts and styles are removed and tags are stripped to
     return readable text. For JSON, plain text, and other formats, content is
-    returned as-is.
+    returned as-is. Blocked by the SSRF guard: localhost/127.0.0.1, private
+    LAN (10.x, 192.168.x, 172.16-31.x), link-local and tailnet (100.64-127.x)
+    addresses — to reach a local server such as http://localhost:8080 use
+    bash with curl instead.
 
     Args:
-        url: The URL to fetch (http or https).
+        url: The URL to fetch (http or https, public hosts only).
         max_length: Maximum characters to return (default 50000).
     """
     return _tools.fetch(url, max_length)
@@ -359,6 +382,8 @@ def _agent_status_report(record: _AgentRecord) -> str:
                 detail = f"{args.get('directory', '.')} [{args.get('pattern', '*')}]"
             elif name == "task_done":
                 detail = args.get("summary", "")[:100]
+            elif name == "update_plan":
+                detail = f"{len(args.get('steps') or [])} steps"
             else:
                 detail = str(args)[:100]
             lines.append(f"  [{name}] {detail}")
@@ -835,17 +860,21 @@ def tail_agent(agent_id: str, lines: int = 30) -> str:
 
 
 @_tool()
-def web_search(query: str, max_results: int = 10) -> str:
-    """Search the web using the local SearXNG instance.
+def web_search(query: str, max_results: int = 10, pageno: int = 1,
+               time_range: str = "") -> str:
+    """Search the web via the stack's SearXNG instance (SEARXNG_URL, default
+    http://localhost:8888).
 
-    Returns titles, URLs, and snippets for the top results. Requires SearXNG
-    to be running (docker compose service or standalone on port 8888).
+    Returns titles, URLs, and snippets for the top results; follow up with
+    fetch to read a result page.
 
     Args:
         query: Search query string.
         max_results: Maximum number of results to return (default 10).
+        pageno: Result page, 1-based (default 1); use 2, 3, … for more results.
+        time_range: Restrict to recent pages: 'day', 'month' or 'year' (default: none).
     """
-    return _tools.web_search(query, max_results)
+    return _tools.web_search(query, max_results, pageno, time_range)
 
 
 # ---------------------------------------------------------------------------

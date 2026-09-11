@@ -88,7 +88,10 @@ def test_read_file_resume_hint(tmp_path):
     p = tmp_path / "long.txt"
     p.write_text("line\n" * 700)
     out = tools.read_file(str(p), limit=500)
-    assert "offset=500" in out
+    # 1-based: after lines 1-500 the next page starts at 501.
+    assert "offset=501" in out
+    nxt = tools.read_file(str(p), offset=501, limit=500)
+    assert "lines 501-700 of 700" in nxt
 
 
 # --- zig has_main ----------------------------------------------------------

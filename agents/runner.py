@@ -18,6 +18,8 @@ The server must be running (e.g. ./serve-qwen-27b-q5.sh) before launching.
 import argparse
 import json
 import os
+import re
+import sys
 import time
 import urllib.parse
 from datetime import datetime
@@ -25,7 +27,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from tools import TOOL_SCHEMAS, TOOL_HANDLERS
+from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -47,14 +49,20 @@ _AGENT_INSTRUCTIONS = """You are a capable autonomous agent running on a local m
 with a FULL production-grade toolset. Use it.
 
 Your toolset:
-  bash         — run shell commands (compile, run scripts, test, install)
-  read_file    — read file contents with offset/limit
+  bash         — run shell commands (compile, run scripts, test, install); stdout+stderr
+                 merged, fresh shell per call (no persistent cd/exports), background
+                 processes are killed when the call returns
+  read_file    — read file contents with offset/limit (offset is 1-based, like grep -n)
   write_file   — create new files (overwrites if exists)
-  edit_file    — surgical string-replace in existing files (PREFERRED for edits)
+  edit_file    — surgical string-replace in existing files (PREFERRED for edits); on a
+                 miss it quotes the nearest file text, on success it shows the edited region
   list_files   — list files matching a glob (use this to explore)
   grep         — regex search across files (use this to navigate code)
-  fetch        — pull text from a URL (docs, API references, gists)
+  fetch        — pull text from a PUBLIC URL (docs, API references, gists); localhost/
+                 LAN/tailnet addresses are blocked; use bash + curl for local servers
   web_search   — search the web via local SearXNG (when stuck or need references)
+  update_plan  — keep a step ladder for multi-step tasks; it is re-shown to you every
+                 turn, so it survives when older tool output is dropped
 
 USE THE TOOLS. A working professional engineer:
   - Runs the code they wrote. Hand-tracing math is not a substitute for running the test
@@ -66,8 +74,10 @@ USE THE TOOLS. A working professional engineer:
 
 Workflow:
 1. Understand the task — read relevant files, explore the codebase with list_files / grep.
-2. Plan your approach. For hard tasks (parsers, algorithms with subtle invariants,
-   numerical code), write a brief plan to yourself before coding.
+2. Plan your approach. For any task with 3+ steps call update_plan with the steps
+   first, then keep it current as you go (exactly one step in_progress at a time).
+   For hard tasks (parsers, algorithms with subtle invariants, numerical code),
+   think through the invariants before coding.
 3. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
 4. Verify by running. Use bash to invoke python/the test/the validation when one exists.
    If stuck, use web_search or fetch for references — don't keep guessing.
@@ -135,6 +145,13 @@ def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
             elif etype == "tool_call":
                 name = event.get("name", "")
                 result = event.get("result", "")
+                if name == "update_plan" and isinstance(event.get("args"), dict):
+                    # Restore the step ladder (pure in-process state) so the
+                    # re-injected plan block is right from the first turn.
+                    try:
+                        update_plan(**event["args"])
+                    except Exception:
+                        pass
                 if name and result:
                     messages.append({
                         "role": "user",
@@ -154,6 +171,9 @@ def _tool_summary(name: str, args: dict) -> str:
         "grep": lambda a: f"'{a.get('pattern', '')}' in {a.get('path', '.')}",
         "list_files": lambda a: f"{a.get('directory', '.')} {a.get('pattern', '')}",
         "fetch": lambda a: a.get("url", "")[:80],
+        "update_plan": lambda a: (
+            f"{len(a.get('steps') or [])} steps"
+            + (f" — {a['explanation'][:60]}" if a.get("explanation") else "")),
         "task_done": lambda a: a.get("summary", "")[:100],
     }
     fmt = summaries.get(name)
@@ -162,9 +182,122 @@ def _tool_summary(name: str, args: dict) -> str:
     return str(args)[:100]
 
 
-def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int) -> None:
+def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
+                         compactions: int = 0) -> None:
     """Print the stable-key token line that the eval harness parses."""
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
+    print(f"COMPACTIONS: {compactions}")
+
+
+# ---------------------------------------------------------------------------
+# Context-window management (2026-09-11 harness agentics, SOTA review #8).
+#
+# Messages grew unboundedly, and on a context overflow the loop retried the
+# IDENTICAL oversized payload every 5 s until max_iter — e.g. 160 × 5 s of
+# guaranteed failures. Now: (a) the server's overflow error is recognised
+# and the OLDEST tool results are replaced by one-line stubs before the
+# retry; (b) with --context-budget set, the same eviction runs proactively
+# past ~70% of the budget (4 chars/token estimate). The system prompt, the
+# original task, assistant turns and the (transiently injected) plan block
+# are never evicted. Every event is logged to stderr + the JSONL log and
+# counted in the done/max_iterations telemetry (COMPACTIONS: n on stdout).
+#
+# Error shapes (llama-server, tools/server): HTTP 400 body
+#   {"error": {"code": 400, "message": "request (N tokens) exceeds the
+#    available context size (M tokens), try increasing it",
+#    "type": "exceed_context_size_error", "n_prompt_tokens": N, "n_ctx": M}}
+# or "input (N tokens) is larger than the max context size (M tokens)";
+# older builds/other paths: "Context size has been exceeded.",
+# "context shift is disabled". The openai client raises BadRequestError
+# whose str() embeds that body.
+# ---------------------------------------------------------------------------
+_CHARS_PER_TOKEN = 4
+_COMPACT_FRACTION = 0.70          # proactive target as a fraction of the budget
+_STUB_MIN_CHARS = 200             # results shorter than this aren't worth stubbing
+_STUB_PREFIX = "[tool result elided:"
+_CTX_OVERFLOW_RE = re.compile(
+    r"exceed_context_size|exceeds the available context size|"
+    r"larger than the max context size|context size has been exceeded|"
+    r"context shift is disabled", re.IGNORECASE)
+_CTX_FIELDS_RE = re.compile(r"n_prompt_tokens['\"]?\s*[:=]\s*(\d+).*?n_ctx['\"]?\s*[:=]\s*(\d+)", re.S)
+_CTX_MSG_RE = re.compile(r"\((\d+) tokens\).*?\((\d+) tokens\)", re.S)
+_SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
+
+
+def _is_context_overflow(err: str) -> bool:
+    return bool(_CTX_OVERFLOW_RE.search(err or ""))
+
+
+def _overflow_tokens(err: str) -> tuple[int, int] | None:
+    """(n_prompt_tokens, n_ctx) parsed from the error text, or None."""
+    m = _CTX_FIELDS_RE.search(err or "") or _CTX_MSG_RE.search(err or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _message_chars(m: dict) -> int:
+    n = len(m.get("content") or "")
+    if m.get("tool_calls"):
+        n += len(json.dumps(m["tool_calls"]))
+    return n
+
+
+def estimate_tokens(messages: list[dict], extra_chars: int = 0) -> int:
+    """Rough prompt size: 4 chars/token over every message + the tool
+    schemas (sent on every request) + a small per-message framing cost."""
+    chars = sum(_message_chars(m) for m in messages) + _SCHEMA_CHARS + extra_chars
+    return chars // _CHARS_PER_TOKEN + 4 * len(messages)
+
+
+def _stub(content: str, call_no: int) -> str:
+    return f"{_STUB_PREFIX} {len(content)} chars, call #{call_no}]"
+
+
+def compact_messages(messages: list[dict], chars_to_free: int,
+                     call_index: dict[int, int] | None = None) -> tuple[int, int]:
+    """Replace the OLDEST tool results with one-line stubs until at least
+    `chars_to_free` characters are freed (or nothing evictable remains).
+
+    Never touches: messages[0] (system prompt), the first user message (the
+    task), assistant turns, user nudges, or results already stubbed. Oldest
+    first and stop as soon as enough is freed, so the newest results — the
+    ones the model is about to act on — survive unless the older ones can't
+    cover the ask (being stuck beats keeping them). Returns
+    (results_evicted, chars_freed). `call_index` maps message position ->
+    tool-call ordinal for the stub text.
+    """
+    call_index = call_index or {}
+    candidates = [
+        i for i, m in enumerate(messages)
+        if i > 1 and m.get("role") == "tool"
+        and not str(m.get("content") or "").startswith(_STUB_PREFIX)
+        and len(m.get("content") or "") > _STUB_MIN_CHARS
+    ]
+    evicted = freed = 0
+    for i in candidates:
+        if freed >= max(chars_to_free, 1):
+            break
+        content = messages[i]["content"]
+        stub = _stub(content, call_index.get(i, i))
+        messages[i]["content"] = stub
+        freed += len(content) - len(stub)
+        evicted += 1
+    return evicted, freed
+
+
+def _with_plan(messages: list[dict], plan: str) -> list[dict]:
+    """Request payload = history + the current plan block (transient: the
+    block is never stored, so it can't bloat or be evicted). Folded into a
+    trailing user message when one exists so roles keep alternating."""
+    if not plan:
+        return messages
+    last = messages[-1] if messages else None
+    if last and last.get("role") == "user" and last is not messages[1]:
+        merged = dict(last)
+        merged["content"] = f"{last.get('content') or ''}\n\n{plan}"
+        return messages[:-1] + [merged]
+    return messages + [{"role": "user", "content": plan}]
 
 
 def _host_of(url: str) -> str:
@@ -284,15 +417,43 @@ def run_agent(
     tokens_prompt = 0
     tokens_completion = 0
     tokens_total = 0
+    # Context-window management state (see compact_messages).
+    compactions = 0
+    stop_reason = ""
+    call_seq = 0
+    call_index: dict[int, int] = {}   # message position -> tool-call ordinal
+    if not (resume_from and os.path.isfile(resume_from)):
+        reset_plan()
+
+    def compact(reason: str, chars_to_free: int, detail: str = "") -> int:
+        nonlocal compactions
+        n, freed = compact_messages(messages, chars_to_free, call_index)
+        if n:
+            compactions += 1
+            print(f"[compaction] {reason}: stubbed {n} oldest tool result(s), "
+                  f"freed {freed:,} chars{detail}", file=sys.stderr)
+            log_event({"type": "compaction", "reason": reason, "evicted": n,
+                       "chars_freed": freed, "iteration": iteration})
+        return n
 
     for iteration in range(1, max_iter + 1):
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
 
+        plan = plan_block()
+        if context_budget > 0:
+            # Proactive: past ~70% of the declared budget, evict before the
+            # server has to tell us (4 chars/token estimate).
+            est = estimate_tokens(messages, len(plan))
+            target = int(context_budget * _COMPACT_FRACTION)
+            if est > target:
+                compact("budget", (est - target) * _CHARS_PER_TOKEN,
+                        f" (est {est:,} > {target:,} tokens)")
+
         try:
             response = client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=_with_plan(messages, plan),
                 tools=TOOL_SCHEMAS,
                 # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode, 2026-09-10):
                 # unseeded temperature-0.6 sampling was the measured ±5-14
@@ -303,8 +464,29 @@ def run_agent(
                     "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
             )
         except Exception as e:
-            print(f"  API error: {e}")
-            log_event({"type": "error", "error": str(e)})
+            err = str(e)
+            print(f"  API error: {err}")
+            log_event({"type": "error", "error": err})
+            if _is_context_overflow(err):
+                nums = _overflow_tokens(err)
+                if nums:
+                    n_prompt, n_ctx = nums
+                    need = (n_prompt - int(n_ctx * _COMPACT_FRACTION)) * _CHARS_PER_TOKEN
+                    detail = f" (server: {n_prompt:,} > {n_ctx:,} tokens)"
+                else:
+                    # No numbers in the error: free a quarter of the history.
+                    need = sum(_message_chars(m) for m in messages) // 4
+                    detail = ""
+                if compact("overflow", max(need, 1), detail):
+                    continue  # retry immediately with the compacted history
+                # Nothing left to evict: the identical payload can only fail
+                # again, so stop instead of burning the remaining iterations.
+                print("  context overflow with nothing left to compact — stopping",
+                      file=sys.stderr)
+                log_event({"type": "context_overflow_unrecoverable",
+                           "iterations": iteration, "compactions": compactions})
+                stop_reason = "context overflow (nothing left to compact)"
+                break
             time.sleep(5)
             continue
 
@@ -391,6 +573,8 @@ def run_agent(
                 "result": result[:2000],
             })
 
+            call_seq += 1
+            call_index[len(messages)] = call_seq
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -404,22 +588,26 @@ def run_agent(
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
-                _print_token_summary(tokens_prompt, tokens_completion, tokens_total)
+                _print_token_summary(tokens_prompt, tokens_completion, tokens_total,
+                                     compactions)
                 print(f"{'=' * 60}")
                 log_event({
                     "type": "done", "summary": final_summary, "iterations": iteration,
                     "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
-                    "tokens_total": tokens_total,
+                    "tokens_total": tokens_total, "compactions": compactions,
                 })
                 return final_summary
 
-    # Max iterations reached
-    print(f"\nMax iterations ({max_iter}) reached without task_done.")
-    _print_token_summary(tokens_prompt, tokens_completion, tokens_total)
+    # Max iterations reached (or an unrecoverable stop)
+    if stop_reason:
+        print(f"\nStopped without task_done: {stop_reason}.")
+    else:
+        print(f"\nMax iterations ({max_iter}) reached without task_done.")
+    _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions)
     log_event({
         "type": "max_iterations", "iterations": max_iter,
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
-        "tokens_total": tokens_total,
+        "tokens_total": tokens_total, "compactions": compactions,
     })
     return final_summary or "(max iterations reached)"
 
@@ -444,7 +632,7 @@ def main():
     parser.add_argument("--log-file", help="Specific log file path (overrides auto-generated name)")
     parser.add_argument("--context", help="Background context to include in the system prompt")
     parser.add_argument("--context-file", help="Read background context from a file")
-    parser.add_argument("--context-budget", type=int, default=0, help="Approximate context token budget (informs the agent to be mindful of context)")
+    parser.add_argument("--context-budget", type=int, default=0, help="Approximate context token budget: told to the agent, and past ~70%% of it the runner stubs the oldest tool results (see compact_messages)")
     parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
     parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")

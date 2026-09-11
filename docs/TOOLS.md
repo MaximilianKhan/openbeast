@@ -85,13 +85,24 @@ skill pre-activated (also accepts `base_url`). All custom. The former
 `skill` (PRODUCTION_ROADMAP §B — fewer always-on meta-tools in a local
 model's context).
 
-## The autonomous runner's 9 tools
+## The autonomous runner's 10 tools
 
 `agents/runner.py` binds `TOOL_SCHEMAS` from `agents/tools.py` directly (no
 MCP hop): `bash`, `read_file`, `write_file`, `edit_file`, `list_files`,
-`grep`, `fetch`, `web_search`, plus `task_done` (the runner's completion
-signal — not exposed over MCP). Background agents deliberately do **not**
-get agent-management or skills tools; no recursive agent spawning.
+`grep`, `fetch`, `web_search`, plus two loop-only tools not exposed over
+MCP: `task_done` (the completion signal) and `update_plan` (a step ladder —
+pending / in_progress / done / skipped, one in_progress at a time — held on
+a ContextVar and re-injected into every request as a compact block, so it
+survives context compaction; Codex `update_plan` semantics). Background
+agents deliberately do **not** get agent-management or skills tools; no
+recursive agent spawning.
+
+The loop also manages its own context window (2026-09-11): on the server's
+`exceed_context_size_error` (or with `--context-budget` set, past ~70% of
+the budget at 4 chars/token) it replaces the oldest tool results with
+one-line stubs (`[tool result elided: N chars, call #k]`) — never the system
+prompt, the task, or the plan — logs each event to stderr and the JSONL log,
+and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 
 ## What the pulled-in projects contribute (and what they don't)
 

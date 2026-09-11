@@ -378,8 +378,15 @@ def _guard_write_path(path: str):
     return None
 
 
-def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
-    """Read lines from a file."""
+def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
+    """Read lines from a file.
+
+    `offset` is 1-BASED (2026-09-11 schema-teaching pass): every number the
+    model sees — the `N\t` prefixes this tool prints, grep's path:N:text —
+    is 1-based, and the old 0-based offset put every chained navigation one
+    line off. offset=0 is tolerated as 1 so callers trained on the old
+    schema still land on the top of the file.
+    """
     try:
         path = _resolve(path)
         # Pseudo-filesystems (procfs/sysfs/devfs) present as regular files but
@@ -409,12 +416,14 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         truncated = len(data) > _MAX_READ_BYTES
         lines = data[:_MAX_READ_BYTES].splitlines(keepends=True)
         total = len(lines)
-        if offset >= total and total > 0:
+        start = max(int(offset), 1) - 1  # 1-based in, 0-based slice
+        if start >= total and total > 0:
             # An offset past EOF used to return an empty SUCCESS ("lines
             # 801-800 of 600") — teach instead of confusing.
             return (f"Error: offset {offset} is past the end of {path} "
-                    f"({total} lines) — last page: offset={max(0, total - limit)}")
-        selected = lines[offset : offset + limit]
+                    f"({total} lines; offset is 1-based) — last page: "
+                    f"offset={max(1, total - limit + 1)}")
+        selected = lines[start : start + limit]
         # Context-bomb caps (2026-09-10 hardening): the file-size cap bounded
         # DISK reads, but the RETURNED STRING was unbounded — one minified
         # line could dump megabytes into a 27B's context. Clamp per-line and
@@ -424,18 +433,18 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         for i, line in enumerate(selected):
             if len(line) > _LINE_CLAMP:
                 line = line[:_LINE_CLAMP] + f"…[line truncated, {len(line)} chars total]\n"
-            row = f"{i + offset + 1}\t{line}"
+            row = f"{i + start + 1}\t{line}"
             if used + len(row) > _CALL_CAP:
                 break
             numbered.append(row)
             used += len(row)
             shown += 1
         note = f" (+ more; read capped at {_MAX_READ_BYTES} bytes)" if truncated else ""
-        header = f"[{path}] lines {offset + 1}-{offset + shown} of {total}{note}\n"
+        header = f"[{path}] lines {start + 1}-{start + shown} of {total}{note}\n"
         resume = ""
-        if offset + shown < total:
-            resume = (f"\n[{total - offset - shown} more lines — continue with "
-                      f"read_file(path, offset={offset + shown}, limit={limit})]")
+        if start + shown < total:
+            resume = (f"\n[{total - start - shown} more lines — continue with "
+                      f"read_file(path, offset={start + shown + 1}, limit={limit})]")
         return header + "".join(numbered) + resume
     except Exception as e:
         return f"Error: {e}"
@@ -1064,6 +1073,130 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
         return f"Error: {e}"
 
 
+# edit_file teach-on-failure (2026-09-11 harness agentics, SOTA review #9).
+# Every zero-match is a full round-trip at ~140 tok/s; the fixes below turn
+# the three measured failure modes into a taught lesson in the same turn:
+# whitespace/indentation drift, pasted `N\t` / `N: ` line-number prefixes
+# from read_file/grep output, and repeat failures that should route to
+# write_file (SWE-Edit, arXiv:2604.26102: +12.5pp edit success on Qwen3-8B
+# via fallback routing). On success a ~5-line numbered window around the
+# change replaces the read_file the model would otherwise issue (SWE-agent's
+# post-edit window finding).
+_EDIT_FAILS: dict[str, int] = {}        # resolved path -> consecutive failed edits
+_EDIT_FALLBACK_AFTER = 2                 # recommend write_file from this count
+_EDIT_QUOTE_MAX_LINES = 20
+_EDIT_QUOTE_MAX_CHARS = 160
+_EDIT_WINDOW_CONTEXT = 2                 # lines above/below the change
+_EDIT_WINDOW_MAX_LINES = 12
+_EDIT_LINENO_RE = re.compile(r"^\s*\d+(?:\t|: ?)")
+
+
+def _edit_norm(line: str) -> str:
+    """Whitespace-insensitive form of one line: runs of spaces/tabs collapse
+    to one space, leading/trailing whitespace dropped, CR stripped."""
+    return re.sub(r"[ \t]+", " ", line.rstrip("\r")).strip()
+
+
+def _edit_strip_linenos(lines: list[str]) -> tuple[list[str], bool]:
+    """Strip `N\t` / `N: ` prefixes when EVERY non-blank line carries one —
+    the signature of text pasted straight from read_file / grep output.
+    (A lone `1: "x"` dict line never qualifies, so real code is untouched.)"""
+    nonblank = [ln for ln in lines if ln.strip()]
+    if not nonblank or not all(_EDIT_LINENO_RE.match(ln) for ln in nonblank):
+        return lines, False
+    return [_EDIT_LINENO_RE.sub("", ln, count=1) if ln.strip() else ln
+            for ln in lines], True
+
+
+def _edit_near_match(content: str, old_string: str) -> dict | None:
+    """Locate where old_string ALMOST matches. Returns None or a dict:
+    kind ∈ {lineno, whitespace, first_line}, line (1-based), n (lines),
+    count (how many normalized hits), diff (first differing line, or '')."""
+    file_lines = content.split("\n")
+    old_lines = old_string.rstrip("\n").split("\n")
+    old_lines, had_prefix = _edit_strip_linenos(old_lines)
+    norm_old = [_edit_norm(ln) for ln in old_lines]
+    # Drop blank edges — a stray leading/trailing newline is noise.
+    while norm_old and not norm_old[0]:
+        norm_old.pop(0); old_lines.pop(0)
+    while norm_old and not norm_old[-1]:
+        norm_old.pop(); old_lines.pop()
+    if not norm_old:
+        return None
+    norm_file = [_edit_norm(ln) for ln in file_lines]
+    n = len(norm_old)
+    hits = [i for i in range(len(norm_file) - n + 1) if norm_file[i:i + n] == norm_old]
+    if hits:
+        i = hits[0]
+        diff = ""
+        if not had_prefix:
+            for k in range(n):
+                f_ln, o_ln = file_lines[i + k].rstrip("\r"), old_lines[k]
+                if f_ln != o_ln:
+                    diff = (f"line {i + k + 1}: file has {f_ln[:_EDIT_QUOTE_MAX_CHARS]!r} "
+                            f"but old_string has {o_ln[:_EDIT_QUOTE_MAX_CHARS]!r}")
+                    break
+        return {"kind": "lineno" if had_prefix else "whitespace",
+                "line": i + 1, "n": n, "count": len(hits), "diff": diff}
+    first = norm_old[0]
+    idx = [i for i, ln in enumerate(norm_file) if ln == first]
+    if idx:
+        return {"kind": "first_line", "line": idx[0] + 1, "n": n,
+                "count": len(idx), "diff": ""}
+    return None
+
+
+def _edit_quote(content: str, line: int, n: int) -> str:
+    """Numbered verbatim lines [line, line+n) — same `N\t` format read_file
+    prints, bounded so a bad guess can't flood the context."""
+    lines = content.split("\n")
+    end = min(len(lines), line - 1 + min(n, _EDIT_QUOTE_MAX_LINES))
+    rows = []
+    for i in range(line - 1, end):
+        text = lines[i].rstrip("\r")
+        if len(text) > _EDIT_QUOTE_MAX_CHARS:
+            text = text[:_EDIT_QUOTE_MAX_CHARS] + "…"
+        rows.append(f"{i + 1}\t{text}")
+    more = f"\n[... {n - (end - line + 1)} more lines not shown]" if n > (end - line + 1) else ""
+    return "\n".join(rows) + more
+
+
+def _edit_window(new_content: str, change_line: int, new_line_count: int) -> str:
+    """Post-edit window: ~5 numbered lines around the change (bounded)."""
+    lines = new_content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # trailing newline is not a line
+    if not lines:
+        return ""
+    start = max(1, change_line - _EDIT_WINDOW_CONTEXT)
+    end = min(len(lines), change_line + max(new_line_count, 1) - 1 + _EDIT_WINDOW_CONTEXT)
+    truncated = False
+    if end - start + 1 > _EDIT_WINDOW_MAX_LINES:
+        end = start + _EDIT_WINDOW_MAX_LINES - 1
+        truncated = True
+    rows = []
+    for i in range(start, end + 1):
+        text = lines[i - 1].rstrip("\r")
+        if len(text) > 200:
+            text = text[:200] + "…"
+        rows.append(f"{i}\t{text}")
+    note = " (window capped; read_file for the rest)" if truncated else ""
+    return f"\nPost-edit window (lines {start}-{end}{note}):\n" + "\n".join(rows)
+
+
+def _edit_fail(path: str, msg: str) -> str:
+    """Count a failed edit on this path; past the threshold, route to the
+    write_file fallback."""
+    n = _EDIT_FAILS.get(path, 0) + 1
+    _EDIT_FAILS[path] = n
+    if n >= _EDIT_FALLBACK_AFTER:
+        msg += (f"\nThis is failed edit #{n} in a row on this file. FALLBACK: "
+                f"read_file the region you want to change, then write_file the "
+                f"WHOLE file with the change applied — do not retry edit_file "
+                f"with another guess at the text.")
+    return msg
+
+
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Replace an exact string in a file with new content."""
     try:
@@ -1086,21 +1219,37 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
         count = content.count(old_string)
         if count == 0:
-            lines = old_string.split("\n")
-            if len(lines) > 1 and content.find(lines[0]) != -1:
-                return (
-                    f"Error: exact match not found in {path}. "
-                    f"The first line was found but the full multi-line string didn't match. "
-                    f"Check whitespace and indentation."
-                )
-            return f"Error: old_string not found in {path}"
+            near = _edit_near_match(content, old_string)
+            if near is None:
+                return _edit_fail(path, (
+                    f"Error: old_string not found in {path} — not even a "
+                    f"whitespace-insensitive match. read_file the region and copy "
+                    f"the text exactly (without the line-number prefixes)."))
+            quote = _edit_quote(content, near["line"], near["n"])
+            where = (f"at line {near['line']}" if near["count"] == 1
+                     else f"at line {near['line']} (and {near['count'] - 1} more places)")
+            if near["kind"] == "lineno":
+                why = ("your old_string carries line-number prefixes (like '12\\t' or "
+                       "'12: ') pasted from read_file/grep output — those numbers are "
+                       "not in the file. Resend old_string without them.")
+            elif near["kind"] == "whitespace":
+                why = ("the file matches except for whitespace (indentation, tabs vs "
+                       "spaces, or trailing spaces). "
+                       + (near["diff"] + ". " if near["diff"] else "")
+                       + "Copy the lines below exactly.")
+            else:
+                why = ("the first line was found but the following lines differ. "
+                       "The file's actual text there is quoted below — copy it exactly.")
+            return _edit_fail(path, (
+                f"Error: exact match not found in {path}, but a near-match is "
+                f"{where}: {why}\nFile text there (numbers are not part of the "
+                f"file):\n{quote}"))
 
         if count > 1 and not replace_all:
-            return (
+            return _edit_fail(path, (
                 f"Error: old_string appears {count} times in {path}. "
                 f"Include more surrounding context to make it unique, "
-                f"or set replace_all=true to replace all occurrences."
-            )
+                f"or set replace_all=true to replace all occurrences."))
 
         if replace_all:
             new_content = content.replace(old_string, new_string)
@@ -1110,6 +1259,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         with open(path, "w") as f:
             f.write(new_content)
         _manifest_log("edit", path, len(new_content))
+        _EDIT_FAILS.pop(path, None)
 
         change_line = content[:content.index(old_string)].count("\n") + 1
         old_lines = old_string.count("\n") + 1
@@ -1118,13 +1268,17 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         if replace_all and count > 1:
             return (f"Replaced {count} occurrences in {path} "
                     f"({len(old_string)} → {len(new_string)} chars each)"
-                    + _path_guard_note(path) + _run_diagnostics(path))
+                    + _path_guard_note(path)
+                    + _edit_window(new_content, change_line, new_lines)
+                    + _run_diagnostics(path))
         else:
             return (
                 f"Edited {path} at line {change_line}: "
                 f"replaced {old_lines} line{'s' if old_lines != 1 else ''} "
                 f"with {new_lines} line{'s' if new_lines != 1 else ''}"
-                + _path_guard_note(path) + _run_diagnostics(path)
+                + _path_guard_note(path)
+                + _edit_window(new_content, change_line, new_lines)
+                + _run_diagnostics(path)
             )
     except Exception as e:
         return f"Error: {e}"
@@ -1352,15 +1506,32 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         return f"Error: {e}"
 
 
-def web_search(query: str, max_results: int = 10) -> str:
-    """Search the web using the local SearXNG instance."""
+_SEARX_TIME_RANGES = ("day", "month", "year")
+
+
+def web_search(query: str, max_results: int = 10, pageno: int = 1,
+               time_range: str = "") -> str:
+    """Search the web using the local SearXNG instance.
+
+    pageno / time_range map 1:1 onto SearXNG's own search parameters
+    (`pageno` ≥ 1; `time_range` ∈ day|month|year) — invalid values are
+    dropped rather than erroring, so a model's stray guess still searches.
+    """
     searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
     try:
-        params = urllib.parse.urlencode({
+        query_params = {
             "q": query,
             "format": "json",
             "categories": "general",
-        })
+        }
+        try:
+            if int(pageno) > 1:
+                query_params["pageno"] = int(pageno)
+        except (TypeError, ValueError):
+            pass
+        if str(time_range or "").strip().lower() in _SEARX_TIME_RANGES:
+            query_params["time_range"] = str(time_range).strip().lower()
+        params = urllib.parse.urlencode(query_params)
         url = f"{searxng_url}/search?{params}"
         req = urllib.request.Request(
             url,
@@ -1431,6 +1602,106 @@ def _path_guard_note(written: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# update_plan — step ladder for the agent loop (2026-09-11, SOTA review #10).
+# Codex `update_plan` semantics: a short list of steps, each pending |
+# in_progress | done | skipped, at most ONE in_progress at a time. Pure
+# in-process state on a ContextVar (same pattern as _BASE_DIR_OVERRIDE), zero
+# security surface. The runner re-injects plan_block() into every request
+# (not into the stored history), so the plan survives context compaction and
+# never bloats the transcript — external memory that matters more to a
+# bounded-window 27B than to a frontier model. Runner-only, like task_done:
+# the MCP/WebUI surfaces have no loop to re-inject into.
+# ---------------------------------------------------------------------------
+_PLAN_STATUSES = ("pending", "in_progress", "done", "skipped")
+_PLAN_STATUS_ALIASES = {
+    "todo": "pending", "not_started": "pending", "open": "pending",
+    "in-progress": "in_progress", "inprogress": "in_progress",
+    "active": "in_progress", "doing": "in_progress", "current": "in_progress",
+    "completed": "done", "complete": "done", "finished": "done",
+    "skip": "skipped", "cancelled": "skipped", "canceled": "skipped",
+}
+_PLAN_MAX_STEPS = 20
+_PLAN_STEP_CHARS = 160
+_PLAN_MARKS = {"pending": "[ ]", "in_progress": "[>]", "done": "[x]", "skipped": "[-]"}
+_PLAN_STATE: ContextVar = ContextVar("openbeast_plan", default=None)
+
+
+def get_plan() -> list[dict] | None:
+    """Current plan steps ([{step, status}, ...]) or None."""
+    return _PLAN_STATE.get()
+
+
+def reset_plan() -> None:
+    _PLAN_STATE.set(None)
+
+
+def _plan_render(steps: list[dict]) -> str:
+    return "\n".join(f"{i}. {_PLAN_MARKS[s['status']]} {s['step']}"
+                     for i, s in enumerate(steps, 1))
+
+
+def plan_block() -> str:
+    """Compact block the runner shows the model every turn ('' when no plan)."""
+    steps = _PLAN_STATE.get()
+    if not steps:
+        return ""
+    done = sum(1 for s in steps if s["status"] == "done")
+    return (f"[plan — {done}/{len(steps)} done; keep it current with update_plan]\n"
+            + _plan_render(steps))
+
+
+def update_plan(steps=None, explanation: str = "") -> str:
+    """Replace the plan with `steps`; validates statuses and the one-in_progress rule."""
+    if isinstance(steps, str):
+        try:
+            steps = json.loads(steps)
+        except json.JSONDecodeError:
+            return ("Error: steps must be a JSON array of {\"step\": ..., "
+                    "\"status\": ...} objects")
+    if isinstance(steps, dict):
+        steps = steps.get("steps", steps)
+    if not isinstance(steps, list) or not steps:
+        return ("Error: steps must be a non-empty array like "
+                "[{\"step\": \"read the parser\", \"status\": \"in_progress\"}, "
+                "{\"step\": \"write tests\", \"status\": \"pending\"}]")
+    if len(steps) > _PLAN_MAX_STEPS:
+        return f"Error: too many steps ({len(steps)}); keep the plan to {_PLAN_MAX_STEPS} or fewer"
+    clean: list[dict] = []
+    for i, raw in enumerate(steps, 1):
+        if isinstance(raw, str):
+            raw = {"step": raw, "status": "pending"}
+        if not isinstance(raw, dict):
+            return f"Error: step {i} must be an object with 'step' and 'status'"
+        text = str(raw.get("step") or raw.get("title") or raw.get("description") or "").strip()
+        if not text:
+            return f"Error: step {i} has no 'step' text"
+        status = str(raw.get("status") or "pending").strip().lower()
+        status = _PLAN_STATUS_ALIASES.get(status, status)
+        if status not in _PLAN_STATUSES:
+            return (f"Error: step {i} has unknown status {raw.get('status')!r}; "
+                    f"use one of {', '.join(_PLAN_STATUSES)}")
+        if len(text) > _PLAN_STEP_CHARS:
+            text = text[:_PLAN_STEP_CHARS - 1] + "…"
+        clean.append({"step": text, "status": status})
+    active = [i for i, s in enumerate(clean, 1) if s["status"] == "in_progress"]
+    if len(active) > 1:
+        return (f"Error: steps {', '.join(map(str, active))} are all in_progress — "
+                f"only ONE step may be in_progress at a time; mark the others "
+                f"pending or done")
+    _PLAN_STATE.set(clean)
+    done = sum(1 for s in clean if s["status"] == "done")
+    current = clean[active[0] - 1]["step"] if active else None
+    head = f"Plan updated: {done}/{len(clean)} done"
+    if current:
+        head += f"; now: {current}"
+    elif done == len(clean):
+        head += " — all steps done; call task_done when verified"
+    if explanation:
+        head += f" ({str(explanation).strip()[:200]})"
+    return head + "\n" + _plan_render(clean)
+
+
 def task_done(summary: str) -> str:
     """Signal that the task is complete."""
     # R1 path guard: refuse completion while expected task files (with a
@@ -1462,12 +1733,12 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Run a shell command. Use for building, testing, git operations, installing packages, or any system task.",
+                "description": "Run a shell command (/bin/sh) and return its output. Use for building, testing, git operations, installing packages, or any system task. Facts: stdout and stderr are MERGED into one stream; each call is a FRESH shell — cd, exported variables and functions do not carry over to the next call (chain steps with && or cd inside the same command); output over 50 KB keeps the head and tail with an elision marker; a nonzero exit appends '(exit code N)'; background processes (servers, trailing &, nohup) are killed when the command returns, so this tool cannot keep a server running — start and test it in the same command.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string", "description": "The shell command to execute"},
-                        "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)", "default": 120},
+                        "timeout": {"type": "integer", "description": "Timeout in seconds (default 120). At the deadline the whole process group is killed and the tail of any partial output is returned.", "default": 120},
                     },
                     "required": ["command"],
                 },
@@ -1480,12 +1751,12 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read lines from a file. Returns numbered lines.",
+                "description": "Read lines from a file. Returns lines as 'N<TAB>text' with 1-based line numbers — the same numbering grep reports, so a line number from grep or an earlier read_file can be passed straight to offset. Output is capped (~50 KB per call, long lines clamped) and ends with a resume hint when more lines remain.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Path to the file"},
-                        "offset": {"type": "integer", "description": "Line offset to start from (0-indexed)", "default": 0},
+                        "offset": {"type": "integer", "description": "First line to return, 1-based (default 1 = top of file). offset=120 starts at the line grep or read_file numbered 120.", "default": 1},
                         "limit": {"type": "integer", "description": "Max lines to read", "default": 500},
                     },
                     "required": ["path"],
@@ -1556,7 +1827,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "edit_file",
-                "description": "Replace an exact string in a file with new content. Use this instead of write_file when modifying existing files — it's safer and more precise. The old_string must appear exactly once unless replace_all is true. To insert text, include surrounding context in old_string and add new text within that context in new_string.",
+                "description": "Replace an exact string in a file with new content. Use this instead of write_file when modifying existing files — it's safer and more precise. The old_string must appear exactly once unless replace_all is true. To insert text, include surrounding context in old_string and add new text within that context in new_string. Copy old_string verbatim from read_file output WITHOUT the line-number prefixes. When no exact match exists the error quotes the nearest matching lines from the file and says what differed; on success the edited region is shown, so no read_file is needed to confirm.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1576,7 +1847,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "fetch",
-                "description": "Fetch content from a URL and return it as text. HTML pages are cleaned (scripts/styles removed, tags stripped) to return readable text. JSON and plain text are returned as-is.",
+                "description": "Fetch content from a PUBLIC URL and return it as text. HTML pages are cleaned (scripts/styles removed, tags stripped) to return readable text. JSON and plain text are returned as-is. Blocked by the SSRF guard: localhost/127.0.0.1, private LAN (10.x, 192.168.x, 172.16-31.x), link-local, and tailnet (100.64-127.x) addresses — to talk to a local server such as http://localhost:8080 use bash with curl instead.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1594,14 +1865,45 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web using the local SearXNG instance. Returns titles, URLs, and snippets. Requires SearXNG running on port 8888.",
+                "description": "Search the web via the stack's SearXNG instance (SEARXNG_URL, default http://localhost:8888). Returns titles, URLs, and snippets; follow up with fetch to read a result page. Use pageno for more results and time_range to prefer recent pages.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query string"},
                         "max_results": {"type": "integer", "description": "Maximum results to return (default 10)", "default": 10},
+                        "pageno": {"type": "integer", "description": "Result page, 1-based (default 1); use 2, 3, … for more results", "default": 1},
+                        "time_range": {"type": "string", "description": "Restrict to recent pages: 'day', 'month' or 'year' (default: no restriction)", "enum": ["day", "month", "year"]},
                     },
                     "required": ["query"],
+                },
+            },
+        },
+    ),
+    (
+        update_plan,
+        {
+            "type": "function",
+            "function": {
+                "name": "update_plan",
+                "description": "Keep a short step-by-step plan for multi-step tasks (3+ steps). Call it once at the start with every step, then again whenever a step's status changes. Statuses: pending, in_progress, done, skipped — exactly ONE step in_progress at a time. The current plan is shown to you every turn (it survives even when older tool output is dropped), so use it to stay on the goal and to see what is left. Skip it for one-step tasks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "description": "The full plan, in order (replaces the previous plan)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "step": {"type": "string", "description": "Short imperative description of the step"},
+                                    "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped"]},
+                                },
+                                "required": ["step", "status"],
+                            },
+                        },
+                        "explanation": {"type": "string", "description": "Optional one-line note on why the plan changed"},
+                    },
+                    "required": ["steps"],
                 },
             },
         },
