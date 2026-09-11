@@ -1,5 +1,23 @@
 # TODO
 
+## 🛠️ TOOLS SOTA REVIEW (scratch/TOOLS_SOTA_REVIEW-2026-09-10.md) — Top-10 status
+
+Shipped: #1-#5, #7 (PR #52 hardening bundle); #6 schema teaching, #8 runner
+context compaction, #9 edit_file teach-on-failure + post-edit window, #10
+`update_plan` (harness agentics bundle, 2026-09-11 — new harness era, cache
+hash bumps by design; `read_file` offset is now 1-based). Still open from
+the review's per-tool sections, in rough impact order: task_done `status`
+enum (success/partial/blocked) + the dangling tool_call_id on mid-batch
+return; web_search HTTPError-vs-"not running" misdiagnosis; write_file
+create-vs-clobber report + atomic write; edit_file encoding symmetry
+(surrogateescape) and a batched `edits` form; list_files default ignore set
++ directories + relative paths; fetch link preservation / `save_to` /
+happy-eyeballs; bash timeout clamp; diagnostics footer honesty and the
+rustc-in-Cargo false errors. New-tool candidates (repo map, python_exec,
+run_tests, background exec, LSP pair, MCP client) each need a v5-suite
+eval win before joining the registry (tool-selection accuracy at 27B
+degrades with registry size).
+
 ## 🌙 24/7 BESPOKE LONG-HORIZON JOBS — Max intent 2026-09-09, NOT YET ORIENTED
 Standing goal: let the default Qwen manage projects end-to-end (spawn
 subagents, run continuously). No design exists yet. Ground truth already
