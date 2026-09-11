@@ -8,6 +8,8 @@ Each tool is defined as:
 from __future__ import annotations
 
 import codecs
+import difflib
+import functools
 import glob
 import html
 import http.client
@@ -583,6 +585,355 @@ def _diag_log_timing(lang: str, ms: float, status: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# diag2 (2026-09-11) — diagnostics-quality bundle. One cache era
+# (run_eval.diagnostics_flag → `diag2-<fp>`), four fixes shipped together:
+#   1. zig reference-trace strip (_zig_compact) — the `referenced by:` block
+#      and std/start.zig shim frames were 56% of the payload; `note:` lines
+#      that carry declared-here / parameter / signature info are KEPT.
+#   2. "did you mean" for zig unknown-member errors (_zig_extras), sourced
+#      from the INSTALLED stdlib only, hybrid prefix+difflib matcher.
+#   3. curated fix-hint table for the ArrayList-arity / std.Io idioms
+#      (_ZIG_FIX_HINTS), every row compile-verified on zig 0.16.
+#   4. anchored error count in the footer (_diag_count_errors).
+# All parsing is pure (no zig needed) — see tests/test_diagnostics.py.
+# The total appended block stays inside _DIAG_MAX_LINES/_DIAG_MAX_BYTES:
+# extras (hints) are budgeted FIRST so the remedy is never the part that
+# truncation eats (the banked NTT failure of the 2026-09-10 A/B).
+# ---------------------------------------------------------------------------
+
+_DIAG_EXTRA_BYTES = 800          # hints share the 2 KB block, never exceed it
+_DIAG_MAX_HINTS = 2              # fix-hint rows per block (table order)
+_DIAG_MAX_SUGGEST = 3            # unknown-member errors that get suggestions
+_DIAG_LOC_RE = re.compile(r"^(\S+?):(\d+):(\d+):\s+(error|note|warning):\s?(.*)$")
+_DIAG_CARET_RE = re.compile(r"^\s*[~^]+\s*$")
+# Frames from these std files are compiler plumbing, never the user's bug.
+_ZIG_SHIM_PATHS = ("/std/start.zig", "/compiler_rt/", "/std/std.zig")
+
+# Per-language anchored error-line shapes. The naive `"error" in line`
+# over-counted (rustc's "aborting due to N previous errors", zig's
+# "N reference(s) hidden" — no; but `error` inside source snippets/notes —
+# yes). zig/gcc emit `file:line:col: error:`; the others have their own
+# anchored forms because they never print that shape at all (an anchored
+# zig regex alone would have relabelled every rustc/python failure
+# "warnings").
+_DIAG_ERROR_RES = {
+    "zig": re.compile(r"^\S+:\d+:\d+:\s+error:", re.M),
+    "c": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
+    "c++": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
+    "rust": re.compile(r"^error(?:\[E\d+\])?:(?! aborting due to)", re.M),
+    "go": re.compile(r"^\S+:\d+:\d+: ", re.M),
+    "python": re.compile(r"^\w*Error:", re.M),
+    "shell": re.compile(r"\(error\):", re.M),
+}
+
+# CURATED — verified 2026-09-11 on zig 0.16.0 (this box): for every row the
+# OLD form fails and the HINTED form compiles under
+# `zig build-exe -fno-emit-bin`. Fixtures: tests/fixtures/zig/stale_*.zig
+# (old, must fail) and tests/fixtures/zig/fixed_*.zig (hinted, must pass);
+# tests/test_diagnostics.py::test_zig_hint_table_verified runs them when
+# zig is installed. Re-verify + re-date on any zig upgrade. ≤5 rows —
+# this is a rename map, not documentation (roadmap R3).
+_ZIG_FIX_HINTS: tuple[tuple[str, str], ...] = (
+    # 1. ArrayList managed → unmanaged (fixed_arraylist_unmanaged.zig)
+    (r"'array_list\.[^']*' has no member named 'init'",
+     "std.ArrayList is unmanaged in zig 0.16: `var list: std.ArrayList(T) = .empty; "
+     "defer list.deinit(allocator); try list.append(allocator, item);` "
+     "(there is no .init(allocator) / .deinit())"),
+    # 2. ArrayList method arity (fixed_arraylist_unmanaged.zig)
+    (r"expected \d+ argument\(s\), found \d+\n(?:[^\n]*\n){0,2}[^\n]*/std/array_list\.zig:\d+:\d+: note: function declared here",
+     "zig 0.16 ArrayList methods take the allocator first: `append(allocator, item)`, "
+     "`appendSlice(allocator, items)`, `deinit(allocator)`, `toOwnedSlice(allocator)`"),
+    # 3. std.io / std.fs.File are gone (fixed_io_writer_init.zig)
+    (r"struct 'std' has no member named 'io'|getStdOut|getStdErr|struct 'fs' has no member named 'File'",
+     "zig 0.16 has no std.io / std.fs.File: declare `pub fn main(init: std.process.Init) !void`, then "
+     "`var buf: [1024]u8 = undefined; var w = std.Io.File.stdout().writer(init.io, &buf); "
+     "const out = &w.interface; try out.print(\"..\", .{..}); try out.flush();`"),
+    # 4. File.writer/reader arity (fixed_io_writer_init.zig, fixed_io_threaded.zig)
+    (r"expected \d+ argument\(s\), found \d+\n(?:[^\n]*\n){0,2}[^\n]*/std/Io/File\.zig:\d+:\d+: note: function declared here",
+     "zig 0.16 File.writer/File.reader take (io, buffer): `.writer(init.io, &buf)` and use "
+     "`&w.interface`; without an Init param: `var t: std.Io.Threaded = .init_single_threaded; "
+     "const io = t.io();`"),
+    # 5. stdin line reading (fixed_io_reader_init.zig)
+    (r"getStdIn|readUntilDelimiter|streamUntilDelimiter|named '\w+' in 'Io\.Reader'",
+     "zig 0.16 stdin lines: `var r = std.Io.File.stdin().reader(init.io, &rbuf); const in = &r.interface; "
+     "while (in.takeDelimiterExclusive('\\n')) |line| { .. } else |err| switch (err) "
+     "{ error.EndOfStream => {}, else => return err }`"),
+)
+
+_ZIG_MEMBER_RES = (
+    # root source file struct 'mem' has no member named 'trimRight'
+    # struct 'array_list.Aligned(i32,null)' has no member named 'init'
+    re.compile(r"(?:root source file )?(?:struct|enum|union|opaque|type) '(?P<t>[^']+)' "
+               r"has no member named '(?P<m>\w+)'"),
+    # no field or member function named 'writeAllz' in 'Io.Writer'
+    re.compile(r"no (?:field or member function|member function|member|field) named "
+               r"'(?P<m>\w+)' in '(?P<t>[^']+)'"),
+)
+_ZIG_DECL_PUB_RE = re.compile(
+    r"^\s*pub\s+(?:(?:inline|extern|export|threadlocal)\s+)*(?:fn|const|var)\s+(\w+)", re.M)
+_ZIG_DECL_ANY_RE = re.compile(
+    r"^\s*(?:pub\s+)?(?:(?:inline|extern|export|threadlocal)\s+)*(?:fn|const|var)\s+(\w+)", re.M)
+_ZIG_READ_CAP = 4 * 1024 * 1024
+
+
+def _diag_count_errors(lang: str, text: str) -> int:
+    """Anchored error count for the footer (diag2 item 4)."""
+    rx = _DIAG_ERROR_RES.get(lang)
+    return len(rx.findall(text)) if rx and text else 0
+
+
+def _zig_compact(out: str) -> str:
+    """diag2 item 1 — drop zig reference-trace noise, keep signal.
+
+    Dropped: `referenced by:` blocks (their indented frames + the
+    "N reference(s) hidden" line); `note:` frames located in std shim
+    files (start.zig, compiler_rt, std.zig snippet); the source+caret
+    companion lines of a module-level `:1:1: note: struct declared here`
+    (that snippet is just the module's first line). Kept verbatim: every
+    error line with its snippet+caret, and every other note — "function
+    declared here" + its signature line is the single most useful thing
+    zig prints for the stale-API class."""
+    lines = out.splitlines()
+    res: list[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.strip() == "referenced by:":
+            i += 1
+            while i < len(lines) and lines[i][:1] in (" ", "\t"):
+                i += 1
+            continue
+        m = _DIAG_LOC_RE.match(ln)
+        if not m:
+            res.append(ln)
+            i += 1
+            continue
+        path, row, col, kind, _msg = m.groups()
+        # companions = source snippet + caret (exactly when the 2nd is a caret)
+        comp: list[str] = []
+        j = i + 1
+        while (j < len(lines) and len(comp) < 2
+               and not _DIAG_LOC_RE.match(lines[j])
+               and lines[j].strip() != "referenced by:"):
+            comp.append(lines[j])
+            j += 1
+        if not (len(comp) == 2 and _DIAG_CARET_RE.match(comp[1])):
+            comp = []
+        shim = kind == "note" and any(s in path for s in _ZIG_SHIM_PATHS)
+        module_decl = kind == "note" and row == "1" and col == "1"
+        if shim and "declared here" not in _msg:
+            pass  # plumbing frame: drop line + companions
+        elif shim or module_decl:
+            res.append(ln)  # keep the note, drop the useless snippet
+        else:
+            res.append(ln)
+            res.extend(comp)
+        i += 1 + len(comp)
+    while res and not res[-1].strip():
+        res.pop()
+    return "\n".join(res)
+
+
+@functools.lru_cache(maxsize=1)
+def _zig_std_dir() -> str | None:
+    """`zig env` std_dir, resolved once per process (scrubbed env, bounded)."""
+    zig = shutil.which("zig")
+    if not zig:
+        return None
+    try:
+        out = subprocess.run([zig, "env"], capture_output=True, text=True,
+                             timeout=10, env=_scrubbed_env()).stdout
+    except Exception:
+        return None
+    m = re.search(r'std_dir"?\s*[=:]\s*"([^"]+)"', out)
+    if m and os.path.isdir(m.group(1)):
+        return m.group(1)
+    m = re.search(r'lib_dir"?\s*[=:]\s*"([^"]+)"', out)
+    if m and os.path.isdir(os.path.join(m.group(1), "std")):
+        return os.path.join(m.group(1), "std")
+    return None
+
+
+@functools.lru_cache(maxsize=64)
+def _zig_decl_names(file_path: str, region: str | None, pub_only: bool,
+                    _mtime: float) -> tuple[str, ...]:
+    """Declared names in a zig file (or inside one container decl).
+
+    `region` narrows to the body of `pub fn NAME(` / `const NAME = struct`
+    — the block from that line to the first `}` at the same indent — so
+    `array_list.Aligned(...)` suggests initCapacity, not the whole module.
+    Falls back to the whole file when the region isn't found or is empty.
+    Cached per (path, mtime); reads are capped at _ZIG_READ_CAP."""
+    try:
+        with open(file_path, errors="replace") as f:
+            src = f.read(_ZIG_READ_CAP)
+    except OSError:
+        return ()
+    rx = _ZIG_DECL_PUB_RE if pub_only else _ZIG_DECL_ANY_RE
+    if region:
+        start = re.search(
+            r"^([ \t]*)(?:pub\s+)?(?:fn\s+%s\s*\(|const\s+%s\s*=)" % (re.escape(region), re.escape(region)),
+            src, re.M)
+        if start:
+            indent = start.group(1)
+            end = re.compile(r"^%s\}" % re.escape(indent), re.M).search(src, start.end())
+            body = src[start.end():end.start() if end else len(src)]
+            names = tuple(dict.fromkeys(rx.findall(body)))
+            if names:
+                return names
+    return tuple(dict.fromkeys(rx.findall(src)))
+
+
+def _zig_resolve_type(type_str: str, std_dir: str | None,
+                      checked_path: str) -> tuple[str, str, str | None, bool] | None:
+    """Map a zig type spelling from an error message to
+    (display_name, file, region, pub_only) — the file to mine for
+    candidates. Stdlib types resolve under std_dir only (INSTALLED std,
+    never the internet); the checked file itself when the type's root
+    segment is that file's module name."""
+    base = type_str.split("(", 1)[0].strip()
+    segs = [s for s in base.split(".") if s]
+    if not segs:
+        return None
+    stem = os.path.splitext(os.path.basename(checked_path))[0]
+    if checked_path and segs[0] == stem:
+        return (".".join(segs), checked_path, segs[1] if len(segs) > 1 else None, False)
+    if not std_dir:
+        return None
+    if segs == ["std"]:
+        return ("std", os.path.join(std_dir, "std.zig"), None, True)
+    # longest file path first: Io.File → std/Io/File.zig; array_list.Aligned
+    # → std/array_list.zig + region Aligned.
+    for k in range(len(segs), 0, -1):
+        cand = os.path.join(std_dir, *segs[:k]) + ".zig"
+        if os.path.isfile(cand):
+            region = segs[k] if k < len(segs) else None
+            return ("std." + ".".join(segs), cand, region, True)
+    return None
+
+
+def _did_you_mean(name: str, candidates, n: int = _DIAG_MAX_SUGGEST) -> list[str]:
+    """diag2 item 2 — hybrid matcher. Tiers: exact (case-insensitive) >
+    camelCase-stem prefix > substring > shared camel/snake token > difflib
+    close match. difflib alone misses trimRight→trimEnd (ratio 0.62 but
+    outranked by noise); the stem tier is what makes that case work."""
+    low = name.lower()
+    stem_m = re.match(r"[a-z]+|[A-Z][a-z]+|[A-Z]+", name)
+    stem = stem_m.group(0).lower() if stem_m else low
+    toks = {t.lower() for t in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", name) if len(t) >= 3}
+    scored: dict[str, float] = {}
+    for c in set(candidates):
+        if c == name:
+            continue
+        cl = c.lower()
+        r = difflib.SequenceMatcher(None, low, cl).ratio()
+        if cl == low:
+            score = 4.0
+        elif len(stem) >= 3 and cl.startswith(stem):
+            score = 3.0 + r
+        elif len(low) >= 4 and len(cl) >= 4 and (low in cl or cl in low):
+            score = 2.0 + r
+        else:
+            ctoks = {t.lower() for t in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", c) if len(t) >= 3}
+            shared = toks & ctoks
+            if shared:
+                score = 1.0 + len(shared) / len(toks | ctoks) + 0.5 * r
+            elif r >= 0.6:
+                score = r
+            else:
+                continue
+        scored[c] = score
+    if not scored:
+        return []
+    best = max(scored.values())
+    # Precision gate: a wrong suggestion sends the model chasing. Emit only
+    # on a strong tier (exact/prefix/substring) or a confident typo
+    # (difflib ≥ 0.75, e.g. incremnt→increment). Token-overlap and weak
+    # difflib hits only ever FILL positions behind a strong lead.
+    if best < 2.0 and not (0.75 <= best < 1.0):
+        return []
+    return sorted(scored, key=lambda c: (-scored[c], len(c), c))[:n]
+
+
+def _zig_extras(body: str, checked_path: str = "",
+                std_dir: str | None = None) -> list[str]:
+    """diag2 items 2+3 — suggestion lines + curated fix hints for a
+    (compacted) zig diagnostic text. Pure given std_dir; resolves the
+    installed std lazily when not supplied."""
+    extras: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for ln in body.splitlines():
+        if len(seen) >= _DIAG_MAX_SUGGEST:
+            break
+        m = _DIAG_LOC_RE.match(ln)
+        if not m or m.group(4) != "error":
+            continue
+        for rx in _ZIG_MEMBER_RES:
+            mm = rx.search(m.group(5))
+            if not mm:
+                continue
+            key = (mm.group("t"), mm.group("m"))
+            if key in seen:
+                break
+            seen.add(key)
+            if std_dir is None:
+                std_dir = _zig_std_dir()
+            res = _zig_resolve_type(key[0], std_dir, checked_path)
+            if not res:
+                break
+            display, fpath, region, pub_only = res
+            try:
+                mtime = os.stat(fpath).st_mtime
+            except OSError:
+                break
+            cands = _did_you_mean(key[1], _zig_decl_names(fpath, region, pub_only, mtime))
+            if cands:
+                extras.append(f"hint: '{key[1]}' is not in {display} — did you mean "
+                              f"{', '.join(cands)}?")
+            break
+    n_hints = 0
+    for pat, text in _ZIG_FIX_HINTS:
+        if n_hints >= _DIAG_MAX_HINTS:
+            break
+        if re.search(pat, body):
+            extras.append("fix: " + text)
+            n_hints += 1
+    return extras
+
+
+def _diag_format(lang: str, rc: int, out: str | None, path: str = "") -> str:
+    """Render one checker verdict — pure, testable without any toolchain.
+    Extras (did-you-mean + fix hints, zig only) are budgeted before the
+    body so truncation can never eat the remedy; the whole block stays
+    within _DIAG_MAX_LINES / _DIAG_MAX_BYTES."""
+    out = (out or "").strip()
+    if rc == 0 and not out:
+        return f"\ndiagnostics: OK ({lang})"
+    body = out
+    extras: list[str] = []
+    if lang == "zig":
+        body = _zig_compact(out)
+        extras = _zig_extras(body, path)
+    extra_txt = "\n".join(extras)[:_DIAG_EXTRA_BYTES]
+    budget_lines = max(_DIAG_MAX_LINES - len(extras), 5)
+    budget_bytes = max(_DIAG_MAX_BYTES - len(extra_txt), 512)
+    block = "\n".join(body.splitlines()[:budget_lines])[:budget_bytes]
+    n = _diag_count_errors(lang, out)
+    shown = _diag_count_errors(lang, block)
+    if n:
+        label = f"{n} error{'s' if n != 1 else ''}"
+        if shown < n:
+            label += f" ({shown} shown)"
+    elif rc == 0:
+        label = "warnings"
+    else:
+        label = f"errors (rc={rc})"
+    if extra_txt:
+        block += "\n" + extra_txt
+    return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──"
+
+
 def _run_diagnostics(path: str) -> str:
     """Checker verdict for `path`, formatted for appending to a tool result.
     Returns "" when diagnostics are off, no checker applies, or the checker
@@ -610,17 +961,7 @@ def _run_diagnostics(path: str) -> str:
         finally:
             _DIAG_SLOTS.release()
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok")
-        out = (out or "").strip()
-        if rc == 0 and not out:
-            return f"\ndiagnostics: OK ({lang})"
-        if rc == 0 and out:
-            # warnings only (shellcheck/-Wall) — still worth showing
-            pass
-        lines = out.splitlines()[:_DIAG_MAX_LINES]
-        block = "\n".join(lines)[:_DIAG_MAX_BYTES]
-        n = sum(1 for line in out.splitlines() if "error" in line.lower())
-        label = f"{n} error{'s' if n != 1 else ''}" if n else "warnings"
-        return (f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──")
+        return _diag_format(lang, rc, out, path)
     except subprocess.TimeoutExpired:
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"

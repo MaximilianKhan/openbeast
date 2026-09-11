@@ -152,6 +152,49 @@ does not, so the cache key gains a diag component with these properties:
   read, or they can disagree.
 - Tests: cache-key separation test AND a legacy-key compatibility test.
 
+### 3.4.1 diag2 bundle (2026-09-11, roadmap R3) — era `diag2-<fp>`
+
+Four formatting fixes to the zig verdict, shipped as ONE era so they
+spend one cache invalidation, not four (`agents/tools.py`
+`_diag_format` and helpers; pure parsers, tested without zig):
+
+1. **Reference-trace strip** (`_zig_compact`): the `referenced by:`
+   block + std/start.zig shim frames were **56.8% of the failing-write
+   payload** (measured on `tests/fixtures/zig/stale_*.zig`, 5110 → 2209
+   bytes). `note:` lines that carry declared-here / parameter /
+   signature information are KEPT — `note: function declared here` +
+   the `pub fn append(self: *Self, gpa: Allocator, item: T)` line is
+   the most useful thing zig prints for the stale-API class.
+2. **Did-you-mean** for unknown-member errors (`no member named 'X'`,
+   `root source file struct 'm' has no member named 'X'`, `no field or
+   member function named 'X' in 'T'`): ≤3 candidates from the
+   **installed** stdlib only (`zig env` std_dir, `pub fn`/`pub const`
+   names of the resolved module/container; the checked file for its own
+   structs). Hybrid matcher: exact-ci > camelCase-stem prefix >
+   substring > token overlap > difflib — difflib alone misses
+   trimRight→trimEnd. Precision gate: nothing is emitted unless the lead
+   is a strong tier (a wrong suggestion sends a 27B model chasing).
+   zig-only; rustc/gcc/shellcheck self-suggest.
+3. **Curated fix-hint table** (`_ZIG_FIX_HINTS`, 5 rows): ArrayList
+   `.init`→`.empty`, allocator-first arity, `std.io`/`std.fs.File`→
+   `std.Io.File` + `main(init: std.process.Init)` / `init.io`,
+   `File.writer(io, &buf)` + `.interface`, stdin `takeDelimiterExclusive`.
+   Every row verified on zig 0.16.0: the old form fails
+   (`stale_*.zig`) and the hinted form compiles (`fixed_*.zig`) — the
+   test suite re-runs that verification whenever zig is installed.
+   ≤2 hints per block; hints are budgeted BEFORE the body so truncation
+   can never eat the remedy (the banked NTT failure of the 09-10 A/B).
+4. **Anchored error count** in the footer: zig/gcc `^\S+:\d+:\d+:\s+error:`
+   (per-language anchors for rustc/python/go/shellcheck, which never
+   print that shape); `12 errors (3 shown)` when truncated, `3 errors`
+   otherwise, `warnings` on rc=0 with output, `errors (rc=N)` when a
+   non-zero exit carries no parsable error line.
+
+Caps unchanged (30 lines / 2 KB for body + extras together). Safety
+properties unchanged (sandbox wrapper, scrubbed env, AS limit, slots,
+broken checker never fails a write). Rows produced under `diag1-` do
+not mix with `diag2-` rows.
+
 ### 3.5 Toggle & rollback
 
 Pre-gate the feature ships **default OFF** — `OPENBEAST_DIAGNOSTICS=1`
