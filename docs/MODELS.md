@@ -335,6 +335,80 @@ row itself is still unbenchmarked
 (`python evals/benchmark_all.py --models qwen38-27b-uncensored-mtp-q5`);
 Qwen3.6 precedent says MTP ties its non-MTP twin on capability.
 
+## Qwen3.8-Flash-Next-Uncensored (orcarouter) — added + baselined 2026-09-11 🐋 FIRST 100B+ MODEL
+
+[orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF](https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF)
+— an abliteration (refusal direction orthogonalized out of the residual stream)
+of Qwen/Qwen3.8-Flash-Next: **177B total parameters, 512 experts, 10 routed per
+token**, architecture `qwen4exp` (Gated DeltaNet linear attention + Qwen Sparse
+Attention, full attention only every 4th layer, 2 KV heads). This is the first
+model OpenBeast ships that does **not fit in VRAM**: the IQ4_XS weights are
+~97 GB (65 GB of experts at 1.36 GB per layer × 48 layers, 30 GB of embedding /
+PLE tables, 2.4 GB of attention). It runs by keeping the experts of the first
+35 layers in system RAM and everything else on the GPU — so it needs **≥ 96 GB
+of free RAM** on top of the 5090. llama.cpp b10865+ loads it natively.
+
+**Three-shard download.** The quant ships as `-00001-of-00003.gguf` …
+`-00003-of-00003.gguf`. All three go in the weights directory under their
+original names; the serve script points at shard 1 and llama.cpp follows the
+split metadata to the rest. Never rename or concatenate them.
+
+**Measured on the RTX 5090 + Ryzen 9 9950X3D / 128 GB DDR5** (thinking off,
+single slot, q4_0 KV, 2026-09-11):
+
+| Config (`-c 32768`) | Decode | Prompt proc. (1.6k) | VRAM |
+|---|---|---|---|
+| `--cpu-moe` (all experts in RAM, mmap) | 30 tok/s | 250 tok/s | 6.3 GB |
+| `--n-cpu-moe 32` (16 expert layers on GPU, mmap) | 39 tok/s | 374 tok/s | 32.0 GB — no headroom |
+| `--n-cpu-moe 35` (13 layers on GPU, mmap) | 38 tok/s | 334 tok/s | 23.1 GB |
+| **`--n-cpu-moe 35 --load-mode none`** ⭐ | **38 tok/s** | **714 tok/s** | 23.3 GB |
+
+The shipped script is the last row: `serve-qwen38-flash-next-unc-iq4xs.sh`.
+`--load-mode none` copies the CPU-resident experts into process memory instead
+of memory-mapping them; decode is unchanged but prompt processing doubles
+(no page-fault cost). It costs ~65 GB of "used" RAM and ~40 s of load time.
+Each expert layer moved onto the GPU buys ~0.6 tok/s for ~3 GB of VRAM; 13
+layers leaves ~9 GB for the MTP draft head and long contexts.
+
+**Decode is flat and RAM-bandwidth-bound.** Across a real opencode session
+(78k prompt tokens, 11k generated) every request decoded at 33.7–36.7 tok/s
+regardless of reply length, with the GPU at ~54% utilization. The 10 active
+experts per token are read from DDR5 every step; that is the ceiling, not the
+GPU. Faster RAM (more channels) is the upgrade that moves this number.
+
+**Q4_K_M tested and rejected (2026-09-11).** 119 GB, 1.84 GB of experts per
+layer, 11 layers on GPU: **31 tok/s** decode, 586 tok/s prompt, 28.1 GB VRAM,
+79 GB RAM — slower than IQ4_XS on every axis. Both quants pull ~40 GB/s from
+RAM (IQ4_XS 1.03 GB/token × 38 tok/s; Q4_K_M 1.33 GB/token × 31), so the
+scattered 10-of-512 expert gather is bandwidth-bound at ~40 GB/s effective on
+dual-channel DDR5 — well under the ~75 GB/s STREAM figure, which is why the
+CPU looks "busy" while waiting. Bytes per token decide; IQ4_XS is the
+smallest 4-bit quant and therefore the fastest. Smaller (IQ3_M/IQ2_M) would be
+faster again at a quality cost; not tested.
+
+**Context is nearly free.** KV lives on the GPU and costs ~14 KB/token (12
+attention layers × 2 KV heads × 256 dim, q4_0; the DeltaNet state is
+fixed-size): idle VRAM 23.3 GB at 32k → 23.8 at 64k → 24.5 at 128k → 26.4 at
+the full **262K native context** (26.7 GB after a 29k-token prompt). RAM does
+not change. The shipped script runs 262144. The cost is speed, not memory:
+decode fell to 25 tok/s with 29k tokens in context; prompt ingestion held at
+~800 tok/s (a 29k prompt reads in 36 s).
+
+**Deployment decisions (Max, 2026-09-11):** single slot (`-np 1`); `-c 262144`;
+opencode `limit.context` mirrors the script's `-c` (opencode cannot discover
+it — change them together); output limit 32768.
+
+**MTP + vision.** The repo also ships `…-MTP-draft.gguf` (4.1 GB, self-contained
+draft head; the card reports 1.3–2× decode at ~67% acceptance) and
+`mmproj-…-F16.gguf` (0.9 GB, vision). The draft is downloaded and pinned, the
+projector is pinned PENDING (not yet downloaded); both are **untested**: the draft head needs llama.cpp PR #28243
+(`danielhanchen:qwen4exp/mtp`, still an open draft as of 2026-09-11, not in
+b10865), so it waits for a separate build. Vision should work with `--mmproj`
+as for Qwen3.8-27B; unverified.
+
+**Not benchmarked.** A v5-fast row at ~35 tok/s single-slot is a ~1-day job;
+it is listed in `BENCH_EXCLUDED` with that reason until scheduled.
+
 ## What the opencode picker shows (and what it doesn't)
 
 Two things about the model list in opencode are worth knowing, because both
