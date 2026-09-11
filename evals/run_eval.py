@@ -352,7 +352,7 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
             except Exception:
                 versions[name] = "?"
     fp = hashlib.sha256(json.dumps(versions, sort_keys=True).encode()).hexdigest()[:8]
-    return True, f"diag1-{fp}", versions
+    return True, f"diag2-{fp}", versions
 
 
 def cacheable_result(result: dict) -> bool:
