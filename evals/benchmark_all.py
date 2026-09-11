@@ -472,6 +472,11 @@ def main():
     parser.add_argument("--greedy", action="store_true",
                         help="Low-churn eval mode: greedy decoding (own cache "
                              "era; leaderboard-ineligible experiment rows)")
+    parser.add_argument("--packs", action="store_true",
+                        help="Tier-3 language awareness packs: inject agents/packs/<lang>.md "
+                             "into the agent system prompt for tasks whose language has a pack "
+                             "(zig only today; own pack1-<sha8> cache era on those units; "
+                             "leaderboard-ineligible experiment rows). Same as BEAST_PACKS=1.")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     args = parser.parse_args()
@@ -494,6 +499,8 @@ def main():
 
     if args.greedy:
         os.environ["OPENBEAST_EVAL_GREEDY"] = "1"
+    if args.packs:
+        os.environ["BEAST_PACKS"] = "1"
     task_filter = args.tasks.split(",") if args.tasks else None
 
     # Cleanup handler — make sure we don't leave llama-server running
