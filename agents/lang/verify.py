@@ -81,7 +81,7 @@ class Claim:
     """
 
     __slots__ = ("id", "lang", "topic", "old", "new", "variant", "old_variant",
-                 "new_variant", "doc_must_contain", "note", "source")
+                 "new_variant", "doc_must_contain", "note", "summary", "source")
 
     def __init__(self, raw: dict, source: str, base: str):
         self.source = source
@@ -92,6 +92,11 @@ class Claim:
         self.old_variant = raw.get("old_variant", self.variant)
         self.new_variant = raw.get("new_variant", self.variant)
         self.note = raw.get("note", "")
+        #: the ONE LINE that would have prevented the mistake. A pack is a
+        #: token budget, and a claim's fixtures are whole programs — the
+        #: summary is what actually ships. A claim without one can still be
+        #: verified; it just cannot be delivered.
+        self.summary = raw.get("summary", "")
         self.doc_must_contain = list(raw.get("doc_must_contain") or
                                      raw.get("pack_must_contain") or [])
         self.old = [_read(s, base) for s in (raw.get("old") or [])]
@@ -188,7 +193,8 @@ def verify(claim: Claim) -> dict:
             "variant": (f"{claim.old_variant}->{claim.new_variant}"
                         if claim.old_variant != claim.new_variant
                         else claim.variant),
-            "doc_must_contain": claim.doc_must_contain}
+            "doc_must_contain": claim.doc_must_contain,
+            "summary": claim.summary, "note": claim.note}
 
 
 def check_doc_linkage(results: list[dict], pack_path: str) -> list[str]:

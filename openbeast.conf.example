@@ -229,6 +229,27 @@
 # campaign as a session with: ./scripts/job.sh run --title "..." -- <command>
 # Env overrides: $OPENBEAST_BEAST_CHAT / $OPENBEAST_CHAT_PORT.
 #BEAST_CHAT=false
+
+# beast-lang — offline language knowledge  (docs/BEAST_LANG_PLAN.md)
+# ---------------------------------------------------------------------------
+# Which languages this deployment wants verified language notes for. The point
+# is that ANY model you drop in knows how to use a language without asking and
+# WITHOUT THE NETWORK: the facts come from the toolchain installed next to it,
+# not from a web search or from weights frozen two versions ago.
+#
+#   auto            every language with an installed toolchain AND verified
+#                   claims (the default when this key is absent)
+#   cpp,zig         exactly these — a rig that only writes C++ and zig pays
+#                   nothing for the rest
+#   off             disabled. An EXPLICITLY EMPTY value (LANG_PACKS=) also
+#                   means off; only an absent key means auto.
+#
+# A pack is served only when its stamped toolchain version matches the
+# installed one. A pack describing zig 0.15 handed to an agent compiling
+# against 0.16 is worse than no pack — it is wrong with authority.
+# Env override: $OPENBEAST_LANG_PACKS.  Inspect: ./scripts/lang-library.sh pack
+#LANG_PACKS=auto
+
 #CHAT_PORT=3003
 
 # READ allowlist: comma-separated tailnet logins, matched against the
