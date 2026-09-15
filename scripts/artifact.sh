@@ -140,6 +140,11 @@ _token_config() {
   printf 'header = "X-OpenBeast-Local: %s"\n' "$TOKEN" > "$CURL_CFG"
 }
 
+# Reads tolerate a missing token up front so the failure is the server's 404
+# with its own explanation, not a local error about a file the user may not
+# know exists. Writes keep the hard check.
+_have_token() { [[ -n "$TOKEN" ]]; }
+
 _need_token() {
   if [[ -n "$TOKEN" ]]; then return 0; fi
   echo "ERROR: no locality token at $TOKEN_FILE." >&2
@@ -161,15 +166,28 @@ _api() {
   local method="$1" path="$2" reqfile="${3:-}" code rc=0
   local args
   args=(-s -S -m 60 -o "$BODY" -w '%{http_code}' -X "$method")
+  # The token proves two different things and both are needed here.
+  #
+  # On a WRITE it is the write credential: the server refuses POST/PATCH/DELETE
+  # from anything that cannot present it, which is what keeps a phone on the
+  # tailnet able to view a page and never create or delete one.
+  #
+  # On a READ it is our IDENTITY. The server refuses anonymous callers outright
+  # — a request with no tailnet login and no token is 404 on every route — so a
+  # CLI GET that sent nothing would be indistinguishable from a stranger and
+  # `artifact.sh list` would report an empty gallery on a rig full of pages.
+  # (That rule exists because loopback is not a trust boundary against a
+  # browser: any page the operator visits can reach 127.0.0.1.)
+  #
+  # Either way it travels in a 0600 --config file, never in argv.
   case "$method" in
-    POST|PUT|PATCH|DELETE)
-      # Writes only: a GET never needs the write credential, so a `list` must
-      # not put it on the wire (or anywhere else) at all.
-      _need_token
-      _token_config
-      args+=(--config "$CURL_CFG")
-      ;;
+    POST|PUT|PATCH|DELETE) _need_token ;;
+    *) _have_token || true ;;
   esac
+  if [[ -n "$TOKEN" ]]; then
+    _token_config
+    args+=(--config "$CURL_CFG")
+  fi
   if [[ -n "$reqfile" ]]; then
     args+=(-H 'Content-Type: application/json' --data-binary "@$reqfile")
   fi
