@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""One-shot patch for the 13 Zig variant `task` fields."""
+"""One-shot patch for the 13 Zig variant `task` fields.
+
+ALREADY APPLIED. It is kept for provenance, so it defaults to a DRY RUN and
+needs --apply to touch anything: it rewrites eval task fixtures, which are
+measurement inputs, and it used to rewrite all 13 files unconditionally —
+including the ones where no patch matched, so a second run was pure JSON
+reformatting churn on the inputs of a live campaign. (Probing it with --help,
+which it did not have, was enough to dirty six fixtures.)
+"""
+import argparse
 import json
 import os
-import re
-import sys
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 TASKS = [
@@ -45,11 +52,19 @@ NEW_GUIDANCE = (
     "Use `std.Io` (capital I), not `std.io`."
 )
 
+_ap = argparse.ArgumentParser(
+    description=__doc__,
+    formatter_class=argparse.RawDescriptionHelpFormatter)
+_ap.add_argument("--apply", action="store_true",
+                 help="actually rewrite the task files (default: dry run)")
+ARGS = _ap.parse_args()
+
 patches = 0
 for slug in TASKS:
     path = os.path.join(REPO, "evals/tasks", slug + ".json")
     with open(path) as f:
         data = json.load(f)
+        before = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
     found_zig = False
     for v in data.get("variants", []):
@@ -70,8 +85,17 @@ for slug in TASKS:
         print(f"SKIP {slug}: no zig variant found")
         continue
 
+    # Write only when this file actually changed, and only under --apply.
+    after = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    if after == before:
+        print(f"SAME {slug}: no change — not rewritten")
+        continue
+    if not ARGS.apply:
+        print(f"WOULD write {slug} ({len(after) - len(before):+d} bytes)")
+        continue
     with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+        f.write(after)
 
 print(f"\n{patches} variants patched.")
+if not ARGS.apply:
+    print("DRY RUN — nothing was written. Re-run with --apply to commit.")

@@ -1098,7 +1098,13 @@ def create_app(local_token: str | None = None) -> FastAPI:
         viewer = viewer_of(request)
         meta = visible_meta(artifact_id, viewer)
         version = _version_or_current(meta, n, artifact_id)
-        if path.strip("/") in ("", "index.html"):
+        # [26] `.strip("/")` alone left surrounding whitespace, so
+        # /raw/<id>/v/<n>/%20index.html missed this delegation while the
+        # store's own read_file (which strips whitespace too) matched
+        # "index.html" and returned the page — served unwrapped, i.e. with no
+        # doctype/charset/viewport, in quirks mode. Both spellings must reach
+        # raw_page so both get wrap_skeleton.
+        if path.strip().strip("/") in ("", "index.html"):
             return raw_page(request, artifact_id, n)
         try:
             data, ctype = store.read_file(_meta_id(meta, artifact_id),
@@ -1190,8 +1196,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
         except store.ArtifactError as e:
             raise _store_error(e)
         meta = store.get_meta(result["id"]) or {}
-        version = next((v for v in meta.get("versions", [])
-                        if int(v.get("n", 0)) == result["version"]), {})
+        # [14] `int(v.get("n", 0))` over raw meta was an AttributeError on a
+        # null/string entry and a ValueError on `n: "two"` — raised AFTER the
+        # version was written, made current, and appended to index.jsonl, so
+        # artifact.sh reported 'publish failed (HTTP 500)' for a page that is
+        # on disk and being served. The store only repairs `versions` when it
+        # is not a list; a list CONTAINING junk survives verbatim.
+        # _version_entries (D23) drops non-records and non-numeric `n` and
+        # never raises.
+        version = _version_entries(meta).get(result["version"], {})
         request.state.extra = {"sha256": version.get("sha256"),
                                "bytes": result.get("bytes")}
         return result
@@ -1242,10 +1255,23 @@ def create_app(local_token: str | None = None) -> FastAPI:
             raise _store_error(e)
         if meta is None:
             meta = store.get_meta(artifact_id)
-        return {"id": meta["id"], "visibility": meta.get("visibility"),
+        # [4]/[15] The store mutators return the raw _read_meta dict with no id
+        # normalisation, and `store.artifact_url(meta["id"])` sat OUTSIDE the
+        # ArtifactError guard above — so an id-less or non-string-id record
+        # turned an ALREADY-COMMITTED patch into a 500: the caller is told the
+        # visibility change failed when it succeeded and the page is now
+        # tailnet-readable. _meta_id is the helper this file already carries for
+        # exactly this corruption family; the five GET routes used it and the
+        # two write routes did not.
+        if not isinstance(meta, dict):
+            # Narrow race: an all-None body plus a concurrent DELETE between
+            # the existence check and this re-read.
+            raise HTTPException(status_code=404, detail="Not Found")
+        aid = _meta_id(meta, artifact_id)
+        return {"id": aid, "visibility": meta.get("visibility"),
                 "description": meta.get("description"),
                 "current": meta.get("current"),
-                "url": store.artifact_url(meta["id"])}
+                "url": store.artifact_url(aid)}
 
     @app.delete("/api/artifacts/{artifact_id}")
     def api_delete(request: Request, artifact_id: str,
