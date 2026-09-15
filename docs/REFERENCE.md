@@ -52,6 +52,9 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
+| `BEAST_ARTIFACT` | `OPENBEAST_BEAST_ARTIFACT` | `false` | Run beast-artifact (`agents/artifact_server.py`), the publish-and-view service for model- or script-authored HTML. Adds the `publish_artifact`/`list_artifacts` tools to the MCP/WebUI surface (not the autonomous runner's registry). See `docs/BEAST_ARTIFACT.md` |
+| `ARTIFACT_PORT` | `OPENBEAST_ARTIFACT_PORT` | `3004` | Loopback port the artifact server listens on when `BEAST_ARTIFACT=true`. `setup-tailscale.sh --publish-artifact` mounts `:8446` at it |
+| `ARTIFACT_OPERATORS` | `OPENBEAST_ARTIFACT_OPERATORS` | *(empty)* | Comma-separated tailnet logins allowed to READ published pages; falls back to `CHAT_OPERATORS`. An unlisted login gets 404, never 403. **Empty means every identified tailnet login can read** — anonymous callers are refused either way. Writes are loopback-only regardless |
 | `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
 | `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 17 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
@@ -708,6 +711,7 @@ when configured:
 |---|---|---|
 | **beast-gate** | `EDGE_GATE=true` | `:$EDGE_PORT/gate/health` (default 8090) — the inference edge remote clients arrive through. `--restart` relaunches `agents/edge.py` and rewrites `.run/edge.pid` |
 | **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:3002/api/slot` — the discovery contract. Advisory only; never fails the run |
+| **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern |
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service

@@ -549,8 +549,15 @@ opt-in publish flag:
 | `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API | always |
 | `https://beast.<tailnet>.ts.net:8889` | SearXNG, for a client's `web_search` | `--publish-searxng` |
 | `https://beast.<tailnet>.ts.net:8444/api/slot` | beast-slot discovery (what the rig is actually serving) | `--publish-slot` |
+| `https://beast.<tailnet>.ts.net:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
 
-The two opt-in ones are for client devices (§8). `--publish-slot` needs the
+The opt-in ones are for client devices (§8) and for reading published pages
+on a phone. `--publish-artifact` needs `BEAST_ARTIFACT=true` or it serves 502s;
+reads are gated on your tailnet login against `ARTIFACT_OPERATORS` (unlisted →
+404), and **publishing stays loopback-only**, so a phone can view a page and
+never create or delete one. Leave `ARTIFACT_OPERATORS` empty and every
+identified login on your tailnet can read every page — the script says so
+loudly when you publish. `--publish-slot` needs the
 dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
 serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
 `/api/status` stay rig-local. Undo either with `--unpublish-searxng` /

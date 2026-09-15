@@ -122,6 +122,7 @@ flowchart TB
     router["🧭 <b>Agent router</b> · :8088<br/><i>(opt-in; OFF by default —<br/>WebUI then calls llama.cpp direct)</i>"]
     searxng["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
     dash["📊 <b>Dashboard</b> · :3002 <i>(extension)</i><br/>serves /api/slot"]
+    artifact["🎨 <b>beast-artifact</b> · :3004 <i>(opt-in)</i><br/><code>agents/artifact_server.py</code><br/>versioned page store · gallery + viewer<br/>sandboxed opaque-origin render · CSP<br/><i>writes are loopback-only</i>"]
 
     webui -->|"tool calls +<br/>identity headers"| its
     opencode -->|"MCP over stdio"| mcp

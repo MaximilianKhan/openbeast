@@ -423,6 +423,7 @@ Two more are **opt-in**, for client devices:
 |---|---|---|
 | `…:8444/api/slot` | beast-slot discovery — what the rig is actually serving | `setup-tailscale.sh --publish-slot` |
 | `…:8889` | SearXNG, for a client's `web_search` | `setup-tailscale.sh --publish-searxng` |
+| `…:8446` | beast-artifact — the gallery and every page the model publishes | `setup-tailscale.sh --publish-artifact` |
 
 Every device authenticates via its WireGuard key; the WebUI additionally
 requires an account (first signup becomes admin). Phone: install the Tailscale
@@ -499,6 +500,44 @@ provenance.
 
 We publish the misses alongside the hits on purpose: a measurement stack
 that only reports victories isn't one.
+
+## beast-artifact 🎨 — a URL for anything the model renders
+
+*(Shipped in v1.3.0, opt-in: `BEAST_ARTIFACT=true` — env or `openbeast.conf`.)*
+
+Ask for a report, a comparison table, a dashboard or a small interactive tool,
+and the answer arrives as a **link** instead of a wall of chat text:
+
+```
+Published "Drive wear, 90 days" → https://beast:8446/a/6f1c2a3e-…  (v1)
+```
+
+The model writes a self-contained HTML page, calls `publish_artifact`, and gets
+a durable URL on your tailnet. Open it on your phone. Publish again with the
+same id and the URL stays while a new **immutable version** is added, so the
+link you sent someone last week still resolves to what they read. A mobile
+gallery lists everything; the viewer adds a version picker, a theme toggle and
+a copy-link button. There is also a CLI — `./scripts/artifact.sh publish
+page.html` — which is how scripts and background agents publish, and how the
+eval campaign publishes its verdict tables.
+
+**Model-authored HTML is treated as hostile, because it is.** The page renders
+in an opaque-origin sandboxed iframe under the repo's first Content-Security-
+Policy: no storage, no `fetch`, no downloads, no reaching the page that frames
+it, and scripts only from the same four CDNs Claude's own artifacts allow.
+The publish tool reads only from the agent's workspace and runs the same
+hazard, regular-file and size guards as `read_file`, so a page cannot be a
+wrapper for `/etc/passwd`. Pages are **private to their publisher** by default;
+`tailnet` visibility is an explicit, owner-only flip. Reads require a tailnet
+identity — an unlisted login gets a 404, never a 403 — and **every write is
+loopback-only**, so a phone can view and never publish.
+
+Those specifics are not aspirational. Three adversarial review agents attacked
+this feature before it shipped and found twelve real defects, including an
+arbitrary-file-read, an ownership hole and a sandbox-attribute injection; each
+is closed with a regression test that fails without the fix. The details, and
+the parts deliberately left out of v1, are in
+[`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md).
 
 ## Evals & benchmarking
 
@@ -581,6 +620,7 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 | [MODELS.md](docs/MODELS.md) | The full lineup, with measured VRAM, context and speed |
 | [REFERENCE.md](docs/REFERENCE.md) | Config keys, measured VRAM tables, per-variant details |
 | [TOOLS.md](docs/TOOLS.md) | Every tool a model can call: inventory, provenance, hardening, RBAC |
+| [BEAST_ARTIFACT.md](docs/BEAST_ARTIFACT.md) | Publishing pages: the URL and version model, visibility, the sandbox and CSP posture, authoring rules |
 | [HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md) | GPU detection and per-tier configs |
 | [RESULTS.md](docs/RESULTS.md) | Eval leaderboards (v4 + v3.5), distribution, cross-host results |
 | [evals/README.md](evals/README.md) | Eval suite: schema, scoring, the CLI, pitfalls |
