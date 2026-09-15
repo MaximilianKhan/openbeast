@@ -1,5 +1,55 @@
 # TODO
 
+## 📱 beast-chat + 🎨 beast-artifact — BOTH SHIPPED 2026-09-15
+
+- **beast-artifact** shipped in **v1.3.0** (PR #61). Docs:
+  [`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md), notes:
+  [`RELEASE_NOTES_v1.3.0.md`](RELEASE_NOTES_v1.3.0.md).
+- **beast-chat** shipped in **v1.4.0** (PR #62). Docs:
+  [`BEAST_CHAT.md`](BEAST_CHAT.md), notes:
+  [`RELEASE_NOTES_v1.4.0.md`](RELEASE_NOTES_v1.4.0.md). It was held as a draft
+  PR until a campaign boundary because it changes `agents/runner.py`, one of
+  the six files `evals/cache.py` hashes; merged 2026-09-15 with the GPU queue
+  idle, so every row after it is one era. **Eval cache era is now
+  `3b7c2adb8da7968d`** — rows measured before f7e81a5 must not be paired with
+  rows measured after it.
+- **STILL OPEN — beast-chat push notifications** (Max 2026-09-14: "not yet but
+  place a TODO"): a self-hosted ntfy container on the tailnet, PWA subscribes.
+  Revisit after a week of real beast-chat use. Plan Phase 5.
+- **STILL OPEN — campaign verdict tables auto-publish as artifacts.** The CLI
+  landed with v1.3.0 (`./scripts/artifact.sh publish`), so the verdict scripts
+  can now publish their own tables with a stable id per verdict (a rerun
+  becomes version 2 of the same URL instead of a new link). Not wired yet.
+
+## 🛟 Long GPU work must survive a desktop-layer failure (2026-09-15)
+
+Learned expensively. Waybar leaked to 32.1 GB, segfaulted in
+`libwayland-client`, and `systemd-coredump` allocated another 31.8 GB dumping
+it. The screen went black 19 hours into a paired capability campaign. The
+campaign itself was fine — it was headless under `nohup` and the kernel kept
+logging normally for 12 more minutes — but from the seat it looked dead, the
+box was power-cycled, and the queue died with it. Upstream:
+[Alexays/Waybar#5186](https://github.com/Alexays/Waybar/issues/5186) (the leak,
+with our measurements) and [omarchy#11986](https://github.com/omacom/omarchy/issues/11986)
+(no bound, no restart, no recovery path).
+
+Rules that follow, now applied to every campaign script:
+
+1. **A black screen is not a dead machine.** Check from another device on the
+   tailnet (`ssh`, or beast-chat on a phone — this is exactly what v1.4.0 is
+   for) before touching the power button. `omarchy restart waybar` from a TTY
+   or over ssh brings the desktop back without disturbing the GPU.
+2. **Campaign logs never live in `/tmp`.** They go to
+   `scratch/logs/campaign/`. The power-off erased both capability rows' serve
+   logs, which made the CUDA-error axis of a 19-hour measurement unauditable
+   after the fact — the row survived only because the chain log had banked the
+   counts at row exit.
+3. **A row stamps its own validity at row exit**, not at verdict time
+   (`scratch/row_validity.py`), while the serve log still exists and an
+   operator can still act on it.
+4. **Register long jobs with `./scripts/job.sh run`** so they are watchable and
+   stoppable from a phone, with a process group that a stop actually reaches.
+
 ## 🛠️ TOOLS SOTA REVIEW (scratch/TOOLS_SOTA_REVIEW-2026-09-10.md) — Top-10 status
 
 Shipped: #1-#5, #7 (PR #52 hardening bundle); #6 schema teaching, #8 runner
