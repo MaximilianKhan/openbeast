@@ -1278,7 +1278,12 @@ else
 fi
 # The generated artifacts are per-rig state (a full probe costs ~0.2s), so
 # they must NOT be committed — a machine's toolchain inventory is not source.
-if git -C "$REPO_DIR" check-ignore -q agents/lang/generated 2>/dev/null; then
+# Ask about a path INSIDE the directory, not the directory. The pattern ends
+# in a slash so it matches directories only, and `git check-ignore` cannot
+# tell that a path which does not EXIST is a directory — so the directory form
+# passed on this box (where probes had created it) and failed on CI (where it
+# never exists). A file path inside matches the pattern either way.
+if git -C "$REPO_DIR" check-ignore -q agents/lang/generated/zig.json 2>/dev/null; then
   pass "agents/lang/generated/ is gitignored (per-rig state, not source)"
 else
   fail "generated L1 artifacts are not gitignored — one box's toolchain would be committed"
