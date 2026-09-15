@@ -303,10 +303,20 @@ def _resolve_agent_base_url(explicit: str = "") -> str:
 
 def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
                       context_budget: int, context: str = "",
-                      base_url: str = "") -> list[str]:
+                      base_url: str = "", session_id: str = "") -> list[str]:
     """Argv for a runner.py spawn. --base-url is appended only when the
     resolved URL differs from the runner's default (distributed agents:
-    tokens come from a worker box, execution stays on this machine)."""
+    tokens come from a worker box, execution stays on this machine).
+
+    --session-id is passed whenever the caller has one, which registers the
+    spawn in the beast-chat ledger (so it survives a tool-server restart and
+    shows up in the console) and makes it steerable. That flag is now the ONLY
+    way steering turns on: the environment opt-in was deleted because
+    scripts/lib/conf.sh exports it unconditionally and evals/run_eval.py copies
+    the whole environment into the child, so a configured shell left every eval
+    steerable. Evals are unaffected either way — run_eval.py sets
+    OPENBEAST_EVAL=1 on every unit, which the runner checks first and which no
+    argv can override."""
     cmd = [
         sys.executable, _RUNNER_PATH,
         "--log-file", log_path,
@@ -314,6 +324,8 @@ def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
         "--workdir", workdir,
         "--context-budget", str(context_budget),
     ]
+    if session_id:
+        cmd.extend(["--session-id", session_id])
     if base_url and base_url != _DEFAULT_AGENT_BASE_URL:
         cmd.extend(["--base-url", base_url])
     if context:
@@ -937,7 +949,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     cmd = _build_runner_cmd(
         task=task, log_path=log_path, max_iter=max_iter, workdir=workdir,
         context_budget=context_budget, context=context,
-        base_url=resolved_base_url,
+        base_url=resolved_base_url, session_id=agent_id,
     )
 
     # Record the spawn (incl. the inference endpoint) as the log's first
