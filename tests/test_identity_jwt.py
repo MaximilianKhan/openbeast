@@ -30,12 +30,23 @@ import tools as _tools  # noqa: E402
 SECRET = "test-jwt-secret"
 
 
-def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET, iss="open-webui"):
+def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET,
+         iss="open-webui", email="alice@example.com"):
+    """Mint an identity token the way Open WebUI forwards one.
+
+    `email` is optional on purpose. A token without one is a valid identity
+    for the other 16 tools — only publishing a page needs a login a reader
+    can present, and that path refuses on its own with a message naming the
+    setting to turn on. Requiring it at decode time would 401 the entire tool
+    surface on any --with-jwt rig whose WebUI omits it, which is a far larger
+    blast radius than the feature it protects.
+    """
     now = int(time.time())
-    return pyjwt.encode(
-        {"sub": sub, "role": role, "iss": iss, "iat": now, "exp": now + exp_delta},
-        secret, algorithm="HS256",
-    )
+    claims = {"sub": sub, "role": role, "iss": iss, "iat": now,
+              "exp": now + exp_delta}
+    if email is not None:
+        claims["email"] = email
+    return pyjwt.encode(claims, secret, algorithm="HS256")
 
 
 @pytest.fixture()

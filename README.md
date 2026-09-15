@@ -7,13 +7,14 @@
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
-15-tool arsenal (shell, file editing, web search, background sub-agents), a
+17-tool arsenal (shell, file editing, web search, background sub-agents,
+publishable pages), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
 
 **One GPU box, every device you own.** Install the **rig** on the machine with
 the graphics card, then install the **client** on any laptop (no GPU, no
-weights). It runs the same agent and the same 15 tools against *its own* files,
+weights). It runs the same agent and the same 17 tools against *its own* files,
 with only the thinking crossing your private tailnet. Your laptop stays a
 laptop; your rig does the reasoning.
 
@@ -39,7 +40,7 @@ OpenBeast runs in **two roles**, and the same repo does both:
 
 You don't need both. Run the rig on its own and use it from any browser, or
 install **only** the client if someone else is hosting the rig. The client is a
-real OpenBeast install: the same 15-tool arsenal, acting on *your* disk.
+real OpenBeast install: the same 17-tool arsenal, acting on *your* disk.
 
 Your shell and your files stay on your machine. What crosses the tailnet is the
 prompt, whatever the agent *reads* as context, and the model's replies, plus
@@ -74,7 +75,7 @@ toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INST
 ## 💻 Install a client (use a rig from your laptop)
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
-and no model download**. OpenCode and the entire 15-tool arsenal run *on the
+and no model download**. OpenCode and the entire 17-tool arsenal run *on the
 laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
 the thinking happens on the rig.
 
@@ -153,7 +154,7 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 
 ⁷ Deliberately **out of scope**. OpenBeast maximizes one model rather than bundling services. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 15-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path, since a client is your own device.)
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 17-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path, since a client is your own device.)
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner: it serves a model and stops there. OpenBeast *includes* a
@@ -276,7 +277,7 @@ flowchart TB
       coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
       ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
       cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
-      ctools["⚙️ <b>15 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      ctools["⚙️ <b>17 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
       csx["🔎 local SearXNG<br/><i>--local-search</i>"]
       coc --> cmcp
       cmcp --> ctools
@@ -298,7 +299,7 @@ flowchart TB
       subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>never published to the tailnet"]
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards<br/>audit · <i>auth HUMAN</i>"]
-        mcp["🔌 <b>MCP surface</b><br/><b>15 tools</b><br/>+ skill · agent ctl"]
+        mcp["🔌 <b>MCP surface</b><br/><b>17 tools</b><br/>+ skill · agent ctl · artifacts"]
         prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls<br/>grep · fetch · search"]
         idsrv --> mcp
         mcp --> prim
@@ -422,6 +423,7 @@ Two more are **opt-in**, for client devices:
 |---|---|---|
 | `…:8444/api/slot` | beast-slot discovery — what the rig is actually serving | `setup-tailscale.sh --publish-slot` |
 | `…:8889` | SearXNG, for a client's `web_search` | `setup-tailscale.sh --publish-searxng` |
+| `…:8446` | beast-artifact — the gallery and every page the model publishes | `setup-tailscale.sh --publish-artifact` |
 
 Every device authenticates via its WireGuard key; the WebUI additionally
 requires an account (first signup becomes admin). Phone: install the Tailscale
@@ -498,6 +500,44 @@ provenance.
 
 We publish the misses alongside the hits on purpose: a measurement stack
 that only reports victories isn't one.
+
+## beast-artifact 🎨 — a URL for anything the model renders
+
+*(Shipped in v1.3.0, opt-in: `BEAST_ARTIFACT=true` — env or `openbeast.conf`.)*
+
+Ask for a report, a comparison table, a dashboard or a small interactive tool,
+and the answer arrives as a **link** instead of a wall of chat text:
+
+```
+Published "Drive wear, 90 days" → https://beast:8446/a/6f1c2a3e-…  (v1)
+```
+
+The model writes a self-contained HTML page, calls `publish_artifact`, and gets
+a durable URL on your tailnet. Open it on your phone. Publish again with the
+same id and the URL stays while a new **immutable version** is added, so the
+link you sent someone last week still resolves to what they read. A mobile
+gallery lists everything; the viewer adds a version picker, a theme toggle and
+a copy-link button. There is also a CLI — `./scripts/artifact.sh publish
+page.html` — which is how scripts and background agents publish, and how the
+eval campaign publishes its verdict tables.
+
+**Model-authored HTML is treated as hostile, because it is.** The page renders
+in an opaque-origin sandboxed iframe under the repo's first Content-Security-
+Policy: no storage, no `fetch`, no downloads, no reaching the page that frames
+it, and scripts only from the same four CDNs Claude's own artifacts allow.
+The publish tool reads only from the agent's workspace and runs the same
+hazard, regular-file and size guards as `read_file`, so a page cannot be a
+wrapper for `/etc/passwd`. Pages are **private to their publisher** by default;
+`tailnet` visibility is an explicit, owner-only flip. Reads require a tailnet
+identity — an unlisted login gets a 404, never a 403 — and **every write is
+loopback-only**, so a phone can view and never publish.
+
+Those specifics are not aspirational. Three adversarial review agents attacked
+this feature before it shipped and found twelve real defects, including an
+arbitrary-file-read, an ownership hole and a sandbox-attribute injection; each
+is closed with a regression test that fails without the fix. The details, and
+the parts deliberately left out of v1, are in
+[`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md).
 
 ## Evals & benchmarking
 
@@ -580,6 +620,7 @@ breakdowns, and the eval CLI: **[evals/README.md](evals/README.md)** and
 | [MODELS.md](docs/MODELS.md) | The full lineup, with measured VRAM, context and speed |
 | [REFERENCE.md](docs/REFERENCE.md) | Config keys, measured VRAM tables, per-variant details |
 | [TOOLS.md](docs/TOOLS.md) | Every tool a model can call: inventory, provenance, hardening, RBAC |
+| [BEAST_ARTIFACT.md](docs/BEAST_ARTIFACT.md) | Publishing pages: the URL and version model, visibility, the sandbox and CSP posture, authoring rules |
 | [HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md) | GPU detection and per-tier configs |
 | [RESULTS.md](docs/RESULTS.md) | Eval leaderboards (v4 + v3.5), distribution, cross-host results |
 | [evals/README.md](evals/README.md) | Eval suite: schema, scoring, the CLI, pitfalls |

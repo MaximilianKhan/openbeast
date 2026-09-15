@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>{{TITLE}} — OpenBeast artifact</title>
+<!--
+  beast-artifact viewer shell (agents/artifact_server.py renders this).
+
+  Substitution is LITERAL string replacement. The placeholders are the bare
+  names below wrapped in DOUBLED CURLY BRACES; they are written unbraced in
+  this comment on purpose, so a substituted value can never land inside a
+  comment and break out of it. These are the only placeholders in the file:
+
+    TITLE            plain text, HTML-escaped (appears in the document title,
+                     the heading, and two attributes - escape quotes too)
+    DESCRIPTION      plain text, HTML-escaped; may be empty (its line hides)
+    ARTIFACT_ID      the uuid4
+    VERSION          the integer version being shown, e.g. 3
+    VERSION_OPTIONS  server-rendered option markup for the picker. Each
+                     option's value is the URL to navigate to, e.g.
+                     value="/a/<id>/v/2" with the current one selected
+    RAW_URL          src for the sandboxed frame, e.g. /raw/<id>/v/3/
+    UPDATED          human text, e.g. "2h ago" or "2026-09-14 11:04"
+    VISIBILITY       exactly "private" or "tailnet" (styled by attribute)
+
+  The frame's sandbox attribute is a SECURITY CONTROL, not decoration. It must
+  stay byte-identical and must never gain allow-same-origin: without it the
+  artifact runs in an opaque origin with no cookies, no storage, and no way to
+  reach the viewer's session on any other service. The /raw/ response carries
+  the same policy as a CSP header; the attribute is the second lock.
+
+  Served under a strict CSP with no external hosts: every style and script here
+  is inline, every icon is inline SVG. Do not add a font, CDN, or image URL.
+  The shell's own policy must admit this inline block - script-src 'self'
+  'unsafe-inline', or a sha256 of it - which is a different, looser policy
+  than the one on /raw/, and deliberately so: this page is ours, the page in
+  the frame is not.
+-->
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f5; --border:#d8dee8;
+  --fg:#11161f; --muted:#5c6779; --accent:#1f6feb; --accent-weak:#e7f0ff;
+  --ok:#1a7f37; --ok-weak:#e6f4ea; --warn:#9a6700; --warn-weak:#fff6dd;
+  --focus:#1f6feb; --canvas:#ffffff; --shadow:0 1px 2px rgba(16,24,40,.08);
+  --bar-h:52px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#0c0f14; --surface:#141922; --surface-2:#1b2230; --border:#232b38;
+    --fg:#d6dbe4; --muted:#7c8598; --accent:#58a6ff; --accent-weak:#16243a;
+    --ok:#3fb950; --ok-weak:#10281a; --warn:#d29922; --warn-weak:#2a2110;
+    --focus:#58a6ff; --canvas:#0c0f14; --shadow:0 1px 2px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#0c0f14; --surface:#141922; --surface-2:#1b2230; --border:#232b38;
+  --fg:#d6dbe4; --muted:#7c8598; --accent:#58a6ff; --accent-weak:#16243a;
+  --ok:#3fb950; --ok-weak:#10281a; --warn:#d29922; --warn-weak:#2a2110;
+  --focus:#58a6ff; --canvas:#0c0f14; --shadow:0 1px 2px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,
+       Cantarell,"Noto Sans",system-ui,sans-serif;
+  display:flex; flex-direction:column; overflow:hidden;
+  -webkit-text-size-adjust:100%;
+}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:6px}
+
+/* ── top bar ───────────────────────────────────────────────────────── */
+.bar{
+  flex:0 0 auto; display:flex; align-items:center; gap:10px;
+  min-height:var(--bar-h); padding:6px 12px;
+  background:var(--surface); border-bottom:1px solid var(--border);
+  box-shadow:var(--shadow);
+}
+.back{
+  flex:0 0 auto; display:grid; place-items:center; width:36px; height:36px;
+  border-radius:8px; color:var(--muted); text-decoration:none;
+}
+.back:hover{background:var(--surface-2); color:var(--fg)}
+.back svg{width:18px; height:18px; fill:none; stroke:currentColor;
+  stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+.ident{min-width:0; flex:1 1 auto}
+h1{
+  margin:0; font-size:15px; font-weight:650; letter-spacing:-.01em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.desc{
+  margin:0; font-size:12.5px; color:var(--muted);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.desc:empty{display:none}
+.controls{flex:0 0 auto; display:flex; align-items:center; gap:6px}
+
+select.ver{
+  font:inherit; font-size:13px; font-variant-numeric:tabular-nums;
+  color:var(--fg); background:var(--surface-2);
+  border:1px solid var(--border); border-radius:8px;
+  padding:6px 8px; min-height:36px; max-width:11em; cursor:pointer;
+}
+.btn{
+  font:inherit; font-size:13px; color:var(--fg); background:var(--surface-2);
+  border:1px solid var(--border); border-radius:8px;
+  min-height:36px; padding:0 10px; display:inline-flex; align-items:center;
+  gap:6px; cursor:pointer; white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent); color:var(--accent)}
+.btn:active{transform:translateY(1px)}
+.btn svg{width:15px; height:15px; fill:none; stroke:currentColor;
+  stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round}
+.btn.icon{width:36px; padding:0; justify-content:center}
+.btn[data-copied="1"]{color:var(--ok); border-color:var(--ok)}
+.btn .i-sun,.btn .i-moon{display:none}
+.btn[data-mode="dark"] .i-sun{display:block}
+.btn[data-mode="light"] .i-moon{display:block}
+
+/* ── meta strip ────────────────────────────────────────────────────── */
+.strip{
+  flex:0 0 auto; display:flex; align-items:center; gap:8px;
+  padding:5px 12px; font-size:12px; color:var(--muted);
+  background:var(--bg); border-bottom:1px solid var(--border);
+  font-variant-numeric:tabular-nums; overflow:hidden; white-space:nowrap;
+}
+.badge{
+  border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600;
+  letter-spacing:.02em; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--muted);
+}
+.badge[data-visibility="tailnet"]{
+  background:var(--ok-weak); color:var(--ok); border-color:transparent;
+}
+.badge[data-visibility="private"]{
+  background:var(--surface-2); color:var(--muted);
+}
+.ver-chip{
+  font-weight:600; color:var(--fg);
+  font-variant-numeric:tabular-nums;
+}
+.sep{opacity:.45}
+.aid{
+  margin-left:auto; font:12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,
+       "Liberation Mono",monospace;
+  color:var(--muted); overflow:hidden; text-overflow:ellipsis; max-width:20em;
+}
+
+/* ── the artifact itself ───────────────────────────────────────────── */
+.stage{flex:1 1 auto; min-height:0; background:var(--canvas)}
+iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas)}
+
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+}
+@media (max-width:560px){
+  .desc{display:none}
+  .aid{display:none}
+  .btn .label{display:none}
+  .btn{padding:0 9px}
+  select.ver{max-width:6.5em}
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <a class="back" href="/" title="All artifacts" aria-label="All artifacts">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+  </a>
+
+  <div class="ident">
+    <h1 title="{{TITLE}}">{{TITLE}}</h1>
+    <p class="desc">{{DESCRIPTION}}</p>
+  </div>
+
+  <div class="controls">
+    <label class="sr-only" for="ver">Version</label>
+    <select class="ver" id="ver">{{VERSION_OPTIONS}}</select>
+
+    <button class="btn" type="button" id="copy" title="Copy link to this page">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="9" y="9" width="11" height="11" rx="2"/>
+        <path d="M5 15V5a2 2 0 0 1 2-2h8"/>
+      </svg>
+      <span class="label" id="copy-label">Copy link</span>
+    </button>
+
+    <button class="btn icon" type="button" id="theme" aria-label="Switch theme">
+      <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/>
+      </svg>
+      <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<div class="strip">
+  <span class="badge" data-visibility="{{VISIBILITY}}">{{VISIBILITY}}</span>
+  <span class="ver-chip">v{{VERSION}}</span>
+  <span class="sep">·</span>
+  <span>updated {{UPDATED}}</span>
+  <code class="aid" title="artifact id">{{ARTIFACT_ID}}</code>
+</div>
+
+<main class="stage">
+  <iframe id="frame"
+          title="{{TITLE}}"
+          src="{{RAW_URL}}"
+          sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var KEY = "openbeast.artifact.theme";
+
+  /* Theme. Unstamped = follow the device. A stamp wins in both directions. */
+  function stored() {
+    try { return localStorage.getItem(KEY); } catch (e) { return null; }
+  }
+  function active() {
+    var t = root.getAttribute("data-theme");
+    if (t) { return t; }
+    return window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  }
+  var themeBtn = document.getElementById("theme");
+  function paint() {
+    var t = active();
+    themeBtn.setAttribute("data-mode", t);
+    themeBtn.setAttribute("aria-label",
+      t === "dark" ? "Switch to light theme" : "Switch to dark theme");
+  }
+  var saved = stored();
+  if (saved === "dark" || saved === "light") { root.setAttribute("data-theme", saved); }
+  paint();
+
+  var frame = document.getElementById("frame");
+  var rawSrc = frame.getAttribute("src");
+
+  themeBtn.addEventListener("click", function () {
+    var next = active() === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) { /* private mode */ }
+    paint();
+    /* The artifact lives in an opaque origin, so it cannot read our stamp and
+       we cannot script into it. Re-serving with ?theme= is the only channel;
+       it reloads the page, which is why we do it on an explicit toggle only. */
+    frame.setAttribute("src",
+      rawSrc + (rawSrc.indexOf("?") === -1 ? "?" : "&") + "theme=" + next);
+  });
+
+  /* Version picker. An option's value is either the target URL or the bare
+     version number - accept both, so the picker cannot break on whichever
+     shape the server renders. */
+  var ver = document.getElementById("ver");
+  function versionHref(value) {
+    if (!/^[0-9]+$/.test(value)) { return value; }
+    var m = /^\/a\/([^/]+)/.exec(window.location.pathname);
+    var id = m ? m[1] : "";
+    if (!id) {
+      var aid = document.querySelector(".aid");
+      id = aid ? (aid.textContent || "").trim() : "";
+    }
+    return id ? "/a/" + id + "/v/" + value : "";
+  }
+  if (ver) {
+    ver.addEventListener("change", function () {
+      var href = versionHref(ver.value);
+      if (href) { window.location.href = href; }
+    });
+  }
+
+  /* Copy link. Clipboard API needs a secure context; the textarea path is the
+     fallback for anything that refuses (or for a browser without it). */
+  var copyBtn = document.getElementById("copy");
+  var copyLabel = document.getElementById("copy-label");
+  var revert = null;
+  function flash(text) {
+    copyLabel.textContent = text;
+    copyBtn.setAttribute("data-copied", "1");
+    if (revert) { clearTimeout(revert); }
+    revert = setTimeout(function () {
+      copyLabel.textContent = "Copy link";
+      copyBtn.removeAttribute("data-copied");
+    }, 1500);
+  }
+  copyBtn.addEventListener("click", function () {
+    var url = window.location.href;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () { flash("Copied"); },
+                                              function () { legacy(url); });
+    } else {
+      legacy(url);
+    }
+  });
+  function legacy(url) {
+    var ta = document.createElement("textarea");
+    ta.value = url;
+    ta.setAttribute("readonly", "readonly");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    flash(ok ? "Copied" : "Press ctrl+C");
+  }
+})();
+</script>
+</body>
+</html>

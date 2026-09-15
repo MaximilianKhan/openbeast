@@ -2,7 +2,7 @@
 
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 15 tools for file I/O, shell, web search, agent management,
+server providing 17 tools for file I/O, shell, web search, agent management,
 and a curated skills system (14 specialized expertise packages loaded on
 demand).
 
@@ -457,7 +457,7 @@ a 35B-A3B MoE when interactive speed matters more.
 This launches:
 1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
 2. **Identity tool server** on port 3001 (`agents/openapi_tools.py` — serves the
-   15 tools as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
+   17 tools as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
    and an audit trail)
 3. **Open WebUI** on port 3000 (Docker container)
 4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
@@ -498,7 +498,7 @@ To stop everything:
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 15 tools; `curl http://localhost:3001/health` for liveness)
+- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 17 tools; `curl http://localhost:3001/health` for liveness)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **beast-gate** (only with `EDGE_GATE=true`): `curl http://127.0.0.1:8090/gate/health`
@@ -549,8 +549,15 @@ opt-in publish flag:
 | `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API | always |
 | `https://beast.<tailnet>.ts.net:8889` | SearXNG, for a client's `web_search` | `--publish-searxng` |
 | `https://beast.<tailnet>.ts.net:8444/api/slot` | beast-slot discovery (what the rig is actually serving) | `--publish-slot` |
+| `https://beast.<tailnet>.ts.net:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
 
-The two opt-in ones are for client devices (§8). `--publish-slot` needs the
+The opt-in ones are for client devices (§8) and for reading published pages
+on a phone. `--publish-artifact` needs `BEAST_ARTIFACT=true` or it serves 502s;
+reads are gated on your tailnet login against `ARTIFACT_OPERATORS` (unlisted →
+404), and **publishing stays loopback-only**, so a phone can view a page and
+never create or delete one. Leave `ARTIFACT_OPERATORS` empty and every
+identified login on your tailnet can read every page — the script says so
+loudly when you publish. `--publish-slot` needs the
 dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
 serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
 `/api/status` stay rig-local. Undo either with `--unpublish-searxng` /
@@ -783,7 +790,7 @@ port 3001) does that job. It replaced the generic MCPO proxy (v1.1,
 2026-07-09) because MCPO dropped the identity headers Open WebUI forwards;
 our server reads them to shard each user's files into their own workspace,
 enforce the RBAC profile keys, and write an audit trail. It imports the same
-15 tool functions as `agents/mcp_server.py`, so the two surfaces can't drift.
+17 tool functions as `agents/mcp_server.py`, so the two surfaces can't drift.
 
 ### Why native function calling?
 

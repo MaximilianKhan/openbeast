@@ -46,6 +46,21 @@ fi
 echo ""
 echo ""
 
+# --- beast-artifact CLI tests ---
+echo "--- Artifact CLI tests (scripts/artifact.sh) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_artifact_cli.sh"; then
+  echo ""
+  echo "Artifact CLI tests: ALL PASSED"
+else
+  echo ""
+  echo "Artifact CLI tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Drive wear tracking tests ---
 echo "--- SSD/NVMe wear tests (scripts/ssd-wear.sh) ---"
 echo ""

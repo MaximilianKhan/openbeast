@@ -287,6 +287,36 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   fi
 fi
 
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  # Health answers {"status":"ok"} and nothing else to an unauthenticated
+  # caller — it is reachable by anything that can open the port, so it must
+  # not report the store path or how many pages exist. doctor runs ON the rig,
+  # so it presents the locality token to get the detailed body. Through a
+  # 0600 --config file, never argv: `ps` is world-readable.
+  _art_cfg=""
+  _art_tok="$(cat "$REPO_DIR/.run/artifact-local.token" 2>/dev/null || true)"
+  if [[ -n "$_art_tok" ]]; then
+    _art_cfg="$(mktemp)"; chmod 600 "$_art_cfg"
+    printf 'header = "X-OpenBeast-Local: %s"\n' "$_art_tok" > "$_art_cfg"
+  fi
+  _art=$(curl -s --max-time 4 ${_art_cfg:+--config "$_art_cfg"} \
+           "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
+  [[ -n "$_art_cfg" ]] && rm -f "$_art_cfg"
+  if [[ -n "$_art" ]]; then
+    _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
+    if [[ -n "$_nart" ]]; then
+      pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — ${_nart} published page(s)"
+    else
+      # Alive, but it would not tell us the count: no token on disk, or the
+      # server restarted and minted a new one after we read it.
+      pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — serving (page count needs .run/artifact-local.token)"
+    fi
+  else
+    warn "beast-artifact not responding (:${ARTIFACT_PORT:-3004})" \
+         "./scripts/healthcheck.sh --restart, or unset BEAST_ARTIFACT in openbeast.conf"
+  fi
+fi
+
 # ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
 # Informational: what tailscale serve currently maps, and whether the raw
 # inference endpoint is published without a bearer key. Keyless is the

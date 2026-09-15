@@ -143,6 +143,26 @@ EDGE_GATE="${OPENBEAST_EDGE_GATE:-$(_ob_conf_value EDGE_GATE || echo false)}"
 EDGE_PORT="${OPENBEAST_EDGE_PORT:-$(_ob_conf_value EDGE_PORT || echo 8090)}"
 export EDGE_GATE EDGE_PORT
 export OPENBEAST_EDGE_PORT="$EDGE_PORT"
+# beast-artifact: a durable URL for anything the model renders (docs/BEAST_ARTIFACT_PLAN.md).
+# Opt-in. When true, start.sh runs agents/artifact_server.py on ARTIFACT_PORT
+# (loopback) and setup-tailscale.sh --publish-artifact mounts it at :8446 so
+# pages open on a phone. The server SERVES the pages; it is not the publish
+# path for the MCP/WebUI tools — publish_artifact/list_artifacts call the
+# store (agents/artifact.py) in process. scripts/artifact.sh is what talks to
+# it over loopback, with a proof-of-locality token on write verbs (the same
+# idiom beast-gate uses).
+BEAST_ARTIFACT="${OPENBEAST_BEAST_ARTIFACT:-$(_ob_conf_value BEAST_ARTIFACT || echo false)}"
+ARTIFACT_PORT="${OPENBEAST_ARTIFACT_PORT:-$(_ob_conf_value ARTIFACT_PORT || echo 3004)}"
+export BEAST_ARTIFACT ARTIFACT_PORT
+export OPENBEAST_ARTIFACT_PORT="$ARTIFACT_PORT"
+# Tailnet logins allowed to READ the gallery. Empty = fall back to
+# CHAT_OPERATORS (beast-chat's list). Only exported when non-empty, same
+# discipline as the keys above: an exported empty string reads as "configured
+# but nobody allowed" to the server instead of "not configured".
+_ARTIFACT_OPERATORS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_OPERATORS || true)}"
+if [[ -n "$_ARTIFACT_OPERATORS" ]]; then
+  export OPENBEAST_ARTIFACT_OPERATORS="$_ARTIFACT_OPERATORS"
+fi
 # Per-device admission control (llama-server's own queue is unbounded).
 _EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || true)}"
 [[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
