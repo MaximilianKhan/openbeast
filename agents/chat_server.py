@@ -1422,6 +1422,20 @@ def create_app() -> FastAPI:
                         status_code=409,
                         detail=f"session is {rec.get('state')} — nothing is "
                                f"listening on its inbox")
+                # A JOB has no turn boundary and no inbox reader. Only
+                # agents/runner.py reads an inbox — job.sh's supervisor never
+                # opens one — so a message sent to a job was appended to a
+                # file nothing would ever read, and answered
+                # {"queued": true, "detail": "queued — lands at the next
+                # turn"}. A silently dropped operator instruction with a
+                # positive acknowledgement is the worst of both. The console
+                # enabled its composer for jobs too, so this was reachable
+                # from the documented phone UI, not just curl.
+                if (rec.get("kind") or "agent") != "agent":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="job sessions have no inbox — stop is the "
+                               "only action")
                 op_id = uuid.uuid4().hex[:12]
                 sessions.append_op(session_id, {
                     "op": "say",

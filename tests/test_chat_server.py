@@ -1795,3 +1795,47 @@ def test_stopping_a_session_never_signals_a_group_it_does_not_lead(monkeypatch):
                                       signal.SIGTERM) is True
     assert calls["killpg"] == [], "killed a group this session does not lead"
     assert calls["kill"] == [(9001, signal.SIGTERM)]
+
+
+def test_sending_to_a_job_is_refused_not_silently_dropped(rig, tmp_path):
+    """A job has no turn boundary and no inbox reader.
+
+    Only `agents/runner.py` reads an inbox — `job.sh`'s supervisor never opens
+    one — so a message sent to a job session was appended to a file nothing
+    would ever read, and answered `{"queued": true, "detail": "queued — lands
+    at the next turn"}`. A silently dropped operator instruction carrying a
+    positive acknowledgement is the worst of both, and the console enabled its
+    composer for jobs too, so it was reachable from the documented phone UI
+    rather than only from curl. The file's own stop-route comment, the docs'
+    capability table and its troubleshooting entry all already said jobs have
+    no inbox; the send path was the one place that did not know.
+    """
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "title": "no inbox", "cmd": "sleep 20",
+        "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    sid = r.json()["session"]["id"]
+
+    send = rig.client.post(f"/api/chat/sessions/{sid}/send",
+                           headers=rig.local, json={"text": "please stop"})
+    assert send.status_code == 409, send.text
+    assert "no inbox" in send.text
+    # and nothing was written — the whole point
+    inbox = sessions.inbox_path(sid)
+    assert not os.path.exists(inbox), f"an op was queued into {inbox}"
+
+    # stop is still the action that works on a job
+    stop = rig.client.post(f"/api/chat/sessions/{sid}/stop", headers=rig.local)
+    assert stop.status_code == 200 and stop.json()["stopped"] is True
+    assert wait_state(sid, "stopped"), sessions.get(sid)
+
+
+def test_sending_to_an_agent_session_still_works(rig, tmp_path):
+    """The guard must not close the path it exists to protect."""
+    sid = sessions.new_id("agent")
+    sessions.register(sid, kind="agent", title="t", pid=os.getpid(),
+                      workdir=str(tmp_path), transcript=str(tmp_path / "t.jsonl"))
+    send = rig.client.post(f"/api/chat/sessions/{sid}/send",
+                           headers=rig.local, json={"text": "hello"})
+    assert send.status_code == 200, send.text
+    assert send.json()["queued"] is True

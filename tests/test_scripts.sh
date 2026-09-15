@@ -1159,6 +1159,53 @@ else
   fail "doctor's expiry check has no expired/expiring distinction"
 fi
 
+# doctor's beast-chat row printed "reads=?, ? running session(s)" on EVERY
+# rig. Two causes, both in this block: it probed /api/chat/health with no
+# credential (the route deliberately answers an unidentified caller with
+# exactly {"status":"ok"} so session counts are not a free map of the box), and
+# its reads pattern was [a-z]-only while the server reports the hyphenated
+# "any-identified". The consequence was not just a cosmetic "?": the
+# no-allowlist WARNING below it compared against "open" and could never fire,
+# so a rig where every tailnet login can read every session said nothing.
+echo ""
+echo "doctor beast-chat row:"
+_DC="$REPO_DIR/scripts/doctor.sh"
+if grep -q 'chat-local.token' "$_DC"; then
+  pass "doctor presents the locality token to the chat health route"
+else
+  fail "doctor probes chat health unauthenticated — the detail fields stay empty"
+fi
+if grep -q 'header = "X-OpenBeast-Local' "$_DC"; then
+  pass "the chat token goes through a --config file, not argv (ps is world-readable)"
+else
+  fail "the chat token may be passed in argv"
+fi
+# The extraction patterns must actually match the server's real payload. Read
+# them OUT of doctor.sh so this cannot drift from the code it checks.
+_DC_BODY='{"status":"ok","port":3003,"sessions_dir":"/x","running":2,"sessions":7,"reads":"any-identified","devices":false,"streams":1,"login":"local"}'
+_DC_READS_PAT="$(grep -oE "'\"reads\":\"\[a-z-\]\*\"'" "$_DC" | head -1 | tr -d "'" || true)"
+if [[ -z "$_DC_READS_PAT" ]]; then
+  fail "could not find doctor's reads pattern"
+else
+  _got="$(echo "$_DC_BODY" | grep -o "$_DC_READS_PAT" | cut -d'"' -f4)"
+  if [[ "$_got" == "any-identified" ]]; then
+    pass "doctor's reads pattern matches the server's real value (any-identified)"
+  else
+    fail "doctor's reads pattern extracted '$_got' from the real payload"
+  fi
+fi
+_got_run="$(echo "$_DC_BODY" | grep -o '"running":-\?[0-9]*' | cut -d: -f2)"
+if [[ "$_got_run" == "2" ]]; then
+  pass "doctor's running-count pattern matches the server's real payload"
+else
+  fail "doctor's running pattern extracted '$_got_run'"
+fi
+if grep -q 'any-identified' "$_DC"; then
+  pass "the no-allowlist warning compares against the value the server sends"
+else
+  fail "doctor still compares reads against a value the server never sends"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

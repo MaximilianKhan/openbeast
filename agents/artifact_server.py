@@ -806,16 +806,52 @@ def create_app(local_token: str | None = None) -> FastAPI:
             if raw and raw in operator_set:
                 return Principal(login=raw, local=local, operator=True)
             if local:
-                return Principal(login=operators[0], local=True, operator=True)
+                # operators[0] verbatim becomes an artifact OWNER (via the
+                # ContextVar that feeds default_owner()), so a malformed first
+                # entry in the allowlist silently owns every rig publish.
+                # Take the first entry that is actually a valid identity, and
+                # fall back to LOCAL_LOGIN rather than to garbage.
+                #
+                # NOT by filtering _operators() itself, which three of the
+                # findings suggested: an all-invalid allowlist would then be
+                # indistinguishable from NO allowlist, flipping the server out
+                # of allowlist mode into accept-any-identity. That is a
+                # fail-open, and it would be a worse bug than the one it fixes.
+                return Principal(login=_rig_owner(operators), local=True,
+                                 operator=True)
             return Principal(login=None, local=False, operator=False)
         if local:
             # The rig itself. A login header on a local call is the identity
             # server telling us whose call this is.
             return Principal(login=raw or LOCAL_LOGIN, local=True,
                              operator=True)
-        if raw:
+        # LOCAL_LOGIN is the documented constant every CLI/campaign publish
+        # is owned by on a rig with no allowlist. Accepting it from a HEADER
+        # made it a read password: a non-local caller presenting
+        # `Tailscale-User-Login: local` read every private page the rig
+        # published, because can_view is a plain owner comparison. Same defect
+        # class R6 deleted `owner_webui_id` for — a constant printed in the
+        # docs is not a credential. The browser route was already closed by
+        # TrustedHostMiddleware; this closes the identity itself.
+        if raw and raw != LOCAL_LOGIN:
             return Principal(login=raw, local=False, operator=False)
         return Principal(login=None, local=False, operator=False)
+
+    def _rig_owner(operators: list) -> str:
+        """The login the RIG publishes as, when an allowlist is configured.
+
+        The first allowlist entry that survives store.valid_email(), else
+        LOCAL_LOGIN. This value becomes an artifact's `owner`, so it has to be
+        something `can_view` can compare later — a malformed entry would own
+        pages nobody could then be matched against.
+        """
+        for cand in operators:
+            try:
+                if store.valid_email(cand):
+                    return cand
+            except Exception:                       # noqa: BLE001
+                continue
+        return LOCAL_LOGIN
 
     def principal_of(request: Request) -> Principal:
         p = getattr(request.state, "principal", None)
