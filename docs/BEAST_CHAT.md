@@ -233,8 +233,10 @@ is what every existing device already relies on.
 A lost phone is one `revoke` away from silence, and the registry hot-reloads:
 the next write fails within one request, no restart.
 
-Loopback callers skip both checks through the existing proof-of-locality
-token, identical to beast-gate. Every request is audited to
+Loopback callers skip both checks by presenting `.run/chat-local.token` —
+its own 0600 token, minted at startup, using the same proof-of-locality trick
+as beast-gate and for the same reason: `tailscale serve` proxies from
+127.0.0.1, so the peer address proves nothing. Every request is audited to
 `.run/chat-audit.jsonl` — `ts, login, device, route, session, outcome, ms`.
 Message *text* is never logged, only its sha256 and length, matching the
 tool-audit rule.
@@ -315,10 +317,15 @@ stack was restarted after: `./start.sh --status` should show a `chat` row.
 `doctor` reports this as a **failure**, not a warning, precisely because the
 mount makes it look reachable.
 
-**Sessions list but the composer does nothing.** That is the two-tier auth
-working as designed: your login reads, but the device has no `chat` scope.
-`./scripts/clients.sh show phone` — if `scopes` reads `-`, run
-`./scripts/clients.sh scope phone add chat`.
+**Sessions list but sending fails.** That is the two-tier auth working as
+designed, and the status code says which half:
+
+- **401 "device key required"** — the console has no key saved. Enroll one
+  and paste it in; the resource's existence is not the secret at this point,
+  so it answers honestly.
+- **404** — a key was presented but it is unknown, revoked, or carries no
+  `chat` scope. `./scripts/clients.sh show phone`; if `scopes` reads `-`, run
+  `./scripts/clients.sh scope phone add chat`.
 
 **404 on every route.** Your tailnet login is not in `CHAT_OPERATORS`. The
 404 is deliberate (403 would confirm the service exists). Compare
