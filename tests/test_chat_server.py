@@ -894,8 +894,11 @@ def test_unlisted_login_gets_404_on_every_route(rig):
     sid = rig.session(kind="agent", state="running")
     rig.operators(LISTED)
     c = rig.client
+    # "/" is the console DOCUMENT and is deliberately not gated — a browser
+    # cannot put a header on a document request, the page carries no session
+    # data, and rebinding is stopped by the Host check, not by this. Every
+    # route that returns DATA is what must refuse. Asserted separately below.
     for method, path, kw in [
-        ("GET", "/", {}),
         ("GET", "/api/chat/sessions", {}),
         ("GET", f"/api/chat/sessions/{sid}", {}),
         ("GET", f"/api/chat/sessions/{sid}/events?from=0", {}),
@@ -911,6 +914,10 @@ def test_unlisted_login_gets_404_on_every_route(rig):
     # ...and nothing they did reached the inbox
     assert not os.path.exists(sessions.inbox_path(sid))
 
+
+    # ...and the console document IS served: it is markup, not data.
+    doc = c.get("/")
+    assert doc.status_code == 200, "the console document must load"
 
 def test_listed_login_reads_but_cannot_write_without_a_device_key(rig):
     sid = rig.session(kind="agent", state="running")
@@ -1392,8 +1399,11 @@ def test_anonymous_is_refused_on_every_route(rig):
     sid = rig.session(kind="agent", state="running")
     rig.operators(LISTED)
     a = rig.anon
+    # "/" is the console DOCUMENT and is deliberately not gated — a browser
+    # cannot put a header on a document request, the page carries no session
+    # data, and rebinding is stopped by the Host check, not by this. Every
+    # route that returns DATA is what must refuse. Asserted separately below.
     for method, path, kw in [
-        ("GET", "/", {}),
         ("GET", "/api/chat/sessions", {}),
         ("GET", "/api/chat/sessions?limit=5", {}),
         ("GET", f"/api/chat/sessions/{sid}", {}),
@@ -1412,6 +1422,10 @@ def test_anonymous_is_refused_on_every_route(rig):
     rig.mp.delenv("OPENBEAST_CHAT_OPERATORS", raising=False)
     assert rig.anon.get("/api/chat/sessions").status_code == 404
 
+
+    # ...and the console document IS served: it is markup, not data.
+    doc = a.get("/")
+    assert doc.status_code == 200, "the console document must load"
 
 def test_the_schema_endpoint_is_gone(rig):
     """openapi.json published the entire write contract — every route, body

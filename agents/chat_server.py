@@ -973,6 +973,19 @@ def create_app() -> FastAPI:
             return None
         return dev
 
+    def principal_or_none(request: Request):
+        """The caller's identity, or None — never raises.
+
+        read_gate() refuses; this one only reports. Used by routes that are
+        safe to serve to anyone a trusted Host let through, so the audit trail
+        still names who asked.
+        """
+        try:
+            return read_gate(request)
+        except HTTPException:
+            return None
+
+
     def read_gate(request: Request) -> dict:
         """Identity or nothing. A request with NO credential is 404.
 
@@ -1040,8 +1053,23 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def console(request: Request):
+        # The console DOCUMENT is not gated on identity; every API route it
+        # calls still is. A browser cannot put a header on a document request,
+        # so gating this returned 404 to an operator opening the console on
+        # the rig itself — and bought nothing, because the page ships no
+        # session data. It is markup and script, identical for every viewer.
+        #
+        # The rebinding attack this service defends against is stopped one
+        # layer up, by TrustedHostMiddleware: a page that rebinds its own
+        # hostname to 127.0.0.1 still sends `Host: attacker.example`, which is
+        # refused with a 400 before any handler runs. Requiring a credential
+        # here as well was belt-and-braces; requiring it on /api/chat/* is the
+        # actual control, and that is unchanged.
+        #
+        # The audit row still records who asked, so an unauthenticated console
+        # load is visible in .run/chat-audit.jsonl.
         with audited("GET /", request=request) as ctx:
-            ctx["principal"] = read_gate(request)
+            ctx["principal"] = principal_or_none(request)
             try:
                 with open(CONSOLE_PATH, encoding="utf-8") as f:
                     html = f.read()
