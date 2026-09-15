@@ -221,6 +221,7 @@ run_preflight() {
 # Checks that only run under --preflight: they add information (disk space,
 # kernel, docker-group diagnosis) without changing the normal bootstrap flow.
 preflight_extras() {
+  preflight_network
   step "System"
   ok "Linux kernel $(uname -r) ($(uname -m)) — note: Docker + NVIDIA need a reasonably current kernel"
 
@@ -268,6 +269,37 @@ preflight_extras() {
   fi
 }
 
+# The network is a dependency like any other, and preflight never checked it.
+# Eleven probes, all local, then the verdict "Environment looks ready — run
+# ./bootstrap.sh to install" on a machine that dies ~2 seconds later at the
+# git clone. `curl` was checked for PRESENCE and never used. An honest
+# preflight says which hosts are unreachable and what that costs, so the
+# operator finds out before the install does.
+#
+# A warning, not a failure: a box that already has llama.cpp/, its wheels and
+# its weights can rebuild and serve perfectly well offline. What must not
+# happen is a green verdict on a box that cannot finish a FIRST install.
+PF_NO_NET=0
+preflight_network() {
+  local unreachable=() host
+  for host in github.com pypi.org huggingface.co; do
+    # -I, 6s, no retries: this is a reachability question, not a download.
+    curl -fsS -I --max-time 6 --retry 0 -o /dev/null "https://$host" 2>/dev/null \
+      || unreachable+=("$host")
+  done
+  if [[ ${#unreachable[@]} -eq 0 ]]; then
+    ok "network: github.com, pypi.org and huggingface.co all reachable"
+    return 0
+  fi
+  PF_NO_NET=1
+  warn "network: cannot reach ${unreachable[*]} — a FIRST install cannot complete"
+  echo "      bootstrap needs all three: llama.cpp source (github), the python"
+  echo "      wheels (pypi), and the ~20 GB default weight (huggingface), plus"
+  echo "      two container images from ghcr.io/docker hub."
+  echo "      An already-provisioned box can still rebuild and serve offline."
+  echo "      Sideloading a single weight: ./scripts/fetch-weight.sh --list"
+}
+
 pf_summary() {
   step "Preflight summary"
   local i n=${#PF_STATUS[@]} n_ok=0 n_warn=0 n_fail=0
@@ -282,6 +314,12 @@ pf_summary() {
   echo "  ${n_ok} ok, ${n_warn} warnings, ${n_fail} failures"
   if [[ $n_fail -gt 0 ]]; then
     echo "  ${c_red}Fix the ✗ items above, then run ./bootstrap.sh${c_rst}"
+  elif [[ ${PF_NO_NET:-0} -eq 1 ]]; then
+    # Everything LOCAL is fine, so this is not a ✗ — but "looks ready" would
+    # be a lie on a box that cannot fetch a single one of its four artifacts.
+    echo "  ${c_ylw}Local environment is ready, but the network is not reachable."
+    echo "  A first install will fail at the llama.cpp clone. An existing"
+    echo "  install can still rebuild and serve.${c_rst}"
   else
     echo "  ${c_grn}Environment looks ready — run ./bootstrap.sh to install.${c_rst}"
   fi

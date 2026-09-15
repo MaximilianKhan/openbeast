@@ -69,9 +69,34 @@ update_llama() {
   # A detached HEAD means the user pinned a known-good SHA (see
   # docs/UPDATING.md) — honor the pin: rebuild what's checked out, no pull.
   if git -C "$src" symbolic-ref -q HEAD >/dev/null; then
-    git -C "$src" pull --ff-only origin master 2>/dev/null \
-      || git -C "$src" pull --ff-only \
-      || die "git pull failed — local changes in llama.cpp/? stash or reset them"
+    # The old form was `pull 2>/dev/null || pull || die "local changes in
+    # llama.cpp/?"`. On an unreachable remote that swallowed git's real
+    # message, spent a SECOND full connect timeout, and then blamed a dirty
+    # worktree — minutes of stall ending in the wrong cause, in the script an
+    # operator reaches for precisely when they are already confused.
+    #
+    # So: keep git's stderr, bound the wait, and tell the two failures apart.
+    # lowSpeedLimit/Time turn a multi-minute hang into ~15s.
+    local pull_out rc=0
+    pull_out="$(git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+                    pull --ff-only origin master 2>&1)" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      if grep -qiE 'could not resolve host|unable to access|connection (timed out|refused)|network is unreachable|failed to connect|no route to host|operation timed out|temporary failure in name resolution' <<< "$pull_out"; then
+        warn "cannot reach the llama.cpp remote — NOT a local problem"
+        echo "        git said: $(head -n1 <<< "$pull_out")"
+        echo "        Rebuilding the revision already checked out ($before)."
+      else
+        # A real local failure (dirty tree, diverged branch, or a default
+        # branch that is not called master). Try the branch-agnostic form,
+        # then fail with git's OWN words rather than a guess.
+        git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+            pull --ff-only >/dev/null 2>&1 \
+          || die "git pull failed in llama.cpp/ — git said:
+       $(head -n2 <<< "$pull_out" | sed 's/^/       /')
+       If that is a dirty worktree, stash or reset it; if it is a diverged
+       branch, see docs/UPDATING.md."
+      fi
+    fi
   else
     warn "detached HEAD (pinned checkout) — skipping pull, building as-is"
   fi
