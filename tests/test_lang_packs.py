@@ -174,7 +174,29 @@ def test_a_generated_pack_says_where_its_facts_came_from():
     assert "web search" in pack.text        # the local-first claim, stated
 
 
-def test_handwritten_beats_generated(monkeypatch):
+def test_handwritten_precedence_without_needing_any_toolchain(tmp_path, monkeypatch):
+    """The PRECEDENCE rule, testable on a machine with no compilers at all.
+
+    The integration version of this needs zig installed, so CI (which has gcc
+    but no zig) could not run it — and a property only checked on one
+    developer's machine is a property that breaks quietly. This exercises the
+    resolver directly instead.
+    """
+    hw = tmp_path / "packs"
+    hw.mkdir()
+    (hw / "madeup-1.2.md").write_text("=== curated notes for madeup 1.2 ===\n")
+    monkeypatch.setattr(P, "HANDWRITTEN_DIR", str(hw))
+    found = P._handwritten("madeup", "madeup 1.2.3")
+    assert found, "a matching hand-written pack was not preferred"
+    path, text = found
+    assert path.endswith("madeup-1.2.md") and "curated notes" in text
+    # and nothing is offered for a language with no hand-written pack
+    assert P._handwritten("other", "other 1.0") is None
+
+
+@pytest.mark.skipif(not (D.driver_for("zig") and D.driver_for("zig").available()),
+                    reason="zig absent (CI runners have gcc but no zig)")
+def test_handwritten_beats_generated_end_to_end(monkeypatch):
     monkeypatch.setenv("OPENBEAST_LANG_PACKS", "zig")
     p = P.pack_for("zig")
     assert p and p.kind == "handwritten", "the curated zig pack was bypassed"
