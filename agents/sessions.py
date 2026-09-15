@@ -400,7 +400,13 @@ def register(session_id: str, *, kind: str = "agent", title: str = "",
     except ValueError:
         rec["inbox"] = None
     rec["meta"] = dict(meta or {})
-    rec["meta"].setdefault("pid_start", pid_start_time(rec["pid"]))
+    # ASSIGNED, not setdefault: this is the process-identity proof, and it is
+    # derived from the pid WE were handed. setdefault let any caller who could
+    # reach a register() with a meta dict pre-empt it with a wrong value, and a
+    # wrong pid_start does not read as corruption — it reads as a session that
+    # already finished, while its command keeps running. Belt to the caller-side
+    # strip in chat_server (RESERVED_META); this is the braces.
+    rec["meta"]["pid_start"] = pid_start_time(rec["pid"])
     rec["meta"].setdefault("cursor", 0)
     with _record_lock(session_id):
         if not _write_record(rec):

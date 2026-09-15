@@ -310,7 +310,11 @@ def surfaces(rig, tmp_path, monkeypatch):
     import artifact_server            # noqa: E402
     import openapi_tools              # noqa: E402
     server = artifact_server.create_app()
-    return (TestClient(openapi_tools.create_app()), TestClient(server),
+    # base_url: the artifact server pins Host now (TrustedHostMiddleware),
+    # and TestClient's default "testserver" is exactly the foreign name a
+    # rebinding attack arrives under.
+    return (TestClient(openapi_tools.create_app()),
+            TestClient(server, base_url="http://127.0.0.1:3004"),
             server)
 
 
@@ -642,7 +646,7 @@ def test_the_api_never_returns_the_provenance_id(surfaces, monkeypatch):
                        "max@example.com,kid@example.com")
     import artifact_server                         # noqa: E402
     app = artifact_server.create_app()
-    web = TestClient(app)
+    web = TestClient(app, base_url="http://127.0.0.1:3004")
     token = {"X-OpenBeast-Local": app.state.local_token,
              "Tailscale-User-Login": TAILNET_LOGIN}
     assert web.patch(f"/api/artifacts/{aid}", json={"visibility": "tailnet"},

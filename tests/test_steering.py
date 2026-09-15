@@ -17,6 +17,8 @@ Run: python3 -m pytest tests/test_steering.py -q
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -217,6 +219,11 @@ def test_run_eval_marks_every_child_and_strips_the_flag(monkeypatch):
 
     class _FakeProc:
         returncode = 0
+        # A real Popen always has a pid, and run_agent now registers it so a
+        # SIGTERM to the harness reaps the agent's process group instead of
+        # orphaning it (v1.4.0 review). A double that omits it is not a
+        # smaller Popen, it is a different object.
+        pid = 424242
         def communicate(self, timeout=None):
             return ("TOKENS: prompt=1 completion=1 total=2\n", "")
         def kill(self): pass
@@ -783,3 +790,71 @@ def test_auto_log_name_has_a_uuid_suffix_so_jobs_cannot_collide(tmp_path):
     # And the id derived from that name is the shape the ledger expects.
     sid = runner._session_id_from_log(produced[0])
     assert _re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{8}", sid)
+
+
+def test_sigterm_reaps_the_agent_group_instead_of_orphaning_it(tmp_path):
+    """Stop must not leave an eval unit running.
+
+    Every agent is spawned with start_new_session=True — load-bearing, since
+    that is what lets a per-task timeout SIGKILL one agent's whole group. The
+    cost is that the agent is OUTSIDE any group signalled at the harness, so
+    `job.sh stop`, a Stop from the beast-chat console, and a plain Ctrl-C all
+    killed run_eval and left the agent alive: still holding a llama-server
+    slot, still writing the task's shared /tmp/eval_* fixtures, against a
+    relaunch that necessarily re-runs the unbanked unit. A corrupted row from
+    that re-run does not look corrupted. It looks like a result.
+
+    A set, not one global: --jobs N runs N agents concurrently in a
+    ThreadPoolExecutor, so tracking a single Popen would orphan N-1.
+    """
+    marker = tmp_path / "grandchild.pid"
+    parent_src = f"""
+import os, subprocess, sys, time
+sys.path.insert(0, {os.path.join(ROOT, 'evals')!r})
+import run_eval
+run_eval._install_signal_reaper()
+child = subprocess.Popen(
+    [sys.executable, "-c",
+     "import os, time; open({str(marker)!r}, 'w').write(str(os.getpid())); time.sleep(60)"],
+    start_new_session=True)
+with run_eval._live_pgid_lock:
+    run_eval._live_pgids.add(child.pid)
+print(child.pid, flush=True)
+time.sleep(60)
+"""
+    p = subprocess.Popen([sys.executable, "-c", parent_src],
+                         stdout=subprocess.PIPE, text=True)
+    try:
+        pgid = int(p.stdout.readline().strip())
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        assert marker.exists(), "the grandchild never started"
+        gpid = int(marker.read_text())
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        assert alive(gpid)
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=10)
+        assert p.returncode == 128 + signal.SIGTERM
+        for _ in range(100):
+            if not alive(gpid):
+                break
+            time.sleep(0.05)
+        assert not alive(gpid), "the agent group was orphaned by the SIGTERM"
+    finally:
+        for pid in (locals().get("gpid"), locals().get("pgid")):
+            if pid:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        if p.poll() is None:
+            p.kill()

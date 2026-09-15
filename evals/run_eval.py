@@ -51,6 +51,57 @@ RUNNER_PATH = os.path.join(EVALS_DIR, "..", "agents", "runner.py")
 sys.path.insert(0, os.path.join(EVALS_DIR, "..", "agents"))
 from tools import run_reaped  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Agent process groups we own, so a SIGTERM to US does not orphan THEM.
+#
+# Every agent is spawned with start_new_session=True, which is load-bearing:
+# it is what lets the per-task wall-timeout SIGKILL the runner's whole group
+# instead of just the runner. The cost, found by the v1.4.0 review, is that
+# the same isolation puts the agent OUTSIDE any group signalled at us — so
+# `./scripts/job.sh stop`, a Stop from the beast-chat console, or a plain
+# Ctrl-C killed run_eval and left the agent running: still holding a
+# llama-server slot, still writing the task's shared /tmp/eval_* fixtures,
+# against a relaunch that necessarily re-runs the unbanked unit. A corrupted
+# row from that re-run does not look corrupted; it looks like a result.
+#
+# A SET, not one global: --jobs N runs N agents concurrently in a
+# ThreadPoolExecutor, so tracking a single Popen would orphan N-1 of them.
+_live_pgids: set[int] = set()
+_live_pgid_lock = threading.Lock()
+
+
+def _reap_live_agents() -> None:
+    """SIGKILL every agent group we own. Best-effort, last-resort."""
+    got = _live_pgid_lock.acquire(blocking=False)
+    try:
+        pgids = tuple(_live_pgids)
+    except RuntimeError:        # mutated mid-snapshot; a partial sweep beats none
+        pgids = ()
+    finally:
+        if got:
+            _live_pgid_lock.release()
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def _install_signal_reaper() -> None:
+    """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
+    def _handler(signum, _frame):
+        _reap_live_agents()
+        # os._exit: no atexit, no threads to join, no chance of a worker
+        # spawning a fresh agent on the way out.
+        os._exit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not the main thread, or a platform without it. The timeout path
+            # still reaps; only the signalled path degrades.
+            pass
+
 
 def detect_model(base_url: str) -> str:
     """Query /v1/models on the llama.cpp server. Returns the alias the model
@@ -621,6 +672,8 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         start_new_session=True,
         env=child_env,
     )
+    with _live_pgid_lock:
+        _live_pgids.add(proc.pid)          # == pgid: start_new_session above
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
         # under parallel contention (see timeout_scale in the docstring).
@@ -655,6 +708,10 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "tokens": {"prompt": 0, "completion": 0, "total": 0},
             "iterations": None,
         }
+    finally:
+        # Whatever happened, this group is no longer ours to reap.
+        with _live_pgid_lock:
+            _live_pgids.discard(proc.pid)
 
 
 def run_pre_validate(task: dict, log=print):
@@ -1171,6 +1228,11 @@ def run_eval(
 
 
 def main():
+    # Before anything spawns: a SIGTERM or Ctrl-C must take our agents with us.
+    # Without this, `job.sh stop` / a Stop from the phone / Ctrl-C killed this
+    # process and left the agent running in its own session — holding a server
+    # slot and writing the task's fixtures while the next launch re-ran it.
+    _install_signal_reaper()
     parser = argparse.ArgumentParser(description="Run eval tasks against local LLM")
     parser.add_argument("--tasks", help="Comma-separated task IDs to run (default: all)")
     parser.add_argument("--base-url", default="http://localhost:8080/v1", help="API base URL")

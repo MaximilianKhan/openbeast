@@ -91,7 +91,6 @@ import json
 import os
 import shlex
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -138,6 +137,21 @@ AGENT_EVENT_TYPES = frozenset({
 CONTROL_EVENT_TYPES = frozenset({"hello", "end", "lost", "log", "unknown"})
 
 MAX_MESSAGE_BYTES = 32 * 1024
+# Ledger meta keys the SERVER owns. A caller may attach free-form meta to a
+# session it starts; it may not attach these, because they are load-bearing
+# for liveness (`pid_start`) and for steering (`cursor`).
+RESERVED_META = ("pid_start", "cursor")
+# How much transcript one read may pull. The SSE reader used to do an
+# uncapped f.read() from the requested offset, and every replay-from-zero —
+# a fresh page load, the Replay button, or the mid-stream `lost` reset —
+# pulled a whole job transcript into one bytes object (plus a tuple per
+# line) while the event loop was blocked, starving every other attached
+# stream and /api/chat/health with it. Matches sessions.INBOX_MAX_READ.
+STREAM_MAX_READ = 256 * 1024
+# A producer that never emits a newline must not wedge the reader. Past
+# this, the chunk is emitted as one line and the offset advances over it —
+# the same escape agents/mcp_server.py uses for tail_transcript.
+STREAM_MAX_LINE = 1024 * 1024
 
 # The console is entirely self-contained; say so in a header so a stray
 # <script src> or webfont can never start working by accident.
@@ -324,32 +338,10 @@ class OperatorList:
         return (login or "").strip().lower() in listed
 
 
-def trusted_hosts(extra: str = "") -> list[str]:
-    """Host values this server answers to (the rebinding allowlist).
-
-    Loopback, whatever this machine calls itself, and the tailnet. `*.ts.net`
-    is safe to wildcard: those names exist only inside MagicDNS, an attacker
-    cannot mint one, and the published deployment is reached by exactly that
-    name. Anything else — including a hostile DNS name pointed at 127.0.0.1 —
-    is refused before a route ever runs.
-    """
-    hosts = {"127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"}
-    try:
-        # gethostname() only. NOT getfqdn(), which does a reverse DNS lookup
-        # and blocks for seconds whenever the resolver is slow or captured —
-        # at startup, on a server whose whole job is to be reachable.
-        name = (socket.gethostname() or "").strip().lower()
-    except OSError:
-        name = ""
-    if name:
-        hosts.add(name)
-        hosts.add(name.split(".")[0])
-    hosts.add("*.ts.net")
-    for item in (extra or "").split(","):
-        item = item.strip().lower()
-        if item:
-            hosts.add(item)
-    return sorted(hosts)
+# The rebinding allowlist now lives in agents/hostpolicy.py so beast-artifact
+# shares this exact list instead of carrying a second copy that can drift.
+# Re-exported here because this is where callers have always found it.
+from hostpolicy import trusted_hosts  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -372,11 +364,22 @@ def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]
 
     A partial trailing line (the producer is mid-write) is never emitted and
     never advances the offset, so a reader can never observe half an event.
+
+    BOUNDED at STREAM_MAX_READ bytes per call. The caller's loop already
+    re-reads without sleeping while lines keep coming, so a big backlog is
+    paged rather than slurped; the returned offset is the exact resume point,
+    which is all a capped read needs to be correct.
     """
     try:
         with open(path, "rb") as f:
             f.seek(offset)
-            buf = f.read()
+            buf = f.read(STREAM_MAX_READ)
+            if buf and b"\n" not in buf and len(buf) >= STREAM_MAX_READ:
+                # No line ending in the whole window. Grow ONCE, then give up
+                # and treat the chunk as a line — otherwise a producer writing
+                # a single enormous line (or only \r) makes this reader return
+                # nothing, forever, at the same offset.
+                buf += f.read(STREAM_MAX_LINE - STREAM_MAX_READ)
     except OSError:
         return [], offset
     if not buf:
@@ -390,6 +393,11 @@ def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]
         text = buf[start:nl].decode("utf-8", "replace").rstrip("\r")
         out.append((text, offset + nl + 1))
         start = nl + 1
+    if not out and len(buf) >= STREAM_MAX_LINE:
+        # The long-line escape. Emit it and advance past it: a stream that
+        # cannot move is worse than one line that arrives unterminated.
+        return ([(buf.decode("utf-8", "replace").rstrip("\r"),
+                  offset + len(buf))], offset + len(buf))
     return out, offset + start
 
 
@@ -552,14 +560,34 @@ def signal_session(record: dict, sig: int) -> bool:
     The group is what matters: a runner that shelled out leaves children, and
     SIGTERM to the leader alone orphans them. Refuses to signal pgid <= 1 or
     our own group — a ledger record with a garbage pgid must not be able to
-    take down this server or init — and refuses entirely unless the recorded
-    pid is still the process we registered (see signal_identity_ok).
+    take down this server or init — refuses entirely unless the recorded pid
+    is still the process we registered (see signal_identity_ok), and signals
+    the GROUP only when the session actually LEADS it (pgid == pid). A session
+    that merely belongs to a group gets a bare-pid signal: killing a group
+    this session did not create means killing processes that are not ours.
     """
     if not isinstance(record, dict) or not signal_identity_ok(record):
         return False
     pid = _int_or_zero(record.get("pid"))
     pgid = _int_or_zero(record.get("pgid") or record.get("pid"))
-    if pgid > 1 and pgid != os.getpgrp():
+    # LEADERSHIP, not just membership. `pgid == pid` is what makes this pid the
+    # group's leader, and it is the only case where killing the group is
+    # killing *this session's* tree. Every intended producer satisfies it by
+    # construction: scripts/job.sh turns on `set -m` specifically so its
+    # supervisor is a group leader, and the console's own spawns use
+    # start_new_session and record pgid=pid.
+    #
+    # What this rejects is a session that registered itself into SOMEONE
+    # ELSE'S group: agents/runner.py calls sessions.register() with no pgid,
+    # so sessions.py fills in os.getpgid(pid) — the group the process BELONGS
+    # to. Start such an agent from a non-interactive script (no job control,
+    # so the child inherits the script's group) and a Stop from the phone
+    # killpg'd the script and every sibling it had — on this rig, a campaign
+    # and all its stages. The old guard compared the live pgid to the recorded
+    # one, which catches a RECYCLED pgid but passes a non-led one trivially,
+    # because the process really is in that group. Found in the v1.4.0 review.
+    leads_group = pgid == pid
+    if pgid > 1 and pgid != os.getpgrp() and leads_group:
         # The leader is verifiably ours; only signal the group if that is
         # still the group it leads, so a recycled pgid cannot borrow the
         # identity proof we just made about the pid.
@@ -1318,7 +1346,12 @@ def create_app() -> FastAPI:
                     closing_at = None
                     continue
 
-                lines, offset = read_lines_from(path, offset)
+                # Off the event loop: the read is bounded now, but it is
+                # still a blocking syscall inside an async generator, and
+                # every OTHER attached stream (plus /api/chat/health, which
+                # start.sh and healthcheck.sh probe) waits behind it.
+                lines, offset = await asyncio.to_thread(
+                    read_lines_from, path, offset)
                 for text, end in lines:
                     seq += 1
                     if kind == "agent":
@@ -1562,7 +1595,12 @@ def create_app() -> FastAPI:
 
                 try:
                     # Fresh session => pgid == pid, so stop/escalation can
-                    # signal the whole tree rather than orphaning children.
+                    # signal this job's group — the supervisor and every child
+                    # that has not detached into its OWN session — rather than
+                    # orphaning them. Not literally "the whole tree": a
+                    # descendant that calls setsid (evals/run_eval.py does,
+                    # deliberately, so a task timeout can kill one agent group)
+                    # is outside this group and must reap itself on SIGTERM.
                     if kind == "agent":
                         proc = subprocess.Popen(
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
@@ -1592,7 +1630,20 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=500,
                                         detail=f"spawn failed: {e}")
 
-                meta = dict(meta_in or {})
+                # RESERVED KEYS ARE STRIPPED, not merged. `meta` is a
+                # free-form caller field that lands in the ledger's meta
+                # namespace — where `pid_start` is the process-identity PROOF
+                # that stops a recycled pid from making a dead session look
+                # alive, and `cursor` is the steering inbox position.
+                # sessions.register() only *setdefault*s pid_start, so a
+                # caller-supplied `{"meta": {"pid_start": 1}}` won, _alive()
+                # then compared 1 against the real /proc start time, and the
+                # record reconciled to `lost` while the command ran on:
+                # /stop answered "already finished" and never signalled,
+                # /send 409'd, and the SSE stream closed — for the whole
+                # duration of a 19-hour job. Review of v1.4.0.
+                meta = {k: v for k, v in (meta_in or {}).items()
+                        if k not in RESERVED_META}
                 meta.update({"started_by": principal.get("login"),
                              "device": principal.get("device"),
                              "command": display[:500]})

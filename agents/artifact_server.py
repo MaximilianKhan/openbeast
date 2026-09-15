@@ -91,12 +91,14 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                Response)
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import artifact as store  # noqa: E402
+from hostpolicy import trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 UI_DIR = os.path.join(_HERE, "artifact_ui")
@@ -547,11 +549,17 @@ def create_app(local_token: str | None = None) -> FastAPI:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404)
 
-    # D27/R5. Refusals are the one audit row an UNIDENTIFIED caller can mint
-    # at will, so they get a budget: the first DENY_AUDIT_ROWS *of each
-    # reason, in each window* are written (an operator still sees who was
-    # turned away and why), and past that that reason is counter-only until
-    # the window turns over. The alternative — rotating the file — would have
+    # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
+    # and a hit on the one route exempt from the anonymity gate
+    # (/api/artifacts/health) — so BOTH get a budget: the first
+    # DENY_AUDIT_ROWS *of each bucket, in each window* are written (an
+    # operator still sees who was turned away and why), and past that the
+    # bucket is counter-only until the window turns over. The original wording
+    # here said refusals were the ONLY such row, and the code believed it: the
+    # health path fell through to an un-budgeted append. Corrected in the
+    # v1.4.0 review, along with capping the row's `login` field, which was the
+    # other half — a bounded row COUNT with an unbounded row SIZE is not a
+    # bound. The alternative — rotating the file — would have
     # let a flood push the interesting rows out of the log, which is worse
     # than not writing the flood in the first place.
     #
@@ -590,7 +598,12 @@ def create_app(local_token: str | None = None) -> FastAPI:
         params = request.scope.get("path_params") or {}
         entry = {
             "ts": _now(),
-            "login": request.headers.get(_HDR_LOGIN) or None,
+            # CAPPED, like the raw path below. Uncapped, this was the
+            # biggest row in the file by two orders of magnitude: an
+            # 8 KB header produced an 8 KB audit row, so D27's budget
+            # bounded the row COUNT while the BYTES stayed unbounded
+            # (~8 MB per reason per window). Review of v1.4.0.
+            "login": (request.headers.get(_HDR_LOGIN) or "")[:128] or None,
             "route": route,
             "id": params.get("artifact_id"),
             "n": params.get("n"),
@@ -599,8 +612,21 @@ def create_app(local_token: str | None = None) -> FastAPI:
         }
         entry.update(extra or getattr(request.state, "extra", {}) or {})
         reason = _deny_label(entry.get("denied"))
-        if entry.get("denied") and not _trusted(request):
-            # D27/R5: counter-only past the budget, PER REASON and PER
+        # The budget has to cover every row an UNIDENTIFIED caller can mint,
+        # not just the refusals. `/api/artifacts/health` is deliberately
+        # exempt from the anonymity gate, so a health hit never sets `denied`
+        # and used to fall straight through to the un-budgeted `audit(entry)`
+        # below — an unauthenticated, unrotated, unbounded append. The
+        # invariant asserted a few lines down ("refusals are the one audit row
+        # an UNIDENTIFIED caller can mint at will") was simply false. Review
+        # of v1.4.0.
+        #
+        # `reason` stays the METRIC label (still "" for a success, so the
+        # bounded label set is unchanged); `budget_key` is the BUDGET bucket.
+        _login = getattr(getattr(request.state, "principal", None), "login", None)
+        budget_key = reason or ("anon-success" if _login is None else "")
+        if budget_key and not _trusted(request):
+            # D27/R5: counter-only past the budget, PER BUCKET and PER
             # WINDOW. The metrics below still count every single refusal and
             # keep its reason as a label, so what a flood costs is the
             # per-request detail (login, id, path) of the refusals it drowns
@@ -609,7 +635,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # left wondering where the trail went.
             now = time.monotonic()
             with metrics_lock:
-                budget = deny_audit[reason]
+                budget = deny_audit[budget_key]
                 if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
                     budget.update(written=0, suppressed=0, since=now)
                 allowed = budget["written"] < DENY_AUDIT_ROWS
@@ -622,11 +648,12 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 audit(entry)
             elif first_drop:
                 audit({"ts": _now(), "route": entry.get("route"),
-                       "outcome": 404, "denied": "audit-budget",
-                       "reason": reason,
-                       "note": f"{DENY_AUDIT_ROWS} {reason} refusals logged "
+                       "outcome": entry.get("outcome"),
+                       "denied": "audit-budget",
+                       "reason": budget_key,
+                       "note": f"{DENY_AUDIT_ROWS} {budget_key} rows logged "
                                f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
-                               f"further {reason} refusals are counted in "
+                               f"further {budget_key} rows are counted in "
                                f"/metrics (with their reason) until it turns "
                                f"over"})
         else:
@@ -708,6 +735,31 @@ def create_app(local_token: str | None = None) -> FastAPI:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
         return response
+
+    # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
+    # inserts at position 0, so the last one added runs first). It has to be
+    # outside `_gate_audit_meter`: a hostile Host must be refused BEFORE the
+    # identity gate reads `Tailscale-User-Login` and before an audit row is
+    # written for it.
+    #
+    # Why this exists (review of v1.4.0): this server had no Host validation
+    # at all, while beast-chat — same week, same tailnet publication — had it.
+    # A DNS-rebinding page loaded from `http://evil.example:3004/` that then
+    # rebinds to 127.0.0.1 becomes SAME-ORIGIN with this server, and
+    # same-origin lets it set arbitrary request headers, including the
+    # `Tailscale-User-Login` header that is the entire read gate. On a default
+    # single-user rig the owner string is the public constant LOCAL_LOGIN, so
+    # nothing even had to be guessed: the page could read the gallery and
+    # every `private` artifact, which is precisely what docs/BEAST_ARTIFACT.md
+    # promises it cannot do. Writes were never reachable (the locality token
+    # is a 0600 file a browser cannot read), so this is a read-confidentiality
+    # fix. A browser cannot forge `Host`; that is what makes this the fix.
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=trusted_hosts(
+            os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", "")))
+    app.state.allowed_hosts = trusted_hosts(
+        os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", ""))
 
     # --- auth ---------------------------------------------------------------
 
@@ -1117,19 +1169,39 @@ def create_app(local_token: str | None = None) -> FastAPI:
             exists = False
         if not exists:
             raise HTTPException(status_code=404, detail="Not Found")
+        # ORDER IS LOAD-BEARING. These are three independent locked store
+        # writes with no rollback, so a mixed body whose LATER field fails
+        # returns 4xx with the EARLIER field already committed. `set_current`
+        # is the only one that can fail after a successful sibling (a version
+        # that does not exist), so it goes FIRST and `visibility` — the only
+        # WIDENING write — goes LAST. Before this, `{"visibility": "tailnet",
+        # "current": 999}` answered 400 "no such version" having already made
+        # the artifact tailnet-readable, and pointed it at whatever `current`
+        # still was: the caller is told the request failed while the artifact
+        # is now shared at a pointer they were trying to move. Review of
+        # v1.4.0.
+        #
+        # NOT fixed by pre-validating `current` in this route: every ownership
+        # check lives inside the store mutators, so a check up here would run
+        # before _require_owner and answer a non-owner "no such version: 999"
+        # instead of the flat 404 — turning D29's deliberately indistinguishable
+        # refusal into an existence-and-version-count oracle. Full atomicity
+        # would need one store-side call holding _artifact_lock once; safe
+        # ordering is what this fix buys, and it is enough to remove the
+        # security-relevant partial.
         try:
             meta = None
+            if body.current is not None:
+                meta = store.set_current(artifact_id, body.current,
+                                         owner=owner_for(request))
+            if body.description is not None:
+                meta = store.set_description(artifact_id, body.description,
+                                             owner=owner_for(request))
             if body.visibility is not None:
                 # Owner-gated in the store (D5/R2): say WHO is asking rather
                 # than letting it guess the rig's first operator.
                 meta = store.set_visibility(artifact_id, body.visibility,
                                             owner=owner_for(request))
-            if body.description is not None:
-                meta = store.set_description(artifact_id, body.description,
-                                             owner=owner_for(request))
-            if body.current is not None:
-                meta = store.set_current(artifact_id, body.current,
-                                         owner=owner_for(request))
         except store.ArtifactError as e:
             raise _store_error(e)
         if meta is None:

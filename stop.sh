@@ -76,10 +76,30 @@ pkill -f "$SCRIPT_DIR/agents/router.py" 2>/dev/null && echo "agent router stoppe
 echo "Stopping beast-gate..."
 pkill -f "$SCRIPT_DIR/agents/edge.py" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
 
-echo "Stopping artifact server..."
-pkill -f "$SCRIPT_DIR/agents/artifact_server.py" 2>/dev/null && echo "artifact server stopped." || echo "artifact server was not running."
-echo "Stopping chat server..."
-pkill -f "$SCRIPT_DIR/agents/chat_server.py" 2>/dev/null && echo "chat server stopped." || echo "chat server was not running."
+# RECORDED PID FIRST for the two services that record one. The pattern below
+# is anchored to this repo's path, so it was never going to reap a sibling
+# worktree — but v1.3.0's health-check path already kills these by recorded
+# pid, with the reasoning written into it (a pattern kill destroyed a live
+# measurement run on this box on 2026-09-14), and shipping two different
+# rules for the same hazard is one rule too many. The pattern stays as the
+# fallback for an instance started outside start.sh, which records no pid.
+# (router/edge still sweep by pattern only; they were not in this review.)
+_stop_recorded() {                 # _stop_recorded <label> <pidfile> <pattern>
+  local label="$1" pidfile="$2" pattern="$3" pid=""
+  echo "Stopping $label..."
+  [[ -f "$pidfile" ]] && pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null && echo "$label stopped (pid $pid)." && return 0
+  fi
+  pkill -f "$pattern" 2>/dev/null \
+    && echo "$label stopped (by path; no live recorded pid)." \
+    || echo "$label was not running."
+}
+
+_stop_recorded "artifact server" "$RUN_DIR/artifact.pid" \
+  "$SCRIPT_DIR/agents/artifact_server.py"
+_stop_recorded "chat server" "$RUN_DIR/chat.pid" \
+  "$SCRIPT_DIR/agents/chat_server.py"
 
 echo "Stopping tool server..."
 pkill -f "$SCRIPT_DIR/agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
