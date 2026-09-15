@@ -119,6 +119,15 @@ NOT_FOUND_BODY = {"detail": "Not Found"}
 # a raw path here is an attacker-controlled, unbounded metric series.
 UNMATCHED_ROUTE = "<unmatched>"
 
+# meta fields the API must never hand back (R6). `owner_webui_id` is PURE
+# PROVENANCE — the publishing surface's own id for the same human, kept so an
+# operator can trace a page to the WebUI account that made it. It authorises
+# nothing (the store half of R6 removed that), and publishing it was the other
+# half of the same finding: `api_get` printed it to every reader of a `tailnet`
+# page, and on a rig with no allowlist a stranger who presented that string as
+# their login was treated as the owner.
+PRIVATE_META_FIELDS = frozenset({"owner_webui_id"})
+
 # Who the rig itself is when no allowlist is configured; mirrors
 # artifact.default_owner()'s last resort (D3) so a CLI publish on an
 # unconfigured rig is readable by the CLI that made it.
@@ -127,12 +136,33 @@ LOCAL_LOGIN = "local"
 MAX_LIST_LIMIT = 200          # D12: limit=0 must not mean "scan everything"
 COUNT_LIMIT = 1_000_000       # operator-only counters, explicitly bounded
 
-# D27: how many REFUSED requests an unidentified caller may write into
-# .run/artifact-audit.jsonl before the log goes counter-only for refusals.
-# ~89 bytes a row with no bound at all was a disk-fill primitive for anyone
-# who could reach the port; the metrics counter keeps counting past it, so
-# nothing is lost but the repetition.
+# The four reasons this server refuses a request, and the ONLY values that
+# ever reach a metric label or the audit budget's keys (R5). They are set from
+# literals in the middleware, and _deny_label() clamps anything else to
+# "other", so this stays a bounded set no caller can grow.
+DENY_REASONS = frozenset({"oversize", "ambiguous-identity", "anonymous",
+                          "not-local"})
+DENY_OTHER = "other"
+
+# D27/R5: how many REFUSED requests an unidentified caller may write into
+# .run/artifact-audit.jsonl — PER REASON, PER WINDOW — before the log goes
+# counter-only for that reason. ~89 bytes a row with no bound at all was a
+# disk-fill primitive for anyone who could reach the port.
+#
+# R5: the budget used to be one process-lifetime counter shared by every
+# reason, which made it an attacker-triggered BLINDING primitive: ~1000
+# anonymous GETs (about a second) spent it, and from then on every refusal
+# from an untrusted caller went unrecorded for the life of the process —
+# including `ambiguous-identity`, the signature D29 was added to catch. Per
+# reason, a flood of the cheapest refusal cannot silence the interesting one;
+# per window, the log recovers on its own instead of staying blind until the
+# next restart.
+#
+# What is lost past the budget is real and worth stating: the individual
+# login, artifact id and path of each suppressed refusal. What SURVIVES is the
+# count and the REASON, because the reason is a metric label below.
 DENY_AUDIT_ROWS = 1000
+DENY_AUDIT_WINDOW_S = 300.0
 
 # --- the policies ------------------------------------------------------------
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
@@ -454,6 +484,24 @@ def _metric_label(value: str) -> str:
             .replace('"', '\\"').replace("\n", "\\n").replace("\r", ""))
 
 
+def _deny_label(reason) -> str:
+    """The refusal reason, CLAMPED to the four constants (R5).
+
+    It becomes a metric label and a budget key, so it has to be a bounded set
+    — the whole point of D11. Every real value is written from a literal in
+    the middleware; anything else collapses to "other" rather than minting a
+    series (or a budget) an attacker chose the name of. "" means "not a
+    refusal", which is its own perfectly good label.
+    """
+    if not reason:
+        return ""
+    try:
+        known = reason in DENY_REASONS
+    except TypeError:            # unhashable: not a label, not a budget key
+        known = False
+    return reason if known else DENY_OTHER
+
+
 # --- app ---------------------------------------------------------------------
 
 def create_app(local_token: str | None = None) -> FastAPI:
@@ -499,13 +547,18 @@ def create_app(local_token: str | None = None) -> FastAPI:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404)
 
-    # D27. Refusals are the one audit row an UNIDENTIFIED caller can mint at
-    # will, so they get a budget: the first DENY_AUDIT_ROWS are written (an
-    # operator still sees who was turned away and why), and past that the
-    # trail for refusals is counter-only. The alternative — rotating the file
-    # — would have let a flood push the interesting rows out of the log,
-    # which is worse than not writing the flood in the first place.
-    deny_audit = {"written": 0, "suppressed": 0}
+    # D27/R5. Refusals are the one audit row an UNIDENTIFIED caller can mint
+    # at will, so they get a budget: the first DENY_AUDIT_ROWS *of each
+    # reason, in each window* are written (an operator still sees who was
+    # turned away and why), and past that that reason is counter-only until
+    # the window turns over. The alternative — rotating the file — would have
+    # let a flood push the interesting rows out of the log, which is worse
+    # than not writing the flood in the first place.
+    #
+    # Keyed by reason, so exhausting the cheap one (an anonymous GET) cannot
+    # blind the expensive one (two identity headers on the same request).
+    deny_audit: dict = defaultdict(
+        lambda: {"written": 0, "suppressed": 0, "since": time.monotonic()})
 
     def audit(entry: dict) -> None:
         try:
@@ -545,30 +598,43 @@ def create_app(local_token: str | None = None) -> FastAPI:
             "ms": ms,
         }
         entry.update(extra or getattr(request.state, "extra", {}) or {})
+        reason = _deny_label(entry.get("denied"))
         if entry.get("denied") and not _trusted(request):
-            # D27: counter-only past the budget. The metrics below still
-            # count every single refusal, and one last row says so, so the
-            # operator is never left wondering where the trail went.
+            # D27/R5: counter-only past the budget, PER REASON and PER
+            # WINDOW. The metrics below still count every single refusal and
+            # keep its reason as a label, so what a flood costs is the
+            # per-request detail (login, id, path) of the refusals it drowns
+            # out — not the fact that they happened, and not their reason.
+            # One row per window per reason says so, so the operator is never
+            # left wondering where the trail went.
+            now = time.monotonic()
             with metrics_lock:
-                allowed = deny_audit["written"] < DENY_AUDIT_ROWS
+                budget = deny_audit[reason]
+                if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
+                    budget.update(written=0, suppressed=0, since=now)
+                allowed = budget["written"] < DENY_AUDIT_ROWS
                 if allowed:
-                    deny_audit["written"] += 1
+                    budget["written"] += 1
                 else:
-                    deny_audit["suppressed"] += 1
-                first_drop = (not allowed and deny_audit["suppressed"] == 1)
+                    budget["suppressed"] += 1
+                first_drop = (not allowed and budget["suppressed"] == 1)
             if allowed:
                 audit(entry)
             elif first_drop:
                 audit({"ts": _now(), "route": entry.get("route"),
                        "outcome": 404, "denied": "audit-budget",
-                       "note": f"{DENY_AUDIT_ROWS} refusals logged; further "
-                               f"refusals are counted in /metrics only"})
+                       "reason": reason,
+                       "note": f"{DENY_AUDIT_ROWS} {reason} refusals logged "
+                               f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
+                               f"further {reason} refusals are counted in "
+                               f"/metrics (with their reason) until it turns "
+                               f"over"})
         else:
             audit(entry)
         outcome = ("error" if status == "error"
                    else "ok" if int(status) < 400 else str(status))
         with metrics_lock:
-            hits[(metric, outcome)] += 1
+            hits[(metric, outcome, reason)] += 1
             latency_ms[(metric,)] += ms
 
     @app.middleware("http")
@@ -620,9 +686,13 @@ def create_app(local_token: str | None = None) -> FastAPI:
             return _flat_404()
 
         # Whoever this is, every store call made while serving the request
-        # attributes to them (artifact.default_owner()'s ContextVar). The
-        # routes also pass `owner=` explicitly where the store takes it —
-        # this is the belt, that is the brace.
+        # attributes to them (artifact.default_owner()'s ContextVar). This is
+        # the BELT ONLY: a ContextVar surviving BaseHTTPMiddleware into
+        # Starlette's threadpool is the least stable corner of the framework,
+        # and R2 found three mutations relying on nothing else — a reviewer
+        # removed this one line and deleted another owner's page. Every route
+        # that mutates now passes `owner=owner_for(request)` explicitly, and
+        # tests/test_artifact_server.py neuters this override to prove it.
         owner_token = store.set_owner_override(principal.login)
         try:
             response = await call_next(request)
@@ -994,7 +1064,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         aid = _meta_id(meta, artifact_id)
         known = _known_versions(meta, artifact_id)
         entries = _version_entries(meta)
-        out = dict(meta)
+        out = {k: v for k, v in meta.items() if k not in PRIVATE_META_FIELDS}
         out["id"] = aid
         out["url"] = store.artifact_url(aid)
         out["current"] = _current_version(meta, known)
@@ -1050,14 +1120,16 @@ def create_app(local_token: str | None = None) -> FastAPI:
         try:
             meta = None
             if body.visibility is not None:
-                # Owner-gated in the store (D5): say WHO is asking rather
+                # Owner-gated in the store (D5/R2): say WHO is asking rather
                 # than letting it guess the rig's first operator.
                 meta = store.set_visibility(artifact_id, body.visibility,
                                             owner=owner_for(request))
             if body.description is not None:
-                meta = store.set_description(artifact_id, body.description)
+                meta = store.set_description(artifact_id, body.description,
+                                             owner=owner_for(request))
             if body.current is not None:
-                meta = store.set_current(artifact_id, body.current)
+                meta = store.set_current(artifact_id, body.current,
+                                         owner=owner_for(request))
         except store.ArtifactError as e:
             raise _store_error(e)
         if meta is None:
@@ -1071,7 +1143,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def api_delete(request: Request, artifact_id: str,
                    _local: None = Depends(require_local)):
         try:
-            gone = store.remove(artifact_id)
+            # R2, and the loudest of the four: DELETE is irreversible.
+            gone = store.remove(artifact_id, owner=owner_for(request))
         except store.ArtifactError as e:
             raise _store_error(e)
         if not gone:
@@ -1093,15 +1166,23 @@ def create_app(local_token: str | None = None) -> FastAPI:
         if not _trusted(request):
             raise HTTPException(status_code=404, detail="Not Found")
         lines = [
-            "# HELP openbeast_artifact_requests_total Requests by route/outcome",
+            "# HELP openbeast_artifact_requests_total "
+            "Requests by route/outcome/deny-reason",
             "# TYPE openbeast_artifact_requests_total counter",
         ]
         with metrics_lock:
-            for (route, outcome), n in sorted(hits.items()):
+            # R5: `reason` is the third label. Without it every refusal —
+            # anonymous, oversize, not-local and the ambiguous-identity signal
+            # D29 exists to catch — collapsed into ONE <unmatched>/404 series,
+            # so past the audit budget an operator could not even tell which
+            # kind of refusal was flooding. It is one of five constants
+            # (_deny_label), so the cardinality is bounded by construction.
+            for (route, outcome, reason), n in sorted(hits.items()):
                 lines.append(
                     f'openbeast_artifact_requests_total'
                     f'{{route="{_metric_label(route)}",'
-                    f'outcome="{_metric_label(outcome)}"}} {n}')
+                    f'outcome="{_metric_label(outcome)}",'
+                    f'reason="{_metric_label(reason)}"}} {n}')
             lines += [
                 "# HELP openbeast_artifact_latency_ms_total Cumulative ms by route",
                 "# TYPE openbeast_artifact_latency_ms_total counter",

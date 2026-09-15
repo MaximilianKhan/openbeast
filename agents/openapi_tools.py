@@ -15,7 +15,10 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              fresh-install behavior is unchanged. Published artifacts are the
              exception to the sharding rule: they are addressed by owner, and
              the owner is the caller's forwarded EMAIL, because that is the
-             namespace the artifact server authorises readers in (D21).
+             namespace the artifact server authorises readers in (D21). An
+             identified caller with no usable email is REFUSED (R1) — the
+             old fallback to the rig's first operator let a second account
+             publish, list and republish as that operator.
   PROFILES   Both RBAC Phase 2 keys are checked natively in ONE process:
              the admin key reaches all tools, the guest key only
              web_search/fetch (403 elsewhere), no key configured = open
@@ -92,6 +95,36 @@ _HDR_EMAIL = "x-openwebui-user-email"
 # Tools whose output is addressed by IDENTITY rather than by workspace path.
 _ARTIFACT_TOOLS = ("publish_artifact", "list_artifacts")
 
+# Every header that says WHO is calling (R8). The artifact server refuses a
+# duplicated identity header (D29); this server — now the surface that
+# RESOLVES OWNERSHIP for a publish — silently took the first, which is the
+# same defect on the newer surface. `authorization` is in the list because it
+# selects the RBAC profile: "take the first" is a silent answer there too.
+_IDENTITY_HEADERS = (_HDR_USER, _HDR_ROLE, _HDR_CHAT, _HDR_JWT, _HDR_EMAIL,
+                     "authorization")
+
+# A plausible local@domain, checked as a SHAPE (R1). `"@" in login` was the
+# whole test before, so the literal string "@" minted an owner named "@", and
+# a non-string claim was str()'d into `"['max@example.com']"` and accepted.
+# The domain deliberately allows a single label with no dot: a Tailscale login
+# from a GitHub/Okta connector really is `someone@github`.
+_EMAIL_RE = re.compile(
+    r"^[^\s@,;:<>\"'\\/]{1,64}@[a-z0-9](?:[a-z0-9.-]{0,253}[a-z0-9])?$")
+
+# What an identified caller is told when nothing usable reached us. It names
+# the setting, because the fix is one env var away and the caller is a model
+# that will otherwise retry forever.
+_NO_EMAIL_HEADER = (
+    "publish/list refused: this request carries a user id but no usable email "
+    "address, and an artifact is owned by the email its reader presents. "
+    "Turn on ENABLE_FORWARD_USER_INFO_HEADERS for Open WebUI (it is set in "
+    "docker-compose.yml) so it forwards X-OpenWebUI-User-Email, then retry.")
+_NO_EMAIL_JWT = (
+    "publish/list refused: the signed identity token carries no usable "
+    "`email` claim, and an artifact is owned by the email its reader "
+    "presents. Configure Open WebUI's ENABLE_FORWARD_USER_INFO_HEADERS so the "
+    "token it signs carries the user's email, then retry.")
+
 # Shard path components come from headers — sanitize hard.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -104,6 +137,31 @@ def _sanitize(component: str) -> str:
     s = _UNSAFE.sub("_", component)[:48].strip("._") or "u"
     digest = hashlib.sha256(component.encode()).hexdigest()[:8]
     return f"{s}-{digest}"
+
+
+def ambiguous_identity_headers(request: Request) -> list:
+    """The identity headers this request sent more than once (R8).
+
+    Starlette keeps every copy and `headers.get()` returns the FIRST, so
+    `X-OpenWebUI-User-Email: max@…` + `X-OpenWebUI-User-Email: kid@…`
+    published as max without a word. Two answers to "who are you" is not an
+    identity, it is a question about one — and this server is the surface
+    that turns that answer into a page's OWNER. Refuse, the way the artifact
+    server already refuses a doubled `Tailscale-User-Login` (D29).
+    """
+    return [h for h in _IDENTITY_HEADERS
+            if len(request.headers.getlist(h)) > 1]
+
+
+def _refuse_ambiguous_identity(request: Request) -> None:
+    dupes = ambiguous_identity_headers(request)
+    if dupes:
+        raise HTTPException(
+            status_code=400,
+            detail=("ambiguous identity: " + ", ".join(sorted(dupes)) +
+                    " sent more than once. Send each identity header exactly "
+                    "once — this server resolves the owner of a published "
+                    "page from them."))
 
 
 def create_app() -> FastAPI:
@@ -164,8 +222,20 @@ def create_app() -> FastAPI:
                 claims = pyjwt.decode(
                     token, jwt_secret, algorithms=["HS256"],
                     issuer="open-webui",
-                    options={"require": ["exp", "sub"]},
+                    # R1: `email` is REQUIRED. A token without it used to
+                    # validate happily and then collapse its bearer onto the
+                    # rig's first operator at publish time — and this repo's
+                    # own fixture shape (sub/role/iss/iat/exp) is exactly
+                    # that token, so on a --with-jwt rig EVERY user collapsed
+                    # onto one owner. Fail at the door instead, where the
+                    # message can name the setting.
+                    options={"require": ["exp", "sub", "email"]},
                 )
+            except pyjwt.MissingRequiredClaimError as e:
+                if getattr(e, "claim", "") == "email":
+                    raise HTTPException(status_code=401, detail=_NO_EMAIL_JWT)
+                raise HTTPException(status_code=401,
+                                    detail=f"invalid identity token: {e}")
             except pyjwt.PyJWTError as e:
                 raise HTTPException(status_code=401,
                                     detail=f"invalid identity token: {e}")
@@ -201,7 +271,7 @@ def create_app() -> FastAPI:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     def artifact_owner(user, email) -> str:
-        """Who a page published through THIS server belongs to (D21).
+        """Who a page published through THIS server belongs to (D21/R1).
 
         The two identity surfaces do not share a namespace. Open WebUI names
         a caller by a UUID; agents/artifact_server.py authorises a reader by
@@ -209,25 +279,40 @@ def create_app() -> FastAPI:
         UUID minted an owner that no principal can ever present: the page
         came back 404 to the human who asked for it, 404 to the rig, and
         could not be recovered — sharing it is owner-only, so only DELETE was
-        left. That is a tombstone, not an artifact, and identity forwarding
-        is on by default, so it was the DEFAULT outcome on a configured rig.
+        left. So the forwarded email is the bridge: it is in the reader's
+        namespace by construction.
 
-        So: prefer the forwarded email (the bridge — it is in the reader's
-        namespace by construction), and when there isn't one fall back to
-        `default_owner()`, the rig's own first operator. A page owned by the
-        operator is readable and manageable by a real person; a page owned by
-        a UUID is not. The `@` test is the invariant, stated out loud: a
-        WebUI user id can never satisfy it, so this function can never mint
-        an owner that nobody can present.
+        R1 — WHAT HAPPENS WHEN THERE ISN'T ONE. D21 fell back to
+        `default_owner()` for everybody, which is worse than the tombstone it
+        replaced: a SECOND WebUI account with no forwarded email publishes AS
+        the rig's first operator, and from there enumerates that operator's
+        private pages through list_artifacts and republishes over them at the
+        operator's own URL (demonstrated). The fallback survives for exactly
+        one case — `user is None`, meaning NO caller identity reached this
+        server at all: the rig itself, the agent router, a curl from the box.
+        An IDENTIFIED caller with no usable email is REFUSED, loudly, with the
+        setting named. Never mint someone else as owner.
+
+        And the email is validated as a SHAPE, not by `"@" in login`: that
+        test passed the literal string "@" (minting an owner named "@") and
+        str()'d a list claim into an owner nobody can present.
         """
-        login = str(email or "").strip().lower()
-        if "@" in login:
+        login = email.strip().lower() if isinstance(email, str) else ""
+        if login and len(login) <= 254 and _EMAIL_RE.match(login):
             return login
-        try:
-            import artifact as _artifact
-            return _artifact.default_owner()
-        except Exception:
-            return "local"
+        if user is None:
+            # No identity at all: the rig / CLI / router path. `default_owner`
+            # is the rig's own first operator, which is a principal a real
+            # person can present — and nobody else's identity was available
+            # to steal here in the first place.
+            try:
+                import artifact as _artifact
+                return _artifact.default_owner()
+            except Exception:
+                return "local"
+        raise HTTPException(status_code=400,
+                            detail=_NO_EMAIL_JWT if jwt_secret
+                            else _NO_EMAIL_HEADER)
 
     def shard_for(user: str | None, chat: str | None) -> str | None:
         """Workspace shard for this caller, or None for the shared root."""
@@ -290,6 +375,11 @@ def create_app() -> FastAPI:
             # probing /bash, a wrong-key brute force, or forged JWTs are
             # exactly the events an audit log exists for.
             try:
+                # R8: two answers to "who is calling" is not an identity.
+                # First, before the key check, because a doubled
+                # `authorization` picks the PROFILE by the same first-wins
+                # accident.
+                _refuse_ambiguous_identity(request)
                 profile = check_auth(request, name)
                 user, role, chat, email = identity_from(request)
             except HTTPException as e:
@@ -331,15 +421,23 @@ def create_app() -> FastAPI:
             # WebUI UUID, which no reader can ever present.
             otoken, owner = None, ""
             if name in _ARTIFACT_TOOLS:
+                # R1: the refusal must ESCAPE. It used to be computed inside
+                # a bare `except Exception`, which would have swallowed it
+                # and published under whatever the ContextVar still held.
+                try:
+                    owner = artifact_owner(user, email)
+                except HTTPException as e:
+                    audit(user, role, chat, name, profile, False, 0, {},
+                          f"http {e.status_code}: {e.detail}")
+                    with metrics_lock:
+                        calls[(name, profile, "error")] += 1
+                    raise
                 try:
                     import artifact as _artifact
-                    owner = artifact_owner(user, email)
                     # The raw WebUI id rides along as the ALIAS: the store
-                    # records it as meta["owner_webui_id"] and can_view
-                    # accepts it beside the owner, so the page is reachable
-                    # from both surfaces — and a page published before this
-                    # bridge existed, owned by the bare id, is reachable
-                    # again from the surface that published it.
+                    # records it as meta["owner_webui_id"] for PROVENANCE
+                    # only (R6) — it authorises nothing, and the API never
+                    # returns it. `owner` above is the whole of the identity.
                     otoken = _artifact.set_owner_override(owner, user)
                 except Exception:
                     otoken = None

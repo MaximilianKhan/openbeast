@@ -17,6 +17,12 @@ itself:
   - the store lives INSIDE the workspace, so the page may not come from it
     (D26): a reviewer published another user's private page by naming the
     store's own internal path
+  - R1: an identified caller with no usable email is REFUSED rather than
+    silently becoming the rig's first operator — including a signed token
+    with no `email` claim, which is this repo's own fixture shape
+  - R8: duplicate identity headers are refused here too, not resolved
+    first-wins, because this is the surface that decides a page's OWNER
+  - R6: the provenance id never comes back out of the API
   - and the one that crosses BOTH surfaces (D21): a page published through
     the tool server, with the identity headers Open WebUI really forwards, is
     read through the HTTP API as the tailnet login. Every other ownership
@@ -377,26 +383,138 @@ def test_the_owner_is_the_login_a_reader_can_present_never_the_uuid(surfaces):
     assert meta["owner"] != WEBUI_ID
     assert WEBUI_ID not in str(meta["owner"])
     assert meta.get("owner_webui_id") == WEBUI_ID        # provenance kept
-    # and the alias really is an alias: the publishing surface can still see
-    # its own page when all it knows about itself is that id
-    assert artifact.can_view(meta, WEBUI_ID) is True
+    # R6: and provenance is ALL it is. The alias used to AUTHENTICATE — a
+    # stranger who presented the UUID as their login read the page, and
+    # `api_get` handed that UUID to every reader of a tailnet page. One
+    # recorded identity owns an artifact now: meta["owner"].
+    assert artifact.can_view(meta, WEBUI_ID) is False
     assert artifact.can_view(meta, TAILNET_LOGIN) is True
     assert artifact.can_view(meta, "kid@example.com") is False
 
 
-def test_without_a_forwarded_email_the_rig_operator_owns_it(surfaces):
-    """No email (an older WebUI, or the header switched off) must NOT fall
-    back to the UUID. The rig's first operator is a principal someone can
-    actually present; a UUID is a tombstone."""
+def test_an_identified_caller_with_no_email_is_refused(surfaces):
+    """R1, the blocker. D21 fell back to `default_owner()` for ANY caller
+    without a forwarded email, which is worse than the tombstone it replaced.
+
+    This test used to reuse the operator's OWN account (WEBUI_ID, whose email
+    is max@example.com), so the collapse looked like the intended answer. The
+    second account is the interesting one: it is somebody else, and the rig's
+    first operator is not a fallback identity for it. Refuse, name the
+    setting, publish nothing.
+    """
     tools, web, _app = surfaces
-    aid = _id_from(_publish_through_the_tool_server(
-        tools, _identity(email=None)))
-    meta = artifact.get_meta(aid)
-    assert meta["owner"] == "max@example.com"    # OPENBEAST_ARTIFACT_OPERATORS[0]
-    assert meta["owner"] != WEBUI_ID
+    r = tools.post("/write_file",
+                   json={"path": "report.html", "content": PAGE},
+                   headers=_identity(email=None, user="second-account-uuid"))
+    assert r.status_code == 200, r.text
+    r = tools.post("/publish_artifact",
+                   json={"path": "report.html", "title": "Not mine"},
+                   headers=_identity(email=None, user="second-account-uuid"))
+    assert r.status_code == 400, r.text
+    detail = json.dumps(r.json())
+    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in detail, detail
+    # nothing was minted in anyone's name — least of all the operator's
+    assert artifact.list_artifacts(viewer="max@example.com") == []
+    assert artifact.list_artifacts(viewer="local") == []
+    # and the listing half of the same collapse is shut too: this is how the
+    # reviewer FOUND the operator's private pages to republish over.
+    r = tools.post("/list_artifacts", json={"limit": 25},
+                   headers=_identity(email=None, user="second-account-uuid"))
+    assert r.status_code == 400, r.text
+    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
+    # the rig itself — no identity headers at all — is NOT the caller this
+    # refusal is about, and still publishes as its own first operator.
+    r = tools.post("/write_file", json={"path": "rig.html", "content": PAGE})
+    assert r.status_code == 200, r.text
+    r = tools.post("/publish_artifact",
+                   json={"path": "rig.html", "title": "From the rig"})
+    assert r.status_code == 200, r.text
+    aid = _id_from(r.json())
+    assert artifact.get_meta(aid)["owner"] == "max@example.com"
     assert web.get(f"/a/{aid}",
                    headers={"Tailscale-User-Login": TAILNET_LOGIN}
                    ).status_code == 200
+
+
+def test_the_emailless_account_cannot_take_over_the_operators_page(surfaces):
+    """The demonstrated escalation, end to end: max's private page, a second
+    WebUI account with no forwarded email, and the republish that defaced it
+    at max's own URL with max still recorded as the owner."""
+    tools, web, _app = surfaces
+    mine = _id_from(_publish_through_the_tool_server(
+        tools, _identity(), title="Quarterly report"))
+    assert artifact.get_meta(mine)["owner"] == TAILNET_LOGIN
+
+    thief = _identity(email=None, user="second-account-uuid")
+    r = tools.post("/list_artifacts", json={"limit": 25}, headers=thief)
+    assert r.status_code == 400                      # cannot even find it
+    r = tools.post("/write_file",
+                   json={"path": "deface.html", "content": "<title>X</title>x"},
+                   headers=thief)
+    assert r.status_code == 200
+    r = tools.post("/publish_artifact",
+                   json={"path": "deface.html", "artifact_id": mine},
+                   headers=thief)
+    assert r.status_code == 400, r.text
+
+    # max's page is untouched: one version, the original bytes, still private
+    meta = artifact.get_meta(mine)
+    assert meta["owner"] == TAILNET_LOGIN
+    assert meta["visibility"] == "private"
+    assert len(meta["versions"]) == 1
+    me = {"Tailscale-User-Login": TAILNET_LOGIN}
+    assert PAGE in web.get(f"/raw/{mine}/v/1/", headers=me).text
+
+
+def test_a_signed_token_with_no_email_claim_is_refused(surfaces, monkeypatch):
+    """R1, JWT mode — and this repo's OWN fixture shape: the token minted by
+    tests/test_identity_jwt.py carried {sub, role, iss, iat, exp} and no
+    email, so on a `--with-jwt` rig every user collapsed onto the operator.
+    The claim is required at decode time, so the failure lands at the door,
+    where the message can name the setting."""
+    import datetime
+
+    import jwt as pyjwt
+    import openapi_tools               # noqa: E402
+    secret = "x" * 48
+    monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", secret)
+    tools = TestClient(openapi_tools.create_app())
+    claims = {"sub": WEBUI_ID, "role": "admin", "iss": "open-webui",
+              "exp": datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(minutes=5)}
+    token = {"X-OpenWebUI-User-JWT": pyjwt.encode(claims, secret,
+                                                  algorithm="HS256")}
+    r = tools.post("/write_file", json={"path": "report.html",
+                                        "content": PAGE}, headers=token)
+    assert r.status_code == 401, r.text          # at the door, not at publish
+    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
+    r = tools.post("/publish_artifact", json={"path": "report.html"},
+                   headers=token)
+    assert r.status_code == 401, r.text
+    assert artifact.list_artifacts(viewer="max@example.com") == []
+    # an unsigned email header next to the token does not rescue it: in JWT
+    # mode the token is the whole identity.
+    r = tools.post("/publish_artifact", json={"path": "report.html"},
+                   headers={**token,
+                            "X-OpenWebUI-User-Email": "attacker@example.invalid"})
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.parametrize("bogus", ["@", " ", "not-an-email", "@example.com",
+                                   "max@", "['max@example.com']"])
+def test_an_unusable_email_is_refused_not_coerced(surfaces, bogus):
+    """R1's other half: `"@" in login` was the whole validation, so the
+    literal string "@" minted an owner named "@" and a list-valued claim was
+    str()'d into an owner nobody can ever present."""
+    tools, _web, _app = surfaces
+    h = _identity(email=bogus, user="second-account-uuid")
+    r = tools.post("/write_file", json={"path": "r.html", "content": PAGE},
+                   headers=h)
+    assert r.status_code == 200
+    r = tools.post("/publish_artifact", json={"path": "r.html"}, headers=h)
+    assert r.status_code == 400, (bogus, r.text)
+    assert artifact.list_artifacts(viewer="max@example.com") == []
+    assert artifact.list_artifacts(viewer=bogus.strip().lower()) == []
 
 
 def test_the_jwt_surface_bridges_through_the_token_email(surfaces,
@@ -429,7 +547,13 @@ def test_the_jwt_surface_bridges_through_the_token_email(surfaces,
 
 def test_two_webui_users_do_not_share_a_page(surfaces):
     """The bridge must not collapse everyone onto one owner: two accounts,
-    two owners, and neither reads the other's private page."""
+    two owners, and neither reads the other's private page.
+
+    R1: this test gave BOTH users an email, so it could never reach the
+    branch where the collapse actually happened. The third account below is
+    the one that mattered — no email at all — and it must be REFUSED rather
+    than quietly handed the first operator's identity.
+    """
     tools, web, _app = surfaces
     mine = _id_from(_publish_through_the_tool_server(
         tools, _identity(), title="Mine"))
@@ -441,6 +565,92 @@ def test_two_webui_users_do_not_share_a_page(surfaces):
     me = {"Tailscale-User-Login": TAILNET_LOGIN}
     assert web.get(f"/a/{mine}", headers=me).status_code == 200
     assert web.get(f"/a/{theirs}", headers=me).status_code == 404
+
+    # ...and the third account, the one with no forwarded email, becomes
+    # NEITHER of them. It used to become the first operator — max — which is
+    # how a page of max's got enumerated and republished over.
+    nobody = _identity(email=None, user="third-uuid")
+    assert tools.post("/write_file",
+                      json={"path": "x.html", "content": PAGE},
+                      headers=nobody).status_code == 200
+    r = tools.post("/publish_artifact", json={"path": "x.html",
+                                              "title": "Theirs too"},
+                   headers=nobody)
+    assert r.status_code == 400, r.text
+    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
+    # exactly the two pages that were published still exist, unchanged
+    rows = artifact.list_artifacts(limit=50)
+    assert sorted(r["owner"] for r in rows) == ["kid@example.com",
+                                                TAILNET_LOGIN]
+
+
+def test_duplicate_identity_headers_are_refused_by_the_tool_server(surfaces):
+    """R8. The artifact server refuses a doubled `Tailscale-User-Login`
+    (D29); this server — the one that now RESOLVES OWNERSHIP — silently took
+    the first, so two emails on one request published as whichever the proxy
+    chain happened to order first."""
+    tools, _web, _app = surfaces
+    assert tools.post("/write_file", json={"path": "d.html", "content": PAGE},
+                      headers=_identity()).status_code == 200
+    two = [("x-openwebui-user-id", WEBUI_ID),
+           ("x-openwebui-user-email", TAILNET_LOGIN),
+           ("x-openwebui-user-email", "kid@example.com"),
+           ("content-type", "application/json")]
+    r = tools.post("/publish_artifact", json={"path": "d.html"}, headers=two)
+    assert r.status_code == 400, r.text
+    assert "ambiguous identity" in json.dumps(r.json())
+    assert artifact.list_artifacts(limit=50) == []
+    # the order does not rescue it either way round
+    swapped = [two[0], two[2], two[1], two[3]]
+    assert tools.post("/publish_artifact", json={"path": "d.html"},
+                      headers=swapped).status_code == 400
+    # nor does doubling the id, the role, the chat or the signed token
+    for name in ("x-openwebui-user-id", "x-openwebui-user-role",
+                 "x-openwebui-chat-id", "x-openwebui-user-jwt",
+                 "authorization"):
+        dupes = [("x-openwebui-user-email", TAILNET_LOGIN),
+                 (name, "a"), (name, "b"),
+                 ("content-type", "application/json")]
+        r = tools.post("/publish_artifact", json={"path": "d.html"},
+                       headers=dupes)
+        assert r.status_code == 400, (name, r.text)
+    # one header each is still fine
+    assert tools.post("/publish_artifact", json={"path": "d.html"},
+                      headers=_identity()).status_code == 200
+
+
+def test_the_api_never_returns_the_provenance_id(surfaces, monkeypatch):
+    """R6, server half. `api_get` published meta["owner_webui_id"] to every
+    reader of a page — and the same string USED to authenticate, so on a rig
+    with no allowlist a stranger who presented it as their login read the
+    page. It is provenance: the audit log and meta.json keep it, the API
+    does not hand it out."""
+    tools, _web, _app = surfaces
+    aid = _id_from(_publish_through_the_tool_server(tools, _identity()))
+    # A second operator on the allowlist is the reader who matters here: the
+    # leak was to anyone who could SEE the page, not only to its owner.
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_OPERATORS",
+                       "max@example.com,kid@example.com")
+    import artifact_server                         # noqa: E402
+    app = artifact_server.create_app()
+    web = TestClient(app)
+    token = {"X-OpenBeast-Local": app.state.local_token,
+             "Tailscale-User-Login": TAILNET_LOGIN}
+    assert web.patch(f"/api/artifacts/{aid}", json={"visibility": "tailnet"},
+                     headers=token).status_code == 200
+
+    for headers in ({"Tailscale-User-Login": TAILNET_LOGIN},
+                    {"Tailscale-User-Login": "kid@example.com"}, token):
+        r = web.get(f"/api/artifacts/{aid}", headers=headers)
+        assert r.status_code == 200, r.text
+        assert "owner_webui_id" not in r.json()
+        assert WEBUI_ID not in r.text
+    # the whole read surface, not just that one route
+    for path in ("/api/artifacts", "/", f"/a/{aid}", f"/a/{aid}/v/1"):
+        r = web.get(path, headers={"Tailscale-User-Login": "kid@example.com"})
+        assert WEBUI_ID not in r.text, path
+    # and it really is still recorded, where an operator can trace it
+    assert artifact.get_meta(aid).get("owner_webui_id") == WEBUI_ID
 
 
 def test_the_tool_listing_shows_the_caller_their_own_pages(surfaces):

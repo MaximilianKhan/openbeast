@@ -31,6 +31,15 @@ Each of these tests failed before the fix it names:
   D27  refusals cannot grow the audit file without bound
   D29  an ownership refusal is the flat 404; HEAD works on health; two
        identity headers are refused rather than silently resolved
+  R2   all FOUR mutations name their owner explicitly — proven with the
+       ContextVar taken away, because a ContextVar crossing
+       BaseHTTPMiddleware into the threadpool was the only thing gating
+       three of them
+  R5   the audit budget is per REASON and per WINDOW, the reason is a
+       bounded metric label, and a flood of the cheapest refusal cannot
+       blind the log to the ambiguous-identity signal
+  R6   the provenance id (meta["owner_webui_id"]) is never returned by the
+       API — see tests/test_artifact_mcp_tools.py, which can publish one
 
 Also covers:
   - publish → /raw/ round trip, skeleton applied at serve time
@@ -48,6 +57,7 @@ import json
 import os
 import socket
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -497,6 +507,116 @@ def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
     r = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
                 json={"visibility": "private"}, headers=local(c))
     assert r.status_code == 404 and r.json() == FLAT_404
+
+
+# --- R2: every mutation names its owner, without help from the ContextVar ----
+# D22's server half was written for `set_visibility` and never reached the
+# other three. They passed their tests anyway, because a ContextVar set in
+# BaseHTTPMiddleware happens to survive into Starlette's threadpool — the
+# least stable corner of that framework, and the one a reviewer removed to
+# PATCH a description, roll back a version and DELETE another owner's page,
+# all 200. These tests take that mechanism away on purpose: with the
+# override neutered, only an explicit `owner=` can carry the caller.
+
+
+def _drop_the_contextvar(monkeypatch):
+    """Delete the mechanism R2 says is load-bearing but must not be.
+
+    `store.default_owner()` then falls back to the env allowlist's first
+    entry (boss), exactly as it would if the ContextVar silently stopped
+    crossing BaseHTTPMiddleware into the threadpool one Starlette release
+    from now. Applied AFTER the fixture publishes, because `publish()` is
+    owned by the ContextVar by design (D28: `owner=` is an assertion there,
+    not an identity) — it is the four METADATA mutations R2 is about.
+    """
+    monkeypatch.setattr(store, "set_owner_override", lambda *a, **k: None)
+    monkeypatch.setattr(store, "reset_owner_override", lambda token: None)
+
+
+def _maxs_artifact(c, monkeypatch, versions: int = 1) -> dict:
+    a = publish(c, headers=local(c, MAX))
+    for _ in range(versions - 1):
+        publish(c, headers=local(c, MAX), artifact_id=a["id"])
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    _drop_the_contextvar(monkeypatch)
+    return a
+
+
+def test_patching_a_description_refuses_a_non_owner_over_http(
+        make_client, monkeypatch):
+    """R2. The gallery subtitle is the text every other operator reads."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = _maxs_artifact(c, monkeypatch)
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"description": "pwned"},
+                headers=local(c))                  # resolves to boss
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(a["id"]).get("description") != "pwned"
+    # and the owner still can, with the ContextVar still gone: the identity
+    # travelled as an argument, which is the whole point.
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"description": "mine"},
+                headers=local(c, MAX))
+    assert r.status_code == 200, r.text
+    assert store.get_meta(a["id"])["description"] == "mine"
+
+
+def test_rolling_back_a_version_refuses_a_non_owner_over_http(
+        make_client, monkeypatch):
+    """R2. An ungated rollback serves an OLDER page at a URL its owner
+    believes is current — a deface that leaves no trace in the version list."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = _maxs_artifact(c, monkeypatch, versions=2)
+    assert store.get_meta(a["id"])["current"] == 2
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1},
+                headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(a["id"])["current"] == 2
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1},
+                headers=local(c, MAX))
+    assert r.status_code == 200, r.text
+    assert store.get_meta(a["id"])["current"] == 1
+
+
+def test_deleting_refuses_a_non_owner_over_http(make_client, monkeypatch):
+    """R2, the irreversible one: versions are the only copy there is."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = _maxs_artifact(c, monkeypatch)
+    r = c.delete(f"/api/artifacts/{a['id']}", headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(a["id"]) is not None, "the page was destroyed"
+    assert c.get(f"/raw/{a['id']}/v/1/", headers=MAX).status_code == 200
+    r = c.delete(f"/api/artifacts/{a['id']}", headers=local(c, MAX))
+    assert r.status_code == 200 and r.json()["removed"] is True
+    assert store.get_meta(a["id"]) is None
+
+
+def test_sharing_refuses_a_non_owner_over_http_too(make_client,
+                                                   monkeypatch):
+    """The fourth mutation — the only one D22 actually reached — held up
+    under the same conditions, which is what made the other three look safe."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = _maxs_artifact(c, monkeypatch)
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
+                headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(a["id"])["visibility"] == "private"
+
+
+def test_a_mixed_patch_body_cannot_slip_one_field_past_the_guard(
+        make_client, monkeypatch):
+    """All three fields in ONE request: the guard is per-mutator, so a body
+    that sets every field must be refused on the first one and change
+    nothing at all."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = _maxs_artifact(c, monkeypatch, versions=2)
+    before = dict(store.get_meta(a["id"]))
+    r = c.patch(f"/api/artifacts/{a['id']}",
+                json={"visibility": "tailnet", "description": "pwned",
+                      "current": 1},
+                headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    after = store.get_meta(a["id"])
+    for field in ("visibility", "description", "current"):
+        assert after.get(field) == before.get(field), field
 
 
 def test_the_store_sees_the_caller_for_the_whole_request(make_client):
@@ -1114,11 +1234,37 @@ def test_the_slash_oracle_is_shut_for_writes_too(make_client):
 
 # --- D27: refusals cannot grow the audit file without bound -------------------
 
+def _rows(path):
+    return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+
+
+def _denied(path, reason):
+    return [r for r in _rows(path) if r.get("denied") == reason]
+
+
+def _metric(text, **labels):
+    """The counter for one exact label set, or 0."""
+    want = [f'{k}="{v}"' for k, v in labels.items()]
+    for ln in text.splitlines():
+        if ln.startswith("openbeast_artifact_requests_total") and \
+                all(w in ln for w in want):
+            return int(ln.rsplit(" ", 1)[1])
+    return 0
+
+
 def test_refusals_stop_growing_the_audit_file(make_client, tmp_path,
                                               monkeypatch):
     """D27. ~89 bytes a row, no rotation, no bound, and writable by anyone
     who can reach the port: a disk-fill primitive that needed no credentials
-    at all. Past the budget refusals are counter-only."""
+    at all. Past the budget, refusals of THAT REASON are counter-only.
+
+    R5 corrected what this test asserted. The budget was one process-lifetime
+    counter for every reason at once, so ~1000 anonymous GETs — about a
+    second of typing — blinded the audit log to every later refusal for the
+    life of the process; and the code's claim that "nothing is lost but the
+    repetition" was false, which this test faithfully repeated. What is lost
+    is the per-request detail. What survives is the count AND the reason.
+    """
     monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 3)
     c = make_client()
     publish(c)                                   # a real row, not a refusal
@@ -1127,27 +1273,101 @@ def test_refusals_stop_growing_the_audit_file(make_client, tmp_path,
     for _ in range(40):
         assert c.get("/api/artifacts").status_code == 404      # anonymous
     settled = path.stat().st_size
-    denied = [json.loads(x) for x in path.read_text().splitlines()
-              if x.strip() and json.loads(x).get("denied") == "anonymous"]
-    assert len(denied) == 3, len(denied)
-    # one row says where the trail went, so the operator is never puzzled
-    notes = [json.loads(x) for x in path.read_text().splitlines()
-             if x.strip() and json.loads(x).get("denied") == "audit-budget"]
-    assert len(notes) == 1 and "metrics" in notes[0]["note"]
+    assert len(_denied(path, "anonymous")) == 3
+    # one row says where the trail went, so the operator is never puzzled —
+    # and it names the reason, because the budget is per reason now.
+    notes = _denied(path, "audit-budget")
+    assert len(notes) == 1
+    assert notes[0]["reason"] == "anonymous"
+    assert "anonymous" in notes[0]["note"] and "metrics" in notes[0]["note"]
 
     for _ in range(40):
         c.get("/api/artifacts")
     assert path.stat().st_size == settled, "the file is still growing"
 
-    # nothing is lost: /metrics counted every single one of the 80. A
-    # middleware refusal never reaches the router, so it labels as the
-    # constant "<unmatched>" (D11) — no attacker-named series here either.
+    # What is NOT lost: the count, and the REASON, as a bounded label (R5).
+    # A middleware refusal never reaches the router, so the route labels as
+    # the constant "<unmatched>" (D11) — no attacker-named series either.
     m = c.get("/metrics", headers=local(c)).text
-    line = [ln for ln in m.splitlines()
-            if ln.startswith("openbeast_artifact_requests_total")
-            and f'route="{artifact_server.UNMATCHED_ROUTE}"' in ln
-            and 'outcome="404"' in ln]
-    assert line and int(line[0].rsplit(" ", 1)[1]) >= 80, line
+    n = _metric(m, route=artifact_server.UNMATCHED_ROUTE, outcome="404",
+                reason="anonymous")
+    assert n >= 80, m
+    # What IS lost, stated honestly: the suppressed rows themselves. The
+    # comment in the server used to claim otherwise.
+    assert len(_denied(path, "anonymous")) == 3 < n
+
+    # The shipped budget is finite and the window is finite. Asserted on the
+    # REAL constants, so raising either past sanity fails here instead of
+    # leaving a monkeypatched test green.
+    assert isinstance(artifact_server.DENY_AUDIT_ROWS, int)
+    assert 0 < artifact_server.DENY_AUDIT_ROWS <= 10_000
+    assert 0 < artifact_server.DENY_AUDIT_WINDOW_S <= 3600
+
+
+def test_a_flood_of_one_refusal_cannot_blind_the_others(make_client, tmp_path,
+                                                        monkeypatch):
+    """R5, the finding itself. The budget was shared, so the cheapest refusal
+    an anonymous caller can mint bought silence for every other kind — the
+    `ambiguous-identity` signal D29 exists to catch included. Per reason, the
+    flood only silences itself."""
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 2)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+
+    for _ in range(30):                          # spend the anonymous budget
+        assert c.get("/api/artifacts").status_code == 404
+    assert len(_denied(path, "anonymous")) == 2
+
+    two = [("tailscale-user-login", "max@example.com"),
+           ("tailscale-user-login", "kid@example.com")]
+    assert c.get("/", headers=two).status_code == 404
+    assert len(_denied(path, "ambiguous-identity")) == 1, \
+        "the signal D29 exists to catch was suppressed by an unrelated flood"
+
+    # a third reason keeps its own budget too
+    monkeypatch.setitem(store.CAPS, "version_bytes", 64)
+    r = c.post("/api/artifacts", content=b'{"html": "' + b"x" * 200 + b'"}',
+               headers={"Content-Type": "application/json"})
+    assert r.status_code == 404
+    assert len(_denied(path, "oversize")) == 1
+
+    # every reason is its own metric series, and the set is bounded: five
+    # constants, none of them attacker-named.
+    m = c.get("/metrics", headers=local(c)).text
+    for reason in ("anonymous", "ambiguous-identity", "oversize"):
+        assert _metric(m, outcome="404", reason=reason) >= 1, reason
+    reasons = {ln.split('reason="', 1)[1].split('"', 1)[0]
+               for ln in m.splitlines()
+               if ln.startswith("openbeast_artifact_requests_total")}
+    assert reasons <= (set(artifact_server.DENY_REASONS)
+                       | {"", artifact_server.DENY_OTHER}), reasons
+
+
+def test_the_audit_budget_recovers_when_the_window_turns_over(
+        make_client, tmp_path, monkeypatch):
+    """R5. A process-lifetime budget stays spent until the next restart, so
+    one flood blinded the log for as long as the server ran. It resets."""
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 1)
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_WINDOW_S", 0.05)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    for _ in range(5):
+        c.get("/api/artifacts")
+    assert len(_denied(path, "anonymous")) == 1
+    time.sleep(0.08)
+    for _ in range(5):
+        c.get("/api/artifacts")
+    assert len(_denied(path, "anonymous")) == 2, "the window never turned over"
+
+
+def test_a_refusal_reason_can_never_forge_a_metric_series(make_client):
+    """R5's label is bounded by construction, not by hoping the middleware
+    only ever writes constants."""
+    assert artifact_server._deny_label("anonymous") == "anonymous"
+    assert artifact_server._deny_label("") == ""
+    assert artifact_server._deny_label(None) == ""
+    for hostile in ('x" nasty="1', "../../etc", "a" * 500, 17, ["x"]):
+        assert artifact_server._deny_label(hostile) == artifact_server.DENY_OTHER
 
 
 def test_a_refused_operator_is_still_audited(make_client, tmp_path,

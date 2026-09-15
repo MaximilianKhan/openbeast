@@ -30,12 +30,23 @@ import tools as _tools  # noqa: E402
 SECRET = "test-jwt-secret"
 
 
-def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET, iss="open-webui"):
+def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET,
+         iss="open-webui", email="alice@example.com"):
+    """A token the way Open WebUI really signs one.
+
+    `email` is part of the fixture shape as of R1: the tool server resolves a
+    published page's OWNER from it, and a token without it used to validate
+    happily and then collapse its bearer onto the rig's first operator. The
+    claim is now REQUIRED at decode time, so omitting it here (email=None) is
+    how a test asks for the 401 — see
+    tests/test_artifact_mcp_tools.py::test_a_signed_token_with_no_email_claim_is_refused.
+    """
     now = int(time.time())
-    return pyjwt.encode(
-        {"sub": sub, "role": role, "iss": iss, "iat": now, "exp": now + exp_delta},
-        secret, algorithm="HS256",
-    )
+    claims = {"sub": sub, "role": role, "iss": iss, "iat": now,
+              "exp": now + exp_delta}
+    if email is not None:
+        claims["email"] = email
+    return pyjwt.encode(claims, secret, algorithm="HS256")
 
 
 @pytest.fixture()
