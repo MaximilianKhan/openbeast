@@ -24,6 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REGISTRY="$SCRIPT_DIR/weights.registry"
 
+# This tool's JOB is to populate the weights directory, so it must work on a
+# machine that does not have one yet — which is precisely the machine you
+# reach for it on. lib/weights.sh is otherwise fatal when the dir is missing
+# (a deliberate friendly guard for serve scripts), and it already ships the
+# escape hatch bootstrap.sh uses for the same reason. Use it rather than
+# inventing a second path resolver.
+export OPENBEAST_WEIGHTS_MKDIR=1
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/weights.sh"
 

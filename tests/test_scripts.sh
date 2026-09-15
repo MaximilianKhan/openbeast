@@ -990,6 +990,19 @@ if [[ -x "$REPO_DIR/scripts/fetch-weight.sh" ]]; then
   else
     fail "fetch-weight.sh did not refuse an unregistered weight name: $_FW_OUT"
   fi
+  # It must work on a box with NO weights directory — that is the box you
+  # reach for it on. lib/weights.sh is otherwise fatal when the dir is
+  # missing, and CI caught this the hard way. Asserted here too so the
+  # property is not checked only on a machine that happens to lack one.
+  _FW_TMP="$(mktemp -d)"
+  _FW_OUT="$(OPENBEAST_WEIGHTS_DIR="$_FW_TMP/not-created-yet" \
+             "$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  if grep -q 'no registry entry' <<< "$_FW_OUT"; then
+    pass "fetch-weight.sh runs with no pre-existing weights directory"
+  else
+    fail "fetch-weight.sh dies when the weights dir is absent: $_FW_OUT"
+  fi
+  rm -rf "$_FW_TMP"
 else
   fail "scripts/fetch-weight.sh missing — start.sh names it in its fallback message"
 fi
