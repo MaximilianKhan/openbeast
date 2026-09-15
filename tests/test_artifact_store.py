@@ -10,7 +10,8 @@ Covers:
     rejected on the way IN and again on the way OUT
   - visibility, rollback, remove, can_view — every one of them owner-gated
   - the lock is per-artifact, bounded, and never in a reader's way
-  - the store's own path is not publishable, and owners carry an alias
+  - the store's own path is not publishable, by name OR by hardlink
+  - the publishing surface's own id is provenance and grants nothing
   - extract_title only looks at the first 8 KB
   - wrap_skeleton wraps a fragment, passes a full document through
 
@@ -252,7 +253,13 @@ def test_orphan_version_dir_does_not_wedge_the_id(store):
     """D14: a crash between writing vN/ and updating meta.json left a version
     directory no meta entry names. publish() then hit FileExistsError on that
     same number forever — a permanent brick on exactly the stable ids the
-    campaign verdicts auto-publish to."""
+    campaign verdicts auto-publish to.
+
+    R4 changed the cure from DELETE to STEP OVER. "This directory is debris"
+    is a judgement made from meta.json, and a corrupt meta.json makes it
+    wrongly about a real version whose bytes are the only copy. So the next
+    publish clears every vN directory that exists, the id still un-wedges, and
+    nothing that was on disk is destroyed."""
     a = store.publish("one", artifact_id="t117-verdict")
     v2 = os.path.join(store.store_root(), a["id"], "v2")
     os.makedirs(v2, mode=0o700)
@@ -261,9 +268,15 @@ def test_orphan_version_dir_does_not_wedge_the_id(store):
     assert store.get_meta(a["id"])["current"] == 1
 
     r = store.publish("two", artifact_id=a["id"])
-    assert r["version"] == 2
-    assert store.read_file(a["id"], 2)[0] == b"two"     # the orphan is gone
-    assert [v["n"] for v in store.get_meta(a["id"])["versions"]] == [1, 2]
+    assert r["version"] == 3                            # stepped over, not 2
+    assert store.read_file(a["id"], 3)[0] == b"two"
+    assert [v["n"] for v in store.get_meta(a["id"])["versions"]] == [1, 3]
+    assert store.read_file(a["id"], 1)[0] == b"one"     # untouched
+    # the debris is not served — meta names it nowhere — and not deleted
+    with pytest.raises(artifact.ArtifactError):
+        store.read_file(a["id"], 2)
+    assert open(os.path.join(v2, "index.html"), "rb").read() \
+        == b"half-written garbage"
 
 
 def test_hard_kill_mid_publish_then_republish(store, tmp_path):
@@ -288,8 +301,9 @@ def test_hard_kill_mid_publish_then_republish(store, tmp_path):
     assert store.get_meta("wedge") is None              # meta never written
 
     r = store.publish("recovered", artifact_id="wedge")
-    assert r["version"] == 1
-    assert store.read_file("wedge", 1)[0] == b"recovered"
+    assert r["version"] == 2                     # v1 is the crash's debris
+    assert store.read_file("wedge", 2)[0] == b"recovered"
+    assert [v["n"] for v in store.get_meta("wedge")["versions"]] == [2]
 
 
 def test_corrupt_record_does_not_poison_the_listing(store):
@@ -328,6 +342,36 @@ def test_corrupt_record_does_not_poison_the_listing(store):
     with pytest.raises(artifact.ArtifactError):
         store.read_file("corrupt3", 1)              # no version resolves
     assert store.read_file(good["id"], 1)[0] == b"<title>Good</title>ok"
+
+
+def test_republish_under_a_corrupt_version_list_destroys_nothing(store):
+    """R4 (silent data loss): `n` came from meta's list alone while every
+    reader resolves from meta FALLING BACK TO DISK. A version list corrupted
+    into non-numeric entries — the very corruption the two tests either side of
+    this one treat as ordinary — made n compute to 1; the orphan
+    sweep then rmtree'd the REAL v1 as debris and v2 fell out of the resolver.
+    Two versions gone, no error, no way back."""
+    a = store.publish("one", artifact_id="verdict")
+    store.publish("two", artifact_id=a["id"])
+    root = store.store_root()
+    meta = store.get_meta(a["id"])
+    # the corruption: the list survives, every number in it does not
+    meta["versions"] = [{"n": "one"}, {"n": None}]
+    artifact._write_meta(a["id"], meta)
+    assert artifact._version_numbers(store.get_meta(a["id"])) == []
+
+    r = store.publish("three", artifact_id=a["id"])
+
+    # nothing on disk was destroyed: both real versions are still there, byte
+    # for byte, and the new one did not land on top of either. (Recovering
+    # them is a meta.json repair — the point is that there is still something
+    # to repair.)
+    for n, body in ((1, b"one"), (2, b"two"), (3, b"three")):
+        p = os.path.join(root, a["id"], f"v{n}", "index.html")
+        assert os.path.isfile(p), f"v{n} was DELETED"
+        assert open(p, "rb").read() == body, f"v{n} was OVERWRITTEN"
+    assert r["version"] == 3
+    assert store.read_file(a["id"], 3)[0] == b"three"
 
 
 def test_read_falls_back_to_the_versions_on_disk(store):
@@ -534,6 +578,33 @@ def test_read_file_rejects_traversal(store):
 def test_bad_artifact_ids_rejected(store, bad):
     with pytest.raises(artifact.ArtifactError):
         store.publish(PAGE, artifact_id=bad)
+
+
+@pytest.mark.parametrize("bad", ["index.jsonl", "INDEX.JSONL", "health",
+                                 "Health"])
+def test_reserved_artifact_ids_are_refused(store, bad):
+    """R7: _ID_RE admitted the store's own ledger filename. <root>/index.jsonl
+    is a FILE, so makedirs raised NotADirectoryError — an OSError neither
+    `except FileExistsError` nor `except ArtifactError` caught, which is a
+    server error handed to the page's own owner. And `health` is the server's
+    one unauthenticated route."""
+    real = store.publish(PAGE)                       # writes the ledger
+    ledger = os.path.join(store.store_root(), "index.jsonl")
+    before = open(ledger, "rb").read()
+    with pytest.raises(artifact.ArtifactError) as e:
+        store.publish(PAGE, artifact_id=bad)
+    assert "invalid artifact id" in str(e.value)
+    for call in (lambda: store.get_meta(bad),
+                 lambda: store.read_file(bad, 1),
+                 lambda: store.set_visibility(bad, "tailnet"),
+                 lambda: store.set_description(bad, "x"),
+                 lambda: store.set_current(bad, 1),
+                 lambda: store.remove(bad),
+                 lambda: store.artifact_url(bad)):
+        with pytest.raises(artifact.ArtifactError):
+            call()
+    assert open(ledger, "rb").read() == before       # the ledger is intact
+    assert [r["id"] for r in store.list_artifacts()] == [real["id"]]
 
 
 def test_stable_human_id_allowed(store):
@@ -785,51 +856,59 @@ def test_mutators_leave_an_unowned_legacy_record_open(store):
         assert store.set_current("legacy2", 1)["current"] == 1
 
 
-# --- D21: ownership lives in the reader's namespace, plus an alias -----------
+# --- R6: the publishing surface's id is PROVENANCE, never a credential -------
 
-def test_owner_alias_is_recorded_and_accepted(store):
-    """D21: a publish that crossed namespaces (Open WebUI's UUID vs the
-    tailnet login) minted a page that was 404 to the human who asked for it
-    AND unmanageable, because no principal can ever present a UUID. The login
-    owns the page; the surface's own id is recorded beside it and counts as
-    the same person."""
+def test_the_publishing_surfaces_id_grants_nothing(store):
+    """R6: `owner_webui_id` used to be flattened into the same string set as
+    the login a reader presents, so the Open WebUI id AUTHENTICATED — on a rig
+    with no operator allowlist a stranger who presented the UUID as their
+    login read the private page, and could manage and delete it. It is
+    recorded, and consulted by nothing."""
     with as_user("max@example.com", "3f1c-uuid-9a2b"):
         r = store.publish(PAGE)
     meta = store.get_meta(r["id"])
     assert meta["owner"] == "max@example.com"            # the reader's namespace
-    assert meta["owner_webui_id"] == "3f1c-uuid-9a2b"    # provenance
+    assert meta["owner_webui_id"] == "3f1c-uuid-9a2b"    # provenance, kept
+
     assert store.can_view(meta, "max@example.com") is True
-    assert store.can_view(meta, "3f1c-uuid-9a2b") is True   # the alias reads
+    assert store.can_view(meta, "3f1c-uuid-9a2b") is False   # NOT a login
     assert store.can_view(meta, "kid@example.com") is False
     assert store.can_view(meta, None) is False
-    # the alias manages, too — a page nobody can manage is a tombstone
-    assert store.set_visibility(r["id"], "tailnet",
-                                owner="3f1c-uuid-9a2b")["visibility"] \
-        == "tailnet"
-    assert store.set_description(r["id"], "d", owner="3f1c-uuid-9a2b")
-    assert store.set_current(r["id"], 1, owner="3f1c-uuid-9a2b")
-    with as_user("3f1c-uuid-9a2b"):
-        assert store.publish("v2", artifact_id=r["id"])["version"] == 2
-    # ...and the listing finds it under either name
-    for who in ("max@example.com", "3f1c-uuid-9a2b"):
-        assert [x["id"] for x in store.list_artifacts(owner=who)] == [r["id"]]
-    assert store.remove(r["id"], owner="3f1c-uuid-9a2b") is True
+
+    for call in (lambda: store.set_visibility(r["id"], "tailnet",
+                                              owner="3f1c-uuid-9a2b"),
+                 lambda: store.set_description(r["id"], "d",
+                                               owner="3f1c-uuid-9a2b"),
+                 lambda: store.set_current(r["id"], 1,
+                                           owner="3f1c-uuid-9a2b"),
+                 lambda: store.remove(r["id"], owner="3f1c-uuid-9a2b")):
+        with pytest.raises(artifact.ArtifactError) as e:
+            call()
+        assert "not your artifact" in str(e.value)
+    with as_user("3f1c-uuid-9a2b"), pytest.raises(artifact.ArtifactError):
+        store.publish("v2", artifact_id=r["id"])
+
+    # the listing does not answer to it either
+    assert [x["id"] for x in
+            store.list_artifacts(owner="max@example.com")] == [r["id"]]
+    assert store.list_artifacts(owner="3f1c-uuid-9a2b") == []
+    assert store.list_artifacts(viewer="3f1c-uuid-9a2b") == []
+    # ...and the page is still private, still whole, still its owner's
+    assert store.get_meta(r["id"])["visibility"] == "private"
+    assert store.read_file(r["id"], 1)[0] == PAGE.encode()
 
 
-def test_a_page_owned_by_an_id_alone_is_still_reachable(store):
-    """The pages published BEFORE the fix: owner is the raw WebUI id. They
-    stay readable and manageable by whoever can present that id — the point
-    of accepting the alias at all is that nothing becomes a tombstone."""
-    with as_user("3f1c-uuid-9a2b"):
-        r = store.publish(PAGE)
-    meta = store.get_meta(r["id"])
-    assert meta["owner"] == "3f1c-uuid-9a2b"
-    assert meta["owner_webui_id"] is None
-    assert store.can_view(meta, "3f1c-uuid-9a2b") is True
-    assert store.can_view(meta, "kid@example.com") is False
-    with as_user("3f1c-uuid-9a2b"):
-        assert store.set_visibility(r["id"], "tailnet")["visibility"] \
-            == "tailnet"
+def test_publish_owner_alias_kwarg_cannot_name_a_third_party(store):
+    """R6: `owner_alias=` was D28's forging primitive reborn — round two
+    accepted any alias from any caller, so an in-process caller could plant a
+    page carrying a named third party's id. Like `owner=`, it is an assertion:
+    only the resolved caller's own alias is ever recorded."""
+    with as_user("max@example.com", "3f1c-uuid-9a2b"):
+        mine = store.publish(PAGE, owner_alias="victims-uuid")
+    assert store.get_meta(mine["id"])["owner_webui_id"] == "3f1c-uuid-9a2b"
+    # with no alias in context there is nothing to record, whatever is asserted
+    plain = store.publish(PAGE, owner_alias="victims-uuid")
+    assert store.get_meta(plain["id"])["owner_webui_id"] is None
 
 
 def test_owner_override_alias_does_not_leak(store):
@@ -903,6 +982,38 @@ def test_is_store_path_refuses_the_store_and_everything_in_it(store, tmp_path,
     assert store.is_store_path(None) is False
     assert store.is_store_path("/etc/passwd") is False
     assert store.is_store_path("x\x00y") is False        # NUL: no exception
+
+
+def test_a_hardlink_into_the_store_is_not_publishable(store, tmp_path):
+    """R3: realpath resolves symlinks; a HARDLINK has nothing to resolve. With
+    FILES_SHARDING off the store lives inside the workspace, so
+    `ln <store>/<id>/v1/index.html loot.html` put another user's private page
+    at a path that passed every guard — the reviewer who did it published it
+    as tailnet and a third operator read it."""
+    with as_user("max@example.com"):
+        r = store.publish("<title>Private</title>secret")
+    page = os.path.join(store.store_root(), r["id"], "v1", "index.html")
+    ws = tmp_path / "files"
+    loot = ws / "loot.html"
+    os.link(page, loot)                              # the attack, verbatim
+
+    assert os.path.realpath(str(loot)) == str(loot)  # nothing to resolve
+    assert open(loot, "rb").read() == b"<title>Private</title>secret"
+    assert store.is_store_path(str(loot)) is True    # ...and it is refused
+
+    # a page the caller just wrote has exactly one link, so honest publishing
+    # is untouched
+    own = ws / "mine.html"
+    own.write_text("<p>hi</p>")
+    assert os.stat(own).st_nlink == 1
+    assert store.is_store_path(str(own)) is False
+    # and a second link to it is refused too: "how many links" is the only
+    # question answerable without walking the whole store per publish, and it
+    # errs toward refusing
+    os.link(own, ws / "mine-again.html")
+    assert store.is_store_path(str(own)) is True
+    # directories carry many links and are judged by path alone, as before
+    assert store.is_store_path(str(ws)) is False
 
 
 def test_get_meta_missing_is_none(store):

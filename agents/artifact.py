@@ -34,9 +34,10 @@ Three invariants the rest of the system leans on:
     out of the store is byte-identical to what went in — that is what makes
     the per-version sha256 meaningful.
   * **A version exists only once meta.json names it.** A vN directory with no
-    meta entry is the debris of a crashed publish: unreachable, swept and
-    reused by the next publish rather than wedging the id (security model
-    D14). meta.json is the single source of truth for what is published.
+    meta entry is the debris of a crashed publish: unreachable, and STEPPED
+    OVER by the next publish rather than wedging the id (D14) — never deleted,
+    because "this directory is debris" is a judgement a corrupt meta.json can
+    make wrongly, and the version it deletes is the only copy (R4).
 
 Caps mirror Claude Code's artifact tool (CAPS below) so a page written for
 one system publishes on the other.
@@ -59,6 +60,7 @@ from contextvars import ContextVar
 import re
 import shutil
 import socket
+import stat as _stat
 import tempfile
 import threading
 import time
@@ -76,6 +78,7 @@ __all__ = [
     "set_description", "set_current", "remove", "artifact_url", "can_view",
     "extract_title", "wrap_skeleton", "set_owner_override",
     "reset_owner_override", "default_owner", "default_owner_alias",
+    "valid_email",
 ]
 
 
@@ -100,6 +103,14 @@ VISIBILITIES = ("private", "tailnet")
 # a stable human id (the campaign verdict scripts do — reruns become versions
 # of one page), so accept a conservative slug and reject everything else.
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# Ids that collide with the store's own files or the server's own routes (R7).
+# `index.jsonl` is the ledger: <root>/index.jsonl is a FILE, so publishing to
+# that id made os.makedirs raise NotADirectoryError — an OSError no handler
+# caught, i.e. an HTTP 500 handed to the page's own owner. `health` is the
+# server's one unauthenticated route. Compared lowercased: refusing
+# `INDEX.JSONL` costs nothing and a case-insensitive filesystem collides too.
+_RESERVED_IDS = frozenset({"index.jsonl", "health"})
 
 # A published file path: relative, forward slashes, no traversal, no dotfile
 # segments, no control characters.
@@ -287,12 +298,21 @@ def is_store_path(path) -> bool:
     index.html) and then re-share it as `tailnet`. Callers reading a file to
     publish must refuse anything this returns True for.
 
-    Correct for the three shapes that beat a string comparison:
+    Correct for the four shapes that beat a string comparison:
       * a relative path (resolved against the working directory first),
       * a symlinked parent — both sides are realpath'd, so a symlink ANYWHERE
         on either path still lands on the same real directory,
       * a path that resolves into the store from outside it (a symlink in the
-        workspace pointing at …/artifacts, the classic bypass).
+        workspace pointing at …/artifacts, the classic bypass),
+      * a HARDLINK to a page inside the store (R3). realpath resolves symlinks;
+        a hardlink has nothing to resolve, so `ln <store>/<id>/v1/index.html
+        loot.html` named the store's own bytes from a path comfortably outside
+        it — a reviewer published another user's private page that way and
+        re-shared it as tailnet. A second link to the same inode is therefore
+        refused outright: the page a caller just wrote with write_file always
+        has exactly one, so this costs an honest publisher nothing, and "how
+        many links" is the only question that can be asked of a file WITHOUT
+        walking the whole store on every publish.
     A path that does not exist is still judged: realpath resolves the part
     that does, which is what makes "publish into the store" refusable before
     the file is ever opened.
@@ -305,7 +325,13 @@ def is_store_path(path) -> bool:
         root = os.path.realpath(store_root())
     except (OSError, ValueError):
         return False
-    return target == root or target.startswith(root + os.sep)
+    if target == root or target.startswith(root + os.sep):
+        return True
+    try:
+        st = os.stat(target)
+    except (OSError, ValueError):
+        return False              # absent, unreadable: not the store
+    return _stat.S_ISREG(st.st_mode) and st.st_nlink > 1
 
 
 def _artifact_dir(artifact_id: str) -> str:
@@ -324,36 +350,68 @@ def _now() -> str:
 
 # --- validation --------------------------------------------------------------
 
+def _valid_id(name: str) -> bool:
+    """Is `name` usable as an artifact id — and as a directory beside the
+    store's own files (R7)?"""
+    return (bool(_ID_RE.match(name)) and name not in (".", "..")
+            and name.lower() not in _RESERVED_IDS)
+
+
 def _check_id(artifact_id: str) -> str:
-    aid = str(artifact_id or "").strip()
-    if not _ID_RE.match(aid) or aid in (".", ".."):
+    aid = artifact_id.strip() if isinstance(artifact_id, str) else ""
+    if not _valid_id(aid):
         raise ArtifactError(f"invalid artifact id: {artifact_id!r}")
     return aid
 
 
 def _norm_login(value) -> str:
     """One spelling for an identity: stripped, lowercased. Owners are stored
-    this way, so every comparison in this module goes through here."""
-    return str(value or "").strip().lower()
+    this way, so every comparison in this module goes through here.
 
-
-def _owner_identities(meta) -> set:
-    """Every identity that counts as this artifact's owner (D21).
-
-    Two of them, because a publish crosses two namespaces: `owner` is the
-    login a reader presents (a tailnet login, an email), and
-    `owner_webui_id` is the raw Open WebUI user id the publish came in under.
-    A page owned by a namespace no principal can ever present is a tombstone
-    — unreadable AND unmanageable — so the alias is recorded beside the owner
-    and both can_view() and every ownership guard accept either.
+    A non-string is NOT an identity (R1). This used to be `str(value or "")`,
+    so a claim that arrived as a list became the owner `"['max@example.com']"`
+    — a principal nobody can ever present, on a page nobody can ever manage.
     """
-    out = set()
-    if isinstance(meta, dict):
-        for key in ("owner", "owner_webui_id"):
-            val = _norm_login(meta.get(key))
-            if val:
-                out.add(val)
-    return out
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+# A login a reader can actually present (R1). Deliberately not RFC 5322: this
+# is the shape an identity provider hands over — one `@`, a non-empty local
+# part, a domain of ordinary labels. Single-label domains are allowed because
+# real tailnet logins have them (`max@github`, `max@passkey`).
+_EMAIL_RE = re.compile(
+    r"^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$")
+
+
+def valid_email(value) -> str:
+    """`value` as a normalized login, or "" when it is not a plausible one.
+
+    The single definition of "an identity a reader can present", for every
+    surface that turns a forwarded header or a JWT claim into an owner (R1).
+    The test it replaces was `"@" in login`, which minted the owner `'@'` from
+    a bare at-sign and stringified a non-string claim into nonsense. An owner
+    nobody can present is a tombstone: unreadable AND unmanageable.
+    """
+    login = _norm_login(value)
+    if not login or len(login) > 254:
+        return ""
+    local, sep, domain = login.partition("@")
+    if not sep or not local or not domain or len(local) > 64:
+        return ""
+    return login if _EMAIL_RE.match(login) else ""
+
+
+def _owner_of(meta) -> str:
+    """The ONE identity that owns this artifact: meta["owner"], normalized.
+
+    There used to be two (R6). `owner_webui_id`, the publishing surface's own
+    id, was flattened into the same set as the login a reader presents — so
+    the id AUTHENTICATED: on a rig with no operator allowlist a stranger who
+    presented the UUID as their login read the private page. It is pure
+    provenance now, consulted by nothing here and by no guard anywhere.
+    """
+    return _norm_login(meta.get("owner")) if isinstance(meta, dict) else ""
 
 
 def _require_owner(meta, owner) -> str:
@@ -365,8 +423,8 @@ def _require_owner(meta, owner) -> str:
     message says nothing about who the owner is, so a probe learns nothing.
     """
     who = _norm_login(owner) or default_owner()
-    known = _owner_identities(meta)
-    if known and who not in known:
+    known = _owner_of(meta)
+    if known and who != known:
         raise ArtifactError("not your artifact")
     return who
 
@@ -585,10 +643,16 @@ def publish(html, *, title=None, description=None, favicon=None,
                 someone else raises — otherwise a second operator could take
                 over the id, flip it to `tailnet` and read every earlier
                 private version through /a/<id>/v/<n>.
-    owner_alias the caller's identity in its OWN namespace (the raw Open WebUI
-                user id), recorded as meta["owner_webui_id"] for provenance
-                and accepted by can_view() and the ownership guards as an
-                alias for the owner (D21). Set once, at creation.
+    owner_alias IGNORED unless it is the resolved caller's own alias (R6), and
+                therefore never a way to plant a page in a third party's name.
+                The caller's alias — its identity in its OWN namespace, the
+                raw Open WebUI user id — comes from the context the server
+                set, and is recorded once, at creation, as
+                meta["owner_webui_id"]. That field is PURE PROVENANCE: no
+                guard here consults it and can_view() does not know it exists.
+                It used to be an alias for the owner, which made it a
+                credential (a stranger presenting the UUID as their login read
+                the page) and made this kwarg an attribution-forging primitive.
 
     Raises ArtifactError on any cap or validation failure — nothing is
     written when it does (the version directory is created exclusively and
@@ -632,9 +696,10 @@ def publish(html, *, title=None, description=None, favicon=None,
     # kwarg that disagrees with it is ignored rather than honoured (the server
     # passes the principal it already resolved, so agreement is the norm).
     resolved_owner = default_owner()
-    alias = _norm_login(owner_alias) or default_owner_alias()
-    if alias == resolved_owner:
-        alias = ""                      # no point aliasing an identity to itself
+    # R6: the same shape as `owner=` above — an alias that disagrees with the
+    # resolved caller's own is ignored, not honoured. Provenance may only ever
+    # record who actually published.
+    alias = default_owner_alias()
     # The id is minted BEFORE the lock because the lock is per-artifact now
     # (D25): a publish into page A must not make page B, health or any read
     # wait on it.
@@ -657,10 +722,9 @@ def publish(html, *, title=None, description=None, favicon=None,
                 "versions": [],
             }
         else:
-            # D5: republish requires ownership. The message says nothing about
-            # who does own it — a probe must not learn that either. Either
-            # recorded identity satisfies it (D21), so a page published under
-            # a WebUI id is still the caller's own page.
+            # D5: republish requires ownership, against meta["owner"] alone
+            # (R6). The message says nothing about who does own it — a probe
+            # must not learn that either.
             _require_owner(meta, resolved_owner)
             # Backfill provenance, never rewrite it: the alias identifies the
             # creator, and a later publisher must not overwrite whose it was.
@@ -672,22 +736,31 @@ def publish(html, *, title=None, description=None, favicon=None,
             raise ArtifactError(
                 f"{aid} already has {len(meta['versions'])} versions, at the "
                 f"{CAPS['versions']} version cap — publish under a new id")
-        n = max(_version_numbers(meta) or [0]) + 1
+        # R4: the number a READER would resolve next, and clear of every vN
+        # directory that already exists.
+        #
+        # It used to come from meta's list alone while every reader resolves
+        # through _resolvable_versions() (meta, falling back to disk). With a
+        # version list corrupted into non-numeric entries — an ordinary
+        # corruption, one the suite below exercises — n computed to 1, and the
+        # orphan sweep that used to live here rmtree'd the REAL v1 as debris;
+        # v2 then fell out of the resolver and became unreachable. Silent and
+        # irreversible, so the sweep is GONE: publish never deletes a version
+        # directory it did not itself create this call. Debris from a crashed
+        # publish (D14) is stepped over instead of destroyed — it stays
+        # unreachable, meta names it nowhere, and the id is not wedged, which
+        # is all D14 ever asked for.
+        n = max(_resolvable_versions(aid, meta) + _disk_versions(aid) or [0]) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
         try:
             os.makedirs(vdir, mode=0o700, exist_ok=False)
-        except FileExistsError:
-            # D14: a crash between mkdir/write and the meta write leaves a vN
-            # directory no meta entry references. It is unreachable (read_file
-            # resolves versions through meta), so it is garbage, not history —
-            # sweep it and retry once rather than wedging the id forever.
-            shutil.rmtree(vdir, ignore_errors=True)
-            try:
-                os.makedirs(vdir, mode=0o700, exist_ok=False)
-            except OSError:
-                raise ArtifactError(
-                    f"version v{n} of {aid} already exists — refusing to "
-                    "rewrite an immutable version")
+        except OSError as e:
+            # R7: every failure here is an ArtifactError the caller turns into
+            # a 4xx. A reserved id used to reach this line as a bare
+            # NotADirectoryError (<root>/index.jsonl is a file) — neither
+            # `except FileExistsError` nor `except ArtifactError` caught it, so
+            # the page's own owner got a 500.
+            raise ArtifactError(f"cannot create version v{n} of {aid}: {e}")
         try:
             _write_bytes(os.path.join(vdir, "index.html"), page)
             for p, data in sorted(payload.items()):
@@ -762,8 +835,8 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
     except OSError:
         return []
     for name in entries:
-        if not _ID_RE.match(name):
-            continue
+        if not _valid_id(name):
+            continue        # index.jsonl, .locks, junk: not artifacts (R7)
         try:
             meta = get_meta(name)
         except Exception:
@@ -775,13 +848,13 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
                 # D29: owners are STORED lowercased, so a case-sensitive
                 # compare here dropped every row for a caller who spelled
                 # their own login the way their identity provider does
-                # (Max@Example.com). Either recorded identity matches (D21).
+                # (Max@Example.com). meta["owner"] alone (R6).
                 want = _norm_login(owner)
-                ids = _owner_identities(meta)
+                have = _owner_of(meta)
                 if want:
-                    if want not in ids:
+                    if want != have:
                         continue
-                elif ids:
+                elif have:
                     continue        # owner="" asks for the unowned records
             if viewer is not None and not can_view(meta, viewer):
                 continue
@@ -790,7 +863,7 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
             last = (versions[-1] if versions and isinstance(versions[-1], dict)
                     else {})
             aid = meta.get("id") if isinstance(meta.get("id"), str) else name
-            if not _ID_RE.match(aid):
+            if not _valid_id(aid):
                 aid = name
             rows.append({
                 "id": aid,
@@ -986,9 +1059,10 @@ def set_owner_override(login, alias=None):
     token for `reset_owner_override()`.
 
     `login` must be an identity a reader can actually present (a tailnet
-    login / email). When the surface only has an opaque id — an Open WebUI
-    UUID — pass it as `alias`, not as `login`: a page owned by a namespace
-    nobody can present is readable by no one and manageable by no one.
+    login / email); `valid_email()` is the test for that. The `alias` is the
+    surface's own opaque id for the same human — recorded as provenance on
+    what this context publishes, and NOTHING else (R6): it authorizes no read
+    and no mutation, so it can never stand in for a login that is missing.
     """
     return _OWNER_OVERRIDE.set(
         (_norm_login(login) or None, _norm_login(alias) or None))
@@ -1017,9 +1091,11 @@ def default_owner() -> str:
         return who
     for var in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS"):
         for part in (os.environ.get(var) or "").split(","):
-            part = part.strip().lower()
-            if part:
-                return part
+            # R1: a login, not any non-empty string. A stray "@" in the
+            # allowlist used to become the owner of every unattributed page.
+            who = valid_email(part)
+            if who:
+                return who
     return "local"
 
 
@@ -1035,10 +1111,10 @@ def _owner_override() -> tuple:
 def default_owner_alias() -> str:
     """The caller's id in its own namespace for this context, or "" (D21).
 
-    Recorded as meta["owner_webui_id"] at publish and accepted as an alias by
-    can_view() and the ownership guards, so a page published through the tool
-    server is reachable BOTH as the tailnet login and as the WebUI id that
-    published it.
+    Recorded as meta["owner_webui_id"] at publish, so an operator reading the
+    store can tie a page owned by a login back to the account that published
+    it. PURE PROVENANCE (R6): can_view() and the ownership guards do not
+    consult it, and no API returns it.
     """
     return _owner_override()[1] or ""
 
@@ -1055,11 +1131,11 @@ def can_view(meta, viewer_login) -> bool:
     IDENTIFIED caller — and the server (D1) gives an anonymous request a 404
     before it ever gets here, so `viewer_login` is never None on a real read.
 
-    "The owner" is either recorded identity (D21): meta["owner"], the login a
-    reader presents, or meta["owner_webui_id"], the publishing surface's own
-    id for the same human. A publish that crossed namespaces used to mint a
-    page no principal could ever present an identity for — 404 to the human
-    who asked for it, and unrecoverable.
+    "The owner" is meta["owner"] and nothing else (R6). meta["owner_webui_id"]
+    is provenance, not a credential: flattening it into the same set as the
+    login a reader presents meant the Open WebUI id AUTHENTICATED, so on a rig
+    with no operator allowlist a stranger who simply presented that id as
+    their login read the private page.
     """
     if not isinstance(meta, dict):
         return False
@@ -1067,12 +1143,10 @@ def can_view(meta, viewer_login) -> bool:
         return True
     if viewer_login is None:
         return False         # NEVER open to anonymous
-    owners = _owner_identities(meta)
-    if not owners:
+    owner = _owner_of(meta)
+    if not owner:
         return True          # legacy/unowned: an identified caller may read
-    # Either recorded identity (D21): the login, or the publishing surface's
-    # own id for the same human.
-    return _norm_login(viewer_login) in owners
+    return _norm_login(viewer_login) == owner
 
 
 # --- html helpers ------------------------------------------------------------
