@@ -402,9 +402,28 @@ REAL_SERVE_SCRIPT="$SERVE_SCRIPT"
 FAST_BOOT_ACTIVE=0
 if [[ "${FAST_BOOT:-false}" == "true" && "$SERVE_SCRIPT" != "$BOOTSTRAP_SERVE" \
       && -x "$SCRIPT_DIR/scripts/$BOOTSTRAP_SERVE" ]]; then
-  FAST_BOOT_ACTIVE=1
-  SERVE_SCRIPT="$BOOTSTRAP_SERVE"
-  echo "Fast boot: bringing up the bootstrap model for instant chat; $REAL_SERVE_SCRIPT loads next."
+  # The bridge weight must actually BE there. Nothing installs it: bootstrap.sh
+  # downloads only the default model, so on a fresh install the 0.6B bridge is
+  # absent even though it is registry-pinned, conf-exposed and documented.
+  # Before this check, FAST_BOOT=true on such a box took the WHOLE stack down
+  # at the health wait below ("Error: bootstrap model failed to load"), which
+  # pointed at llama-server instead of at a file that was never fetched.
+  #
+  # Fast boot is an OPTIMISATION. A missing optimisation must degrade to the
+  # normal path, never fail the boot.
+  _fb_w="$( (source "$SCRIPT_DIR/scripts/lib/weights.sh" >/dev/null 2>&1; printf '%s' "${WEIGHTS_DIR:-}") || true )"
+  _fb_g="$(grep -oE 'WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$SCRIPT_DIR/scripts/$BOOTSTRAP_SERVE" \
+           | head -1 | sed 's|WEIGHTS_DIR/||')"
+  if [[ -n "$_fb_w" && -n "$_fb_g" && ! -f "$_fb_w/$_fb_g" ]]; then
+    echo "Fast boot is on but its bridge weight is missing: $_fb_w/$_fb_g" >&2
+    echo "  Nothing downloads it — bootstrap.sh fetches only the default model." >&2
+    echo "  Get it:  ./scripts/fetch-weight.sh $_fb_g" >&2
+    echo "  Continuing WITHOUT fast boot; the configured model loads directly." >&2
+  else
+    FAST_BOOT_ACTIVE=1
+    SERVE_SCRIPT="$BOOTSTRAP_SERVE"
+    echo "Fast boot: bringing up the bootstrap model for instant chat; $REAL_SERVE_SCRIPT loads next."
+  fi
 fi
 
 echo "Waiting for llama.cpp server to be ready..."

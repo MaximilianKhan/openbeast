@@ -197,11 +197,48 @@ def capture_gpu_info() -> dict:
     return {}
 
 
+def parse_engine_version(out: str) -> dict:
+    """Parse llama-server --version output. Pure, so it can be tested.
+
+    TWO upstream formats, and the second one broke us silently:
+      old: "version: 8893 (6217b4958)"
+      new: "version: 0.4.0-dev (build 10865, commit d4389a4dd)"
+    The regex only knew the old one, so from the day llama.cpp changed the
+    line, `build` and `commit` were absent from EVERY row — and because the
+    parse failure was a quiet `if m:`, nothing said so. The row kept
+    `source_head`, which is the SOURCE TREE's HEAD and is NOT what the binary
+    was built from (today: tree 8e126574, binary build 10865 / d4389a4dd). So
+    the field recording what actually produced a measurement was empty while
+    the populated one named something else.
+
+    An unrecognised third format is reported, not dropped.
+    """
+    info: dict = {}
+    m = re.search(r"^version:\s*\S*\s*\(build\s+(\d+),\s*commit\s+([0-9a-f]+)\)",
+                  out, re.MULTILINE)
+    if not m:
+        m = re.search(r"^version:\s+(\S+)\s+\(([0-9a-f]+)\)\s*$", out, re.MULTILINE)
+    if m:
+        info["build"], info["commit"] = m.group(1), m.group(2)
+    else:
+        first = next((ln for ln in out.splitlines() if ln.startswith("version:")), "")
+        info["version_raw"] = first.strip() or "(no version line)"
+        info["version_parse"] = "UNRECOGNISED — update parse_engine_version in run_eval.py"
+    m = re.search(r"^built with\s+(.+?)\s+for\s+(.+?)\s*$", out, re.MULTILINE)
+    if m:
+        info["compiler"], info["target"] = m.group(1), m.group(2)
+    return info
+
+
 def capture_inference_engine_info() -> dict:
     """Snapshot the llama.cpp binary's version + build commit + compiler.
 
-    Reads from `<repo>/llama.cpp/build/bin/llama-server --version`, which
-    prints lines like `version: 8893 (6217b4958)` and `built with GNU 15.2.1`.
+    Reads from `<repo>/llama.cpp/build/bin/llama-server --version`. Upstream
+    has used two formats — `version: 8893 (6217b4958)` and the current
+    `version: 0.4.0-dev (build 10865, commit d4389a4dd)` — and both are
+    parsed. An unrecognised third one is recorded as `version_raw` +
+    `version_parse: UNRECOGNISED` rather than dropped, because the previous
+    silent miss meant no row carried the binary's identity at all.
     `CUDA_VISIBLE_DEVICES=""` disables ggml's CUDA init so this call doesn't
     contend for VRAM with a running server. Also captures the llama.cpp
     source-tree HEAD via `git rev-parse HEAD`, which may differ from the
@@ -218,14 +255,7 @@ def capture_inference_engine_info() -> dict:
             capture_output=True, text=True, timeout=10, env=env,
         )
         out = (result.stdout or "") + (result.stderr or "")
-        m = re.search(r"^version:\s+(\S+)\s+\(([0-9a-f]+)\)\s*$", out, re.MULTILINE)
-        if m:
-            info["build"] = m.group(1)
-            info["commit"] = m.group(2)
-        m = re.search(r"^built with\s+(.+?)\s+for\s+(.+?)\s*$", out, re.MULTILINE)
-        if m:
-            info["compiler"] = m.group(1)
-            info["target"] = m.group(2)
+        info.update(parse_engine_version(out))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     try:
