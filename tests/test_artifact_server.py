@@ -8,6 +8,23 @@ if someone ever adds `allow-same-origin`, drops `connect-src 'none'`, or
 widens the CDN allowlist, this file fails loudly rather than the isolation
 quietly disappearing.
 
+The second load-bearing group is the security model
+(docs/BEAST_ARTIFACT_PLAN.md as amended after three adversarial reviews).
+Each of these tests failed before the fix it names:
+
+  D1   identity is REQUIRED — anonymous is 404 on every route but health,
+       and is never more privileged than a caller who names themselves
+  D4   the publish body cannot name an owner
+  D9   no /docs, /redoc, /openapi.json; every refusal is one flat 404,
+       including method-not-allowed and parameter validation
+  D10  size and auth run in middleware, before any body is parsed
+  D11  /metrics is operator-only, and an unmatched route cannot forge a
+       metric series named after the request path
+  D12  health is minimal and does not scan the store; limit=0 is clamped
+  D16  template substitution is single pass — a title cannot delete the
+       iframe's src and sandbox
+  D18  a failed second start never overwrites a live server's token
+
 Also covers:
   - publish → /raw/ round trip, skeleton applied at serve time
   - republish: same URL, v2 current, v1 still served
@@ -17,12 +34,12 @@ Also covers:
   - write auth: POST/PATCH/DELETE without the locality token → 404, with → 201
   - caps rejected with a 400 and a readable message
   - audit log: 0600, one row per request, no HTML inside
-  - /api/artifacts/health and /metrics
 
 Run: pytest tests/test_artifact_server.py
 """
 import json
 import os
+import socket
 import sys
 
 import pytest
@@ -38,6 +55,9 @@ PAGE = "<title>Hello</title><p>hi</p>"
 MAX = {"Tailscale-User-Login": "max@example.com"}
 KID = {"Tailscale-User-Login": "kid@example.com"}
 STRANGER = {"Tailscale-User-Login": "nobody@example.com"}
+
+# The body EVERY refusal carries, byte for byte (D9).
+FLAT_404 = {"detail": "Not Found"}
 
 # The exact policy /raw/ must carry. Duplicated here (not imported) so a typo
 # in the server constant cannot silently agree with itself.
@@ -61,18 +81,33 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path / "files"))
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.setenv("OPENBEAST_ARTIFACT_BASE_URL", "https://beast:8446")
+    # A port nothing answers on: create_app() probes it before reusing a
+    # token file (D18), and a test must never depend on the real rig.
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_PORT", "39917")
     monkeypatch.delenv("OPENBEAST_ARTIFACT_OPERATORS", raising=False)
     monkeypatch.delenv("OPENBEAST_CHAT_OPERATORS", raising=False)
     return tmp_path
 
 
-def make_client(operators: str = ""):
-    if operators:
-        os.environ["OPENBEAST_ARTIFACT_OPERATORS"] = operators
-    app = artifact_server.create_app()
-    c = TestClient(app)
-    c.app_token = app.state.local_token          # type: ignore[attr-defined]
-    return c
+@pytest.fixture()
+def make_client(env, monkeypatch):
+    """Client factory.
+
+    It is a FIXTURE, not a module function, so the operator allowlist goes
+    through `monkeypatch.setenv`: the old version assigned os.environ
+    directly and leaked OPENBEAST_ARTIFACT_OPERATORS into every test that ran
+    after it in the session — an allowlist appearing out of nowhere is
+    exactly the kind of drift these tests exist to catch.
+    """
+    def _make(operators: str = ""):
+        if operators:
+            monkeypatch.setenv("OPENBEAST_ARTIFACT_OPERATORS", operators)
+        app = artifact_server.create_app()
+        c = TestClient(app)
+        c.app_token = app.state.local_token      # type: ignore[attr-defined]
+        c.asgi_app = app                         # type: ignore[attr-defined]
+        return c
+    return _make
 
 
 def local(c, extra=None):
@@ -81,20 +116,20 @@ def local(c, extra=None):
     return h
 
 
-def publish(c, **kw):
+def publish(c, headers=None, **kw):
     body = {"html": PAGE}
     body.update(kw)
-    r = c.post("/api/artifacts", json=body, headers=local(c))
+    r = c.post("/api/artifacts", json=body, headers=headers or local(c))
     assert r.status_code == 201, r.text
     return r.json()
 
 
 # --- isolation (the load-bearing part) ---------------------------------------
 
-def test_raw_csp_is_exactly_the_pinned_policy(env):
+def test_raw_csp_is_exactly_the_pinned_policy(make_client):
     c = make_client()
     a = publish(c)
-    r = c.get(f"/raw/{a['id']}/v/1/")
+    r = c.get(f"/raw/{a['id']}/v/1/", headers=local(c))
     assert r.status_code == 200
     csp = r.headers["content-security-policy"]
     assert csp == EXPECTED_RAW_CSP
@@ -111,10 +146,10 @@ def test_raw_csp_is_exactly_the_pinned_policy(env):
     assert r.headers["cross-origin-resource-policy"] == "same-origin"
 
 
-def test_raw_headers_on_supporting_files_too(env):
+def test_raw_headers_on_supporting_files_too(make_client):
     c = make_client()
     a = publish(c, files={"app.js": "console.log(1)"})
-    r = c.get(f"/raw/{a['id']}/v/1/app.js")
+    r = c.get(f"/raw/{a['id']}/v/1/app.js", headers=local(c))
     assert r.status_code == 200
     assert r.text == "console.log(1)"
     assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP
@@ -123,11 +158,11 @@ def test_raw_headers_on_supporting_files_too(env):
         r.headers["content-type"].startswith("application/javascript")
 
 
-def test_shell_and_gallery_carry_a_different_stricter_policy(env):
+def test_shell_and_gallery_carry_a_different_stricter_policy(make_client):
     c = make_client()
     a = publish(c)
     for path in ("/", f"/a/{a['id']}", f"/a/{a['id']}/v/1"):
-        r = c.get(path)
+        r = c.get(path, headers=local(c))
         assert r.status_code == 200, path
         csp = r.headers["content-security-policy"]
         assert csp == artifact_server.SHELL_CSP
@@ -139,40 +174,40 @@ def test_shell_and_gallery_carry_a_different_stricter_policy(env):
         assert r.headers["x-frame-options"] == "DENY"
 
 
-def test_shell_embeds_the_raw_route_in_a_sandboxed_iframe(env):
+def test_shell_embeds_the_raw_route_in_a_sandboxed_iframe(make_client):
     c = make_client()
     a = publish(c)
-    body = c.get(f"/a/{a['id']}").text
+    body = c.get(f"/a/{a['id']}", headers=local(c)).text
     assert f'src="/raw/{a["id"]}/v/1/"' in body
     assert 'sandbox="allow-scripts allow-forms allow-modals allow-popups"' in body
 
 
-def test_head_returns_the_headers_without_a_body(env):
+def test_head_returns_the_headers_without_a_body(make_client):
     """`curl -I` and header probes must see the policy, not a 405."""
     c = make_client()
     a = publish(c)
-    r = c.head(f"/raw/{a['id']}/v/1/")
+    r = c.head(f"/raw/{a['id']}/v/1/", headers=local(c))
     assert r.status_code == 200
     assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP
     assert r.content == b""
 
 
-def test_unknown_content_type_defaults_to_octet_stream(env):
+def test_unknown_content_type_defaults_to_octet_stream(make_client):
     c = make_client()
     a = publish(c, files={"blob.weird": {"b64": "AAE="}})
-    r = c.get(f"/raw/{a['id']}/v/1/blob.weird")
+    r = c.get(f"/raw/{a['id']}/v/1/blob.weird", headers=local(c))
     assert r.headers["content-type"] == "application/octet-stream"
 
 
 # --- serving ------------------------------------------------------------------
 
-def test_publish_round_trip_and_skeleton(env):
+def test_publish_round_trip_and_skeleton(make_client):
     c = make_client()
     a = publish(c, description="a greeting", favicon="👋")
     assert a["url"] == f"https://beast:8446/a/{a['id']}"
     assert a["title"] == "Hello" and a["version"] == 1
 
-    raw = c.get(f"/raw/{a['id']}/v/1/").text
+    raw = c.get(f"/raw/{a['id']}/v/1/", headers=local(c)).text
     assert raw.startswith("<!doctype html>")     # skeleton applied at SERVE time
     assert "width=device-width" in raw
     assert PAGE in raw
@@ -180,82 +215,139 @@ def test_publish_round_trip_and_skeleton(env):
     on_disk, _ = store.read_file(a["id"], 1)
     assert on_disk.decode() == PAGE
 
-    shell = c.get(f"/a/{a['id']}").text
+    shell = c.get(f"/a/{a['id']}", headers=local(c)).text
     assert "Hello" in shell and "a greeting" in shell
 
 
-def test_theme_query_stamps_the_skeleton(env):
+def test_theme_query_stamps_the_skeleton(make_client):
     c = make_client()
     a = publish(c)
-    assert 'data-theme="dark"' in c.get(f"/raw/{a['id']}/v/1/?theme=dark").text
-    assert "data-theme" not in c.get(f"/raw/{a['id']}/v/1/").text
-    assert "data-theme" not in c.get(f"/raw/{a['id']}/v/1/?theme=bogus").text
+    h = local(c)
+    assert 'data-theme="dark"' in \
+        c.get(f"/raw/{a['id']}/v/1/?theme=dark", headers=h).text
+    assert "data-theme" not in c.get(f"/raw/{a['id']}/v/1/", headers=h).text
+    assert "data-theme" not in \
+        c.get(f"/raw/{a['id']}/v/1/?theme=bogus", headers=h).text
 
 
-def test_republish_keeps_url_adds_version(env):
+def test_republish_keeps_url_adds_version(make_client):
     c = make_client()
+    h = local(c)
     a = publish(c)
     b = publish(c, html="<title>Two</title>second", artifact_id=a["id"],
                 label="pass 2")
     assert b["id"] == a["id"] and b["version"] == 2
 
-    assert "second" in c.get(f"/raw/{a['id']}/v/2/").text
-    assert PAGE in c.get(f"/raw/{a['id']}/v/1/").text      # v1 still served
-    shell = c.get(f"/a/{a['id']}").text
+    assert "second" in c.get(f"/raw/{a['id']}/v/2/", headers=h).text
+    assert PAGE in c.get(f"/raw/{a['id']}/v/1/", headers=h).text   # v1 served
+    shell = c.get(f"/a/{a['id']}", headers=h).text
     assert 'value="2" selected' in shell and 'value="1"' in shell
     assert "pass 2" in shell
-    meta = c.get(f"/api/artifacts/{a['id']}").json()
+    meta = c.get(f"/api/artifacts/{a['id']}", headers=h).json()
     assert meta["current"] == 2 and len(meta["versions"]) == 2
 
     # rollback moves the pointer; both versions stay reachable
-    r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1},
-                headers=local(c))
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1}, headers=h)
     assert r.status_code == 200 and r.json()["current"] == 1
-    assert 'value="1" selected' in c.get(f"/a/{a['id']}").text
-    assert "second" in c.get(f"/raw/{a['id']}/v/2/").text
+    assert 'value="1" selected' in c.get(f"/a/{a['id']}", headers=h).text
+    assert "second" in c.get(f"/raw/{a['id']}/v/2/", headers=h).text
 
 
-def test_missing_things_are_404(env):
+def test_missing_things_are_404(make_client):
     c = make_client()
+    h = local(c)
     a = publish(c)
-    assert c.get("/a/00000000-0000-4000-8000-000000000000").status_code == 404
-    assert c.get(f"/a/{a['id']}/v/7").status_code == 404
-    assert c.get(f"/raw/{a['id']}/v/7/").status_code == 404
-    assert c.get(f"/raw/{a['id']}/v/1/nope.js").status_code == 404
-    assert c.get(f"/raw/{a['id']}/v/1/../../meta.json").status_code == 404
-    assert c.get("/a/not a valid id").status_code == 404
+    assert c.get("/a/00000000-0000-4000-8000-000000000000",
+                 headers=h).status_code == 404
+    assert c.get(f"/a/{a['id']}/v/7", headers=h).status_code == 404
+    assert c.get(f"/raw/{a['id']}/v/7/", headers=h).status_code == 404
+    assert c.get(f"/raw/{a['id']}/v/1/nope.js", headers=h).status_code == 404
+    assert c.get(f"/raw/{a['id']}/v/1/../../meta.json",
+                 headers=h).status_code == 404
+    assert c.get("/a/not a valid id", headers=h).status_code == 404
 
 
-def test_gallery_lists_artifacts(env):
+def test_gallery_lists_artifacts(make_client):
     c = make_client()
     alpha = publish(c, html="<title>Alpha</title>a", description="first")
     beta = publish(c, html="<title>Beta</title>b")
-    body = c.get("/").text
+    body = c.get("/", headers=local(c)).text
     assert "Alpha" in body and "Beta" in body and "first" in body
     # a card linking to each artifact, whatever the template's wording is
     for a in (alpha, beta):
         assert f'href="/a/{a["id"]}"' in body
 
 
+# --- D1: identity is required -------------------------------------------------
+
+def test_anonymous_gets_404_on_every_route_but_health(make_client):
+    """D1. A caller with no login header and no locality token does not get
+    to find out that any of this exists."""
+    c = make_client()
+    a = publish(c, files={"app.js": "console.log(1)"})
+    for path in ("/", f"/a/{a['id']}", f"/a/{a['id']}/v/1",
+                 f"/raw/{a['id']}/v/1/", f"/raw/{a['id']}/v/1/app.js",
+                 "/api/artifacts", f"/api/artifacts/{a['id']}", "/metrics"):
+        r = c.get(path)
+        assert r.status_code == 404, path
+        assert r.json() == FLAT_404, path
+    # health, and only health, answers
+    r = c.get("/api/artifacts/health")
+    assert r.status_code == 200 and r.json() == {"status": "ok"}
+
+
+def test_anonymous_is_not_more_privileged_than_a_named_caller(make_client):
+    """D1, the inversion itself. On the SHIPPED default config (no
+    allowlist) a caller who sent nothing read every owner's private
+    artifacts, while a caller who named themselves correctly got 404."""
+    c = make_client()
+    mine = publish(c, headers=local(c, MAX))         # owner: max
+    assert store.get_meta(mine["id"])["owner"] == "max@example.com"
+    assert c.get(f"/a/{mine['id']}", headers=MAX).status_code == 200
+    assert c.get(f"/a/{mine['id']}").status_code == 404          # was 200
+    assert c.get("/api/artifacts").status_code == 404            # was the lot
+    # an unowned/legacy artifact is not a back door either
+    assert c.get("/").status_code == 404
+
+
+def test_anonymous_writes_are_404_before_the_body_is_read(make_client):
+    c = make_client()
+    r = c.post("/api/artifacts", json={"html": PAGE})
+    assert r.status_code == 404 and r.json() == FLAT_404
+
+
+def test_identified_caller_without_an_allowlist_is_a_viewer(make_client):
+    """No allowlist means identity is not CHECKED against a list — it is
+    still required, and ownership still governs each artifact."""
+    c = make_client()
+    mine = publish(c, headers=local(c, MAX))
+    assert c.get(f"/a/{mine['id']}", headers=MAX).status_code == 200
+    assert c.get(f"/a/{mine['id']}", headers=STRANGER).status_code == 404
+    shared = publish(c, headers=local(c, MAX), visibility="tailnet")
+    assert c.get(f"/a/{shared['id']}", headers=STRANGER).status_code == 200
+
+
 # --- read auth ----------------------------------------------------------------
 
-def test_unlisted_login_gets_404_everywhere(env):
+def test_unlisted_login_gets_404_everywhere(make_client):
     c = make_client(operators="max@example.com,kid@example.com")
-    a = publish(c, owner="max@example.com", visibility="tailnet")
+    a = publish(c, visibility="tailnet")
     for path in ("/", f"/a/{a['id']}", f"/a/{a['id']}/v/1",
                  f"/raw/{a['id']}/v/1/", "/api/artifacts",
                  f"/api/artifacts/{a['id']}"):
         r = c.get(path, headers=STRANGER)
         assert r.status_code == 404, path          # never 403
+        assert r.json() == FLAT_404, path
     # a listed operator sees the same paths
     for path in ("/", f"/a/{a['id']}", f"/raw/{a['id']}/v/1/",
                  "/api/artifacts"):
         assert c.get(path, headers=KID).status_code == 200, path
 
 
-def test_private_artifact_of_another_owner_is_404(env):
+def test_private_artifact_of_another_owner_is_404(make_client):
     c = make_client(operators="max@example.com,kid@example.com")
-    a = publish(c, owner="max@example.com")        # default: private
+    a = publish(c)                                 # owner: first operator
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
     assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 200
     assert c.get(f"/a/{a['id']}", headers=KID).status_code == 404
     assert c.get(f"/raw/{a['id']}/v/1/", headers=KID).status_code == 404
@@ -269,21 +361,7 @@ def test_private_artifact_of_another_owner_is_404(env):
     assert c.get("/api/artifacts", headers=KID).json()["count"] == 1
 
 
-def test_no_operators_configured_allows_everyone(env):
-    """Single-user default: no allowlist, so nobody is turned away at the
-    door. Ownership still governs individual artifacts — an unowned CLI
-    publish is visible to all, max's private page stays his."""
-    c = make_client()
-    unowned = publish(c)                           # CLI publish, no operators
-    assert store.get_meta(unowned["id"])["owner"] is None
-    assert c.get(f"/a/{unowned['id']}").status_code == 200
-    assert c.get(f"/a/{unowned['id']}", headers=STRANGER).status_code == 200
-    mine = publish(c, owner="max@example.com")
-    assert c.get(f"/a/{mine['id']}", headers=MAX).status_code == 200
-    assert c.get(f"/a/{mine['id']}", headers=STRANGER).status_code == 404
-
-
-def test_chat_operators_is_the_fallback_allowlist(env, monkeypatch):
+def test_chat_operators_is_the_fallback_allowlist(make_client, monkeypatch):
     monkeypatch.setenv("OPENBEAST_CHAT_OPERATORS", "max@example.com")
     c = make_client()
     assert c.get("/", headers=MAX).status_code == 200
@@ -292,9 +370,9 @@ def test_chat_operators_is_the_fallback_allowlist(env, monkeypatch):
 
 # --- write auth ---------------------------------------------------------------
 
-def test_writes_need_the_locality_token(env):
+def test_writes_need_the_locality_token(make_client):
     c = make_client(operators="max@example.com")
-    a = publish(c, owner="max@example.com")
+    a = publish(c)
 
     # no token: 404 on every write route, even for a listed operator
     assert c.post("/api/artifacts", json={"html": PAGE},
@@ -305,9 +383,6 @@ def test_writes_need_the_locality_token(env):
     # a wrong token is no better
     assert c.post("/api/artifacts", json={"html": PAGE},
                   headers={"X-OpenBeast-Local": "deadbeef"}).status_code == 404
-    # a malformed body from the tailnet must not leak a 422 either
-    assert c.post("/api/artifacts", json={"nope": 1},
-                  headers=MAX).status_code == 404
     # a non-ASCII token must not become a 500 (latin-1 header decoding)
     assert c.post("/api/artifacts", json={"html": PAGE},
                   headers={"X-OpenBeast-Local": b"t\xc3\xb6k\xc3\xa9n"}
@@ -322,95 +397,467 @@ def test_writes_need_the_locality_token(env):
     assert store.get_meta(a["id"]) is None
 
 
-def test_local_token_file_is_0600(env, tmp_path):
+def test_a_malformed_body_from_the_tailnet_leaks_nothing(make_client):
+    """D10. The old version of this test posted WELL-FORMED json ({"nope":1})
+    and so asserted the case that already worked. FastAPI parses the body
+    BEFORE it solves dependencies, so unparseable json from an unauthorised
+    caller used to come back 422 — which confirms the route exists, names the
+    fields, and happens after the bytes are already in memory."""
+    c = make_client(operators="max@example.com")
+    bad = [
+        (b"{not json", "application/json"),
+        (b"", "application/json"),
+        (b"[1,2,3]", "application/json"),
+        (b"<xml/>", "application/xml"),
+    ]
+    for payload, ctype in bad:
+        r = c.post("/api/artifacts", content=payload,
+                   headers={**MAX, "Content-Type": ctype})
+        assert r.status_code == 404, payload
+        assert r.json() == FLAT_404, payload
+    # ...and a well-formed body that is missing required fields, too
+    r = c.post("/api/artifacts", json={"nope": 1}, headers=MAX)
+    assert r.status_code == 404 and r.json() == FLAT_404
+
+
+def test_local_token_file_is_0600(make_client, tmp_path):
     make_client()
     path = tmp_path / "run" / "artifact-local.token"
     assert path.exists()
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
 
-def test_publish_owner_defaults_to_the_caller(env):
+def test_publish_owner_defaults_to_the_caller(make_client):
     c = make_client(operators="max@example.com,kid@example.com")
-    a = publish(c, **{})                               # no owner, no login
+    a = publish(c)                                     # no login header
     assert store.get_meta(a["id"])["owner"] == "max@example.com"  # 1st operator
     r = c.post("/api/artifacts", json={"html": PAGE}, headers=local(c, KID))
     assert store.get_meta(r.json()["id"])["owner"] == "kid@example.com"
 
 
-# --- caps + validation --------------------------------------------------------
-
-def test_caps_rejected_with_400(env):
-    c = make_client()
-    big = "<p>" + "x" * store.CAPS["page_bytes"]
-    r = c.post("/api/artifacts", json={"html": big}, headers=local(c))
-    assert r.status_code == 400 and "page cap" in r.json()["detail"]
-
-    files = {f"f{i}.txt": "x" for i in range(store.CAPS["files"] + 1)}
-    r = c.post("/api/artifacts", json={"html": PAGE, "files": files},
+def test_the_body_cannot_name_an_owner(make_client):
+    """D4. `owner` in the publish body let a local writer attribute a page to
+    anyone — including a login no operator uses, which made the artifact
+    invisible to every real person on the rig."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    r = c.post("/api/artifacts",
+               json={"html": PAGE, "owner": "ghost@example.invalid"},
                headers=local(c))
-    assert r.status_code == 400 and "file cap" in r.json()["detail"]
+    assert r.status_code == 201                        # ignored, not rejected
+    meta = store.get_meta(r.json()["id"])
+    assert meta["owner"] == "max@example.com"          # the principal, not the body
+    assert c.get(f"/a/{r.json()['id']}", headers=MAX).status_code == 200
+    # the model no longer carries the field at all
+    assert "owner" not in artifact_server.PublishBody.model_fields
+    # nor can it forge one through the login header without the token
+    assert c.post("/api/artifacts", json={"html": PAGE},
+                  headers=KID).status_code == 404
 
 
-def test_path_traversal_in_a_files_key_is_rejected(env):
+def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
+    """The store gates visibility changes on ownership (D5), so the server
+    has to say WHO is asking instead of letting it guess."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = publish(c, headers=local(c, MAX))          # owner: max, not boss
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
+                headers=local(c, MAX))
+    assert r.status_code == 200, r.text
+    assert r.json()["visibility"] == "tailnet"
+    # and a local caller who is somebody else cannot share max's page
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "private"},
+                headers=local(c))                  # resolves to boss
+    assert r.status_code == 400 and "not your artifact" in r.json()["detail"]
+
+
+def test_the_store_sees_the_caller_for_the_whole_request(make_client):
+    """The owner ContextVar is set for the duration of the request, so a
+    store call that resolves the caller itself agrees with the one the route
+    passes explicitly."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    seen = []
+    publish(c, headers=local(c, MAX))
+
+    @c.asgi_app.get("/_probe_owner")
+    def _probe():
+        seen.append(store.default_owner())
+        return {"ok": True}
+
+    c.get("/_probe_owner", headers=local(c, MAX))
+    assert seen == ["max@example.com"]
+
+
+def test_a_local_publish_cannot_attribute_to_a_non_operator(make_client):
+    c = make_client(operators="max@example.com")
+    r = c.post("/api/artifacts", json={"html": PAGE},
+               headers=local(c, STRANGER))
+    assert r.status_code == 201
+    assert store.get_meta(r.json()["id"])["owner"] == "max@example.com"
+
+
+# --- D9: nothing announces the route table ------------------------------------
+
+def test_there_is_no_schema_and_no_docs(make_client):
+    """D9. /openapi.json documented the entire write API to anyone who
+    asked, and /docs pulled unpinned third-party script into the same origin
+    as the viewer shell."""
     c = make_client()
-    for bad in ("../escape.js", "/etc/cron.d/x", "a/../../b.js", "index.html"):
-        r = c.post("/api/artifacts", json={"html": PAGE, "files": {bad: "x"}},
-                   headers=local(c))
-        assert r.status_code == 400, bad
-    assert store.list_artifacts() == []
-    root = store.store_root()
-    assert os.listdir(root) == [] or os.listdir(root) == ["index.jsonl"]
+    for path in ("/openapi.json", "/docs", "/redoc",
+                 "/docs/oauth2-redirect"):
+        for headers in ({}, dict(MAX), local(c)):
+            r = c.get(path, headers=headers)
+            assert r.status_code == 404, (path, headers)
+            assert r.json() == FLAT_404, (path, headers)
+            assert "openapi" not in r.text.lower()
+            assert "swagger" not in r.text.lower()
 
 
-def test_publish_requires_html(env):
+def test_every_refusal_is_the_same_flat_404(make_client):
+    """D9. A reviewer walked the route table without credentials: 405 named
+    the verbs a path takes, and a bad path parameter 422'd with the
+    parameter's name — both fire before any route code runs."""
     c = make_client()
-    r = c.post("/api/artifacts", json={"title": "x"}, headers=local(c))
-    assert r.status_code == 400
+    a = publish(c)
+    probes = [
+        ("options", "/api/artifacts", {}),                 # 405: allowed verbs
+        ("options", f"/a/{a['id']}", {}),
+        ("get", f"/a/{a['id']}/v/not-a-number", {}),       # 422: parameter name
+        ("get", "/api/artifacts?limit=not-a-number", {}),
+        ("get", "/definitely/not/a/route", {}),
+        ("get", "/api/artifacts/%2e%2e", {}),
+    ]
+    seen = set()
+    for verb, path, extra in probes:
+        r = getattr(c, verb)(path, headers={**MAX, **extra})
+        assert r.status_code == 404, (verb, path)
+        assert r.json() == FLAT_404, (verb, path)
+        assert "allow" not in {k.lower() for k in r.headers}
+        seen.add((r.text, r.headers.get("content-length")))
+    # identical in content AND length — including to an ordinary miss
+    r = c.get("/a/00000000-0000-4000-8000-000000000000", headers=MAX)
+    seen.add((r.text, r.headers.get("content-length")))
+    assert len(seen) == 1, seen
 
 
-def test_base64_page_and_files(env):
+def test_the_rig_itself_still_gets_real_errors(make_client):
+    """The flat 404 is for strangers. An operator debugging the CLI keeps
+    the diagnosis — they already hold the locality token."""
     c = make_client()
-    import base64
-    a = publish(c, html=None,
-                html_b64=base64.b64encode(PAGE.encode()).decode(),
-                files={"logo.png": {"b64": base64.b64encode(
-                    b"\x89PNG\r\n\x1a\n").decode()}})
-    assert PAGE in c.get(f"/raw/{a['id']}/v/1/").text
-    r = c.get(f"/raw/{a['id']}/v/1/logo.png")
-    assert r.content == b"\x89PNG\r\n\x1a\n"
-    assert r.headers["content-type"] == "image/png"
+    a = publish(c)
+    assert c.get(f"/a/{a['id']}/v/nope", headers=local(c)).status_code == 422
+    r = c.post("/api/artifacts", json={"title": "no html"}, headers=local(c))
+    assert r.status_code == 400 and "html" in r.json()["detail"]
+
+
+def test_a_crash_does_not_announce_the_route_to_a_stranger(make_client):
+    """D9, the last exit: an unhandled 500 names the route as loudly as a
+    405 does. The rig still gets the real failure."""
+    c = make_client()
+
+    @c.asgi_app.get("/_boom")
+    def _boom():
+        raise RuntimeError("kaboom")
+
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    r = quiet.get("/_boom", headers=MAX)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert "kaboom" not in r.text
+    r = quiet.get("/_boom", headers=local(c))
+    assert r.status_code == 500                    # operators see the truth
+
+
+# --- D10: middleware runs before the body ------------------------------------
+
+def test_oversized_content_length_is_refused_before_parsing(make_client,
+                                                            monkeypatch):
+    """D10. An unauthenticated caller could stream 50 MB into this process
+    before anything looked at it, and the validation error that came back
+    disclosed the route."""
+    c = make_client()
+    cap = store.CAPS["version_bytes"]
+    monkeypatch.setitem(store.CAPS, "version_bytes", 64)
+    payload = b'{"html": "' + b"x" * 200 + b'"}'
+    # even WITH the locality token, and even unparseable, it is one flat 404
+    for headers in (local(c), dict(MAX), {}):
+        r = c.post("/api/artifacts", content=payload,
+                   headers={**headers, "Content-Type": "application/json"})
+        assert r.status_code == 404
+        assert r.json() == FLAT_404
+    r = c.post("/api/artifacts", content=b"{not json even" + b"x" * 200,
+               headers={**local(c), "Content-Type": "application/json"})
+    assert r.status_code == 404                  # size first, parsing never
+    assert r.json() == FLAT_404
+    # under the cap the same request works
+    monkeypatch.setitem(store.CAPS, "version_bytes", cap)
+    assert c.post("/api/artifacts", content=payload,
+                  headers={**local(c), "Content-Type": "application/json"}
+                  ).status_code == 201
+
+
+def test_the_gate_never_reads_the_body(make_client):
+    """The proof that the refusal is in MIDDLEWARE and not in the route:
+    drive the ASGI app by hand and count how many times it asks for body
+    bytes. Zero, for a caller it is going to refuse."""
+    import asyncio
+    c = make_client()
+    reads, sent = [], []
+
+    async def receive():
+        reads.append(1)
+        return {"type": "http.request", "body": b'{"html": "x"}',
+                "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/artifacts", "raw_path": b"/api/artifacts",
+        "root_path": "", "query_string": b"",
+        "headers": [(b"host", b"testserver"),
+                    (b"content-type", b"application/json"),
+                    (b"content-length", b"13"),
+                    (b"tailscale-user-login", b"max@example.com")],
+        "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 3004),
+    }
+    asyncio.run(c.asgi_app(scope, receive, send))
+    start = [m for m in sent if m["type"] == "http.response.start"][0]
+    assert start["status"] == 404
+    assert reads == [], "the body was read before the caller was refused"
+
+
+def test_publish_still_works_for_the_rig(make_client):
+    c = make_client()
+    a = publish(c)
+    assert c.get(f"/raw/{a['id']}/v/1/", headers=local(c)).status_code == 200
+
+
+# --- D11: metrics --------------------------------------------------------------
+
+def test_metrics_need_an_operator_or_the_rig(make_client):
+    c = make_client(operators="max@example.com")
+    assert c.get("/metrics").status_code == 404                  # anonymous
+    assert c.get("/metrics", headers=STRANGER).status_code == 404
+    assert c.get("/metrics", headers=MAX).status_code == 200
+    assert c.get("/metrics", headers=local(c)).status_code == 200
+
+
+def test_an_unmatched_route_cannot_forge_a_metric_series(make_client):
+    """D11. The metric label was the RAW request path, so a stranger could
+    mint an unbounded number of series with names of their choosing."""
+    c = make_client()
+    for path in ('/nope/%22injected%22%20forged',
+                 "/also/missing", "/x/y/z", "/api/artifacts/../../etc"):
+        c.get(path, headers=MAX)
+    m = c.get("/metrics", headers=local(c)).text
+    assert 'route="<unmatched>"' in m
+    for needle in ("injected", "forged", "also/missing", "/x/y/z"):
+        assert needle not in m, needle
+    # one series per (route, outcome), not one per path
+    unmatched = [ln for ln in m.splitlines()
+                 if ln.startswith("openbeast_artifact_requests_total")
+                 and "<unmatched>" in ln]
+    assert len(unmatched) == 1, unmatched
+    # and the labels are still well formed
+    for ln in m.splitlines():
+        if ln.startswith("openbeast_artifact"):
+            assert ln.count('"') % 2 == 0, ln
+
+
+def test_metric_label_escaping():
+    esc = artifact_server._metric_label
+    assert esc('a"b') == 'a\\"b'
+    assert esc("a\\b") == "a\\\\b"
+    assert esc("a\nb") == "a\\nb"
+    assert esc("a\r\nb") == "a\\nb"
+    assert esc(artifact_server.UNMATCHED_ROUTE) == "<unmatched>"
+
+
+# --- D12: health + listing limits ---------------------------------------------
+
+def test_health_is_minimal_for_anyone_unauthenticated(make_client):
+    """D12. It handed a stranger the absolute store path, the auth mode and
+    a count of everyone's artifacts."""
+    c = make_client()
+    publish(c)
+    r = c.get("/api/artifacts/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+    for leak in ("store", "artifacts", "auth", str(store.store_root())):
+        assert leak not in r.text
+    # the rig still gets the detail it needs
+    detail = c.get("/api/artifacts/health", headers=local(c)).json()
+    assert detail["status"] == "ok" and detail["artifacts"] == 1
+    assert detail["store"] == store.store_root()
+    assert detail["auth"] in ("identified", "allowlist")
+
+
+def test_health_does_not_scan_the_store_for_a_stranger(make_client,
+                                                       monkeypatch):
+    """D12. 48 ms of CPU per unauthenticated hit at 5k artifacts."""
+    c = make_client()
+    calls = []
+    real = store.list_artifacts
+    monkeypatch.setattr(store, "list_artifacts",
+                        lambda **kw: (calls.append(kw), real(**kw))[1])
+    assert c.get("/api/artifacts/health").json() == {"status": "ok"}
+    assert calls == []
+    c.get("/api/artifacts/health", headers=local(c))
+    assert calls, "the operator body still counts"
+
+
+def test_listing_limit_is_clamped(make_client, monkeypatch):
+    """D12. limit=0 meant UNLIMITED in the store, so the cheapest request to
+    write was the most expensive one to serve."""
+    c = make_client()
+    for i in range(3):
+        publish(c, html=f"<title>T{i}</title>x")
+    h = local(c)
+    assert c.get("/api/artifacts?limit=0", headers=h).json()["count"] == 1
+    assert c.get("/api/artifacts?limit=-9", headers=h).json()["count"] == 1
+    seen = []
+    real = store.list_artifacts
+    monkeypatch.setattr(store, "list_artifacts",
+                        lambda **kw: (seen.append(kw.get("limit")),
+                                      real(**kw))[1])
+    c.get("/api/artifacts?limit=999999999", headers=h)
+    assert seen == [artifact_server.MAX_LIST_LIMIT]
+
+
+# --- D16: single-pass template substitution -----------------------------------
+
+IFRAME_SANDBOX = 'sandbox="allow-scripts allow-forms allow-modals allow-popups"'
+
+
+def _iframe_tag(body: str) -> str:
+    i = body.index("<iframe")
+    return body[i:body.index(">", i) + 1]
+
+
+def test_a_placeholder_in_a_title_cannot_delete_the_iframe_sandbox(make_client):
+    """D16. Values were substituted one key at a time, so an inserted value
+    was re-scanned for the placeholders that had not run yet. A title of
+    `{{VERSION_OPTIONS}}` spliced the <option> markup into the iframe's title
+    attribute, and the `>` inside it closed the <iframe> tag BEFORE its src
+    and sandbox attributes — deleting the sandbox this module calls a
+    security control."""
+    c = make_client()
+    a = publish(c, title="{{VERSION_OPTIONS}}")
+    publish(c, artifact_id=a["id"], html="<p>v2</p>", label="two")
+    body = c.get(f"/a/{a['id']}", headers=local(c)).text
+    tag = _iframe_tag(body)
+    assert f'src="/raw/{a["id"]}/v/2/"' in tag      # the iframe still loads
+    assert IFRAME_SANDBOX in tag                    # ...and is still boxed in
+    assert "<option" not in tag
+    # the title renders as text, not as a placeholder
+    assert "&#123;&#123;VERSION_OPTIONS&#125;&#125;" in body
+
+
+@pytest.mark.parametrize("evil", [
+    "{{RAW_URL}}", "{{ARTIFACT_ID}}", "{{DESCRIPTION}}", "{{SANDBOX}}",
+    "{{VERSION}}", "{{ROWS}}", "{{COUNT}}", "{{VIEWER}}", "{{",
+])
+def test_no_placeholder_in_a_title_reaches_the_second_pass(make_client, evil):
+    c = make_client()
+    a = publish(c, title=evil)
+    body = c.get(f"/a/{a['id']}", headers=local(c)).text
+    tag = _iframe_tag(body)
+    assert f'src="/raw/{a["id"]}/v/1/"' in tag
+    assert IFRAME_SANDBOX in tag
+    gallery = c.get("/", headers=local(c)).text
+    assert f'href="/a/{a["id"]}"' in gallery
+
+
+def test_fill_is_one_pass():
+    fill = artifact_server._fill
+    assert fill("{{A}}", {"A": "{{B}}", "B": "boom"}) == "{{B}}"
+    assert fill("{{A}} {{B}}", {"A": "x", "B": "y"}) == "x y"
+    assert fill("{{UNKNOWN}}", {"A": "x"}) == "{{UNKNOWN}}"
+    # css and js braces are not placeholders
+    assert fill("body{margin:0}", {}) == "body{margin:0}"
+    assert fill("function(){ return {}; }", {}) == "function(){ return {}; }"
+
+
+def test_esc_neutralises_braces():
+    assert artifact_server._esc("{{X}}") == "&#123;&#123;X&#125;&#125;"
+    assert artifact_server._esc('<b>"') == "&lt;b&gt;&quot;"
+
+
+# --- D18: the token is minted after the bind ----------------------------------
+
+def test_a_live_server_keeps_its_token(make_client, tmp_path, monkeypatch):
+    """D18. A second start used to overwrite the running server's token, so
+    scripts/artifact.sh authenticated with a secret nobody honoured and the
+    operator was told "404 Not Found" for what was really an auth failure."""
+    c = make_client()
+    first = c.app_token
+    token_file = tmp_path / "run" / "artifact-local.token"
+    assert token_file.read_text() == first
+
+    monkeypatch.setattr(artifact_server, "_health_answers",
+                        lambda *a, **k: True)          # something IS live
+    app2 = artifact_server.create_app()
+    assert app2.state.local_token == first
+    assert token_file.read_text() == first
+
+    monkeypatch.setattr(artifact_server, "_health_answers",
+                        lambda *a, **k: False)         # nothing is
+    app3 = artifact_server.create_app()
+    assert app3.state.local_token != first
+    assert token_file.read_text() == app3.state.local_token
+
+
+def test_main_refuses_a_taken_port_without_touching_the_token(env, monkeypatch,
+                                                              tmp_path):
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.bind(("127.0.0.1", 0))
+    held.listen(1)
+    port = held.getsockname()[1]
+    try:
+        monkeypatch.setenv("OPENBEAST_ARTIFACT_PORT", str(port))
+        run = tmp_path / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        token_file = run / "artifact-local.token"
+        token_file.write_text("the-live-servers-token")
+        with pytest.raises(SystemExit):
+            artifact_server.main()
+        assert token_file.read_text() == "the-live-servers-token"
+    finally:
+        held.close()
 
 
 # --- conventions --------------------------------------------------------------
 
-def test_health_and_metrics(env):
+def test_health_and_metrics(make_client):
     c = make_client()
     publish(c)
-    h = c.get("/api/artifacts/health").json()
-    assert h["status"] == "ok" and h["artifacts"] == 1 and h["auth"] == "open"
-    m = c.get("/metrics").text
+    h = c.get("/api/artifacts/health", headers=local(c)).json()
+    assert h["status"] == "ok" and h["artifacts"] == 1
+    m = c.get("/metrics", headers=local(c)).text
     assert "openbeast_artifact_requests_total" in m
     assert "openbeast_artifacts_stored 1" in m
 
 
-def test_api_listing_shape(env):
+def test_api_listing_shape(make_client):
     c = make_client()
+    h = local(c)
     a = publish(c, description="d")
-    body = c.get("/api/artifacts").json()
+    body = c.get("/api/artifacts", headers=h).json()
     assert body["count"] == 1
     row = body["artifacts"][0]
     assert row["id"] == a["id"] and row["title"] == "Hello"
     assert row["versions"] == 1 and row["visibility"] == "private"
     assert row["url"].endswith(f"/a/{a['id']}")
-    meta = c.get(f"/api/artifacts/{a['id']}").json()
+    meta = c.get(f"/api/artifacts/{a['id']}", headers=h).json()
     assert meta["description"] == "d"
     assert meta["versions"][0]["url"].endswith(f"/a/{a['id']}/v/1")
 
 
-def test_audit_log_is_0600_and_has_no_content(env, tmp_path):
+def test_audit_log_is_0600_and_has_no_content(make_client, tmp_path):
     c = make_client()
     a = publish(c)
-    c.get(f"/raw/{a['id']}/v/1/")
+    c.get(f"/raw/{a['id']}/v/1/", headers=local(c))
     path = tmp_path / "run" / "artifact-audit.jsonl"
     assert oct(path.stat().st_mode & 0o777) == "0o600"
     rows = [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
@@ -424,10 +871,11 @@ def test_audit_log_is_0600_and_has_no_content(env, tmp_path):
     assert "<title>" not in blob and "<p>hi</p>" not in blob
 
 
-def test_unlisted_login_is_audited_too(env, tmp_path):
+def test_unlisted_login_is_audited_too(make_client, tmp_path):
     c = make_client(operators="max@example.com")
     c.get("/", headers=STRANGER)
     rows = [json.loads(x) for x in
             (tmp_path / "run" / "artifact-audit.jsonl").read_text().splitlines()]
     denied = [r for r in rows if r["outcome"] == 404]
     assert denied and denied[-1]["login"] == "nobody@example.com"
+    assert denied[-1]["denied"] == "anonymous"     # why, for the operator

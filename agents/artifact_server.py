@@ -16,16 +16,24 @@ the service:
   /a/…, /    OUR shell and gallery. Different, stricter policy: no CDN hosts,
              `frame-ancestors 'none'`, scripts from self only.
 
-Auth (plan §5):
-  reads   `Tailscale-User-Login` must appear in OPENBEAST_ARTIFACT_OPERATORS
-          (falls back to OPENBEAST_CHAT_OPERATORS; BOTH unset = single-user
-          rig, everyone allowed). An unlisted login gets 404, never 403 —
-          a 403 would confirm the service exists. A private artifact owned
-          by someone else is 404 for the same reason.
-  writes  POST/PATCH/DELETE need the proof-of-locality token
-          (`X-OpenBeast-Local` == .run/artifact-local.token, minted 0600 at
-          startup, agents/edge.py:412 pattern). A phone on the tailnet can
-          view; only the rig can publish.
+Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
+  identity  a caller is the LOCAL principal if it presents the locality token
+          (`X-OpenBeast-Local` == .run/artifact-local.token, 0600, minted at
+          startup — agents/edge.py:412 pattern), otherwise whoever
+          `Tailscale-User-Login` says, otherwise ANONYMOUS.
+  reads   ANONYMOUS gets 404 on every route but health: no identity, no
+          service. With OPENBEAST_ARTIFACT_OPERATORS set (falling back to
+          OPENBEAST_CHAT_OPERATORS) the login must also be on that list.
+          An unlisted login gets 404, never 403 — a 403 would confirm the
+          service exists. A private artifact owned by someone else is 404
+          for the same reason, and so is a 405 or a 422: every refusal this
+          service makes is the same 404 body, byte for byte.
+  writes  POST/PATCH/DELETE need the locality token, checked in MIDDLEWARE
+          before the body is read. A phone on the tailnet can view; only the
+          rig can publish. Ownership is the principal's — the publish body
+          cannot name an owner.
+  docs    /docs, /redoc and /openapi.json are OFF: the route table is not
+          public information.
   audit   every request → .run/artifact-audit.jsonl (0600):
           {ts, login, route, id, n, outcome, ms}; publish rows add sha256 and
           bytes, never content.
@@ -63,18 +71,26 @@ import base64
 import binascii
 import hmac
 import html as _html
+import http.client
 import json
 import os
+import re
+import socket
 import sys
 import threading
 import time
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               Response)
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -87,6 +103,29 @@ UI_DIR = os.path.join(_HERE, "artifact_ui")
 
 _HDR_LOGIN = "tailscale-user-login"
 _HDR_LOCAL = "x-openbeast-local"
+
+# The ONE unauthenticated route (D12): liveness for doctor.sh, nothing else.
+HEALTH_PATH = "/api/artifacts/health"
+
+# Verbs that mutate the store. Only the LOCAL principal may use them (D10),
+# and that is decided in middleware, before a body is parsed.
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Every refusal is byte-identical (D9): a stranger cannot tell a route that
+# exists from one that does not, nor a 405 from a 422 from a real 404.
+NOT_FOUND_BODY = {"detail": "Not Found"}
+
+# One constant metric label for everything that matched no route (D11) —
+# a raw path here is an attacker-controlled, unbounded metric series.
+UNMATCHED_ROUTE = "<unmatched>"
+
+# Who the rig itself is when no allowlist is configured; mirrors
+# artifact.default_owner()'s last resort (D3) so a CLI publish on an
+# unconfigured rig is readable by the CLI that made it.
+LOCAL_LOGIN = "local"
+
+MAX_LIST_LIMIT = 200          # D12: limit=0 must not mean "scan everything"
+COUNT_LIMIT = 1_000_000       # operator-only counters, explicitly bounded
 
 # --- the policies ------------------------------------------------------------
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
@@ -146,6 +185,60 @@ def _run_dir() -> str:
         os.path.join(REPO_DIR, ".run")
 
 
+def _token_path() -> str:
+    return os.path.join(_run_dir(), "artifact-local.token")
+
+
+def _configured_port() -> int:
+    try:
+        return int(os.environ.get("OPENBEAST_ARTIFACT_PORT", "3004"))
+    except (TypeError, ValueError):
+        return 3004
+
+
+def _configured_host() -> str:
+    return os.environ.get("OPENBEAST_BIND", "").strip() or "127.0.0.1"
+
+
+def _read_local_token() -> str:
+    try:
+        with open(_token_path(), "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _health_answers(host: str, port: int, timeout: float = 0.6) -> bool:
+    """Is an artifact server already live on this port? (D18)"""
+    target = "127.0.0.1" if host in ("", "0.0.0.0", "::", "[::]") else host
+    resp = None
+    try:
+        conn = http.client.HTTPConnection(target, port, timeout=timeout)
+        try:
+            conn.request("GET", HEALTH_PATH)
+            resp = conn.getresponse()
+            body = resp.read(256)
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException):
+        return False
+    return resp is not None and resp.status == 200 and b'"status"' in body
+
+
+def _ensure_local_token() -> str:
+    """Mint, unless a LIVE server already owns the token file (D18).
+
+    A failed second start used to overwrite the running server's token, so
+    scripts/artifact.sh authenticated with a secret nobody honoured and the
+    operator got "404 Not Found" for a publish that was really an auth
+    failure. main() additionally binds the port BEFORE calling this.
+    """
+    existing = _read_local_token()
+    if existing and _health_answers(_configured_host(), _configured_port()):
+        return existing
+    return _mint_local_token()
+
+
 def _mint_local_token() -> str:
     """Shared secret proving the caller can read this box's filesystem.
 
@@ -154,7 +247,7 @@ def _mint_local_token() -> str:
     learned this the hard way). Regenerated each start, 0600.
     """
     token = uuid.uuid4().hex
-    path = os.path.join(_run_dir(), "artifact-local.token")
+    path = _token_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # O_TRUNC keeps an existing file's mode — fchmod explicitly so a
@@ -185,7 +278,13 @@ def _operators() -> list[str]:
 
 
 def _esc(value) -> str:
-    return _html.escape("" if value is None else str(value), quote=True)
+    """HTML-escape, and neutralise BRACES (D16).
+
+    `{` and `}` become entities that render identically, so no escaped value
+    can ever spell a `{{PLACEHOLDER}}` — belt to _fill's single-pass braces.
+    """
+    out = _html.escape("" if value is None else str(value), quote=True)
+    return out.replace("{", "&#123;").replace("}", "&#125;")
 
 
 def _now() -> str:
@@ -204,10 +303,22 @@ def _read_template(name: str, fallback: str) -> str:
         return fallback
 
 
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
 def _fill(template: str, values: dict) -> str:
-    for key, val in values.items():
-        template = template.replace("{{%s}}" % key, val)
-    return template
+    """Substitute every placeholder in ONE pass (D16).
+
+    The old sequential `str.replace` loop re-scanned each inserted value for
+    the placeholders that had not run yet: a page whose TITLE was the literal
+    text `{{VERSION_OPTIONS}}` had the <option> markup spliced into the
+    iframe's title attribute, and the `>` in it closed the <iframe> tag
+    BEFORE its src and sandbox attributes — deleting the very sandbox this
+    module calls a security control. One pass makes a value inert: whatever
+    it contains is output, never input.
+    """
+    return _PLACEHOLDER_RE.sub(
+        lambda m: values.get(m.group(1), m.group(0)), template)
 
 
 _FALLBACK_GALLERY = """<title>OpenBeast artifacts</title>
@@ -270,6 +381,13 @@ class PublishBody(BaseModel):
     `html` is the page (UTF-8 text); `html_b64` carries it base64 for callers
     with non-UTF-8 bytes. `files` maps a published path to either a string
     (stored as UTF-8) or {"b64": "..."} for binaries.
+
+    There is deliberately NO `owner` field (D4). Attribution comes from the
+    locality-token principal and the login header only — a body that could
+    name its own owner let any local writer forge attribution and, by naming
+    a login nobody uses, publish a private page no real operator can ever
+    see. Unknown fields are ignored, so an older CLI still sending `owner`
+    keeps working; the value has no effect.
     """
     html: str | None = None
     html_b64: str | None = None
@@ -280,7 +398,6 @@ class PublishBody(BaseModel):
     artifact_id: str | None = None
     label: str | None = None
     visibility: str = "private"
-    owner: str | None = None
 
 
 class PatchBody(BaseModel):
@@ -305,27 +422,66 @@ def _decode_files(files: dict | None) -> dict:
     return out
 
 
+@dataclass(frozen=True)
+class Principal:
+    """Who is calling (D1).
+
+    login     the resolved identity, or None for ANONYMOUS.
+    local     presented the locality token: this box's own filesystem.
+    operator  on the read allowlist (or LOCAL) — may see the route table's
+              real errors, /metrics and the detailed health body.
+
+    ANONYMOUS is the least privileged thing there is: it gets 404 on every
+    route but health. Before D1 it was the MOST privileged — a caller who
+    sent no headers at all read every owner's private artifacts, while a
+    caller who named themselves correctly got 404.
+    """
+    login: str | None
+    local: bool
+    operator: bool
+
+
+def _metric_label(value: str) -> str:
+    """Prometheus label value escaping (D11): backslash, quote, newline."""
+    return (str(value).replace("\\", "\\\\")
+            .replace('"', '\\"').replace("\n", "\\n").replace("\r", ""))
+
+
 # --- app ---------------------------------------------------------------------
 
-def create_app() -> FastAPI:
-    """App factory — reads config at call time so tests can vary env."""
+def create_app(local_token: str | None = None) -> FastAPI:
+    """App factory — reads config at call time so tests can vary env.
+
+    `local_token` lets main() mint the token only AFTER it owns the port
+    (D18); passing None keeps the safe default (reuse a live server's token,
+    otherwise mint).
+    """
     operators = _operators()          # ordered; [0] owns CLI publishes
     operator_set = set(operators)
-    local_token = _mint_local_token()
+    if local_token is None:
+        local_token = _ensure_local_token()
     audit_path = os.path.join(_run_dir(), "artifact-audit.jsonl")
 
     metrics_lock = threading.Lock()
     hits: dict = defaultdict(int)        # (route, outcome) -> count
     latency_ms: dict = defaultdict(float)
 
+    # D9: nothing announces the route table. /openapi.json was readable by a
+    # stranger and documented the entire write API; /docs pulled unpinned
+    # third-party script into the same origin as the viewer shell.
     app = FastAPI(
         title="OpenBeast artifacts",
         version="1.0",
         description="Durable URLs for model-authored HTML "
                     "(see agents/artifact_server.py).",
+        docs_url=None, redoc_url=None, openapi_url=None,
     )
     app.state.local_token = local_token
     app.state.operators = operators
+
+    def _flat_404() -> JSONResponse:
+        """The single refusal (D9). Same status, same body, same length."""
+        return JSONResponse(NOT_FOUND_BODY, status_code=404)
 
     def audit(entry: dict) -> None:
         try:
@@ -341,40 +497,96 @@ def create_app() -> FastAPI:
         except Exception:
             pass  # the audit trail must never break a request
 
-    @app.middleware("http")
-    async def _audit_and_meter(request: Request, call_next):
-        t0 = time.monotonic()
-        request.state.extra = {}
-        try:
-            response = await call_next(request)
-            status = response.status_code
-        except Exception:
-            ms = int((time.monotonic() - t0) * 1000)
-            audit({"ts": _now(),
-                   "login": request.headers.get(_HDR_LOGIN) or None,
-                   "route": request.url.path, "id": None, "n": None,
-                   "outcome": "error", "ms": ms})
-            with metrics_lock:
-                hits[(request.url.path, "error")] += 1
-            raise
+    def _labels(request: Request) -> tuple:
+        """(metric label, audit route). The METRIC label is a route template
+        or one constant (D11) — never attacker text. The audit log may name
+        the raw path (it is a file, not an unbounded metric series), capped."""
+        route = getattr(request.scope.get("route"), "path", None)
+        if route:
+            return route, route
+        return UNMATCHED_ROUTE, request.url.path[:128]
+
+    def _record(request: Request, status, t0: float,
+                extra: dict | None = None) -> None:
         ms = int((time.monotonic() - t0) * 1000)
-        route = request.scope.get("route")
-        label = getattr(route, "path", None) or request.url.path
+        metric, route = _labels(request)
         params = request.scope.get("path_params") or {}
         entry = {
             "ts": _now(),
             "login": request.headers.get(_HDR_LOGIN) or None,
-            "route": label,
+            "route": route,
             "id": params.get("artifact_id"),
             "n": params.get("n"),
             "outcome": status,
             "ms": ms,
         }
-        entry.update(getattr(request.state, "extra", {}) or {})
+        entry.update(extra or getattr(request.state, "extra", {}) or {})
         audit(entry)
+        outcome = ("error" if status == "error"
+                   else "ok" if int(status) < 400 else str(status))
         with metrics_lock:
-            hits[(label, "ok" if status < 400 else str(status))] += 1
-            latency_ms[(label,)] += ms
+            hits[(metric, outcome)] += 1
+            latency_ms[(metric,)] += ms
+
+    @app.middleware("http")
+    async def _gate_audit_meter(request: Request, call_next):
+        """Size, identity and write-locality — BEFORE the body is parsed (D10).
+
+        Order matters. (1) An oversized Content-Length dies here, so an
+        unauthenticated caller can no longer stream tens of megabytes into
+        this process's RAM. (2) The principal is resolved. (3) ANONYMOUS is
+        refused everywhere but health (D1), and a non-LOCAL caller is refused
+        every write verb — as a flat 404, so the 422 that FastAPI used to
+        raise while validating an unauthorised body can no longer confirm
+        that the route exists.
+        """
+        t0 = time.monotonic()
+        request.state.extra = {}
+
+        # (1) size first: nothing has read the body yet, and nothing will.
+        oversize = False
+        raw_len = request.headers.get("content-length")
+        if raw_len:
+            try:
+                oversize = int(raw_len) > store.CAPS["version_bytes"]
+            except (TypeError, ValueError):
+                oversize = True        # unparseable length: not a request we serve
+
+        # (2) identity.
+        principal = resolve_principal(request)
+        request.state.principal = principal
+
+        # (3) the gates.
+        if oversize:
+            deny = "oversize"
+        elif principal.login is None and request.url.path != HEALTH_PATH:
+            deny = "anonymous"
+        elif request.method in WRITE_METHODS and not principal.local:
+            deny = "not-local"
+        else:
+            deny = ""
+        if deny:
+            _record(request, 404, t0, {"denied": deny})
+            return _flat_404()
+
+        # Whoever this is, every store call made while serving the request
+        # attributes to them (artifact.default_owner()'s ContextVar). The
+        # routes also pass `owner=` explicitly where the store takes it —
+        # this is the belt, that is the brace.
+        owner_token = store.set_owner_override(principal.login)
+        try:
+            response = await call_next(request)
+        except Exception:
+            _record(request, "error", t0, {"outcome": "error"})
+            # A 500 announces the route too (D9). The rig and the operators
+            # still get the real failure — and the audit row above is written
+            # either way, so nothing is swallowed silently.
+            if not (principal.local or principal.operator):
+                return _flat_404()
+            raise
+        finally:
+            store.reset_owner_override(owner_token)
+        _record(request, response.status_code, t0)
         return response
 
     # --- auth ---------------------------------------------------------------
@@ -390,31 +602,80 @@ def create_app() -> FastAPI:
             presented.encode("utf-8", "surrogateescape"),
             local_token.encode())
 
-    def viewer_of(request: Request) -> str | None:
-        """The caller's login, or None on a rig with no allowlist.
+    def resolve_principal(request: Request) -> Principal:
+        """Header + token -> Principal (D1). Never raises; never trusts.
 
-        Raises 404 (never 403) for an unlisted login: to a stranger this
-        service does not exist.
+        With an allowlist: a listed login is that operator; the locality
+        token alone is the first operator (who a CLI publish belongs to);
+        anything else — INCLUDING a caller who sent nothing — is anonymous.
+        Without an allowlist: identity is still REQUIRED, it is just not
+        checked against a list. Anonymous is never a viewer.
         """
-        login = (request.headers.get(_HDR_LOGIN) or "").strip()
-        if not operators:
-            return login.lower() or None
-        if login and login.lower() in operator_set:
-            return login.lower()
-        if is_local(request):
-            # The rig itself (CLI / MCP tool with the locality token). It acts
-            # as the first operator, which is who a CLI publish belongs to.
-            return operators[0] if operators else None
-        raise HTTPException(status_code=404, detail="Not Found")
+        local = is_local(request)
+        raw = (request.headers.get(_HDR_LOGIN) or "").strip().lower()
+        if operators:
+            if raw and raw in operator_set:
+                return Principal(login=raw, local=local, operator=True)
+            if local:
+                return Principal(login=operators[0], local=True, operator=True)
+            return Principal(login=None, local=False, operator=False)
+        if local:
+            # The rig itself. A login header on a local call is the identity
+            # server telling us whose call this is.
+            return Principal(login=raw or LOCAL_LOGIN, local=True,
+                             operator=True)
+        if raw:
+            return Principal(login=raw, local=False, operator=False)
+        return Principal(login=None, local=False, operator=False)
+
+    def principal_of(request: Request) -> Principal:
+        p = getattr(request.state, "principal", None)
+        return p if isinstance(p, Principal) else resolve_principal(request)
+
+    def viewer_of(request: Request) -> str:
+        """The caller's login. Never None: the middleware already turned
+        every anonymous request into a 404 (D1), and this is the belt to that
+        brace for any route reached another way."""
+        login = principal_of(request).login
+        if not login:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return login
 
     def require_local(request: Request) -> None:
-        """Write guard, used as a DEPENDENCY: FastAPI solves dependencies
-        before it validates the request body, so a malformed publish from the
-        tailnet gets the same 404 as a well-formed one — a 422 would confirm
-        the route exists."""
-        if not is_local(request):
+        """Write guard, used as a DEPENDENCY. The middleware already refused
+        every non-LOCAL write before the body was read (D10); this stays as
+        the second lock on the same door."""
+        if not principal_of(request).local:
             # 404, not 403: writes are invisible from the tailnet.
             raise HTTPException(status_code=404, detail="Not Found")
+
+    # --- refusals (D9) ------------------------------------------------------
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exc(request: Request, exc: StarletteHTTPException):
+        """A stranger gets ONE answer, byte for byte, whatever went wrong.
+
+        A reviewer enumerated the whole route table without credentials:
+        405 Method Not Allowed named the verbs a path accepts, and a path
+        parameter of the wrong type 422'd with the parameter's name — both
+        fire before any route code (and so before any auth check) runs.
+        """
+        if _trusted(request) and exc.status_code != 404:
+            return JSONResponse({"detail": exc.detail},
+                                status_code=exc.status_code,
+                                headers=getattr(exc, "headers", None))
+        return _flat_404()
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exc(request: Request, exc: RequestValidationError):
+        if _trusted(request):
+            return JSONResponse({"detail": jsonable_encoder(exc.errors())},
+                                status_code=422)
+        return _flat_404()
+
+    def _trusted(request: Request) -> bool:
+        p = principal_of(request)
+        return bool(p.local or p.operator)
 
     def visible_meta(artifact_id: str, viewer: str | None) -> dict:
         try:
@@ -427,13 +688,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Not Found")
         return meta
 
-    def default_owner(request: Request, body_owner: str | None) -> str | None:
-        if body_owner and body_owner.strip():
-            return body_owner.strip()
-        login = (request.headers.get(_HDR_LOGIN) or "").strip()
-        if login:
-            return login.lower()
-        return operators[0] if operators else None
+    def owner_for(request: Request) -> str:
+        """Who a publish belongs to (D3/D4): the resolved principal, full
+        stop. The body has no say — it never sees an `owner` field again.
+        Writes are LOCAL-only, so this is never None."""
+        return principal_of(request).login or LOCAL_LOGIN
 
     def _version_or_current(meta: dict, n) -> int:
         known = [int(v.get("n", 0)) for v in meta.get("versions", [])]
@@ -455,7 +714,7 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def gallery(request: Request):
         viewer = viewer_of(request)
-        rows = store.list_artifacts(viewer=viewer, limit=200)
+        rows = store.list_artifacts(viewer=viewer, limit=MAX_LIST_LIMIT)
         cards = []
         for r in rows:
             fav = f"{_esc(r['favicon'])} " if r.get("favicon") else ""
@@ -552,23 +811,34 @@ def create_app() -> FastAPI:
 
     # --- api ----------------------------------------------------------------
 
-    @app.get("/api/artifacts/health")
+    @app.get(HEALTH_PATH)
     def health(request: Request):
-        # Liveness for doctor.sh / healthcheck.sh. No allowlist check: it
-        # leaks nothing but "the service is up", and probes have no login.
+        """Liveness for doctor.sh / healthcheck.sh — the ONE route an
+        anonymous caller may reach, and it says the minimum (D12).
+
+        It used to hand a stranger the absolute store path, the auth mode and
+        a count of EVERYONE's artifacts, and it listed the whole store to get
+        that count: 48 ms of CPU per unauthenticated hit at five thousand
+        artifacts. Detail is now operator/LOCAL only, and the scan with it.
+        """
+        if not _trusted(request):
+            return {"status": "ok"}
         try:
             root = store.store_root()
-            count = len(store.list_artifacts(limit=0))
+            count = len(store.list_artifacts(limit=COUNT_LIMIT))
             ok = os.path.isdir(root)
         except Exception as e:
             return {"status": "error", "detail": str(e)}
         return {"status": "ok" if ok else "error", "artifacts": count,
-                "auth": "allowlist" if operators else "open",
+                "auth": "allowlist" if operators else "identified",
                 "store": root}
 
     @app.get("/api/artifacts")
     def api_list(request: Request, limit: int = 25, owner: str = ""):
         viewer = viewer_of(request)
+        # D12: clamp. `limit=0` meant "no limit" in the store, so the cheapest
+        # possible query was also the most expensive one to serve.
+        limit = max(1, min(int(limit), MAX_LIST_LIMIT))
         rows = store.list_artifacts(owner=owner or None, viewer=viewer,
                                     limit=limit)
         return {"artifacts": rows, "count": len(rows), "viewer": viewer}
@@ -605,7 +875,7 @@ def create_app() -> FastAPI:
                 favicon=body.favicon, files=files,
                 artifact_id=body.artifact_id, label=body.label,
                 visibility=(body.visibility or "private"),
-                owner=default_owner(request, body.owner))
+                owner=owner_for(request))
         except store.ArtifactError as e:
             raise HTTPException(status_code=400, detail=str(e))
         meta = store.get_meta(result["id"]) or {}
@@ -627,7 +897,10 @@ def create_app() -> FastAPI:
         try:
             meta = None
             if body.visibility is not None:
-                meta = store.set_visibility(artifact_id, body.visibility)
+                # Owner-gated in the store (D5): say WHO is asking rather
+                # than letting it guess the rig's first operator.
+                meta = store.set_visibility(artifact_id, body.visibility,
+                                            owner=owner_for(request))
             if body.description is not None:
                 meta = store.set_description(artifact_id, body.description)
             if body.current is not None:
@@ -653,10 +926,19 @@ def create_app() -> FastAPI:
         return {"id": artifact_id, "removed": True}
 
     @app.get("/metrics", response_class=PlainTextResponse)
-    def metrics():
+    def metrics(request: Request):
         """Prometheus text exposition, hand-rolled (no client dep), same as
         the identity tool server. No login labels: cardinality + privacy —
-        per-caller detail lives in the audit log."""
+        per-caller detail lives in the audit log.
+
+        Operator or LOCAL only (D11). It was world-readable, and every
+        unmatched path became its own metric series named after the raw
+        request path: a stranger could forge arbitrary series, and grow this
+        dict without bound. Labels are now a route template or the constant
+        "<unmatched>", and escaped on the way out.
+        """
+        if not _trusted(request):
+            raise HTTPException(status_code=404, detail="Not Found")
         lines = [
             "# HELP openbeast_artifact_requests_total Requests by route/outcome",
             "# TYPE openbeast_artifact_requests_total counter",
@@ -664,20 +946,23 @@ def create_app() -> FastAPI:
         with metrics_lock:
             for (route, outcome), n in sorted(hits.items()):
                 lines.append(
-                    f'openbeast_artifact_requests_total{{route="{route}",'
-                    f'outcome="{outcome}"}} {n}')
+                    f'openbeast_artifact_requests_total'
+                    f'{{route="{_metric_label(route)}",'
+                    f'outcome="{_metric_label(outcome)}"}} {n}')
             lines += [
                 "# HELP openbeast_artifact_latency_ms_total Cumulative ms by route",
                 "# TYPE openbeast_artifact_latency_ms_total counter",
             ]
             for (route,), ms in sorted(latency_ms.items()):
                 lines.append(
-                    f'openbeast_artifact_latency_ms_total{{route="{route}"}} {ms:.0f}')
+                    f'openbeast_artifact_latency_ms_total'
+                    f'{{route="{_metric_label(route)}"}} {ms:.0f}')
         try:
             lines += [
                 "# HELP openbeast_artifacts_stored Artifacts in the store",
                 "# TYPE openbeast_artifacts_stored gauge",
-                f"openbeast_artifacts_stored {len(store.list_artifacts(limit=0))}",
+                f"openbeast_artifacts_stored "
+                f"{len(store.list_artifacts(limit=COUNT_LIMIT))}",
             ]
         except Exception:
             pass
@@ -687,13 +972,37 @@ def create_app() -> FastAPI:
 
 
 def main() -> None:
+    """Bind the port FIRST, then mint the token (D18).
+
+    A second `start.sh` used to build the app — and so overwrite
+    .run/artifact-local.token — before uvicorn discovered the port was taken.
+    The live server kept serving with the old secret, and scripts/artifact.sh
+    published with the new one and was told "404 Not Found", which is not
+    what happened. Now a start that cannot own the port never touches the
+    token file.
+    """
     import uvicorn
-    host = os.environ.get("OPENBEAST_BIND", "127.0.0.1")
-    port = int(os.environ.get("OPENBEAST_ARTIFACT_PORT", "3004"))
-    app = create_app()
+    host = _configured_host()
+    port = _configured_port()
+    family, stype, proto, _, addr = socket.getaddrinfo(
+        host, port, type=socket.SOCK_STREAM)[0]
+    sock = socket.socket(family, stype, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(addr)
+        sock.listen(128)
+    except OSError as e:
+        sock.close()
+        print(f"ERROR: cannot bind {host}:{port} ({e}) — another artifact "
+              f"server is probably already running. Its locality token has "
+              f"been left alone, so scripts/artifact.sh keeps working.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    app = create_app(local_token=_mint_local_token())
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
 
 
 if __name__ == "__main__":
