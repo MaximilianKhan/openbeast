@@ -16,8 +16,10 @@ Layout, under $OPENBEAST_FILES_DIR/artifacts (0700 all the way down):
         v1/files/app.js    supporting files at their published paths
         v2/...
       index.jsonl          append-only publish log (ts, id, n, owner, bytes)
+      .lock                flock target; every mutator holds it (three
+                           separate processes write this store)
 
-Two invariants the rest of the system leans on:
+Three invariants the rest of the system leans on:
 
   * **Versions are immutable.** A vN directory is written once and never
     rewritten. "Publishing again" means vN+1; `current` selects which one a
@@ -26,6 +28,10 @@ Two invariants the rest of the system leans on:
     skeleton is applied at SERVE time (`wrap_skeleton`), so what comes back
     out of the store is byte-identical to what went in — that is what makes
     the per-version sha256 meaningful.
+  * **A version exists only once meta.json names it.** A vN directory with no
+    meta entry is the debris of a crashed publish: unreachable, swept and
+    reused by the next publish rather than wedging the id (security model
+    D14). meta.json is the single source of truth for what is published.
 
 Caps mirror Claude Code's artifact tool (CAPS below) so a page written for
 one system publishes on the other.
@@ -37,6 +43,7 @@ Env:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html as _html
 import json
@@ -51,11 +58,17 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
+try:
+    import fcntl                      # POSIX only; absent on Windows
+except ImportError:                   # pragma: no cover - not our platform
+    fcntl = None
+
 __all__ = [
     "ArtifactError", "CAPS", "store_root", "publish", "get_meta",
     "list_artifacts", "read_file", "set_visibility", "set_description",
     "set_current", "remove", "artifact_url", "can_view", "extract_title",
-    "wrap_skeleton",
+    "wrap_skeleton", "set_owner_override", "reset_owner_override",
+    "default_owner",
 ]
 
 
@@ -71,6 +84,7 @@ CAPS = {
     "binary_bytes": 15 * 1024 * 1024,    # each binary supporting file
     "files": 255,                        # supporting files per version
     "version_bytes": 64 * 1024 * 1024,   # page + files, per version
+    "versions": 200,                     # versions per artifact id
 }
 
 VISIBILITIES = ("private", "tailnet")
@@ -93,6 +107,50 @@ _TEXT_TYPES = {
 }
 
 _LOCK = threading.Lock()   # serializes version allocation within a process
+
+# The store is written by THREE processes in the shipped stack (the artifact
+# server, the MCP tool host and scripts/artifact.sh), so an in-process lock is
+# not enough: two publishes that interleave their read-modify-write of
+# meta.json lose a version and leave a vN directory with no meta entry, which
+# wedges that id forever. Every mutator therefore takes an flock on
+# <store>/.lock for the whole read-modify-write.
+_LOCK_NAME = ".lock"
+
+
+@contextlib.contextmanager
+def _store_lock():
+    """Exclusive, cross-process lock over the whole store.
+
+    Always takes the in-process lock first (a single, fixed order, so nested
+    waiters can never deadlock), then the flock. Degrades to the in-process
+    lock alone if the filesystem has no working flock (some network mounts) —
+    a store that cannot lock must still publish.
+    """
+    path = os.path.join(store_root(), _LOCK_NAME)
+    with _LOCK:
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            fd = None
+        if fd is not None and fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                pass       # no locking on this filesystem; carry on
+        try:
+            yield
+        finally:
+            if fd is not None:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 # --- paths -------------------------------------------------------------------
@@ -230,12 +288,28 @@ def _write_meta(artifact_id: str, meta: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, os.path.join(d, "meta.json"))
+        _fsync_dir(d)      # the rename itself must survive a power cut
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def _fsync_dir(path: str) -> None:
+    """fsync a directory so a rename inside it is durable. Best effort: not
+    every platform or filesystem allows opening a directory for fsync."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def get_meta(artifact_id: str) -> dict | None:
@@ -246,6 +320,61 @@ def get_meta(artifact_id: str) -> dict | None:
         raise
     except Exception:
         return None
+
+
+def _coerce_int(value, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _version_numbers(meta) -> list[int]:
+    """The version numbers meta.json claims, coerced and de-junked.
+
+    Never raises: a record whose `versions` is the wrong shape (a dict, a
+    string, a list of nulls — all of which a truncated or hand-edited file can
+    produce) yields the numbers it can and drops the rest, so one bad artifact
+    cannot take down a listing or a read of the others.
+    """
+    out = []
+    if not isinstance(meta, dict):
+        return out
+    versions = meta.get("versions")
+    if not isinstance(versions, list):
+        return out
+    for v in versions:
+        if not isinstance(v, dict):
+            continue
+        try:
+            n = int(v.get("n", 0))
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            out.append(n)
+    return out
+
+
+def _disk_versions(artifact_id: str) -> list[int]:
+    """Version numbers actually on disk, from the vN directory names. The
+    fallback when meta.json's own list is unusable."""
+    out = []
+    try:
+        names = os.listdir(_artifact_dir(artifact_id))
+    except OSError:
+        return out
+    for name in names:
+        m = re.match(r"^v([0-9]{1,9})$", name)
+        if m and int(m.group(1)) > 0:
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _resolvable_versions(artifact_id: str, meta) -> list[int]:
+    """What a reader may address: meta's list, or — when that is broken — the
+    highest existing version on disk."""
+    nums = _version_numbers(meta)
+    return nums if nums else _disk_versions(artifact_id)
 
 
 def _append_log(entry: dict) -> None:
@@ -270,15 +399,19 @@ def publish(html, *, title=None, description=None, favicon=None,
     artifact_id None mints a uuid4; an existing id adds a version and keeps
                 the URL. An unknown-but-valid id creates that artifact (the
                 campaign verdict scripts use stable ids so reruns version).
-    visibility  applied on creation. On a REPUBLISH it can only widen
-                ("tailnet"); narrowing back to private is an explicit
-                set_visibility call, so a routine republish can never
-                silently re-share or un-share a page.
-    owner       the publisher's login; immutable after creation.
+    visibility  applied ON CREATION ONLY. A republish never touches an
+                existing artifact's visibility, in either direction:
+                `set_visibility()` is the only path (security model D5), so a
+                republish can neither silently re-share a page nor un-share
+                one.
+    owner       the publisher's login; immutable after creation. Republishing
+                into an id owned by someone else raises — otherwise a second
+                operator could take over the id, flip it to `tailnet` and
+                read every earlier private version through /a/<id>/v/<n>.
 
     Raises ArtifactError on any cap or validation failure — nothing is
     written when it does (the version directory is created exclusively and
-    removed on failure).
+    removed on failure, including a failure of the meta write itself).
     """
     page = _as_bytes(html, "html")
     if visibility not in VISIBILITIES:
@@ -314,7 +447,8 @@ def publish(html, *, title=None, description=None, favicon=None,
             f"{CAPS['version_bytes']} byte per-version cap")
 
     store_root()  # ensure 0700 root exists before we touch anything
-    with _LOCK:
+    resolved_owner = (owner or "").strip().lower() or default_owner()
+    with _store_lock():
         if artifact_id:
             aid = _check_id(artifact_id)
         else:
@@ -324,7 +458,7 @@ def publish(html, *, title=None, description=None, favicon=None,
         if new:
             meta = {
                 "id": aid,
-                "owner": (owner or "").strip().lower() or default_owner(),
+                "owner": resolved_owner,
                 "title": None,
                 "description": None,
                 "favicon": None,
@@ -334,14 +468,34 @@ def publish(html, *, title=None, description=None, favicon=None,
                 "current": 0,
                 "versions": [],
             }
-        n = max([int(v.get("n", 0)) for v in meta.get("versions", [])] or [0]) + 1
+        else:
+            # D5: republish requires ownership. The message says nothing about
+            # who does own it — a probe must not learn that either.
+            existing_owner = str(meta.get("owner") or "").strip().lower()
+            if existing_owner and existing_owner != resolved_owner:
+                raise ArtifactError("not your artifact")
+        if not isinstance(meta.get("versions"), list):
+            meta["versions"] = []
+        if len(meta["versions"]) >= CAPS["versions"]:
+            raise ArtifactError(
+                f"{aid} already has {len(meta['versions'])} versions, at the "
+                f"{CAPS['versions']} version cap — publish under a new id")
+        n = max(_version_numbers(meta) or [0]) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
         try:
             os.makedirs(vdir, mode=0o700, exist_ok=False)
         except FileExistsError:
-            raise ArtifactError(
-                f"version v{n} of {aid} already exists — refusing to rewrite "
-                "an immutable version")
+            # D14: a crash between mkdir/write and the meta write leaves a vN
+            # directory no meta entry references. It is unreachable (read_file
+            # resolves versions through meta), so it is garbage, not history —
+            # sweep it and retry once rather than wedging the id forever.
+            shutil.rmtree(vdir, ignore_errors=True)
+            try:
+                os.makedirs(vdir, mode=0o700, exist_ok=False)
+            except OSError:
+                raise ArtifactError(
+                    f"version v{n} of {aid} already exists — refusing to "
+                    "rewrite an immutable version")
         try:
             _write_bytes(os.path.join(vdir, "index.html"), page)
             for p, data in sorted(payload.items()):
@@ -371,11 +525,17 @@ def publish(html, *, title=None, description=None, favicon=None,
             meta["description"] = str(description).strip()[:1000]
         if favicon is not None and str(favicon).strip():
             meta["favicon"] = str(favicon).strip()[:32]
-        if not new and visibility == "tailnet":
-            meta["visibility"] = "tailnet"
+        # No visibility change here, in either direction (D5): set_visibility()
+        # is the only path, and it is owner-only.
         if meta.get("visibility") not in VISIBILITIES:
             meta["visibility"] = "private"
-        _write_meta(aid, meta)
+        try:
+            _write_meta(aid, meta)
+        except BaseException:
+            # The version is only real once meta names it; if the meta write
+            # fails, the directory must not survive to block v{n} forever.
+            shutil.rmtree(vdir, ignore_errors=True)
+            raise
 
     _append_log({"ts": _now(), "id": aid, "n": n,
                  "owner": meta.get("owner"), "bytes": total, "sha256": sha})
@@ -397,6 +557,11 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
     """Artifacts newest-updated first, as compact gallery rows.
 
     owner  restrict to one login. viewer  drop anything can_view() refuses.
+
+    A record that is unreadable, corrupt or the wrong shape is SKIPPED, never
+    raised (D14): the gallery is the one page an operator reaches for when
+    something has gone wrong on disk, so one bad meta.json must not turn the
+    whole listing into a server error.
     """
     root = store_root()
     rows = []
@@ -407,29 +572,44 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
     for name in entries:
         if not _ID_RE.match(name):
             continue
-        meta = get_meta(name)
-        if not meta:
+        try:
+            meta = get_meta(name)
+        except Exception:
+            continue            # corrupt/unreadable: skip this one, not all
+        if not isinstance(meta, dict) or not meta:
             continue
-        if owner is not None and (meta.get("owner") or "") != owner:
-            continue
-        if viewer is not None and not can_view(meta, viewer):
-            continue
-        versions = meta.get("versions", [])
-        rows.append({
-            "id": meta.get("id", name),
-            "title": meta.get("title") or "Untitled",
-            "description": meta.get("description"),
-            "favicon": meta.get("favicon"),
-            "owner": meta.get("owner"),
-            "visibility": meta.get("visibility", "private"),
-            "current": meta.get("current", len(versions)),
-            "versions": len(versions),
-            "created_at": meta.get("created_at"),
-            "updated_at": meta.get("updated_at"),
-            "bytes": versions[-1].get("bytes") if versions else 0,
-            "url": artifact_url(meta.get("id", name)),
-        })
-    rows.sort(key=lambda r: (r.get("updated_at") or "", r["id"]), reverse=True)
+        try:
+            if owner is not None and (meta.get("owner") or "") != owner:
+                continue
+            if viewer is not None and not can_view(meta, viewer):
+                continue
+            versions = meta.get("versions")
+            versions = versions if isinstance(versions, list) else []
+            last = (versions[-1] if versions and isinstance(versions[-1], dict)
+                    else {})
+            aid = meta.get("id") if isinstance(meta.get("id"), str) else name
+            if not _ID_RE.match(aid):
+                aid = name
+            rows.append({
+                "id": aid,
+                "title": meta.get("title") or "Untitled",
+                "description": meta.get("description"),
+                "favicon": meta.get("favicon"),
+                "owner": meta.get("owner"),
+                "visibility": (meta.get("visibility")
+                               if meta.get("visibility") in VISIBILITIES
+                               else "private"),
+                "current": _coerce_int(meta.get("current"), len(versions)),
+                "versions": len(versions),
+                "created_at": meta.get("created_at"),
+                "updated_at": meta.get("updated_at"),
+                "bytes": _coerce_int(last.get("bytes"), 0),
+                "url": artifact_url(aid),
+            })
+        except Exception:
+            continue            # any shape surprise: drop the row, keep going
+    rows.sort(key=lambda r: (str(r.get("updated_at") or ""), str(r["id"])),
+              reverse=True)
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -452,7 +632,9 @@ def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]
         n = int(version)
     except (TypeError, ValueError):
         raise ArtifactError(f"invalid version: {version!r}")
-    if n not in [int(v.get("n", 0)) for v in meta.get("versions", [])]:
+    # Coerced, and — if meta's own list is the wrong shape — resolved from the
+    # vN directories on disk, so a damaged record still serves its pages.
+    if n not in _resolvable_versions(aid, meta):
         raise ArtifactError(f"no such version: v{version}")
     rel = (path or "index.html").strip().lstrip("/")
     if rel in ("", "index.html"):
@@ -476,15 +658,26 @@ def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]
 
 # --- mutate (metadata only; versions stay immutable) -------------------------
 
-def set_visibility(artifact_id, visibility) -> dict:
+def set_visibility(artifact_id, visibility, *, owner=None) -> dict:
+    """The ONLY way an artifact's visibility changes (D5), and owner-only.
+
+    `owner` defaults to the resolved caller (`default_owner()`: the identity
+    the server put in the ContextVar, else the rig's first operator, else
+    "local"). Sharing someone else's private page is exactly the escalation
+    the republish hole gave away, so it is refused here too.
+    """
     if visibility not in VISIBILITIES:
         raise ArtifactError(
             f"visibility must be one of {VISIBILITIES}, got {visibility!r}")
     aid = _check_id(artifact_id)
-    with _LOCK:
+    who = str(owner or "").strip().lower() or default_owner()
+    with _store_lock():
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
+        existing_owner = str(meta.get("owner") or "").strip().lower()
+        if existing_owner and existing_owner != who:
+            raise ArtifactError("not your artifact")
         meta["visibility"] = visibility
         meta["updated_at"] = _now()
         _write_meta(aid, meta)
@@ -494,7 +687,7 @@ def set_visibility(artifact_id, visibility) -> dict:
 def set_description(artifact_id, description) -> dict:
     """Gallery subtitle. Metadata only — the stored pages are untouched."""
     aid = _check_id(artifact_id)
-    with _LOCK:
+    with _store_lock():
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
@@ -509,7 +702,7 @@ def set_current(artifact_id, version) -> dict:
     """Rollback: move the `current` pointer. Every version stays on disk and
     stays reachable at /a/<id>/v/<n>."""
     aid = _check_id(artifact_id)
-    with _LOCK:
+    with _store_lock():
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
@@ -517,7 +710,7 @@ def set_current(artifact_id, version) -> dict:
             n = int(version)
         except (TypeError, ValueError):
             raise ArtifactError(f"invalid version: {version!r}")
-        if n not in [int(v.get("n", 0)) for v in meta.get("versions", [])]:
+        if n not in _resolvable_versions(aid, meta):
             raise ArtifactError(f"no such version: v{version}")
         meta["current"] = n
         meta["updated_at"] = _now()
@@ -578,47 +771,87 @@ def reset_owner_override(token):
         pass
 
 
-def default_owner():
-    """Who owns a publish that named no owner: the caller if the identity
-    server told us, else the rig's first operator, else nobody (single-user
-    rig, where `can_view` lets every reader through anyway)."""
+def default_owner() -> str:
+    """Who owns a publish that named no owner. NEVER None (D3).
+
+    Order: the identity the server put in the ContextVar, else the rig's first
+    artifact operator, else its first chat operator, else the literal "local".
+
+    An ownerless artifact used to mean "readable by every operator forever",
+    so a CLI or campaign publish on an unconfigured rig silently shared itself
+    with the whole tailnet. "local" is a real principal instead: the rig's own
+    processes publish as it, and `can_view` treats it like any other owner.
+    """
     who = _OWNER_OVERRIDE.get()
     if who:
         return who
-    ops = (os.environ.get("OPENBEAST_ARTIFACT_OPERATORS")
-           or os.environ.get("OPENBEAST_CHAT_OPERATORS") or "")
-    for part in ops.split(","):
-        part = part.strip().lower()
-        if part:
-            return part
-    return None
+    for var in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS"):
+        for part in (os.environ.get(var) or "").split(","):
+            part = part.strip().lower()
+            if part:
+                return part
+    return "local"
 
 
 def can_view(meta, viewer_login) -> bool:
-    """Read permission for one artifact.
+    """Read permission for one artifact. Fails CLOSED (D2).
 
-    True for the owner, for anything marked `tailnet`, and — deliberately —
-    for an unidentified viewer on a rig with no operator allowlist: that is
-    the single-user default, where the login header does not exist and every
-    reader is Max. The allowlist check itself lives in the server; by the
-    time a login reaches here it is already known to be an operator.
+    True for anything marked `tailnet`, and otherwise only for the owner. An
+    ANONYMOUS viewer (`viewer_login is None`) never reads a non-tailnet page:
+    the old "no identity configured => single-user rig" branch handed every
+    private artifact to any caller who simply omitted the login header.
+
+    A legacy artifact with no owner at all is still readable, but only by an
+    IDENTIFIED caller — and the server (D1) gives an anonymous request a 404
+    before it ever gets here, so `viewer_login` is never None on a real read.
     """
     if not isinstance(meta, dict):
         return False
     if meta.get("visibility") == "tailnet":
         return True
-    owner = (meta.get("owner") or "").strip()
-    if not owner:
-        return True          # unowned (CLI publish on a single-user rig)
+    owner = str(meta.get("owner") or "").strip()
     if viewer_login is None:
-        return True          # no identity configured => single-user rig
+        return False         # NEVER open to anonymous
+    if not owner:
+        return True          # legacy/unowned: an identified caller may read
     return str(viewer_login).strip().lower() == owner.lower()
 
 
 # --- html helpers ------------------------------------------------------------
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.I | re.S)
-_DOC_RE = re.compile(rb"^\s*(<!doctype\s+html|<html[\s>])", re.I)
+
+# Everything a real document may carry BEFORE its <html> tag: a UTF-8 BOM,
+# whitespace, an XML declaration, comments (a licence header is the common
+# case) — and, once, a doctype.
+_LEAD_RE = re.compile(rb"\xef\xbb\xbf|\s+|<\?xml\b[^>]*\?>|<!--.*?-->", re.S)
+_DOCTYPE_RE = re.compile(rb"<!doctype\b[^>]*>", re.I)
+_HTML_TAG_RE = re.compile(rb"<html[\s>/]", re.I)
+
+
+def _skip_lead(data: bytes, pos: int) -> int:
+    while True:
+        m = _LEAD_RE.match(data, pos)
+        if not m or m.end() == pos:
+            return pos
+        pos = m.end()
+
+
+def _html_tag_at(data: bytes) -> int:
+    """Offset of the document's own <html> tag, or -1 if these bytes are a
+    fragment (D19).
+
+    A doctype alone is NOT a document: pages arrive from models with a stray
+    `<!doctype html>` on top of a bare `<p>`, and passing those through cost
+    them the charset/viewport skeleton. Equally, a document whose first bytes
+    are a BOM or a comment IS a document and must not be wrapped a second time
+    — the old anchored match got both cases wrong.
+    """
+    pos = _skip_lead(data, 0)
+    m = _DOCTYPE_RE.match(data, pos)
+    if m:
+        pos = _skip_lead(data, m.end())
+    return pos if _HTML_TAG_RE.match(data, pos) else -1
 
 
 def extract_title(html) -> str | None:
@@ -645,19 +878,22 @@ def wrap_skeleton(body_html, *, theme=None) -> bytes:
     author's own bytes, and changing this skeleton re-renders every artifact
     ever published without rewriting a single file.
 
-    A page that already carries its own <!doctype>/<html> is passed through
-    untouched (beyond the optional data-theme stamp) — hand-built pages like
-    scratch/spare-memory-meta.html predate the tool and must still render.
+    A page that already carries its own <html> tag is passed through untouched
+    (beyond the optional data-theme stamp) — hand-built pages like
+    scratch/spare-memory-meta.html predate the tool and must still render —
+    even if a BOM, a licence comment or an XML declaration comes first.
     """
     data = (body_html.encode("utf-8") if isinstance(body_html, str)
             else bytes(body_html or b""))
     stamp = ""
     if theme in ("dark", "light"):
         stamp = f' data-theme="{theme}"'
-    if _DOC_RE.match(data):
+    at = _html_tag_at(data)
+    if at >= 0:
         if stamp and b"data-theme" not in data[:2048]:
-            data = re.sub(rb"<html", b"<html" + stamp.encode(), data, count=1,
-                          flags=re.I)
+            # Stamp THE document's tag, found above — never a "<html" that
+            # happens to sit inside the leading comment.
+            data = data[:at + 5] + stamp.encode() + data[at + 5:]
         return data
     head = (
         "<!doctype html>\n"

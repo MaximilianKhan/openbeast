@@ -60,6 +60,25 @@ class TestPublisherIdentity(unittest.TestCase):
         self.assertFalse(self.A.can_view(meta, "max@example.com"))
         self.assertTrue(self.A.can_view(meta, "guest@example.com"))
 
+    def test_unconfigured_rig_publishes_as_local(self):
+        """D3: default_owner() never returns None. An ownerless artifact used
+        to be readable by every operator forever, so a CLI or campaign publish
+        on a rig with no allowlist silently shared itself."""
+        os.environ.pop("OPENBEAST_ARTIFACT_OPERATORS", None)
+        os.environ.pop("OPENBEAST_CHAT_OPERATORS", None)
+        self.assertEqual(self.A.default_owner(), "local")
+        a = self.A.publish("<title>T</title><p>x")
+        meta = self.A.get_meta(a["id"])
+        self.assertEqual(meta["owner"], "local")
+        self.assertFalse(self.A.can_view(meta, None))            # anonymous
+        self.assertFalse(self.A.can_view(meta, "max@example.com"))
+        self.assertTrue(self.A.can_view(meta, "local"))
+
+    def test_chat_operators_are_the_fallback(self):
+        os.environ.pop("OPENBEAST_ARTIFACT_OPERATORS", None)
+        os.environ["OPENBEAST_CHAT_OPERATORS"] = "chat@example.com"
+        self.assertEqual(self.A.default_owner(), "chat@example.com")
+
     def test_override_does_not_leak_after_reset(self):
         token = self.A.set_owner_override("guest@example.com")
         self.A.reset_owner_override(token)
