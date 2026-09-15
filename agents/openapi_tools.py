@@ -222,13 +222,6 @@ def create_app() -> FastAPI:
                 claims = pyjwt.decode(
                     token, jwt_secret, algorithms=["HS256"],
                     issuer="open-webui",
-                    # R1: `email` is REQUIRED. A token without it used to
-                    # validate happily and then collapse its bearer onto the
-                    # rig's first operator at publish time — and this repo's
-                    # own fixture shape (sub/role/iss/iat/exp) is exactly
-                    # that token, so on a --with-jwt rig EVERY user collapsed
-                    # onto one owner. Fail at the door instead, where the
-                    # message can name the setting.
                     # NOT "email". A token without one is a perfectly valid
                     # identity for the other 16 tools, and requiring it here
                     # would 401 the whole surface on any --with-jwt rig whose
@@ -238,9 +231,6 @@ def create_app() -> FastAPI:
                     # message that names the setting; see artifact_owner().
                     options={"require": ["exp", "sub"]},
                 )
-            except pyjwt.MissingRequiredClaimError as e:
-                raise HTTPException(status_code=401,
-                                    detail=f"invalid identity token: {e}")
             except pyjwt.PyJWTError as e:
                 raise HTTPException(status_code=401,
                                     detail=f"invalid identity token: {e}")

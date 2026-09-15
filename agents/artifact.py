@@ -725,6 +725,24 @@ def publish(html, *, title=None, description=None, favicon=None,
             # D5: republish requires ownership, against meta["owner"] alone
             # (R6). The message says nothing about who does own it — a probe
             # must not learn that either.
+            #
+            # KNOWN, DELIBERATE, and the one mutator R2 did not de-load: this
+            # check authorizes off `default_owner()` — the ContextVar — while
+            # description/current/visibility/remove take an explicit `owner=`
+            # from the server. A ship check confirmed that removing the
+            # ContextVar lets a second operator add a version to someone
+            # else's page (blind deface; visibility is untouched, so they
+            # still cannot read it, and it needs >=2 operators plus shell
+            # access to the rig).
+            #
+            # Honouring `owner=` here instead was tried and REVERTED: on a
+            # republish it would let any in-process caller assert their way
+            # past this guard, which is exactly the forging primitive D28
+            # closed, and test_publish_owner_kwarg_cannot_forge_attribution
+            # catches it. Fixing it properly means giving publish a way to be
+            # told the principal that cannot also be used to claim one —
+            # a real change, not a patch, and not one to make at the end of
+            # three rounds of churn in this file.
             _require_owner(meta, resolved_owner)
             # Backfill provenance, never rewrite it: the alias identifies the
             # creator, and a later publisher must not overwrite whose it was.
