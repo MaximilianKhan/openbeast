@@ -1077,6 +1077,73 @@ else
   fail "update.sh can still hang for minutes on an unreachable remote"
 fi
 
+# bootstrap must not hit the PyPI index when every pin is already installed.
+# The old line was an unconditional `pip install -q -U huggingface_hub -r
+# requirements.txt`, and the -U on an unpinned name forced an index query every
+# run — fatal under `set -euo pipefail` on a closed network, so pre-seeding a
+# USB wheelhouse still could not get past step 3 of the only supported
+# installer. And it fired AFTER the llama.cpp build had burned 10-40 minutes.
+echo ""
+echo "bootstrap python-dep guard:"
+_BD_FN="$(sed -n '/^ob_python_deps_satisfied()/,/^}$/p' "$REPO_DIR/bootstrap.sh")"
+if [[ -z "$_BD_FN" ]]; then
+  fail "bootstrap.sh has no ob_python_deps_satisfied guard"
+else
+  # satisfied: the repo's own requirements, which this box has installed
+  if bash -c "REPO_DIR='$REPO_DIR'
+$_BD_FN
+ob_python_deps_satisfied >/dev/null" 2>/dev/null; then
+    pass "the guard reports SATISFIED for already-installed pins (no index query)"
+  else
+    fail "the guard says the repo's own installed pins are unsatisfied"
+  fi
+  # unsatisfied: a synthetic requirements file naming something impossible
+  _BD_TMP="$(mktemp -d)"
+  mkdir -p "$_BD_TMP/agents"
+  printf 'openai==3.9.0\ndefinitely-not-installed-xyz==1.2.3\n' \
+    > "$_BD_TMP/agents/requirements.txt"
+  _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+  if grep -q 'definitely-not-installed-xyz' <<< "$_BD_OUT"; then
+    pass "the guard names what is missing instead of silently skipping"
+  else
+    fail "the guard did not report a missing pin: $_BD_OUT"
+  fi
+  rm -rf "$_BD_TMP"
+fi
+# The failure message has to teach the offline path, or the guard just moves
+# the dead end one line later.
+if grep -q 'no-index --find-links' "$REPO_DIR/bootstrap.sh"; then
+  pass "a failed pip install prints the pre-staged-wheelhouse recipe"
+else
+  fail "pip failure gives no offline recipe"
+fi
+
+# doctor must notice a certificate that is about to expire. Renewal goes
+# THROUGH tailscale's coordination server, so on a closed network a cached
+# cert simply runs out — and nothing checked (no `tailscale cert` call
+# anywhere, no expiry probe). Structural assertions: the check exists, it
+# reads the LIVE port (no root), and it has all three outcomes.
+echo ""
+echo "doctor certificate expiry:"
+_DR="$REPO_DIR/scripts/doctor.sh"
+if grep -q 'openssl x509 -noout -enddate' "$_DR"; then
+  pass "doctor reads the served certificate's expiry"
+else
+  fail "doctor never checks certificate expiry"
+fi
+if grep -q '/var/lib/tailscale' "$_DR"; then
+  fail "doctor reads tailscaled's cert store (needs root); probe the live port instead"
+else
+  pass "doctor probes the live port rather than a root-only cert store"
+fi
+if grep -q 'EXPIRED' "$_DR" && grep -q 'renews at 30' "$_DR"; then
+  pass "doctor distinguishes already-expired from expiring-soon"
+else
+  fail "doctor's expiry check has no expired/expiring distinction"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

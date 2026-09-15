@@ -398,6 +398,46 @@ if command -v tailscale >/dev/null 2>&1; then
   else
     pass "no tailscale serve mappings (stack is localhost-only)"
   fi
+
+  # ── Certificate expiry ──────────────────────────────────────────────────
+  # HTTPS on every published port is a Let's Encrypt cert that tailscaled
+  # renews THROUGH the coordination server. On a closed network that renewal
+  # cannot happen, so a cached cert simply runs out — and nothing in the repo
+  # noticed: there was no `tailscale cert` call anywhere and no expiry check
+  # here. A surface that stops trusting itself in 90 days, silently, is worse
+  # than one that was never published.
+  #
+  # Read from the LIVE port with openssl rather than tailscaled's cert store:
+  # no root needed, and it checks what a client actually gets.
+  if [[ -n "$_serve" ]] && command -v openssl >/dev/null 2>&1; then
+    _fqdn="$(tailscale status --json 2>/dev/null \
+             | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["Self"].get("DNSName","").rstrip("."))
+except Exception: print("")' 2>/dev/null)"
+    if [[ -n "$_fqdn" ]]; then
+      # One port is enough: tailscaled serves the same cert on all of them.
+      _port="$(grep -oE 'https://[^ ]+:([0-9]+)' <<< "$_serve" | head -1 | sed 's/.*://')"
+      _port="${_port:-443}"
+      _end="$(timeout 15 openssl s_client -connect "$_fqdn:$_port" -servername "$_fqdn" \
+                </dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null \
+              | cut -d= -f2)"
+      if [[ -z "$_end" ]]; then
+        warn "could not read the TLS certificate on $_fqdn:$_port" \
+             "if the surfaces are up this is usually transient; re-run"
+      else
+        _left=$(( ( $(date -d "$_end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+        if [[ $_left -lt 0 ]]; then
+          fail "TLS certificate for $_fqdn EXPIRED $(( -_left )) days ago" \
+               "renewal needs the tailscale coordination server — reconnect, or see docs/REMOTE_ACCESS_PLAN.md"
+        elif [[ $_left -le 30 ]]; then
+          warn "TLS certificate for $_fqdn expires in $_left days (renews at 30 via the coordination server)" \
+               "on a closed network that renewal cannot happen and the cert will simply run out"
+        else
+          pass "TLS certificate for $_fqdn valid for $_left more days"
+        fi
+      fi
+    fi
+  fi
 fi
 
 # ── Verdict ─────────────────────────────────────────────────────────────────

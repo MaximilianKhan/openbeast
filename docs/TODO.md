@@ -152,12 +152,16 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       `http.lowSpeedLimit/Time` (a multi-minute hang becomes ~15 s), and tells
       *"cannot reach the remote"* apart from *"your worktree is dirty"* instead
       of swallowing the first error, burning a second connect timeout, and
-      blaming local changes. **Still open:** the `pip -U` guard at
-      `bootstrap.sh:350` (the one true hard blocker — it forces an index hit
-      even when every wheel is present), `-DLLAMA_USE_PREBUILT_UI=OFF` in
-      `ob_cmake_flags` (660 s of cmake stall fetching a Web UI we never use —
-      verify upstream's fallback is a WARNING not FATAL before flipping it),
-      the compose stanza, and the conf key itself that ties them together.
+      blaming local changes. **Also done 2026-09-15: the `pip -U` guard** — the one
+      true hard blocker. bootstrap now checks satisfaction locally via
+      `importlib.metadata` (zero network), skips the install entirely when
+      every pin is present, and on failure prints the pre-staged-wheelhouse
+      recipe. Upgrades were not lost: `update.sh --python` already owns them,
+      which is the right place — bootstrap's job is to make the box work.
+      **Still open:** `-DLLAMA_USE_PREBUILT_UI=OFF` in `ob_cmake_flags`
+      (660 s of cmake stall fetching a Web UI we never use — ⚠ MAX'S CALL, it
+      disables an upstream feature and he wants latest llama.cpp), the compose
+      stanza, and the conf key itself that ties them together.
 - [ ] **Offline bundle — build connected, install from USB** (airgap 10,
       feasibility 7). Four fatal fetches with no local alternative: llama.cpp
       source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.
@@ -170,6 +174,13 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       9, feasibility 6). Land the CONSUMER side first, against parts already on
       disk, before writing any tarball builder.
 - [ ] **Local PKI for the published surfaces** (airgap 8, feasibility 6).
+      **First step done 2026-09-15:** `doctor.sh` now reads the served
+      certificate's expiry off the LIVE port (openssl, no root needed, and it
+      checks what a client actually gets), and distinguishes already-expired
+      from expiring-soon with the reason — renewal goes through tailscale's
+      coordination server, so on a closed network a cached cert simply runs
+      out. Currently 80 days on this rig. ⚠ THE PKI SHAPE IS MAX'S CALL
+      (self-signed CA / headscale / warn-only).
       HTTPS on 443/8443/8444/8445/8446 is Let's Encrypt via Tailscale's
       coordination server: a cached cert just **expires** (90 days, renewal
       impossible offline) and nothing notices — zero occurrences of
