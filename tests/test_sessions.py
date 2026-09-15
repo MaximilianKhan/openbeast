@@ -19,9 +19,13 @@ Run: python3 -m pytest tests/test_sessions.py -q
 """
 
 import json
+import multiprocessing
 import os
+import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -112,6 +116,83 @@ def test_touch_merges_meta_rather_than_replacing(ledger):
     assert meta["cursor"] == 512
     assert meta["base_url"] == "http://x/v1"     # co-writer's field survives
     assert "pid_start" in meta
+
+
+def test_concurrent_touches_do_not_lose_writes(ledger):
+    """E5 — THE test the merge claim actually needs.
+
+    The docstring on touch() has always promised that two writers cannot
+    clobber each other; until the flock landed, nothing enforced it and the
+    test backing the promise was single-threaded. Four real processes, each
+    setting its own field 40 times: with an unsynchronised read-modify-write
+    ~10% of those writes vanished.
+    """
+    sid = "20260914-130000-c0c0c0c0"
+    sessions.register(sid, pid=os.getpid())
+
+    def writer(tag):
+        sessions.SESSIONS_DIR = ledger        # fresh process, re-point it
+        for i in range(40):
+            sessions.touch(sid, **{f"w_{tag}": i}, meta={f"m_{tag}": i})
+
+    ctx = multiprocessing.get_context("fork")
+    procs = [ctx.Process(target=writer, args=(t,)) for t in range(4)]
+    for pr in procs:
+        pr.start()
+    for pr in procs:
+        pr.join(30)
+    assert all(pr.exitcode == 0 for pr in procs)
+
+    rec = sessions.get(sid)
+    for t in range(4):
+        assert rec.get(f"w_{t}") == 39, f"writer {t} lost its last write"
+        assert rec["meta"].get(f"m_{t}") == 39, f"writer {t} lost its meta"
+    assert rec["meta"]["pid_start"] is not None, "register's field survived"
+
+
+def test_a_racing_touch_cannot_resurrect_a_finalized_session(ledger):
+    """E5 — a touch that read before a finalize and wrote after it reverted
+    the terminal record to `running` in 29 of 30 trials."""
+    sid = "20260914-130001-d0d0d0d0"
+    for trial in range(30):
+        sessions.register(sid, pid=os.getpid())
+        barrier = threading.Barrier(2)
+
+        def toucher():
+            barrier.wait()
+            sessions.touch(sid, last_event="tool_call")
+
+        t = threading.Thread(target=toucher)
+        t.start()
+        barrier.wait()
+        sessions.finalize(sid, "done", summary="finished")
+        t.join(10)
+        rec = sessions.get(sid)
+        assert rec["state"] == "done", f"resurrected on trial {trial}: {rec['state']}"
+
+
+def test_finalize_refuses_to_move_a_record_back_to_running(ledger):
+    sid = sessions.new_id("agent")
+    sessions.register(sid, pid=os.getpid())
+    assert sessions.finalize(sid, "done", summary="first verdict") is True
+    # The atexit safety net fires after a clean done — it must not win.
+    assert sessions.finalize(sid, "failed", summary="late atexit") is False
+    assert sessions.finalize(sid, "running") is False
+    rec = sessions.get(sid)
+    assert rec["state"] == "done" and rec["summary"] == "first verdict"
+    # And an explicit touch(state="running") cannot undo it either.
+    sessions.touch(sid, state="running")
+    assert sessions.get(sid)["state"] == "done"
+    assert sessions.finalize("no-such-session", "done") is False
+
+
+def test_register_returns_none_when_the_write_failed(ledger, monkeypatch):
+    """E19 — it used to report success against a read-only ledger dir."""
+    sid = sessions.new_id("agent")
+    assert sessions.register(sid, pid=os.getpid()) is not None
+
+    monkeypatch.setattr(sessions, "_write_record", lambda rec: False)
+    assert sessions.register("20260914-130002-e0e0e0e0") is None
 
 
 def test_register_does_not_create_the_inbox(ledger):
@@ -377,3 +458,236 @@ def test_prune_removes_only_old_terminal_records(ledger):
 
 def test_prune_on_missing_dir_is_zero(ledger):
     assert sessions.prune(30) == 0
+
+
+# ---------------------------------------------------------------------------
+# Liveness (E3) — the ledger must tell the truth about a dead session
+# ---------------------------------------------------------------------------
+
+def _zombie() -> int:
+    """A child that has exited and has NOT been reaped. Caller must reap."""
+    pid = os.fork()
+    if pid == 0:                                  # child
+        os._exit(0)
+    for _ in range(200):                          # wait for state Z
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                raw = f.read().decode("utf-8", "replace")
+            if raw.rpartition(")")[2].split()[0] == "Z":
+                return pid
+        except OSError:
+            break
+        time.sleep(0.01)
+    return pid
+
+
+def test_a_zombie_is_not_alive(ledger):
+    """E3 — the premise of the whole feature.
+
+    An unreaped child keeps its /proc entry AND its start time, so the old
+    check called it `running` forever: every console-started session reported
+    as running for good, the SSE stream never ended, and /send queued into a
+    corpse.
+    """
+    pid = _zombie()
+    try:
+        state = open(f"/proc/{pid}/stat").read().rpartition(")")[2].split()[0]
+        assert state == "Z", "the fixture did not actually produce a zombie"
+        start = sessions.pid_start_time(pid)
+        assert start is not None, "a zombie still has a start time (that is the bug)"
+
+        assert sessions._alive(pid, start) is False
+        assert sessions._alive(pid, start, require_start=True) is False
+
+        sid = "20260914-140000-20mb1e00"
+        sessions.register(sid, pid=pid)
+        assert sessions.get(sid)["state"] == "lost"
+        assert sessions.is_alive(sessions.get(sid)) is False
+    finally:
+        os.waitpid(pid, 0)
+
+
+def test_missing_start_time_is_not_alive_for_a_signalling_caller(ledger):
+    """E3 — a reviewer rode the `no pid_start` fallback into SIGKILLing an
+    unrelated live process group. A record that cannot prove the pid is ours
+    is not alive for anything that signals."""
+    rec = {"id": "x", "state": "running", "pid": os.getpid(), "meta": {}}
+
+    # Reporting is allowed to be lenient...
+    assert sessions._alive(os.getpid(), None) is True
+    assert sessions.is_alive(rec, require_start=False) is True
+    # ...signalling is not, and that is the DEFAULT.
+    assert sessions._alive(os.getpid(), None, require_start=True) is False
+    assert sessions.is_alive(rec) is False
+
+    # The concrete attack: a live pid this record never owned.
+    victim = subprocess.Popen([sys.executable, "-c",
+                               "import time; time.sleep(30)"])
+    try:
+        stolen = {"id": "y", "state": "running", "pid": victim.pid,
+                  "pgid": victim.pid, "meta": {}}
+        assert sessions.is_alive(stolen) is False, \
+            "a record with no pid_start must never authorise a signal"
+        stolen["meta"] = {"pid_start": sessions.pid_start_time(victim.pid)}
+        assert sessions.is_alive(stolen) is True, "a proven pid still signals"
+    finally:
+        victim.kill()
+        victim.wait()
+
+
+def test_is_alive_rejects_junk_and_dead_pids(ledger):
+    assert sessions.is_alive(None) is False
+    assert sessions.is_alive({}) is False
+    assert sessions.is_alive({"pid": 0, "meta": {"pid_start": 1}}) is False
+    assert sessions.is_alive({"pid": -1, "meta": {"pid_start": 1}}) is False
+    assert sessions.is_alive({"pid": "abc", "meta": {"pid_start": 1}}) is False
+    assert sessions.is_alive({"pid": _dead_pid(), "meta": {"pid_start": 1}}) is False
+
+
+def test_proc_state_and_start_time_come_from_one_parse(tmp_path, monkeypatch):
+    """`comm` is attacker-shaped: rpartition(')') is the only correct split,
+    and the state char is field 3 == index 0 after it."""
+    fake = tmp_path / "stat"
+    fields = " ".join(str(i) for i in range(3, 53))
+    fake.write_text(f"4242 (weird ) name (x)) {fields}\n")
+    real_open = open
+
+    def fake_open(path, *a, **kw):
+        if str(path) == "/proc/4242/stat":
+            return real_open(str(fake), *a, **kw)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    assert sessions._proc_stat(4242) == ("3", 22)
+    assert sessions.pid_start_time(4242) == 22
+
+
+# ---------------------------------------------------------------------------
+# Inbox caps + hostile inbox paths (E12, E13)
+# ---------------------------------------------------------------------------
+
+def test_read_new_ops_is_bounded_per_turn(ledger):
+    """E12 — the read was unbounded: a 25 MB inbox allocated ~151 MB."""
+    sid = sessions.new_id("agent")
+    line = json.dumps({"op": "say", "text": "y" * 900, "ts": 1}) + "\n"
+    path = sessions.inbox_path(sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for _ in range(3000):                      # ~2.8 MB
+            f.write(line)
+    total = os.path.getsize(path)
+    assert total > sessions.INBOX_MAX_READ
+
+    ops, cursor = sessions.read_new_ops(sid, 0)
+    assert len(ops) == sessions.INBOX_MAX_OPS
+    assert 0 < cursor <= sessions.INBOX_MAX_READ, "at most one capped read"
+
+    # The backlog drains across turns instead of arriving as one allocation.
+    seen, guard = len(ops), 0
+    while cursor < total and guard < 500:
+        ops, cursor = sessions.read_new_ops(sid, cursor)
+        assert len(ops) <= sessions.INBOX_MAX_OPS
+        seen += len(ops)
+        guard += 1
+    assert cursor == total and seen == 3000
+
+
+def test_an_oversized_say_is_clamped(ledger):
+    sid = sessions.new_id("agent")
+    sessions.append_op(sid, {"op": "say", "text": "q" * 100_000})
+    ops, _ = sessions.read_new_ops(sid, 0)
+    assert len(ops) == 1
+    assert len(ops[0]["text"]) == sessions.OP_MAX_TEXT + len(sessions._TRUNC_MARK)
+    assert ops[0]["text"].endswith(sessions._TRUNC_MARK)
+
+
+def test_a_single_line_longer_than_the_cap_does_not_wedge_the_cursor(ledger):
+    sid = sessions.new_id("agent")
+    path = sessions.inbox_path(sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("x" * (sessions.INBOX_MAX_READ * 2) + "\n")
+        f.write(json.dumps({"op": "stop"}) + "\n")
+    cursor, guard = 0, 0
+    ops = []
+    while not ops and guard < 20:
+        ops, cursor = sessions.read_new_ops(sid, cursor)
+        guard += 1
+    assert [o["op"] for o in ops] == ["stop"], "the good op is still reachable"
+
+
+def test_a_fifo_at_the_inbox_path_does_not_block_the_runner(ledger):
+    """E13 — a named pipe there hung the runner forever inside open(), at
+    EVERY turn boundary: the module's fail-soft contract inverted into a hard
+    hang by anything that can write the ledger directory."""
+    sid = sessions.new_id("agent")
+    path = sessions.inbox_path(sid)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    os.mkfifo(path, 0o600)
+
+    def _boom(signum, frame):
+        raise AssertionError("read_new_ops blocked on the FIFO")
+
+    old = signal.signal(signal.SIGALRM, _boom)
+    signal.setitimer(signal.ITIMER_REAL, 3.0)
+    try:
+        assert sessions.read_new_ops(sid, 0) == ([], 0)
+        assert sessions.read_new_ops(sid, 512) == ([], 512)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+        os.unlink(path)
+
+
+def test_a_directory_at_the_inbox_path_is_not_an_inbox(ledger):
+    sid = sessions.new_id("agent")
+    os.makedirs(sessions.inbox_path(sid), exist_ok=True)
+    assert sessions.read_new_ops(sid, 0) == ([], 0)
+
+
+def test_append_op_refuses_to_follow_a_symlink(ledger, tmp_path):
+    """E13 — otherwise 'append an operator message' becomes 'append
+    attacker-chosen JSON to an arbitrary file'."""
+    sid = sessions.new_id("agent")
+    path = sessions.inbox_path(sid)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    target = tmp_path / "victim.txt"
+    target.write_text("original\n")
+    os.symlink(str(target), path)
+
+    sessions.append_op(sid, {"op": "say", "text": "pwned"})       # must not raise
+    assert target.read_text() == "original\n", "the symlink was followed"
+    assert sessions.read_new_ops(sid, 0) == ([], 0)
+
+
+# ---------------------------------------------------------------------------
+# prune (E17)
+# ---------------------------------------------------------------------------
+
+def test_prune_removes_the_job_log_and_the_lock_sidecar(ledger):
+    """E17 — scripts/job.sh streams stdout+stderr to <ledger>/<id>.log; a
+    prune that removed only the record orphaned it forever."""
+    sid = sessions.new_id("job")
+    sessions.register(sid, kind="job", pid=os.getpid())
+    sessions.touch(sid, last_event="x")            # creates the lock sidecar
+    log = os.path.join(ledger, f"{sid}.log")
+    open(log, "w").write("job output\n")
+    lock = os.path.join(ledger, f".{sid}.lock")
+    assert os.path.exists(lock)
+    sessions.finalize(sid, "done")
+    _age(sid, 45)
+
+    assert sessions.prune(30) == 1
+    assert not os.path.exists(log), "the job log was orphaned"
+    assert not os.path.exists(lock)
+    assert not os.path.exists(sessions.record_path(sid))
+
+
+def test_prune_leaves_a_live_session_log_alone(ledger):
+    sid = sessions.new_id("job")
+    sessions.register(sid, kind="job", pid=os.getpid())
+    log = os.path.join(ledger, f"{sid}.log")
+    open(log, "w").write("still running\n")
+    _age(sid, 45)
+    assert sessions.prune(30) == 0
+    assert os.path.exists(log)

@@ -12,7 +12,9 @@ disk and are reconciled against `/proc` on read.
 Layout (all under `<repo>/.run/sessions`, mode 0700):
 
     <id>.json          one record per session, 0600, written atomically
+    <id>.log           combined stdout+stderr for a job (scripts/job.sh)
     <id>/inbox.jsonl   append-only steering ops for that session (0600)
+    .<id>.lock         flock sidecar serialising the record's read-modify-write
 
 Record shape:
 
@@ -27,7 +29,15 @@ gone without a terminal event. Liveness compares **pid AND process start
 time** (field 22 of `/proc/<pid>/stat`, captured at `register()` time as
 `meta["pid_start"]`), so a recycled pid can never make a dead session look
 alive — on a box that spawns thousands of eval subprocesses, pid reuse inside
-a single campaign is routine, not theoretical.
+a single campaign is routine, not theoretical. It also rejects the **zombie**
+state (field 3 == `Z`): an unreaped child keeps both its /proc entry and its
+start time, which is why every console-started session used to read `running`
+forever. And a record with NO recorded start time is alive enough to show in
+a list but NOT alive enough to signal — see `is_alive(require_start=True)`.
+
+Record writes are serialised by an exclusive flock per record: `touch` is a
+read-modify-write and `finalize` is a compare-and-set, so a slow writer can
+never clobber a co-writer's field or resurrect a terminal session.
 
 EVERYTHING HERE IS FAIL-SOFT. This module sits on `runner.py`'s hot path
 (`log_event` calls `touch` on every transcript event). A corrupt, partial, or
@@ -37,8 +47,10 @@ down an agent that is otherwise working.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import stat as _stat
 import tempfile
 import time
 import uuid
@@ -67,6 +79,20 @@ _FILE_MODE = 0o600
 # Fields callers may not overwrite through touch() — identity is immutable.
 _IMMUTABLE = ("id", "started_at")
 
+# --- Inbox caps (E12) -------------------------------------------------------
+# read_new_ops used to read the whole tail in one go: a 25 MB inbox allocated
+# ~151 MB of Python objects on a turn boundary, and an oversized `say` could
+# never be evicted from the context (see runner._STEER_STUB_AFTER_TURNS), so
+# ONE bad message ended the run. Everything the inbox hands the runner is now
+# bounded; the cursor still advances past what was consumed, so a big backlog
+# drains over several turns instead of arriving as one allocation.
+#: Most inbox bytes consumed at a single turn boundary.
+INBOX_MAX_READ = 256 * 1024
+#: Most ops handed to the runner from a single turn boundary.
+INBOX_MAX_OPS = 64
+#: Longest operator message text kept; the rest is dropped with a marker.
+OP_MAX_TEXT = 4000
+_TRUNC_MARK = " […operator message truncated]"
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -128,12 +154,14 @@ def new_id(kind: str = "agent") -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
-def pid_start_time(pid: int) -> int | None:
-    """Process start time (field 22 of /proc/<pid>/stat), or None.
+def _proc_stat(pid: int) -> tuple[str, int] | None:
+    """(state char, start time) from /proc/<pid>/stat, or None.
 
     Field 2 (`comm`) is parenthesised and may itself contain spaces and
     parentheses — `rpartition(')')` is the only correct way to skip it. After
-    the split, field N lives at index N-3, so field 22 is index 19.
+    the split, field N lives at index N-3: field 3 (state) is index 0 and
+    field 22 (starttime) is index 19. One read gives us both, so the zombie
+    check below costs nothing extra.
     """
     try:
         with open(f"/proc/{int(pid)}/stat", "rb") as f:
@@ -147,17 +175,39 @@ def pid_start_time(pid: int) -> int | None:
     if len(fields) < 20:
         return None
     try:
-        return int(fields[19])
+        return fields[0], int(fields[19])
     except ValueError:
         return None
 
 
-def _alive(pid, pid_start) -> bool:
+def pid_start_time(pid: int) -> int | None:
+    """Process start time (field 22 of /proc/<pid>/stat), or None."""
+    got = _proc_stat(pid)
+    return got[1] if got else None
+
+
+#: /proc states that mean "this process is over". `Z` is the one that matters:
+#: a child whose parent never wait()s keeps its /proc entry AND its start time
+#: forever, so every console-started session read `running` for good.
+_DEAD_STATES = ("Z", "X", "x")
+
+
+def _alive(pid, pid_start, *, require_start: bool = False) -> bool:
     """True when `pid` is running AND is the same process we registered.
 
-    A None `pid_start` means the record predates start-time capture (or /proc
-    was unreadable); we fall back to bare pid existence, which is weaker but
-    never worse than the old behaviour.
+    A ZOMBIE is not alive (E3). Its /proc entry survives — with the SAME
+    start time — until somebody reaps it, so the old check called every
+    unreaped child "running" forever; that is exactly what made a finished
+    console session never end its SSE stream.
+
+    `require_start` is the difference between *reporting* and *signalling*.
+    With a None `pid_start` (a record that predates start-time capture, or
+    /proc unreadable at register() time) we can only prove that SOME process
+    holds this pid, not that it is ours. That is tolerable for a status
+    column and unacceptable for anything that delivers a signal: a reviewer
+    rode that fallback into SIGKILLing an unrelated live process group. So
+    every signalling path passes require_start=True and a record with no
+    recorded start time is simply not alive.
     """
     try:
         pid = int(pid)
@@ -165,15 +215,34 @@ def _alive(pid, pid_start) -> bool:
         return False
     if pid <= 0:
         return False
-    current = pid_start_time(pid)
-    if current is None:
+    if pid_start is None and require_start:
         return False
+    got = _proc_stat(pid)
+    if got is None:
+        return False
+    state, current = got
+    if state in _DEAD_STATES:
+        return False                     # zombie/dead: the pid is a tombstone
     if pid_start is None:
         return True
     try:
         return int(pid_start) == current
     except (TypeError, ValueError):
-        return True
+        return not require_start
+
+
+def is_alive(record: dict, *, require_start: bool = True) -> bool:
+    """Public liveness for a record. Defaults to the SIGNALLING contract.
+
+    `chat_server.signal_session` must call this immediately before killpg —
+    the record it was handed may be seconds old, and a pid recycled in that
+    window belongs to somebody else.
+    """
+    if not isinstance(record, dict):
+        return False
+    meta = record.get("meta")
+    pid_start = meta.get("pid_start") if isinstance(meta, dict) else None
+    return _alive(record.get("pid"), pid_start, require_start=require_start)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +292,57 @@ def _read_record(path: str) -> dict | None:
     return rec
 
 
+def _lock_path(session_id: str) -> str:
+    """Sidecar lock file for a record's read-modify-write.
+
+    The record itself cannot be locked: `_write_record` replaces it by
+    rename, so two writers would hold flocks on two different inodes. A
+    stable sidecar (never renamed, never unlinked while the ledger lives) is
+    what actually serialises them.
+    """
+    return os.path.join(_dir(), f".{_safe_id(session_id)}.lock")
+
+
+class _record_lock:
+    """Exclusive flock around a record RMW. Fail-soft: if the lock cannot be
+    taken (read-only dir, exotic filesystem, fd exhaustion) the body still
+    runs unlocked — a ledger problem must never stop an agent (module
+    contract), and unlocked is exactly the old behaviour."""
+
+    def __init__(self, session_id: str):
+        self._sid = session_id
+        self._fd = None
+
+    def __enter__(self):
+        try:
+            _ensure_dir()
+            fd = os.open(_lock_path(self._sid),
+                         os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, _FILE_MODE)
+        except (OSError, ValueError):
+            return self
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._fd = fd
+        except OSError:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            finally:
+                try:
+                    os.close(self._fd)
+                except OSError:
+                    pass
+                self._fd = None
+        return False
+
+
 def _blank(session_id: str) -> dict:
     return {
         "id": session_id,
@@ -249,12 +369,17 @@ def _blank(session_id: str) -> dict:
 def register(session_id: str, *, kind: str = "agent", title: str = "",
              pid: int | None = None, pgid: int | None = None,
              workdir: str | None = None, model: str | None = None,
-             transcript: str | None = None, meta: dict | None = None) -> dict:
-    """Create (or re-create) a `running` record and return it.
+             transcript: str | None = None,
+             meta: dict | None = None) -> dict | None:
+    """Create (or re-create) a `running` record; return it, or None (E19).
 
     Captures `meta["pid_start"]` so `reconcile` can tell our process from a
     later one that inherited the same pid. Does NOT create the inbox
     directory: an inbox comes into being only when somebody writes an op.
+
+    Returns None when the record could not be written (an unwritable ledger
+    dir, a bad id). It used to report success unconditionally, so a caller on
+    a read-only .run/ believed it owned a session that did not exist.
     """
     rec = _blank(session_id)
     rec["kind"] = kind if kind in ("agent", "job") else "agent"
@@ -277,7 +402,22 @@ def register(session_id: str, *, kind: str = "agent", title: str = "",
     rec["meta"] = dict(meta or {})
     rec["meta"].setdefault("pid_start", pid_start_time(rec["pid"]))
     rec["meta"].setdefault("cursor", 0)
-    _write_record(rec)
+    with _record_lock(session_id):
+        if not _write_record(rec):
+            return None
+    return rec
+
+
+def _apply(rec: dict, fields: dict) -> dict:
+    """Merge `fields` into `rec` in place-ish. `meta` merges shallowly."""
+    for key, value in fields.items():
+        if key in _IMMUTABLE:
+            continue
+        if key == "meta" and isinstance(value, dict):
+            base = rec.get("meta")
+            rec["meta"] = {**(base if isinstance(base, dict) else {}), **value}
+        else:
+            rec[key] = value
     return rec
 
 
@@ -288,35 +428,68 @@ def touch(session_id: str, **fields) -> None:
     `log_event`, and a missing ledger must never interrupt a transcript write.
     `meta` merges shallowly rather than replacing, so two writers (the runner
     bumping `cursor`, the chat server annotating) do not clobber each other.
+
+    SERIALISED (E5). The merge is a read-modify-write, and the docstring above
+    used to claim co-writers were safe while nothing enforced it: four
+    concurrent writers lost ~10% of their writes, and a touch that read before
+    a finalize and wrote after it resurrected the terminal record as
+    `running` in 29 of 30 trials. The whole RMW now runs under an exclusive
+    flock on a sidecar lock file, and a terminal record can never be moved
+    back to `running` by a merge.
     """
     try:
         path = record_path(session_id)
     except ValueError:
         return
-    rec = _read_record(path)
-    if rec is None:
+    if not os.path.exists(path):
+        # Cheap pre-check: never create a lock sidecar for an id that has no
+        # record (ids can arrive from a request body).
         return
-    for key, value in fields.items():
-        if key in _IMMUTABLE:
-            continue
-        if key == "meta" and isinstance(value, dict):
-            base = rec.get("meta")
-            rec["meta"] = {**(base if isinstance(base, dict) else {}), **value}
-        else:
-            rec[key] = value
-    rec["updated_at"] = _now()
-    _write_record(rec)
+    with _record_lock(session_id):
+        rec = _read_record(path)
+        if rec is None:
+            return
+        prior_state = rec.get("state")
+        _apply(rec, fields)
+        if prior_state in TERMINAL_STATES and rec.get("state") == "running":
+            # A stale in-flight writer must not undo a terminal transition.
+            rec["state"] = prior_state
+        rec["updated_at"] = _now()
+        _write_record(rec)
 
 
-def finalize(session_id: str, state: str, *, summary: str | None = None) -> None:
-    """Move a session to a terminal state. Unknown session is ignored."""
+def finalize(session_id: str, state: str, *, summary: str | None = None) -> bool:
+    """Compare-and-set a session into a terminal state (E5).
+
+    Returns True when this call made the transition. Unknown session, or a
+    record that is ALREADY terminal, is a no-op returning False: the first
+    terminal verdict wins, so a late atexit `failed` cannot overwrite the
+    `done` the loop already recorded, and nothing can walk a finished session
+    back to `running`. Runs under the same flock as `touch`.
+    """
     if state not in STATES:
         state = "failed"
+    if state == "running":
+        return False                     # finalize means terminal, full stop
+    try:
+        path = record_path(session_id)
+    except ValueError:
+        return False
+    if not os.path.exists(path):
+        return False
     fields: dict = {"state": state}
     if summary is not None:
         fields["summary"] = str(summary)[:2000]
     fields["ended_at"] = _now()
-    touch(session_id, **fields)
+    with _record_lock(session_id):
+        rec = _read_record(path)
+        if rec is None:
+            return False
+        if rec.get("state") in TERMINAL_STATES:
+            return False                 # already decided; do not re-decide
+        _apply(rec, fields)
+        rec["updated_at"] = _now()
+        return _write_record(rec)
 
 
 def reconcile(record: dict) -> dict:
@@ -340,9 +513,24 @@ def reconcile(record: dict) -> dict:
 
 
 def _reconciled(rec: dict) -> dict:
-    """Reconcile and persist the `lost` transition (best effort)."""
+    """Reconcile and persist the `lost` transition (best effort).
+
+    The lock is taken ONLY when there is a transition to persist, and the
+    record is re-read inside it: a session that finalized between our read
+    and the lock must keep its own verdict rather than be overwritten with
+    `lost`.
+    """
     fixed = reconcile(rec)
-    if fixed is not rec and fixed.get("state") != rec.get("state"):
+    if fixed is rec or fixed.get("state") == rec.get("state"):
+        return fixed
+    try:
+        path = record_path(rec.get("id", ""))
+    except ValueError:
+        return fixed
+    with _record_lock(rec["id"]):
+        current = _read_record(path)
+        if current is None or current.get("state") != "running":
+            return current if current is not None else fixed
         _write_record({**fixed, "updated_at": _now()})
     return fixed
 
@@ -400,6 +588,11 @@ def append_op(session_id: str, op: dict) -> None:
     One `write()` to an `O_APPEND` fd: concurrent writers interleave whole
     lines, never halves, which is what lets the reader treat a trailing
     partial line as "not yet complete" rather than corruption.
+
+    O_NOFOLLOW (E13): the ledger is 0700, but a symlink planted at the inbox
+    path by anything that ever ran as this user would turn "append an
+    operator message" into "append attacker-chosen JSON to an arbitrary
+    file". We never follow a link here; a linked path simply fails soft.
     """
     try:
         path = inbox_path(session_id)
@@ -415,15 +608,25 @@ def append_op(session_id: str, op: dict) -> None:
         return
     try:
         os.makedirs(os.path.dirname(path), mode=_DIR_MODE, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _FILE_MODE)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                     | os.O_NOFOLLOW | os.O_CLOEXEC, _FILE_MODE)
     except OSError:
-        return
+        return                           # incl. ELOOP: the path is a symlink
     try:
         os.write(fd, line)
     except OSError:
         pass
     finally:
         os.close(fd)
+
+
+def _clamp_op(op: dict) -> dict:
+    """Bound the one field an operator controls the size of (E12)."""
+    text = op.get("text")
+    if isinstance(text, str) and len(text) > OP_MAX_TEXT:
+        op = dict(op)
+        op["text"] = text[:OP_MAX_TEXT] + _TRUNC_MARK
+    return op
 
 
 def read_new_ops(session_id: str, cursor: int = 0) -> tuple[list[dict], int]:
@@ -433,6 +636,19 @@ def read_new_ops(session_id: str, cursor: int = 0) -> tuple[list[dict], int]:
     cursor where it was so the op is picked up whole on the next turn. A file
     shorter than the cursor (truncated or replaced) restarts from 0. A missing
     inbox returns `([], cursor)` and creates nothing.
+
+    BOUNDED (E12). At most `INBOX_MAX_READ` bytes and `INBOX_MAX_OPS` ops
+    leave this function per call, and each op's `text` is clipped to
+    `OP_MAX_TEXT`. The cursor advances past exactly what was consumed, so a
+    backlog drains across turns instead of arriving as one 151 MB allocation.
+
+    NON-BLOCKING (E13). A FIFO at the inbox path used to hang the runner
+    forever inside `open()` at EVERY turn boundary — the module's fail-soft
+    contract inverted into a hard hang, from a path anyone who can write the
+    ledger dir controls. We open O_RDONLY|O_NONBLOCK (which returns
+    immediately even on a FIFO with no writer) and then require S_ISREG.
+    O_NOFOLLOW matches append_op: a symlink planted at the inbox path would
+    otherwise let anything readable be parsed as a stream of operator ops.
     """
     try:
         cursor = max(int(cursor), 0)
@@ -442,23 +658,40 @@ def read_new_ops(session_id: str, cursor: int = 0) -> tuple[list[dict], int]:
         path = inbox_path(session_id)
     except ValueError:
         return [], cursor
+    fd = None
     try:
-        with open(path, "rb") as f:
-            size = os.fstat(f.fileno()).st_size
-            if size < cursor:
-                cursor = 0               # rotated/truncated: start over
-            if size == cursor:
-                return [], cursor
-            f.seek(cursor)
-            chunk = f.read()
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                     | os.O_CLOEXEC)
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode):
+            return [], cursor            # FIFO, device, directory: not an inbox
+        size = st.st_size
+        if size < cursor:
+            cursor = 0                   # rotated/truncated: start over
+        if size == cursor:
+            return [], cursor
+        os.lseek(fd, cursor, os.SEEK_SET)
+        chunk = os.read(fd, INBOX_MAX_READ)
     except OSError:
         return [], cursor
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     end = chunk.rfind(b"\n")
     if end < 0:
+        if len(chunk) >= INBOX_MAX_READ:
+            # A single line longer than the cap would wedge the cursor here
+            # forever. Skip the unreadable run of bytes rather than stall.
+            return [], cursor + len(chunk)
         return [], cursor                # nothing complete yet
     complete = chunk[:end + 1]
     ops: list[dict] = []
-    for raw in complete.split(b"\n"):
+    consumed = 0
+    for raw in complete.split(b"\n")[:-1]:
+        consumed += len(raw) + 1
         if not raw.strip():
             continue
         try:
@@ -466,8 +699,10 @@ def read_new_ops(session_id: str, cursor: int = 0) -> tuple[list[dict], int]:
         except ValueError:
             continue                     # malformed line: skip, keep going
         if isinstance(op, dict):
-            ops.append(op)
-    return ops, cursor + len(complete)
+            ops.append(_clamp_op(op))
+            if len(ops) >= INBOX_MAX_OPS:
+                break                    # the rest waits for the next turn
+    return ops, cursor + consumed
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +713,9 @@ def prune(days: int = 30) -> int:
     """Delete terminal records (and their inboxes) older than `days`.
 
     Transcripts under `agents/logs/` are deliberately left alone — the ledger
-    is an index, not the archive.
+    is an index, not the archive. The job log `<id>.log` IS ours, though
+    (scripts/job.sh streams stdout+stderr to it inside this directory), and
+    used to be orphaned forever by a prune that removed only the record (E17).
     """
     cutoff = datetime.now() - timedelta(days=max(days, 0))
     d = _dir()
@@ -508,8 +745,16 @@ def prune(days: int = 30) -> int:
         except OSError:
             continue
         removed += 1
+        sid_name = name[:-len(".json")]
+        # The job wrapper's combined stdout+stderr stream, and the sidecar
+        # lock — both live in this directory and belong to this record.
+        for leaf in (f"{sid_name}.log", f".{sid_name}.lock"):
+            try:
+                os.unlink(os.path.join(d, leaf))
+            except OSError:
+                pass
         # Drop the session's inbox directory too; it is never reused.
-        box = os.path.join(d, name[:-len(".json")])
+        box = os.path.join(d, sid_name)
         try:
             for leaf in os.listdir(box):
                 try:
