@@ -1007,6 +1007,76 @@ else
   fail "scripts/fetch-weight.sh missing — start.sh names it in its fallback message"
 fi
 
+# An honest preflight. It used to run eleven LOCAL probes and then print
+# "Environment looks ready — run ./bootstrap.sh to install" on a machine that
+# dies ~2 seconds later at the git clone; `curl` was checked for PRESENCE and
+# never used. Driven here with a curl that always fails, which is what a
+# closed network looks like from inside the script.
+echo ""
+echo "Preflight honesty:"
+_PF_TMP="$(mktemp -d)"
+printf '#!/bin/bash\nexit 1\n' > "$_PF_TMP/curl"
+chmod +x "$_PF_TMP/curl"
+_PF_OUT="$(PATH="$_PF_TMP:$PATH" "$REPO_DIR/bootstrap.sh" --preflight 2>&1 \
+           | sed 's/\x1b\[[0-9;]*m//g' || true)"
+if grep -q 'cannot reach' <<< "$_PF_OUT"; then
+  pass "preflight reports unreachable hosts instead of only checking curl exists"
+else
+  fail "preflight said nothing about the network"
+fi
+if grep -q 'Environment looks ready' <<< "$_PF_OUT"; then
+  fail "preflight still claims readiness on a box that cannot fetch anything"
+else
+  pass "preflight does not claim readiness when the network is unreachable"
+fi
+if grep -q 'first install will fail' <<< "$_PF_OUT"; then
+  pass "preflight names the consequence (a first install cannot complete)"
+else
+  fail "preflight warns without saying what it costs"
+fi
+rm -rf "$_PF_TMP"
+
+# update.sh must tell "the remote is unreachable" apart from "your worktree is
+# dirty". It used to swallow git's stderr, burn a SECOND connect timeout, and
+# then blame local changes — the wrong cause, in the script you reach for when
+# already confused. The pattern is read OUT OF update.sh so this test cannot
+# drift from the code it checks.
+echo ""
+echo "update.sh failure diagnosis:"
+# `|| true`: under `set -e` a non-matching grep aborts the whole test file
+# before it can report the failure, so the mutation that DELETES this pattern
+# looked like a pass. The test has to survive its own failure case.
+_UP_PAT="$(grep -oE "could not resolve host\|[^']*temporary failure in name resolution" \
+           "$REPO_DIR/scripts/update.sh" | head -1 || true)"
+if [[ -z "$_UP_PAT" ]]; then
+  fail "could not find the network-vs-local pattern in update.sh"
+else
+  _UP_OK=1
+  while IFS='|' read -r want msg; do
+    [[ -z "$want" ]] && continue
+    if grep -qiE "$_UP_PAT" <<< "$msg"; then got=NETWORK; else got=LOCAL; fi
+    [[ "$got" == "$want" ]] || { _UP_OK=0; echo "      misclassified as $got: $msg"; }
+  done <<'CASES'
+NETWORK|fatal: unable to access 'https://github.com/x.git/': Could not resolve host: github.com
+NETWORK|fatal: unable to access 'https://github.com/x.git/': Failed to connect to github.com port 443 after 129011 ms: Connection timed out
+NETWORK|fatal: unable to access 'https://github.com/x/': Could not resolve proxy: Temporary failure in name resolution
+LOCAL|error: Your local changes to the following files would be overwritten by merge:
+LOCAL|fatal: Not possible to fast-forward, aborting.
+LOCAL|hint: You have divergent branches and need to specify how to reconcile them.
+CASES
+  if [[ $_UP_OK -eq 1 ]]; then
+    pass "update.sh distinguishes an unreachable remote from a dirty worktree"
+  else
+    fail "update.sh's diagnosis pattern misclassifies real git messages"
+  fi
+fi
+# And the wait must be bounded, or "minutes of stall" survives the fix.
+if grep -q 'http.lowSpeedLimit' "$REPO_DIR/scripts/update.sh"; then
+  pass "update.sh bounds the git pull wait (lowSpeedLimit/Time)"
+else
+  fail "update.sh can still hang for minutes on an unreachable remote"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

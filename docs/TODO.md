@@ -147,15 +147,17 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
 ### The four top-tier features
 
 - [ ] **`OFFLINE=true` conf key + egress kill switch** (airgap 9, feasibility
-      8). Nothing can be told "there is no internet", so the stack stalls and
-      then misdiagnoses: **660 s** inside cmake fetching llama.cpp's prebuilt
-      Web UI (`ui-assets.cmake:422` TIMEOUT 300 + :433 TIMEOUT 30, over two
-      candidates), and `update.sh:72-74` swallowing the first `git pull`'s
-      stderr, running a second, and dying with *"local changes in llama.cpp/?"*
-      — minutes of stall ending in the wrong cause, in the script an operator
-      reaches for when confused. Ship the two possibility-changing lines
-      first: a `pip` guard at `bootstrap.sh:350` and
-      `-DLLAMA_USE_PREBUILT_UI=OFF` in `ob_cmake_flags`.
+      8). Nothing can be told "there is no internet". **Partly done 2026-09-15:**
+      `update.sh`'s half is fixed — it keeps git's stderr, bounds the wait with
+      `http.lowSpeedLimit/Time` (a multi-minute hang becomes ~15 s), and tells
+      *"cannot reach the remote"* apart from *"your worktree is dirty"* instead
+      of swallowing the first error, burning a second connect timeout, and
+      blaming local changes. **Still open:** the `pip -U` guard at
+      `bootstrap.sh:350` (the one true hard blocker — it forces an index hit
+      even when every wheel is present), `-DLLAMA_USE_PREBUILT_UI=OFF` in
+      `ob_cmake_flags` (660 s of cmake stall fetching a Web UI we never use —
+      verify upstream's fallback is a WARNING not FATAL before flipping it),
+      the compose stanza, and the conf key itself that ties them together.
 - [ ] **Offline bundle — build connected, install from USB** (airgap 10,
       feasibility 7). Four fatal fetches with no local alternative: llama.cpp
       source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.
@@ -182,9 +184,14 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       `number_of_results` in the same response, which we throw away. A silent
       empty answer the agent treats as fact is the worst failure mode in the
       whole review.
-- [ ] **`bootstrap.sh --preflight` lies.** Eleven probes, not one touches the
-      network, so it prints *"Environment looks ready — run ./bootstrap.sh to
-      install"* and exits 0 on a machine that cannot possibly finish.
+- [x] **`bootstrap.sh --preflight` lies. FIXED 2026-09-15.** Eleven probes,
+      not one touched the network (`curl` was checked for *presence* and never
+      used), so it printed *"Environment looks ready"* on a machine that dies
+      ~2 s later at the git clone. Now probes github/pypi/huggingface with
+      bounded timeouts, names which are unreachable AND what that costs, and
+      the verdict says *"Local environment is ready, but the network is not
+      reachable"* instead of claiming readiness. A warning, not a failure — an
+      already-provisioned box rebuilds and serves offline just fine.
 - [ ] **`FETCH_ALLOW_HOSTS`** (hours) — an exact `host:port` allowlist so the
       model's `fetch` can reach a closed-network doc mirror on 10.x or a
       `kiwix-serve` on loopback. Today `agents/tools.py:1324-1330` refuses every
