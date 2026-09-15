@@ -43,6 +43,15 @@ else
   OVERALL=1
 fi
 
+if bash "$REPO_DIR/tests/test_job_sh.sh"; then
+  echo ""
+  echo "Job session tests: ALL PASSED"
+else
+  echo ""
+  echo "Job session tests: SOME FAILED"
+  OVERALL=1
+fi
+
 echo ""
 echo ""
 
