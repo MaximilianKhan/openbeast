@@ -6,6 +6,8 @@
 #   ./scripts/lang-library.sh list                 what we hold, with provenance
 #   ./scripts/lang-library.sh verify [lang]        compile every claim against
 #                                                  the INSTALLED toolchains
+#   ./scripts/lang-library.sh pack [lang]          what a model would receive
+#                                                  (LANG_PACKS allow list)
 #   ./scripts/lang-library.sh where                print the library root
 #
 # Design rules (docs/BEAST_LANG_PLAN.md):
@@ -377,9 +379,10 @@ cmd_verify() {
 case "${1:-}" in
   acquire) shift; cmd_acquire "$@" ;;
   verify)  shift; cmd_verify "${1:-}" ;;
+  pack)    shift; python3 "$SCRIPT_DIR/agents/lang/packs.py" "$@" ;;
   check)   cmd_check ;;
   list)    cmd_list ;;
   where)   say "$LANG_DIR" ;;
-  -h|--help|"") sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (try --help)" ;;
 esac

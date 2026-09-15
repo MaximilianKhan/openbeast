@@ -1,5 +1,5 @@
 {
-  "_comment": "C++ AVAILABILITY claims — 'this needs C++N'. The revision axis for C++ is the -std level, not a rename: the old form is the SAME code under an older standard. cppreference's per-standard markers (in the acquired offline archive) are the source these are drafted from; the compilers installed here are what CONFIRM them.",
+  "_comment": "C++ AVAILABILITY claims \u2014 'this needs C++N'. The revision axis for C++ is the -std level, not a rename: the old form is the SAME code under an older standard. cppreference's per-standard markers (in the acquired offline archive) are the source these are drafted from; the compilers installed here are what CONFIRM them.",
   "lang": "cpp",
   "claims": [
     {
@@ -8,8 +8,13 @@
       "note": "constrained algorithms arrived in C++20; the <ranges> header does not even exist before it",
       "old_variant": "c++17",
       "new_variant": "c++20",
-      "new": ["#include <algorithm>\n#include <ranges>\n#include <vector>\nint main(){ std::vector<int> v{3,1,2}; std::ranges::sort(v); return v[0]; }\n"],
-      "doc_must_contain": ["std::ranges::sort"]
+      "new": [
+        "#include <algorithm>\n#include <ranges>\n#include <vector>\nint main(){ std::vector<int> v{3,1,2}; std::ranges::sort(v); return v[0]; }\n"
+      ],
+      "doc_must_contain": [
+        "std::ranges::sort"
+      ],
+      "summary": "constrained algorithms (`std::ranges::sort(v)`, `<ranges>`) are C++20 \u2014 under C++17 use `std::sort(v.begin(), v.end())`"
     },
     {
       "id": "designated-initializers",
@@ -17,8 +22,13 @@
       "note": "a C idiom that only became legal C++ in C++20",
       "old_variant": "c++17",
       "new_variant": "c++20",
-      "new": ["struct P { int x; int y; };\nint main(){ P p{.x = 1, .y = 2}; return p.x; }\n"],
-      "doc_must_contain": [".x = 1"]
+      "new": [
+        "struct P { int x; int y; };\nint main(){ P p{.x = 1, .y = 2}; return p.x; }\n"
+      ],
+      "doc_must_contain": [
+        ".x = 1"
+      ],
+      "summary": "`P p{.x = 1, .y = 2}` is C++20 (gcc accepts it earlier only as a GNU extension; `-pedantic-errors` refuses it)"
     },
     {
       "id": "three-way-comparison",
@@ -26,8 +36,13 @@
       "note": "the spaceship operator and <compare> are C++20",
       "old_variant": "c++17",
       "new_variant": "c++20",
-      "new": ["#include <compare>\nstruct P { int x; auto operator<=>(const P&) const = default; };\nint main(){ P a{1}, b{2}; return (a < b) ? 0 : 1; }\n"],
-      "doc_must_contain": ["operator<=>"]
+      "new": [
+        "#include <compare>\nstruct P { int x; auto operator<=>(const P&) const = default; };\nint main(){ P a{1}, b{2}; return (a < b) ? 0 : 1; }\n"
+      ],
+      "doc_must_contain": [
+        "operator<=>"
+      ],
+      "summary": "`auto operator<=>(const T&) const = default;` and `<compare>` are C++20"
     },
     {
       "id": "constexpr-vector",
@@ -35,8 +50,13 @@
       "note": "constexpr std::vector needs C++20's constexpr allocation",
       "old_variant": "c++17",
       "new_variant": "c++20",
-      "new": ["#include <vector>\nconstexpr int sum(){ std::vector<int> v{1,2,3}; int s=0; for (int x : v) s += x; return s; }\nstatic_assert(sum() == 6);\nint main(){ return 0; }\n"],
-      "doc_must_contain": ["constexpr"]
+      "new": [
+        "#include <vector>\nconstexpr int sum(){ std::vector<int> v{1,2,3}; int s=0; for (int x : v) s += x; return s; }\nstatic_assert(sum() == 6);\nint main(){ return 0; }\n"
+      ],
+      "doc_must_contain": [
+        "constexpr"
+      ],
+      "summary": "`constexpr` functions may allocate (so `constexpr std::vector`) only from C++20"
     },
     {
       "id": "if-init-statement",
@@ -44,16 +64,26 @@
       "note": "C++17. Included as a control: a claim whose OLD form is genuinely older than the rest",
       "old_variant": "c++14",
       "new_variant": "c++17",
-      "new": ["#include <string>\nint main(){ std::string s = \"ab\"; if (auto n = s.size(); n > 1) return 0; return 1; }\n"],
-      "doc_must_contain": ["if (auto"]
+      "new": [
+        "#include <string>\nint main(){ std::string s = \"ab\"; if (auto n = s.size(); n > 1) return 0; return 1; }\n"
+      ],
+      "doc_must_contain": [
+        "if (auto"
+      ],
+      "summary": "`if (auto n = s.size(); n > 1)` \u2014 the init-statement form is C++17"
     },
     {
       "id": "structured-bindings",
       "topic": "structured bindings",
       "old_variant": "c++14",
       "new_variant": "c++17",
-      "new": ["#include <utility>\nint main(){ auto [a, b] = std::pair{1, 2}; return a + b - 3; }\n"],
-      "doc_must_contain": ["auto ["]
+      "new": [
+        "#include <utility>\nint main(){ auto [a, b] = std::pair{1, 2}; return a + b - 3; }\n"
+      ],
+      "doc_must_contain": [
+        "auto ["
+      ],
+      "summary": "`auto [a, b] = pair;` is C++17"
     }
   ]
 }

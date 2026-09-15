@@ -6,6 +6,20 @@ reaching the web, pull every revision of a language, synthesize the whole
 thing into succinct summaries the model can consult before it writes code,
 and probably ship a skill.
 
+**And the justification Max added on the day (2026-09-15), which belongs at
+the top rather than in a footnote: this is what lets us run projects with no
+internet at all.** OpenBeast's whole premise is "no cloud, no API keys", and
+beast-lang is the piece that finishes the sentence. A model can only write
+*current* code if something on the machine knows what current means — and
+without this, that knowledge comes from a web search or from weights frozen
+two versions ago. With it, it comes from the compiler sitting next to the
+model. A rig in a closed network, on an air-gapped site, or on a plane writes
+the same correct zig 0.16 as one with a fibre line.
+
+That reframes the feature from "nice documentation tooling" to **a
+prerequisite for closed-network deployment**, which is a situation Max
+expects to be in.
+
 This document is the plan. It is deliberately argumentative in two places,
 because the repo already has measured evidence that contradicts the obvious
 version of this feature, and building the obvious version would repeat a
@@ -99,6 +113,40 @@ evidence per language, the suite needs harder units in that language first —
 and authoring those is real work (each needs a deterministic checker and a
 tripwire classification).
 
+### 2.3 Max's correction (2026-09-15): measurability is not the scope gate
+
+I originally proposed gating the language list on what our suite can measure.
+Max rejected that, correctly:
+
+> *"I want this implemented so that ANY model dropped in (irrespective of our
+> 27B testing) can automatically and auto-magically know how to use a
+> language. Yes, in our case Zig and C++ are saturated with errors, and that's
+> fine. This is to future proof us in the case that in the future we need to
+> pull in this information for a model. What we can do is FF certain languages
+> via an allow list for an openbeast-deployment."*
+
+The point is infrastructure, not this quarter's model. A pack is a statement
+about a **toolchain**, not about our 27B — it stays true when the model is
+replaced, and the next model dropped in may be strong enough to use notes our
+current one ignores. Gating on our own measurability would have built a
+feature that only ever serves the model we happen to be running.
+
+So the design changes in one specific way: **which languages are active is a
+DEPLOYMENT decision, expressed as an allow list.**
+
+- `LANG_PACKS=auto` (default) — every language with an installed toolchain and
+  verified claims. This is the "auto-magically" part: drop a model in, and it
+  gets whatever this machine can prove.
+- `LANG_PACKS=cpp,zig` — one rig only writes C++ and zig and pays nothing for
+  the rest.
+- `LANG_PACKS=off` — disabled. An explicitly empty value means off too; only
+  an absent key means `auto`.
+
+Measurement keeps its own separate life: the zig A/B still tells us whether
+the push layer moves *our* model, and harder per-language units remain worth
+authoring for that purpose. But they are no longer a precondition for shipping
+the capability.
+
 ---
 
 ## 3. Architecture — four layers
@@ -182,7 +230,7 @@ GPU time, not disk.
 
 ---
 
-## 5. The gate — and why this needs Max's explicit call
+## 5. The gate (answered in §9.6 — kept for the reasoning)
 
 The Tier-3 zig A/B is on the GPU right now. Its pre-registered ship rule is
 `net ≥ 7 ∧ p < 0.05 ∧ champion guard clean`, and the campaign's **Clause 2
@@ -279,26 +327,44 @@ must clear a v5-suite eval before joining the runner registry.
 
 ---
 
-## 9. Open questions — Max's call
+## 9. Decisions — answered by Max, 2026-09-15
 
-1. **Name.** `beast-lang` (recommended) / `beast-ref` / something else.
-2. **Language scope for v1.** Recommended: **zig, C++, C, Go, Rust, Python**
-   — the six the eval suite actually covers and the toolchains we can verify
-   against. **Swift is the odd one out**: no toolchain here, so it would be
-   CURATED-only and never auto-injected. Install a Swift toolchain, or accept
-   Swift as pull-only-and-unverified, or drop it from v1?
-3. **Rust offline docs.** No `rustup` on this rig (Rust is the Arch system
-   package) and `rust-docs` did not resolve as a package. Options: install
-   `rustup` alongside for its doc component, use the reference git plus
-   toolchain introspection only, or skip Rust's prose corpus and do
-   signatures-only. Recommended: reference git + introspection; prose is the
-   least load-bearing part.
-4. **Suite headroom.** Do we author harder units for C++/Rust/Go/Python so a
-   pack for those languages can be *measured*? Without it we are shipping
-   product value on faith for five of six languages. This is the single
-   biggest scope decision in the plan.
-5. **GPU budget for P3.** Synthesis is the only GPU-hungry phase. Schedule it
-   after the current queue (~26 h), or interleave?
+1. **Name: `beast-lang`.** Locked.
+2. **Language scope: build them all; the deployment picks** (§2.3). Not gated
+   on what our eval can measure.
+3. **Swift.** No toolchain on this rig, so every Swift claim is
+   `UNVERIFIABLE` by construction. Resolved in a way that serves both of Max's
+   answers: Swift is **acquired and kept as CURATED-only** — the corpus exists
+   so a rig that *does* install a Swift toolchain gets it for free, the claims
+   are labelled unverified, and `active_packs()` can never serve them because
+   `pack_for()` requires an installed toolchain. Nothing is dropped, and
+   nothing unverified can reach a model.
+4. **Rust offline docs: reference git + toolchain introspection**, no prose
+   corpus (Max: "whatever you deem is best"). No rustup on this rig, and
+   `rustc` is the authority anyway.
+5. **GPU for synthesis: when Max goes to bed.** Phases 0-2 needed none.
+6. **Stopping rule after the zig A/B: my call** — a null result does not kill
+   beast-lang, it moves the bet from the push layer to the escalation layer
+   (§7 P4), which is better targeted regardless.
 
-I am proceeding with **P0 → P1 → P2** now, because they need no GPU, roll no
-cache era, and are prerequisites under every answer to the questions above.
+## 10. Status
+
+- **Phase 0 — the library: SHIPPED** (PR #65). `scripts/lang-library.sh
+  acquire|check|list|verify|pack|where`.
+- **Phase 2 — the verifier: SHIPPED** (PR #66). 25 claims VERIFIED across
+  zig/cpp/python; three of the first ten claims were wrong and it caught all
+  three.
+- **Pack resolution + the allow list + the drift guard: SHIPPED** (this
+  change). `agents/lang/packs.py`.
+- **Phase 1 — toolchain introspection: next**, no GPU. Generalizes
+  `gen_zig_pack.py`'s area/rank/budget machinery behind a per-language driver.
+- **Phase 4 — escalation (Tier 1.5): next**, small GPU cost only to A/B it.
+  Injection through `runner.py --context-file`, which already exists, so no
+  cache-era-hashed file needs to change. **`agents/tools.py` IS hashed**, so
+  wiring `start_agent`'s spawn path waits until the Tier-3 A/B's five
+  remaining cells are done.
+- **Phase 3 — synthesis: needs the GPU.** Note that a pack does NOT need an
+  LLM: the verified claims already *are* the summary, one `summary` line each.
+  The local model's job in phase 3 is to DRAFT new candidate claims from the
+  corpus, which the verifier then accepts or rejects. That ordering is what
+  keeps a model-written claim from ever reaching a pack unverified.
