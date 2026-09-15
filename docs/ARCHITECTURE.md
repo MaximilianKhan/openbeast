@@ -24,7 +24,7 @@ flowchart LR
 
         subgraph CLIENT["💻 CLIENT — any Mac / Linux laptop &nbsp;(optional, purely additive)"]
             cagent["⌨️ <b>OpenCode</b> · <b>openbeast-client</b><br/>the agent loop runs HERE"]
-            ctools["⚙️ <b>15 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
+            ctools["⚙️ <b>17 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
             cagent --> ctools
         end
 
@@ -108,7 +108,7 @@ flowchart TB
 
     subgraph TOOLPLANE["🔑 TOOL PLANE — runs on the rig, acts on the rig · NEVER published"]
         its["<b>Identity tool server</b> · :3001<br/><code>agents/openapi_tools.py</code><br/>RBAC profile keys · per-user file shards · audit<br/><i>authenticates the HUMAN</i>"]
-        mcp["<b>MCP tool surface — 15 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent"]
+        mcp["<b>MCP tool surface — 17 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent<br/>publish_artifact · list_artifacts"]
         core["<b>Tool primitives</b> · <code>agents/tools.py</code><br/>bash · read/write/edit/list/grep<br/>fetch (SSRF-guarded) · web_search<br/><i>+ push-diagnostics on write/edit (opt-in)</i>"]
         its --> mcp --> core
     end
@@ -162,10 +162,11 @@ flowchart TB
   shards each user's files into their own `users/<id>/` workspace, and writes
   an audit trail. The **terminal path** (OpenCode) speaks MCP over stdio to
   `agents/mcp_server.py`. The `:3001` server *imports* that same module rather
-  than reimplementing it, so the HTTP and MCP surfaces expose the identical 15
+  than reimplementing it, so the HTTP and MCP surfaces expose the identical 17
   tools and cannot drift. `mcp_server.py` in turn delegates its eight file /
-  shell / network primitives to `agents/tools.py` and adds `skill` plus the
-  six agent-orchestration tools on top. The **headless path** (`agent.sh` →
+  shell / network primitives to `agents/tools.py` and adds `skill`, the six
+  agent-orchestration tools, and the two beast-artifact publishing tools on
+  top. The **headless path** (`agent.sh` →
   `agents/runner.py`) skips both servers and imports the primitives directly.
 - **Two identity layers, deliberately separate — and they are the only two.**
   `:3001` (amber, solid) authenticates the *human*: WebUI user → RBAC tier →
@@ -189,7 +190,7 @@ flowchart TB
   [`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
   (`scripts/setup-mcpo-keys.sh`), every `:3001` tool call must present a
-  profile key — **admin** reaches all 15 tools, **guest** reaches `web_search`
+  profile key — **admin** reaches all 17 tools, **guest** reaches `web_search`
   + `fetch` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
   are loopback-only; remote devices arrive exclusively through Tailscale's
   authenticated HTTPS proxy (see [Remote access](REMOTE_ACCESS_PLAN.md)).
@@ -226,7 +227,7 @@ scripts/                     # Server, chat, and ops scripts
   lib/                       # Shared libs: conf.sh, hardware.sh, weights.sh, extensions.sh
 
 agents/                      # Agent framework + tool servers
-  mcp_server.py              # MCP tool server (15 tools, stdio MCP surface for OpenCode)
+  mcp_server.py              # MCP tool server (17 tools, stdio MCP surface for OpenCode)
   openapi_tools.py           # Identity tool server on :3001 (WebUI surface: RBAC keys, per-user shards, audit)
   edge.py                    # beast-gate on :8090 — identity-aware INFERENCE edge (opt-in EDGE_GATE)
   runner.py                  # Autonomous agent loop (LLM + tool use)

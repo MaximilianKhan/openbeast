@@ -7,13 +7,14 @@
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack: an OpenAI-compatible model server, an autonomous agent with a
-15-tool arsenal (shell, file editing, web search, background sub-agents), a
+17-tool arsenal (shell, file editing, web search, background sub-agents,
+publishable pages), a
 browser chat UI *and* a terminal coding agent, one-command encrypted remote
 access, and family-grade multi-user permissions. All self-hosted, all yours.
 
 **One GPU box, every device you own.** Install the **rig** on the machine with
 the graphics card, then install the **client** on any laptop (no GPU, no
-weights). It runs the same agent and the same 15 tools against *its own* files,
+weights). It runs the same agent and the same 17 tools against *its own* files,
 with only the thinking crossing your private tailnet. Your laptop stays a
 laptop; your rig does the reasoning.
 
@@ -39,7 +40,7 @@ OpenBeast runs in **two roles**, and the same repo does both:
 
 You don't need both. Run the rig on its own and use it from any browser, or
 install **only** the client if someone else is hosting the rig. The client is a
-real OpenBeast install: the same 15-tool arsenal, acting on *your* disk.
+real OpenBeast install: the same 17-tool arsenal, acting on *your* disk.
 
 Your shell and your files stay on your machine. What crosses the tailnet is the
 prompt, whatever the agent *reads* as context, and the model's replies, plus
@@ -74,7 +75,7 @@ toolchain, GPU/driver notes, every model — is in **[docs/INSTALL.md](docs/INST
 ## 💻 Install a client (use a rig from your laptop)
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
-and no model download**. OpenCode and the entire 15-tool arsenal run *on the
+and no model download**. OpenCode and the entire 17-tool arsenal run *on the
 laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
 the thinking happens on the rig.
 
@@ -153,7 +154,7 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 
 ⁷ Deliberately **out of scope**. OpenBeast maximizes one model rather than bundling services. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 15-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path, since a client is your own device.)
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 17-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on. (RBAC governs the rig's own users, not the client path, since a client is your own device.)
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner: it serves a model and stops there. OpenBeast *includes* a
@@ -276,7 +277,7 @@ flowchart TB
       coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
       ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
       cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
-      ctools["⚙️ <b>15 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      ctools["⚙️ <b>17 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
       csx["🔎 local SearXNG<br/><i>--local-search</i>"]
       coc --> cmcp
       cmcp --> ctools
@@ -298,7 +299,7 @@ flowchart TB
       subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig<br/>never published to the tailnet"]
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards<br/>audit · <i>auth HUMAN</i>"]
-        mcp["🔌 <b>MCP surface</b><br/><b>15 tools</b><br/>+ skill · agent ctl"]
+        mcp["🔌 <b>MCP surface</b><br/><b>17 tools</b><br/>+ skill · agent ctl · artifacts"]
         prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls<br/>grep · fetch · search"]
         idsrv --> mcp
         mcp --> prim

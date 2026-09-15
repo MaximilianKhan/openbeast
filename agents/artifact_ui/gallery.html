@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Artifacts — OpenBeast</title>
+<!--
+  beast-artifact gallery (agents/artifact_server.py renders this).
+
+  Substitution is LITERAL string replacement. The placeholders are the bare
+  names below wrapped in DOUBLED CURLY BRACES; they are written unbraced in
+  this comment on purpose, so a substituted value can never land inside a
+  comment and break out of it. These are the only placeholders in the file:
+
+    ROWS     server-rendered list-item markup, newest first. Substitute the
+             EMPTY STRING when there is nothing to show - the empty state
+             below is driven by `.list:empty`, so a stray newline or a
+             placeholder comment inside the list would suppress it.
+    COUNT    integer, the number of rows rendered
+    VIEWER   the tailnet login the rows were filtered for; may be empty, in
+             which case its chip hides itself (`:empty`)
+
+  Row contract - one list item per artifact, everything inside one anchor:
+
+    <li class="row" data-search="title description"><a class="card" href="/a/ID">
+      <span class="row-top">
+        <span class="row-title">Title</span>
+        <span class="row-age">2h ago</span>
+      </span>
+      <span class="row-desc">Description</span>
+      <span class="row-meta">
+        <span class="badge" data-visibility="private">private</span>
+        <span class="vers">3 versions</span>
+      </span>
+    </a></li>
+
+  data-search is optional (the filter falls back to the row's text). Omit the
+  row-desc span entirely, or leave it empty, when there is no description.
+  data-visibility is exactly "private" or "tailnet".
+
+  Served under a strict CSP with no external hosts: every style and script is
+  inline and every icon is inline SVG. Do not add a font, CDN, or image URL.
+  The gallery and shell responses need a policy that admits their own inline
+  block - script-src 'self' 'unsafe-inline', or a sha256 of the block - and
+  they are ours, not model-authored, so that stays separate from the far
+  stricter policy on /raw/.
+-->
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f5; --border:#d8dee8;
+  --fg:#11161f; --muted:#5c6779; --accent:#1f6feb; --accent-weak:#e7f0ff;
+  --ok:#1a7f37; --ok-weak:#e6f4ea; --focus:#1f6feb;
+  --shadow:0 1px 2px rgba(16,24,40,.08);
+  --shadow-lift:0 2px 10px rgba(16,24,40,.10);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#0c0f14; --surface:#141922; --surface-2:#1b2230; --border:#232b38;
+    --fg:#d6dbe4; --muted:#7c8598; --accent:#58a6ff; --accent-weak:#16243a;
+    --ok:#3fb950; --ok-weak:#10281a; --focus:#58a6ff;
+    --shadow:0 1px 2px rgba(0,0,0,.45);
+    --shadow-lift:0 2px 12px rgba(0,0,0,.55);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#0c0f14; --surface:#141922; --surface-2:#1b2230; --border:#232b38;
+  --fg:#d6dbe4; --muted:#7c8598; --accent:#58a6ff; --accent-weak:#16243a;
+  --ok:#3fb950; --ok-weak:#10281a; --focus:#58a6ff;
+  --shadow:0 1px 2px rgba(0,0,0,.45);
+  --shadow-lift:0 2px 12px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,
+       Cantarell,"Noto Sans",system-ui,sans-serif;
+  -webkit-text-size-adjust:100%;
+}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:10px}
+.page{max-width:760px; margin:0 auto; padding:18px 14px 56px}
+
+/* ── header ────────────────────────────────────────────────────────── */
+header{display:flex; align-items:flex-start; gap:10px; margin-bottom:16px}
+.brand{flex:1 1 auto; min-width:0}
+h1{
+  margin:0; font-size:21px; font-weight:700; letter-spacing:-.02em;
+  display:flex; align-items:center; gap:8px;
+}
+.mark{font-size:20px; line-height:1}
+.sub{
+  margin:2px 0 0; font-size:13px; color:var(--muted);
+  font-variant-numeric:tabular-nums;
+  display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+}
+.who{
+  border:1px solid var(--border); background:var(--surface-2);
+  border-radius:999px; padding:0 8px; font-size:12px; color:var(--muted);
+}
+.who:empty{display:none}
+.btn{
+  flex:0 0 auto; font:inherit; font-size:13px; color:var(--fg);
+  background:var(--surface-2); border:1px solid var(--border);
+  border-radius:9px; width:38px; height:38px; display:grid; place-items:center;
+  cursor:pointer;
+}
+.btn:hover{border-color:var(--accent); color:var(--accent)}
+.btn svg{width:16px; height:16px; fill:none; stroke:currentColor;
+  stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round}
+.btn .i-sun,.btn .i-moon{display:none}
+.btn[data-mode="dark"] .i-sun{display:block}
+.btn[data-mode="light"] .i-moon{display:block}
+
+/* ── order: toolbar visually first, DOM-last so `.list:empty ~` reaches it ─ */
+.wrap{display:flex; flex-direction:column}
+.toolbar{order:-1; margin-bottom:12px}
+.list{order:0}
+.empty,.nomatch{order:1}
+
+.filter{
+  width:100%; font:inherit; font-size:14px; color:var(--fg);
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:10px; padding:9px 12px; min-height:42px;
+}
+.filter::placeholder{color:var(--muted)}
+.filter:focus{border-color:var(--accent)}
+
+/* ── rows ──────────────────────────────────────────────────────────── */
+.list{list-style:none; margin:0; padding:0; display:flex;
+  flex-direction:column; gap:8px}
+.row[hidden]{display:none}
+.card{
+  display:block; padding:13px 14px; min-height:64px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:12px; text-decoration:none; color:inherit;
+  box-shadow:var(--shadow);
+  transition:border-color .12s ease, box-shadow .12s ease, transform .12s ease;
+}
+.card:hover{border-color:var(--accent); box-shadow:var(--shadow-lift)}
+.card:active{transform:translateY(1px)}
+.row-top{display:flex; align-items:baseline; gap:10px}
+.row-title{
+  flex:1 1 auto; min-width:0; font-size:15.5px; font-weight:650;
+  letter-spacing:-.01em; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.row-age{
+  flex:0 0 auto; font-size:12px; color:var(--muted);
+  font-variant-numeric:tabular-nums;
+}
+.row-desc{
+  display:block; margin-top:2px; font-size:13px; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.row-desc:empty{display:none}
+/* Alias vocabulary: a row rendered as .t / .d / .m gets the same treatment,
+   so the page is not at the mercy of one spelling of the row markup. */
+.card>.t{display:flex; align-items:baseline; gap:10px; font-size:15.5px;
+  font-weight:650; letter-spacing:-.01em; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.card>.d{display:block; margin-top:2px; font-size:13px; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.card>.m{display:flex; align-items:center; gap:7px; margin-top:8px;
+  font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
+.row-meta{
+  display:flex; align-items:center; gap:7px; margin-top:8px;
+  font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;
+}
+.badge{
+  border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600;
+  letter-spacing:.02em; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--muted);
+}
+.badge[data-visibility="tailnet"]{
+  background:var(--ok-weak); color:var(--ok); border-color:transparent;
+}
+.vers{
+  border-left:1px solid var(--border); padding-left:8px;
+}
+
+/* ── empty / no-match states ───────────────────────────────────────── */
+.empty,.nomatch{display:none}
+.list:empty ~ .empty{display:block}
+.list:empty ~ .toolbar{display:none}
+.list>.empty{display:block}          /* a server that renders its own empty row */
+.list:has(>.empty) ~ .toolbar{display:none}
+.empty,.nomatch{
+  text-align:center; padding:34px 18px;
+  border:1px dashed var(--border); border-radius:12px;
+  background:var(--surface);
+}
+.empty h2,.nomatch h2{margin:0 0 6px; font-size:15px; font-weight:650}
+.empty p,.nomatch p{margin:0 0 14px; font-size:13px; color:var(--muted)}
+.empty p:last-child{margin-bottom:0}
+pre{
+  margin:0; text-align:left; overflow-x:auto;
+  background:var(--bg); border:1px solid var(--border); border-radius:9px;
+  padding:11px 12px;
+  font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,
+       "Liberation Mono",monospace;
+  color:var(--fg);
+}
+footer{
+  margin-top:22px; font-size:12px; color:var(--muted); text-align:center;
+}
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+}
+code{
+  font:12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,
+       "Liberation Mono",monospace;
+  background:var(--surface-2); border:1px solid var(--border);
+  border-radius:5px; padding:1px 5px;
+}
+@media (max-width:480px){
+  .page{padding:14px 11px 44px}
+  h1{font-size:19px}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="brand">
+    <h1><span class="mark" aria-hidden="true">&#129409;</span> Artifacts</h1>
+    <p class="sub">
+      <span>{{COUNT}} published</span>
+      <span class="who">{{VIEWER}}</span>
+    </p>
+  </div>
+  <button class="btn" type="button" id="theme" aria-label="Switch theme">
+    <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4.2"/>
+      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/>
+    </svg>
+    <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2z"/>
+    </svg>
+  </button>
+</header>
+
+<main class="wrap">
+  <ul class="list" id="list">{{ROWS}}</ul>
+
+  <div class="empty">
+    <h2>Nothing published yet</h2>
+    <p>Hand any self-contained HTML file to beast-artifact and it gets a
+      durable URL on your tailnet.</p>
+    <pre>./scripts/artifact.sh publish page.html --title "My page"</pre>
+  </div>
+
+  <div class="nomatch" id="nomatch">
+    <h2>No artifact matches that</h2>
+    <p>Clear the filter to see everything again.</p>
+  </div>
+
+  <div class="toolbar">
+    <label class="sr-only" for="filter">Filter artifacts</label>
+    <input class="filter" id="filter" type="search" autocomplete="off"
+           spellcheck="false" placeholder="Filter by title or description">
+  </div>
+</main>
+
+<footer>beast-artifact &middot; private to your tailnet</footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var KEY = "openbeast.artifact.theme";
+
+  function stored() {
+    try { return localStorage.getItem(KEY); } catch (e) { return null; }
+  }
+  function active() {
+    var t = root.getAttribute("data-theme");
+    if (t) { return t; }
+    return window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  }
+  var themeBtn = document.getElementById("theme");
+  function paint() {
+    var t = active();
+    themeBtn.setAttribute("data-mode", t);
+    themeBtn.setAttribute("aria-label",
+      t === "dark" ? "Switch to light theme" : "Switch to dark theme");
+  }
+  var saved = stored();
+  if (saved === "dark" || saved === "light") { root.setAttribute("data-theme", saved); }
+  paint();
+  themeBtn.addEventListener("click", function () {
+    var next = active() === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem(KEY, next); } catch (e) { /* private mode */ }
+    paint();
+  });
+
+  /* Client-side filter over the server-rendered rows. */
+  var input = document.getElementById("filter");
+  var list = document.getElementById("list");
+  var nomatch = document.getElementById("nomatch");
+  /* Rows are whatever the server rendered as direct children - list items,
+     or bare anchors. Filter on the children rather than on one tag name. */
+  var rows = list ? list.children : [];
+  var i;
+  for (i = 0; i < rows.length; i++) {
+    if (!rows[i].getAttribute("data-search")) {
+      rows[i].setAttribute("data-search", (rows[i].textContent || "").toLowerCase());
+    } else {
+      rows[i].setAttribute("data-search",
+        rows[i].getAttribute("data-search").toLowerCase());
+    }
+  }
+  if (input) {
+    input.addEventListener("input", function () {
+      var q = input.value.trim().toLowerCase();
+      var shown = 0, k;
+      for (k = 0; k < rows.length; k++) {
+        var hit = !q || rows[k].getAttribute("data-search").indexOf(q) !== -1;
+        rows[k].hidden = !hit;
+        if (hit) { shown++; }
+      }
+      nomatch.style.display = (rows.length && shown === 0) ? "block" : "none";
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -53,7 +53,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
 | `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
-| `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 15 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
+| `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 17 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
 | `IDENTITY_JWT_SECRET` | `OPENBEAST_IDENTITY_JWT_SECRET` | empty (header mode) | Shared HS256 secret: Open WebUI mints a signed JWT per tool call and the identity tool server verifies it, killing header forgery. Requests without a token stay anonymous; a present-but-invalid token is 401. Generate with `scripts/setup-mcpo-keys.sh --with-jwt` |
 | `AGENT_INFERENCE_URL` | `OPENBEAST_AGENT_INFERENCE_URL` | empty (local) | Distributed agents Phase 1 (opt-in): OpenAI-compatible endpoint a worker box serves — spawned agents (`start_agent`, `agent.sh`) send their *inference* there while still executing files/shell on this machine. Tokens (and the file contents agents read) flow over your tailnet. Empty = local model server. See `docs/DISTRIBUTED_AGENTS_PLAN.md` |
@@ -384,7 +384,7 @@ Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
 Connects to the llama.cpp server on port 8080 via `localhost`.
 
 Tools are exposed via the **identity tool server** (`agents/openapi_tools.py`)
-on port 3001, which serves the 15 tools as OpenAPI endpoints that Open WebUI
+on port 3001, which serves the 17 tools as OpenAPI endpoints that Open WebUI
 consumes natively (Open WebUI's native MCP Streamable HTTP support has a known
 bug, which is why an OpenAPI surface is used at all). It replaced the generic
 MCPO proxy (v1.1, 2026-07-09) because MCPO dropped the identity headers Open
@@ -481,14 +481,15 @@ with `./start.sh`). Changes take effect on the next new chat.
 
 ### Tool surfaces: MCP server + identity tool server
 
-Two surfaces expose the same 15 tools, in four groups:
+Two surfaces expose the same 17 tools, in five groups:
 
 - **Code & files** (5): `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - **Shell + web** (3): `bash`, `fetch`, `web_search`
 - **Long-running agent management** (5): `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
 - **Skills** (2): `skill`, `start_skill_agent`
+- **Artifacts** (2): `publish_artifact`, `list_artifacts` — opt-in (`BEAST_ARTIFACT=true`), and on these two surfaces only; see [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md)
 
-All 15 are custom OpenBeast code — full inventory, provenance, hardening
+All 17 are custom OpenBeast code — full inventory, provenance, hardening
 notes, and RBAC visibility in [`docs/TOOLS.md`](TOOLS.md).
 
 Surfaces:
@@ -501,7 +502,7 @@ Surfaces:
   HTTP support), reads the `X-OpenWebUI-User-Id`/`-Chat-Id` headers WebUI
   forwards, shards each user's files into `$OPENBEAST_FILES_DIR/users/<id>/`,
   enforces the RBAC profile keys, and writes the audit trail. It imports the
-  same 15 tool functions from the MCP server, so the two surfaces can't drift.
+  same 17 tool functions from the MCP server, so the two surfaces can't drift.
 
 #### Long-running agents via MCP
 
