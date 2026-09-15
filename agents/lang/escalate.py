@@ -159,10 +159,19 @@ def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
     entry = (idx.get("langs") or {}).get(lang)
     if not entry:
         return []
+    # The index must be CONFIRMED to describe this machine. Two ways to fail.
     installed = D.driver_for(lang)
     installed_v = installed.version() if installed and installed.available() else None
-    if installed_v and P._short_version(entry.get("toolchain", "")) \
-            != P._short_version(installed_v):
+    if not installed_v:
+        # No toolchain, so the match cannot be confirmed at all. This branch
+        # was a FAIL-OPEN: the version comparison was guarded on
+        # `if installed_v and ...`, so a box with no compiler served cards
+        # from ANY index, including one stamped for a different release. CI
+        # caught it — the runner has no zig, and a deliberately poisoned
+        # index handed it a card anyway. Unverifiable is never a pass here;
+        # that is the same rule keeping Swift claims out of every pack.
+        return []
+    if P._short_version(entry.get("toolchain", "")) != P._short_version(installed_v):
         # Diagnostics move between releases; a card chosen from a stale
         # signature is the same mistake as a pack for the wrong compiler.
         return []

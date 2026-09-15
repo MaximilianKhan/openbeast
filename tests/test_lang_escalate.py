@@ -85,16 +85,39 @@ def test_the_committed_index_matches_a_rebuild():
     assert E.main(["--check", "--lang", "zig"]) == 0
 
 
-def test_a_stale_index_is_refused_rather_than_used(monkeypatch):
+DIAG_STD_IO = "error: root source file struct 'std' has no member named 'io'"
+
+
+def test_a_stale_index_is_refused_rather_than_used():
     """Diagnostics move between releases. An index built by another toolchain
     version must produce NOTHING — the same drift discipline packs have."""
     idx = E.load_index()
     if "zig" not in (idx.get("langs") or {}):
         pytest.skip("no zig index here")
     poisoned = {"langs": {"zig": dict(idx["langs"]["zig"], toolchain="0.11.0")}}
-    got = E.cards_for("zig", "error: root source file struct 'std' has no member "
-                             "named 'io'", index=poisoned)
-    assert got == [], "a card was served from an index built by another toolchain"
+    assert E.cards_for("zig", DIAG_STD_IO, index=poisoned) == [], \
+        "a card was served from an index built by another toolchain"
+
+
+def test_an_index_that_cannot_be_CONFIRMED_serves_nothing():
+    """The fail-open CI caught. The version comparison was guarded on
+    `if installed_v and ...`, so a box with NO toolchain skipped the check
+    entirely and served cards from any index at all — including one stamped
+    for a different release. Unverifiable is never a pass here; it is the same
+    rule that keeps Swift claims out of every pack."""
+    idx = E.load_index()
+    if "zig" not in (idx.get("langs") or {}):
+        pytest.skip("no zig index here")
+    drv = D.driver_for("zig")
+    original = drv.available
+    try:
+        drv.available = lambda: False          # a box with no zig
+        assert E.cards_for("zig", DIAG_STD_IO, index=idx) == [], \
+            "cards were served for a language whose toolchain is absent"
+    finally:
+        drv.available = original
+    if original():                             # and it still works with zig
+        assert E.cards_for("zig", DIAG_STD_IO, index=idx)
 
 
 # --- accuracy -------------------------------------------------------------
