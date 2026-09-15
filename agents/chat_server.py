@@ -31,17 +31,43 @@ runner's JSONL event stream (agents/runner.py log_event), `kind="job"` writes
 plain text. Following a file means the server can restart, the producer can
 restart, and a reader from an hour ago can still resume exactly.
 
-Auth (three independent gates, see docs/BEAST_CHAT_PLAN.md):
-  READ    Tailscale-User-Login must appear in OPENBEAST_CHAT_OPERATORS.
-          Unset => allow (single-user default). Unlisted => 404, never 403:
-          an unauthorized reader learns nothing about what exists.
+Auth. IDENTITY IS REQUIRED — there is no anonymous read. A transcript is
+file contents, command output and everything the model has been shown, so a
+request carrying no credential at all must never stream one: combined with an
+unchecked Host header that is a browser-rebinding read of the whole rig from
+any page the operator happens to visit, published or not.
+
+  READ    one of: the rig-local token (below); a Tailscale-User-Login the
+          operator list allows (the list is an ALLOWLIST when set, and when
+          unset any *identified* login passes — single-user default, which is
+          still not "anonymous"); or an enrolled device key with the `chat`
+          scope. Nothing at all => 404. Unlisted => 404, never 403: an
+          unauthorized reader learns nothing about what exists.
   WRITE   additionally an enrolled device key (.run/clients.json, schema in
-          scripts/clients.sh) carrying the `chat` scope. No key => 401;
-          key that isn't authorized => 404. Rate limited per device.
+          scripts/clients.sh) carrying the `chat` scope. Missing, unknown,
+          revoked or unscoped all answer 404 — identically, because a 401/404
+          split is a membership oracle for the operator list. Rate limited
+          per device.
   LOCAL   a caller that can read .run/chat-local.token is ON this box and
           bypasses both — the same proof-of-locality trick as agents/edge.py,
           because `tailscale serve` makes every remote caller look like
           127.0.0.1 and the peer address therefore proves nothing.
+  HOST    TrustedHostMiddleware pins the Host header to loopback, this
+          machine's names and the tailnet (`*.ts.net`). The second half of
+          the rebinding defence: a hostile name that resolves to 127.0.0.1
+          never reaches a route.
+  SCHEMA  openapi_url=None. /docs and /redoc were already off; the schema
+          endpoint was still publishing the entire write contract to a caller
+          404'd everywhere else.
+  HEALTH  the one ungated route, and to an unidentified caller it answers
+          {"status": "ok"} and nothing more (start.sh probes it with no
+          credential). Counts and paths need a read credential.
+
+Lifecycle. A session spawned HERE has no job wrapper and no other writer, so
+this module keeps the Popen handle, reaps it, and finalizes the ledger from
+the exit status (0 -> done, >0 -> failed, <0 -> stopped). Without that the
+child becomes a zombie, a zombie still answers the liveness check, and the
+session reads `running` forever while /send queues into a corpse.
 
 Env:
   OPENBEAST_CHAT_PORT          listen port            (default 3003)
@@ -53,6 +79,9 @@ Env:
   OPENBEAST_CHAT_POLL_MS       transcript poll period (default 250)
   OPENBEAST_CHAT_HEARTBEAT_S   SSE comment heartbeat  (default 15)
   OPENBEAST_CHAT_RUN_DIR       override .run          (tests)
+  OPENBEAST_CHAT_ALLOWED_HOSTS extra trusted Host values, comma separated
+  OPENBEAST_CHAT_AUTH_RECHECK_S  re-authorize an open stream every N seconds
+                               (default: the heartbeat period, capped at 5)
 """
 import asyncio
 import contextlib
@@ -62,6 +91,7 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -73,6 +103,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -101,7 +132,7 @@ TOOL_RESULT_LIMIT = 2000
 # so an older console degrades to "show it as raw" instead of dropping it.
 AGENT_EVENT_TYPES = frozenset({
     "start", "spawn", "iteration", "assistant", "tool_call", "compaction",
-    "steer", "error", "context_overflow_unrecoverable", "done",
+    "steer", "paused", "error", "context_overflow_unrecoverable", "done",
     "max_iterations",
 })
 CONTROL_EVENT_TYPES = frozenset({"hello", "end", "lost", "log", "unknown"})
@@ -228,6 +259,97 @@ def _has_scope(device: dict, scope: str) -> bool:
     if not isinstance(scopes, (list, tuple)):
         return False
     return scope in {str(s).strip().lower() for s in scopes}
+
+
+class OperatorList:
+    """The read allowlist, re-read on every check.
+
+    Revoking a reader must not need a stack restart — the device registry has
+    always reloaded itself that way and the operator list was the one
+    credential that did not. Two sources, unioned:
+
+      OPENBEAST_CHAT_OPERATORS   read from the environment at CHECK time
+      <run_dir>/chat-operators   one login per line, `#` comments, stat-gated
+                                 exactly like clients.json (mtime+size+inode,
+                                 because mtime alone misses two writes inside
+                                 one filesystem timestamp tick)
+
+    Empty from both sources is the single-user default: any *identified*
+    login passes. It is not an anonymous bypass — read_gate still demands a
+    credential of some kind.
+    """
+
+    def __init__(self, path: str, env_var: str = "OPENBEAST_CHAT_OPERATORS"):
+        self.path = path
+        self.env_var = env_var
+        self._stamp = None
+        self._file: set[str] = set()
+
+    def _reload_file(self) -> None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            self._file, self._stamp = set(), None
+            return
+        stamp = (st.st_mtime, st.st_size, st.st_ino)
+        if stamp == self._stamp:
+            return
+        try:
+            with open(self.path) as f:
+                raw = f.read()
+        except OSError:
+            return  # half-written: keep serving the last good list
+        out = set()
+        for line in raw.splitlines():
+            login = line.split("#", 1)[0].strip().lower()
+            if login:
+                out.add(login)
+        self._file, self._stamp = out, stamp
+
+    def current(self) -> set[str]:
+        self._reload_file()
+        env = {x.strip().lower()
+               for x in os.environ.get(self.env_var, "").split(",")
+               if x.strip()}
+        return env | self._file
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.current())
+
+    def allows(self, login: str) -> bool:
+        listed = self.current()
+        if not listed:
+            return True
+        return (login or "").strip().lower() in listed
+
+
+def trusted_hosts(extra: str = "") -> list[str]:
+    """Host values this server answers to (the rebinding allowlist).
+
+    Loopback, whatever this machine calls itself, and the tailnet. `*.ts.net`
+    is safe to wildcard: those names exist only inside MagicDNS, an attacker
+    cannot mint one, and the published deployment is reached by exactly that
+    name. Anything else — including a hostile DNS name pointed at 127.0.0.1 —
+    is refused before a route ever runs.
+    """
+    hosts = {"127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"}
+    try:
+        # gethostname() only. NOT getfqdn(), which does a reverse DNS lookup
+        # and blocks for seconds whenever the resolver is slow or captured —
+        # at startup, on a server whose whole job is to be reachable.
+        name = (socket.gethostname() or "").strip().lower()
+    except OSError:
+        name = ""
+    if name:
+        hosts.add(name)
+        hosts.add(name.split(".")[0])
+    hosts.add("*.ts.net")
+    for item in (extra or "").split(","):
+        item = item.strip().lower()
+        if item:
+            hosts.add(item)
+    return sorted(hosts)
 
 
 # ---------------------------------------------------------------------------
@@ -390,30 +512,67 @@ def derive_status(record: dict) -> dict:
 # Process signalling (module level so tests can monkeypatch it)
 # ---------------------------------------------------------------------------
 
+def _int_or_zero(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def signal_identity_ok(record: dict) -> bool:
+    """True only when the recorded pid is STILL the process we recorded.
+
+    A pid is a reusable integer. On a box that spawns thousands of eval
+    subprocesses, a stale ledger row pointing at a recycled pid is routine —
+    and every path here ends in `killpg`, which would take down an unrelated
+    process GROUP (a reviewer did exactly that through the bare-pid
+    fallback). `meta["pid_start"]` is the process's start time captured at
+    register(); it never repeats for the same pid. No pid_start at all means
+    no proof of identity, and a path that SIGNALS must then refuse.
+    """
+    pid = _int_or_zero(record.get("pid"))
+    if pid <= 1:
+        return False
+    meta = record.get("meta")
+    want = meta.get("pid_start") if isinstance(meta, dict) else None
+    if want is None:
+        return False
+    try:
+        current = sessions.pid_start_time(pid)
+    except Exception:
+        return False
+    if current is None:
+        return False
+    return _int_or_zero(current) == _int_or_zero(want)
+
+
 def signal_session(record: dict, sig: int) -> bool:
     """Signal a session's process GROUP, falling back to the bare pid.
 
     The group is what matters: a runner that shelled out leaves children, and
     SIGTERM to the leader alone orphans them. Refuses to signal pgid <= 1 or
     our own group — a ledger record with a garbage pgid must not be able to
-    take down this server or init.
+    take down this server or init — and refuses entirely unless the recorded
+    pid is still the process we registered (see signal_identity_ok).
     """
-    pgid = record.get("pgid") or record.get("pid")
-    pid = record.get("pid")
-    try:
-        pgid = int(pgid) if pgid else 0
-    except (TypeError, ValueError):
-        pgid = 0
+    if not isinstance(record, dict) or not signal_identity_ok(record):
+        return False
+    pid = _int_or_zero(record.get("pid"))
+    pgid = _int_or_zero(record.get("pgid") or record.get("pid"))
     if pgid > 1 and pgid != os.getpgrp():
+        # The leader is verifiably ours; only signal the group if that is
+        # still the group it leads, so a recycled pgid cannot borrow the
+        # identity proof we just made about the pid.
         try:
-            os.killpg(pgid, sig)
-            return True
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        pid = int(pid) if pid else 0
-    except (TypeError, ValueError):
-        pid = 0
+            live_pgid = os.getpgid(pid)
+        except OSError:
+            live_pgid = None
+        if live_pgid is None or live_pgid == pgid:
+            try:
+                os.killpg(pgid, sig)
+                return True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
     if pid > 1:
         try:
             os.kill(pid, sig)
@@ -423,12 +582,179 @@ def signal_session(record: dict, sig: int) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# E3 — children spawned HERE are ours to reap and ours to finalize
+# ---------------------------------------------------------------------------
+
+#: Live children by session id. Dropping a Popen on the floor is what made
+#: every phone-started session immortal: nobody wait()s, the child becomes a
+#: zombie, /proc still lists it, the liveness check says `running`, the SSE
+#: stream never ends and /send keeps queueing into a corpse.
+_CHILDREN: dict[str, subprocess.Popen] = {}
+_CHILDREN_LOCK = threading.Lock()
+
+
+def terminal_state_for(returncode: int) -> str:
+    """Exit status -> ledger state. 0 done, >0 failed, <0 (signalled) stopped."""
+    rc = _int_or_zero(returncode)
+    if rc == 0:
+        return "done"
+    if rc > 0:
+        return "failed"
+    return "stopped"
+
+
+def exit_summary(returncode: int) -> str:
+    rc = _int_or_zero(returncode)
+    if rc >= 0:
+        return f"exited with status {rc}"
+    try:
+        name = signal.Signals(-rc).name
+    except (ValueError, AttributeError):
+        name = f"signal {-rc}"
+    return f"killed by {name}"
+
+
+def annotate_when_registered(session_id: str, meta: dict, *,
+                             timeout: float = 15.0, poll: float = 0.05,
+                             proc: subprocess.Popen | None = None) -> bool:
+    """Merge our provenance into a record the CHILD owns (E4).
+
+    We must not register() an id the runner registers for itself: register is
+    a full overwrite, so whichever write lands last wins and started_by /
+    device / command vanish non-deterministically — and it resets the
+    runner's consumed-message cursor, which replays the operator's last
+    instruction to a resumed agent. So wait for the owner's record to appear
+    and touch() ours in, which merges.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    grace = None
+    while True:
+        exists = False
+        try:
+            exists = sessions.get(session_id) is not None
+        except Exception:
+            exists = False
+        if exists:
+            with contextlib.suppress(Exception):
+                sessions.touch(session_id, meta=dict(meta or {}))
+            return True
+        now = time.monotonic()
+        if now >= deadline:
+            return False
+        if proc is not None and proc.poll() is not None:
+            # The child died before it ever registered; one last look (it may
+            # have written the record microseconds before exiting) and stop.
+            if grace is None:
+                grace = now + 0.5
+            elif now >= grace:
+                return False
+        time.sleep(poll)
+
+
+def reap_session(session_id: str, proc: subprocess.Popen, *,
+                 annotate: dict | None = None, annotate_timeout: float = 15.0,
+                 poll: float = 0.05) -> str | None:
+    """Wait on our child, then record the truth. Blocking; see start_reaper.
+
+    Finalizes ONLY from `running`/`lost`: an agent runner writes its own
+    terminal state (an operator stop lands `stopped` on a process that then
+    exits 0), and the exit status must not overwrite a verdict its owner
+    already made. `lost` is the reconciler's guess and is exactly what we are
+    here to replace with the exit status.
+    """
+    if annotate is not None:
+        annotate_when_registered(session_id, annotate,
+                                 timeout=annotate_timeout, poll=poll,
+                                 proc=proc)
+    try:
+        returncode = proc.wait()
+    except Exception:
+        returncode = None
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.pop(session_id, None)
+    if returncode is None:
+        return None
+    state = terminal_state_for(returncode)
+    rec = read_record_raw(session_id)
+    if rec is not None and rec.get("state") not in ("running", "lost"):
+        return rec.get("state")          # its owner already decided
+    record_terminal_state(session_id, state, exit_summary(returncode))
+    return state
+
+
+def start_reaper(session_id: str, proc: subprocess.Popen,
+                 annotate: dict | None = None,
+                 annotate_timeout: float = 15.0) -> threading.Thread:
+    """One daemon thread per spawned child: reaps it and finalizes the ledger."""
+    with _CHILDREN_LOCK:
+        _CHILDREN[session_id] = proc
+    t = threading.Thread(
+        target=reap_session, args=(session_id, proc),
+        kwargs={"annotate": annotate, "annotate_timeout": annotate_timeout},
+        name=f"chat-reap-{session_id}", daemon=True)
+    t.start()
+    return t
+
+
+def read_record_raw(session_id: str) -> dict | None:
+    """Read a ledger record WITHOUT the reconcile-on-read side effect.
+
+    sessions.get() PERSISTS the `lost` transition it infers. For a path that
+    is about to record the real terminal state that write is a race we lose:
+    finalize() is a compare-and-set and `lost` is terminal, so whoever writes
+    first wins — and an operator stop would be permanently filed as a crash.
+    sessions.reconcile() is pure; only the read wrapper writes. So read the
+    file (record_path is public API) and reconcile it ourselves.
+    """
+    try:
+        with open(sessions.record_path(session_id)) as f:
+            rec = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("id") else None
+
+
+def record_terminal_state(session_id: str, state: str,
+                          summary: str | None = None) -> bool:
+    """Write a terminal state, correcting a `lost` GUESS if one got in first.
+
+    finalize() refuses to re-decide a record that is already terminal, which
+    is right: the first VERDICT wins, and a late atexit must not overwrite
+    it. But `lost` is not a verdict — it is the reconciler's inference about
+    a record nobody finalized, and it can be persisted by any concurrent
+    reader (an attached SSE stream polls four times a second). We are the
+    writer that actually knows: we hold the child, or we signalled it and
+    watched it go. So a `lost` is corrected, and a done/failed/stopped that a
+    session wrote for ITSELF is left exactly as it is.
+    """
+    try:
+        if sessions.finalize(session_id, state, summary=summary):
+            return True
+    except Exception:
+        return False
+    rec = read_record_raw(session_id)
+    if rec is None:
+        return False
+    if rec.get("state") == state:
+        return True                      # it landed (older finalize -> None)
+    if rec.get("state") != "lost":
+        return False                     # a real verdict; leave it alone
+    with contextlib.suppress(Exception):
+        sessions.touch(session_id, state=state,
+                       summary=summary if summary is not None
+                       else rec.get("summary"),
+                       ended_at=_now_iso())
+    return True
+
+
 def _still_running(session_id: str) -> bool:
     try:
-        rec = sessions.get(session_id)
+        rec = read_record_raw(session_id)
         if not rec:
             return False
-        rec = sessions.reconcile(rec)
+        rec = sessions.reconcile(rec)    # pure: infers `lost`, writes nothing
         return rec.get("state") == "running"
     except Exception:
         return False
@@ -443,23 +769,50 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
     caller), SIGTERM the group at `term_after`, SIGKILL at `kill_after`. The
     thread exits the moment the session leaves `running`, so the common case
     costs one wakeup per half second for a few seconds and nothing after.
+
+    WHATEVER WE SIGNALLED, THE RECORD LANDS ON `stopped`. Only the SIGKILL
+    branch used to finalize, so a process that went quietly on the polite
+    signal was reconciled to `lost` — which reads as "it crashed" and
+    contradicts the plan's own checklist ("stop during a tool call: process
+    gone, ledger `stopped`"). A session nobody here signalled keeps whatever
+    terminal state its owner wrote.
     """
     started = time.monotonic()
     done = threading.Event()
 
     def run():
         sent_term = False
+        sent_kill = False
+        kill_deadline = None
+
+        def finalize_stopped():
+            summary = ("SIGKILL after stop request" if sent_kill
+                       else "SIGTERM after stop request")
+            record_terminal_state(session_id, "stopped", summary)
+
         while not done.wait(poll):
             if not _still_running(session_id):
+                # It is gone. If we are why, say so; a cooperative exit keeps
+                # the terminal state the session wrote for itself.
+                if sent_term or sent_kill:
+                    finalize_stopped()
                 return
-            elapsed = time.monotonic() - started
-            rec = sessions.get(session_id) or {}
+            now = time.monotonic()
+            elapsed = now - started
+            rec = read_record_raw(session_id) or {}
+            if sent_kill:
+                # SIGKILL cannot be caught, but the record only flips once
+                # something reaps the child. Give it a few polls, then record
+                # the truth we already know rather than looping forever.
+                if kill_deadline is not None and now >= kill_deadline:
+                    finalize_stopped()
+                    return
+                continue
             if elapsed >= kill_after:
                 signal_session(rec, signal.SIGKILL)
-                with contextlib.suppress(Exception):
-                    sessions.finalize(session_id, "stopped",
-                                      summary="SIGKILL after stop request")
-                return
+                sent_kill = True
+                kill_deadline = now + max(poll * 4, 0.5)
+                continue
             if elapsed >= term_after and not sent_term:
                 signal_session(rec, signal.SIGTERM)
                 sent_term = True
@@ -479,15 +832,21 @@ def create_app() -> FastAPI:
     the environment without a module reload and without leaking config between
     apps (see tests/test_chat_server.py)."""
     run_dir = (os.environ.get("OPENBEAST_CHAT_RUN_DIR") or "").strip() or RUN_DIR
-    operators = {x.strip().lower()
-                 for x in os.environ.get("OPENBEAST_CHAT_OPERATORS", "").split(",")
-                 if x.strip()}
+    # Re-read per check, not captured here: a revoked reader must lose access
+    # without a stack restart (E11).
+    operators = OperatorList(os.path.join(run_dir, "chat-operators"))
     rate_per_min = max(1, int(os.environ.get("OPENBEAST_CHAT_RATE_PER_MIN") or 60))
     term_after = float(os.environ.get("OPENBEAST_CHAT_STOP_TERM_S") or 30)
     kill_after = float(os.environ.get("OPENBEAST_CHAT_STOP_KILL_S") or 60)
     poll = max(0.01, float(os.environ.get("OPENBEAST_CHAT_POLL_MS") or 250) / 1000.0)
     heartbeat = float(os.environ.get("OPENBEAST_CHAT_HEARTBEAT_S") or 15)
+    # An open stream re-authorizes on this period. Capped at the heartbeat so
+    # a long-lived attachment is re-checked at least as often as it is poked.
+    auth_recheck = float(os.environ.get("OPENBEAST_CHAT_AUTH_RECHECK_S")
+                         or min(heartbeat, 5.0))
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    allowed_hosts = trusted_hosts(
+        os.environ.get("OPENBEAST_CHAT_ALLOWED_HOSTS", ""))
 
     registry = DeviceRegistry(os.path.join(run_dir, "clients.json"))
     audit_path = os.path.join(run_dir, "chat-audit.jsonl")
@@ -503,12 +862,21 @@ def create_app() -> FastAPI:
         title="OpenBeast beast-chat",
         version="1.0",
         description="Sessions API + mobile console (see agents/chat_server.py).",
-        docs_url=None, redoc_url=None,
+        # /docs and /redoc were already off; the SCHEMA was not, and it
+        # published the whole write contract — routes, bodies, parameters —
+        # to a caller 404'd on every one of them.
+        docs_url=None, redoc_url=None, openapi_url=None,
     )
+    # Half of the rebinding defence (the other half is that identity is now
+    # required): a hostile DNS name pointed at 127.0.0.1 is refused here,
+    # before any route runs.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     app.state.local_token = local_token
     app.state.registry = registry
     app.state.run_dir = run_dir
     app.state.port = port
+    app.state.operators = operators
+    app.state.allowed_hosts = allowed_hosts
 
     # -- audit -------------------------------------------------------------
 
@@ -541,12 +909,26 @@ def create_app() -> FastAPI:
         except Exception:
             pass  # the audit trail must never break the request
 
+    def claimed(request: Request) -> dict:
+        """Who the caller SAYS they are, before anything is verified.
+
+        Seeded into the audit context BEFORE the gate runs: a denial whose
+        row says `login: null` records that somebody probed but not who, and
+        the probe is the whole reason this log exists.
+        """
+        login = (request.headers.get("tailscale-user-login") or "").strip()
+        return {"login": login or "anonymous", "device": None,
+                "verified": False}
+
     @contextlib.contextmanager
-    def audited(route: str, session: str | None = None):
+    def audited(route: str, session: str | None = None,
+                request: Request | None = None):
         """Wrap a handler so denials are audited too — a probe from an
         unlisted login is exactly the event this log exists for."""
         t0 = time.monotonic()
-        ctx = {"principal": None, "outcome": "ok", "extra": {}, "session": session}
+        principal = claimed(request) if request is not None else None
+        ctx = {"principal": principal, "outcome": "ok", "extra": {},
+               "session": session}
         try:
             yield ctx
         except HTTPException as e:
@@ -574,18 +956,47 @@ def create_app() -> FastAPI:
         return hmac.compare_digest(
             presented.encode("utf-8", "surrogateescape"), local_token.encode())
 
+    def device_for(request: Request) -> dict | None:
+        """The enrolled, chat-scoped device behind this request, or None.
+
+        Unknown, revoked and unscoped are all None: the caller learns nothing
+        about which keys exist or what they are missing.
+        """
+        auth = request.headers.get("authorization", "")
+        key = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not key:
+            key = (request.headers.get("x-openbeast-device-key") or "").strip()
+        if not key:
+            return None
+        dev = registry.lookup(key)
+        if dev is None or not _has_scope(dev, "chat"):
+            return None
+        return dev
+
     def read_gate(request: Request) -> dict:
+        """Identity or nothing. A request with NO credential is 404.
+
+        There is no anonymous read: a transcript is file contents, command
+        output and every byte the model has been shown. `tailscale serve`
+        injects Tailscale-User-Login on the published deployment; an enrolled
+        chat-scoped device key is accepted as identity too (the client CLI
+        and curl have no header to be injected into); a caller that can read
+        the 0600 token in .run/ is on the box.
+        """
         if is_local(request):
             return {"login": "local", "device": "local", "local": True}
         login = (request.headers.get("tailscale-user-login") or "").strip()
-        if not operators:
-            # Single-user default: no operator list configured, reads are open
-            # on a loopback/tailnet-only port.
-            return {"login": login or "anonymous", "device": None, "local": False}
-        if login.lower() not in operators:
-            # 404, never 403. A stranger must not learn that beast-chat is here.
-            raise HTTPException(status_code=404, detail="Not Found")
-        return {"login": login, "device": None, "local": False}
+        if login and operators.allows(login):
+            # Unset operator list = single-user default: any identified login
+            # reads. Set = allowlist, and anything else falls through to 404.
+            return {"login": login, "device": None, "local": False}
+        dev = device_for(request)
+        if dev is not None:
+            dev_id = dev.get("id") or "device"
+            return {"login": login or f"device:{dev_id}", "device": dev_id,
+                    "local": False}
+        # 404, never 403. A stranger must not learn that beast-chat is here.
+        raise HTTPException(status_code=404, detail="Not Found")
 
     def rate_check(key: str) -> None:
         now = time.monotonic()
@@ -601,23 +1012,18 @@ def create_app() -> FastAPI:
     def write_gate(request: Request, principal: dict) -> dict:
         """Reads already passed. Writes additionally need an enrolled device
         key with the `chat` scope — steering an agent is a different act from
-        watching one."""
+        watching one.
+
+        Missing, unknown, revoked and unscoped all answer 404, identically.
+        The old 401-for-missing-key was a membership oracle: a 401 told an
+        unlisted prober that the login they had just guessed IS in
+        CHAT_OPERATORS, while everyone else got 404.
+        """
         if principal.get("local"):
             rate_check("local")
             return principal
-        auth = request.headers.get("authorization", "")
-        key = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if not key:
-            key = (request.headers.get("x-openbeast-device-key") or "").strip()
-        if not key:
-            # A listed operator with no device key CAN read and is told
-            # honestly that a credential is missing — 401, not 404: the
-            # resource's existence is not the secret at this point.
-            raise HTTPException(status_code=401, detail="device key required")
-        dev = registry.lookup(key)
-        if dev is None or not _has_scope(dev, "chat"):
-            # Unknown, revoked, or unscoped: as far as this caller is
-            # concerned the write route does not exist.
+        dev = device_for(request)
+        if dev is None:
             raise HTTPException(status_code=404, detail="Not Found")
         out = dict(principal)
         out["device"] = dev.get("id") or "device"
@@ -634,7 +1040,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def console(request: Request):
-        with audited("GET /") as ctx:
+        with audited("GET /", request=request) as ctx:
             ctx["principal"] = read_gate(request)
             try:
                 with open(CONSOLE_PATH, encoding="utf-8") as f:
@@ -672,15 +1078,25 @@ def create_app() -> FastAPI:
 
     @app.get("/api/chat/sessions")
     def list_sessions(request: Request, state: str = "", kind: str = "",
-                      limit: int = 200):
-        with audited("GET /api/chat/sessions") as ctx:
+                      limit: str = "200"):
+        # `limit` is typed as a STRING on purpose. As `int` FastAPI validated
+        # it in the routing layer, so `?limit=abc` returned 422 — before the
+        # auth gate ran, and only for a URL that exists. That 422 told an
+        # anonymous prober the route was real while every honest request got
+        # 404. Coerce after the gate instead.
+        with audited("GET /api/chat/sessions", request=request) as ctx:
             ctx["principal"] = read_gate(request)
             state = (state or "").strip() or None
             kind = (kind or "").strip() or None
             if state and state not in sessions.STATES:
                 raise HTTPException(status_code=400, detail="unknown state")
+            try:
+                count = int(str(limit).strip() or "200")
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="'limit' must be an integer")
             rows = sessions.list_sessions(state=state, kind=kind,
-                                          limit=max(1, min(int(limit), 1000)))
+                                          limit=max(1, min(count, 1000)))
             out = []
             for rec in rows:
                 rec = sessions.reconcile(rec)
@@ -699,7 +1115,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/chat/sessions/{session_id}")
     def get_session(request: Request, session_id: str):
-        with audited("GET /api/chat/sessions/{id}", session_id) as ctx:
+        with audited("GET /api/chat/sessions/{id}", session_id,
+                     request=request) as ctx:
             ctx["principal"] = read_gate(request)
             rec = load_session(session_id)
             status = derive_status(rec)
@@ -728,8 +1145,11 @@ def create_app() -> FastAPI:
         try:
             principal = read_gate(request)
         except HTTPException as e:
-            audit(None, "GET /events", session_id, f"http_{e.status_code}",
+            audit(claimed(request), "GET /events", session_id,
+                  f"http_{e.status_code}",
                   int((time.monotonic() - t0) * 1000))
+            with metrics_lock:
+                counters[("GET /events", f"http_{e.status_code}")] += 1
             raise
         rec = load_session(session_id)
 
@@ -758,7 +1178,7 @@ def create_app() -> FastAPI:
             gauges["sse_open"] += 1
 
         return StreamingResponse(
-            _stream(request, rec, start),
+            _stream(request, rec, start, principal),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -770,26 +1190,48 @@ def create_app() -> FastAPI:
             },
         )
 
-    async def _stream(request: Request, record: dict, start: int):
+    def _file_ident(path: str):
+        """(device, inode) — the identity of the file we are following.
+
+        A transcript that is rotated or replaced keeps its path and can come
+        back SHORTER or LONGER; size alone cannot see that, and following the
+        old offset into a new file hands the reader half an event.
+        """
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino)
+
+    async def _stream(request: Request, record: dict, start: int,
+                      principal: dict):
         session_id = record["id"]
         kind = record.get("kind") or "agent"
         path = record.get("transcript") or ""
         offset = start
         seq = 0
         closing_at = None
+        ident = _file_ident(path)
+        last_auth = time.monotonic()
+
+        def lost_frame(reason: str, requested: int, size: int) -> str:
+            # The llama.cpp OFFSET_LOST case. Rather than 400 a phone that did
+            # nothing wrong, say so and restart from zero — the console clears
+            # its buffer on this frame.
+            return sse_frame("lost", {
+                "type": "lost", "requested": requested, "size": size,
+                "reason": reason,
+                "message": ("transcript is shorter than the requested offset "
+                            "— replaying from the start"
+                            if reason == "offset_beyond_eof" else
+                            "transcript was replaced — replaying from the "
+                            "start"),
+            })
+
         try:
             size = _file_size(path)
             if offset > size:
-                # The transcript was truncated or replaced under us (the
-                # llama.cpp OFFSET_LOST case). Rather than 400 a phone that
-                # did nothing wrong, say so and restart from zero — the
-                # console clears its buffer on this frame.
-                yield sse_frame("lost", {
-                    "type": "lost", "requested": offset, "size": size,
-                    "reason": "offset_beyond_eof",
-                    "message": "transcript is shorter than the requested "
-                               "offset — replaying from the start",
-                })
+                yield lost_frame("offset_beyond_eof", offset, size)
                 offset = 0
             # Reconnect hint for EventSource, sent once before the first
             # frame. Bare `retry:` is a legal SSE field, not a frame.
@@ -806,6 +1248,48 @@ def create_app() -> FastAPI:
             while True:
                 if await request.is_disconnected():
                     return
+
+                # E11: a reader revoked while attached must LOSE the stream.
+                # An allowlist that only applies at open means removing a
+                # login needs a full restart, and the open attachment
+                # survives even that.
+                now = time.monotonic()
+                if now - last_auth >= auth_recheck:
+                    last_auth = now
+                    try:
+                        read_gate(request)
+                    except HTTPException as e:
+                        audit(principal, "GET /events", session_id,
+                              f"revoked_{e.status_code}", 0, {"offset": offset})
+                        with metrics_lock:
+                            counters[("GET /events", "revoked")] += 1
+                        yield sse_frame("end", {
+                            "type": "end", "session": session_id,
+                            "state": record.get("state"), "offset": offset,
+                            "reason": "unauthorized",
+                            "summary": "read access was revoked",
+                        }, offset)
+                        return
+
+                # E6: the shrink/replace guard runs on EVERY pass, not once at
+                # open. A transcript truncated mid-stream used to leave the
+                # reader's offset past EOF forever — it silently skipped
+                # everything written after the truncation and, once the file
+                # grew back past the stale offset, handed out half an event.
+                size = _file_size(path)
+                now_ident = _file_ident(path)
+                if ident is None:
+                    ident = now_ident     # it did not exist yet at open
+                replaced = (now_ident is not None and ident is not None
+                            and now_ident != ident)
+                if replaced or offset > size:
+                    reason = "transcript_replaced" if replaced else "offset_beyond_eof"
+                    yield lost_frame(reason, offset, size)
+                    ident = now_ident
+                    offset = 0
+                    closing_at = None
+                    continue
+
                 lines, offset = read_lines_from(path, offset)
                 for text, end in lines:
                     seq += 1
@@ -858,7 +1342,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat/sessions/{session_id}/send")
     async def send(request: Request, session_id: str):
-        with audited("POST /send", session_id) as ctx:
+        with audited("POST /send", session_id, request=request) as ctx:
             with _inflight(metrics_lock, gauges):
                 principal = read_gate(request)
                 ctx["principal"] = principal
@@ -910,7 +1394,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat/sessions/{session_id}/stop")
     async def stop(request: Request, session_id: str):
-        with audited("POST /stop", session_id) as ctx:
+        with audited("POST /stop", session_id, request=request) as ctx:
             with _inflight(metrics_lock, gauges):
                 principal = read_gate(request)
                 ctx["principal"] = principal
@@ -966,22 +1450,26 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat/sessions")
     async def create_session(request: Request):
-        with audited("POST /api/chat/sessions") as ctx:
+        with audited("POST /api/chat/sessions", request=request) as ctx:
             with _inflight(metrics_lock, gauges):
                 principal = read_gate(request)
                 ctx["principal"] = principal
                 principal = write_gate(request, principal)
                 ctx["principal"] = principal
                 body = await _json_body(request)
-                kind = (body.get("kind") or "agent").strip().lower()
+                kind = _body_str(body, "kind", "agent").strip().lower()
                 if kind not in ("agent", "job"):
                     raise HTTPException(status_code=400,
                                         detail="kind must be 'agent' or 'job'")
                 workdir = os.path.abspath(os.path.expanduser(
-                    body.get("workdir") or REPO_DIR))
+                    _body_str(body, "workdir") or REPO_DIR))
                 if not os.path.isdir(workdir):
                     raise HTTPException(status_code=400,
                                         detail=f"workdir does not exist: {workdir}")
+                meta_in = body.get("meta")
+                if meta_in is not None and not isinstance(meta_in, dict):
+                    raise HTTPException(status_code=400,
+                                        detail="'meta' must be an object")
                 session_id = sessions.new_id(kind)
                 # Transcripts live in agents/logs/, NOT under SESSIONS_DIR.
                 # Two reasons, both load-bearing: sessions.prune() deletes a
@@ -997,30 +1485,46 @@ def create_app() -> FastAPI:
                     transcript = os.path.join(LOG_DIR, f"job-{session_id}.log")
 
                 if kind == "agent":
-                    task = (body.get("task") or "").strip()
+                    task = _body_str(body, "task").strip()
                     if not task:
                         raise HTTPException(status_code=400,
                                             detail="agent sessions need a task")
-                    title = (body.get("title") or task[:80]).strip()
-                    model = body.get("model") or ""
+                    title = (_body_str(body, "title") or task[:80]).strip()
+                    model = _body_str(body, "model")
+                    max_iter = _body_int(body, "max_iter", 200, lo=1, hi=1000)
                     cmd = [sys.executable, RUNNER_PATH,
                            "--log-file", transcript,
                            "--workdir", workdir,
-                           "--max-iter", str(int(body.get("max_iter") or 200))]
+                           "--max-iter", str(max_iter),
+                           # The steering opt-in is EXPLICIT ARGV and nothing
+                           # else (the env opt-in is gone, and it leaked into
+                           # measured eval units through inherited
+                           # environments). --session-id also pins the id the
+                           # runner registers ITSELF under, which is what
+                           # keeps this server from owning that record.
+                           "--session-id", session_id,
+                           "--steer"]
                     if model:
-                        cmd += ["--model", str(model)]
-                    if body.get("base_url"):
-                        cmd += ["--base-url", str(body["base_url"])]
-                    if body.get("context"):
-                        cmd += ["--context", str(body["context"])]
+                        cmd += ["--model", model]
+                    base_url = _body_str(body, "base_url")
+                    if base_url:
+                        cmd += ["--base-url", base_url]
+                    context = _body_str(body, "context")
+                    if context:
+                        cmd += ["--context", context]
                     cmd.append(task)
-                    display = " ".join(shlex.quote(c) for c in cmd[:6]) + " …"
+                    # The WHOLE argv (clipped by the writers below), not the
+                    # first six words: the flags that decide what this agent
+                    # may do — --session-id, --steer, --max-iter, --model —
+                    # all sort after the sixth token.
+                    display = " ".join(shlex.quote(c) for c in cmd)
                 else:
-                    shell_cmd = (body.get("cmd") or body.get("command") or "").strip()
+                    shell_cmd = (_body_str(body, "cmd")
+                                 or _body_str(body, "command")).strip()
                     if not shell_cmd:
                         raise HTTPException(status_code=400,
                                             detail="job sessions need a cmd")
-                    title = (body.get("title") or shell_cmd[:80]).strip()
+                    title = (_body_str(body, "title") or shell_cmd[:80]).strip()
                     model = ""
                     # Equivalent in power to the stack's existing `bash` tool,
                     # and gated by the same class of credential (an enrolled
@@ -1036,7 +1540,18 @@ def create_app() -> FastAPI:
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
                     else:
-                        log = open(transcript, "ab", buffering=0)
+                        # 0600, matching scripts/job.sh. A plain open() took
+                        # the umask and left every job transcript on the box
+                        # world-readable — command output is exactly as
+                        # sensitive as the transcript it is quoted into.
+                        fd = os.open(transcript,
+                                     os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                                     0o600)
+                        try:
+                            os.fchmod(fd, 0o600)
+                        except OSError:
+                            pass
+                        log = os.fdopen(fd, "ab", buffering=0)
                         try:
                             proc = subprocess.Popen(
                                 cmd, cwd=workdir, stdout=log,
@@ -1049,16 +1564,46 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=500,
                                         detail=f"spawn failed: {e}")
 
-                meta = dict(body.get("meta") or {})
+                meta = dict(meta_in or {})
                 meta.update({"started_by": principal.get("login"),
                              "device": principal.get("device"),
-                             "command": display})
-                rec = sessions.register(
-                    session_id, kind=kind, title=title, pid=proc.pid,
-                    pgid=proc.pid, workdir=workdir, model=model or None,
-                    transcript=transcript, meta=meta)
+                             "command": display[:500]})
+
+                if kind == "job":
+                    # Nothing else writes this record: an API job bypasses
+                    # scripts/job.sh entirely, so this server IS its ledger
+                    # writer — and its reaper.
+                    rec = sessions.register(
+                        session_id, kind=kind, title=title, pid=proc.pid,
+                        pgid=proc.pid, workdir=workdir, model=model or None,
+                        transcript=transcript, meta=meta)
+                    start_reaper(session_id, proc)
+                else:
+                    # E4 — ONE WRITER PER RECORD. The runner registers this id
+                    # itself (we passed it --session-id); register()ing it here
+                    # too is a full overwrite racing a full overwrite, which
+                    # loses started_by/device/command at random AND resets the
+                    # runner's consumed-message cursor, replaying the
+                    # operator's last instruction into a resumed agent. Wait
+                    # for its record, then merge ours in with touch().
+                    start_reaper(session_id, proc, annotate=meta)
+                    rec = sessions.get(session_id) or {
+                        "id": session_id, "kind": kind, "title": title,
+                        "pid": proc.pid, "pgid": proc.pid, "state": "running",
+                        "workdir": workdir, "model": model or None,
+                        "transcript": transcript,
+                        "inbox": _inbox_path(session_id), "meta": meta,
+                    }
                 ctx["session"] = session_id
-                ctx["extra"] = {"kind": kind, "pid": proc.pid}
+                # The command is the one action the scope system gates, so it
+                # is the one thing this row must carry. Hash + workdir too:
+                # the hash survives truncation and proves the exact bytes.
+                ctx["extra"] = {
+                    "kind": kind, "pid": proc.pid, "workdir": workdir,
+                    "command": display[:500],
+                    "command_sha256": hashlib.sha256(
+                        display.encode("utf-8", "replace")).hexdigest(),
+                }
                 with metrics_lock:
                     counters[("sessions", kind)] += 1
                 return JSONResponse(status_code=201, content={
@@ -1070,9 +1615,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/chat/health")
     def health(request: Request):
-        # Deliberately ungated: start.sh / healthcheck.sh probe this from the
-        # box and must not need a credential to learn the process is alive.
-        # It reveals counts, never contents.
+        # The ONE ungated route, because start.sh / healthcheck.sh probe it
+        # from the box with no credential to learn the process is alive. To
+        # an unidentified caller that is all it says: liveness. Session
+        # counts, the ledger path and the auth posture are a map of the rig
+        # and need a read credential like everything else.
+        try:
+            principal = read_gate(request)
+        except HTTPException:
+            return {"status": "ok"}
         try:
             live = len(sessions.list_sessions(state="running", limit=1000))
             total = len(sessions.list_sessions(limit=1000))
@@ -1084,13 +1635,18 @@ def create_app() -> FastAPI:
             "sessions_dir": sessions.SESSIONS_DIR,
             "running": live,
             "sessions": total,
-            "reads": "operators" if operators else "open",
+            "reads": "operators" if operators.configured else "any-identified",
             "devices": registry.configured,
             "streams": max(0, gauges.get("sse_open", 0)),
+            "login": principal.get("login"),
         }
 
     @app.get("/api/chat/metrics", response_class=PlainTextResponse)
     def metrics(request: Request):
+        # Route names, outcome counts and live attachment counts are an
+        # operational map of this box. Read credential required, and 404 —
+        # not 403 — to everyone else.
+        read_gate(request)
         lines = [
             "# HELP openbeast_chat_requests_total Requests by route/outcome",
             "# TYPE openbeast_chat_requests_total counter",
@@ -1126,6 +1682,41 @@ def _inflight(lock, gauges):
     finally:
         with lock:
             gauges["inflight"] -= 1
+
+
+def _body_str(body: dict, key: str, default: str = "") -> str:
+    """A string field, or 400. Explicit types: a list where a string belongs
+    used to reach shlex/Popen and 500 from deep inside the spawn."""
+    value = body.get(key, None)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400,
+                            detail=f"'{key}' must be a string")
+    return value
+
+
+def _body_int(body: dict, key: str, default: int, *, lo: int, hi: int) -> int:
+    """An integer field, CLAMPED to [lo, hi].
+
+    `max_iter: "abc"` used to raise ValueError inside the handler and answer
+    500; `max_iter: -5` was accepted verbatim and handed to the runner, where
+    a negative budget means the loop never runs. Junk is a 400, an
+    out-of-range number is clamped (a phone typing 100000 wants "lots", not
+    an error).
+    """
+    value = body.get(key, None)
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise HTTPException(status_code=400,
+                            detail=f"'{key}' must be an integer")
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"'{key}' must be an integer")
+    return max(lo, min(hi, number))
 
 
 async def _json_body(request: Request) -> dict:

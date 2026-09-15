@@ -330,7 +330,7 @@ footer{
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="ksT">
     <h2 id="ksT">Device key</h2>
     <p>Sending and stopping need an enrolled device key with the <code>chat</code> scope.
-       Reads never do. Stored only in this browser.</p>
+       Reading needs a tailnet login or the same key. Stored only in this browser.</p>
     <label for="keyIn">Key</label>
     <input id="keyIn" type="password" autocomplete="off" spellcheck="false" placeholder="paste the key from clients.sh enroll">
     <div class="acts">
@@ -409,7 +409,10 @@ function api(path, opts){
   opts = opts || {};
   var headers = opts.headers || {};
   var k = lsGet(KEY, "");
-  if(k && opts.method === "POST") headers["X-OpenBeast-Device-Key"] = k;
+  // Reads carry it too. `tailscale serve` injects Tailscale-User-Login on the
+  // published deployment; a browser pointed straight at loopback has no such
+  // header, and identity is now required on every route.
+  if(k) headers["X-OpenBeast-Device-Key"] = k;
   if(opts.body) headers["Content-Type"] = "application/json";
   return fetch(path, { method: opts.method || "GET", headers: headers, body: opts.body })
     .then(function(r){
@@ -425,8 +428,10 @@ function api(path, opts){
     });
 }
 function writeError(err){
+  // A missing key and an unauthorized key answer the SAME 404 on purpose —
+  // the old 401/404 split told a prober which logins are operators.
   if(err.status === 401) return "no device key — tap the key icon to add one";
-  if(err.status === 404) return "this device is not allowed to write here";
+  if(err.status === 404) return "no device key, or this device cannot write here — tap the key icon";
   if(err.status === 429) return "slow down — write rate limit hit";
   if(err.status === 409) return "session already finished";
   return err.message || "failed";
@@ -440,7 +445,7 @@ var S = {
 };
 var MAX_NODES = 600;
 var KNOWN = ["hello","end","lost","log","unknown","start","spawn","iteration",
-             "assistant","tool_call","compaction","steer","error",
+             "assistant","tool_call","compaction","steer","paused","error",
              "context_overflow_unrecoverable","done","max_iterations"];
 
 // --- rendering: session list -------------------------------------------
@@ -543,6 +548,10 @@ function eventNode(type, d){
   }
   if(type === "iteration"){
     return el("div", "divider", "iteration " + (d.number || "?"));
+  }
+  if(type === "paused"){
+    return el("div", "note n-warn",
+      "paused at iteration " + (d.iteration || "?") + " — waiting for resume or stop");
   }
   if(type === "compaction"){
     return el("div", "note n-compaction",
@@ -659,6 +668,14 @@ function handle(name, d){
     return;
   }
   if(name === "end"){
+    if(d.reason === "unauthorized"){
+      // Access was revoked while we were attached. Not terminal: the session
+      // may well still be running, we simply may not watch it any more.
+      closeStream(); setConn("closed", "");
+      push(el("div", "note n-warn", "stream closed — access revoked"));
+      composerEnabled(false);
+      return;
+    }
     S.terminal = true;
     updateState(d.state);
     push(el("div", "note", "stream closed — " + (d.state || "finished")));
