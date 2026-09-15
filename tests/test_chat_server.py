@@ -1659,3 +1659,139 @@ def test_paused_is_a_first_class_event(rig):
     assert body[1]["data"]["iteration"] == 4
     console = rig.client.get("/").text
     assert '"paused"' in console        # bound by the console too
+
+
+# --- v1.4.0 adversarial review ----------------------------------------------
+
+def test_caller_meta_cannot_forge_the_liveness_proof(rig, tmp_path):
+    """`meta` is a free-form caller field that landed in the ledger's meta
+    namespace unfiltered — and that namespace holds `pid_start`, the process
+    identity PROOF that stops a recycled pid from making a dead session look
+    alive. `sessions.register` only *setdefault*'d it, so the caller's value
+    won, `_alive()` then compared it against the real /proc start time, and
+    the record reconciled to `lost` while the command ran on: `/stop`
+    answered "already finished" and never signalled, `/send` 409'd, and the
+    stream closed. For a 19-hour job, for its whole duration.
+    """
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "title": "forged", "cmd": "sleep 30",
+        "workdir": str(tmp_path),
+        # the payload: reserved keys, plus one legitimate free-form key
+        "meta": {"pid_start": 1, "cursor": 999, "note": "keep me"}})
+    assert r.status_code == 201, r.text
+    sid = r.json()["session"]["id"]
+    rec = sessions.get(sid)
+
+    # the server's own value, not the caller's
+    assert rec["meta"]["pid_start"] == sessions.pid_start_time(rec["pid"])
+    assert rec["meta"]["pid_start"] != 1
+    assert rec["meta"]["cursor"] == 0
+    # free-form meta still works — this is a filter, not a wall
+    assert rec["meta"]["note"] == "keep me"
+
+    # and the consequence the forgery bought: the session is alive and
+    # stoppable, not a `lost` record with a running process behind it.
+    assert sessions.get(sid)["state"] == "running"
+    body = rig.client.get(f"/api/chat/sessions/{sid}").json()
+    assert body["session"]["state"] == "running"
+    stop = rig.client.post(f"/api/chat/sessions/{sid}/stop", headers=rig.local)
+    assert stop.status_code == 200 and stop.json()["stopped"] is True
+    assert stop.json().get("detail") != "already finished"
+    assert wait_state(sid, "stopped"), sessions.get(sid)
+
+
+def test_the_stream_read_is_bounded_and_still_pages_exactly(tmp_path):
+    """`read_lines_from` did an uncapped `f.read()` from the offset, and its
+    only caller is inside the async SSE generator — so every replay-from-zero
+    (a fresh page load, the Replay button, the mid-stream `lost` reset) pulled
+    a whole job transcript into one bytes object, plus a tuple per line, with
+    the event loop blocked: every other attached stream and
+    /api/chat/health waited behind it.
+
+    Bounded now. The properties that must survive the bound are that no line
+    is lost, none is duplicated, and the returned offset is exactly the
+    resume point — so this asserts the paging, not just the cap.
+    """
+    p = tmp_path / "big.log"
+    n = 20000
+    with open(p, "wb") as f:
+        for i in range(n):
+            f.write((f"line {i:06d}" + "x" * 84 + "\n").encode())
+    size = p.stat().st_size
+    assert size > chat_server.STREAM_MAX_READ * 4, "make the fixture bigger"
+
+    # one read is bounded...
+    first, off1 = chat_server.read_lines_from(str(p), 0)
+    assert 0 < len(first) < n, "the read is still unbounded"
+    assert off1 <= chat_server.STREAM_MAX_READ + 1
+
+    # ...and paging it delivers every line, once, in order
+    seen, off, reads = [], 0, 0
+    while True:
+        lines, off = chat_server.read_lines_from(str(p), off)
+        if not lines:
+            break
+        reads += 1
+        seen.extend(t for t, _ in lines)
+        assert reads < 500, "not converging"
+    assert len(seen) == n
+    assert seen[0].startswith("line 000000") and seen[-1].startswith(f"line {n-1:06d}")
+    assert off == size, "the final offset is not the resume point"
+
+    # a partial trailing line is still never emitted
+    with open(p, "ab") as f:
+        f.write(b"unterminated")
+    lines, off2 = chat_server.read_lines_from(str(p), off)
+    assert lines == [] and off2 == off
+
+
+def test_a_newline_free_producer_cannot_wedge_the_stream(tmp_path):
+    """The cap's own failure mode: with a hard byte limit and no line ending
+    in the window, a naive reader returns nothing, forever, at the same
+    offset — a stream that stops without ending. One long line is emitted
+    and the offset advances past it, the same escape tail_transcript uses."""
+    p = tmp_path / "nolf.log"
+    open(p, "wb").write(b"A" * (chat_server.STREAM_MAX_LINE + 4096))
+    lines, off = chat_server.read_lines_from(str(p), 0)
+    assert len(lines) == 1
+    assert off >= chat_server.STREAM_MAX_LINE
+    assert off > 0, "the reader is wedged at offset 0"
+
+
+def test_stopping_a_session_never_signals_a_group_it_does_not_lead(monkeypatch):
+    """A session that registered itself into SOMEONE ELSE'S process group
+    must get a bare-pid signal, not a killpg.
+
+    `agents/runner.py` calls `sessions.register()` with no pgid, so
+    `sessions.py` fills in `os.getpgid(pid)` — the group the process BELONGS
+    to. Start such an agent from a non-interactive script (no job control, so
+    the child inherits the script's group) and a Stop from the phone killpg'd
+    the script and every sibling it had: on this rig, a campaign and all its
+    stages. The old guard compared the live pgid to the recorded one, which
+    catches a recycled pgid but passes a non-led one trivially — the process
+    really is in that group.
+
+    Every intended producer leads its group by construction (`job.sh` sets
+    `set -m` for exactly this; the console spawns with start_new_session and
+    records pgid=pid), so this costs those paths nothing.
+    """
+    calls = {"killpg": [], "kill": []}
+    monkeypatch.setattr(chat_server.os, "killpg",
+                        lambda pg, sig: calls["killpg"].append((pg, sig)))
+    monkeypatch.setattr(chat_server.os, "kill",
+                        lambda pid, sig: calls["kill"].append((pid, sig)))
+    monkeypatch.setattr(chat_server, "signal_identity_ok", lambda rec: True)
+    monkeypatch.setattr(chat_server.os, "getpgid", lambda pid: 4242)
+
+    # (a) a LEADER — the group is this session's tree, so signal the group
+    assert chat_server.signal_session({"pid": 4242, "pgid": 4242},
+                                      signal.SIGTERM) is True
+    assert calls["killpg"] == [(4242, signal.SIGTERM)]
+    assert calls["kill"] == []
+
+    # (b) a MEMBER of someone else's group — bare pid only
+    calls["killpg"].clear(); calls["kill"].clear()
+    assert chat_server.signal_session({"pid": 9001, "pgid": 4242},
+                                      signal.SIGTERM) is True
+    assert calls["killpg"] == [], "killed a group this session does not lead"
+    assert calls["kill"] == [(9001, signal.SIGTERM)]

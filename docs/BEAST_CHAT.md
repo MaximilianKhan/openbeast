@@ -97,6 +97,27 @@ Everything in the console is a **session**, and there are exactly two kinds.
 | Steerable | **yes** — messages land at the next turn | no; you can stop it |
 | Stop | inbox `stop`, then SIGTERM the group | SIGTERM the process group, SIGKILL on escalation |
 
+**What a `stop` actually reaches** (corrected in the v1.4.0 review, where the
+code and two comments said "the whole tree" and meant something narrower): the
+job's own process group — the supervisor and every child that has **not**
+detached into a session of its own. A descendant that calls `setsid` /
+`start_new_session=True` leaves that group *by design*: `evals/run_eval.py`
+does exactly that so a per-task timeout can SIGKILL one agent's group without
+touching the run. Such a descendant has to reap itself, and `run_eval.py` now
+does (`_install_signal_reaper`) — before that fix, stopping a campaign from
+the phone killed the harness and left an eval unit running, still holding a
+server slot and still writing the task's fixtures, against a relaunch that
+necessarily re-ran it. **If you add another self-sessioning spawner, give it
+the same handler; `stop` cannot reach it for you.**
+
+**`meta` on session creation is caller free-form with reserved keys.**
+`pid_start` and `cursor` are the server's: the first is the process-identity
+proof that stops a recycled pid from making a dead session look alive, the
+second is the steering inbox position. They are stripped from caller input
+(and `pid_start` is assigned, never inherited) because a forged `pid_start`
+does not read as corruption — it reads as a session that already finished,
+while its command keeps running for hours. Anything else you attach is kept.
+
 Both live at `.run/sessions/<id>.json` (mode 0600), with `state ∈ running ·
 done · failed · stopped · lost`. `lost` is the honest answer for a session
 whose process is gone without a terminal event — the crash case. It is
@@ -374,6 +395,19 @@ tailnet mid-stream while the rig stays perfectly healthy — the single most
 confusing failure mode on this stack (README § Remote access).
 
 ## Durability: what survives what
+
+**The stream reader is bounded.** A replay from zero — a fresh page load, the
+Replay button, or the mid-stream `lost` reset — used to read the whole
+transcript into memory in one blocking call inside the async generator, so a
+long campaign log starved every other attached stream and `/api/chat/health`
+while it did. Each read now takes at most `STREAM_MAX_READ` (256 KB, matching
+the steering inbox) and runs off the event loop; the caller already re-reads
+without sleeping while lines keep coming, so a backlog is *paged* rather than
+slurped, and the byte offset it returns is exactly the resume point. A
+producer that emits no newline at all cannot wedge the reader: past
+`STREAM_MAX_LINE` the chunk is delivered as one line and the offset advances
+over it.
+
 
 | Event | Effect |
 |---|---|

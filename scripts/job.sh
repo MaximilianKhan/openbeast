@@ -16,8 +16,16 @@
 #
 # What `run` guarantees:
 #   * the job survives this shell exiting (nohup-style, stdin from /dev/null)
-#   * the job gets its OWN process group, so `stop` can signal the whole tree
-#     — a campaign script's children included — without touching the caller
+#   * the job gets its OWN process group, so `stop` signals the supervisor and
+#     every child that has NOT detached into a session of its own — a campaign
+#     script's stages included — without ever touching the caller.
+#     NOT "the whole tree": a descendant spawned with setsid/start_new_session
+#     leaves this group by design (evals/run_eval.py does exactly that, so a
+#     per-task timeout can SIGKILL one agent's group without touching the run).
+#     Such a descendant has to reap itself on SIGTERM, and run_eval now does
+#     (_install_signal_reaper) — it used to leave an eval unit running against
+#     a relaunch. If you add another self-sessioning spawner, give it the same
+#     handler; `stop` cannot reach it for you.
 #   * both pid and pgid land in the ledger record
 #   * combined stdout+stderr stream to .run/sessions/<id>.log
 #   * the terminal state is the truth: exit 0 -> done, anything else -> failed,

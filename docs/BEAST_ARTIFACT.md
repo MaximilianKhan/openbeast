@@ -286,6 +286,29 @@ sandbox instead — stricter on storage (there is none), identical on network.
 - `Tailscale-User-Login` is forgeable by a process already on the rig. That is
   inside the existing loopback trust model, and it only ever buys *reads* —
   writes need the locality token.
+- **The `Host` header is pinned** (`TrustedHostMiddleware`, the outermost
+  middleware, sharing the one allowlist in `agents/hostpolicy.py` with
+  beast-chat). A browser cannot forge `Host`, and that is what closes DNS
+  rebinding: without this, a page served from `http://evil.example:3004/`
+  that rebinds the name to `127.0.0.1` becomes **same-origin** with this
+  server, and same-origin means it may set request headers — including the
+  `Tailscale-User-Login` header above. On a single-user rig the owner string
+  is the constant `local`, so nothing even had to be guessed: the page could
+  read the gallery and every `private` artifact. Found in the v1.4.0
+  adversarial review; the middleware runs before the identity gate, so a
+  rebound `Host` cannot even write an audit row. Extra names go in
+  `OPENBEAST_ARTIFACT_ALLOWED_HOSTS`.
+- **Audit rows an unidentified caller can mint are budgeted AND byte-capped.**
+  Refusals were budgeted from the start; `/api/artifacts/health` — the one
+  route exempt from the anonymity gate — was not, so it was an
+  unauthenticated, unrotated append. The row's `login` field is also capped
+  at 128 chars: a bounded row *count* with an unbounded row *size* is not a
+  bound (an 8 KB header bought an 8 KB row). Both fixed in the v1.4.0 review.
+- A `PATCH` applies its fields in a fixed order — `current`, then
+  `description`, then `visibility` — because the three are independent locked
+  writes with no rollback. `visibility` is the only *widening* one, so it goes
+  last: a mixed body that fails part-way can never leave the artifact shared
+  while telling the caller the request failed.
 
 ## Writing a page
 

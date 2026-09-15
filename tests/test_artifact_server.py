@@ -120,7 +120,11 @@ def make_client(env, monkeypatch):
         if operators:
             monkeypatch.setenv("OPENBEAST_ARTIFACT_OPERATORS", operators)
         app = artifact_server.create_app()
-        c = TestClient(app)
+        # A REAL Host header. TrustedHostMiddleware now pins it (the v1.4.0
+        # review found this server had no Host validation at all), and
+        # TestClient's default "testserver" is exactly the kind of foreign
+        # name a rebinding attack arrives under.
+        c = TestClient(app, base_url="http://127.0.0.1:3004")
         c.app_token = app.state.local_token      # type: ignore[attr-defined]
         c.asgi_app = app                         # type: ignore[attr-defined]
         return c
@@ -707,7 +711,8 @@ def test_a_crash_does_not_announce_the_route_to_a_stranger(make_client):
     def _boom():
         raise RuntimeError("kaboom")
 
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                         base_url="http://127.0.0.1:3004")
     r = quiet.get("/_boom", headers=MAX)
     assert r.status_code == 404 and r.json() == FLAT_404
     assert "kaboom" not in r.text
@@ -764,7 +769,10 @@ def test_the_gate_never_reads_the_body(make_client):
         "http_version": "1.1", "method": "POST", "scheme": "http",
         "path": "/api/artifacts", "raw_path": b"/api/artifacts",
         "root_path": "", "query_string": b"",
-        "headers": [(b"host", b"testserver"),
+        # A trusted Host: this test is about the IDENTITY gate, and Host
+        # pinning is now outside it (a foreign Host is 400'd before this
+        # point — see test_foreign_host_refused_before_the_identity_gate).
+        "headers": [(b"host", b"127.0.0.1:3004"),
                     (b"content-type", b"application/json"),
                     (b"content-length", b"13"),
                     (b"tailscale-user-login", b"max@example.com")],
@@ -1096,7 +1104,8 @@ def test_a_corrupt_record_never_500s_any_route(make_client, corruption):
     c = make_client()
     a = publish(c, files={"app.js": "console.log(1)"})
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                         base_url="http://127.0.0.1:3004")
     h = local(c)
     for path in ("/",
                  f"/a/{a['id']}",
@@ -1125,7 +1134,8 @@ def test_a_corrupt_record_never_500s_a_stranger_either(make_client,
     c = make_client(operators="max@example.com,kid@example.com")
     a = publish(c)                                    # owner: max
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                         base_url="http://127.0.0.1:3004")
     for path in (f"/a/{a['id']}", f"/a/{a['id']}/v/1", f"/raw/{a['id']}/v/1/",
                  f"/raw/{a['id']}/v/1/app.js", f"/api/artifacts/{a['id']}"):
         r = quiet.get(path, headers=KID)
@@ -1142,7 +1152,8 @@ def test_a_dangling_current_resolves_to_the_newest_version(make_client):
     publish(c, artifact_id=a["id"], html="<title>Two</title>second")
     _corrupt(a["id"], _set("current", 99))
     h = local(c)
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                         base_url="http://127.0.0.1:3004")
     assert quiet.get(f"/a/{a['id']}", headers=h).status_code == 200
     assert 'value="2" selected' in quiet.get(f"/a/{a['id']}", headers=h).text
     assert quiet.get(f"/api/artifacts/{a['id']}", headers=h).json()["current"] == 2
@@ -1159,7 +1170,8 @@ def test_a_version_the_meta_lost_is_still_served_from_disk(make_client):
     publish(c, artifact_id=a["id"], html="<title>Two</title>second")
     _corrupt(a["id"], _set("versions", "gone"))
     h = local(c)
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                         base_url="http://127.0.0.1:3004")
     assert "second" in quiet.get(f"/raw/{a['id']}/v/2/", headers=h).text
     assert PAGE in quiet.get(f"/raw/{a['id']}/v/1/", headers=h).text
     body = quiet.get(f"/a/{a['id']}", headers=h)
@@ -1455,3 +1467,110 @@ def test_an_ownership_refusal_is_indistinguishable_from_a_miss(make_client):
     # and a real failure is still a real failure for the rig
     r = c.post("/api/artifacts", json={"title": "no html"}, headers=local(c))
     assert r.status_code == 400 and "html" in r.json()["detail"]
+
+
+# --- v1.4.0 adversarial review ----------------------------------------------
+
+def test_a_foreign_host_is_refused_before_the_identity_gate(make_client):
+    """DNS rebinding. This server had NO Host validation while beast-chat,
+    written the same week and published the same way, had it.
+
+    A page loaded from `http://evil.example:3004/` that then rebinds that name
+    to 127.0.0.1 becomes SAME-ORIGIN with this server — and same-origin lets
+    it set arbitrary request headers, including the `Tailscale-User-Login`
+    header that IS the read gate. On a default rig the owner string is the
+    public constant LOCAL_LOGIN, so nothing had to be guessed. A browser
+    cannot forge `Host`; that is what makes pinning it the fix.
+    """
+    c = make_client()
+    a = publish(c)
+    evil = TestClient(c.asgi_app, base_url="http://evil.example:3004",
+                      raise_server_exceptions=False)
+    me = {"Tailscale-User-Login": artifact_server.LOCAL_LOGIN}
+    for path in ("/", f"/a/{a['id']}", "/api/artifacts",
+                 f"/api/artifacts/{a['id']}", f"/raw/{a['id']}/v/1/",
+                 "/api/artifacts/health"):
+        r = evil.get(path, headers=me)
+        assert r.status_code == 400, f"{path} answered a rebound Host: {r.status_code}"
+    # and the trusted client is unaffected
+    assert c.get("/api/artifacts", headers=me).status_code == 200
+
+
+def test_a_rebound_host_never_reaches_the_audit_log(make_client, tmp_path):
+    """Host pinning is OUTSIDE the audit middleware, so a rebinding flood
+    cannot write rows either. Ordering, asserted rather than assumed."""
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    before = path.stat().st_size if path.exists() else 0
+    evil = TestClient(c.asgi_app, base_url="http://evil.example:3004",
+                      raise_server_exceptions=False)
+    for _ in range(20):
+        assert evil.get("/api/artifacts").status_code == 400
+    after = path.stat().st_size if path.exists() else 0
+    assert after == before, "a refused Host still wrote audit rows"
+
+
+def test_anonymous_health_cannot_grow_the_audit_file(make_client, tmp_path,
+                                                     monkeypatch):
+    """The other half of D27, which D27 missed.
+
+    `/api/artifacts/health` is deliberately exempt from the anonymity gate,
+    so a health hit never sets `denied` — and the budget was keyed on
+    `denied`. The row therefore took the un-budgeted branch: an
+    unauthenticated, unrotated, unbounded append. This is the same assertion
+    test_refusals_stop_growing_the_audit_file makes for /api/artifacts, which
+    is exactly why its absence here was the signpost.
+    """
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 3)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    for _ in range(40):
+        assert c.get("/api/artifacts/health").status_code == 200
+    settled = path.stat().st_size
+    for _ in range(40):
+        assert c.get("/api/artifacts/health").status_code == 200
+    assert path.stat().st_size == settled, "the file is still growing"
+    notes = _denied(path, "audit-budget")
+    assert len(notes) == 1 and notes[0]["reason"] == "anon-success"
+    # liveness is NOT what got budgeted — the probe still answers
+    assert c.get("/api/artifacts/health").json()["status"] == "ok"
+
+
+def test_an_audit_row_can_never_carry_an_8kb_identity(make_client, tmp_path):
+    """A bounded row COUNT with an unbounded row SIZE is not a bound: an
+    8 KB login header produced an 8 KB audit row, so the D27 budget still
+    bought ~8 MB per reason per window. The raw path beside it was already
+    capped; the login was not."""
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    huge = {"Tailscale-User-Login": "A" * 8000}
+    c.get("/api/artifacts/health", headers=huge)
+    c.get("/api/artifacts", headers=huge)          # a refusal, also capped
+    rows = _rows(path)
+    assert rows, "nothing was audited at all"
+    assert max(len(r.get("login") or "") for r in rows) <= 128
+    assert max(len(json.dumps(r)) for r in rows) < 600
+
+
+def test_a_failed_mixed_patch_never_widens_visibility(make_client):
+    """Three independent store writes, no rollback. With `visibility` applied
+    FIRST, `{"visibility": "tailnet", "current": 999}` answered 400 *having
+    already made the artifact tailnet-readable* — the caller is told the
+    request failed while the page is now shared, at a pointer they were
+    trying to move. The only widening write goes last."""
+    c = make_client()
+    a = publish(c)
+    aid = a["id"]
+    assert store.get_meta(aid)["visibility"] == "private"
+    r = c.patch(f"/api/artifacts/{aid}",
+                json={"visibility": "tailnet", "current": 999},
+                headers=local(c))
+    assert r.status_code == 400
+    meta = store.get_meta(aid)
+    assert meta["visibility"] == "private", "the failed patch widened it anyway"
+    assert not store.can_view(meta, "stranger@example.com")
+    # description is non-widening, so a partial there is acceptable — but the
+    # valid single-field patch must still work
+    assert c.patch(f"/api/artifacts/{aid}", json={"visibility": "tailnet"},
+                   headers=local(c)).status_code == 200
+    assert store.get_meta(aid)["visibility"] == "tailnet"
