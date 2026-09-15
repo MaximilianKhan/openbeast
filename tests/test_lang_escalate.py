@@ -190,7 +190,6 @@ def test_a_claim_with_no_summary_is_never_attached(monkeypatch):
 
 
 def test_the_rendered_block_says_where_its_facts_came_from():
-    idx = E.load_index()
     if not have_zig:
         pytest.skip("zig absent")
     diag = _diagnostic("zig", 'const v = std.math.max(3, 9);\n    _ = v;')
