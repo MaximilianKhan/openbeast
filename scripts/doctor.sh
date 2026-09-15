@@ -287,6 +287,17 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   fi
 fi
 
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  _art=$(curl -s --max-time 4 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
+  if [[ -n "$_art" ]]; then
+    _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
+    pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — ${_nart:-?} published page(s)"
+  else
+    warn "beast-artifact not responding (:${ARTIFACT_PORT:-3004})" \
+         "./scripts/healthcheck.sh --restart, or unset BEAST_ARTIFACT in openbeast.conf"
+  fi
+fi
+
 # ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
 # Informational: what tailscale serve currently maps, and whether the raw
 # inference endpoint is published without a bearer key. Keyless is the

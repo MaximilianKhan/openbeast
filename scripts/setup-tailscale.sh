@@ -2,7 +2,9 @@
 # OpenBeast remote access — one-shot Tailscale setup. Idempotent.
 #
 #   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
+#                                [--publish-artifact]
 #   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
+#                               | --unpublish-artifact
 #
 # What it does:
 #   1. Installs tailscale (pacman) and enables tailscaled
@@ -30,12 +32,20 @@
 # the dashboard extension (./scripts/ext.sh enable dashboard). Undo with
 # --unpublish-slot.
 #
+# --publish-artifact publishes beast-artifact at :8446 (→ the artifact
+# server on ARTIFACT_PORT, default :3004): the gallery and the pages the
+# model publishes, so an artifact URL opens on a phone. Requires
+# BEAST_ARTIFACT=true in openbeast.conf. READ access is gated on the
+# tailnet login (ARTIFACT_OPERATORS); WRITES stay loopback-only, so nothing
+# on the phone path can publish or delete. Undo with --unpublish-artifact.
+#
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
 
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
+PUBLISH_ARTIFACT=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -48,7 +58,12 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8444 off
       echo "beast-slot status API unpublished from the tailnet (:8444 off)."
       exit 0 ;;
-    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --publish-artifact)  PUBLISH_ARTIFACT=1 ;;
+    --unpublish-artifact)
+      sudo tailscale serve --https=8446 off
+      echo "beast-artifact unpublished from the tailnet (:8446 off)."
+      exit 0 ;;
+    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -193,6 +208,20 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "            dashboard (page + /api/status) is tailnet-visible."
   fi
 fi
+if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
+  # beast-artifact (docs/BEAST_ARTIFACT_PLAN.md): the gallery + the pages the
+  # model publishes. Best-effort preflight — publishing while BEAST_ARTIFACT
+  # is off just serves 502s until the server is running. conf.sh is already
+  # sourced above, so ARTIFACT_PORT/BEAST_ARTIFACT are resolved here.
+  if [[ "${BEAST_ARTIFACT:-false}" != "true" ]]; then
+    echo "      WARNING: BEAST_ARTIFACT is not true — :8446 will 502 until:"
+    echo "               set BEAST_ARTIFACT=true in openbeast.conf, then ./stop.sh && ./start.sh"
+  fi
+  sudo tailscale serve --bg --https=8446 "http://127.0.0.1:${ARTIFACT_PORT:-3004}"
+  echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
+  echo "      Reads are gated on the tailnet login (ARTIFACT_OPERATORS);"
+  echo "      publishing stays loopback-only — a phone can view, never write."
+fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
 
@@ -236,6 +265,12 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
   echo "  beast-slot discovery:  https://$FQDN:8444/api/slot"
   echo "          (read-only model/slots/health JSON — undo with"
   echo "           ./scripts/setup-tailscale.sh --unpublish-slot)"
+fi
+if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
+  echo ""
+  echo "  Artifacts (beast-artifact):  https://$FQDN:8446/"
+  echo "          (gallery + published pages, view-only from the tailnet —"
+  echo "           undo with ./scripts/setup-tailscale.sh --unpublish-artifact)"
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"

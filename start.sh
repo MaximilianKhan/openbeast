@@ -61,13 +61,14 @@ _pid_pattern() {
     mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
     edge)       echo 'edge\.py' ;;
-    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge' ;;
+    artifact)   echo 'artifact_server\.py' ;;
+    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge|artifact_server' ;;
   esac
 }
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
-  for name in supervisor llama mcpo router edge; do
+  for name in supervisor llama mcpo router edge artifact; do
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"
@@ -259,6 +260,9 @@ cleanup() {
   if [[ -n "${EDGE_PID:-}" ]]; then
     kill "$EDGE_PID" 2>/dev/null && echo "beast-gate stopped."
   fi
+  if [[ -n "${ARTIFACT_PID:-}" ]]; then
+    kill "$ARTIFACT_PID" 2>/dev/null && echo "beast-artifact stopped."
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
@@ -272,7 +276,7 @@ cleanup() {
     rm -f "$_pf"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
+        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid" "$RUN_DIR/artifact.pid"
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -525,6 +529,30 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
     echo "    ./scripts/clients.sh enroll <device-id>"
   fi
+fi
+
+# beast-artifact (opt-in, BEAST_ARTIFACT=true) — the publish-and-view service
+# for model- or script-authored HTML (docs/BEAST_ARTIFACT_PLAN.md). Loopback
+# only; setup-tailscale.sh --publish-artifact puts it on :8446 for phones.
+# Started AFTER the tool server: publish_artifact posts to it over loopback.
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
+  OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
+  OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
+    python3 "$SCRIPT_DIR/agents/artifact_server.py" &
+  ARTIFACT_PID=$!
+  echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
+  ARTIFACT_UP=0
+  for _i in $(seq 1 20); do
+    if ! kill -0 "$ARTIFACT_PID" 2>/dev/null; then
+      echo "Error: beast-artifact exited during startup — see output above" >&2; exit 1
+    fi
+    curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
+      && { ARTIFACT_UP=1; break; }
+    sleep 1
+  done
+  [[ $ARTIFACT_UP -eq 1 ]] || { echo "Error: beast-artifact not serving after 20s" >&2; exit 1; }
+  echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
 fi
 
 echo "Starting Open WebUI..."

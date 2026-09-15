@@ -66,12 +66,13 @@ import tools as _tools     # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 15 functions the MCP server exposes.
+# The full WebUI tool surface — same 17 functions the MCP server exposes.
 TOOL_NAMES = [
     "bash", "read_file", "write_file", "edit_file", "list_files", "grep",
     "fetch", "web_search", "skill",
     "start_agent", "start_skill_agent", "check_agent", "list_agents",
     "stop_agent", "tail_agent",
+    "publish_artifact", "list_artifacts",
 ]
 GUEST_TOOLS = {"web_search", "fetch"}
 

@@ -21,6 +21,10 @@ Agent management (long-running autonomous agents):
   - list_agents: see all tracked agents and their status
   - stop_agent: terminate a running agent
 
+Artifacts (a durable URL for anything the model renders):
+  - publish_artifact: publish an HTML file as a versioned page on the rig
+  - list_artifacts: list published pages (title, URL, versions, visibility)
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -875,6 +879,147 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         time_range: Restrict to recent pages: 'day', 'month' or 'year' (default: none).
     """
     return _tools.web_search(query, max_results, pageno, time_range)
+
+
+# ---------------------------------------------------------------------------
+# Artifacts — a durable URL for anything the model renders
+# ---------------------------------------------------------------------------
+# The store (agents/artifact.py) is imported INSIDE each function, never at
+# module scope: beast-artifact is opt-in (BEAST_ARTIFACT), and a missing or
+# broken module must degrade to one tool returning "Error: ..." rather than
+# taking the other 16 tools down with an ImportError at registration time.
+
+
+@_tool()
+def publish_artifact(path: str, title: str = "", description: str = "",
+                     favicon: str = "", artifact_id: str = "",
+                     label: str = "", visibility: str = "private") -> str:
+    """Publish an HTML file as a page with a durable, shareable URL on the rig,
+    and return that URL. Use it whenever the answer is worth more as a page
+    than as chat text — a report, a table, a dashboard, a chart, a checklist,
+    a small interactive tool — or whenever the user asks for something they
+    will reopen, send to someone, or read on their phone. Write the file first
+    (write_file), then publish it. Republishing with the same artifact_id
+    keeps the URL and adds a version, so prefer updating over publishing a
+    second page.
+
+    HOW TO WRITE THE FILE — the page is served inside a locked-down sandbox,
+    so these are hard rules, not style advice:
+
+      1. Write ONLY a <title>, a <style>, and the body content. No <!doctype>,
+         <html>, <head> or <body> tags — a skeleton (doctype, charset,
+         viewport, small reset) is added at serve time. The <title> names the
+         page in the tab and the gallery: a short noun phrase, not a sentence.
+      2. Inline all CSS and JS in the file. External <script> may ONLY load
+         from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net/npm/,
+         https://cdn.tailwindcss.com or https://code.jquery.com (pin an exact
+         version, UMD build); external stylesheets ONLY from
+         https://fonts.googleapis.com. Every other host is blocked silently.
+      3. Embed images, fonts and any other asset as data: URIs.
+      4. fetch(), XMLHttpRequest and WebSocket are blocked — the page cannot
+         call home, so compute from data you write into the file itself.
+      5. localStorage THROWS in the sandbox. Wrap every read and write in
+         try/catch and render correctly when there is no stored value.
+      6. Support both themes: define colors as CSS custom properties on
+         :root, then redefine those properties inside
+         @media (prefers-color-scheme: dark). Never give a color its only
+         definition inside the media block.
+      7. Set an explicit background (and color) on body — a transparent body
+         borrows the host page's theme and can end up unreadable.
+      8. Wide content — tables, pre/code, diagrams — goes in a container with
+         overflow-x: auto so the page itself never scrolls sideways on a
+         phone.
+
+    Args:
+        path: Path to the .html file to publish.
+        title: Page title; falls back to the file's own <title>, then the
+               filename. Keep it stable across updates.
+        description: One sentence shown as the subtitle in the gallery.
+        favicon: One or two emoji (e.g. "📊") used as the tab icon. Set it on
+                 the FIRST publish and never change it — people find the page
+                 by its icon. Omit when updating.
+        artifact_id: Publish into an EXISTING artifact: same URL, new version.
+                     Omit to create a new one (the returned id is what you
+                     pass back later).
+        label: Short name for this version (e.g. "with Q3 numbers"), shown in
+               the version picker.
+        visibility: "private" (default, only you) or "tailnet" (any device
+                    signed in to the tailnet can open the link).
+
+    Returns:
+        A line naming the page and its URL, or a string starting with "Error:".
+    """
+    try:
+        import artifact as _artifact  # lazy: see the note above
+    except Exception as e:
+        return (f"Error: artifact store unavailable ({e}). Enable it with "
+                f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
+    try:
+        resolved = _tools._resolve(path)
+        with open(resolved, "r", encoding="utf-8") as f:
+            html = f.read()
+    except OSError as e:
+        return f"Error: cannot read {path}: {e}"
+    except UnicodeDecodeError as e:
+        return (f"Error: {path} is not UTF-8 text ({e}) — publish_artifact "
+                f"takes an HTML file, not a binary.")
+    if not html.strip():
+        return f"Error: {path} is empty — nothing to publish."
+    try:
+        meta = _artifact.publish(
+            html,
+            title=title.strip() or None,
+            description=description.strip() or None,
+            favicon=favicon.strip() or None,
+            artifact_id=artifact_id.strip() or None,
+            label=label.strip() or None,
+            visibility=(visibility.strip() or "private"),
+        )
+    except Exception as e:  # ArtifactError and anything else: tool contract
+        return f"Error: publish failed: {e}"
+    name = meta.get("title") or os.path.basename(path)
+    return (f'Published "{name}" → {meta.get("url")} '
+            f'(v{meta.get("version")}, id {meta.get("id")})')
+
+
+@_tool()
+def list_artifacts(limit: int = 25) -> str:
+    """List the published artifact pages you can see, newest first: title, URL,
+    version count, visibility and when it was last updated. Use it to find the
+    id of a page you want to update with publish_artifact(artifact_id=...), or
+    to hand the user a link to something published earlier.
+
+    Args:
+        limit: Maximum number of artifacts to list (default 25).
+    """
+    try:
+        import artifact as _artifact  # lazy: see the note above
+    except Exception as e:
+        return (f"Error: artifact store unavailable ({e}). Enable it with "
+                f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
+    try:
+        rows = _artifact.list_artifacts(limit=max(1, int(limit)))
+    except Exception as e:
+        return f"Error: could not list artifacts: {e}"
+    if not rows:
+        return ("No artifacts published yet. Write an HTML file and call "
+                "publish_artifact(path) to make one.")
+    lines = [f"{len(rows)} artifact(s):", ""]
+    for r in rows:
+        versions = r.get("versions")
+        if isinstance(versions, list):
+            versions = len(versions)
+        updated = str(r.get("updated_at") or r.get("created_at") or "")[:16]
+        updated = updated.replace("T", " ")
+        lines.append(
+            f"  {str(r.get('title') or '(untitled)')[:40]:40s}  "
+            f"{r.get('url', '')}  "
+            f"v{versions or 1}  {r.get('visibility', '?')}  {updated}"
+        )
+    lines.append("")
+    lines.append('Update one in place: publish_artifact(path, '
+                 'artifact_id="<id>") — the id is the last part of the URL.')
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
