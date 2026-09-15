@@ -43,6 +43,15 @@ else
   OVERALL=1
 fi
 
+if bash "$REPO_DIR/tests/test_job_sh.sh"; then
+  echo ""
+  echo "Job session tests: ALL PASSED"
+else
+  echo ""
+  echo "Job session tests: SOME FAILED"
+  OVERALL=1
+fi
+
 echo ""
 echo ""
 
@@ -99,6 +108,27 @@ else
   else
     echo ""
     echo "Tool tests: SOME FAILED"
+    OVERALL=1
+  fi
+fi
+
+# --- Full Python suite -----------------------------------------------------
+# The block above runs ONE file. CI runs `pytest tests/ -q` as a separate step,
+# so for a long time every suite outside test_tools.py (the artifact, chat,
+# session, steering and identity suites — several hundred tests) was green in
+# CI and never executed by this script. A local runner that reports "ALL TESTS
+# PASSED" while skipping most of the tests is worse than having no runner, so
+# it now runs what CI runs.
+if python3 -c "import pytest" 2>/dev/null; then
+  echo ""
+  echo "--- Full Python suite (everything CI runs) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests" -q; then
+    echo ""
+    echo "Full Python suite: ALL PASSED"
+  else
+    echo ""
+    echo "Full Python suite: SOME FAILED"
     OVERALL=1
   fi
 fi

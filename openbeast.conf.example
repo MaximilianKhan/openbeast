@@ -218,6 +218,40 @@
 #AGENT_INFERENCE_URL=https://worker.tailnet.ts.net:8443/v1
 
 # ---------------------------------------------------------------------------
+# beast-chat — operator console for this rig's sessions  (docs/BEAST_CHAT.md)
+# ---------------------------------------------------------------------------
+
+# Opt-in. When true, start.sh runs agents/chat_server.py on CHAT_PORT, bound
+# to loopback like every other service; ./scripts/setup-tailscale.sh
+# --publish-chat maps :8445 at it so a phone on your tailnet can list every
+# agent and job running on the rig, follow its transcript live, send it a
+# message that lands at its next turn, and stop it. Register a plain bash
+# campaign as a session with: ./scripts/job.sh run --title "..." -- <command>
+# Env overrides: $OPENBEAST_BEAST_CHAT / $OPENBEAST_CHAT_PORT.
+#BEAST_CHAT=false
+#CHAT_PORT=3003
+
+# READ allowlist: comma-separated tailnet logins, matched against the
+# Tailscale-User-Login header that `tailscale serve` injects on every proxied
+# request. A login that is not listed gets 404, never 403 (same convention as
+# beast-gate: a caller learns nothing about what exists).
+# LEFT EMPTY THE ALLOWLIST IS NOT ENFORCED — every login on your tailnet can
+# read every session. That is the single-operator default and it is fine on a
+# tailnet you own outright; set it the moment a device you don't own joins.
+# NOTE: values must stand alone — the conf parser does NOT strip trailing
+# comments, so "CHAT_OPERATORS=me@x.com  # just me" would be read literally.
+# Env override: $OPENBEAST_CHAT_OPERATORS.
+#CHAT_OPERATORS=you@example.com
+
+# WRITING (send a message, stop a session, start an agent) is NOT covered by
+# the allowlist above and has no conf key: it needs an enrolled device key
+# carrying the `chat` scope, because starting an agent is remote code
+# execution on the rig and a proxy-injected header is forgeable by anything
+# already on this box. Enroll the phone:
+#   ./scripts/clients.sh enroll phone --label "My phone" --scope chat
+#   ./scripts/clients.sh scope phone remove chat     # take it back, no restart
+
+# ---------------------------------------------------------------------------
 # Agent-spawn router  (see docs/RESEARCH_FINDINGS.md §8-11)
 # ---------------------------------------------------------------------------
 

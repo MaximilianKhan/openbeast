@@ -7,9 +7,10 @@
 # device its OWN bearer key, so a lost device is one `revoke` away from silence
 # and every other device keeps working.
 #
-#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N]
+#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S]
 #   ./scripts/clients.sh list [--json]
 #   ./scripts/clients.sh show <id> [--json]
+#   ./scripts/clients.sh scope <id> add|remove <name>
 #   ./scripts/clients.sh revoke <id>
 #   ./scripts/clients.sh unrevoke <id>
 #   ./scripts/clients.sh rotate <id>            # = enroll <id> --force
@@ -24,9 +25,22 @@
 # Registry schema (version 1) — the shared contract with agents/edge.py:
 #   {"version":1,"devices":[{"id","label","key_sha256","enrolled_at",
 #                            "revoked_at","slot","rate_limit_per_min",
-#                            "last_seen"}]}
+#                            "last_seen","scopes"}]}
 # Unknown/future fields are round-tripped untouched, so a newer edge.py can add
-# fields (and keep writing last_seen) without this CLI dropping them.
+# fields (and keep writing last_seen) without this CLI dropping them. `scopes`
+# arrived that way and is why the version stays 1: a consumer that has never
+# heard of it reads the record exactly as before.
+#
+# SCOPES grant a device capabilities BEYOND inference. Inference needs no
+# scope — an enrolled, un-revoked key is the whole check, which is what every
+# existing device already relies on. A scope is asked for by name, by a
+# consumer that decides acting is riskier than reading:
+#   chat   — write access to beast-chat (send a message to a live session,
+#            stop one, start a new agent). Starting an agent is remote code
+#            execution on the rig, so watching is tailnet identity and ACTING
+#            is this key. See docs/BEAST_CHAT.md.
+# A device with no `scopes` field, or an empty one, has no scopes — absence is
+# never a grant.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,7 +53,7 @@ REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 RUN_DIR="$REPO_DIR/.run"
 REGISTRY="$RUN_DIR/clients.json"
 
-_usage() { sed -n '10,16p' "$0" | sed 's/^# \{0,1\}//'; }
+_usage() { sed -n '10,17p' "$0" | sed 's/^# \{0,1\}//'; }
 _die() { echo "ERROR: $*" >&2; exit 2; }
 
 # 32 random bytes, hex. Same idiom as scripts/setup-mcpo-keys.sh / lib/conf.sh:
@@ -77,6 +91,13 @@ _no_registry() {
 
 _valid_id() {
   local re='^[a-z0-9][a-z0-9-]{0,30}$'
+  [[ "$1" =~ $re ]]
+}
+
+# Scope names are compared byte-for-byte by consumers, so keep the alphabet
+# narrow: a stray capital or space would silently never match a grant.
+_valid_scope() {
+  local re='^[a-z0-9][a-z0-9_-]{0,30}$'
   [[ "$1" =~ $re ]]
 }
 
@@ -183,6 +204,22 @@ def need(doc, dev_id):
 def status(dev):
     return "REVOKED" if dev.get("revoked_at") else "active"
 
+def scopes_of(dev):
+    """A device's scope list, defensively: never None, never a non-string."""
+    raw = dev.get("scopes")
+    if not isinstance(raw, list):
+        return []
+    return [s for s in raw if isinstance(s, str) and s]
+
+def parse_scopes(raw):
+    """Comma-separated --scope values -> deduped list, order preserved."""
+    out = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if item and item not in out:
+            out.append(item)
+    return out
+
 def short(val, width):
     val = "-" if val in (None, "") else str(val)
     return val if len(val) <= width else val[: width - 1] + "…"
@@ -226,6 +263,9 @@ if CMD == "enroll":
             "slot": None,
             "rate_limit_per_min": None,
             "last_seen": None,
+            # Always present on a fresh row (empty = no grants), so a
+            # consumer can read the field instead of probing for it.
+            "scopes": parse_scopes(os.environ.get("OB_SCOPES")),
         }
         doc["devices"].append(dev)
         action = "enrolled"
@@ -241,6 +281,11 @@ if CMD == "enroll":
         dev["slot"] = int(os.environ["OB_SLOT"])
     if os.environ.get("OB_HAS_RATE") == "1":
         dev["rate_limit_per_min"] = int(os.environ["OB_RATE"])
+    # On a rotate, --scope REPLACES the list (it is the only way to express
+    # "these and no others"); without the flag the existing grants survive,
+    # same as label/slot/rate.
+    if os.environ.get("OB_HAS_SCOPES") == "1":
+        dev["scopes"] = parse_scopes(os.environ.get("OB_SCOPES"))
     save(doc)
     print(action)
     if action == "rotated" and dev.get("revoked_at"):
@@ -259,12 +304,14 @@ elif CMD == "list":
         print("No devices enrolled yet.")
         print("  Enroll one:  ./scripts/clients.sh enroll <id> --label \"My laptop\"")
         sys.exit(0)
-    fmt = "%-20s  %-24s  %-4s  %-16s  %-16s  %s"
-    print(fmt % ("ID", "LABEL", "SLOT", "ENROLLED", "LAST-SEEN", "STATUS"))
-    print(fmt % ("-" * 20, "-" * 24, "----", "-" * 16, "-" * 16, "------"))
+    fmt = "%-20s  %-22s  %-4s  %-14s  %-16s  %-16s  %s"
+    print(fmt % ("ID", "LABEL", "SLOT", "SCOPES", "ENROLLED", "LAST-SEEN", "STATUS"))
+    print(fmt % ("-" * 20, "-" * 22, "----", "-" * 14, "-" * 16, "-" * 16, "------"))
     for dev in devices:
-        print(fmt % (short(dev.get("id"), 20), short(dev.get("label"), 24),
-                     short(dev.get("slot"), 4), stamp(dev.get("enrolled_at")),
+        print(fmt % (short(dev.get("id"), 20), short(dev.get("label"), 22),
+                     short(dev.get("slot"), 4),
+                     short(",".join(scopes_of(dev)), 14),
+                     stamp(dev.get("enrolled_at")),
                      stamp(last_seen_of(dev)), status(dev)))
     revoked = sum(1 for d in devices if d.get("revoked_at"))
     print("")
@@ -279,14 +326,47 @@ elif CMD == "show":
         sys.exit(0)
     pub = redact(dev)
     prefix = pub.pop("key_sha256_prefix", None)
-    order = ["id", "label", "status", "slot", "rate_limit_per_min",
+    order = ["id", "label", "status", "slot", "rate_limit_per_min", "scopes",
              "enrolled_at", "revoked_at", "last_seen"]
+    # `scopes` is printed even when the row predates the field. An operator
+    # reading this to answer "may this device act on my rig?" must see the
+    # answer, not the absence of a line they have to know to look for.
+    pub.setdefault("scopes", [])
     keys = [k for k in order if k in pub] + [k for k in pub if k not in order]
     for k in keys:
         val = pub[k]
+        if k == "scopes":
+            val = ", ".join(scopes_of(dev)) or None
         print("  %-20s %s" % (k + ":", "-" if val is None else val))
     print("  %-20s %s… (sha256; the key itself is not stored)"
           % ("key:", prefix or "?"))
+
+elif CMD == "scope":
+    dev_id = os.environ["OB_ID"]
+    action = os.environ["OB_ACTION"]
+    name = os.environ["OB_SCOPE"]
+    doc = load()
+    dev = need(doc, dev_id)
+    current = scopes_of(dev)
+    if action == "add":
+        if name in current:
+            print("'%s' already has scope '%s' — nothing to do." % (dev_id, name))
+            sys.exit(0)
+        current.append(name)
+    else:
+        if name not in current:
+            print("'%s' does not have scope '%s' — nothing to do." % (dev_id, name))
+            sys.exit(0)
+        current = [s for s in current if s != name]
+    dev["scopes"] = current
+    save(doc)
+    print("%s scope '%s' %s '%s'. Scopes now: %s"
+          % ("Granted" if action == "add" else "Removed", name,
+             "to" if action == "add" else "from", dev_id,
+             ", ".join(current) or "(none)"))
+    print("")
+    print("Takes effect on the device's NEXT request — the consumer hot-reloads")
+    print("this file, so no restart and no re-enrollment.")
 
 elif CMD in ("revoke", "unrevoke"):
     dev_id = os.environ["OB_ID"]
@@ -338,11 +418,11 @@ if [[ $# -gt 0 ]]; then shift; fi
 case "$cmd" in
   enroll|rotate)
     dev_id="${1:-}"
-    [[ -n "$dev_id" ]] || _die "usage: clients.sh $cmd <id> [--label \"text\"] [--slot N] [--rate N]"
+    [[ -n "$dev_id" ]] || _die "usage: clients.sh $cmd <id> [--label \"text\"] [--slot N] [--rate N] [--scope NAME]"
     shift
     _valid_id "$dev_id" || _die "invalid id '$dev_id' — use [a-z0-9][a-z0-9-]{0,30} (e.g. laptop-air)"
-    label=""; slot=""; rate=""
-    has_label=0; has_slot=0; has_rate=0
+    label=""; slot=""; rate=""; scopes=""
+    has_label=0; has_slot=0; has_rate=0; has_scopes=0
     force=0
     # rotate implies --force, but ALSO requires the device to already exist:
     # rotating a mistyped id must fail loudly, not silently enroll a brand-new
@@ -375,6 +455,14 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
         --slot=*)  slot="${1#*=}"; has_slot=1; shift ;;
         --rate)    [[ $# -ge 2 ]] || _die "--rate needs a value"; rate="$2"; has_rate=1; shift 2 ;;
         --rate=*)  rate="${1#*=}"; has_rate=1; shift ;;
+        # Repeatable: --scope chat --scope admin. Accumulated as a comma-
+        # separated string because bash 3.2 cannot export an array.
+        --scope)   [[ $# -ge 2 ]] || _die "--scope needs a value"
+                   _valid_scope "$2" || _die "invalid scope '$2' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
+                   scopes="${scopes:+$scopes,}$2"; has_scopes=1; shift 2 ;;
+        --scope=*) _scope_val="${1#*=}"
+                   _valid_scope "$_scope_val" || _die "invalid scope '$_scope_val' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
+                   scopes="${scopes:+$scopes,}$_scope_val"; has_scopes=1; shift ;;
         --force)   force=1; shift ;;
         *)         _die "unknown option for $cmd: $1" ;;
       esac
@@ -392,8 +480,9 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
 
     # The plaintext key is passed to nothing: only its hash crosses into Python.
     action="$(OB_CMD=enroll OB_ID="$dev_id" OB_LABEL="$label" OB_HASH="$key_hash" \
-              OB_SLOT="$slot" OB_RATE="$rate" OB_FORCE="$force" \
+              OB_SLOT="$slot" OB_RATE="$rate" OB_FORCE="$force" OB_SCOPES="$scopes" \
               OB_HAS_LABEL="$has_label" OB_HAS_SLOT="$has_slot" OB_HAS_RATE="$has_rate" \
+              OB_HAS_SCOPES="$has_scopes" \
               _registry_op)"
 
     echo ""
@@ -402,6 +491,9 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
       echo "the gate's hot-reload window."
     else
       echo "Enrolled '$dev_id'."
+    fi
+    if [[ -n "$scopes" ]]; then
+      echo "Scopes: $scopes"
     fi
     echo ""
     echo "  ┌─ copy this now — it is NOT recoverable ──────────────────────────"
@@ -444,6 +536,23 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     done
     if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
     OB_CMD=show OB_ID="$dev_id" OB_JSON="$json" _registry_op
+    ;;
+
+  scope)
+    dev_id="${1:-}"
+    action="${2:-}"
+    scope_name="${3:-}"
+    [[ -n "$dev_id" && -n "$action" && -n "$scope_name" ]] \
+      || _die "usage: clients.sh scope <id> add|remove <name>"
+    shift 3
+    [[ $# -eq 0 ]] || _die "unknown option for scope: $1"
+    case "$action" in
+      add|remove) ;;
+      *) _die "scope action must be 'add' or 'remove' (got: $action)" ;;
+    esac
+    _valid_scope "$scope_name" || _die "invalid scope '$scope_name' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
+    if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
+    OB_CMD=scope OB_ID="$dev_id" OB_ACTION="$action" OB_SCOPE="$scope_name" _registry_op
     ;;
 
   revoke|unrevoke)

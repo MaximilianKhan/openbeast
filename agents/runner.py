@@ -16,18 +16,27 @@ The server must be running (e.g. ./serve-qwen-27b-q5.sh) before launching.
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
 import sys
 import time
 import urllib.parse
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from openai import OpenAI
 
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
+
+# beast-chat session ledger. Optional on purpose: a runner whose checkout
+# predates sessions.py, or whose import fails for any reason, must still run.
+try:
+    import sessions as _sessions
+except Exception:                                      # pragma: no cover
+    _sessions = None
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -119,8 +128,18 @@ def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
 # Agent loop
 # ---------------------------------------------------------------------------
 
-def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
-    """Reconstruct the conversation from a JSONL log for resumption."""
+def _rebuild_messages_from_log(log_path: str, system_prompt: str,
+                               steering: bool = False) -> list[dict]:
+    """Reconstruct the conversation from a JSONL log for resumption.
+
+    `steering` is THE EVAL GUARD, carried in (E2). This function replayed
+    `steer` events into the message list ~26 lines before `run_agent` ever
+    computed the gate, so a --resume of a transcript that contains operator
+    messages re-injected every one of them with NEITHER lock applied — the
+    guard protected the live inbox and left the recorded history wide open.
+    The caller now computes the gate first and passes it here; with steering
+    off, a `steer` event is inert transcript, exactly like `paused`.
+    """
     messages = [{"role": "system", "content": system_prompt}]
     # Track recent assistant contents in a set for O(1) dedup instead of O(n²) scan.
     seen_assistant: set[str] = set()
@@ -142,6 +161,16 @@ def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
                 if content and content not in seen_assistant:
                     seen_assistant.add(content)
                     messages.append({"role": "assistant", "content": content})
+            elif etype == "steer":
+                # beast-chat operator messages are real history (unlike the
+                # transient plan block), so --resume must put them back in the
+                # position they were spoken — between the turns they separated.
+                # Under the eval guard they are not replayed at all.
+                if steering and event.get("op") == "say":
+                    text = event.get("text") or ""
+                    if text:
+                        messages.append({"role": "user",
+                                         "content": _STEER_PREFIX + text})
             elif etype == "tool_call":
                 name = event.get("name", "")
                 result = event.get("result", "")
@@ -215,6 +244,14 @@ _CHARS_PER_TOKEN = 4
 _COMPACT_FRACTION = 0.70          # proactive target as a fraction of the budget
 _STUB_MIN_CHARS = 200             # results shorter than this aren't worth stubbing
 _STUB_PREFIX = "[tool result elided:"
+#: An operator message becomes evictable after this many turns (E12). It is
+#: real history, so it outlives ordinary tool results — but it is not
+#: IMMORTAL: a single oversized `say` used to be unevictable, so the context
+#: could never come back under the window and the run died at the overflow
+#: with nothing left to compact. Note the stub does NOT carry _STEER_PREFIX,
+#: so a stubbed message is never re-counted as a live directive.
+_STEER_STUB_AFTER_TURNS = 3
+_STEER_STUB_PREFIX = "[operator message elided:"
 _CTX_OVERFLOW_RE = re.compile(
     r"exceed_context_size|exceeds the available context size|"
     r"larger than the max context size|context size has been exceeded|"
@@ -254,8 +291,13 @@ def _stub(content: str, call_no: int) -> str:
     return f"{_STUB_PREFIX} {len(content)} chars, call #{call_no}]"
 
 
+def _steer_stub(content: str) -> str:
+    return f"{_STEER_STUB_PREFIX} {len(content)} chars]"
+
+
 def compact_messages(messages: list[dict], chars_to_free: int,
-                     call_index: dict[int, int] | None = None) -> tuple[int, int]:
+                     call_index: dict[int, int] | None = None,
+                     steer_eligible=None) -> tuple[int, int]:
     """Replace the OLDEST tool results with one-line stubs until at least
     `chars_to_free` characters are freed (or nothing evictable remains).
 
@@ -266,20 +308,40 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     cover the ask (being stuck beats keeping them). Returns
     (results_evicted, chars_freed). `call_index` maps message position ->
     tool-call ordinal for the stub text.
+
+    `steer_eligible` (E12) is the set of message positions holding operator
+    messages old enough to evict (see _STEER_STUB_AFTER_TURNS). They are
+    considered only after every tool result has been stubbed. It is EMPTY
+    whenever steering is off, which is what keeps this function byte-for-byte
+    identical to its pre-beast-chat behaviour on every eval unit.
     """
     call_index = call_index or {}
-    candidates = [
-        i for i, m in enumerate(messages)
-        if i > 1 and m.get("role") == "tool"
-        and not str(m.get("content") or "").startswith(_STUB_PREFIX)
-        and len(m.get("content") or "") > _STUB_MIN_CHARS
-    ]
+    steer_eligible = steer_eligible or ()
+    tool_results: list[int] = []
+    aged_steers: list[int] = []
+    for i, m in enumerate(messages):
+        if i <= 1:
+            continue
+        content = str(m.get("content") or "")
+        if len(content) <= _STUB_MIN_CHARS:
+            continue
+        if m.get("role") == "tool":
+            if not content.startswith(_STUB_PREFIX):
+                tool_results.append(i)
+        elif (i in steer_eligible and m.get("role") == "user"
+                and content.startswith(_STEER_PREFIX)):
+            aged_steers.append(i)
+    # Tool results first (oldest first), aged operator messages only as a LAST
+    # resort: a directive outranks a transcript of `ls`, but it stops short of
+    # being unevictable, which is the failure E12 describes.
+    candidates = tool_results + aged_steers
     evicted = freed = 0
     for i in candidates:
         if freed >= max(chars_to_free, 1):
             break
         content = messages[i]["content"]
-        stub = _stub(content, call_index.get(i, i))
+        stub = (_steer_stub(content) if messages[i].get("role") != "tool"
+                else _stub(content, call_index.get(i, i)))
         messages[i]["content"] = stub
         freed += len(content) - len(stub)
         evicted += 1
@@ -289,15 +351,139 @@ def compact_messages(messages: list[dict], chars_to_free: int,
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
-    trailing user message when one exists so roles keep alternating."""
+    trailing user message when one exists so roles keep alternating.
+
+    E14: never fold into a message carrying _STEER_PREFIX. An operator
+    message is a directive the model must act on NOW; gluing a step ladder
+    onto its tail dilutes it and — worse — makes the boundary between what
+    the operator said and what the harness appended invisible. In that one
+    case the plan goes in its own message.
+    """
     if not plan:
         return messages
     last = messages[-1] if messages else None
-    if last and last.get("role") == "user" and last is not messages[1]:
+    if (last and last.get("role") == "user" and last is not messages[1]
+            and not str(last.get("content") or "").startswith(_STEER_PREFIX)):
         merged = dict(last)
         merged["content"] = f"{last.get('content') or ''}\n\n{plan}"
         return messages[:-1] + [merged]
     return messages + [{"role": "user", "content": plan}]
+
+
+# ---------------------------------------------------------------------------
+# beast-chat: session ledger + steering inbox
+#
+# INERT BY DEFAULT. With beast-chat unconfigured, every path below is skipped
+# and the runner emits the same events, builds the same message list, prints
+# the same stdout and returns the same exit codes as before this feature.
+# ---------------------------------------------------------------------------
+
+#: Marks an operator message in both `messages` and the transcript. Unlike the
+#: plan block this IS stored in history — the model should remember being told.
+_STEER_PREFIX = "[operator message] "
+
+#: Bounded poll while paused. Never a busy loop; a paused agent costs nothing.
+_PAUSE_POLL_S = 1.0
+
+#: Hard ceiling on an operator message, applied here as well as in
+#: sessions.read_new_ops (E12) — the runner must bound its own context even
+#: if it is handed ops by something other than that reader.
+_SAY_MAX_CHARS = 4000
+
+#: Set unconditionally by evals/run_eval.py in every child environment. It is
+#: the ONLY lock that does not depend on how a task happens to be worded or on
+#: how the operator's shell happens to be configured.
+_EVAL_MARKER = "OPENBEAST_EVAL"
+
+
+def _steering_enabled(explicit: bool = False) -> bool:
+    """The single gate for the ledger AND the steering inbox.
+
+    ===================== HARD EVAL GUARD (E1) =====================
+    An eval unit is a scientific measurement, half of a paired A/B row. If an
+    operator message — or a stale, pre-planted inbox file from an earlier
+    interactive run — reaches one, the row is silently corrupted and the
+    cache-key era does not show it. A reviewer drove a real operator message
+    into a measured unit through the genuine spawn path, so this gate is now
+    THREE locks and the first of them is unconditional:
+
+      L1  OPENBEAST_EVAL — evals/run_eval.py sets it in EVERY child env, and
+          pops OPENBEAST_BEAST_CHAT from that env at the same time. It does
+          not depend on the task text, the shell, or openbeast.conf. This is
+          the lock that actually holds.
+      L2  OPENBEAST_TASK_PATHS — kept, checked next. It used to be the last
+          line of defence, which was luck: it is derived from whether a task
+          SPEC happens to mention a /tmp/eval path. All 291 current variants
+          do; that is a property of wording, not of being a measurement.
+      L3  EXPLICIT ARGV ONLY — `--steer` or `--session-id`. The environment
+          opt-in is GONE. scripts/lib/conf.sh exports OPENBEAST_BEAST_CHAT
+          unconditionally and run_eval copied the whole environment into the
+          child, so "opt-in" was already open in any configured shell. A
+          spawner that wants steering must now say so on the command line;
+          agents/chat_server.py passes `--session-id <id> --steer`.
+
+    Under eval mode the inbox is never opened, never created, and never even
+    stat()ed: this returns False FIRST, before any other consideration, and
+    run_agent caches the result for the whole run.
+    ================================================================
+    """
+    if os.environ.get(_EVAL_MARKER):
+        return False
+    if os.environ.get("OPENBEAST_TASK_PATHS"):
+        return False
+    if _sessions is None:
+        return False
+    return bool(explicit)
+
+
+def _session_id_from_log(log_path: str) -> str | None:
+    """Recover the MCP agent id from its log filename (`agent-<id>.jsonl`).
+
+    mcp_server.start_agent already names the transcript after the agent id, so
+    reusing it keeps one identity across the tool server, the ledger and the
+    console instead of minting a second name for the same run.
+    """
+    m = re.fullmatch(r"agent-(.+)\.jsonl", os.path.basename(log_path or ""))
+    return m.group(1) if m else None
+
+
+def _apply_steer_ops(ops: list[dict], messages: list[dict], log_event,
+                     paused: bool = False) -> dict:
+    """Fold a batch of inbox ops into the conversation.
+
+    Returns {"stop", "paused", "said"}. Ops apply in file order, so the last
+    pause/resume in a batch wins. Unknown ops are ignored but logged — a
+    silently dropped operator action is worse than a noisy one.
+    """
+    stop = False
+    said = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            log_event({"type": "steer", "op": "?", "ignored": "not an object"})
+            continue
+        name = str(op.get("op") or "").strip().lower()
+        sender = str(op.get("from") or "")
+        if name == "say":
+            text = str(op.get("text") or "").strip()[:_SAY_MAX_CHARS]
+            if not text:
+                log_event({"type": "steer", "op": "say", "ignored": "empty text"})
+                continue
+            messages.append({"role": "user", "content": _STEER_PREFIX + text})
+            said += 1
+            log_event({"type": "steer", "op": "say", "text": text, "from": sender})
+        elif name == "stop":
+            stop = True
+            paused = False
+            log_event({"type": "steer", "op": "stop", "from": sender})
+        elif name == "pause":
+            paused = True
+            log_event({"type": "steer", "op": "pause", "from": sender})
+        elif name == "resume":
+            paused = False
+            log_event({"type": "steer", "op": "resume", "from": sender})
+        else:
+            log_event({"type": "steer", "op": name or "?", "ignored": "unknown op"})
+    return {"stop": stop, "paused": paused, "said": said}
 
 
 def _host_of(url: str) -> str:
@@ -358,6 +544,8 @@ def run_agent(
     context_budget: int = 0,
     resume_from: str | None = None,
     api_key: str | None = None,
+    session_id: str | None = None,
+    steer: bool = False,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
 
@@ -371,9 +559,17 @@ def run_agent(
 
     client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url))
 
+    # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
+    # Resolved once, here, and cached in a local for the whole run: the guard
+    # is evaluated exactly one time, cannot be re-decided mid-loop, and — the
+    # E2 fix — is known BEFORE the resume rebuild, which replays recorded
+    # operator messages and used to run ~26 lines ahead of this line.
+    steering = _steering_enabled(steer or bool(session_id))
+
     # Resume from existing log or start fresh
     if resume_from and os.path.isfile(resume_from):
-        messages = _rebuild_messages_from_log(resume_from, system_prompt)
+        messages = _rebuild_messages_from_log(resume_from, system_prompt,
+                                              steering=steering)
         messages.append({
             "role": "user",
             "content": "You are resuming a previous run that was interrupted. "
@@ -393,13 +589,69 @@ def run_agent(
         os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     else:
         os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_path = os.path.join(log_dir, f"agent-{timestamp}.jsonl")
+        # E18: the same shape sessions.new_id() uses. A bare 1-second
+        # timestamp collided under `run_eval.py --jobs N` — two units of the
+        # same measurement appended to ONE transcript, and the derived
+        # session id collided with it.
+        stamp = (datetime.now().strftime("%Y%m%d-%H%M%S") + "-"
+                 + uuid.uuid4().hex[:8])
+        log_path = os.path.join(log_dir, f"agent-{stamp}.jsonl")
+
+    # --- beast-chat (inert unless configured; see _steering_enabled) --------
+    ses_id = ""
+    steer_cursor = 0
+    steer_paused = False
+    #: message position -> the iteration at which that operator message
+    #: arrived, so compact_messages knows which ones have aged out (E12).
+    steer_turn: dict[int, int] = {}
+    if steering:
+        # Operator messages restored by --resume are already old history:
+        # evictable from the first turn if the context needs the room.
+        for _i, _m in enumerate(messages):
+            if (_m.get("role") == "user"
+                    and str(_m.get("content") or "").startswith(_STEER_PREFIX)):
+                steer_turn[_i] = 1 - _STEER_STUB_AFTER_TURNS
+        ses_id = session_id or _session_id_from_log(log_path) or _sessions.new_id("agent")
+        # Carry a previous cursor forward so --resume never replays ops the
+        # earlier process already consumed.
+        prior = _sessions.get(ses_id) or {}
+        prior_meta = prior.get("meta") if isinstance(prior.get("meta"), dict) else {}
+        try:
+            steer_cursor = max(int(prior_meta.get("cursor") or 0), 0)
+        except (TypeError, ValueError):
+            steer_cursor = 0
+        _sessions.register(
+            ses_id, kind="agent", title=task[:200], pid=os.getpid(),
+            workdir=workdir, model=model, transcript=log_path,
+            meta={"cursor": steer_cursor, "base_url": base_url,
+                  "max_iter": max_iter},
+        )
+        _finalized = {"done": False}
+
+        def _finalize_once(state: str, summary: str | None = None):
+            if not _finalized["done"]:
+                _finalized["done"] = True
+                _sessions.finalize(ses_id, state, summary=summary)
+
+        # An unhandled exception prints its traceback and THEN runs atexit, so
+        # a crashed agent lands as `failed` instead of a record stuck on
+        # `running`. A SIGKILL skips this — that is exactly what `lost` is for.
+        atexit.register(
+            _finalize_once, "failed", "process exited without a terminal event")
+        _last_touch = [0.0]
 
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
         with open(log_path, "a") as f:
             f.write(json.dumps(event) + "\n")
+        if steering:
+            # Throttled: `updated_at` is a liveness heartbeat for the console,
+            # not an audit trail, and the transcript is the real record. Keeps
+            # the ledger off the hot path during tool-call bursts.
+            now = time.time()
+            if now - _last_touch[0] >= 0.5:
+                _last_touch[0] = now
+                _sessions.touch(ses_id, last_event=event.get("type") or "")
 
     print(f"Agent started — task: {task[:100]}{'...' if len(task) > 100 else ''}")
     print(f"Server: {base_url}")
@@ -427,7 +679,12 @@ def run_agent(
 
     def compact(reason: str, chars_to_free: int, detail: str = "") -> int:
         nonlocal compactions
-        n, freed = compact_messages(messages, chars_to_free, call_index)
+        # Empty unless steering is on, which is what keeps compaction
+        # byte-identical to the pre-beast-chat behaviour under the guard.
+        eligible = {i for i, turn in steer_turn.items()
+                    if iteration - turn >= _STEER_STUB_AFTER_TURNS}
+        n, freed = compact_messages(messages, chars_to_free, call_index,
+                                    steer_eligible=eligible)
         if n:
             compactions += 1
             print(f"[compaction] {reason}: stubbed {n} oldest tool result(s), "
@@ -437,6 +694,57 @@ def run_agent(
         return n
 
     for iteration in range(1, max_iter + 1):
+        if steering:
+            # THE TURN BOUNDARY — the only point at which operator ops apply.
+            # A message sent during a 60 s tool call lands here, when the call
+            # returns; the console tells the operator so. Reading before the
+            # `iteration` event means a stop never leaves a phantom turn in
+            # the transcript.
+            paused_logged = False
+            while True:
+                ops, steer_cursor = _sessions.read_new_ops(ses_id, steer_cursor)
+                if ops:
+                    # Persist the cursor before acting: a crash mid-turn must
+                    # not replay an op the model has already been told.
+                    _sessions.touch(ses_id, meta={"cursor": steer_cursor})
+                    _before = len(messages)
+                    act = _apply_steer_ops(ops, messages, log_event, steer_paused)
+                    for _i in range(_before, len(messages)):
+                        if str(messages[_i].get("content") or "").startswith(
+                                _STEER_PREFIX):
+                            steer_turn[_i] = iteration
+                    steer_paused = act["paused"]
+                    if act["stop"]:
+                        print("\nStopped by operator.")
+                        _print_token_summary(tokens_prompt, tokens_completion,
+                                             tokens_total, compactions)
+                        log_event({
+                            # COMPLETED turns, so counter-1 — ops are consumed
+                            # at the TOP of iteration N, before that turn runs
+                            # and before its `iteration` event is logged, so
+                            # N-1 turns have finished. It also matches the last
+                            # `iteration` event in the transcript, which is the
+                            # previous pass's. (An adversarial review claimed
+                            # this was an off-by-one and a spec item propagated
+                            # the claim; both were wrong. A stop at the first
+                            # boundary takes no turn at all and must record 0.)
+                            "type": "done", "summary": "stopped by operator",
+                            "iterations": iteration - 1,
+                            "tokens_prompt": tokens_prompt,
+                            "tokens_completion": tokens_completion,
+                            "tokens_total": tokens_total,
+                            "compactions": compactions,
+                        })
+                        _finalize_once("stopped", "stopped by operator")
+                        return final_summary or "stopped by operator"
+                if not steer_paused:
+                    break
+                if not paused_logged:
+                    paused_logged = True
+                    log_event({"type": "paused", "iteration": iteration})
+                    print("[paused] waiting for resume or stop", file=sys.stderr)
+                time.sleep(_PAUSE_POLL_S)   # bounded: never a spin
+
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
 
@@ -596,6 +904,8 @@ def run_agent(
                     "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
                     "tokens_total": tokens_total, "compactions": compactions,
                 })
+                if steering:
+                    _finalize_once("done", final_summary)
                 return final_summary
 
     # Max iterations reached (or an unrecoverable stop)
@@ -609,6 +919,11 @@ def run_agent(
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
         "tokens_total": tokens_total, "compactions": compactions,
     })
+    if steering:
+        # The process exited cleanly, so this is `done`, not `failed`; the
+        # summary is what tells the console it ran out of road.
+        _finalize_once("done", final_summary or (
+            stop_reason or f"max iterations ({max_iter}) reached without task_done"))
     return final_summary or "(max iterations reached)"
 
 
@@ -634,6 +949,8 @@ def main():
     parser.add_argument("--context-file", help="Read background context from a file")
     parser.add_argument("--context-budget", type=int, default=0, help="Approximate context token budget: told to the agent, and past ~70%% of it the runner stubs the oldest tool results (see compact_messages)")
     parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
+    parser.add_argument("--session-id", help="beast-chat: pin the session-ledger id (default: derived from the log filename, else generated). Implies --steer.")
+    parser.add_argument("--steer", action="store_true", help="beast-chat: register in the session ledger and read the steering inbox at each turn boundary. OFF unless this flag or --session-id is passed (there is no environment opt-in); ALWAYS off under run_eval.py (OPENBEAST_EVAL / OPENBEAST_TASK_PATHS).")
     parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")
 
@@ -672,6 +989,8 @@ def main():
         context_budget=args.context_budget,
         resume_from=args.resume,
         api_key=args.api_key,
+        session_id=args.session_id,
+        steer=args.steer,
     )
 
 

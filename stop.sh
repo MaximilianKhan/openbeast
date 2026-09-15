@@ -78,6 +78,8 @@ pkill -f "$SCRIPT_DIR/agents/edge.py" 2>/dev/null && echo "beast-gate stopped." 
 
 echo "Stopping artifact server..."
 pkill -f "$SCRIPT_DIR/agents/artifact_server.py" 2>/dev/null && echo "artifact server stopped." || echo "artifact server was not running."
+echo "Stopping chat server..."
+pkill -f "$SCRIPT_DIR/agents/chat_server.py" 2>/dev/null && echo "chat server stopped." || echo "chat server was not running."
 
 echo "Stopping tool server..."
 pkill -f "$SCRIPT_DIR/agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
@@ -89,4 +91,4 @@ pkill -f "$SCRIPT_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null && echo "lla
 
 rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
       "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" \
-      "$RUN_DIR/edge.pid" "$RUN_DIR/artifact.pid" 2>/dev/null || true
+      "$RUN_DIR/edge.pid" "$RUN_DIR/artifact.pid" "$RUN_DIR/chat.pid" 2>/dev/null || true

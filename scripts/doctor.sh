@@ -266,6 +266,27 @@ probe "http://$HEALTH_HOST:3000/api/version" "version" \
   && pass "Open WebUI (:3000)" \
   || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
 
+# beast-chat (opt-in) — the operator console for the rig's own sessions.
+# Only checked when enabled: a row for a service nobody asked for is noise.
+if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
+  _chat=$(curl -s --max-time 4 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
+  if echo "$_chat" | grep -qi '"status":"ok"'; then
+    _chat_reads=$(echo "$_chat" | grep -o '"reads":"[a-z]*"' | cut -d'"' -f4)
+    _chat_running=$(echo "$_chat" | grep -o '"running":-\?[0-9]*' | cut -d: -f2)
+    pass "beast-chat console (:${CHAT_PORT:-3003}) — reads=${_chat_reads:-?}, ${_chat_running:-?} running session(s)"
+    # An empty allowlist is not a failure (single-operator rig, tailnet you
+    # own) but it IS the difference between "my phone" and "every device on
+    # the tailnet", and only the operator can decide that. Say it out loud.
+    if [[ "$_chat_reads" == "open" ]]; then
+      warn "beast-chat has no operator allowlist — every tailnet login can read every session" \
+           "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
+    fi
+  else
+    warn "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
+         "./scripts/healthcheck.sh --restart"
+  fi
+fi
+
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # Proof-of-locality header: the peer address can't distinguish local from
   # tailnet (tailscale serve proxies from loopback), so the gate keys this on
@@ -335,6 +356,20 @@ if command -v tailscale >/dev/null 2>&1; then
         *proxy*)   pass "published ${_url:-?} → ${_line##*proxy }" ;;
       esac
     done <<< "$_serve"
+    # :8445 is beast-chat — a WRITE surface (send a message to a live agent,
+    # stop it, start a new one), so a mount pointing at a dead process is
+    # worth more than a shrug: the operator thinks they can reach their rig.
+    if echo "$_serve" | grep -qE ':8445[^0-9]'; then
+      if curl -s --max-time 4 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+        pass "beast-chat published on :8445 (tailnet-only)"
+      else
+        fail ":8445 is published but beast-chat is NOT responding" \
+             "the console 502s from the phone — set BEAST_CHAT=true and restart, or ./scripts/setup-tailscale.sh --unpublish-chat"
+      fi
+    elif [[ "${BEAST_CHAT:-false}" == "true" ]]; then
+      warn "BEAST_CHAT=true but :8445 is not published — the console is loopback-only" \
+           "./scripts/setup-tailscale.sh --publish-chat"
+    fi
     if echo "$_serve" | grep -qE ':8443[^0-9]'; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
       # the OpenAI routes and keys per device; raw llama-server publishes its

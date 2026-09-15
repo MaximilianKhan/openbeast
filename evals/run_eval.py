@@ -580,6 +580,28 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
                          for k in ("task", "validation", "setup", "cleanup"))
     expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
     child_env = dict(os.environ)
+
+    # === THE EVAL MARKER — beast-chat lock L1 (E1) ========================
+    # This is the ONE fact about a child of this function that is always
+    # true: it is a measured evaluation unit. Everything else the old guard
+    # relied on was circumstantial. OPENBEAST_TASK_PATHS (below) is derived
+    # from whether the task SPEC happens to name a /tmp/eval path — today all
+    # 291 variants do, which is luck, not a guarantee. And the "opt-in",
+    # OPENBEAST_BEAST_CHAT, is exported UNCONDITIONALLY by
+    # scripts/lib/conf.sh, so `dict(os.environ)` on the line above handed it
+    # straight to every child in any configured shell: a reviewer drove a
+    # real operator message into a measured unit through this exact path.
+    #
+    # So: set the marker always, and strip the flag that was never a lock.
+    # agents/runner.py:_steering_enabled() checks OPENBEAST_EVAL first, and
+    # its remaining opt-in is explicit argv only.
+    #
+    # This file is deliberately NOT in evals/cache.py CONTEXT_FILES, so this
+    # costs no cache era — verified before and after the change.
+    child_env["OPENBEAST_EVAL"] = "1"
+    child_env.pop("OPENBEAST_BEAST_CHAT", None)
+    # ======================================================================
+
     if expected:
         child_env["OPENBEAST_TASK_PATHS"] = json.dumps(expected)
     else:

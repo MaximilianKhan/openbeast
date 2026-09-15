@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>beast-chat</title>
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#141312">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="beast-chat">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="manifest" href="data:application/json,%7B%22name%22%3A%22OpenBeast%20beast-chat%22%2C%22short_name%22%3A%22beast-chat%22%2C%22start_url%22%3A%22%2F%23%2F%22%2C%22scope%22%3A%22%2F%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23141312%22%2C%22theme_color%22%3A%22%23141312%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22%2Ficon.svg%22%2C%22sizes%22%3A%22any%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%2C%22purpose%22%3A%22any%20maskable%22%7D%5D%7D">
+<style>
+/* ---- palette -------------------------------------------------------- */
+:root{
+  --bg:#faf9f7; --surface:#fff; --surface-2:#f3f1ed; --surface-3:#eae7e1;
+  --border:#e3dfd8; --border-strong:#cfc9c0;
+  --text:#1b1917; --text-2:#4a453f; --muted:#79736b;
+  --accent:#b4530a; --accent-text:#fff; --accent-soft:#fdf0e3;
+  --ok:#17784a; --ok-soft:#e6f4ec;
+  --warn:#8f6000; --warn-soft:#fbf1dc;
+  --err:#b02a1f; --err-soft:#fdecea;
+  --info:#2a5ea6; --info-soft:#e9f0fa;
+  --code-bg:#f3f1ed;
+  --shadow:0 1px 2px rgba(23,20,17,.06),0 6px 20px rgba(23,20,17,.05);
+  --r:12px; --r-sm:8px; --r-pill:999px;
+  --tap:44px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121110; --surface:#1a1918; --surface-2:#232120; --surface-3:#2c2927;
+    --border:#332f2c; --border-strong:#474240;
+    --text:#ecebe8; --text-2:#c4beb6; --muted:#938c83;
+    --accent:#f0913f; --accent-text:#1a1008; --accent-soft:#2b1d10;
+    --ok:#5ec98e; --ok-soft:#14261d;
+    --warn:#e2b25c; --warn-soft:#2a2113;
+    --err:#ff8f83; --err-soft:#2e1714;
+    --info:#86b3f2; --info-soft:#141f2e;
+    --code-bg:#201e1d;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121110; --surface:#1a1918; --surface-2:#232120; --surface-3:#2c2927;
+  --border:#332f2c; --border-strong:#474240;
+  --text:#ecebe8; --text-2:#c4beb6; --muted:#938c83;
+  --accent:#f0913f; --accent-text:#1a1008; --accent-soft:#2b1d10;
+  --ok:#5ec98e; --ok-soft:#14261d;
+  --warn:#e2b25c; --warn-soft:#2a2113;
+  --err:#ff8f83; --err-soft:#2e1714;
+  --info:#86b3f2; --info-soft:#141f2e;
+  --code-bg:#201e1d;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.3);
+}
+
+/* ---- base ----------------------------------------------------------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+  font-size:15px;line-height:1.5;-webkit-text-size-adjust:100%;
+  overflow:hidden;overscroll-behavior:none;
+  display:flex;flex-direction:column;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+::selection{background:var(--accent-soft);color:var(--text)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---- header --------------------------------------------------------- */
+header{
+  flex:0 0 auto;background:var(--surface);border-bottom:1px solid var(--border);
+  padding:max(8px,env(safe-area-inset-top)) 12px 8px;
+  padding-left:max(12px,env(safe-area-inset-left));
+  padding-right:max(12px,env(safe-area-inset-right));
+  display:flex;flex-direction:column;gap:8px;z-index:5;
+}
+.bar{display:flex;align-items:center;gap:8px;min-height:var(--tap)}
+.bar h1{font-size:16px;font-weight:650;margin:0;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.bar .sub{display:block;font-size:12px;font-weight:450;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icobtn{
+  flex:0 0 auto;min-width:var(--tap);min-height:var(--tap);display:flex;
+  align-items:center;justify-content:center;background:transparent;
+  border:1px solid transparent;border-radius:var(--r-sm);cursor:pointer;
+  color:var(--text-2);font-size:17px;line-height:1;
+}
+.icobtn:hover{background:var(--surface-2);color:var(--text)}
+.icobtn:active{background:var(--surface-3)}
+.btn{
+  min-height:38px;padding:0 14px;border-radius:var(--r-pill);cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--border-strong);
+  color:var(--text);font-size:14px;font-weight:550;white-space:nowrap;
+}
+.btn:hover{background:var(--surface-3)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+.btn.danger{background:var(--err-soft);border-color:var(--err);color:var(--err)}
+
+/* filter chips */
+.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+.chips::-webkit-scrollbar{display:none}
+.chip{
+  flex:0 0 auto;padding:6px 12px;border-radius:var(--r-pill);font-size:13px;
+  font-weight:550;background:var(--surface-2);border:1px solid var(--border);
+  color:var(--muted);cursor:pointer;min-height:32px;
+}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+
+/* ---- main ----------------------------------------------------------- */
+main{
+  flex:1 1 auto;overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;
+  padding:12px max(12px,env(safe-area-inset-right)) 16px max(12px,env(safe-area-inset-left));
+}
+.empty{text-align:center;color:var(--muted);padding:56px 20px;font-size:14px}
+.empty .big{font-size:34px;display:block;margin-bottom:10px;opacity:.5}
+
+/* ---- session list --------------------------------------------------- */
+.list{display:flex;flex-direction:column;gap:8px;max-width:820px;margin:0 auto}
+.card{
+  display:block;width:100%;text-align:left;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;
+  cursor:pointer;box-shadow:var(--shadow);color:inherit;
+}
+.card:hover{border-color:var(--border-strong)}
+.card:active{background:var(--surface-2)}
+.card .row1{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.card .title{flex:1;min-width:0;font-weight:600;font-size:15px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .row2{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.card .last{
+  margin-top:7px;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+  background:var(--code-bg);border-radius:var(--r-sm);padding:6px 8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pill{
+  flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  font-weight:650;text-transform:uppercase;letter-spacing:.045em;
+  padding:3px 9px;border-radius:var(--r-pill);border:1px solid transparent;
+}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.p-running{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.p-running .dot{animation:pulse 1.6s ease-in-out infinite}
+.p-done{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
+.p-failed{background:var(--err-soft);color:var(--err);border-color:var(--err)}
+.p-stopped{background:var(--surface-2);color:var(--muted);border-color:var(--border-strong)}
+.p-lost{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.p-running .dot{animation:none}}
+.tag{
+  flex:0 0 auto;font-size:11px;font-weight:600;padding:2px 7px;border-radius:var(--r-sm);
+  background:var(--surface-2);color:var(--muted);border:1px solid var(--border);
+}
+
+/* ---- transcript ----------------------------------------------------- */
+.stream{display:flex;flex-direction:column;gap:10px;max-width:820px;margin:0 auto}
+.ev{border-radius:var(--r);font-size:14.5px;overflow:hidden}
+.ev .hd{
+  display:flex;align-items:center;gap:7px;font-size:11px;font-weight:650;
+  text-transform:uppercase;letter-spacing:.045em;color:var(--muted);
+  margin-bottom:4px;
+}
+.ev .hd .off{margin-left:auto;font-family:var(--mono);font-weight:500;
+  text-transform:none;letter-spacing:0;opacity:.65}
+
+/* assistant */
+.e-assistant{background:var(--surface);border:1px solid var(--border);
+  padding:11px 13px;box-shadow:var(--shadow)}
+.e-assistant .body{white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;color:var(--text)}
+
+/* your steer message */
+.e-steer,.e-pending{
+  background:var(--accent-soft);border:1px solid var(--accent);
+  padding:10px 13px;align-self:flex-end;max-width:88%;
+}
+.e-steer .hd,.e-pending .hd{color:var(--accent)}
+.e-steer .body,.e-pending .body{white-space:pre-wrap;overflow-wrap:anywhere}
+.e-pending{opacity:.78;border-style:dashed}
+.queued{font-size:11.5px;color:var(--accent);margin-top:6px;font-weight:600}
+
+/* tool call */
+.e-tool{background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow)}
+.e-tool details{margin:0}
+.e-tool summary{
+  list-style:none;cursor:pointer;padding:10px 13px;display:flex;
+  align-items:center;gap:8px;min-height:var(--tap);
+}
+.e-tool summary::-webkit-details-marker{display:none}
+.e-tool summary::after{content:"▸";color:var(--muted);font-size:12px;margin-left:auto}
+.e-tool details[open] summary::after{content:"▾"}
+.e-tool .name{font-family:var(--mono);font-size:13px;font-weight:650;color:var(--info);flex:0 0 auto}
+.e-tool .args{
+  font-family:var(--mono);font-size:12px;color:var(--muted);min-width:0;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.e-tool .res{
+  margin:0;padding:10px 13px;border-top:1px solid var(--border);
+  background:var(--code-bg);font-family:var(--mono);font-size:12px;
+  line-height:1.45;white-space:pre;overflow-x:auto;max-height:340px;overflow-y:auto;
+}
+.trunc{
+  display:inline-block;margin:0 13px 10px;font-size:11px;font-weight:650;
+  color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn);
+  padding:2px 8px;border-radius:var(--r-pill);
+}
+
+/* notices */
+.note{
+  display:flex;align-items:center;gap:8px;font-size:12.5px;padding:7px 12px;
+  border-radius:var(--r-pill);align-self:center;max-width:100%;
+  background:var(--surface-2);color:var(--muted);border:1px solid var(--border);
+}
+.n-compaction{background:var(--info-soft);color:var(--info);border-color:var(--info)}
+.n-warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
+.divider{display:flex;align-items:center;gap:10px;color:var(--muted);
+  font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;margin:4px 0}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--border)}
+
+/* error + done */
+.e-error{background:var(--err-soft);border:1px solid var(--err);padding:11px 13px}
+.e-error .hd{color:var(--err)}
+.e-error .body{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
+.e-done{background:var(--ok-soft);border:1px solid var(--ok);padding:11px 13px}
+.e-done .hd{color:var(--ok)}
+.e-done .body{white-space:pre-wrap;overflow-wrap:anywhere}
+.stats{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.stat{font-size:11px;font-family:var(--mono);background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r-sm);padding:2px 7px;color:var(--muted)}
+
+/* job log */
+.log{
+  background:var(--code-bg);border:1px solid var(--border);border-radius:var(--r);
+  font-family:var(--mono);font-size:12px;line-height:1.5;padding:10px 12px;
+  overflow-x:auto;max-width:820px;margin:0 auto;width:100%;
+}
+.log div{white-space:pre;min-height:1.5em}
+
+/* status strip */
+.status{
+  max-width:820px;margin:0 auto 12px;display:flex;flex-wrap:wrap;gap:6px;
+}
+.status .stat{background:var(--surface);font-size:11.5px}
+
+/* ---- composer ------------------------------------------------------- */
+footer{
+  flex:0 0 auto;background:var(--surface);border-top:1px solid var(--border);
+  padding:8px max(10px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));
+}
+.composer{display:flex;gap:8px;align-items:flex-end;max-width:820px;margin:0 auto}
+.composer textarea{
+  flex:1;min-width:0;resize:none;background:var(--surface-2);
+  border:1px solid var(--border-strong);border-radius:var(--r);
+  padding:10px 12px;font-size:16px;line-height:1.4;max-height:132px;min-height:var(--tap);
+}
+.composer textarea::placeholder{color:var(--muted)}
+.composer textarea:disabled{opacity:.5}
+.composer .send{
+  min-width:var(--tap);min-height:var(--tap);border-radius:var(--r);
+  background:var(--accent);border:1px solid var(--accent);color:var(--accent-text);
+  font-size:17px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+.composer .send:disabled{opacity:.4;cursor:not-allowed}
+.hint{font-size:11.5px;color:var(--muted);text-align:center;margin:6px auto 0;max-width:820px}
+
+/* ---- sheet + toast --------------------------------------------------- */
+.sheet{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;
+  display:flex;align-items:flex-end;justify-content:center;
+}
+.sheet[hidden]{display:none}
+.sheet .panel{
+  background:var(--surface);width:100%;max-width:520px;
+  border-radius:var(--r) var(--r) 0 0;padding:18px 18px max(18px,env(safe-area-inset-bottom));
+  border:1px solid var(--border);border-bottom:none;
+}
+.sheet h2{margin:0 0 4px;font-size:16px}
+.sheet p{margin:0 0 14px;font-size:13px;color:var(--muted)}
+.sheet label{display:block;font-size:12px;font-weight:650;margin-bottom:5px;color:var(--text-2)}
+.sheet input{
+  width:100%;background:var(--surface-2);border:1px solid var(--border-strong);
+  border-radius:var(--r-sm);padding:10px 12px;font-size:16px;margin-bottom:14px;
+  font-family:var(--mono);
+}
+.sheet .acts{display:flex;gap:8px;justify-content:flex-end}
+#toast{
+  position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));
+  background:var(--text);color:var(--bg);padding:9px 16px;border-radius:var(--r-pill);
+  font-size:13px;font-weight:600;z-index:30;box-shadow:var(--shadow);max-width:90vw;text-align:center;
+}
+#toast[hidden]{display:none}
+#conn{font-size:11px;font-weight:600;padding:2px 8px;border-radius:var(--r-pill);
+  border:1px solid var(--border);background:var(--surface-2);color:var(--muted);flex:0 0 auto}
+#conn.live{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
+#conn.off{background:var(--err-soft);color:var(--err);border-color:var(--err)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <button class="icobtn" id="back" hidden aria-label="Back to sessions">&#8592;</button>
+    <h1 id="title">beast-chat<span class="sub" id="subtitle">sessions on this rig</span></h1>
+    <span id="conn" hidden>idle</span>
+    <button class="icobtn" id="stopBtn" hidden aria-label="Stop this session" title="Stop">&#9632;</button>
+    <button class="icobtn" id="replayBtn" hidden aria-label="Replay from the start" title="Replay from the start">&#8635;</button>
+    <button class="icobtn" id="themeBtn" aria-label="Toggle colour theme" title="Theme">&#9681;</button>
+    <button class="icobtn" id="keyBtn" aria-label="Device key" title="Device key">&#128273;</button>
+  </div>
+  <div class="chips" id="filters"></div>
+</header>
+
+<main id="view" tabindex="-1"></main>
+
+<footer id="foot" hidden>
+  <div class="composer">
+    <label class="sr" for="msg">Message to this agent</label>
+    <textarea id="msg" rows="1" placeholder="Say something to this agent&#8230;" enterkeyhint="send"></textarea>
+    <button class="send" id="sendBtn" aria-label="Send">&#8593;</button>
+  </div>
+  <div class="hint" id="hint">Messages are queued &#8212; they land at the agent&#8217;s next turn.</div>
+</footer>
+
+<div class="sheet" id="keySheet" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="ksT">
+    <h2 id="ksT">Device key</h2>
+    <p>Sending and stopping need an enrolled device key with the <code>chat</code> scope.
+       Reading needs a tailnet login or the same key. Stored only in this browser.</p>
+    <label for="keyIn">Key</label>
+    <input id="keyIn" type="password" autocomplete="off" spellcheck="false" placeholder="paste the key from clients.sh enroll">
+    <div class="acts">
+      <button class="btn" id="keyClear">Clear</button>
+      <button class="btn" id="keyCancel">Cancel</button>
+      <button class="btn primary" id="keySave">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" hidden role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+(function(){
+// --- storage (any of this can throw: private mode, blocked site data) ----
+function lsGet(k, d){ try{ var v = localStorage.getItem(k); return v === null ? d : v; }catch(e){ return d; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
+
+var OFF = function(id){ return "bc.off." + id; };
+var KEY = "bc.devkey", THEME = "bc.theme", FILTER = "bc.filter";
+
+// --- tiny helpers -------------------------------------------------------
+var $ = function(s){ return document.querySelector(s); };
+function el(tag, cls, txt){ var n = document.createElement(tag); if(cls) n.className = cls; if(txt != null) n.textContent = txt; return n; }
+function esc(s){ return String(s == null ? "" : s); }
+function clamp(s, n){ s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; }
+function ago(iso){
+  if(!iso) return "";
+  var t = Date.parse(iso); if(isNaN(t)) return "";
+  var s = Math.max(0, (Date.now() - t) / 1000);
+  if(s < 60) return Math.round(s) + "s";
+  if(s < 3600) return Math.round(s / 60) + "m";
+  if(s < 86400) return Math.round(s / 3600) + "h";
+  return Math.round(s / 86400) + "d";
+}
+var toastTimer = null;
+function toast(msg, ms){
+  var t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.hidden = true; }, ms || 2600);
+}
+
+// --- theme --------------------------------------------------------------
+function applyTheme(){
+  var t = lsGet(THEME, "");
+  if(t) document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+}
+$("#themeBtn").addEventListener("click", function(){
+  var cur = lsGet(THEME, "");
+  var next = cur === "dark" ? "light" : (cur === "light" ? "" : "dark");
+  if(next) lsSet(THEME, next); else lsDel(THEME);
+  applyTheme();
+  toast(next ? next + " theme" : "system theme", 1200);
+});
+applyTheme();
+
+// --- device key sheet ---------------------------------------------------
+var sheet = $("#keySheet");
+function openSheet(){ $("#keyIn").value = lsGet(KEY, ""); sheet.hidden = false; $("#keyIn").focus(); }
+function closeSheet(){ sheet.hidden = true; }
+$("#keyBtn").addEventListener("click", openSheet);
+$("#keyCancel").addEventListener("click", closeSheet);
+$("#keyClear").addEventListener("click", function(){ lsDel(KEY); closeSheet(); toast("device key cleared"); });
+$("#keySave").addEventListener("click", function(){
+  var v = $("#keyIn").value.trim();
+  if(v) lsSet(KEY, v); else lsDel(KEY);
+  closeSheet(); toast(v ? "device key saved" : "device key cleared");
+});
+sheet.addEventListener("click", function(e){ if(e.target === sheet) closeSheet(); });
+document.addEventListener("keydown", function(e){ if(e.key === "Escape" && !sheet.hidden) closeSheet(); });
+
+// --- API ----------------------------------------------------------------
+function api(path, opts){
+  opts = opts || {};
+  var headers = opts.headers || {};
+  var k = lsGet(KEY, "");
+  // Reads carry it too. `tailscale serve` injects Tailscale-User-Login on the
+  // published deployment; a browser pointed straight at loopback has no such
+  // header, and identity is now required on every route.
+  if(k) headers["X-OpenBeast-Device-Key"] = k;
+  if(opts.body) headers["Content-Type"] = "application/json";
+  return fetch(path, { method: opts.method || "GET", headers: headers, body: opts.body })
+    .then(function(r){
+      return r.text().then(function(txt){
+        var data = null;
+        try{ data = txt ? JSON.parse(txt) : null; }catch(e){}
+        if(!r.ok){
+          var e2 = new Error((data && (data.detail || data.message)) || ("HTTP " + r.status));
+          e2.status = r.status; throw e2;
+        }
+        return data;
+      });
+    });
+}
+function writeError(err){
+  // A missing key and an unauthorized key answer the SAME 404 on purpose —
+  // the old 401/404 split told a prober which logins are operators.
+  if(err.status === 401) return "no device key — tap the key icon to add one";
+  if(err.status === 404) return "no device key, or this device cannot write here — tap the key icon";
+  if(err.status === 429) return "slow down — write rate limit hit";
+  if(err.status === 409) return "session already finished";
+  return err.message || "failed";
+}
+
+// --- state --------------------------------------------------------------
+var S = {
+  view: "list", id: null, rec: null, kind: "agent",
+  es: null, offset: 0, rendered: {}, filter: lsGet(FILTER, ""),
+  stick: true, logBox: null, nodes: 0, terminal: false, poll: null
+};
+var MAX_NODES = 600;
+var KNOWN = ["hello","end","lost","log","unknown","start","spawn","iteration",
+             "assistant","tool_call","compaction","steer","paused","error",
+             "context_overflow_unrecoverable","done","max_iterations"];
+
+// --- rendering: session list -------------------------------------------
+var STATES = ["", "running", "done", "failed", "stopped", "lost"];
+function renderFilters(){
+  var box = $("#filters"); box.textContent = "";
+  if(S.view !== "list"){ box.hidden = true; return; }
+  box.hidden = false;
+  STATES.forEach(function(st){
+    var b = el("button", "chip", st || "all");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(S.filter === st));
+    b.addEventListener("click", function(){ S.filter = st; lsSet(FILTER, st); renderFilters(); loadList(); });
+    box.appendChild(b);
+  });
+}
+function pill(state){
+  var p = el("span", "pill p-" + (state || "lost"));
+  p.appendChild(el("span", "dot"));
+  p.appendChild(document.createTextNode(state || "?"));
+  return p;
+}
+function loadList(){
+  var q = S.filter ? ("?state=" + encodeURIComponent(S.filter)) : "";
+  api("/api/chat/sessions" + q).then(function(d){
+    if(S.view !== "list") return;
+    var v = $("#view"); v.textContent = "";
+    var rows = (d && d.sessions) || [];
+    if(!rows.length){
+      var e = el("div", "empty");
+      e.appendChild(el("span", "big", "◎"));
+      e.appendChild(document.createTextNode(S.filter ? ("no " + S.filter + " sessions") : "no sessions yet"));
+      v.appendChild(e); return;
+    }
+    var list = el("div", "list");
+    rows.forEach(function(r){
+      var c = el("button", "card"); c.type = "button";
+      var r1 = el("div", "row1");
+      r1.appendChild(el("span", "title", r.title || r.id));
+      r1.appendChild(pill(r.state));
+      c.appendChild(r1);
+      var r2 = el("div", "row2");
+      r2.appendChild(el("span", "tag", r.kind || "agent"));
+      if(r.model) r2.appendChild(el("span", "tag", clamp(r.model, 22)));
+      r2.appendChild(el("span", null, ago(r.updated_at || r.started_at) + " ago"));
+      c.appendChild(r2);
+      if(r.last_line) c.appendChild(el("div", "last", clamp(r.last_line, 220)));
+      c.addEventListener("click", function(){ location.hash = "#/s/" + encodeURIComponent(r.id); });
+      list.appendChild(c);
+    });
+    v.appendChild(list);
+  }).catch(function(e){
+    var v = $("#view"); v.textContent = "";
+    var b = el("div", "empty"); b.appendChild(el("span", "big", "⚠"));
+    b.appendChild(document.createTextNode(e.status === 404 ? "not available for this login" : ("could not load sessions: " + e.message)));
+    v.appendChild(b);
+  });
+}
+
+// --- rendering: transcript events ---------------------------------------
+function head(node, label, offset){
+  var h = el("div", "hd");
+  h.appendChild(el("span", null, label));
+  if(offset != null) h.appendChild(el("span", "off", "@" + offset));
+  node.appendChild(h);
+  return node;
+}
+function argSummary(args){
+  if(!args || typeof args !== "object") return "";
+  var keys = ["command","cmd","file_path","path","pattern","query","url","directory","task","summary"];
+  for(var i = 0; i < keys.length; i++){
+    if(args[keys[i]] != null && typeof args[keys[i]] !== "object") return clamp(String(args[keys[i]]), 120);
+  }
+  try{ return clamp(JSON.stringify(args), 120); }catch(e){ return ""; }
+}
+function eventNode(type, d){
+  var n;
+  if(type === "assistant"){
+    n = head(el("div", "ev e-assistant"), "assistant", d.offset);
+    n.appendChild(el("div", "body", esc(d.content)));
+    return n;
+  }
+  if(type === "steer"){
+    n = head(el("div", "ev e-steer"), "you → agent", d.offset);
+    n.appendChild(el("div", "body", esc(d.text || d.content || d.message)));
+    return n;
+  }
+  if(type === "tool_call"){
+    n = el("div", "ev e-tool");
+    var det = el("details");
+    var sum = el("summary");
+    sum.appendChild(el("span", "name", esc(d.name)));
+    sum.appendChild(el("span", "args", argSummary(d.args)));
+    det.appendChild(sum);
+    var pre = el("pre", "res", esc(d.result));
+    det.appendChild(pre);
+    if(d.result_truncated) det.appendChild(el("span", "trunc", "result truncated at 2000 chars"));
+    n.appendChild(det);
+    return n;
+  }
+  if(type === "iteration"){
+    return el("div", "divider", "iteration " + (d.number || "?"));
+  }
+  if(type === "paused"){
+    return el("div", "note n-warn",
+      "paused at iteration " + (d.iteration || "?") + " — waiting for resume or stop");
+  }
+  if(type === "compaction"){
+    return el("div", "note n-compaction",
+      "context compacted — stubbed " + (d.evicted || 0) + " tool result(s), freed " +
+      (d.chars_freed || 0).toLocaleString() + " chars");
+  }
+  if(type === "start" || type === "spawn"){
+    n = head(el("div", "ev e-assistant"), "task", d.offset);
+    n.appendChild(el("div", "body", esc(d.task)));
+    return n;
+  }
+  if(type === "error" || type === "context_overflow_unrecoverable"){
+    n = head(el("div", "ev e-error"), type === "error" ? "error" : "context overflow", d.offset);
+    n.appendChild(el("div", "body", esc(d.error || d.reason || d.message || JSON.stringify(d))));
+    return n;
+  }
+  if(type === "done" || type === "max_iterations"){
+    n = head(el("div", "ev " + (type === "done" ? "e-done" : "e-error")),
+             type === "done" ? "complete" : "max iterations reached", d.offset);
+    if(d.summary) n.appendChild(el("div", "body", esc(d.summary)));
+    var st = el("div", "stats");
+    if(d.iterations) st.appendChild(el("span", "stat", d.iterations + " iterations"));
+    if(d.tokens_total) st.appendChild(el("span", "stat", d.tokens_total.toLocaleString() + " tokens"));
+    if(d.compactions) st.appendChild(el("span", "stat", d.compactions + " compactions"));
+    if(st.childNodes.length) n.appendChild(st);
+    return n;
+  }
+  // unknown / unparsed: show it rather than swallow it
+  n = head(el("div", "ev e-tool"), type, d.offset);
+  var p = el("pre", "res");
+  try{ p.textContent = d.raw != null ? d.raw : JSON.stringify(d, null, 1); }
+  catch(e){ p.textContent = String(d); }
+  n.appendChild(p);
+  return n;
+}
+
+function push(node){
+  var v = $("#view");
+  var stream = $("#stream") || (function(){ var s = el("div", "stream"); s.id = "stream"; v.appendChild(s); return s; })();
+  stream.appendChild(node);
+  S.nodes++;
+  if(S.nodes > MAX_NODES){
+    while(S.nodes > MAX_NODES - 100 && stream.firstChild){ stream.removeChild(stream.firstChild); S.nodes--; }
+    if(!stream.firstChild || !stream.firstChild.classList.contains("note")){
+      var w = el("div", "note n-warn", "older events trimmed — tap ↻ to replay from the start");
+      stream.insertBefore(w, stream.firstChild);
+    }
+  }
+  scroll();
+}
+function pushLog(line){
+  var v = $("#view");
+  if(!S.logBox){ S.logBox = el("pre", "log"); S.logBox.id = "stream"; v.appendChild(S.logBox); }
+  S.logBox.appendChild(el("div", null, line === "" ? " " : line));
+  S.nodes++;
+  if(S.nodes > MAX_NODES * 4){
+    while(S.nodes > MAX_NODES * 3 && S.logBox.firstChild){ S.logBox.removeChild(S.logBox.firstChild); S.nodes--; }
+  }
+  scroll();
+}
+function scroll(){
+  if(!S.stick) return;
+  var m = $("#view");
+  m.scrollTop = m.scrollHeight;
+}
+$("#view").addEventListener("scroll", function(){
+  var m = $("#view");
+  S.stick = (m.scrollTop + m.clientHeight) >= (m.scrollHeight - 48);
+});
+
+// --- connection ---------------------------------------------------------
+function setConn(txt, cls){
+  var c = $("#conn"); c.hidden = false; c.textContent = txt;
+  c.className = cls || "";
+}
+function closeStream(){
+  if(S.es){ try{ S.es.close(); }catch(e){} S.es = null; }
+}
+function openStream(from){
+  closeStream();
+  S.offset = from;
+  var url = "/api/chat/sessions/" + encodeURIComponent(S.id) + "/events?from=" + from;
+  var es = new EventSource(url);
+  S.es = es;
+  setConn("connecting", "");
+  es.onopen = function(){ setConn("live", "live"); };
+  es.onerror = function(){
+    // EventSource reconnects on its own and replays Last-Event-ID, which the
+    // server honours as `from` — so a dropped radio resumes with no work here.
+    if(S.terminal){ closeStream(); setConn("closed", ""); return; }
+    setConn("reconnecting", "off");
+  };
+  KNOWN.forEach(function(name){
+    es.addEventListener(name, function(m){
+      var d; try{ d = JSON.parse(m.data); }catch(e){ return; }
+      if(m.lastEventId){
+        var n = parseInt(m.lastEventId, 10);
+        if(!isNaN(n) && n > S.offset){ S.offset = n; lsSet(OFF(S.id), String(n)); }
+      }
+      handle(name, d);
+    });
+  });
+}
+function handle(name, d){
+  if(name === "hello"){
+    S.kind = d.kind || "agent";
+    if(d.from === 0){ resetStream(); }
+    if(d.state) updateState(d.state);
+    return;
+  }
+  if(name === "lost"){
+    resetStream();
+    push(el("div", "note n-warn", "transcript restarted — replaying from the beginning"));
+    return;
+  }
+  if(name === "end"){
+    if(d.reason === "unauthorized"){
+      // Access was revoked while we were attached. Not terminal: the session
+      // may well still be running, we simply may not watch it any more.
+      closeStream(); setConn("closed", "");
+      push(el("div", "note n-warn", "stream closed — access revoked"));
+      composerEnabled(false);
+      return;
+    }
+    S.terminal = true;
+    updateState(d.state);
+    push(el("div", "note", "stream closed — " + (d.state || "finished")));
+    if(d.summary){
+      var f = head(el("div", "ev e-done"), "summary", d.offset);
+      f.appendChild(el("div", "body", esc(d.summary)));
+      push(f);
+    }
+    closeStream(); setConn("closed", "");
+    composerEnabled(false);
+    return;
+  }
+  if(name === "log"){ pushLog(d.line); return; }
+  push(eventNode(d.type || name, d));
+}
+function resetStream(){
+  var old = document.getElementById("stream");
+  if(old && old.parentNode) old.parentNode.removeChild(old);
+  S.logBox = null; S.nodes = 0; S.stick = true;
+}
+
+// --- session view -------------------------------------------------------
+function updateState(state){
+  S.terminal = ["done","failed","stopped","lost"].indexOf(state) >= 0;
+  var sub = $("#subtitle");
+  sub.textContent = (S.kind || "agent") + " · " + (state || "?");
+  $("#stopBtn").hidden = S.terminal;
+  composerEnabled(!S.terminal);
+}
+function composerEnabled(on){
+  $("#msg").disabled = !on;
+  $("#sendBtn").disabled = !on;
+  $("#hint").textContent = on
+    ? "Messages are queued — they land at the agent’s next turn."
+    : "This session has finished. Nothing is listening on its inbox.";
+}
+function renderStatus(st){
+  var v = $("#view");
+  var old = document.getElementById("statbar");
+  if(old) old.parentNode.removeChild(old);
+  var box = el("div", "status"); box.id = "statbar";
+  var bits = [];
+  if(st.iterations) bits.push(st.iterations + " iter");
+  if(st.tool_calls) bits.push(st.tool_calls + " tools");
+  if(st.tokens && st.tokens.total) bits.push(st.tokens.total.toLocaleString() + " tok");
+  if(st.compactions) bits.push(st.compactions + " compactions");
+  if(st.errors) bits.push(st.errors + " errors");
+  bits.push((st.transcript_bytes || 0).toLocaleString() + " B");
+  bits.forEach(function(b){ box.appendChild(el("span", "stat", b)); });
+  v.insertBefore(box, v.firstChild);
+}
+
+function openSession(id){
+  S.view = "session"; S.id = id; S.terminal = false; S.stick = true;
+  $("#back").hidden = false; $("#replayBtn").hidden = false;
+  $("#foot").hidden = false;
+  renderFilters();
+  var fresh = !S.rendered[id];
+  if(fresh){ $("#view").textContent = ""; S.logBox = null; S.nodes = 0; }
+  S.rendered[id] = true;
+
+  api("/api/chat/sessions/" + encodeURIComponent(id)).then(function(d){
+    var rec = d.session || {};
+    S.rec = rec; S.kind = rec.kind || "agent";
+    $("#title").firstChild.nodeValue = clamp(rec.title || id, 60);
+    updateState(rec.state);
+    renderStatus(d.status || {});
+    // A fresh page load has nothing on screen, so replay from 0 to rebuild
+    // the view. A return to a session we already painted (tab backgrounded,
+    // radio dropped) resumes from the stored offset — nothing duplicated.
+    var from = 0;
+    if(!fresh){
+      var stored = parseInt(lsGet(OFF(id), "0"), 10);
+      if(!isNaN(stored) && stored > 0) from = stored;
+    }
+    openStream(from);
+  }).catch(function(e){
+    $("#view").textContent = "";
+    var b = el("div", "empty"); b.appendChild(el("span", "big", "⚠"));
+    b.appendChild(document.createTextNode(e.status === 404 ? "no such session" : e.message));
+    $("#view").appendChild(b);
+  });
+}
+
+// --- composer -----------------------------------------------------------
+var ta = $("#msg");
+function autosize(){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 132) + "px"; }
+ta.addEventListener("input", autosize);
+ta.addEventListener("keydown", function(e){
+  if(e.key === "Enter" && (e.metaKey || e.ctrlKey)){ e.preventDefault(); send(); }
+});
+$("#sendBtn").addEventListener("click", send);
+function send(){
+  var text = ta.value.trim();
+  if(!text || !S.id) return;
+  $("#sendBtn").disabled = true;
+  api("/api/chat/sessions/" + encodeURIComponent(S.id) + "/send",
+      { method: "POST", body: JSON.stringify({ text: text }) })
+    .then(function(d){
+      ta.value = ""; autosize();
+      // Optimistic local echo, explicitly marked PENDING. The agent only
+      // reads its inbox between turns, so "sent" would be a lie while it is
+      // 90 seconds deep in a tool call.
+      var n = head(el("div", "ev e-pending"), "you → agent", null);
+      n.appendChild(el("div", "body", text));
+      n.appendChild(el("div", "queued", (d && d.detail) || "queued — lands at the next turn"));
+      push(n);
+      toast((d && d.detail) || "queued — lands at the next turn");
+    })
+    .catch(function(e){ toast(writeError(e), 3800); })
+    .then(function(){ $("#sendBtn").disabled = S.terminal; },
+          function(){ $("#sendBtn").disabled = S.terminal; });
+}
+$("#stopBtn").addEventListener("click", function(){
+  if(!S.id) return;
+  if(!confirm("Stop this session?")) return;
+  api("/api/chat/sessions/" + encodeURIComponent(S.id) + "/stop", { method: "POST", body: "{}" })
+    .then(function(d){ toast((d && d.detail) || "stop requested", 4200); })
+    .catch(function(e){ toast(writeError(e), 3800); });
+});
+$("#replayBtn").addEventListener("click", function(){
+  if(!S.id) return;
+  lsDel(OFF(S.id)); resetStream(); S.terminal = false; openStream(0); toast("replaying from the start", 1500);
+});
+$("#back").addEventListener("click", function(){ location.hash = "#/"; });
+
+// --- routing ------------------------------------------------------------
+function route(){
+  var h = location.hash.replace(/^#/, "");
+  var m = h.match(/^\/s\/(.+)$/);
+  closeStream();
+  if(S.poll){ clearInterval(S.poll); S.poll = null; }
+  if(m){ openSession(decodeURIComponent(m[1])); return; }
+  S.view = "list"; S.id = null;
+  $("#back").hidden = true; $("#stopBtn").hidden = true; $("#replayBtn").hidden = true;
+  $("#conn").hidden = true; $("#foot").hidden = true;
+  $("#title").firstChild.nodeValue = "beast-chat";
+  $("#subtitle").textContent = "sessions on this rig";
+  renderFilters();
+  loadList();
+  S.poll = setInterval(function(){ if(S.view === "list" && !document.hidden) loadList(); }, 5000);
+}
+window.addEventListener("hashchange", route);
+
+// Backgrounding a phone kills the socket but keeps the DOM. Drop the stream
+// on hide (so we are not the reason the radio stays up) and resume from the
+// stored offset on show — which is the entire point of byte offsets.
+document.addEventListener("visibilitychange", function(){
+  if(document.hidden){ closeStream(); setConn("paused", ""); return; }
+  if(S.view === "session" && S.id && !S.terminal){
+    var stored = parseInt(lsGet(OFF(S.id), "0"), 10);
+    openStream(isNaN(stored) ? 0 : stored);
+  } else if(S.view === "list"){ loadList(); }
+});
+window.addEventListener("pagehide", closeStream);
+
+route();
+})();
+</script>
+</body>
+</html>

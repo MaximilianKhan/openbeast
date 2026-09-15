@@ -22,6 +22,11 @@
 #       beast-gate instead (EDGE_GATE — see docs/BEAST_SLOT.md).
 #   WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD     default empty
 #       Lets configure-webui.sh authenticate after WEBUI_AUTH is enabled.
+#   BEAST_CHAT       (env OPENBEAST_BEAST_CHAT)  default false
+#   CHAT_PORT        (env OPENBEAST_CHAT_PORT)   default 3003
+#   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
+#       beast-chat: the tailnet operator console for the rig's agent and job
+#       sessions (docs/BEAST_CHAT.md). Off by default.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto
 #       llama.cpp build backend: auto | cuda | hip | sycl | cpu. "auto" maps
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
@@ -172,6 +177,28 @@ _EDGE_INFLIGHT="${OPENBEAST_EDGE_MAX_INFLIGHT:-$(_ob_conf_value EDGE_MAX_INFLIGH
 # rather than serving them anonymously (the 2026-07-17 RBAC lesson).
 _EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || true)}"
 [[ -n "$_EDGE_ANON" ]] && export OPENBEAST_EDGE_ALLOW_ANON="$_EDGE_ANON"
+# beast-chat — the operator console for this rig's own sessions
+# (agents/chat_server.py, docs/BEAST_CHAT.md). Opt-in. When true, start.sh
+# runs it on CHAT_PORT bound to loopback, and setup-tailscale.sh --publish-chat
+# maps :8445 at it so a phone on the tailnet can watch and steer agents and
+# jobs. CHAT_OPERATORS is the READ allowlist: a comma-separated list of
+# tailnet logins (the Tailscale-User-Login that `tailscale serve` injects);
+# anything not listed gets 404, never 403 — the beast-gate convention. Left
+# EMPTY the allowlist is not enforced at all: every login on your tailnet can
+# READ every session. That is the single-operator default and it is fine on a
+# tailnet you own outright — set it the moment a device you don't own joins.
+# WRITING (send a message, stop a session, start an agent) additionally needs
+# a chat-scoped device key: ./scripts/clients.sh enroll phone --scope chat.
+BEAST_CHAT="${OPENBEAST_BEAST_CHAT:-$(_ob_conf_value BEAST_CHAT || echo false)}"
+CHAT_PORT="${OPENBEAST_CHAT_PORT:-$(_ob_conf_value CHAT_PORT || echo 3003)}"
+CHAT_OPERATORS="${OPENBEAST_CHAT_OPERATORS:-$(_ob_conf_value CHAT_OPERATORS || true)}"
+export OPENBEAST_BEAST_CHAT="$BEAST_CHAT"
+export OPENBEAST_CHAT_PORT="$CHAT_PORT"
+# Same export discipline as the keys above: only when non-empty, so the chat
+# server can tell "no allowlist configured" from "an allowlist of nobody".
+if [[ -n "$CHAT_OPERATORS" ]]; then
+  export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
+fi
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else
