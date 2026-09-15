@@ -99,6 +99,90 @@ Full text with failure scenarios and suggested fixes:
 - [ ] **low** `agents/chat_ui/console.html:637` — The console's live stream uses `EventSource`, which cannot carry `X-OpenBeast-Device-Key`, so an identity that is *only* a chat-scoped device key gets a permanently dead stream that the UI reports as "reconnecting" forever.
 - [ ] **low** `agents/sessions.py:229` — The pid-identity proof is `/proc/<pid>/stat` field 22, which counts clock ticks since BOOT, and nothing records a boot identity — so the guarantee the docs make specifically for the reboot case ("a recycled pid is never mistaken for a live session") is not provided across a reboot.
 - [ ] **low** `docs/BEAST_CHAT.md:417` — The docs state twice that `/` returns 404 without identity, but the console route is ungated and always returns 200 — and the page it serves republishes the whole write contract that `openapi_url=None` was set to hide.
+## 🔌 CLOSED-NETWORK / AIR-GAP READINESS — reviewed 2026-09-15
+
+Max: "We may have situations where we are only allowed to run openbeast in a
+closed network." 40-agent repo-wide review (8 subsystem scouts + 32 skeptical
+feature rankers): **114 breaks — 14 fail-to-boot, 60 feature-broken, 36
+degraded** — and 12 features kept of 32 ranked. Full text, with per-finding
+failure modes and each ranker's reasoning:
+`scratch/AIRGAP-REVIEW-2026-09-15.md`.
+
+**The verdict in one line: an already-installed rig SERVES fine offline. What
+is broken is installing, updating, rebuilding, and telling the truth about it.**
+
+### Two bugs that bite ON the network too — fix these first, they are not air-gap work
+
+- [ ] **`bootstrap.sh:312` clones llama.cpp unpinned.** A fresh install gets
+      whatever `master` is today, NOT the b10865 every eval row and serve
+      script was validated against. The revision exists nowhere
+      machine-readable — only in prose (`docs/MODELS.md:349`). This is a
+      reproducibility hole independent of air-gap. Fix: `scripts/llamacpp.pin`
+      with `d4389a4dd920d24c9592f1dc3badbd69be23bd09` (b10865).
+- [ ] **`scripts/serve-bootstrap.sh:15` needs a weight nothing acquires.**
+      FAST_BOOT wants `Qwen3-0.6B-Q8_0.gguf`; it is registry-pinned
+      (`weights.registry:36`), conf-exposed and documented — and `bootstrap.sh`
+      never downloads it. `FAST_BOOT=true` on any install where it was not
+      hand-fetched fails the WHOLE stack at `start.sh:415`.
+
+### The four top-tier features
+
+- [ ] **`OFFLINE=true` conf key + egress kill switch** (airgap 9, feasibility
+      8). Nothing can be told "there is no internet", so the stack stalls and
+      then misdiagnoses: **660 s** inside cmake fetching llama.cpp's prebuilt
+      Web UI (`ui-assets.cmake:422` TIMEOUT 300 + :433 TIMEOUT 30, over two
+      candidates), and `update.sh:72-74` swallowing the first `git pull`'s
+      stderr, running a second, and dying with *"local changes in llama.cpp/?"*
+      — minutes of stall ending in the wrong cause, in the script an operator
+      reaches for when confused. Ship the two possibility-changing lines
+      first: a `pip` guard at `bootstrap.sh:350` and
+      `-DLLAMA_USE_PREBUILT_UI=OFF` in `ob_cmake_flags`.
+- [ ] **Offline bundle — build connected, install from USB** (airgap 10,
+      feasibility 7). Four fatal fetches with no local alternative: llama.cpp
+      source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.
+      **Note the trap the ranker caught: a digest-pinned image reference cannot
+      be satisfied by a locally retagged image**, so `docker save`/`load` alone
+      does not work — the compose reference has to change too. Supersedes the
+      existing "Air-gapped bundle (M/L)" line below, which is the getting-bits-
+      IN half and is unusable until the OFFLINE key exists.
+- [ ] **`openbeast-bundle` — a signed offline install/update artifact** (airgap
+      9, feasibility 6). Land the CONSUMER side first, against parts already on
+      disk, before writing any tarball builder.
+- [ ] **Local PKI for the published surfaces** (airgap 8, feasibility 6).
+      HTTPS on 443/8443/8444/8445/8446 is Let's Encrypt via Tailscale's
+      coordination server: a cached cert just **expires** (90 days, renewal
+      impossible offline) and nothing notices — zero occurrences of
+      `tailscale cert` and no expiry check in `doctor.sh`. First step is cheap:
+      an expiry check in the doctor.
+
+### The cheap, high-value ones
+
+- [ ] **Truthful search: unavailable is not empty** (hours).
+      `agents/tools.py:1553` collapses "the network is gone" into "the web has
+      nothing" — and SearXNG already hands us `unresponsive_engines` and
+      `number_of_results` in the same response, which we throw away. A silent
+      empty answer the agent treats as fact is the worst failure mode in the
+      whole review.
+- [ ] **`bootstrap.sh --preflight` lies.** Eleven probes, not one touches the
+      network, so it prints *"Environment looks ready — run ./bootstrap.sh to
+      install"* and exits 0 on a machine that cannot possibly finish.
+- [ ] **`FETCH_ALLOW_HOSTS`** (hours) — an exact `host:port` allowlist so the
+      model's `fetch` can reach a closed-network doc mirror on 10.x or a
+      `kiwix-serve` on loopback. Today `agents/tools.py:1324-1330` refuses every
+      private address and the only escape hatch is the tailnet CGNAT range.
+      Put the check in the single choke point `_resolve_vetted`, not both
+      callers.
+- [ ] **Hash-pinned lockfile + wheelhouse** (hours).
+      `agents/requirements.txt` has version pins but no hashes, so
+      `--require-hashes` is impossible and a local mirror cannot be
+      integrity-verified. `docs/SOC2_READINESS.md:111` already claims we do this.
+- [ ] **`agents/runner.py:560` routes loopback through the proxy.** No
+      `http_client=httpx.Client(trust_env=False)`, so an exported `HTTP_PROXY`
+      — the most common closed-network configuration — sends the agent's own
+      `http://localhost:8080/v1` calls into a dead proxy and every turn fails
+      at the transport layer. **`runner.py` is cache-era-hashed: this one waits
+      for the Tier-3 A/B's five remaining cells.**
+
 ## 🛟 Long GPU work must survive a desktop-layer failure (2026-09-15)
 
 Learned expensively. Waybar leaked to 32.1 GB, segfaulted in
