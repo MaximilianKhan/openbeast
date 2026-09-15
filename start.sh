@@ -44,7 +44,7 @@ _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
   # unrelated process must not count as "running". If /proc/<pid>/cmdline is
   # unreadable (exotic /proc, zombie) fall back to the plain liveness check.
-  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router}" pid cmd
+  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router|chat_server}" pid cmd
   [[ -f "$1" ]] || return 1
   pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
@@ -61,13 +61,14 @@ _pid_pattern() {
     mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
     edge)       echo 'edge\.py' ;;
-    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge' ;;
+    chat)       echo 'chat_server\.py' ;;
+    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge|chat_server' ;;
   esac
 }
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
-  for name in supervisor llama mcpo router edge; do
+  for name in supervisor llama mcpo router edge chat; do
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"
@@ -259,6 +260,9 @@ cleanup() {
   if [[ -n "${EDGE_PID:-}" ]]; then
     kill "$EDGE_PID" 2>/dev/null && echo "beast-gate stopped."
   fi
+  if [[ -n "${CHAT_PID:-}" ]]; then
+    kill "$CHAT_PID" 2>/dev/null && echo "beast-chat console stopped."
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
@@ -272,7 +276,7 @@ cleanup() {
     rm -f "$_pf"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
+        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid" "$RUN_DIR/chat.pid"
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -524,6 +528,41 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
     echo "    ./scripts/clients.sh enroll <device-id>"
+  fi
+fi
+
+# beast-chat (opt-in, BEAST_CHAT=true) — the operator console for this rig's
+# own agent and job sessions (docs/BEAST_CHAT.md). Loopback like the tool
+# server; setup-tailscale.sh --publish-chat is what makes it reachable from a
+# phone. Deliberately NON-FATAL at every step below: the console is an
+# observability surface, and a stack that refuses to boot because its window
+# is cracked is worse than a stack with no window. Contrast the tool server,
+# whose absence means the model has no tools at all.
+if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
+  if [[ ! -f "$SCRIPT_DIR/agents/chat_server.py" ]]; then
+    echo "Warning: BEAST_CHAT=true but agents/chat_server.py is missing — skipping." >&2
+  else
+    echo "Starting beast-chat console on http://localhost:${CHAT_PORT:-3003}..."
+    python3 "$SCRIPT_DIR/agents/chat_server.py" &
+    CHAT_PID=$!
+    echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
+    CHAT_UP=0
+    for _i in $(seq 1 20); do
+      kill -0 "$CHAT_PID" 2>/dev/null || break
+      curl -s -m 2 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" >/dev/null 2>&1 \
+        && { CHAT_UP=1; break; }
+      sleep 1
+    done
+    if [[ $CHAT_UP -eq 1 ]]; then
+      echo "beast-chat ready on http://localhost:${CHAT_PORT:-3003}"
+      if [[ -z "${CHAT_OPERATORS:-}" ]]; then
+        echo "  CHAT_OPERATORS is empty — once published, EVERY tailnet login can"
+        echo "  read every session. Set it in openbeast.conf to pin it to you."
+      fi
+    else
+      echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
+      echo "         Diagnose with: ./scripts/doctor.sh" >&2
+    fi
   fi
 fi
 

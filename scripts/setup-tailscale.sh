@@ -1,8 +1,8 @@
 #!/bin/bash
 # OpenBeast remote access — one-shot Tailscale setup. Idempotent.
 #
-#   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
-#   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
+#   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot] [--publish-chat]
+#   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot | --unpublish-chat
 #
 # What it does:
 #   1. Installs tailscale (pacman) and enables tailscaled
@@ -30,12 +30,21 @@
 # the dashboard extension (./scripts/ext.sh enable dashboard). Undo with
 # --unpublish-slot.
 #
+# --publish-chat publishes beast-chat at :8445 (→ agents/chat_server.py on
+# CHAT_PORT): the operator console for the rig's own agent and job sessions —
+# watch a campaign from a phone, steer an agent, stop one. Requires
+# BEAST_CHAT=true in openbeast.conf. Two-tier auth (docs/BEAST_CHAT.md):
+# READING is your tailnet login against CHAT_OPERATORS; WRITING (send, stop,
+# start an agent) also needs a chat-scoped device key, because starting an
+# agent is remote code execution on the rig. Undo with --unpublish-chat.
+#
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
 
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
+PUBLISH_CHAT=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -48,7 +57,16 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8444 off
       echo "beast-slot status API unpublished from the tailnet (:8444 off)."
       exit 0 ;;
-    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --publish-chat)      PUBLISH_CHAT=1 ;;
+    --unpublish-chat)
+      # No conf needed to unpublish: the mount is keyed by the PUBLISHED port
+      # (8445), not by CHAT_PORT. Keeping this branch conf-free means it still
+      # works on a rig whose openbeast.conf is broken — exactly when you most
+      # want to take a surface down.
+      sudo tailscale serve --https=8445 off
+      echo "beast-chat unpublished from the tailnet (:8445 off)."
+      exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -193,8 +211,54 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "            dashboard (page + /api/status) is tailnet-visible."
   fi
 fi
+if [[ $PUBLISH_CHAT -eq 1 ]]; then
+  # beast-chat (docs/BEAST_CHAT.md). Unlike the slot API this mounts "/" on
+  # purpose: the console is a page plus its own API, and every route under it
+  # enforces the same two-tier auth in-process. There is nothing here to
+  # narrow with --set-path.
+  if [[ "${BEAST_CHAT:-false}" != "true" ]]; then
+    echo "      WARNING: BEAST_CHAT is not true in openbeast.conf — :8445 will"
+    echo "               502 until: set BEAST_CHAT=true && ./stop.sh && ./start.sh"
+  fi
+  sudo tailscale serve --bg --https=8445 "http://127.0.0.1:${CHAT_PORT:-3003}"
+  echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
+  if [[ -z "${CHAT_OPERATORS:-}" ]]; then
+    echo "      NOTE: CHAT_OPERATORS is empty — EVERY login on your tailnet can"
+    echo "            read every session. Set it in openbeast.conf to pin it to you."
+  fi
+  echo "      Writing (send/stop/start) needs a chat-scoped device key:"
+  echo "        ./scripts/clients.sh enroll phone --label \"My phone\" --scope chat"
+fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
+
+# The rig publishes several ports now, and `tailscale serve status` names
+# upstreams, not features. Print the mapping the operator actually reasons
+# about: which OpenBeast surface sits on which tailnet port, and whether it
+# is up right now. Purely informational — never fails the run.
+_serve_now="$(tailscale serve status 2>/dev/null || true)"
+_serve_has() { # _serve_has <port> — is that port currently mounted?
+  # The default :443 entry prints WITHOUT a port token, so it needs its own
+  # pattern; a port-keyed grep alone silently omits the WebUI.
+  if [[ "$1" == "443" ]]; then
+    printf '%s\n' "$_serve_now" | grep -qE '^https://[^ :]+( |$)'
+  else
+    printf '%s\n' "$_serve_now" | grep -qE "^https://[^ ]+:$1( |$)"
+  fi
+}
+echo ""
+echo "      Tailnet serve mounts:"
+printf '        %-6s  %-34s  %s\n' "PORT" "SURFACE" "STATE"
+for _row in \
+  "443|Open WebUI (:3000)" \
+  "8443|inference (llama-server / beast-gate)" \
+  "8444|beast-slot status API (:3002)" \
+  "8445|beast-chat console (:${CHAT_PORT:-3003})" \
+  "8889|SearXNG for thin clients (:8888)"; do
+  _port="${_row%%|*}"; _what="${_row#*|}"
+  if _serve_has "$_port"; then _state="published"; else _state="-"; fi
+  printf '        %-6s  %-34s  %s\n' "$_port" "$_what" "$_state"
+done
 
 # --- 3b. Turn on the WebUI login boundary now that it's tailnet-wide --------
 # Local-only installs run WEBUI_AUTH=false (no login wall). Going remote is
@@ -236,6 +300,14 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
   echo "  beast-slot discovery:  https://$FQDN:8444/api/slot"
   echo "          (read-only model/slots/health JSON — undo with"
   echo "           ./scripts/setup-tailscale.sh --unpublish-slot)"
+fi
+if [[ $PUBLISH_CHAT -eq 1 ]]; then
+  echo ""
+  echo "  beast-chat console:    https://$FQDN:8445"
+  echo "          Open it on the phone and 'Add to Home Screen'. Reading is"
+  echo "          your tailnet login; sending/stopping needs a chat-scoped"
+  echo "          device key (./scripts/clients.sh enroll phone --scope chat)."
+  echo "          Undo with ./scripts/setup-tailscale.sh --unpublish-chat"
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"

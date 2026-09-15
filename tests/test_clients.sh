@@ -132,7 +132,7 @@ else
 fi
 
 # Contract shape.
-MISSING="$(_q '",".join(k for k in ["id","label","key_sha256","enrolled_at","revoked_at","slot","rate_limit_per_min","last_seen"] if k not in dev(0))')"
+MISSING="$(_q '",".join(k for k in ["id","label","key_sha256","enrolled_at","revoked_at","slot","rate_limit_per_min","last_seen","scopes"] if k not in dev(0))')"
 if [[ -z "$MISSING" ]]; then
   pass "device row carries every field of the version-1 contract"
 else
@@ -198,6 +198,141 @@ if "$CLI" show laptop-air --json | python3 -c 'import json,sys; d=json.load(sys.
   pass "show --json parses and is redacted"
 else
   fail "show --json malformed or unredacted"
+fi
+
+# --- 5b. Device scopes (beast-chat write auth, docs/BEAST_CHAT.md) ---
+#
+# A scope is the difference between a device that may WATCH the rig and one
+# that may ACT on it (send a message to a live agent, stop it, start a new
+# one — remote code execution). So the properties under test are: a grant is
+# only ever explicit, absence is never a grant, and revoking one takes no
+# re-enrollment.
+echo ""
+echo "scopes:"
+# A device's scopes as a plain comma-joined string — comparing python reprs
+# through two layers of shell quoting is how this section first went wrong.
+_scopes() { _q '",".join([d for d in devs if d["id"]=="'"$1"'"][0].get("scopes") or [])'; }
+# Devices enrolled before scopes existed have no `scopes` key at all. That row
+# must round-trip AND read as "no scopes" — never as an unknown that some
+# consumer decides to treat generously.
+python3 - "$REG" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["devices"].append({
+    "id": "legacy-box", "label": "pre-scopes device",
+    "key_sha256": "f" * 64, "enrolled_at": "2026-01-01T00:00:00Z",
+    "revoked_at": None, "slot": None, "rate_limit_per_min": None,
+    "last_seen": None,
+})
+json.dump(doc, open(sys.argv[1], "w"), indent=2)
+PY
+if "$CLI" show legacy-box | grep -qE '^[[:space:]]*scopes:[[:space:]]+-[[:space:]]*$'; then
+  pass "a device with no scopes field reports no scopes"
+else
+  fail "a pre-scopes device did not report an empty scope list"
+fi
+if "$CLI" show legacy-box --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d.get("scopes")' 2>/dev/null; then
+  pass "show --json reports no scopes for a pre-scopes device"
+else
+  fail "show --json invented scopes for a pre-scopes device"
+fi
+
+PHONE_OUT="$("$CLI" enroll phone --label "Max's phone" --scope chat)"
+PHONE_KEY="$(printf '%s' "$PHONE_OUT" | grep -Eo '[0-9a-f]{64}' | head -1)"
+if [[ "$(_scopes phone)" == "chat" ]]; then
+  pass "enroll --scope chat persists the scope"
+else
+  fail "enroll --scope did not persist: $(_scopes phone)"
+fi
+# The key discipline must survive the new flag: the plaintext is shown on
+# stdout at enroll time and NOWHERE else, ever again — not in the registry,
+# not in a later `show`, not in a `scope` grant.
+if echo "$PHONE_OUT" | grep -qi "not recoverable" \
+   && ! grep -qF "$PHONE_KEY" "$REG" \
+   && ! "$CLI" show phone | grep -qF "$PHONE_KEY" \
+   && ! "$CLI" scope phone add extra 2>&1 | grep -qF "$PHONE_KEY"; then
+  pass "the plaintext key is printed only at enroll — never by show or scope"
+else
+  fail "a scoped device's key was recoverable after enrollment"
+fi
+"$CLI" scope phone remove extra >/dev/null
+if ! grep -rqF "$PHONE_KEY" "$SANDBOX" 2>/dev/null; then
+  pass "a scoped device's plaintext key is still nowhere on disk"
+else
+  fail "PLAINTEXT KEY LEAKED after enrolling with a scope"
+fi
+if "$CLI" list | grep -q "chat"; then
+  pass "list shows the SCOPES column"
+else
+  fail "list does not show scopes"
+fi
+if "$CLI" enroll multi --scope chat --scope admin >/dev/null \
+   && [[ "$(_scopes multi)" == "chat,admin" ]]; then
+  pass "--scope is repeatable and preserves order"
+else
+  fail "repeated --scope did not accumulate"
+fi
+if ! "$CLI" enroll bad-scope --scope "Chat Admin" >/dev/null 2>&1; then
+  pass "an invalid scope name is refused at enroll"
+else
+  fail "an invalid scope name was accepted"
+fi
+if "$CLI" scope legacy-box add chat >/dev/null \
+   && [[ "$(_scopes legacy-box)" == "chat" ]]; then
+  pass "scope add grants a scope to a device that never had the field"
+else
+  fail "scope add did not grant the scope"
+fi
+if "$CLI" scope legacy-box add chat 2>&1 | grep -q "already has scope" \
+   && [[ "$(_scopes legacy-box)" == "chat" ]]; then
+  pass "granting an existing scope is an idempotent no-op"
+else
+  fail "a repeated scope add duplicated the entry"
+fi
+if "$CLI" scope legacy-box remove chat >/dev/null \
+   && [[ -z "$(_scopes legacy-box)" ]]; then
+  pass "scope remove revokes it"
+else
+  fail "scope remove did not revoke the scope"
+fi
+if "$CLI" scope legacy-box remove chat 2>&1 | grep -q "does not have scope"; then
+  pass "removing an absent scope is an idempotent no-op"
+else
+  fail "removing an absent scope was not reported as a no-op"
+fi
+if ! "$CLI" scope legacy-box grant chat >/dev/null 2>&1 \
+   && ! "$CLI" scope ghost-device add chat >/dev/null 2>&1; then
+  pass "scope rejects a bad action and an unknown device"
+else
+  fail "scope accepted a bad action or an unknown device"
+fi
+# Rotating a scoped device must not silently drop its grants — the key
+# changes, the authorization does not.
+"$CLI" rotate phone >/dev/null
+if [[ "$(_scopes phone)" == "chat" ]]; then
+  pass "rotate preserves a device's scopes"
+else
+  fail "rotate dropped the device's scopes"
+fi
+if "$CLI" rotate phone --scope admin >/dev/null \
+   && [[ "$(_scopes phone)" == "admin" ]]; then
+  pass "rotate --scope REPLACES the list (the only way to say 'these and no others')"
+else
+  fail "rotate --scope did not replace the scope list"
+fi
+# Put the fixtures back so the sections below still see exactly one device.
+"$CLI" remove phone --yes >/dev/null
+"$CLI" remove multi --yes >/dev/null
+"$CLI" remove legacy-box --yes >/dev/null
+if [[ "$(_q 'len(devs)')" == "1" ]]; then
+  pass "scope fixtures cleaned up; the original device is untouched"
+else
+  fail "scope fixtures left $(_q 'len(devs)') devices behind"
+fi
+if [[ "$(_q 'dev(0)["id"]')" == "laptop-air" && -z "$(_scopes laptop-air)" ]]; then
+  pass "an unscoped device stayed unscoped through all of the above"
+else
+  fail "the unscoped device picked up a scope it was never granted"
 fi
 
 # --- 6. Duplicates and rotation ---

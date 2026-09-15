@@ -13,7 +13,8 @@ Tools:
   - fetch: retrieve content from URLs (HTML → text, JSON, plain text)
   - web_search: search the web via local SearXNG instance
 
-Agent management (long-running autonomous agents):
+Agent management (long-running autonomous agents; backed by the durable
+session ledger in agents/sessions.py, so agents outlive this process):
   - start_agent: spawn a background agent with optional context briefing
     (base_url routes its inference to a worker box for multi-box setups)
   - check_agent: monitor progress, view recent activity and results
@@ -187,10 +188,106 @@ def fetch(url: str, max_length: int = 50_000) -> str:
 _RUNNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
 _LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
+# Ceiling on how many ledger records list_agents will render. Each row costs
+# one transcript parse, so this bounds the tool's worst case on a rig with a
+# long history rather than letting it grow with the ledger.
+_LEDGER_LIST_LIMIT = 100
+
 # Must match runner.py's DEFAULT_BASE_URL — when the resolved endpoint equals
 # this, we omit --base-url so local spawns stay byte-identical to before the
 # distributed-agents feature existed.
 _DEFAULT_AGENT_BASE_URL = "http://localhost:8080/v1"
+
+# --- Session ledger (agents/sessions.py) — read-only, lazy, fail-soft ------
+#
+# The ledger is the DURABLE index of every agent and job session on this rig
+# (.run/sessions/<id>.json, docs/BEAST_CHAT.md). It exists because `_agents`
+# below is in-memory: restart this server and every live agent vanished from
+# `list_agents` even though its process was still running.
+#
+# Three rules this module holds itself to:
+#   1. READ ONLY. The record is written by the session itself (runner.py for
+#      agents, scripts/job.sh for jobs), never by the spawner — that is what
+#      makes non-MCP spawn paths (agent.sh, the client CLI) appear too. Two
+#      writers for one id would race, so this one does not write.
+#   2. LAZY. Imported on first use, not at module import, so `import
+#      mcp_server` keeps working on a checkout where the ledger is absent.
+#   3. FAIL SOFT. Every helper here returns an empty/None result instead of
+#      raising. With no ledger, every tool behaves exactly as it did before
+#      the ledger existed — the old in-memory paths are still all there.
+#
+# NOT an excuse to scan agents/logs/: that directory holds thousands of
+# historical transcripts and listing it is a filesystem walk on every call.
+# The ledger is the index; transcripts are opened by path, one at a time.
+
+_SESSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.py")
+_sessions_mod = None
+
+
+def _sessions():
+    """The sessions module, or None when the ledger is unavailable."""
+    global _sessions_mod
+    if _sessions_mod is not None:
+        return _sessions_mod
+    # Stat before importing: cheap, and it lets a rig that gains the module
+    # later pick it up without a restart (an ImportError is not cached here).
+    if not os.path.isfile(_SESSIONS_PATH):
+        return None
+    try:
+        import sessions as _mod  # noqa: PLC0415 — deliberately lazy
+    except Exception:
+        return None
+    _sessions_mod = _mod
+    return _mod
+
+
+def _ledger_reconcile(record: dict) -> dict:
+    """reconcile() a record (running → lost when its pid is gone), best effort."""
+    mod = _sessions()
+    if mod is None or not isinstance(record, dict):
+        return record if isinstance(record, dict) else {}
+    try:
+        out = mod.reconcile(record)
+    except Exception:
+        return record
+    return out if isinstance(out, dict) else record
+
+
+def _ledger_get(session_id: str) -> dict | None:
+    """One reconciled ledger record, or None."""
+    mod = _sessions()
+    if mod is None:
+        return None
+    try:
+        record = mod.get(session_id)
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    return _ledger_reconcile(record)
+
+
+def _ledger_agents(limit: int = _LEDGER_LIST_LIMIT) -> list[dict]:
+    """Reconciled agent-kind ledger records, newest first, bounded."""
+    mod = _sessions()
+    if mod is None:
+        return []
+    try:
+        records = mod.list_sessions(kind="agent", limit=limit)
+    except Exception:
+        return []
+    if not isinstance(records, list):
+        return []
+    return [_ledger_reconcile(r) for r in records if isinstance(r, dict)]
+
+
+def _ledger_transcript(record: dict, session_id: str) -> str:
+    """Transcript path for a ledger record, falling back to the log-dir
+    convention so a record written before `transcript` was set still tails."""
+    path = record.get("transcript") if isinstance(record, dict) else None
+    if isinstance(path, str) and path:
+        return path
+    return os.path.join(_LOG_DIR, f"agent-{session_id}.jsonl")
 
 
 def _resolve_agent_base_url(explicit: str = "") -> str:
@@ -237,6 +334,7 @@ class _AgentRecord:
     max_iter: int
     started_at: datetime
     base_url: str = _DEFAULT_AGENT_BASE_URL
+    detach: bool = False
 
 
 # In-memory registry of agents spawned during this server session.
@@ -244,8 +342,17 @@ _agents: dict[str, _AgentRecord] = {}
 
 
 def _cleanup_agents():
-    """Terminate all running agents on server shutdown."""
+    """Terminate all running agents on server shutdown.
+
+    DETACHED agents are deliberately spared. Tying an agent's life to the tool
+    server's meant a routine restart of :3001 SIGTERMed every long-running
+    agent on the box — fatal for beast-chat, whose whole premise is that a
+    session outlives the process that happened to spawn it. Non-detached
+    spawns keep the old contract exactly: close the server, they die.
+    """
     for record in list(_agents.values()):
+        if record.detach:
+            continue
         if record.process.poll() is None:
             try:
                 os.killpg(os.getpgid(record.pid), signal.SIGTERM)
@@ -323,6 +430,53 @@ def _classify_agent_status(
     if not alive:
         return f"exited (code {returncode})" if returncode is not None else "exited"
     return "running"
+
+
+def _ledger_status(record: dict, events: list[dict]) -> str:
+    """Status string for a ledger record with no live process behind it.
+
+    A terminal TRANSCRIPT event still wins — _classify_agent_status stays the
+    single source of "completed" / "max_iterations_reached", and a server
+    restart after the fact does not make a finished agent's outcome unknown.
+    The ledger only answers for records whose transcript never got a terminal
+    event, which is precisely the case the in-memory map could never describe:
+    the agent crashed, or was SIGKILLed, and nothing wrote a `done` line.
+    """
+    state = str(record.get("state") or "").strip().lower()
+    if state == "running":
+        return _classify_agent_status(alive=True, events=events)
+    classified = _classify_agent_status(alive=False, events=events, orphaned=True)
+    if classified != "unknown (server restarted)":
+        return classified
+    if state == "lost":
+        return "lost (process gone)"
+    if state in ("failed", "stopped"):
+        return state
+    if state == "done":
+        return "completed"
+    return classified
+
+
+def _parse_ts(value) -> datetime | None:
+    """ISO-8601 (with or without a trailing Z) → datetime, else None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.rstrip("Z"))
+    except ValueError:
+        return None
+
+
+def _ledger_task(record: dict, events: list[dict]) -> str:
+    """Best available description of what a ledger session is doing."""
+    title = record.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    for kind in ("start", "spawn"):
+        event = next((e for e in events if e.get("type") == kind), None)
+        if event and event.get("task"):
+            return str(event["task"])
+    return "(no title)"
 
 
 def _agent_status_report(record: _AgentRecord) -> str:
@@ -434,6 +588,114 @@ def _orphaned_log_report(agent_id: str, log_path: str) -> str:
 
     lines.append(f"Log: {log_path}")
     return "\n".join(lines)
+
+
+def _ledger_report(record: dict) -> str:
+    """Report for an agent known only through the session ledger.
+
+    Richer than _orphaned_log_report because the ledger carries what the
+    transcript never did — pid/pgid, workdir, and an authoritative terminal
+    state written by the session itself, so a crashed agent reads as crashed
+    instead of "unknown".
+    """
+    session_id = str(record.get("id") or "?")
+    log_path = _ledger_transcript(record, session_id)
+    events = _parse_agent_log(log_path)
+    status = _ledger_status(record, events)
+
+    iteration_events = [e for e in events if e.get("type") == "iteration"]
+    tool_events = [e for e in events if e.get("type") == "tool_call"]
+    error_events = [e for e in events if e.get("type") == "error"]
+    done_event = next((e for e in events if e.get("type") == "done"), None)
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+
+    lines = [
+        f"Agent: {session_id} (from the session ledger — this server did not spawn it)",
+        f"Status: {status}",
+        f"Task: {_ledger_task(record, events)[:300]}",
+    ]
+    if record.get("workdir"):
+        lines.append(f"Workdir: {record['workdir']}")
+    base_url = meta.get("base_url") or record.get("model")
+    if base_url:
+        lines.append(f"Inference: {base_url}" + (
+            " (REMOTE worker)" if base_url != _DEFAULT_AGENT_BASE_URL else " (local)"))
+    max_iter = meta.get("max_iter")
+    lines.append(f"Iteration: {len(iteration_events)}"
+                 + (f"/{max_iter}" if max_iter else ""))
+    started = _parse_ts(record.get("started_at"))
+    if started:
+        lines.append(f"Runtime: {_format_elapsed(started)}")
+    if record.get("pid"):
+        lines.append(f"PID: {record['pid']}"
+                     + (f" (pgid {record['pgid']})" if record.get("pgid") else ""))
+
+    summary = (done_event or {}).get("summary") or record.get("summary")
+    if summary:
+        lines.append(f"\nSummary: {summary}")
+    if tool_events:
+        lines.append(f"\nRecent activity ({len(tool_events)} total tool calls):")
+        for event in tool_events[-10:]:
+            lines.append(f"  [{event.get('name', '?')}] {str(event.get('args', {}))[:100]}")
+    if error_events:
+        lines.append(f"\nErrors ({len(error_events)}):")
+        for event in error_events[-5:]:
+            lines.append(f"  {str(event.get('error', '?'))[:200]}")
+    lines.append(f"\nLog: {log_path}")
+    return "\n".join(lines)
+
+
+def tail_transcript(log_path: str, from_offset: int = 0,
+                    max_bytes: int = 50_000) -> dict:
+    """Byte-offset read of a transcript: {content, offset, size, reset}.
+
+    The contract a poller needs and the last-N-lines view cannot give: pass
+    back the `offset` you were handed and you get only what was appended
+    since, never the same bytes twice. Cut from the HEAD of the new region
+    (not the tail, the way the legacy view caps) so `offset` advances without
+    skipping anything, and trimmed to the last complete line so JSONL
+    consumers never see half an event.
+
+    `start` is where the read actually began (it differs from `from_offset`
+    only on a reset). `reset` is True when the file is now SHORTER than the
+    offset asked for —
+    a rotated or rewritten transcript — and the read restarted at 0 rather
+    than returning nothing forever.
+    """
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return {"content": "", "start": 0, "offset": 0, "size": 0, "reset": False}
+
+    start = max(0, int(from_offset))
+    reset = False
+    if start > size:
+        start, reset = 0, True
+    if start == size:
+        return {"content": "", "start": start, "offset": size, "size": size,
+                "reset": reset}
+
+    try:
+        with open(log_path, "rb") as fh:
+            fh.seek(start)
+            chunk = fh.read(max_bytes)
+    except OSError as exc:
+        return {"content": f"Error reading log: {exc}", "start": start,
+                "offset": start, "size": size, "reset": reset}
+
+    # Trim to the last newline so the caller always gets whole events. A single
+    # line longer than the cap would otherwise never advance the offset, so in
+    # that one case emit the partial chunk and move on.
+    cut = chunk.rfind(b"\n")
+    if cut != -1:
+        chunk = chunk[:cut + 1]
+    return {
+        "content": chunk.decode("utf-8", errors="replace"),
+        "start": start,
+        "offset": start + len(chunk),
+        "size": size,
+        "reset": reset,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +837,7 @@ def skill(name: str = "") -> str:
 
 @_tool()
 def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "",
-                base_url: str = "") -> str:
+                base_url: str = "", detach: bool = False) -> str:
     """Delegate a task to a background agent that runs it autonomously and in parallel.
 
     MANDATORY USAGE: if the user asks to 'spawn', 'launch', 'kick off', or 'start'
@@ -601,6 +863,13 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
                   files/shell on THIS machine. Leave empty (default) for the
                   local model — empty falls back to the configured
                   OPENBEAST_AGENT_INFERENCE_URL, else http://localhost:8080/v1.
+        detach: Keep the agent alive if THIS tool server restarts. Default
+                false preserves the historical contract (shutting the server
+                down SIGTERMs every agent it spawned). Pass true for work that
+                should outlive a service restart — the beast-chat console
+                starts agents this way (docs/BEAST_CHAT.md). Either way the
+                agent already runs in its own process group, so stop_agent()
+                still terminates it cleanly.
 
     Returns:
         Agent ID for use with check_agent, list_agents, and stop_agent.
@@ -671,6 +940,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         max_iter=max_iter,
         started_at=datetime.now(),
         base_url=resolved_base_url,
+        detach=bool(detach),
     )
     _agents[agent_id] = record
 
@@ -683,7 +953,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         f"Inference: {resolved_base_url}"
         + (" (REMOTE worker — executes locally, thinks remotely)" if remote else " (local)") + "\n"
         f"Max iterations: {max_iter}\n"
-        f"Log: {log_path}\n"
+        + ("Detached: survives a tool-server restart\n" if detach else "")
+        + f"Log: {log_path}\n"
         f"\nUse check_agent('{agent_id}') to monitor progress."
     )
 
@@ -740,14 +1011,27 @@ def check_agent(agent_id: str) -> str:
     """Check the status of a running or completed agent.
 
     Returns iteration count, recent tool calls, last model reasoning, errors,
-    and the final summary if the agent has finished.
+    and the final summary if the agent has finished. Works for agents this
+    server never spawned (another spawn path, or a previous server process) —
+    the session ledger is consulted first.
 
     Args:
         agent_id: The ID returned by start_agent.
     """
+    # Ledger first, in-memory second, transcript last. Where BOTH the ledger
+    # and the in-memory map know this agent, the in-memory report wins: it is
+    # a strict superset (a live poll of the actual child process, its exit
+    # code, its resolved inference endpoint), and the ledger would only tell
+    # us what the live process already proves.
+    ledger_record = _ledger_get(agent_id)
     record = _agents.get(agent_id)
     if record:
-        return _agent_status_report(record)
+        report = _agent_status_report(record)
+        if ledger_record and ledger_record.get("state"):
+            report += f"\nSession: {ledger_record['state']} (ledger)"
+        return report
+    if ledger_record:
+        return _ledger_report(ledger_record)
 
     # Fallback: check for orphaned log from a previous server session
     candidate = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
@@ -759,28 +1043,58 @@ def check_agent(agent_id: str) -> str:
 
 @_tool()
 def list_agents() -> str:
-    """List all agents spawned during this server session with their current status."""
-    if not _agents:
-        return "No agents tracked in this session."
+    """List every agent known to this rig with its current status.
 
-    lines = [f"Agents ({len(_agents)}):"]
-    lines.append(f"{'ID':<36}  {'STATUS':<22}  {'ITER':>6}  {'RUNTIME':>9}  TASK")
-    lines.append("-" * 110)
+    Reads the durable session ledger FIRST and this server's in-memory map
+    second, merged by id — so agents spawned by another process, or by a
+    previous life of this one, are listed rather than silently missing.
+    """
+    # id → row, insertion-ordered. Ledger rows land first (newest first, the
+    # order list_sessions returns), then in-memory rows OVERWRITE the matching
+    # ledger row in place: a live process is the better witness of its own
+    # status, and dict assignment keeps the merged row where the ledger put it.
+    rows: dict[str, tuple] = {}
+
+    for ledger_record in _ledger_agents():
+        session_id = str(ledger_record.get("id") or "")
+        if not session_id:
+            continue
+        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id))
+        meta = ledger_record.get("meta") if isinstance(ledger_record.get("meta"), dict) else {}
+        started = _parse_ts(ledger_record.get("started_at"))
+        rows[session_id] = (
+            _ledger_status(ledger_record, events),
+            sum(1 for e in events if e.get("type") == "iteration"),
+            meta.get("max_iter") or "-",
+            _format_elapsed(started) if started else "-",
+            _ledger_task(ledger_record, events)[:50].replace("\n", " "),
+        )
 
     # Snapshot: MCPServer (mcp 2.x) serves tools on worker threads, so a concurrent
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
         events = _parse_agent_log(record.log_path)
-        iters = sum(1 for e in events if e.get("type") == "iteration")
-        status = _classify_agent_status(alive, events, record.process.returncode)
-
-        elapsed = _format_elapsed(record.started_at)
-        task_preview = record.task[:50].replace("\n", " ")
-
-        lines.append(
-            f"{agent_id:<36}  {status:<22}  {iters:>4}/{record.max_iter:<4}  {elapsed:>9}  {task_preview}"
+        rows[agent_id] = (
+            _classify_agent_status(alive, events, record.process.returncode),
+            sum(1 for e in events if e.get("type") == "iteration"),
+            record.max_iter,
+            _format_elapsed(record.started_at),
+            record.task[:50].replace("\n", " "),
         )
+
+    if not rows:
+        return "No agents tracked in this session."
+
+    lines = [f"Agents ({len(rows)}):"]
+    lines.append(f"{'ID':<36}  {'STATUS':<22}  {'ITER':>6}  {'RUNTIME':>9}  TASK")
+    lines.append("-" * 110)
+    for agent_id, (status, iters, max_iter, elapsed, task_preview) in rows.items():
+        lines.append(
+            f"{agent_id:<36}  {status:<22}  {iters:>4}/{str(max_iter):<4}  {elapsed:>9}  {task_preview}"
+        )
+    if len(rows) >= _LEDGER_LIST_LIMIT:
+        lines.append(f"(capped at the {_LEDGER_LIST_LIMIT} most recent ledger sessions)")
 
     return "\n".join(lines)
 
@@ -824,22 +1138,49 @@ def stop_agent(agent_id: str) -> str:
 
 
 @_tool()
-def tail_agent(agent_id: str, lines: int = 30) -> str:
+def tail_agent(agent_id: str, lines: int = 30, from_offset: int = 0) -> str:
     """Stream the raw tail of an agent's log — recent events in JSONL format.
 
     More detailed than check_agent: returns full tool call results, complete model
     output, and raw event data. Useful for debugging or understanding exactly what
     an agent is doing.
 
+    Two modes:
+      from_offset = 0 (default) — the last `lines` events, as always.
+      from_offset ≠ 0           — FOLLOW mode: only the bytes appended since
+                                  that offset. The reply's first line ends
+                                  `next from_offset=N`; pass N back on the next
+                                  call and you never re-read the same bytes.
+                                  Use -1 to follow from the start of the file.
+
     Args:
         agent_id: The ID returned by start_agent.
         lines: Number of recent log events to return (default 30).
+        from_offset: Byte offset to resume from; 0 = last-N-lines view,
+                     -1 = follow from the beginning of the transcript.
     """
     record = _agents.get(agent_id)
-    log_path = record.log_path if record else os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
+    if record:
+        log_path = record.log_path
+    else:
+        # Not ours — the ledger knows where this session's transcript lives
+        # (a client-spawned or pre-restart agent need not sit in agents/logs/).
+        ledger_record = _ledger_get(agent_id)
+        log_path = (_ledger_transcript(ledger_record, agent_id) if ledger_record
+                    else os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl"))
 
     if not os.path.exists(log_path):
         return f"Error: no log file for agent '{agent_id}'"
+
+    if from_offset != 0:
+        chunk = tail_transcript(log_path, max(0, from_offset))
+        header = (f"Agent {agent_id} — bytes {chunk['start']}-{chunk['offset']} "
+                  f"of {chunk['size']}; next from_offset={chunk['offset']}")
+        if chunk["reset"]:
+            header += " (transcript shorter than the requested offset — restarted at 0)"
+        if not chunk["content"]:
+            return header + "\n\n(no new events)"
+        return header + "\n\n" + chunk["content"]
 
     try:
         with open(log_path, "r") as f:

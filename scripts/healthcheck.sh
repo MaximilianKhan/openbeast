@@ -190,6 +190,40 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   fi
 fi
 
+# beast-chat console (opt-in) — the surface a phone reaches the rig's own
+# sessions through. Restart is safe to automate: it holds no model state and
+# no client connections worth preserving (an SSE tail reattaches by offset,
+# which is the whole point of the offset cursor).
+if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
+  if ! check "beast-chat console" \
+       "http://${HEALTH_HOST:-127.0.0.1}:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
+    if $RESTART; then
+      echo "       → restarting beast-chat console..."
+      pkill -f "$REPO_DIR/agents/chat_server.py" 2>/dev/null || true
+      sleep 1
+      python3 "$REPO_DIR/agents/chat_server.py" >/dev/null 2>&1 &
+      CHAT_NEW_PID=$!
+      # Record the pid immediately, same reasoning as the llama/mcpo paths:
+      # a slow-but-alive start must not leave a stale pid on record.
+      mkdir -p "$REPO_DIR/.run"
+      echo "$CHAT_NEW_PID" > "$REPO_DIR/.run/chat.pid"
+      CHAT_OK=0
+      for _i in $(seq 1 15); do
+        if curl -s --max-time 2 "http://${HEALTH_HOST:-127.0.0.1}:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
+          CHAT_OK=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ $CHAT_OK -eq 1 ]]; then
+        echo "       → restarted (pid $CHAT_NEW_PID)"
+      else
+        echo "       → restart FAILED: beast-chat not serving after 15s"
+      fi
+    fi
+  fi
+fi
+
 # beast-slot status API (dashboard extension) — only when enabled in conf.
 if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
   check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true

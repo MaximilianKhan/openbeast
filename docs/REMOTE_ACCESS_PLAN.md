@@ -26,6 +26,18 @@ boundary; `LLAMA_API_KEY` stays wired but off).
 >    question #3 below ("should tooling on other machines get API-key auth
 >    from day one?"): yes, per device, opt-in.
 >
+> 3. **(2026-09-14) A third published surface, and it accepts WRITES.**
+>    `--publish-chat` maps `:8445` at **beast-chat** — the operator console
+>    for the rig's own agent and job sessions (watch a campaign from a phone,
+>    steer an agent, stop one, start one). This doc's premise below is that
+>    remote access means *consuming* inference; beast-chat is remote access to
+>    the rig's **work**, and `POST /api/chat/sessions` starts an agent, which
+>    is remote code execution. So the "tailnet device identity is the
+>    boundary" decision recorded above is no longer the whole answer for every
+>    port: reading beast-chat is tailnet login (`CHAT_OPERATORS`), but writing
+>    needs an enrolled device key carrying the `chat` scope. See
+>    **[BEAST_CHAT.md](BEAST_CHAT.md)**.
+>
 > Also stale below: the "where we are today" table predates both the loopback
 > rebind and the replacement of MCPO by the identity tool server.
 
