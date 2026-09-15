@@ -343,14 +343,18 @@ if grep -q -- "--config" "$STUB_ARGV"; then
 else
   fail "curl was not given a --config file: $(cat "$STUB_ARGV")"
 fi
-# A read must not carry the write credential at all.
+# A read DOES carry the token — it is our identity, not just a write
+# credential: the server refuses anonymous callers on every route, so a GET
+# that sent nothing would be indistinguishable from a stranger and `list`
+# would report an empty gallery on a rig full of pages. What must still hold
+# is that it travels through --config and never through argv.
 : > "$STUB_ARGV"
 STUB_EXIT=0 STUB_CODE=200 STUB_RESPONSE='{"artifacts":[]}' \
   PATH="$STUBDIR:$PATH" "$CLI" list >/dev/null 2>&1 || true
-if ! grep -q -- "--config" "$STUB_ARGV" && ! grep -q "$TESTTOKEN" "$STUB_ARGV"; then
-  pass "a read-only call sends no locality token at all"
+if grep -q -- "--config" "$STUB_ARGV" && ! grep -q "$TESTTOKEN" "$STUB_ARGV"; then
+  pass "a read identifies itself through --config, never through argv"
 else
-  fail "list still carries the write credential: $(cat "$STUB_ARGV")"
+  fail "read did not use --config, or leaked the token into argv: $(cat "$STUB_ARGV")"
 fi
 unset STUB_PS
 rm -f "$SANDBOX/.run/artifact-local.token"
