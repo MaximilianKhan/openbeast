@@ -174,6 +174,20 @@ elif CMD == "stopinfo":
     print("%s %s %s" % (record.get("state") or "unknown",
                         record.get("pid") or 0, record.get("pgid") or 0))
 
+elif CMD == "rawstate":
+    # The state EXACTLY as it sits on disk, with NO reconciliation.
+    # Deliberately not sessions.get(): that accessor reconciles first and
+    # PERSISTS `lost` for a session whose process is gone, so a caller that
+    # has just killed the process can never read anything else back. That is
+    # what made `stop`'s operator-stop finalize dead code — an operator stop
+    # was recorded as a crash. Unreadable/missing record -> "unknown".
+    try:
+        with open(sessions.record_path(ARGV[0]), "r") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        raw = {}
+    print((raw.get("state") if isinstance(raw, dict) else None) or "unknown")
+
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
 PY
@@ -186,6 +200,21 @@ _pgid_of() {
   out="$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ')" || out=""
   [[ "$out" =~ ^[0-9]+$ ]] || out="0"
   printf '%s\n' "$out"
+}
+
+# Direct liveness probe: true when <pid> exists AND is not a zombie. `ps` is
+# what makes this portable (the ledger reads /proc; job.sh also runs on the
+# macOS client box). A reaped-but-unwaited child still owns its pid, and
+# treating that corpse as alive would suppress the terminal state a caller
+# needs to write.
+_pid_alive() { # _pid_alive <pid>
+  local st re='^[0-9]+$'
+  [[ "${1:-}" =~ $re ]] || return 1
+  [[ "$1" -gt 1 ]] || return 1
+  st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" || return 1
+  [[ -n "$st" ]] || return 1
+  case "$st" in Z*) return 1 ;; esac
+  return 0
 }
 
 _int_or_die() { # _int_or_die <value> <flag> <min>
@@ -408,6 +437,11 @@ case "$cmd" in
       echo "Sent SIGTERM to process group $target."
     fi
 
+    # Wait for the supervisor to write its OWN terminal state — the polite
+    # path, and the only one that can report the job's real exit. This read
+    # goes through the reconciling accessor on purpose: it is also how a
+    # supervisor that died under our signal without writing shows up (as
+    # `lost`), which the branches below correct.
     waited=0
     while [[ $waited -lt $timeout ]]; do
       info="$(OB_CMD=stopinfo _ledger_op "$session_id")"
@@ -426,14 +460,32 @@ case "$cmd" in
       fi
       sleep 1
       # A SIGKILLed supervisor never got to write its own terminal state, so
-      # write it here. (reconcile() would eventually call it 'lost', which is
-      # for crashes — an operator stop is not a crash.)
-      info="$(OB_CMD=stopinfo _ledger_op "$session_id")"
-      state="$(printf '%s\n' "$info" | awk '{print $1}')"
-      if [[ "$state" == "running" ]]; then
-        OB_CMD=finalize _ledger_op "$session_id" stopped "force-killed by operator"
-        state="stopped"
+      # write it here — an operator stop is not a crash.
+      #
+      # Liveness is probed DIRECTLY (`_pid_alive`, i.e. `ps`), and the record
+      # is read RAW. Reading it back through `stopinfo` was the bug: that
+      # accessor reconciles first and PERSISTS `lost` for exactly the process
+      # we have just killed, so the guard below could never see anything but
+      # `lost` and this finalize was dead code. The job then ended as `lost`,
+      # "process gone without a terminal event", when an operator had
+      # deliberately stopped it.
+      state="$(OB_CMD=rawstate _ledger_op "$session_id")"
+      if _pid_alive "$pid"; then
+        echo "WARNING: PID $pid survived SIGKILL (uninterruptible sleep?) —" >&2
+        echo "         leaving the record at '$state'; check it by hand." >&2
+      else
+        case "$state" in
+          running|lost|unknown)
+            OB_CMD=finalize _ledger_op "$session_id" stopped "force-killed by operator"
+            state="stopped"
+            ;;
+        esac
       fi
+    elif [[ "$state" == "lost" ]]; then
+      # SIGTERM reached the group and the supervisor went away without a
+      # terminal event. Same correction, same reason: the operator did this.
+      OB_CMD=finalize _ledger_op "$session_id" stopped "stopped by operator"
+      state="stopped"
     fi
     echo "Job '$session_id' is now '$state'."
     ;;

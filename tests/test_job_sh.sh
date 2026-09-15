@@ -300,6 +300,56 @@ else
   fail "a second stop did not report the job as already stopped"
 fi
 
+# --- 7b. stop, when the job IGNORES the polite signal ---
+echo ""
+echo "stop (SIGTERM ignored):"
+# The section above stops a job that dies on SIGTERM, so the escalation path
+# never ran. `trap "" TERM` sets the disposition to SIG_IGN, which fork+exec
+# INHERITS: the fixture's shell and its sleep both ignore the polite signal,
+# the way a process wedged in an uninterruptible syscall does. The operator
+# then force-kills the group — including the supervisor, before it can write
+# its own terminal state — and the record must still say a person did this.
+# Reading the state back through the reconciling accessor at that moment
+# always answered `lost`, which made the `stopped` finalize dead code.
+"$CLI" run --title "stubborn job" -- bash -c 'trap "" TERM; sleep 300 & wait' >/dev/null 2>&1
+STUB_ID="$(_latest)"
+sleep 1
+STUB_PG="$(_q "$STUB_ID" 'rec["pgid"]')"
+STOP_OUT2="$("$CLI" stop "$STUB_ID" --timeout 2 2>&1)"
+if echo "$STOP_OUT2" | grep -q "escalating to SIGKILL"; then
+  pass "the polite signal was ignored, so stop escalated (the path under test)"
+else
+  fail "stop never escalated — the fixture died on SIGTERM: $STOP_OUT2"
+fi
+STUB_STATE="$(_q "$STUB_ID" 'rec["state"]')"
+if [[ "$STUB_STATE" == "stopped" ]]; then
+  pass "a force-killed job records 'stopped' — an operator stop is not a crash"
+else
+  fail "force-kill gave state '$STUB_STATE', want 'stopped': $STOP_OUT2"
+fi
+if [[ "$STUB_STATE" != "lost" ]]; then
+  pass "the record is NOT 'lost' (that state is for a process that vanished)"
+else
+  fail "the record says 'lost': $(_q "$STUB_ID" 'repr(rec.get("summary"))')"
+fi
+if [[ "$(_q "$STUB_ID" 'rec.get("summary") or ""')" == *operator* ]]; then
+  pass "the summary names the operator, not a vanished process"
+else
+  fail "summary is $(_q "$STUB_ID" 'repr(rec.get("summary"))')"
+fi
+if echo "$STOP_OUT2" | grep -q "is now 'stopped'"; then
+  pass "stop reports the state it actually recorded"
+else
+  fail "stop reported something else: $STOP_OUT2"
+fi
+sleep 1
+STUB_AFTER="$(ps -eo pgid= -o pid= | awk -v g="$STUB_PG" '$1==g' | wc -l | tr -d ' ')"
+if [[ "$STUB_AFTER" -eq 0 ]]; then
+  pass "the stubborn group is gone after the escalation"
+else
+  fail "$STUB_AFTER process(es) survived the SIGKILL escalation"
+fi
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"

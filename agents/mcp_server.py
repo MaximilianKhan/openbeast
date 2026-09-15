@@ -645,9 +645,17 @@ def _ledger_report(record: dict) -> str:
     return "\n".join(lines)
 
 
+#: Hard ceiling on how far `tail_transcript` will grow a read while hunting
+#: for the end of one line. Generous on purpose — an agent that writes a big
+#: file logs the whole tool call as a single JSONL event — but finite, because
+#: the alternative to a ceiling is reading an arbitrarily large file into RAM.
+_TAIL_MAX_LINE_BYTES = 4_000_000
+
+
 def tail_transcript(log_path: str, from_offset: int = 0,
-                    max_bytes: int = 50_000) -> dict:
-    """Byte-offset read of a transcript: {content, offset, size, reset}.
+                    max_bytes: int = 50_000,
+                    max_line_bytes: int = _TAIL_MAX_LINE_BYTES) -> dict:
+    """Byte-offset read of a transcript: {content, offset, size, reset, long_line}.
 
     The contract a poller needs and the last-N-lines view cannot give: pass
     back the `offset` you were handed and you get only what was appended
@@ -655,6 +663,19 @@ def tail_transcript(log_path: str, from_offset: int = 0,
     (not the tail, the way the legacy view caps) so `offset` advances without
     skipping anything, and trimmed to the last complete line so JSONL
     consumers never see half an event.
+
+    A line longer than `max_bytes` is NEVER split. The read grows (up to
+    `max_line_bytes`) until the terminator turns up; only if the line is
+    longer than that ceiling does the call give up, and then it says so with
+    `long_line: True` and leaves `offset` where it was. Splitting was the old
+    behaviour and it was wrong twice over: the caller got an unparseable half
+    event, and the remainder was served on the next call as though it were a
+    fresh one. An ordinary large file-write tool call or a long assistant
+    message clears 50 KB easily.
+
+    An unterminated line at EOF (the writer is mid-append) is likewise not
+    emitted: content is empty, `offset` does not move, and the bytes arrive
+    whole once the newline lands.
 
     `start` is where the read actually began (it differs from `from_offset`
     only on a reset). `reset` is True when the file is now SHORTER than the
@@ -665,7 +686,8 @@ def tail_transcript(log_path: str, from_offset: int = 0,
     try:
         size = os.path.getsize(log_path)
     except OSError:
-        return {"content": "", "start": 0, "offset": 0, "size": 0, "reset": False}
+        return {"content": "", "start": 0, "offset": 0, "size": 0,
+                "reset": False, "long_line": False}
 
     start = max(0, int(from_offset))
     reset = False
@@ -673,28 +695,42 @@ def tail_transcript(log_path: str, from_offset: int = 0,
         start, reset = 0, True
     if start == size:
         return {"content": "", "start": start, "offset": size, "size": size,
-                "reset": reset}
+                "reset": reset, "long_line": False}
 
+    ceiling = max(int(max_line_bytes), int(max_bytes))
     try:
         with open(log_path, "rb") as fh:
-            fh.seek(start)
-            chunk = fh.read(max_bytes)
+            want = max(int(max_bytes), 1)
+            while True:
+                fh.seek(start)
+                chunk = fh.read(want)
+                if b"\n" in chunk:
+                    break
+                if start + len(chunk) >= size:
+                    break                    # EOF: the line is still being written
+                if want >= ceiling:
+                    break                    # one line longer than we will ever read
+                want = min(want * 4, ceiling)
     except OSError as exc:
         return {"content": f"Error reading log: {exc}", "start": start,
-                "offset": start, "size": size, "reset": reset}
+                "offset": start, "size": size, "reset": reset,
+                "long_line": False}
 
-    # Trim to the last newline so the caller always gets whole events. A single
-    # line longer than the cap would otherwise never advance the offset, so in
-    # that one case emit the partial chunk and move on.
     cut = chunk.rfind(b"\n")
-    if cut != -1:
-        chunk = chunk[:cut + 1]
+    if cut == -1:
+        # No terminator anywhere in the window. Return NOTHING and hold the
+        # offset: a partial line is not an event.
+        return {"content": "", "start": start, "offset": start, "size": size,
+                "reset": reset,
+                "long_line": bool(start + len(chunk) < size)}
+    chunk = chunk[:cut + 1]
     return {
         "content": chunk.decode("utf-8", errors="replace"),
         "start": start,
         "offset": start + len(chunk),
         "size": size,
         "reset": reset,
+        "long_line": False,
     }
 
 
@@ -1178,7 +1214,14 @@ def tail_agent(agent_id: str, lines: int = 30, from_offset: int = 0) -> str:
                   f"of {chunk['size']}; next from_offset={chunk['offset']}")
         if chunk["reset"]:
             header += " (transcript shorter than the requested offset — restarted at 0)"
+        if chunk.get("long_line"):
+            # Never hand back half of it: say what is blocking and where.
+            return (header + "\n\n(the event at byte "
+                    f"{chunk['start']} is longer than this tool will read in one "
+                    "piece — open the transcript directly: " + log_path + ")")
         if not chunk["content"]:
+            if chunk["offset"] < chunk["size"]:
+                return header + "\n\n(no new events — the last line is still being written)"
             return header + "\n\n(no new events)"
         return header + "\n\n" + chunk["content"]
 
