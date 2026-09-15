@@ -73,10 +73,35 @@ another's private page, a template injection where a page's *title* deleted
 the viewer's sandbox attribute, and an unauthenticated 50 MB request that
 buffered in memory before any auth check.
 
-Every one is closed, and every one has a regression test that fails without
-its fix. Two tests that existed before the review were rewritten rather than
-kept: one asserted the absence of something that was never created, and one
-tested the case that already worked. A fourth agent then attacked the fixes.
+Then we attacked the fixes, and that is the part worth reporting honestly:
+
+| Round | Findings | Introduced by the previous fix |
+|---|---|---|
+| Hostile review | 12 | — |
+| Verification | 11 | 6 |
+| Verification | 9 | most |
+
+Fixing turned out to be about as defect-prone as building. Two of those
+second-round findings were security holes created by the first round's
+repairs: an identity alias added to keep older pages reachable became a
+credential a stranger could present, and a fallback that was supposed to make
+an unattributable page recoverable instead handed it to the rig's operator,
+where a second chat account could enumerate and overwrite it. Four tests
+written along the way were **vacuous** — one asserted a value equals the same
+expression the code evaluates, so it could never fail — and each vacuous test
+was sitting next to a live defect.
+
+The third round therefore preferred **deleting** mechanisms to guarding them.
+The alias is gone rather than fenced. Publishing no longer deletes any version
+directory it did not create in that call, which is a stronger guarantee than
+sweeping carefully. Every fix carries a regression test that fails without it,
+verified by reverting each one individually.
+
+We are reporting this rather than the tidier version because the tidier
+version would suggest a feature that was got right the first time, and the
+useful information for anyone running this on their own machine is that a
+publish-to-a-URL feature layered onto a system with two identity namespaces
+took three rounds to settle.
 
 The complete posture, the authoring rules, and what is deliberately **not** in
 v1 (no public-internet sharing, no per-artifact origins, no browser-side
