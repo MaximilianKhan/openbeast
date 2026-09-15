@@ -2,7 +2,6 @@
 """Generate JSON for the 9 medium variant tasks."""
 import json
 import os
-import sys
 import importlib.util
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))

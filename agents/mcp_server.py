@@ -1440,8 +1440,14 @@ def publish_artifact(path: str, title: str = "", description: str = "",
          version, UMD build); external stylesheets ONLY from
          https://fonts.googleapis.com. Every other host is blocked silently.
       3. Embed images, fonts and any other asset as data: URIs.
-      4. fetch(), XMLHttpRequest and WebSocket are blocked — the page cannot
-         call home, so compute from data you write into the file itself.
+      4. fetch(), XMLHttpRequest and WebSocket are blocked, and so is every
+         subresource from a host not listed above — so compute from data you
+         write into the file itself rather than loading it at runtime. (This
+         is not a claim that the page cannot transmit at all: no CSP
+         directive governs a document navigating ITSELF, so a raw page opened
+         as a top-level document can still reach an external URL by setting
+         location or opening a popup. That is why the page is treated as
+         hostile and boxed in an opaque origin, not trusted.)
       5. localStorage THROWS in the sandbox. Wrap every read and write in
          try/catch and render correctly when there is no stored value.
       6. Support both themes: define colors as CSS custom properties on
@@ -1518,6 +1524,15 @@ def list_artifacts(limit: int = 25) -> str:
     Args:
         limit: Maximum number of artifacts to list (default 25).
     """
+    # [28] Same guard, same reason as publish_artifact above: the STORE is
+    # flag-independent, so on a rig where BEAST_ARTIFACT was once on and is
+    # now off, the rows are still on disk and this tool handed the model
+    # titles and :8446 URLs for a viewer that is not running. The model then
+    # answers with a link that connection-fails. The header comment for both
+    # tools already states the intent — check the flag here rather than let
+    # the user discover the service is off by failing to connect.
+    if not _artifact_enabled():
+        return _ARTIFACT_OFF
     try:
         import artifact as _artifact  # lazy: see the note above
     except Exception as e:

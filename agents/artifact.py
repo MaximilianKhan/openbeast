@@ -116,7 +116,11 @@ _RESERVED_IDS = frozenset({"index.jsonl", "health"})
 # segments, no control characters.
 # Leading "_" is fine (_app.js); a leading "." is not — no dotfiles, and ".."
 # can never form.
-_SEG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+# `\Z`, not `$`: Python's `$` also matches BEFORE a single trailing newline,
+# so `_SEG_RE.match("dir\n")` was True and a published path could carry one
+# raw newline — an on-disk directory named "dir\n" — which made the "no
+# control characters" rule above a comment rather than a check. (Review [23].)
+_SEG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\Z")
 
 # Types we bill against the (larger) text cap rather than the binary one.
 _TEXT_TYPES = {
@@ -681,6 +685,21 @@ def publish(html, *, title=None, description=None, favicon=None,
             raise ArtifactError(
                 f"{p} is {len(data)} bytes, over the {cap} byte {kind} cap")
         payload[p] = data
+    # [5] Two paths where one is a "/"-prefix of the other ("a" + "a/b") are
+    # each individually valid and are not duplicates, but on disk "a" is
+    # written as a FILE and then os.makedirs(".../files/a") re-raises
+    # FileExistsError (exist_ok only forgives an existing DIRECTORY). That
+    # escaped publish() as a bare OSError, so a caller who handed in colliding
+    # paths got a 500 where the contract promises a 400. Reject it here, in the
+    # validation pass, before any directory exists.
+    for p in payload:
+        parts = p.split("/")
+        for i in range(1, len(parts)):
+            anc = "/".join(parts[:i])
+            if anc in payload:
+                raise ArtifactError(
+                    f"file path {p!r} collides with file {anc!r}: one cannot be "
+                    f"both a file and a directory")
     if len(payload) > CAPS["files"]:
         raise ArtifactError(
             f"{len(payload)} supporting files, over the "
@@ -771,7 +790,15 @@ def publish(html, *, title=None, description=None, favicon=None,
         n = max(_resolvable_versions(aid, meta) + _disk_versions(aid) or [0]) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
         try:
-            os.makedirs(vdir, mode=0o700, exist_ok=False)
+            # [6] os.makedirs recurses WITHOUT mode, so `mode=` reaches only the
+            # leaf: one deep call left <root>/<id> at 0755 while vN got 0700,
+            # and the header's "0700 all the way down" was false. Create the
+            # parent explicitly, then the version dir exclusively (os.mkdir
+            # raises FileExistsError — an OSError — so D14's exclusive-create
+            # semantics and the handler below are both preserved).
+            os.makedirs(_artifact_dir(aid), mode=0o700, exist_ok=True)
+            os.chmod(_artifact_dir(aid), 0o700)
+            os.mkdir(vdir, 0o700)
         except OSError as e:
             # R7: every failure here is an ArtifactError the caller turns into
             # a 4xx. A reserved id used to reach this line as a bare
@@ -783,7 +810,10 @@ def publish(html, *, title=None, description=None, favicon=None,
             _write_bytes(os.path.join(vdir, "index.html"), page)
             for p, data in sorted(payload.items()):
                 dest = os.path.join(vdir, "files", *p.split("/"))
-                os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+                # [6] One level at a time, each at 0700 — a single deep
+                # makedirs would leave "files" and every intermediate
+                # subdirectory at 0777 & ~umask.
+                _mkdir_chain_0700(vdir, ["files"] + p.split("/")[:-1])
                 _write_bytes(dest, data)
         except BaseException:
             shutil.rmtree(vdir, ignore_errors=True)
@@ -824,6 +854,31 @@ def publish(html, *, title=None, description=None, favicon=None,
                  "owner": meta.get("owner"), "bytes": total, "sha256": sha})
     return {"id": aid, "version": n, "url": artifact_url(aid),
             "title": meta.get("title"), "bytes": total}
+
+
+def _mkdir_chain_0700(base: str, parts: list) -> None:
+    """Create base/parts/... one component at a time, each mode 0700.
+
+    os.makedirs(mode=) only applies the mode to the LEAF (CPython recurses
+    without it), so a deep call leaves every intermediate directory at
+    0777 & ~umask. Review [6].
+    """
+    cur = base
+    for part in parts:
+        cur = os.path.join(cur, part)
+        try:
+            os.mkdir(cur, 0o700)
+        except FileExistsError:
+            pass
+        else:
+            continue
+        # Pre-existing (a second file under the same subdirectory): tighten it
+        # if it is ours to tighten, but never follow a symlink out of the tree.
+        if os.path.isdir(cur) and not os.path.islink(cur):
+            try:
+                os.chmod(cur, 0o700)
+            except OSError:
+                pass
 
 
 def _write_bytes(path: str, data: bytes) -> None:
@@ -1035,8 +1090,23 @@ def remove(artifact_id, *, owner=None) -> bool:
     real = os.path.realpath(d)
     if not real.startswith(root + os.sep):
         raise ArtifactError(f"refusing to remove outside the store: {aid}")
+    # [18] The cheap existence test belongs ABOVE the lock: taking it first
+    # meant a DELETE of an id that never existed permanently added an
+    # _ID_LOCKS entry and created a zero-byte <root>/.locks/<id>.lock. The
+    # in-lock check below stays as the race-safe one.
+    if not os.path.isdir(real):
+        return False
     with _artifact_lock(aid):
-        meta = _read_meta(aid) if os.path.isdir(real) else None
+        # [32] An unparseable meta.json used to raise out of remove() as a 400,
+        # while every READ path already treats such a record as absent — so a
+        # truncated record was invisible, unservable AND undeletable through
+        # every API, recoverable only by rm -rf inside the 0700 store. Treat it
+        # as the no-recorded-owner case the next line already handles; the
+        # store-root containment check above still bounds what can be removed.
+        try:
+            meta = _read_meta(aid) if os.path.isdir(real) else None
+        except ArtifactError:
+            meta = None
         if meta is not None:
             _require_owner(meta, owner)
         if not os.path.isdir(real):

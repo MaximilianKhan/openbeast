@@ -55,6 +55,7 @@ Run: pytest tests/test_artifact_server.py
 """
 import json
 import os
+import stat
 import socket
 import sys
 import time
@@ -146,6 +147,20 @@ def publish(c, headers=None, **kw):
 
 
 # --- isolation (the load-bearing part) ---------------------------------------
+# The exact policy the shell and gallery must carry. Duplicated for the same
+# reason as EXPECTED_RAW_CSP above — asserting equality with the server's own
+# constant lets a weakening edit pass unnoticed. Review [11].
+EXPECTED_SHELL_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-src 'self'; object-src 'none'; "
+    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
+
 
 def test_raw_csp_is_exactly_the_pinned_policy(make_client):
     c = make_client()
@@ -186,6 +201,13 @@ def test_shell_and_gallery_carry_a_different_stricter_policy(make_client):
         r = c.get(path, headers=local(c))
         assert r.status_code == 200, path
         csp = r.headers["content-security-policy"]
+        # [11] Comparing to artifact_server.SHELL_CSP asserts only that the
+        # header equals the constant that produced it — the policy's CONTENT
+        # was unpinned, unlike /raw/'s, which this file duplicates as
+        # EXPECTED_RAW_CSP precisely so a typo cannot agree with itself. Pin
+        # both: the duplicate catches a silent weakening, the identity catches
+        # a header that stops coming from the constant at all.
+        assert csp == EXPECTED_SHELL_CSP
         assert csp == artifact_server.SHELL_CSP
         assert csp != EXPECTED_RAW_CSP
         assert "frame-ancestors 'none'" in csp   # our UI is never framed
@@ -1620,3 +1642,184 @@ def test_a_failed_mixed_patch_never_widens_visibility(make_client):
     assert c.patch(f"/api/artifacts/{aid}", json={"visibility": "tailnet"},
                    headers=local(c)).status_code == 200
     assert store.get_meta(aid)["visibility"] == "tailnet"
+
+
+# --- the write routes, on a damaged record (review [4], [14], [15]) ---------
+# The D23 sweep above walks GET routes only, so the two routes that WRITE were
+# never covered: both 500'd AFTER committing. That is the worst shape a bug of
+# this family can take — the caller is told the request failed while the store
+# has already moved.
+
+@pytest.mark.parametrize("corruption", sorted(CORRUPTIONS))
+def test_patch_never_500s_on_a_corrupt_record(make_client, corruption):
+    """PATCH's response block indexed raw meta["id"] and called artifact_url
+    on it OUTSIDE the ArtifactError guard, so an id-less record answered 500
+    for a visibility change that had already committed and widened the page."""
+    c = make_client()
+    a = publish(c)
+    _corrupt(a["id"], CORRUPTIONS[corruption])
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    r = quiet.patch(f"/api/artifacts/{a['id']}",
+                    json={"visibility": "tailnet"}, headers=local(c))
+    assert r.status_code < 500, (corruption, r.status_code, r.text)
+    if r.status_code == 200:
+        # the answer must name the artifact the caller asked about, never a
+        # junk id out of the damaged record
+        assert r.json()["id"] == a["id"], corruption
+        assert a["id"] in r.json()["url"], corruption
+        # and it must report the state the store actually committed
+        assert r.json()["visibility"] == "tailnet", corruption
+
+
+@pytest.mark.parametrize("corruption", sorted(CORRUPTIONS))
+def test_publish_never_500s_into_a_corrupt_record(make_client, corruption):
+    """A republish into a record whose `versions` list contains junk used to
+    commit the version (dir written, current moved, index.jsonl appended) and
+    THEN raise out of the response block, so artifact.sh printed
+    'publish failed (HTTP 500)' for a page that was live."""
+    c = make_client()
+    a = publish(c)
+    _corrupt(a["id"], CORRUPTIONS[corruption])
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    r = quiet.post("/api/artifacts",
+                   json={"html": PAGE, "artifact_id": a["id"]},
+                   headers=local(c))
+    assert r.status_code < 500, (corruption, r.status_code, r.text)
+    if r.status_code == 201:
+        # whatever it answered, the page it just wrote must be servable
+        n = r.json()["version"]
+        got = quiet.get(f"/raw/{a['id']}/v/{n}/", headers=local(c))
+        assert got.status_code == 200, corruption
+        assert PAGE in got.text, corruption
+
+
+# --- publish-time validation (review [5], [6], [23]) ------------------------
+
+def test_a_file_path_cannot_be_both_a_file_and_a_directory(make_client):
+    """"a" + "a/b": each path is individually valid and they are not
+    duplicates, but on disk "a" is a file and then makedirs(".../files/a")
+    raises FileExistsError — which escaped as a 500 where the contract
+    promises a 400."""
+    c = make_client()
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    r = quiet.post("/api/artifacts",
+                   json={"html": PAGE,
+                         "files": {"a": "x", "a/b": "y"}},
+                   headers=local(c))
+    assert r.status_code == 400, (r.status_code, r.text)
+    assert "collides" in r.text
+    # order must not matter: the dict is sorted before the write loop, but the
+    # validation pass has to catch it either way round
+    r = quiet.post("/api/artifacts",
+                   json={"html": PAGE,
+                         "files": {"deep/nested/leaf": "y", "deep": "x"}},
+                   headers=local(c))
+    assert r.status_code == 400, (r.status_code, r.text)
+
+
+def test_a_published_path_cannot_carry_a_newline(make_client):
+    """_SEG_RE used `$`, which in Python also matches before a single trailing
+    newline, so "dir\\n/app.js" passed a validator whose own comment promises
+    no control characters — and became a directory named "dir\\n"."""
+    c = make_client()
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    # An INTERIOR segment is what survived: _check_file_path strips the whole
+    # path, so only a trailing newline on the LAST segment was ever normalised
+    # away. "dir\n/app.js" reached disk as a directory literally named "dir\n".
+    for bad in ("dir\n/app.js", "a\nb/c.js", "x/y\n/z.js", "dir\r/app.js"):
+        r = quiet.post("/api/artifacts",
+                       json={"html": PAGE, "files": {bad: "x"}},
+                       headers=local(c))
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+    # Trailing whitespace on the whole path is normalised, not rejected — and
+    # what lands on disk must be the normalised name, with no stray byte.
+    a = publish(c, files={"app.js\n": "console.log(1)"})
+    got = c.get(f"/raw/{a['id']}/v/1/app.js", headers=local(c))
+    assert got.status_code == 200 and "console.log(1)" in got.text
+    files_dir = os.path.join(store.store_root(), a["id"], "v1", "files")
+    assert sorted(os.listdir(files_dir)) == ["app.js"], os.listdir(files_dir)
+
+
+def test_every_directory_in_the_store_is_0700(make_client):
+    """os.makedirs applies `mode=` to the LEAF only — CPython recurses without
+    it — so one deep call left <root>/<id>, vN/files and every intermediate
+    files/ subdirectory at 0777 & ~umask while the module header claimed
+    "0700 all the way down"."""
+    c = make_client()
+    a = publish(c, files={"deep/nested/app.js": "console.log(1)",
+                          "deep/other.css": "b{}"})
+    root = store.store_root()
+    checked = 0
+    for dirpath, dirnames, _files in os.walk(root):
+        for d in dirnames:
+            full = os.path.join(dirpath, d)
+            mode = stat.S_IMODE(os.stat(full).st_mode)
+            assert mode == 0o700, (os.path.relpath(full, root), oct(mode))
+            checked += 1
+    assert checked >= 5, f"walked too little to prove anything ({checked})"
+    # and the page is still intact through the tightened chain
+    r = c.get(f"/raw/{a['id']}/v/1/deep/nested/app.js", headers=local(c))
+    assert r.status_code == 200 and "console.log(1)" in r.text
+
+
+# --- removal (review [32], [18]) --------------------------------------------
+
+def test_an_unparseable_record_can_still_be_deleted(make_client):
+    """Every READ path treats a truncated meta.json as absent, but remove()
+    let _read_meta's ArtifactError escape as a 400 — so the record was
+    invisible, unservable AND undeletable through every API, recoverable only
+    by rm -rf inside the 0700 store."""
+    c = make_client()
+    a = publish(c)
+    with open(_meta_file(a["id"]), "w", encoding="utf-8") as fh:
+        fh.write('{"id": "' + a["id"] + '", "versions": [')   # truncated
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    # it is invisible, as before
+    assert quiet.get(f"/api/artifacts/{a['id']}", headers=local(c)).status_code == 404
+    # ...and now it is removable
+    r = quiet.delete(f"/api/artifacts/{a['id']}", headers=local(c))
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert not os.path.isdir(os.path.join(store.store_root(), a["id"]))
+
+
+def test_deleting_an_id_that_never_existed_leaves_no_lock_file(make_client):
+    """remove() took the per-id lock before checking existence, so every
+    DELETE of an unknown id left a permanent _ID_LOCKS entry and a zero-byte
+    <root>/.locks/<id>.lock behind."""
+    c = make_client()
+    publish(c)                                   # a real record, so the store exists
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    locks = os.path.join(store.store_root(), ".locks")
+    before = set(os.listdir(locks)) if os.path.isdir(locks) else set()
+    for i in range(5):
+        r = quiet.delete(f"/api/artifacts/ghost-{i}", headers=local(c))
+        assert r.status_code == 404, (i, r.status_code)
+    after = set(os.listdir(locks)) if os.path.isdir(locks) else set()
+    assert after == before, sorted(after - before)
+
+
+# --- the raw route's index.html spelling (review [26]) ----------------------
+
+def test_a_whitespace_spelled_index_html_still_gets_the_skeleton(make_client):
+    """/raw/<id>/v/<n>/%20index.html missed the raw_page delegation (which
+    strips only slashes) while the store's read_file (which strips whitespace)
+    matched index.html and returned the page — served with no doctype,
+    charset or viewport, i.e. in quirks mode."""
+    c = make_client()
+    a = publish(c)
+    plain = c.get(f"/raw/{a['id']}/v/1/", headers=local(c))
+    assert plain.status_code == 200
+    assert "<!doctype html>" in plain.text.lower()
+    for spelling in ("%20index.html", "index.html%20", "%20"):
+        r = c.get(f"/raw/{a['id']}/v/1/{spelling}", headers=local(c))
+        assert r.status_code == 200, (spelling, r.status_code)
+        assert "<!doctype html>" in r.text.lower(), spelling
+        assert "viewport" in r.text, spelling
+        # and the isolation policy is the same one the plain spelling gets
+        assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP, spelling

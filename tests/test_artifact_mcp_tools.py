@@ -35,6 +35,7 @@ Run: pytest tests/test_artifact_mcp_tools.py
 import json
 import os
 import re
+import pathlib
 import sys
 
 import pytest
@@ -175,6 +176,27 @@ def test_publish_refuses_when_the_flag_is_unset(rig, monkeypatch):
     out = mcp_server.publish_artifact(_page(rig))
     assert out.startswith("Error:")
     assert "BEAST_ARTIFACT=true" in out
+
+
+def test_list_refuses_when_the_feature_is_off(rig, monkeypatch):
+    """[28] The STORE is flag-independent, so a rig that had BEAST_ARTIFACT on
+    and then turned it off still holds the rows. list_artifacts had no opt-in
+    guard, so it handed the model titles and :8446 URLs for a viewer that is
+    not running — and the model answered with a link that connection-fails.
+    publish_artifact was given this guard; the listing tool was not."""
+    mcp_server.publish_artifact(_page(rig), title="From the enabled era")
+    assert "From the enabled era" in mcp_server.list_artifacts()
+    for off in ("false", None):
+        if off is None:
+            monkeypatch.delenv("BEAST_ARTIFACT", raising=False)
+        else:
+            monkeypatch.setenv("BEAST_ARTIFACT", off)
+        out = mcp_server.list_artifacts()
+        assert out.startswith("Error:"), (off, out)
+        assert "BEAST_ARTIFACT=true" in out, off
+        # the row is still on disk — this is a gate, not a deletion
+        assert "beast:8446" not in out, off
+        assert "From the enabled era" not in out, off
 
 
 # --- D6: the listing tool passes a viewer ------------------------------------
@@ -691,3 +713,75 @@ def test_the_audit_row_carries_both_halves_of_the_identity(surfaces,
     pub = [r for r in rows if r.get("tool") == "publish_artifact"][-1]
     assert pub["user"] == WEBUI_ID
     assert pub["artifact_owner"] == TAILNET_LOGIN
+
+
+# --- the docs must describe the surface that exists (review [21], [29], [30])
+# Four of the v1.4.0 review's findings were documentation that contradicted
+# the code: a `list --limit N` flag artifact.sh rejects with exit 2, a `files=`
+# argument publish_artifact does not have, and an `ARTIFACT_LOCK_TIMEOUT` knob
+# no code reads. A human following any of them gets an error; the model reading
+# the tool description gets a wrong idea of its own surface. Cheap to pin.
+
+def _doc() -> str:
+    return (pathlib.Path(__file__).resolve().parents[1]
+            / "docs" / "BEAST_ARTIFACT.md").read_text(encoding="utf-8")
+
+
+def test_documented_mcp_signature_matches_the_real_one():
+    import inspect
+    doc = _doc()
+    sig = inspect.signature(mcp_server.publish_artifact.__wrapped__
+                            if hasattr(mcp_server.publish_artifact, "__wrapped__")
+                            else mcp_server.publish_artifact)
+    real = set(sig.parameters)
+    block = doc.split("publish_artifact(", 1)[1].split(")", 1)[0]
+    documented = {seg.split("=")[0].strip()
+                  for seg in block.replace("\n", " ").split(",") if seg.strip()}
+    assert documented <= real, documented - real
+    # `files=` is the specific one that was wrong: supporting files are CLI-only
+    assert "files" not in real
+    assert "files=" not in block
+
+
+def test_documented_cli_flags_are_accepted_by_artifact_sh():
+    doc = _doc()
+    sh = (pathlib.Path(__file__).resolve().parents[1]
+          / "scripts" / "artifact.sh").read_text(encoding="utf-8")
+    # every long flag the doc shows for `list` must appear in artifact.sh
+    for line in doc.splitlines():
+        if "artifact.sh list" not in line:
+            continue
+        for flag in re.findall(r"--[a-z][a-z-]+", line):
+            assert flag in sh, (line.strip(), flag)
+    # the flag that did not exist must not come back
+    assert "artifact.sh list [--limit N]" not in doc
+
+
+def test_the_lock_timeout_knob_is_named_the_way_the_code_reads_it():
+    doc = _doc()
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "agents" / "artifact.py").read_text(encoding="utf-8")
+    assert "OPENBEAST_ARTIFACT_LOCK_TIMEOUT" in src
+    assert "OPENBEAST_ARTIFACT_LOCK_TIMEOUT" in doc
+    # the bare name reads nothing; it must never be the one the docs give
+    assert not re.search(r"(?<!OPENBEAST_)\bARTIFACT_LOCK_TIMEOUT\b", doc)
+
+
+def test_the_documented_csp_probe_presents_the_locality_token():
+    """[20] The published probe sent no token, so it resolved to `anonymous`
+    and got the flat 404 — which carries no CSP. The grep found nothing on a
+    healthy server and could not distinguish it from a broken one."""
+    doc = _doc()
+    probe = [b for b in doc.split("```") if "content-security-policy" in b.lower()]
+    assert probe, "the CSP verification command is gone"
+    for block in probe:
+        cmd = [ln for ln in block.splitlines()
+               if "content-security-policy" in ln.lower() and "curl" in ln
+               or (ln.strip().startswith("curl") and "raw/" in ln)]
+        if not cmd:
+            continue
+        joined = block
+        assert "artifact-local.token" in joined, joined
+        # and it must NOT put the token in argv — /proc is world-readable
+        assert '-H "X-OpenBeast-Local' not in joined
+        assert "-K " in joined

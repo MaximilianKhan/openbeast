@@ -42,10 +42,16 @@ jobs:
           python-version: "3.12"
       # E9 (syntax errors) + F (undefined names, unused imports, broken
       # f-strings) — the "this is actually wrong" tier, not style opinions.
+      #
+      # DIRECTORIES, not `agents/*.py`. The glob matched the top level only,
+      # so every package under it was invisible to the linter — agents/lang/
+      # (all of beast-lang), agents/packs/, evals/scripts/ and scripts/lib/
+      # were never checked, and four unused imports had accumulated there
+      # unseen. ruff walks a directory recursively and respects .gitignore.
       - name: ruff
         run: |
           python3 -m pip install -q ruff
-          ruff check agents/*.py evals/*.py tests/*.py --select E9,F
+          ruff check agents evals tests scripts --select E9,F
 
   pip-audit:
     name: Dependency vulnerability audit

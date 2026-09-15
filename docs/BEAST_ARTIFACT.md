@@ -37,8 +37,13 @@ PUBLISHERS (all on the rig, all loopback)         VIEWERS (anything on the tailn
 
 The load-bearing fact: **the page runs in a sandbox with an opaque origin.**
 A model wrote it, so it is treated as hostile — it has no cookies, no
-storage, no network, and no way to reach the viewer's session on Open WebUI
-or anything else on your tailnet. See
+storage, no `fetch`/`XHR`/`WebSocket`, no subresource from a host outside the
+allowlist, and no way to reach the viewer's session on Open WebUI or anything
+else on your tailnet. What it is *not* is unable to transmit at all: no CSP
+directive governs a document navigating **itself**, so a raw page opened as a
+top-level document can still reach an external URL by setting `location` or
+opening a popup. That is exactly why the page is boxed in an opaque origin
+and treated as hostile rather than trusted. See
 [The security posture](#the-security-posture), which is the section worth
 reading twice.
 
@@ -122,7 +127,7 @@ write credential to every uid on the box.
 
 ```bash
 ./scripts/artifact.sh publish <file.html> [options]
-./scripts/artifact.sh list [--limit N]
+./scripts/artifact.sh list [--json]
 ./scripts/artifact.sh show <id>
 ./scripts/artifact.sh versions <id>
 ./scripts/artifact.sh rollback <id> <n>
@@ -157,7 +162,8 @@ where it was.
 
 ```
 publish_artifact(path, title="", description="", favicon="",
-                 artifact_id="", label="", files="", visibility="private")
+                 artifact_id="", label="", visibility="private")
+    # no `files=` — supporting files are CLI-only (artifact.sh --file pub=src)
     → "Published Weekly numbers → https://beast:8446/a/<id> (v3)"
 
 list_artifacts(limit=25)
@@ -263,7 +269,8 @@ either, that test failing is the feature working.
 | Load a stylesheet from `fonts.googleapis.com` and its font files from `fonts.gstatic.com` | Load a stylesheet, image, or media file from any other external host |
 | Show images, audio and video embedded as `data:` URIs | Read or write cookies, `localStorage`, `sessionStorage`, `IndexedDB` |
 | Draw inline SVG, canvas, animations | Start a download — `<a download>` and script-driven saves are inert |
-| Open a popup, submit a form to itself, use `alert`/`confirm` | Navigate the top window, or frame another page |
+| Open a popup, use `alert`/`confirm`, navigate **itself** to an external URL | Submit a form anywhere, including to itself — `form-action 'none'` |
+| — | Navigate the top window from inside the shell's frame, or frame another page |
 | Be framed by the shell on this host | Be framed by any other origin (`frame-ancestors 'self'`) |
 
 The CDN allowlist is **Claude Code's, verbatim**, so a page written for one
@@ -352,8 +359,18 @@ curl -s http://127.0.0.1:3004/api/artifacts/health
 ./scripts/artifact.sh publish scratch/spare-memory-meta.html --title "Spare memory"
 ./scripts/artifact.sh list
 
-# the isolation headers are actually on the raw route
-curl -sD- -o /dev/null http://127.0.0.1:3004/raw/<id>/v/1/ | grep -i 'content-security-policy'
+# the isolation headers are actually on the raw route.
+# The token is REQUIRED: locality is proven by the X-OpenBeast-Local header,
+# never by the socket peer, so a bare loopback curl resolves to `anonymous`
+# and gets the flat 404 — which carries no CSP at all. Without the token this
+# check greps nothing on a perfectly healthy server and cannot tell you
+# anything. Pass it through a 0600 config file, never -H: /proc makes argv
+# world-readable (see "Never pass the token on a command line" above).
+printf 'header = "X-OpenBeast-Local: %s"\n' "$(cat .run/artifact-local.token)" \
+  > /tmp/art.cfg && chmod 600 /tmp/art.cfg
+curl -sD- -o /dev/null -K /tmp/art.cfg \
+  http://127.0.0.1:3004/raw/<id>/v/1/ | grep -i 'content-security-policy'
+rm -f /tmp/art.cfg
 
 # writes are loopback-only: from another tailnet device, want 404
 curl -o /dev/null -w '%{http_code}\n' -X POST https://beast:8446/api/artifacts
@@ -372,7 +389,7 @@ the first.
 | **404 on everything** from a phone, while the rig works | Your tailnet login is not in `ARTIFACT_OPERATORS`. This is the intended answer for an unlisted login — it is not a bug, and it is not 403 |
 | 404 on someone else's link | That artifact is `private`. Its owner runs `artifact.sh visibility <id> tailnet` |
 | **502** from `https://beast:8446` | The port is published but nothing is listening — you ran `--publish-artifact` without turning `BEAST_ARTIFACT` on, or the server died. Same trap as `--publish-slot` and the dashboard extension ([BEAST_SLOT.md](BEAST_SLOT.md)) |
-| `artifact <id> is busy` | Another publish holds that page's lock. Locking is **per page**, so every other page and every read is unaffected; the call gives up after `ARTIFACT_LOCK_TIMEOUT` (10s) rather than hanging. Retry. If it persists, a publisher died mid-write — the next publish steps over the half-written version (it is never served, and never deleted: the only copy of a real version is not something a damaged `meta.json` gets to vote on) and continues |
+| `artifact <id> is busy` | Another publish holds that page's lock. Locking is **per page**, so every other page and every read is unaffected; the call gives up after `OPENBEAST_ARTIFACT_LOCK_TIMEOUT` (10s) rather than hanging — an environment variable only, **not** an `openbeast.conf` key (`conf.sh` greps a fixed set of keys and does not map this one), so export it in the unit or the shell that starts the stack. Retry. If it persists, a publisher died mid-write — the next publish steps over the half-written version (it is never served, and never deleted: the only copy of a real version is not something a damaged `meta.json` gets to vote on) and continues |
 | `not your artifact` | Pages are owned by whoever published them. Republishing, re-describing, rolling back, re-sharing and deleting are all owner-only. The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
 | A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read |
 | The page renders blank | Almost always `localStorage` or `fetch` in the page's startup path. Both throw here. Open the browser console — the error is in the frame's context, not the shell's |
