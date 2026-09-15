@@ -228,11 +228,13 @@ def test_missing_things_are_404(env):
 
 def test_gallery_lists_artifacts(env):
     c = make_client()
-    publish(c, html="<title>Alpha</title>a", description="first")
-    publish(c, html="<title>Beta</title>b")
+    alpha = publish(c, html="<title>Alpha</title>a", description="first")
+    beta = publish(c, html="<title>Beta</title>b")
     body = c.get("/").text
     assert "Alpha" in body and "Beta" in body and "first" in body
-    assert "2 published" in body
+    # a card linking to each artifact, whatever the template's wording is
+    for a in (alpha, beta):
+        assert f'href="/a/{a["id"]}"' in body
 
 
 # --- read auth ----------------------------------------------------------------
