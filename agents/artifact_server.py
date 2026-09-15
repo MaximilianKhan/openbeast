@@ -127,6 +127,13 @@ LOCAL_LOGIN = "local"
 MAX_LIST_LIMIT = 200          # D12: limit=0 must not mean "scan everything"
 COUNT_LIMIT = 1_000_000       # operator-only counters, explicitly bounded
 
+# D27: how many REFUSED requests an unidentified caller may write into
+# .run/artifact-audit.jsonl before the log goes counter-only for refusals.
+# ~89 bytes a row with no bound at all was a disk-fill primitive for anyone
+# who could reach the port; the metrics counter keeps counting past it, so
+# nothing is lost but the repetition.
+DENY_AUDIT_ROWS = 1000
+
 # --- the policies ------------------------------------------------------------
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
 # test fails loudly, on purpose: the isolation IS these headers.
@@ -469,12 +476,21 @@ def create_app(local_token: str | None = None) -> FastAPI:
     # D9: nothing announces the route table. /openapi.json was readable by a
     # stranger and documented the entire write API; /docs pulled unpinned
     # third-party script into the same origin as the viewer shell.
+    # D24: redirect_slashes=False, because the slash redirect is an oracle.
+    # Starlette answers `/api/artifacts/` with a 307 to `/api/artifacts` when
+    # nothing matched — from the ROUTER, after the identity middleware and
+    # before any route code, so no auth check can suppress it. A caller who
+    # is identified but not an operator got 307 for a route that exists and
+    # 404 for one that does not, which is the whole route table read out one
+    # path at a time. With redirects off, a trailing slash is simply a path
+    # that matches nothing: the same flat 404 as any other miss (D9).
     app = FastAPI(
         title="OpenBeast artifacts",
         version="1.0",
         description="Durable URLs for model-authored HTML "
                     "(see agents/artifact_server.py).",
         docs_url=None, redoc_url=None, openapi_url=None,
+        redirect_slashes=False,
     )
     app.state.local_token = local_token
     app.state.operators = operators
@@ -482,6 +498,14 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404)
+
+    # D27. Refusals are the one audit row an UNIDENTIFIED caller can mint at
+    # will, so they get a budget: the first DENY_AUDIT_ROWS are written (an
+    # operator still sees who was turned away and why), and past that the
+    # trail for refusals is counter-only. The alternative — rotating the file
+    # — would have let a flood push the interesting rows out of the log,
+    # which is worse than not writing the flood in the first place.
+    deny_audit = {"written": 0, "suppressed": 0}
 
     def audit(entry: dict) -> None:
         try:
@@ -521,7 +545,26 @@ def create_app(local_token: str | None = None) -> FastAPI:
             "ms": ms,
         }
         entry.update(extra or getattr(request.state, "extra", {}) or {})
-        audit(entry)
+        if entry.get("denied") and not _trusted(request):
+            # D27: counter-only past the budget. The metrics below still
+            # count every single refusal, and one last row says so, so the
+            # operator is never left wondering where the trail went.
+            with metrics_lock:
+                allowed = deny_audit["written"] < DENY_AUDIT_ROWS
+                if allowed:
+                    deny_audit["written"] += 1
+                else:
+                    deny_audit["suppressed"] += 1
+                first_drop = (not allowed and deny_audit["suppressed"] == 1)
+            if allowed:
+                audit(entry)
+            elif first_drop:
+                audit({"ts": _now(), "route": entry.get("route"),
+                       "outcome": 404, "denied": "audit-budget",
+                       "note": f"{DENY_AUDIT_ROWS} refusals logged; further "
+                               f"refusals are counted in /metrics only"})
+        else:
+            audit(entry)
         outcome = ("error" if status == "error"
                    else "ok" if int(status) < 400 else str(status))
         with metrics_lock:
@@ -559,6 +602,13 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # (3) the gates.
         if oversize:
             deny = "oversize"
+        elif _ambiguous_identity(request):
+            # D29: two `Tailscale-User-Login` headers is not a request with an
+            # identity, it is a request with a QUESTION about its identity —
+            # and "take the first" is a silent answer that a proxy chain, a
+            # header-injection bug or a hostile client picks for us. Refused
+            # everywhere, health included: this one is never a viewer.
+            deny = "ambiguous-identity"
         elif principal.login is None and request.url.path != HEALTH_PATH:
             deny = "anonymous"
         elif request.method in WRITE_METHODS and not principal.local:
@@ -591,6 +641,19 @@ def create_app(local_token: str | None = None) -> FastAPI:
 
     # --- auth ---------------------------------------------------------------
 
+    def _ambiguous_identity(request: Request) -> bool:
+        """More than one copy of an identity header (D29).
+
+        Starlette keeps every copy and `headers.get()` returns the first, so
+        `Tailscale-User-Login: max@…` + `Tailscale-User-Login: kid@…` used to
+        authorise silently as max. Neither header is trustworthy once there
+        are two of them.
+        """
+        for name in (_HDR_LOGIN, _HDR_LOCAL):
+            if len(request.headers.getlist(name)) > 1:
+                return True
+        return False
+
     def is_local(request: Request) -> bool:
         """Compare BYTES: hmac.compare_digest on str raises TypeError for any
         non-ASCII character, and Starlette decodes headers as latin-1, so one
@@ -611,6 +674,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
         Without an allowlist: identity is still REQUIRED, it is just not
         checked against a list. Anonymous is never a viewer.
         """
+        if _ambiguous_identity(request):
+            # Belt to the middleware's brace: a route reached another way
+            # still sees ANONYMOUS, never an arbitrarily-chosen login.
+            return Principal(login=None, local=False, operator=False)
         local = is_local(request)
         raw = (request.headers.get(_HDR_LOGIN) or "").strip().lower()
         if operators:
@@ -694,13 +761,70 @@ def create_app(local_token: str | None = None) -> FastAPI:
         Writes are LOCAL-only, so this is never None."""
         return principal_of(request).login or LOCAL_LOGIN
 
-    def _version_or_current(meta: dict, n) -> int:
-        known = [int(v.get("n", 0)) for v in meta.get("versions", [])]
+    # --- version resolution (D23) -------------------------------------------
+    # The store hardened this once (D14) and the server then re-derived it
+    # from raw meta in three more places, so four ordinary corruptions — a
+    # `versions` that is not a list, entries that are not dicts, an `n` that
+    # is not a number, a `current` that points nowhere — turned five routes
+    # into an HTTP 500 for the artifact's LEGITIMATE OWNER, which is the
+    # failure D14 exists to prevent. Everything below goes through
+    # store._resolvable_versions(), which falls back to the vN directories
+    # actually on disk, and coerces `current` instead of trusting it.
+
+    def _meta_id(meta, artifact_id: str) -> str:
+        """The id to address the store with: meta's own, when it is a valid
+        id, else the one the caller asked for. `meta["id"]` was a KeyError
+        (and a bad one an ArtifactError) away from a 500 on five routes."""
+        aid = meta.get("id") if isinstance(meta, dict) else None
+        if isinstance(aid, str):
+            try:
+                return store._check_id(aid)
+            except store.ArtifactError:
+                pass
+        return artifact_id
+
+    def _known_versions(meta, artifact_id: str) -> list[int]:
+        """Every version a reader may address, ascending. Never raises."""
+        try:
+            return sorted(set(store._resolvable_versions(
+                _meta_id(meta, artifact_id), meta)))
+        except Exception:
+            return []
+
+    def _version_entries(meta) -> dict:
+        """{n: version record} for the entries that ARE records — the labels
+        and timestamps the picker shows, with the junk dropped."""
+        out: dict[int, dict] = {}
+        raw = meta.get("versions") if isinstance(meta, dict) else None
+        for v in raw if isinstance(raw, list) else []:
+            if not isinstance(v, dict):
+                continue
+            try:
+                n = int(v.get("n", 0))
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                out[n] = v
+        return out
+
+    def _current_version(meta, known: list[int]) -> int:
+        """`current`, COERCED (D23): a missing, non-numeric or dangling
+        pointer resolves to the newest version that actually exists rather
+        than 500ing (or 404ing) the owner out of their own page."""
+        if not known:
+            return 0
+        try:
+            cur = int(meta.get("current"))
+        except (TypeError, ValueError):
+            cur = 0
+        return cur if cur in known else max(known)
+
+    def _version_or_current(meta: dict, n, artifact_id: str) -> int:
+        known = _known_versions(meta, artifact_id)
+        if not known:
+            raise HTTPException(status_code=404, detail="Not Found")
         if n is None:
-            cur = int(meta.get("current") or (max(known) if known else 0))
-            if cur not in known:
-                raise HTTPException(status_code=404, detail="Not Found")
-            return cur
+            return _current_version(meta, known)
         try:
             wanted = int(n)
         except (TypeError, ValueError):
@@ -708,6 +832,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
         if wanted not in known:
             raise HTTPException(status_code=404, detail="Not Found")
         return wanted
+
+    def _store_error(e: store.ArtifactError) -> HTTPException:
+        """Store failure -> HTTP. A cap or a validation error is a real 400
+        for the rig; the OWNERSHIP refusal is the flat 404 (D29), because
+        "not your artifact" confirms a page exists exactly where a
+        nonexistent id would have said Not Found."""
+        if "not your artifact" in str(e).lower():
+            return HTTPException(status_code=404, detail="Not Found")
+        return HTTPException(status_code=400, detail=str(e))
 
     # --- gallery + shell ----------------------------------------------------
 
@@ -741,22 +874,28 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def _shell(request: Request, artifact_id: str, n=None) -> HTMLResponse:
         viewer = viewer_of(request)
         meta = visible_meta(artifact_id, viewer)
-        version = _version_or_current(meta, n)
+        aid = _meta_id(meta, artifact_id)
+        version = _version_or_current(meta, n, artifact_id)
+        # The picker is built from the RESOLVABLE versions (D23), not from
+        # whatever `versions` happens to hold: the old sort called int() on
+        # every entry, so one null in the list 500'd the owner's own page.
+        entries = _version_entries(meta)
         opts = []
-        for v in sorted(meta.get("versions", []),
-                        key=lambda v: int(v.get("n", 0)), reverse=True):
-            vn = int(v.get("n", 0))
+        for vn in sorted(_known_versions(meta, artifact_id), reverse=True):
+            v = entries.get(vn, {})
             label = f" · {v['label']}" if v.get("label") else ""
             sel = " selected" if vn == version else ""
+            ts = v.get("ts")
             opts.append(f'<option value="{vn}"{sel}>v{vn}{_esc(label)} · '
-                        f'{_esc((v.get("ts") or "")[:16])}</option>')
+                        f'{_esc((ts if isinstance(ts, str) else "")[:16])}'
+                        f'</option>')
         page = _fill(_read_template("shell.html", _FALLBACK_SHELL), {
             "TITLE": _esc(meta.get("title") or "Untitled"),
             "DESCRIPTION": _esc(meta.get("description") or ""),
-            "ARTIFACT_ID": _esc(meta.get("id") or artifact_id),
+            "ARTIFACT_ID": _esc(aid),
             "VERSION": str(version),
             "VERSION_OPTIONS": "\n".join(opts),
-            "RAW_URL": f"/raw/{_esc(meta.get('id') or artifact_id)}/v/{version}/",
+            "RAW_URL": f"/raw/{_esc(aid)}/v/{version}/",
             "UPDATED": _esc(meta.get("updated_at") or ""),
             "VISIBILITY": _esc(meta.get("visibility") or "private"),
             "SANDBOX": IFRAME_SANDBOX,
@@ -784,9 +923,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def raw_page(request: Request, artifact_id: str, n: int, theme: str = ""):
         viewer = viewer_of(request)
         meta = visible_meta(artifact_id, viewer)
-        version = _version_or_current(meta, n)
+        version = _version_or_current(meta, n, artifact_id)
         try:
-            data, _ = store.read_file(meta["id"], version, "index.html")
+            data, _ = store.read_file(_meta_id(meta, artifact_id), version,
+                                      "index.html")
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
@@ -799,11 +939,12 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def raw_file(request: Request, artifact_id: str, n: int, path: str):
         viewer = viewer_of(request)
         meta = visible_meta(artifact_id, viewer)
-        version = _version_or_current(meta, n)
+        version = _version_or_current(meta, n, artifact_id)
         if path.strip("/") in ("", "index.html"):
             return raw_page(request, artifact_id, n)
         try:
-            data, ctype = store.read_file(meta["id"], version, path)
+            data, ctype = store.read_file(_meta_id(meta, artifact_id),
+                                          version, path)
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
@@ -811,7 +952,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
 
     # --- api ----------------------------------------------------------------
 
-    @app.get(HEALTH_PATH)
+    # GET + HEAD (D29): FastAPI does not add HEAD to an @app.get route, so a
+    # `curl -I` liveness probe — the cheapest one there is, and what a lot of
+    # monitors default to — got 404 from a server that was perfectly healthy.
+    @app.api_route(HEALTH_PATH, methods=["GET", "HEAD"])
     def health(request: Request):
         """Liveness for doctor.sh / healthcheck.sh — the ONE route an
         anonymous caller may reach, and it says the minimum (D12).
@@ -847,11 +991,20 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def api_get(request: Request, artifact_id: str):
         viewer = viewer_of(request)
         meta = visible_meta(artifact_id, viewer)
+        aid = _meta_id(meta, artifact_id)
+        known = _known_versions(meta, artifact_id)
+        entries = _version_entries(meta)
         out = dict(meta)
-        out["url"] = store.artifact_url(meta["id"])
+        out["id"] = aid
+        out["url"] = store.artifact_url(aid)
+        out["current"] = _current_version(meta, known)
+        # Built from the resolvable list (D23): `dict(v, ...)` on a null and
+        # artifact_url(..., "two") on a non-numeric `n` were each a 500 on
+        # this route, for the owner, over a damaged record the store itself
+        # can still serve pages out of.
         out["versions"] = [
-            dict(v, url=store.artifact_url(meta["id"], v.get("n")))
-            for v in meta.get("versions", [])]
+            dict(entries.get(vn, {}), n=vn, url=store.artifact_url(aid, vn))
+            for vn in known]
         return out
 
     @app.post("/api/artifacts", status_code=201)
@@ -877,7 +1030,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 visibility=(body.visibility or "private"),
                 owner=owner_for(request))
         except store.ArtifactError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise _store_error(e)
         meta = store.get_meta(result["id"]) or {}
         version = next((v for v in meta.get("versions", [])
                         if int(v.get("n", 0)) == result["version"]), {})
@@ -906,7 +1059,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             if body.current is not None:
                 meta = store.set_current(artifact_id, body.current)
         except store.ArtifactError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise _store_error(e)
         if meta is None:
             meta = store.get_meta(artifact_id)
         return {"id": meta["id"], "visibility": meta.get("visibility"),
@@ -920,7 +1073,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         try:
             gone = store.remove(artifact_id)
         except store.ArtifactError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise _store_error(e)
         if not gone:
             raise HTTPException(status_code=404, detail="Not Found")
         return {"id": artifact_id, "removed": True}

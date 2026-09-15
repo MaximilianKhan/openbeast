@@ -917,6 +917,22 @@ _ARTIFACT_OFF = ("Error: beast-artifact is not enabled on this rig. Enable it "
                  "stack (./stop.sh && ./start.sh).")
 
 
+def _is_store_path(resolved: str) -> bool:
+    """Is this path the artifact store, or inside it (D26)?
+
+    `artifact.is_store_path()` is the store's own helper for the question —
+    it realpaths both sides, so a symlink on either path still lands on the
+    same real directory. Imported lazily like everything else here (the store
+    is opt-in), and a store that will not import cannot be published into
+    anyway.
+    """
+    try:
+        import artifact as _artifact
+        return bool(_artifact.is_store_path(resolved))
+    except Exception:
+        return False
+
+
 def _read_artifact_page(path: str, cap: int):
     """Read `path` as the page to publish. Returns (html, None) or (None, err).
 
@@ -937,8 +953,9 @@ def _read_artifact_page(path: str, cap: int):
     read config") because its output lands in one model's context; THIS tool
     mints a durable, shareable URL, which is a different blast radius. So the
     page must come from the caller's own workspace — the directory write_file
-    puts it in. Publishing an arbitrary path on the rig stays available to the
-    human through scripts/artifact.sh, which is loopback- and token-gated.
+    puts it in — and NOT from the store's own tree inside it (D26). Publishing
+    an arbitrary path on the rig stays available to the human through
+    scripts/artifact.sh, which is loopback- and token-gated.
     """
     fd = -1
     try:
@@ -955,6 +972,20 @@ def _read_artifact_page(path: str, cap: int):
                           f"durable URL anyone with the link can open. Write "
                           f"the page there first (write_file) and publish that "
                           f"path.")
+        if _is_store_path(resolved):
+            # D26. "Inside the workspace" is NOT the same as "yours": the
+            # store is $OPENBEAST_FILES_DIR/artifacts and the workspace is
+            # $OPENBEAST_FILES_DIR itself whenever no per-user shard is in
+            # play (FILES_SHARDING=off, and every MCP stdio caller). A
+            # reviewer republished another user's PRIVATE page by naming the
+            # store's own internal path — the bytes are read as a file, so
+            # ownership never enters into it — and then re-shared it as
+            # tailnet. The store is addressed by artifact_id, never by path.
+            return None, (f"Error: refusing to publish {path} — that is the "
+                          f"artifact store's own storage. To add a version to "
+                          f"an existing page use "
+                          f"publish_artifact(path, artifact_id=\"<id>\"); the "
+                          f"id is the last part of its URL.")
         # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
         # regular-file check and the read see the same inode.
         fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK)

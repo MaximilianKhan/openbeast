@@ -24,6 +24,13 @@ Each of these tests failed before the fix it names:
   D16  template substitution is single pass — a title cannot delete the
        iframe's src and sandbox
   D18  a failed second start never overwrites a live server's token
+  D23  every version resolution goes through the store's hardened helper:
+       eleven ordinary corruptions of meta.json, through every route, are
+       the page or a flat 404 — never a 500 for the legitimate owner
+  D24  a trailing slash is not a route oracle (the 307 outlived D9)
+  D27  refusals cannot grow the audit file without bound
+  D29  an ownership refusal is the flat 404; HEAD works on health; two
+       identity headers are refused rather than silently resolved
 
 Also covers:
   - publish → /raw/ round trip, skeleton applied at serve time
@@ -175,11 +182,23 @@ def test_shell_and_gallery_carry_a_different_stricter_policy(make_client):
 
 
 def test_shell_embeds_the_raw_route_in_a_sandboxed_iframe(make_client):
+    """The src and the sandbox must be on the SAME TAG.
+
+    This test used to assert that each string appeared ANYWHERE in the body,
+    which is vacuous against the bug it sits next to: the D16 splice closed
+    the <iframe> tag early, leaving `src=` and `sandbox=` in the document —
+    as loose text, on no element — while the frame that actually loaded had
+    neither. Two `in body` checks pass happily through that. Parse the tag.
+    """
     c = make_client()
     a = publish(c)
     body = c.get(f"/a/{a['id']}", headers=local(c)).text
-    assert f'src="/raw/{a["id"]}/v/1/"' in body
-    assert 'sandbox="allow-scripts allow-forms allow-modals allow-popups"' in body
+    tag = _iframe_tag(body)
+    assert f'src="/raw/{a["id"]}/v/1/"' in tag
+    assert IFRAME_SANDBOX in tag
+    # exactly one frame, and the sandbox never gains the escape hatch
+    assert body.count("<iframe") == 1
+    assert "allow-same-origin" not in tag
 
 
 def test_head_returns_the_headers_without_a_body(make_client):
@@ -464,10 +483,20 @@ def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
                 headers=local(c, MAX))
     assert r.status_code == 200, r.text
     assert r.json()["visibility"] == "tailnet"
-    # and a local caller who is somebody else cannot share max's page
+    # ...and a local caller who is somebody else cannot share max's page.
+    # The refusal is the FLAT 404 (D29): "not your artifact" is a 400 that
+    # confirms a page exists at an id where a nonexistent one answers 404, so
+    # the second operator could map the store by the shape of the error.
     r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "private"},
                 headers=local(c))                  # resolves to boss
-    assert r.status_code == 400 and "not your artifact" in r.json()["detail"]
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert "not your artifact" not in r.text
+    # and it really was refused, not quietly applied
+    assert store.get_meta(a["id"])["visibility"] == "tailnet"
+    # an id that does not exist at all is indistinguishable from it
+    r = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
+                json={"visibility": "private"}, headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
 
 
 def test_the_store_sees_the_caller_for_the_whole_request(make_client):
@@ -879,3 +908,330 @@ def test_unlisted_login_is_audited_too(make_client, tmp_path):
     denied = [r for r in rows if r["outcome"] == 404]
     assert denied and denied[-1]["login"] == "nobody@example.com"
     assert denied[-1]["denied"] == "anonymous"     # why, for the operator
+
+
+# --- D23: every version resolution goes through the store ---------------------
+# The store learned to survive a damaged meta.json (D14) and the SERVER kept
+# re-deriving the version list from raw metadata in three more places, so the
+# corruptions below turned five routes into an HTTP 500 — for the artifact's
+# legitimate owner, over a record the store itself can still serve pages out
+# of. `test_corrupt_record_does_not_poison_the_listing` in the store suite
+# only ever covered list_artifacts(); nothing covered a route. These do.
+
+def _meta_file(artifact_id: str) -> str:
+    return os.path.join(store.store_root(), artifact_id, "meta.json")
+
+
+def _corrupt(artifact_id: str, mutate) -> None:
+    """Damage meta.json the way a truncated write or a hand-edit does."""
+    with open(_meta_file(artifact_id), "r", encoding="utf-8") as fh:
+        meta = json.load(fh)
+    mutate(meta)
+    with open(_meta_file(artifact_id), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
+
+
+def _set(key, value):
+    def mutate(meta):
+        meta[key] = value
+    return mutate
+
+
+def _drop(key):
+    def mutate(meta):
+        meta.pop(key, None)
+    return mutate
+
+
+def _prepend(entry):
+    def mutate(meta):
+        meta["versions"] = [entry] + list(meta.get("versions") or [])
+    return mutate
+
+
+CORRUPTIONS = {
+    # `versions` is not a list at all (a dict is what a hand-merge produces)
+    "versions-is-a-dict": _set("versions", {"1": {"n": 1}}),
+    "versions-is-a-string": _set("versions", "v1"),
+    "versions-is-missing": _drop("versions"),
+    # the list is a list, but the entries are not records
+    "entry-is-null": _prepend(None),
+    "entry-is-a-string": _prepend("v1"),
+    "n-is-not-a-number": _set("versions", [{"n": "two", "ts": "2026-01-01"}]),
+    # the pointer is junk, or points at a version that is not there
+    "current-points-nowhere": _set("current", 99),
+    "current-is-a-string": _set("current", "latest"),
+    "current-is-null": _set("current", None),
+    # the record cannot even name itself — meta["id"] was a KeyError away
+    # from a 500 on five routes
+    "id-is-missing": _drop("id"),
+    "id-is-not-a-string": _set("id", 7),
+}
+
+
+@pytest.mark.parametrize("corruption", sorted(CORRUPTIONS))
+def test_a_corrupt_record_never_500s_any_route(make_client, corruption):
+    """D23. Every route, for the OWNER, on a record whose vN directories are
+    all still on disk: the answer is the page, not a server error."""
+    c = make_client()
+    a = publish(c, files={"app.js": "console.log(1)"})
+    _corrupt(a["id"], CORRUPTIONS[corruption])
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    h = local(c)
+    for path in ("/",
+                 f"/a/{a['id']}",
+                 f"/a/{a['id']}/v/1",
+                 f"/raw/{a['id']}/v/1/",
+                 f"/raw/{a['id']}/v/1/app.js",
+                 f"/api/artifacts/{a['id']}",
+                 "/api/artifacts"):
+        r = quiet.get(path, headers=h)
+        assert r.status_code == 200, (corruption, path, r.status_code, r.text)
+    # the page still renders, from the version that really exists
+    assert PAGE in quiet.get(f"/raw/{a['id']}/v/1/", headers=h).text
+    assert "console.log(1)" in \
+        quiet.get(f"/raw/{a['id']}/v/1/app.js", headers=h).text
+    # ...and the shell still frames it, sandbox intact
+    tag = _iframe_tag(quiet.get(f"/a/{a['id']}", headers=h).text)
+    assert f'src="/raw/{a["id"]}/v/1/"' in tag and IFRAME_SANDBOX in tag
+
+
+@pytest.mark.parametrize("corruption", sorted(CORRUPTIONS))
+def test_a_corrupt_record_never_500s_a_stranger_either(make_client,
+                                                       corruption):
+    """The same corruptions through a caller who may NOT see the page: the
+    answer must be the flat 404, never a 500 (which announces the route as
+    loudly as a 405 does — D9)."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    a = publish(c)                                    # owner: max
+    _corrupt(a["id"], CORRUPTIONS[corruption])
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    for path in (f"/a/{a['id']}", f"/a/{a['id']}/v/1", f"/raw/{a['id']}/v/1/",
+                 f"/raw/{a['id']}/v/1/app.js", f"/api/artifacts/{a['id']}"):
+        r = quiet.get(path, headers=KID)
+        assert r.status_code == 404, (corruption, path)
+        assert r.json() == FLAT_404, (corruption, path)
+
+
+def test_a_dangling_current_resolves_to_the_newest_version(make_client):
+    """D23, the coercion. `current` is a pointer, not a fact: a rollback that
+    lost its write, or a hand-edit, must not 404 the owner out of a page
+    whose versions are all present."""
+    c = make_client()
+    a = publish(c)
+    publish(c, artifact_id=a["id"], html="<title>Two</title>second")
+    _corrupt(a["id"], _set("current", 99))
+    h = local(c)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    assert quiet.get(f"/a/{a['id']}", headers=h).status_code == 200
+    assert 'value="2" selected' in quiet.get(f"/a/{a['id']}", headers=h).text
+    assert quiet.get(f"/api/artifacts/{a['id']}", headers=h).json()["current"] == 2
+    # an explicitly addressed version is still exactly what was asked for
+    assert PAGE in quiet.get(f"/raw/{a['id']}/v/1/", headers=h).text
+
+
+def test_a_version_the_meta_lost_is_still_served_from_disk(make_client):
+    """D23/D14 together: meta's list is unusable, the vN directories are
+    fine, and the store's helper falls back to them. The owner keeps their
+    page instead of meeting a 500."""
+    c = make_client()
+    a = publish(c)
+    publish(c, artifact_id=a["id"], html="<title>Two</title>second")
+    _corrupt(a["id"], _set("versions", "gone"))
+    h = local(c)
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False)
+    assert "second" in quiet.get(f"/raw/{a['id']}/v/2/", headers=h).text
+    assert PAGE in quiet.get(f"/raw/{a['id']}/v/1/", headers=h).text
+    body = quiet.get(f"/a/{a['id']}", headers=h)
+    assert body.status_code == 200
+    assert 'value="2"' in body.text and 'value="1"' in body.text
+    meta = quiet.get(f"/api/artifacts/{a['id']}", headers=h).json()
+    assert [v["n"] for v in meta["versions"]] == [1, 2]
+    assert meta["versions"][1]["url"].endswith(f"/a/{a['id']}/v/2")
+
+
+def test_the_server_asks_the_store_to_resolve_versions(make_client,
+                                                       monkeypatch):
+    """The mechanism, not just the symptom: every route resolves through
+    store._resolvable_versions() rather than re-deriving the list itself."""
+    c = make_client()
+    a = publish(c, files={"app.js": "x"})
+    seen = []
+    real = store._resolvable_versions
+    monkeypatch.setattr(store, "_resolvable_versions",
+                        lambda aid, meta: (seen.append(aid),
+                                           real(aid, meta))[1])
+    h = local(c)
+    for path in (f"/a/{a['id']}", f"/a/{a['id']}/v/1", f"/raw/{a['id']}/v/1/",
+                 f"/raw/{a['id']}/v/1/app.js", f"/api/artifacts/{a['id']}"):
+        assert c.get(path, headers=h).status_code == 200, path
+        assert seen, f"{path} resolved versions without the store helper"
+        seen.clear()
+
+
+# --- D24: the slash redirect was an oracle ------------------------------------
+
+def test_a_trailing_slash_is_not_a_route_oracle(make_client):
+    """D24. Starlette answers an unmatched `/api/artifacts/` with a 307 to
+    `/api/artifacts` — from the ROUTER, after the identity middleware and
+    before any route code, so no auth check could suppress it. 307 here and
+    404 there reads the route table out one path at a time."""
+    c = make_client()
+    a = publish(c)
+    probes = [
+        "/api/artifacts/",                       # exists without the slash
+        f"/api/artifacts/{a['id']}/",
+        "/api/artifacts/health/",
+        f"/a/{a['id']}/",
+        f"/a/{a['id']}/v/1/",
+        "/metrics/",
+        "/nope/",                                # does not exist either way
+        "/definitely/not/a/route/",
+    ]
+    seen = set()
+    for path in probes:
+        r = c.get(path, headers=MAX, follow_redirects=False)
+        assert r.status_code == 404, (path, r.status_code)
+        assert r.json() == FLAT_404, path
+        assert "location" not in {k.lower() for k in r.headers}, path
+        seen.add((r.text, r.headers.get("content-length")))
+    # byte-identical to an ordinary miss, exactly like every other refusal
+    r = c.get("/a/00000000-0000-4000-8000-000000000000", headers=MAX)
+    seen.add((r.text, r.headers.get("content-length")))
+    assert len(seen) == 1, seen
+    # and the real paths still work, for everyone who should have them
+    assert c.get("/api/artifacts", headers=local(c)).status_code == 200
+    assert c.get(f"/a/{a['id']}", headers=local(c)).status_code == 200
+
+
+def test_the_slash_oracle_is_shut_for_writes_too(make_client):
+    c = make_client()
+    r = c.post("/api/artifacts/", json={"html": PAGE}, headers=local(c),
+               follow_redirects=False)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert "location" not in {k.lower() for k in r.headers}
+
+
+# --- D27: refusals cannot grow the audit file without bound -------------------
+
+def test_refusals_stop_growing_the_audit_file(make_client, tmp_path,
+                                              monkeypatch):
+    """D27. ~89 bytes a row, no rotation, no bound, and writable by anyone
+    who can reach the port: a disk-fill primitive that needed no credentials
+    at all. Past the budget refusals are counter-only."""
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 3)
+    c = make_client()
+    publish(c)                                   # a real row, not a refusal
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+
+    for _ in range(40):
+        assert c.get("/api/artifacts").status_code == 404      # anonymous
+    settled = path.stat().st_size
+    denied = [json.loads(x) for x in path.read_text().splitlines()
+              if x.strip() and json.loads(x).get("denied") == "anonymous"]
+    assert len(denied) == 3, len(denied)
+    # one row says where the trail went, so the operator is never puzzled
+    notes = [json.loads(x) for x in path.read_text().splitlines()
+             if x.strip() and json.loads(x).get("denied") == "audit-budget"]
+    assert len(notes) == 1 and "metrics" in notes[0]["note"]
+
+    for _ in range(40):
+        c.get("/api/artifacts")
+    assert path.stat().st_size == settled, "the file is still growing"
+
+    # nothing is lost: /metrics counted every single one of the 80. A
+    # middleware refusal never reaches the router, so it labels as the
+    # constant "<unmatched>" (D11) — no attacker-named series here either.
+    m = c.get("/metrics", headers=local(c)).text
+    line = [ln for ln in m.splitlines()
+            if ln.startswith("openbeast_artifact_requests_total")
+            and f'route="{artifact_server.UNMATCHED_ROUTE}"' in ln
+            and 'outcome="404"' in ln]
+    assert line and int(line[0].rsplit(" ", 1)[1]) >= 80, line
+
+
+def test_a_refused_operator_is_still_audited(make_client, tmp_path,
+                                             monkeypatch):
+    """The budget applies to callers the server cannot identify. The rig's
+    own failures — an oversized publish, say — stay in the log."""
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 0)
+    c = make_client()
+    monkeypatch.setitem(store.CAPS, "version_bytes", 64)
+    r = c.post("/api/artifacts", content=b'{"html": "' + b"x" * 200 + b'"}',
+               headers={**local(c), "Content-Type": "application/json"})
+    assert r.status_code == 404
+    rows = [json.loads(x) for x in
+            (tmp_path / "run" / "artifact-audit.jsonl").read_text().splitlines()
+            if x.strip()]
+    assert [r for r in rows if r.get("denied") == "oversize"]
+
+
+# --- D29: the small ones ------------------------------------------------------
+
+def test_head_on_health_is_not_a_404(make_client):
+    """D29. FastAPI does not add HEAD to an @app.get route, so `curl -I` —
+    the cheapest liveness probe there is — reported a healthy server down."""
+    c = make_client()
+    r = c.head("/api/artifacts/health")
+    assert r.status_code == 200
+    assert r.content == b""
+    assert c.head("/api/artifacts/health", headers=local(c)).status_code == 200
+    # GET is unchanged, body and all
+    assert c.get("/api/artifacts/health").json() == {"status": "ok"}
+
+
+def test_two_identity_headers_are_refused_not_resolved(make_client):
+    """D29. Starlette keeps every copy of a header and `.get()` returns the
+    first, so two logins used to authorise silently as whichever one a proxy
+    chain happened to put first. Ambiguous identity is no identity."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    a = publish(c, headers=local(c, MAX))
+    two = [("tailscale-user-login", "max@example.com"),
+           ("tailscale-user-login", "kid@example.com")]
+    for path in ("/", f"/a/{a['id']}", "/api/artifacts", "/metrics",
+                 "/api/artifacts/health"):
+        r = c.get(path, headers=two)
+        assert r.status_code == 404, path
+        assert r.json() == FLAT_404, path
+    # the order does not rescue it either way round
+    assert c.get(f"/a/{a['id']}", headers=two[::-1]).status_code == 404
+    # ...nor does doubling the locality token on a write
+    r = c.post("/api/artifacts", json={"html": PAGE},
+               headers=[("x-openbeast-local", c.app_token),
+                        ("x-openbeast-local", c.app_token),
+                        ("content-type", "application/json")])
+    assert r.status_code == 404
+    # one header each is still fine
+    assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 200
+
+
+def test_the_ambiguity_is_audited_with_its_reason(make_client, tmp_path):
+    c = make_client()
+    c.get("/", headers=[("tailscale-user-login", "max@example.com"),
+                        ("tailscale-user-login", "kid@example.com")])
+    rows = [json.loads(x) for x in
+            (tmp_path / "run" / "artifact-audit.jsonl").read_text().splitlines()
+            if x.strip()]
+    assert rows[-1]["denied"] == "ambiguous-identity"
+
+
+def test_an_ownership_refusal_is_indistinguishable_from_a_miss(make_client):
+    """D29. `400 "not your artifact"` confirmed a page exists at an id where
+    a nonexistent one answers 404 — a map of the store, one id at a time, for
+    anyone holding the locality token."""
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = publish(c, headers=local(c, MAX))          # owner: max
+    miss = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
+                   json={"description": "x"}, headers=local(c))
+    hit = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
+                  headers=local(c))                # boss, not max
+    assert hit.status_code == miss.status_code == 404
+    assert hit.text == miss.text
+    assert hit.headers.get("content-length") == miss.headers.get("content-length")
+    # the republish path says exactly as little
+    r = c.post("/api/artifacts", json={"html": PAGE, "artifact_id": a["id"]},
+               headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    # and a real failure is still a real failure for the rig
+    r = c.post("/api/artifacts", json={"title": "no html"}, headers=local(c))
+    assert r.status_code == 400 and "html" in r.json()["detail"]
