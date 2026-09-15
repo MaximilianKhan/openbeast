@@ -1486,7 +1486,13 @@ def test_a_foreign_host_is_refused_before_the_identity_gate(make_client):
     a = publish(c)
     evil = TestClient(c.asgi_app, base_url="http://evil.example:3004",
                       raise_server_exceptions=False)
-    me = {"Tailscale-User-Login": artifact_server.LOCAL_LOGIN}
+    # Identify with the LOCALITY TOKEN, not with LOCAL_LOGIN as a header.
+    # This test used to present `Tailscale-User-Login: local`, which worked
+    # only because the rig's own login was accepted from a header — the read
+    # hole closed alongside this (a constant printed in the docs is not a
+    # credential). The test is about HOST pinning, so any working identity
+    # serves; the token is the one a rig-local caller actually has.
+    me = local(c)
     for path in ("/", f"/a/{a['id']}", "/api/artifacts",
                  f"/api/artifacts/{a['id']}", f"/raw/{a['id']}/v/1/",
                  "/api/artifacts/health"):
@@ -1494,6 +1500,46 @@ def test_a_foreign_host_is_refused_before_the_identity_gate(make_client):
         assert r.status_code == 400, f"{path} answered a rebound Host: {r.status_code}"
     # and the trusted client is unaffected
     assert c.get("/api/artifacts", headers=me).status_code == 200
+
+
+def test_the_rigs_own_login_is_not_a_presentable_credential(make_client):
+    """`LOCAL_LOGIN` is the documented constant every CLI and campaign publish
+    is owned by on a rig with no allowlist, and it was accepted FROM A HEADER
+    — so any caller that could reach the port and set headers read every
+    private page the rig had published, because `can_view` is a plain owner
+    comparison. Same defect class R6 deleted `owner_webui_id` for."""
+    c = make_client()
+    a = publish(c)                                    # owned by the rig
+    assert store.get_meta(a["id"])["visibility"] == "private"
+    forged = {"Tailscale-User-Login": artifact_server.LOCAL_LOGIN}
+    assert c.get("/api/artifacts", headers=forged).status_code == 404
+    assert c.get(f"/api/artifacts/{a['id']}", headers=forged).status_code == 404
+    assert c.get(f"/raw/{a['id']}/v/1/", headers=forged).status_code == 404
+    # the real rig identity — the locality token — still works
+    assert c.get(f"/api/artifacts/{a['id']}", headers=local(c)).status_code == 200
+
+
+def test_the_rig_owner_is_a_valid_identity_not_the_first_allowlist_entry(make_client):
+    """`operators[0]` verbatim became an artifact OWNER via the ContextVar
+    that feeds `default_owner()`, so a malformed first entry silently owned
+    every rig publish — and `can_view` could then never match anyone.
+
+    Deliberately NOT fixed by filtering the allowlist itself: an all-invalid
+    list would become indistinguishable from NO list, flipping the server from
+    allowlist mode into accept-any-identity. That fail-open would be worse
+    than the bug."""
+    c = make_client(operators="not-an-email, max@example.com")
+    a = publish(c)
+    owner = store.get_meta(a["id"])["owner"]
+    assert owner == "max@example.com", f"rig published as {owner!r}"
+    # an all-invalid allowlist falls back to the rig constant, and must NOT
+    # turn the read gate off
+    c2 = make_client(operators="not-an-email")
+    b = publish(c2)
+    assert store.get_meta(b["id"])["owner"] == artifact_server.LOCAL_LOGIN
+    assert c2.get("/api/artifacts",
+                  headers={"Tailscale-User-Login": "stranger@example.com"}
+                  ).status_code == 404, "an all-invalid allowlist failed OPEN"
 
 
 def test_a_rebound_host_never_reaches_the_audit_log(make_client, tmp_path):

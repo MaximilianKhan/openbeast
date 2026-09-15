@@ -269,15 +269,37 @@ probe "http://$HEALTH_HOST:3000/api/version" "version" \
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.
 if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
-  _chat=$(curl -s --max-time 4 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
+  # The health route answers an UNIDENTIFIED caller with exactly
+  # {"status":"ok"} and nothing else — deliberately, so session counts and the
+  # auth posture are not a free map of the rig. Probing it without a
+  # credential therefore made the detail fields ALWAYS empty: every rig
+  # printed "reads=?, ? running session(s)", and the no-allowlist warning
+  # below could never fire because `$_chat_reads` was never populated. So
+  # present the locality token, through a 0600 --config file and never argv
+  # (`ps` is world-readable) — the same shape the beast-artifact row below
+  # already uses.
+  _chat_cfg=""
+  _chat_tok="$(cat "$REPO_DIR/.run/chat-local.token" 2>/dev/null || true)"
+  if [[ -n "$_chat_tok" ]]; then
+    _chat_cfg="$(mktemp)"; chmod 600 "$_chat_cfg"
+    printf 'header = "X-OpenBeast-Local: %s"\n' "$_chat_tok" > "$_chat_cfg"
+  fi
+  _chat=$(curl -s --max-time 4 ${_chat_cfg:+--config "$_chat_cfg"} \
+            "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
+  [[ -n "$_chat_cfg" ]] && rm -f "$_chat_cfg"
   if echo "$_chat" | grep -qi '"status":"ok"'; then
-    _chat_reads=$(echo "$_chat" | grep -o '"reads":"[a-z]*"' | cut -d'"' -f4)
+    # [a-z-]: the value is a hyphenated word ("any-identified"), and a
+    # [a-z]-only class silently matched nothing.
+    _chat_reads=$(echo "$_chat" | grep -o '"reads":"[a-z-]*"' | cut -d'"' -f4)
     _chat_running=$(echo "$_chat" | grep -o '"running":-\?[0-9]*' | cut -d: -f2)
     pass "beast-chat console (:${CHAT_PORT:-3003}) — reads=${_chat_reads:-?}, ${_chat_running:-?} running session(s)"
     # An empty allowlist is not a failure (single-operator rig, tailnet you
     # own) but it IS the difference between "my phone" and "every device on
     # the tailnet", and only the operator can decide that. Say it out loud.
-    if [[ "$_chat_reads" == "open" ]]; then
+    # The server reports "any-identified" for an empty allowlist, not "open";
+    # comparing against "open" meant this warning could never fire even once
+    # the field was populated.
+    if [[ "$_chat_reads" == "any-identified" || "$_chat_reads" == "open" ]]; then
       warn "beast-chat has no operator allowlist — every tailnet login can read every session" \
            "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
     fi
