@@ -314,6 +314,13 @@ pf_summary() {
   echo "  ${n_ok} ok, ${n_warn} warnings, ${n_fail} failures"
   if [[ $n_fail -gt 0 ]]; then
     echo "  ${c_red}Fix the ✗ items above, then run ./bootstrap.sh${c_rst}"
+    # A box with BOTH a local gap and no network used to hear only about the
+    # local gap, so "fix these and install" was wrong twice over: you fix them
+    # and still cannot fetch a single artifact. Say both.
+    if [[ ${PF_NO_NET:-0} -eq 1 ]]; then
+      echo "  ${c_red}…and the network is unreachable: a first install will fail"
+      echo "  at the llama.cpp clone even once the ✗ items are fixed.${c_rst}"
+    fi
   elif [[ ${PF_NO_NET:-0} -eq 1 ]]; then
     # Everything LOCAL is fine, so this is not a ✗ — but "looks ready" would
     # be a lie on a box that cannot fetch a single one of its four artifacts.

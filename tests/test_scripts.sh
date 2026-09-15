@@ -1,6 +1,11 @@
 #!/bin/bash
 # Validate script structure: existence, permissions, path references.
-# Runs without a GPU or server — pure filesystem checks.
+#
+# MUST pass on a box with NO GPU, no docker and no network — CI is such a box.
+# Any check that needs one of those STUBS it on PATH (see the curl stub in the
+# preflight test and the nvidia-smi stub in the GPU-lease test). A check that
+# reads the ambient machine instead passes here and fails on CI, or worse
+# passes on CI while asserting nothing.
 #
 # Usage: ./tests/test_scripts.sh
 
@@ -10,9 +15,13 @@ export REPO_DIR  # the embedded Python heredocs read it from the environment
 
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+# Skips are COUNTED and printed in the summary: a skip that reports as a pass
+# is how a test quietly stops testing anything.
+skip() { echo "  SKIP: $1"; SKIP=$((SKIP + 1)); }
 
 echo "=== Script structure tests ==="
 echo ""
@@ -132,10 +141,15 @@ else
 fi
 # doctor runs to completion and prints its verdict (WARN/FAIL allowed when
 # nothing is up — we only assert it doesn't crash and reaches the summary).
-if bash "$REPO_DIR/scripts/doctor.sh" --quiet 2>&1 | grep -q '^doctor: '; then
+# Capture first, THEN grep: piping straight into grep under `set -o pipefail`
+# makes the pipeline's status doctor's OWN exit code, so a box where doctor
+# correctly reports a failure (no GPU, no docker) failed a test that claims to
+# assert only "it reached the summary". Same trap as the grep -q SIGPIPE family.
+_DOC_OUT="$(bash "$REPO_DIR/scripts/doctor.sh" --quiet 2>&1 || true)"
+if grep -q '^doctor: ' <<< "$_DOC_OUT"; then
   pass "doctor.sh runs and reports a verdict"
 else
-  fail "doctor.sh did not reach its summary line"
+  fail "doctor.sh did not reach its summary line: $(tail -3 <<< "$_DOC_OUT")"
 fi
 if grep -q 'supervisor.pid' "$REPO_DIR/start.sh" && grep -q 'supervisor.pid' "$REPO_DIR/stop.sh"; then
   pass "start.sh and stop.sh share the supervisor pidfile"
@@ -1017,8 +1031,16 @@ echo "Preflight honesty:"
 _PF_TMP="$(mktemp -d)"
 printf '#!/bin/bash\nexit 1\n' > "$_PF_TMP/curl"
 chmod +x "$_PF_TMP/curl"
-_PF_OUT="$(PATH="$_PF_TMP:$PATH" "$REPO_DIR/bootstrap.sh" --preflight 2>&1 \
-           | sed 's/\x1b\[[0-9;]*m//g' || true)"
+# GPU_BACKEND=cpu + --minimal pin the LOCAL environment clean on any box, so
+# the network is the only axis left. Without them this test read the ambient
+# machine: the consequence line lives in the summary's PF_NO_NET branch, which
+# is only reached when n_fail == 0, so a GPU-less or docker-less runner
+# hard-failed on the toolchain and the assertion silently tested nothing.
+# OPENBEAST_GPU_BACKEND is the ENV name; GPU_BACKEND is the conf-file key
+# (scripts/lib/conf.sh:30). Setting the latter here looked like it worked and
+# silently did nothing.
+_PF_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=cpu "$REPO_DIR/bootstrap.sh" \
+           --preflight --minimal 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 if grep -q 'cannot reach' <<< "$_PF_OUT"; then
   pass "preflight reports unreachable hosts instead of only checking curl exists"
 else
@@ -1034,6 +1056,23 @@ if grep -q 'first install will fail' <<< "$_PF_OUT"; then
 else
   fail "preflight warns without saying what it costs"
 fi
+# A box with BOTH a local gap and a dead network used to be told only about
+# the local gap, because the consequence line sat in the summary's PF_NO_NET
+# branch and any failure jumped past it. Construct that box: ask for the sycl
+# backend (no icpx on a normal runner) with the same dead-curl stub.
+_PF2_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=sycl "$REPO_DIR/bootstrap.sh" \
+            --preflight --minimal 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+if grep -qE '^  ✗' <<< "$_PF2_OUT"; then
+  if grep -q 'first install will fail' <<< "$_PF2_OUT"; then
+    pass "preflight names the network consequence even when a local check fails"
+  else
+    fail "a box with a local gap AND no network hears only about the local gap"
+  fi
+else
+  # icpx present — the case we wanted to build does not exist here.
+  skip "no local check fails under --minimal sycl on this box"
+fi
+rm -rf "$_PF_TMP"
 rm -rf "$_PF_TMP"
 
 # update.sh must tell "the remote is unreachable" apart from "your worktree is
@@ -1206,10 +1245,141 @@ else
   fail "doctor still compares reads against a value the server never sends"
 fi
 
+# The GPU lease (docs/BEAST_CAMPAIGN_PLAN.md P0). Nothing on this box has ever
+# claimed the GPU, and the cost is documented: six parallel build agents ran
+# inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
+# Those agents did not IGNORE a lease — they had nothing to consult.
+echo ""
+echo "GPU lease:"
+_GL="$REPO_DIR/scripts/gpu-lease.sh"
+_GL_DIR="$(mktemp -d)"
+# A high VRAM floor so the real card (which may be busy) cannot skew the test.
+_gl() { OPENBEAST_RUN_DIR="$_GL_DIR" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$_GL" "$@"; }
+if [[ ! -x "$_GL" ]]; then
+  fail "scripts/gpu-lease.sh missing or not executable"
+else
+  # A bare acquire must be held by the CALLER, or it is stale the instant it
+  # returns — which is how the first version shipped, with a usage example
+  # promising otherwise.
+  # export, not a bare assignment: the script reads these from the
+  # ENVIRONMENT, and an assignment on its own line only sets a shell variable
+  # — which is how this test first "failed" against a perfectly good lease.
+  _GL_OUT="$(bash -c "export OPENBEAST_RUN_DIR='$_GL_DIR' OPENBEAST_LEASE_VRAM_FLOOR=99999999
+    '$_GL' acquire probe >/dev/null && '$_GL' status | head -1" 2>&1 || true)"
+  if grep -q '^HELD' <<< "$_GL_OUT"; then
+    pass "a bare acquire is held by the caller and survives the call"
+  else
+    fail "acquire did not produce a live lease: $_GL_OUT"
+  fi
+  rm -f "$_GL_DIR/gpu.lease"
+
+  # A LIVE holder must be refused, with a distinguishable exit code.
+  bash -c "export OPENBEAST_RUN_DIR='$_GL_DIR' OPENBEAST_LEASE_VRAM_FLOOR=99999999
+           '$_GL' run holder -- sleep 4" >/dev/null 2>&1 &
+  _GL_BG=$!
+  sleep 1
+  # Capture the code without letting `set -e` fire: a non-zero exit is the
+  # EXPECTED result here, and testing $? after the fact aborts the whole file
+  # before the `if` can read it. (Third time today this pattern bit a test of
+  # mine — the others were a pipefail-through-grep and a bare assignment.)
+  _GL_RC=0
+  _gl acquire second >/dev/null 2>&1 || _GL_RC=$?
+  if [[ "$_GL_RC" -eq 4 ]]; then
+    pass "a live holder is refused (exit 4)"
+  else
+    fail "the lease was handed out while another process held it (rc=$_GL_RC)"
+  fi
+  wait "$_GL_BG" 2>/dev/null || true
+  # run's EXIT trap must have released it
+  _GL_OUT="$(_gl status 2>&1 || true)"
+  if grep -q '^FREE' <<< "$_GL_OUT"; then
+    pass "run releases the lease when its command exits"
+  else
+    fail "run leaked the lease: $_GL_OUT"
+  fi
+
+  # A RECYCLED pid must not look alive: identity is pid + start time, the
+  # lesson agents/sessions.py already carries.
+  printf 'pid=%s\nstart=1\nlabel=recycled\nsince=then\n' "$$" > "$_GL_DIR/gpu.lease"
+  # Capture, THEN grep. `grep -q` exits on its first match, so acquire takes
+  # SIGPIPE writing its next line and `pipefail` reports the whole pipeline
+  # as failed — making a passing behaviour look broken. Fourth variant of the
+  # same family today (pipefail-through-grep, set -e on an expected non-zero,
+  # a bare env assignment, and now SIGPIPE).
+  _GL_OUT="$(_gl acquire after-recycle 2>&1 || true)"
+  if grep -q 'stale' <<< "$_GL_OUT"; then
+    pass "a recycled pid does not make a dead lease look live"
+  else
+    fail "a lease was treated as live on pid alone: $_GL_OUT"
+  fi
+  rm -f "$_GL_DIR/gpu.lease"
+
+  # It must refuse to claim a card somebody else is quietly using — and that
+  # has to be testable on a box with NO GPU at all. The first version read
+  # the real card, so it passed here (where 27 GB was in use) and failed on
+  # CI (where used=0 and no floor can trigger). Stub the reading instead, the
+  # same way the preflight test stubs curl.
+  _GL_BIN="$(mktemp -d)"
+  printf '#!/bin/bash\necho 8000\n' > "$_GL_BIN/nvidia-smi"
+  chmod +x "$_GL_BIN/nvidia-smi"
+  _GL_OUT="$(PATH="$_GL_BIN:$PATH" OPENBEAST_RUN_DIR="$_GL_DIR" \
+             OPENBEAST_LEASE_VRAM_FLOOR=1000 "$_GL" acquire greedy 2>&1 || true)"
+  if grep -qE 'refusing|already allocated' <<< "$_GL_OUT"; then
+    pass "refuses to claim a GPU that has an unclaimed user"
+  else
+    fail "claimed a GPU already in use: $_GL_OUT"
+  fi
+  # …and takes it when the card is genuinely idle.
+  printf '#!/bin/bash\necho 12\n' > "$_GL_BIN/nvidia-smi"
+  rm -f "$_GL_DIR/gpu.lease"
+  _GL_OUT="$(PATH="$_GL_BIN:$PATH" OPENBEAST_RUN_DIR="$_GL_DIR" \
+             OPENBEAST_LEASE_VRAM_FLOOR=1000 "$_GL" acquire idle 2>&1 || true)"
+  if grep -q 'lease acquired' <<< "$_GL_OUT"; then
+    pass "takes the lease when the GPU is idle"
+  else
+    fail "refused an idle GPU: $_GL_OUT"
+  fi
+  rm -rf "$_GL_BIN"
+fi
+rm -rf "$_GL_DIR"
+
+# The era assertion. Rows either side of a change to the six hashed files are
+# not comparable, and until now era was a thing people remembered — the
+# 2026-09-08 plan put the churn floor before a git pull and the cells it
+# calibrates after it, and review did not catch it because it was nobody's job.
+echo ""
+echo "Eval era assertion:"
+_EE="$REPO_DIR/scripts/eval-era.sh"
+if [[ ! -x "$_EE" ]]; then
+  fail "scripts/eval-era.sh missing or not executable"
+else
+  _EE_NOW="$("$_EE" 2>/dev/null || true)"
+  if [[ "$_EE_NOW" =~ ^[0-9a-f]{16}$ ]]; then
+    pass "eval-era.sh prints a 16-hex era ($_EE_NOW)"
+  else
+    fail "eval-era.sh printed '$_EE_NOW'"
+  fi
+  if "$_EE" --check "$_EE_NOW" >/dev/null 2>&1; then
+    pass "--check passes against the current era"
+  else
+    fail "--check failed against the era it just printed"
+  fi
+  _EE_OUT="$("$_EE" --check deadbeefdeadbeef 2>&1 || true)"
+  if grep -q 'ERA MOVED' <<< "$_EE_OUT" && grep -q 'runner.py' <<< "$_EE_OUT"; then
+    pass "--check fails on a moved era and names the hashed inputs"
+  else
+    fail "--check did not report a moved era usefully: $_EE_OUT"
+  fi
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
-echo "Results: $PASS passed, $FAIL failed"
+if [[ $SKIP -gt 0 ]]; then
+  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
+else
+  echo "Results: $PASS passed, $FAIL failed"
+fi
 echo "================================"
 
 [[ $FAIL -eq 0 ]]
