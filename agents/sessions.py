@@ -231,6 +231,41 @@ def _alive(pid, pid_start, *, require_start: bool = False) -> bool:
         return not require_start
 
 
+def _boot_id() -> str | None:
+    """This boot's identity, or None if the kernel will not say.
+
+    /proc/sys/kernel/random/boot_id is a fresh uuid per boot. None is a
+    legitimate answer (a kernel without it, a container): callers MUST treat
+    "no boot id" as "no information" and fall through to the pid+start proof.
+    """
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def from_another_boot(record: dict) -> bool:
+    """True only when the record PROVES it was written before this boot.
+
+    Absent-is-unknown is load-bearing in both directions. Every record
+    written before this change has no boot_id, and treating absent as
+    mismatched would flip every live session on the rig to `lost` the moment
+    this lands; a kernel that will not report a boot id must likewise not
+    invalidate anything. Only two different NON-EMPTY strings are a mismatch.
+    """
+    if not isinstance(record, dict):
+        return False
+    meta = record.get("meta")
+    was = meta.get("boot_id") if isinstance(meta, dict) else None
+    if not isinstance(was, str) or not was:
+        return False
+    now = _boot_id()
+    if not now:
+        return False
+    return was != now
+
+
 def is_alive(record: dict, *, require_start: bool = True) -> bool:
     """Public liveness for a record. Defaults to the SIGNALLING contract.
 
@@ -240,6 +275,8 @@ def is_alive(record: dict, *, require_start: bool = True) -> bool:
     """
     if not isinstance(record, dict):
         return False
+    if from_another_boot(record):
+        return False                     # [54] its pid means nothing here
     meta = record.get("meta")
     pid_start = meta.get("pid_start") if isinstance(meta, dict) else None
     return _alive(record.get("pid"), pid_start, require_start=require_start)
@@ -407,6 +444,16 @@ def register(session_id: str, *, kind: str = "agent", title: str = "",
     # already finished, while its command keeps running. Belt to the caller-side
     # strip in chat_server (RESERVED_META); this is the braces.
     rec["meta"]["pid_start"] = pid_start_time(rec["pid"])
+    # [54] pid_start is field 22 of /proc/<pid>/stat: ticks since BOOT. Two
+    # boots share one number space, and SESSIONS_DIR lives in the repo, so
+    # records survive a reboot unreconciled — which made the documented
+    # promise ("reconcile matches pid AND process start time, so a recycled
+    # pid is never mistaken for a live session") void by construction across
+    # exactly the event it names. Stamp the boot so the comparison has a
+    # frame of reference.
+    boot = _boot_id()
+    if boot:
+        rec["meta"]["boot_id"] = boot
     rec["meta"].setdefault("cursor", 0)
     with _record_lock(session_id):
         if not _write_record(rec):
@@ -509,12 +556,14 @@ def reconcile(record: dict) -> dict:
         return record
     meta = record.get("meta")
     pid_start = meta.get("pid_start") if isinstance(meta, dict) else None
-    if _alive(record.get("pid"), pid_start):
+    if not from_another_boot(record) and _alive(record.get("pid"), pid_start):
         return record
     out = dict(record)
     out["state"] = "lost"
     if not out.get("summary"):
-        out["summary"] = "process gone without a terminal event"
+        out["summary"] = ("started before this boot — the rig restarted while it "
+                          "was running" if from_another_boot(record)
+                          else "process gone without a terminal event")
     return out
 
 
@@ -588,12 +637,23 @@ def list_sessions(*, state: str | None = None, kind: str | None = None,
 # Steering inbox
 # ---------------------------------------------------------------------------
 
-def append_op(session_id: str, op: dict) -> None:
-    """Append one steering op as a single JSON line.
+def append_op(session_id: str, op: dict) -> bool:
+    """Append one steering op as a single JSON line. True if it landed.
 
     One `write()` to an `O_APPEND` fd: concurrent writers interleave whole
     lines, never halves, which is what lets the reader treat a trailing
     partial line as "not yet complete" rather than corruption.
+
+    That guarantee was a comment, not a check: the write's return value was
+    discarded and its OSError swallowed, so on a full disk a /send was DROPPED
+    while the API answered `{"queued": true}`. Worse in the short-write case
+    (legal on a regular file — ENOSPC after a partial transfer, a quota, an
+    RLIMIT_FSIZE), which only the 32 KiB /send op is big enough to hit: the
+    newline-less remnant swallowed the NEXT op too, because read_new_ops
+    advances its cursor past a line before json.loads rejects it, so TWO ops
+    vanished with no error anywhere. Now the write is looped, a partial line
+    is TERMINATED so it can never merge with its successor (costing one op
+    instead of two), and the caller is told.
 
     O_NOFOLLOW (E13): the ledger is 0700, but a symlink planted at the inbox
     path by anything that ever ran as this user would turn "append an
@@ -603,27 +663,40 @@ def append_op(session_id: str, op: dict) -> None:
     try:
         path = inbox_path(session_id)
     except ValueError:
-        return
+        return False
     if op is not None and not isinstance(op, dict):
-        return                           # fail-soft: junk never reaches the runner
+        return False                     # fail-soft: junk never reaches the runner
     payload = dict(op or {})
     payload.setdefault("ts", time.time())
     try:
         line = (json.dumps(payload) + "\n").encode("utf-8")
     except (TypeError, ValueError):
-        return
+        return False
     try:
         os.makedirs(os.path.dirname(path), mode=_DIR_MODE, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
                      | os.O_NOFOLLOW | os.O_CLOEXEC, _FILE_MODE)
     except OSError:
-        return                           # incl. ELOOP: the path is a symlink
+        return False                     # incl. ELOOP: the path is a symlink
+    mv = memoryview(line)
     try:
-        os.write(fd, line)
+        while mv:
+            wrote = os.write(fd, mv)
+            if wrote <= 0:
+                break
+            mv = mv[wrote:]
     except OSError:
         pass
     finally:
+        if mv:
+            # A partial line is worse than no line: unterminated, it merges
+            # with the next op and takes that one down with it. Close it.
+            try:
+                os.write(fd, b"\n")
+            except OSError:
+                pass
         os.close(fd)
+    return not mv
 
 
 def _clamp_op(op: dict) -> dict:

@@ -1250,6 +1250,63 @@ fi
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
+echo "Orphaned-stack pid discipline:"
+# [17] In the orphaned-stack state (supervisor SIGKILLed, EXIT trap never ran)
+# a fresh start.sh spawned a replacement that cannot bind the port, wrote its
+# pid OVER the pidfile, then deleted the file when the probe failed — erasing
+# the live server's recorded pid, after which healthcheck.sh --restart could
+# never find or kill the wedged orphan and looped on an unbindable
+# replacement every 5 minutes. The spawn must be guarded, not the delete.
+for _svc in chat artifact; do
+  _blk="$(python3 - "$REPO_DIR/start.sh" "$_svc" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+svc = sys.argv[2]
+flag = "BEAST_CHAT" if svc == "chat" else "BEAST_ARTIFACT"
+i = src.index('if [[ "${%s:-false}" == "true" ]]; then' % flag)
+# to the end of that top-level block
+j = src.index("\nfi\n", src.index("$RUN_DIR/%s.pid" % svc, i))
+print(src[i:j])
+PY
+)"
+  # the pidfile write must be preceded by a liveness guard on that same file
+  if grep -q "_pid_alive \"\$RUN_DIR/$_svc.pid\"" <<< "$_blk"; then
+    pass "start.sh guards the $_svc spawn on its own pidfile"
+  else
+    fail "start.sh spawns $_svc without checking whether one is already live"
+  fi
+  _guard_at="$(grep -n "_pid_alive \"\$RUN_DIR/$_svc.pid\"" <<< "$_blk" | head -1 | cut -d: -f1)"
+  _write_at="$(grep -n "> \"\$RUN_DIR/$_svc.pid\"" <<< "$_blk" | head -1 | cut -d: -f1)"
+  if [[ -n "$_guard_at" && -n "$_write_at" && $_guard_at -lt $_write_at ]]; then
+    pass "start.sh checks for a live $_svc BEFORE overwriting its pidfile"
+  else
+    fail "start.sh writes $_svc.pid at line $_write_at, guard at ${_guard_at:-none}"
+  fi
+done
+# and the orphan with no recorded pid must still be reapable, path-anchored so
+# a sibling worktree's server is never touched (healthcheck.sh's own rule)
+if grep -q 'pkill -f "\$REPO_DIR/agents/artifact_server.py"' "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "healthcheck can reap an unrecorded beast-artifact orphan"
+else
+  fail "a beast-artifact orphan with no pidfile is unreapable — restart loops forever"
+fi
+# Every pkill of artifact_server must be path-anchored. Checking for the
+# absence of the string "artifact_server" after pkill would flag the anchored
+# line too, so the assertion is per-line: each one must name $REPO_DIR.
+_BARE=0
+while IFS= read -r _ln; do
+  _t="${_ln#"${_ln%%[![:space:]]*}"}"       # strip leading whitespace
+  [[ "$_t" == \#* ]] && continue            # a COMMENT about pkill is not a pkill
+  [[ "$_t" == *artifact_server* ]] || continue
+  [[ "$_t" == *'$REPO_DIR'* ]] || _BARE=1
+done < <(grep 'pkill' "$REPO_DIR/scripts/healthcheck.sh" || true)
+if [[ $_BARE -eq 0 ]]; then
+  pass "every pkill of artifact_server is path-anchored (never a sibling worktree)"
+else
+  fail "healthcheck reaps artifact by a BARE pattern — that reaps sibling worktrees too"
+fi
+
+echo ""
 echo "GPU lease:"
 _GL="$REPO_DIR/scripts/gpu-lease.sh"
 _GL_DIR="$(mktemp -d)"

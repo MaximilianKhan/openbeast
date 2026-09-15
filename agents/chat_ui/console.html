@@ -642,6 +642,15 @@ function openStream(from){
     // EventSource reconnects on its own and replays Last-Event-ID, which the
     // server honours as `from` — so a dropped radio resumes with no work here.
     if(S.terminal){ closeStream(); setConn("closed", ""); return; }
+    // [51] ...but a NON-200 is not retried at all, and this handler never
+    // looked at readyState, so a permanently failed stream (the /events gate
+    // refusing a caller whose only credential is a device key, which
+    // EventSource cannot send) was painted "reconnecting" forever. CLOSED(2)
+    // is exactly the permanent case; a transient drop with a retry pending
+    // is CONNECTING(0), so the radio-blip path above is undisturbed.
+    if(es.readyState === 2){
+      closeStream(); setConn("stream unavailable", ""); return;
+    }
     setConn("reconnecting", "off");
   };
   KNOWN.forEach(function(name){
@@ -663,6 +672,16 @@ function handle(name, d){
     return;
   }
   if(name === "lost"){
+    // [46] The SERVER has rewound to offset 0, so our forward offset is now
+    // a lie. `lost` frames deliberately carry no `id:`, so the monotonic
+    // guard above never lowers S.offset by itself — it would instead reject
+    // every id of the replayed transcript, freezing S.offset and
+    // localStorage at the stale value for the rest of the page's life. A
+    // later same-page resume (visibilitychange, or re-entering the session)
+    // would then ask `from=<stale>` and be served a silent blank. Rewind
+    // here: the server emits `lost` before every rewind it does, at open and
+    // mid-loop, so this one site covers both.
+    S.offset = 0; lsDel(OFF(S.id));
     resetStream();
     push(el("div", "note n-warn", "transcript restarted — replaying from the beginning"));
     return;

@@ -42,12 +42,14 @@ Which processes write one:
 
 - `scripts/job.sh run` — **always**. Any command you wrap is a session.
 - `runner.py` — when it is started with `--steer` or `--session-id`. The
-  console passes both for every agent it spawns, so anything started *from*
-  beast-chat is a session by construction.
-- An agent started any other way (`agent.sh`, the MCP `start_agent` tool,
-  `openbeast-client agent`) behaves exactly as it did before beast-chat
-  existed and is **not** a ledger session unless you ask for one with
-  `--steer`. That flag is the entire opt-in; there is no config value that
+  console passes both for every agent it spawns, and the MCP `start_agent`
+  tool always passes `--session-id` (which *implies* `--steer`), so anything
+  started *from* beast-chat **or by the local model through the tool server**
+  is a session by construction — and therefore steerable and stoppable by any
+  chat-scoped device key.
+- An agent started any other way (`agent.sh`, `openbeast-client agent`)
+  behaves exactly as it did before beast-chat existed and is **not** a ledger
+  session unless you ask for one with `--steer`. That flag is the entire opt-in; there is no config value that
   turns it on. See *Steering is disabled inside eval runs* for why.
 
 **Is not:** a replacement for Open WebUI (your chat history already lives
@@ -77,7 +79,9 @@ Verify from the rig itself at any point:
 ```bash
 ./scripts/doctor.sh | grep -i chat      # health row + auth posture
 
-# Health is the one route an unidentified caller may have, and it answers
+# Health is the one API route an unidentified caller may have (the console
+# page and its /icon.svg are ungated markup and always answer 200 — they ship
+# no session data, so a 200 there proves nothing about your login), and it answers
 # with exactly {"status":"ok"} — liveness, nothing else. The detail fields
 # need proof you are on the box:
 curl -s -H "X-OpenBeast-Local: $(cat .run/chat-local.token)" \
@@ -259,7 +263,9 @@ identity: a `Tailscale-User-Login` header the tailnet proxy injected, the
 locality token below, or an enrolled chat-scoped device key (curl and the
 client CLI have no header to be injected into). A request carrying none of
 them is refused on every route — `404`, the same answer a stranger gets.
-`/api/chat/health` is the single exception, and to an unidentified caller it
+`/api/chat/health` is the only API route excepted — `/` and `/icon.svg` are
+ungated markup, carry no session data, and always answer 200 — and to an
+unidentified caller health
 answers `{"status":"ok"}` and nothing else, because `start.sh` and
 `healthcheck.sh` must be able to ask whether the process is alive without a
 credential. Session counts, the ledger path and the auth posture are a map of
@@ -415,7 +421,7 @@ over it.
 | `chat_server` restarts | Nothing is lost. The ledger is on disk; the phone reopens its stream with `from=<offset>`. |
 | Phone sleeps 10 minutes | Reattach resumes at the exact byte. No duplicate events, no gap. |
 | Transcript is rotated or truncated under a live stream | The stream notices mid-poll, emits a `lost` frame, and restarts at 0 rather than skipping content or handing the reader half an event. |
-| Rig reboots | Sessions whose pid is gone reconcile to `lost` on the next listing — `reconcile` matches pid **and** process start time, so a recycled pid is never mistaken for a live session. |
+| Rig reboots | Every session from a previous boot reconciles to `lost` on the next listing. `reconcile` matches pid **and** process start time **and** the boot id (`/proc/sys/kernel/random/boot_id`, stamped at register). The boot id is what makes this row true rather than approximately true: the start time is *ticks since boot*, so across a reboot the other two compare against a different clock and can agree by coincidence — which is also why the signalling path checks it before any `killpg`. A record written before this existed, or on a kernel that will not report a boot id, falls back to the pid+start proof rather than being declared dead. |
 | A session finishes | The record stays. `sessions.prune(days=30)` is the tool for clearing old terminal records, but **nothing calls it on a schedule** — run it yourself when the ledger gets long. Agent transcripts under `agents/logs/` are never touched by it; the ledger is an index, not the archive. |
 
 `list_agents` and `check_agent` in the MCP tool server read the ledger first
@@ -445,10 +451,14 @@ distinguished those cases would also tell a prober which logins are in
 `./scripts/clients.sh scope phone add chat`; if the device is gone entirely,
 enroll it again.
 
-**404 on every route, including the console page.** Either your tailnet login
-is not in `CHAT_OPERATORS`, or the request reached the server with no
-identity at all (no `Tailscale-User-Login` header and no
-`.run/chat-local.token`) — a direct `curl localhost:3003/` does exactly that.
+**404 on every API route.** Either your tailnet login is not in
+`CHAT_OPERATORS`, or the request reached the server with no identity at all
+(no `Tailscale-User-Login` header and no `.run/chat-local.token`) — a direct
+`curl localhost:3003/api/chat/sessions` does exactly that. Note the console
+page itself is NOT part of this symptom: `/` and `/icon.svg` are ungated
+markup and answer 200 to anyone who can reach the port, so loading the page
+tells you nothing about your identity — the session list inside it is what
+404s.
 The 404 is deliberate in both cases; 403 would confirm the service exists.
 Compare `tailscale status --json | grep -i login` against the conf value, and
 from the box itself pass `-H "X-OpenBeast-Local: $(cat .run/chat-local.token)"`.
@@ -467,7 +477,13 @@ a session writes about itself.
 
 Expect it after a rig reboot, an OOM kill, a `kill -9` of the session's
 process group from outside beast-chat, or a power cut — and after nothing
-else. In particular it is **not** what an operator stop looks like: a job
+else, with **one exception worth knowing**: a job started through the console
+(`POST /api/chat/sessions`) is reaped by `chat_server` itself, which files any
+death-by-signal as `stopped`, not `lost` — the same event `job.sh` would call
+`failed`. The record's summary is what distinguishes them: an unsolicited
+kill reads `killed by SIGKILL`, while a stop you asked for reads `SIGKILL
+after stop request`. So on a console-started job, read the summary, not just
+the state word. In particular it is **not** what an operator stop looks like: a job
 stopped with `job.sh stop` records `stopped` even when it ignored SIGTERM and
 had to be force-killed, and an agent stopped from the console records
 `stopped` after its `done` event. A `lost` job whose log ends mid-command is

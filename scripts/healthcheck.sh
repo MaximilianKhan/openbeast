@@ -252,6 +252,16 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       if [[ -n "$_art_pid" ]] && kill -0 "$_art_pid" 2>/dev/null; then
         kill "$_art_pid" 2>/dev/null || true
         sleep 1
+      else
+        # No recorded pid, but the health check failed — so if anything IS
+        # holding :3004 it is an orphan we have no handle on, and every
+        # subsequent cycle would spawn a replacement that cannot bind and
+        # loop here forever. PATH-ANCHORED, which is what the rule above
+        # actually forbids the bare form of: "$REPO_DIR/agents/..." cannot
+        # match a sibling worktree's server, because its path differs. Same
+        # form stop.sh uses for every service it reaps.
+        pkill -f "$REPO_DIR/agents/artifact_server.py" 2>/dev/null || true
+        sleep 1
       fi
       OPENBEAST_REPO_DIR="$REPO_DIR" \
         OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
