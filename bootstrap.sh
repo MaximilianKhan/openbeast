@@ -385,8 +385,60 @@ if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.p
 fi
 # huggingface_hub 1.x ships the `hf` CLI in the base package (the old [cli]
 # extra now warns); -U pulls a current version so the base package is enough.
-python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt"
-ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+# SATISFACTION CHECK FIRST, and it costs no network. The old form was an
+# unconditional `pip install -q -U "huggingface_hub" -r requirements.txt`, and
+# the `-U` on an unpinned name forces a PyPI index query EVERY run — even on a
+# box where every pin is already installed. Under `set -euo pipefail` that made
+# this line fatal on a closed network, so an operator who pre-seeded ~/.local
+# from a USB wheelhouse still could not get past step 3 of the only supported
+# installer. It also fired AFTER the llama.cpp build had burned 10-40 minutes.
+#
+# Upgrades are not lost: scripts/update.sh --python owns them (it already runs
+# `pip list --outdated` and reinstalls against requirements.txt), which is the
+# right place for an upgrade — bootstrap's job is to make the box WORK.
+ob_python_deps_satisfied() {
+  python3 - "$REPO_DIR/agents/requirements.txt" <<'PYDEPS'
+import importlib.metadata as md, re, sys
+missing = []
+for raw in open(sys.argv[1]):
+    line = raw.split("#")[0].strip()
+    if not line:
+        continue
+    m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line)
+    if not m:                      # unpinned line: presence is all we can check
+        name, want = re.split(r"[<>=!~\[]", line, 1)[0].strip(), None
+    else:
+        name, want = m.group(1), m.group(2).strip()
+    try:
+        got = md.version(name)
+    except md.PackageNotFoundError:
+        missing.append(f"{name} (not installed)")
+        continue
+    if want and got != want:
+        missing.append(f"{name} (have {got}, need {want})")
+# huggingface_hub is installed alongside the pins but is NOT pinned in the
+# file; presence is the only claim we can make about it.
+try:
+    md.version("huggingface_hub")
+except md.PackageNotFoundError:
+    missing.append("huggingface_hub (not installed)")
+if missing:
+    print("; ".join(missing))
+    sys.exit(1)
+sys.exit(0)
+PYDEPS
+}
+if _unsat="$(ob_python_deps_satisfied)"; then
+  ok "python deps already satisfied — skipping the install (no index query)"
+else
+  warn "installing python deps: ${_unsat:-unknown}"
+  python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
+    || die "pip install failed. On a closed network, pre-stage the wheels:
+       on a connected box:  pip download -d wheels -r agents/requirements.txt huggingface_hub
+       copy ./wheels here, then: pip install --user --no-index --find-links wheels \\
+                                     -r agents/requirements.txt huggingface_hub"
+  ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+fi
 # hf / mcpo land in ~/.local/bin — make sure it's reachable for this run
 export PATH="$HOME/.local/bin:$PATH"
 command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
