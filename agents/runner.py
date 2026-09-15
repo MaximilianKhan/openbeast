@@ -16,6 +16,7 @@ The server must be running (e.g. ./serve-qwen-27b-q5.sh) before launching.
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -28,6 +29,13 @@ from pathlib import Path
 from openai import OpenAI
 
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
+
+# beast-chat session ledger. Optional on purpose: a runner whose checkout
+# predates sessions.py, or whose import fails for any reason, must still run.
+try:
+    import sessions as _sessions
+except Exception:                                      # pragma: no cover
+    _sessions = None
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -142,6 +150,15 @@ def _rebuild_messages_from_log(log_path: str, system_prompt: str) -> list[dict]:
                 if content and content not in seen_assistant:
                     seen_assistant.add(content)
                     messages.append({"role": "assistant", "content": content})
+            elif etype == "steer":
+                # beast-chat operator messages are real history (unlike the
+                # transient plan block), so --resume must put them back in the
+                # position they were spoken — between the turns they separated.
+                if event.get("op") == "say":
+                    text = event.get("text") or ""
+                    if text:
+                        messages.append({"role": "user",
+                                         "content": _STEER_PREFIX + text})
             elif etype == "tool_call":
                 name = event.get("name", "")
                 result = event.get("result", "")
@@ -300,6 +317,103 @@ def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     return messages + [{"role": "user", "content": plan}]
 
 
+# ---------------------------------------------------------------------------
+# beast-chat: session ledger + steering inbox
+#
+# INERT BY DEFAULT. With beast-chat unconfigured, every path below is skipped
+# and the runner emits the same events, builds the same message list, prints
+# the same stdout and returns the same exit codes as before this feature.
+# ---------------------------------------------------------------------------
+
+#: Marks an operator message in both `messages` and the transcript. Unlike the
+#: plan block this IS stored in history — the model should remember being told.
+_STEER_PREFIX = "[operator message] "
+
+#: Bounded poll while paused. Never a busy loop; a paused agent costs nothing.
+_PAUSE_POLL_S = 1.0
+
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _steering_enabled(explicit: bool = False) -> bool:
+    """The single gate for the ledger AND the steering inbox.
+
+    ===================== HARD EVAL GUARD =====================
+    `run_eval.py` spawns this runner as a subprocess with OPENBEAST_TASK_PATHS
+    in the child env (evals/run_eval.py:~584). An eval unit is a scientific
+    measurement, half of a paired A/B row. If an operator message — or a
+    stale, pre-planted inbox file from an earlier interactive run — could
+    reach it, the row would be silently corrupted and the cache-key era would
+    not show it. So under eval mode the inbox is never opened, never created,
+    and never even stat()ed: this returns False FIRST, before any other
+    consideration, and the caller caches the result for the whole run.
+    ===========================================================
+
+    Otherwise steering is strictly opt-in: `BEAST_CHAT=true` in
+    openbeast.conf (exported by scripts/lib/conf.sh as OPENBEAST_BEAST_CHAT),
+    or an explicit --steer / --session-id on the command line. Belt and
+    braces: eval tasks whose spec names no /tmp/eval path carry no
+    OPENBEAST_TASK_PATHS, and the opt-in is what protects those.
+    """
+    if os.environ.get("OPENBEAST_TASK_PATHS"):
+        return False
+    if _sessions is None:
+        return False
+    if explicit:
+        return True
+    return os.environ.get("OPENBEAST_BEAST_CHAT", "").strip().lower() in _TRUTHY
+
+
+def _session_id_from_log(log_path: str) -> str | None:
+    """Recover the MCP agent id from its log filename (`agent-<id>.jsonl`).
+
+    mcp_server.start_agent already names the transcript after the agent id, so
+    reusing it keeps one identity across the tool server, the ledger and the
+    console instead of minting a second name for the same run.
+    """
+    m = re.fullmatch(r"agent-(.+)\.jsonl", os.path.basename(log_path or ""))
+    return m.group(1) if m else None
+
+
+def _apply_steer_ops(ops: list[dict], messages: list[dict], log_event,
+                     paused: bool = False) -> dict:
+    """Fold a batch of inbox ops into the conversation.
+
+    Returns {"stop", "paused", "said"}. Ops apply in file order, so the last
+    pause/resume in a batch wins. Unknown ops are ignored but logged — a
+    silently dropped operator action is worse than a noisy one.
+    """
+    stop = False
+    said = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            log_event({"type": "steer", "op": "?", "ignored": "not an object"})
+            continue
+        name = str(op.get("op") or "").strip().lower()
+        sender = str(op.get("from") or "")
+        if name == "say":
+            text = str(op.get("text") or "").strip()
+            if not text:
+                log_event({"type": "steer", "op": "say", "ignored": "empty text"})
+                continue
+            messages.append({"role": "user", "content": _STEER_PREFIX + text})
+            said += 1
+            log_event({"type": "steer", "op": "say", "text": text, "from": sender})
+        elif name == "stop":
+            stop = True
+            paused = False
+            log_event({"type": "steer", "op": "stop", "from": sender})
+        elif name == "pause":
+            paused = True
+            log_event({"type": "steer", "op": "pause", "from": sender})
+        elif name == "resume":
+            paused = False
+            log_event({"type": "steer", "op": "resume", "from": sender})
+        else:
+            log_event({"type": "steer", "op": name or "?", "ignored": "unknown op"})
+    return {"stop": stop, "paused": paused, "said": said}
+
+
 def _host_of(url: str) -> str:
     try:
         return (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -358,6 +472,8 @@ def run_agent(
     context_budget: int = 0,
     resume_from: str | None = None,
     api_key: str | None = None,
+    session_id: str | None = None,
+    steer: bool = False,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
 
@@ -396,10 +512,55 @@ def run_agent(
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         log_path = os.path.join(log_dir, f"agent-{timestamp}.jsonl")
 
+    # --- beast-chat (inert unless configured; see _steering_enabled) --------
+    # Resolved ONCE here and cached in a local for the whole run, so the eval
+    # guard is evaluated exactly one time and cannot be re-decided mid-loop.
+    steering = _steering_enabled(steer or bool(session_id))
+    ses_id = ""
+    steer_cursor = 0
+    steer_paused = False
+    if steering:
+        ses_id = session_id or _session_id_from_log(log_path) or _sessions.new_id("agent")
+        # Carry a previous cursor forward so --resume never replays ops the
+        # earlier process already consumed.
+        prior = _sessions.get(ses_id) or {}
+        prior_meta = prior.get("meta") if isinstance(prior.get("meta"), dict) else {}
+        try:
+            steer_cursor = max(int(prior_meta.get("cursor") or 0), 0)
+        except (TypeError, ValueError):
+            steer_cursor = 0
+        _sessions.register(
+            ses_id, kind="agent", title=task[:200], pid=os.getpid(),
+            workdir=workdir, model=model, transcript=log_path,
+            meta={"cursor": steer_cursor, "base_url": base_url,
+                  "max_iter": max_iter},
+        )
+        _finalized = {"done": False}
+
+        def _finalize_once(state: str, summary: str | None = None):
+            if not _finalized["done"]:
+                _finalized["done"] = True
+                _sessions.finalize(ses_id, state, summary=summary)
+
+        # An unhandled exception prints its traceback and THEN runs atexit, so
+        # a crashed agent lands as `failed` instead of a record stuck on
+        # `running`. A SIGKILL skips this — that is exactly what `lost` is for.
+        atexit.register(
+            _finalize_once, "failed", "process exited without a terminal event")
+        _last_touch = [0.0]
+
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
         with open(log_path, "a") as f:
             f.write(json.dumps(event) + "\n")
+        if steering:
+            # Throttled: `updated_at` is a liveness heartbeat for the console,
+            # not an audit trail, and the transcript is the real record. Keeps
+            # the ledger off the hot path during tool-call bursts.
+            now = time.time()
+            if now - _last_touch[0] >= 0.5:
+                _last_touch[0] = now
+                _sessions.touch(ses_id, last_event=event.get("type") or "")
 
     print(f"Agent started — task: {task[:100]}{'...' if len(task) > 100 else ''}")
     print(f"Server: {base_url}")
@@ -437,6 +598,43 @@ def run_agent(
         return n
 
     for iteration in range(1, max_iter + 1):
+        if steering:
+            # THE TURN BOUNDARY — the only point at which operator ops apply.
+            # A message sent during a 60 s tool call lands here, when the call
+            # returns; the console tells the operator so. Reading before the
+            # `iteration` event means a stop never leaves a phantom turn in
+            # the transcript.
+            paused_logged = False
+            while True:
+                ops, steer_cursor = _sessions.read_new_ops(ses_id, steer_cursor)
+                if ops:
+                    # Persist the cursor before acting: a crash mid-turn must
+                    # not replay an op the model has already been told.
+                    _sessions.touch(ses_id, meta={"cursor": steer_cursor})
+                    act = _apply_steer_ops(ops, messages, log_event, steer_paused)
+                    steer_paused = act["paused"]
+                    if act["stop"]:
+                        print("\nStopped by operator.")
+                        _print_token_summary(tokens_prompt, tokens_completion,
+                                             tokens_total, compactions)
+                        log_event({
+                            "type": "done", "summary": "stopped by operator",
+                            "iterations": iteration - 1,
+                            "tokens_prompt": tokens_prompt,
+                            "tokens_completion": tokens_completion,
+                            "tokens_total": tokens_total,
+                            "compactions": compactions,
+                        })
+                        _finalize_once("stopped", "stopped by operator")
+                        return final_summary or "stopped by operator"
+                if not steer_paused:
+                    break
+                if not paused_logged:
+                    paused_logged = True
+                    log_event({"type": "paused", "iteration": iteration})
+                    print("[paused] waiting for resume or stop", file=sys.stderr)
+                time.sleep(_PAUSE_POLL_S)   # bounded: never a spin
+
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
 
@@ -596,6 +794,8 @@ def run_agent(
                     "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
                     "tokens_total": tokens_total, "compactions": compactions,
                 })
+                if steering:
+                    _finalize_once("done", final_summary)
                 return final_summary
 
     # Max iterations reached (or an unrecoverable stop)
@@ -609,6 +809,11 @@ def run_agent(
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
         "tokens_total": tokens_total, "compactions": compactions,
     })
+    if steering:
+        # The process exited cleanly, so this is `done`, not `failed`; the
+        # summary is what tells the console it ran out of road.
+        _finalize_once("done", final_summary or (
+            stop_reason or f"max iterations ({max_iter}) reached without task_done"))
     return final_summary or "(max iterations reached)"
 
 
@@ -634,6 +839,8 @@ def main():
     parser.add_argument("--context-file", help="Read background context from a file")
     parser.add_argument("--context-budget", type=int, default=0, help="Approximate context token budget: told to the agent, and past ~70%% of it the runner stubs the oldest tool results (see compact_messages)")
     parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
+    parser.add_argument("--session-id", help="beast-chat: pin the session-ledger id (default: derived from the log filename, else generated). Implies --steer.")
+    parser.add_argument("--steer", action="store_true", help="beast-chat: register in the session ledger and read the steering inbox at each turn boundary. Off unless this flag or BEAST_CHAT=true is set; ALWAYS off under run_eval.py (OPENBEAST_TASK_PATHS).")
     parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")
 
@@ -672,6 +879,8 @@ def main():
         context_budget=args.context_budget,
         resume_from=args.resume,
         api_key=args.api_key,
+        session_id=args.session_id,
+        steer=args.steer,
     )
 
 
