@@ -114,8 +114,11 @@ shell and the raw route alike. A listed login asking for someone else's
 
 The CLI is the general publisher: shell scripts, cron, campaign runs, and
 background agents (which reach it through their `bash` tool) all use it. It
-talks to `:3004` on loopback and presents the proof-of-locality token, so it
-only works *on the rig*.
+talks to `:3004` on loopback and presents the proof-of-locality token on write
+verbs, so publishing only works *on the rig*. The token goes to curl through a
+0600 `--config` file in the CLI's own temp directory, never as a `-H` argument
+— `/proc` makes argv world-readable, so a header on the command line hands the
+write credential to every uid on the box.
 
 ```bash
 ./scripts/artifact.sh publish <file.html> [options]
@@ -197,9 +200,18 @@ read. Nothing arriving over the tailnet can create, change or remove an
 artifact — a phone can view and nothing else. Remote publish (a device key
 carrying an `artifact` scope) is a small addition and deliberately not in v1.
 
-Every request writes one line to `.run/artifact-audit.jsonl` (mode 0600):
-`ts, login, route, id, n, outcome, ms`, plus `sha256` and `bytes` on a
-publish. Never page content.
+Every request **that reaches the server** writes one line to
+`.run/artifact-audit.jsonl` (mode 0600): `ts, login, route, id, n, outcome,
+ms`, plus `sha256` and `bytes` on a publish. Never page content. That covers
+`scripts/artifact.sh` and every tailnet viewer.
+
+It does **not** cover the model's tools. `publish_artifact` and
+`list_artifacts` call the store in process — no HTTP hop, so no audit row. A
+publish through them still appends the store's own ledger,
+`<store>/index.jsonl` (`ts, id, n, owner, bytes, sha256`); a list through them
+leaves no trace at all. If you need every model-side read audited too, route
+the tools through the server instead — that is the only way to get it, and it
+is deliberately not v1.
 
 beast-artifact does **not** sit behind beast-gate — that gate is the
 *inference* edge, and this is not the inference path.

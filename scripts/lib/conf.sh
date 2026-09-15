@@ -146,9 +146,11 @@ export OPENBEAST_EDGE_PORT="$EDGE_PORT"
 # beast-artifact: a durable URL for anything the model renders (docs/BEAST_ARTIFACT_PLAN.md).
 # Opt-in. When true, start.sh runs agents/artifact_server.py on ARTIFACT_PORT
 # (loopback) and setup-tailscale.sh --publish-artifact mounts it at :8446 so
-# pages open on a phone. The MCP/WebUI tools (publish_artifact, list_artifacts)
-# and scripts/artifact.sh talk to it over loopback with a proof-of-locality
-# token, the same idiom beast-gate uses.
+# pages open on a phone. The server SERVES the pages; it is not the publish
+# path for the MCP/WebUI tools — publish_artifact/list_artifacts call the
+# store (agents/artifact.py) in process. scripts/artifact.sh is what talks to
+# it over loopback, with a proof-of-locality token on write verbs (the same
+# idiom beast-gate uses).
 BEAST_ARTIFACT="${OPENBEAST_BEAST_ARTIFACT:-$(_ob_conf_value BEAST_ARTIFACT || echo false)}"
 ARTIFACT_PORT="${OPENBEAST_ARTIFACT_PORT:-$(_ob_conf_value ARTIFACT_PORT || echo 3004)}"
 export BEAST_ARTIFACT ARTIFACT_PORT

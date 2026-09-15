@@ -218,6 +218,143 @@ else
   fail "a garbage port was not caught: $out"
 fi
 
+# --- 9. identifier validation happens LOCALLY ---
+# A typo'd id used to sail into curl, produce a malformed URL, fail with curl
+# exit 3, and be reported as "beast-artifact is not answering — restart the
+# stack". Wrong diagnosis, wrong repair, healthy stack bounced.
+echo ""
+echo "Identifier validation:"
+_run 2 "show rejects an id with a space" -- show "not an id"
+if echo "$OUT" | grep -q "is not an artifact id"; then
+  pass "a bad id is a usage error that names the id"
+else
+  fail "a bad id was not caught locally: $OUT"
+fi
+if echo "$OUT" | grep -q "not answering"; then
+  fail "a bad id is still reported as 'server not answering'"
+else
+  pass "a bad id is NOT reported as a dead server"
+fi
+_run 2 "show rejects a traversal id" -- show "../../etc/passwd"
+_run 2 "show rejects a URL-ish id" -- show "abc?x=1"
+_run 2 "show rejects a bare dot" -- show "."
+_run 2 "versions rejects a bad id" -- versions "bad id"
+_run 2 "rollback rejects a bad id" -- rollback "bad id" 2
+_run 2 "visibility rejects a bad id" -- visibility "bad id" private
+_run 2 "remove rejects a bad id" -- remove "bad id" --yes
+# A well-formed id must still be allowed through to the network (and then
+# fail as "no server", not as a validation error).
+_run 4 "a well-formed id reaches the network" -- show "a1b2c3d4-5e6f.7g"
+
+# --- 10. publish argument honesty ---
+echo ""
+echo "publish honesty:"
+_run 2 "--title '' is refused, not silently dropped" -- publish "$PAGE" --title ""
+if echo "$OUT" | grep -q "cannot be empty"; then
+  pass "an empty --title says why it cannot be honored"
+else
+  fail "an empty --title was dropped silently: $OUT"
+fi
+: > "$TMPROOT/app.js"
+_run 2 "--file with an absolute published path is refused" \
+      -- publish "$PAGE" --file "/opt/app.js=$TMPROOT/app.js"
+if echo "$OUT" | grep -q "must be relative"; then
+  pass "an absolute published path is refused, not silently relocated"
+else
+  fail "an absolute published path was accepted: $OUT"
+fi
+_run 2 "publish rejects a bad --id locally" -- publish "$PAGE" --id "bad id"
+
+# --- 11. transport failures are told apart ---
+# A stubbed curl is the only deterministic way to produce "curl failed for a
+# reason that is NOT a refused connection" — and the distinction is the whole
+# point: one means "start the stack", the other means "do not".
+echo ""
+echo "Transport error classification:"
+STUBDIR="$TMPROOT/stub"
+mkdir -p "$STUBDIR"
+cat > "$STUBDIR/curl" <<'STUB'
+#!/bin/bash
+# Test stub for curl: records its own argv and a process-table snapshot,
+# then fakes whatever response the test asked for.
+out=""; prev=""
+for a in "$@"; do
+  [[ "$prev" == "-o" ]] && out="$a"
+  prev="$a"
+done
+printf '%s\n' "$*" > "${STUB_ARGV:-/dev/null}"
+[[ -n "${STUB_PS:-}" ]] && { ps -ww -eo args= > "$STUB_PS" 2>/dev/null || true; }
+[[ -n "$out" && -n "${STUB_RESPONSE:-}" ]] && printf '%s' "$STUB_RESPONSE" > "$out"
+printf '%s' "${STUB_CODE:-}"
+exit "${STUB_EXIT:-0}"
+STUB
+chmod +x "$STUBDIR/curl"
+export STUB_ARGV="$TMPROOT/argv.txt"
+
+# NB: the assignments go INSIDE the substitution — `A=1 OUT="$(cmd)"` is a
+# list of assignments, and cmd would not see A at all.
+rc=0
+OUT="$(STUB_EXIT=7 PATH="$STUBDIR:$PATH" "$CLI" list 2>&1)" || rc=$?
+if [[ $rc -eq 4 ]] && echo "$OUT" | grep -q "not answering"; then
+  pass "a refused connection (curl 7) is 'the server is not answering' (exit 4)"
+else
+  fail "curl 7 was not classified as a dead server (exit $rc): $OUT"
+fi
+rc=0
+OUT="$(STUB_EXIT=3 PATH="$STUBDIR:$PATH" "$CLI" list 2>&1)" || rc=$?
+if [[ $rc -eq 5 ]]; then
+  pass "any other curl failure is its own outcome (exit 5, not 4)"
+else
+  fail "curl 3 was not told apart from a refused connection (exit $rc): $OUT"
+fi
+if echo "$OUT" | grep -q "restarting it will not help"; then
+  pass "it does not advise restarting a healthy stack"
+else
+  fail "a transport error still advises a restart: $OUT"
+fi
+
+# --- 12. the locality token never reaches the process table ---
+# /proc/<pid>/cmdline is world-readable: a `-H "X-OpenBeast-Local: $TOKEN"`
+# argument published the WRITE credential to every uid on the box, on every
+# call — read-only ones included.
+echo ""
+echo "Locality token handling:"
+mkdir -p "$SANDBOX/.run"
+TESTTOKEN="deadbeefcafe0123456789abcdefTOKEN"
+printf '%s' "$TESTTOKEN" > "$SANDBOX/.run/artifact-local.token"
+chmod 600 "$SANDBOX/.run/artifact-local.token"
+export STUB_PS="$TMPROOT/ps.txt"
+: > "$STUB_PS"
+STUB_EXIT=0 STUB_CODE=201 \
+  STUB_RESPONSE='{"id":"abc","title":"Test page","url":"http://x/a/abc","version":1}' \
+  PATH="$STUBDIR:$PATH" "$CLI" publish "$PAGE" --title "T" >/dev/null 2>&1 || true
+if [[ -s "$STUB_ARGV" ]] && ! grep -q "$TESTTOKEN" "$STUB_ARGV"; then
+  pass "the token is absent from curl's argv on a publish"
+else
+  fail "the token appears in curl's argv: $(cat "$STUB_ARGV" 2>/dev/null)"
+fi
+if [[ -s "$STUB_PS" ]] && ! grep -q "$TESTTOKEN" "$STUB_PS"; then
+  pass "the token is absent from the process table during the call"
+else
+  fail "the token is visible in \`ps\` during a publish"
+fi
+if grep -q -- "--config" "$STUB_ARGV"; then
+  pass "curl is handed the header through --config instead"
+else
+  fail "curl was not given a --config file: $(cat "$STUB_ARGV")"
+fi
+# A read must not carry the write credential at all.
+: > "$STUB_ARGV"
+STUB_EXIT=0 STUB_CODE=200 STUB_RESPONSE='{"artifacts":[]}' \
+  PATH="$STUBDIR:$PATH" "$CLI" list >/dev/null 2>&1 || true
+if ! grep -q -- "--config" "$STUB_ARGV" && ! grep -q "$TESTTOKEN" "$STUB_ARGV"; then
+  pass "a read-only call sends no locality token at all"
+else
+  fail "list still carries the write credential: $(cat "$STUB_ARGV")"
+fi
+unset STUB_PS
+rm -f "$SANDBOX/.run/artifact-local.token"
+
 # --- Summary ---
 echo ""
 echo "================================"

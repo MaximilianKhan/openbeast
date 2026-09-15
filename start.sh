@@ -534,7 +534,10 @@ fi
 # beast-artifact (opt-in, BEAST_ARTIFACT=true) — the publish-and-view service
 # for model- or script-authored HTML (docs/BEAST_ARTIFACT_PLAN.md). Loopback
 # only; setup-tailscale.sh --publish-artifact puts it on :8446 for phones.
-# Started AFTER the tool server: publish_artifact posts to it over loopback.
+# It SERVES the pages; it is not on the publish path for the tools —
+# publish_artifact/list_artifacts call the store (agents/artifact.py) in
+# process. scripts/artifact.sh is the one that speaks HTTP to it, with the
+# proof-of-locality token. So a failure here costs viewing, not publishing.
 if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
@@ -544,15 +547,26 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
   ARTIFACT_UP=0
   for _i in $(seq 1 20); do
-    if ! kill -0 "$ARTIFACT_PID" 2>/dev/null; then
-      echo "Error: beast-artifact exited during startup — see output above" >&2; exit 1
-    fi
+    kill -0 "$ARTIFACT_PID" 2>/dev/null || break
     curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
       && { ARTIFACT_UP=1; break; }
     sleep 1
   done
-  [[ $ARTIFACT_UP -eq 1 ]] || { echo "Error: beast-artifact not serving after 20s" >&2; exit 1; }
-  echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
+  if [[ $ARTIFACT_UP -eq 1 ]]; then
+    echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
+  else
+    # WARNING, not fatal: this is an opt-in cosmetic service. Taking the whole
+    # stack — the model included — down because a page viewer failed to bind
+    # is a far worse outcome than not being able to open an artifact URL.
+    echo "WARNING: beast-artifact did not come up (see its output above)." >&2
+    echo "         The rest of the stack, llama-server included, is unaffected;" >&2
+    echo "         artifact URLs will not serve until it starts. Publishing" >&2
+    echo "         through the model's tools still works (in-process store)." >&2
+    echo "         Retry it on its own:  ./scripts/healthcheck.sh --restart" >&2
+    kill "$ARTIFACT_PID" 2>/dev/null || true
+    rm -f "$RUN_DIR/artifact.pid"
+    ARTIFACT_PID=""
+  fi
 fi
 
 echo "Starting Open WebUI..."

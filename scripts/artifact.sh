@@ -18,9 +18,17 @@
 # Design: docs/BEAST_ARTIFACT_PLAN.md.
 #
 # Talks to the artifact server on loopback (ARTIFACT_PORT, default 3004).
-# Writes carry the proof-of-locality token from .run/artifact-local.token —
-# the file is 0600, so "can read it" IS "is on this box" (the transport peer
-# proves nothing: tailscale serve reverse-proxies from 127.0.0.1).
+# WRITE verbs (POST/PATCH/DELETE) carry the proof-of-locality token from
+# .run/artifact-local.token — the file is 0600, so "can read it" IS "is on
+# this box" (the transport peer proves nothing: tailscale serve reverse-
+# proxies every remote caller in from 127.0.0.1). The token is handed to curl
+# through a 0600 --config file in this script's own 0700 tmpdir, NEVER as
+# -H on the command line: argv is world-readable in /proc, so every uid on
+# the box could lift the write credential out of `ps` during any call.
+#
+# Exit codes: 0 ok · 2 usage/validation · 3 the server said no (HTTP non-2xx)
+#             4 nothing answering on the port, or no locality token
+#             5 the request itself failed (curl transport error)
 #
 # Wire contract for --file (agents/artifact_server.py PublishBody): supporting
 # files ride in the request body as
@@ -66,10 +74,12 @@ esac
 BASE="http://127.0.0.1:$PORT"
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
 
-TMPDIR_RUN="$(mktemp -d "${TMPDIR:-/tmp}/openbeast-artifact.XXXXXX")"
+TMPDIR_RUN="$(mktemp -d "${TMPDIR:-/tmp}/openbeast-artifact.XXXXXX")"   # 0700
 trap 'rm -rf "$TMPDIR_RUN"' EXIT
 BODY="$TMPDIR_RUN/body"
 REQ="$TMPDIR_RUN/req.json"
+CURL_CFG="$TMPDIR_RUN/curl.cfg"
+CURL_ERR="$TMPDIR_RUN/curl.err"
 
 _no_server() {
   echo "ERROR: beast-artifact is not answering on $BASE." >&2
@@ -79,6 +89,55 @@ _no_server() {
   echo "                   ./stop.sh && ./start.sh" >&2
   echo "  Already on?      ./start.sh --status   and   ./scripts/doctor.sh" >&2
   exit 4
+}
+
+_transport_failed() {  # _transport_failed <curl-exit-code>
+  echo "ERROR: the request to $BASE failed (curl exit $1)." >&2
+  if [[ -s "$CURL_ERR" ]]; then sed 's/^/       /' "$CURL_ERR" >&2; fi
+  echo "" >&2
+  echo "       The server is reachable — this is not 'the stack is down', so" >&2
+  echo "       restarting it will not help. Check the message above." >&2
+  exit 5
+}
+
+# The server's own id rule (agents/artifact.py:_ID_RE). Validated HERE so a
+# typo'd id is a usage error naming the id, not a malformed URL that curl
+# rejects and the old code reported as "beast-artifact is not answering —
+# restart the stack".
+_check_id() {
+  local id="$1" what="$2"
+  case "$id" in
+    .|..) _die "$what: '$id' is not an artifact id" ;;
+  esac
+  if ! printf '%s' "$id" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'; then
+    _die "$what: '$id' is not an artifact id (letters, digits, . _ - only," \
+         "64 chars max — it is the last part of the artifact URL)"
+  fi
+}
+
+# Percent-encode for a path segment. _check_id already restricts the alphabet
+# to characters that need no encoding; this is the belt to that suspenders, so
+# no future caller can hand curl a URL it has to guess at.
+_urlenc() {
+  local s="$1" out="" i c
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      [A-Za-z0-9._~-]) out="$out$c" ;;
+      *)               out="$out$(printf '%%%02X' "'$c")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# The locality token goes in a 0600 file curl reads with --config, never in
+# argv: `ps` is world-readable, so -H "X-OpenBeast-Local: $TOKEN" broadcast
+# the write credential to every uid on the box on every call — including the
+# read-only ones, which do not need it at all.
+_token_config() {
+  [[ -s "$CURL_CFG" ]] && return 0
+  ( umask 077; : > "$CURL_CFG" )
+  printf 'header = "X-OpenBeast-Local: %s"\n' "$TOKEN" > "$CURL_CFG"
 }
 
 _need_token() {
@@ -91,21 +150,51 @@ _need_token() {
 }
 
 # _api <METHOD> <path> [request-body-file] — response lands in $BODY, the HTTP
-# status is echoed. A refused connection is a missing server, not a 000 to
-# parse downstream.
+# status is echoed.
+#
+# Two transport outcomes, deliberately NOT merged: curl 7 (connection refused)
+# and 28 (timeout) mean nothing is answering, which is the "start the stack"
+# advice; every other curl failure (malformed URL, unreadable body file, a
+# broken --config) is OUR bug or the caller's, and telling the operator to
+# restart a healthy stack for it wastes their evening.
 _api() {
-  local method="$1" path="$2" reqfile="${3:-}" code
+  local method="$1" path="$2" reqfile="${3:-}" code rc=0
   local args
   args=(-s -S -m 60 -o "$BODY" -w '%{http_code}' -X "$method")
-  if [[ -n "$TOKEN" ]]; then args+=(-H "X-OpenBeast-Local: $TOKEN"); fi
+  case "$method" in
+    POST|PUT|PATCH|DELETE)
+      # Writes only: a GET never needs the write credential, so a `list` must
+      # not put it on the wire (or anywhere else) at all.
+      _need_token
+      _token_config
+      args+=(--config "$CURL_CFG")
+      ;;
+  esac
   if [[ -n "$reqfile" ]]; then
     args+=(-H 'Content-Type: application/json' --data-binary "@$reqfile")
   fi
-  if ! code="$(curl "${args[@]}" "$BASE$path" 2>/dev/null)"; then
-    _no_server
+  : > "$CURL_ERR"
+  code="$(curl "${args[@]}" "$BASE$path" 2>"$CURL_ERR")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    case "$rc" in
+      7|28) _no_server ;;
+      *)    _transport_failed "$rc" ;;
+    esac
   fi
   [[ -n "$code" && "$code" != "000" ]] || _no_server
   printf '%s' "$code"
+}
+
+# The `id` field out of the response in $BODY (empty if there is none).
+_body_id() {
+  OB_BODY="$BODY" python3 -c '
+import json, os, sys
+try:
+    doc = json.load(open(os.environ["OB_BODY"]))
+except Exception:
+    sys.exit(0)
+if isinstance(doc, dict):
+    print(str(doc.get("id") or doc.get("artifact_id") or ""))' 2>/dev/null || true
 }
 
 # _check <status> <what> — exit with the server's own message on a non-2xx.
@@ -273,13 +362,17 @@ case "$cmd" in
     [[ -r "$src" ]] || _die "cannot read: $src"
     [[ -s "$src" ]] || _die "$src is empty — nothing to publish"
     title=""; description=""; favicon=""; art_id=""; label=""; visibility="private"
+    # "given and empty" is not "not given": --description "" means CLEAR it.
+    # The old code dropped every empty value on the floor and reported
+    # success, so there was no way to unset a description at all.
+    title_set=0; desc_set=0
     file_pairs=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --title)        [[ $# -ge 2 ]] || _die "--title needs a value"; title="$2"; shift 2 ;;
-        --title=*)      title="${1#*=}"; shift ;;
-        --description)  [[ $# -ge 2 ]] || _die "--description needs a value"; description="$2"; shift 2 ;;
-        --description=*) description="${1#*=}"; shift ;;
+        --title)        [[ $# -ge 2 ]] || _die "--title needs a value"; title="$2"; title_set=1; shift 2 ;;
+        --title=*)      title="${1#*=}"; title_set=1; shift ;;
+        --description)  [[ $# -ge 2 ]] || _die "--description needs a value"; description="$2"; desc_set=1; shift 2 ;;
+        --description=*) description="${1#*=}"; desc_set=1; shift ;;
         --favicon)      [[ $# -ge 2 ]] || _die "--favicon needs a value"; favicon="$2"; shift 2 ;;
         --favicon=*)    favicon="${1#*=}"; shift ;;
         --id)           [[ $# -ge 2 ]] || _die "--id needs a value"; art_id="$2"; shift 2 ;;
@@ -297,10 +390,30 @@ case "$cmd" in
       private|tailnet) ;;
       *) _die "--visibility takes 'private' or 'tailnet' (got: $visibility)" ;;
     esac
+    [[ -n "$art_id" ]] && _check_id "$art_id" "--id"
+    if [[ $title_set -eq 1 && -z "$title" ]]; then
+      # A page always has a title (the store falls back to the file's own
+      # <title>, then "Untitled"), so an empty one cannot be honored. Say so
+      # instead of silently publishing under the old title.
+      _die "--title cannot be empty: a page always has a title." \
+           "Omit --title to keep the current one, or to let the file's" \
+           "own <title> supply it."
+    fi
     for _pair in ${file_pairs[@]+"${file_pairs[@]}"}; do
       case "$_pair" in
         *=*) ;;
         *)   _die "--file takes published=source (got: $_pair)" ;;
+      esac
+      _fpub="${_pair%%=*}"
+      case "$_fpub" in
+        # The published path is where the file is served NEXT TO the page, so
+        # an absolute one is meaningless — and used to be silently stripped to
+        # a relative one and published somewhere the caller never named, under
+        # a success line. Caught here, before the token check, so it is a plain
+        # usage error on a rig with no stack running.
+        /*|\\*) _die "--file published path must be relative, not '$_fpub'" \
+                   "— it is the path the page references (<script src=\"app.js\">)," \
+                   "not a path on this box. Did you mean '${_fpub#/}'?" ;;
       esac
       _fsrc="${_pair#*=}"
       [[ -f "$_fsrc" && -r "$_fsrc" ]] || _die "--file source not readable: $_fsrc"
@@ -340,9 +453,19 @@ files = {}
 total = len(raw)
 for pair in pairs:
     published, _, source = pair.partition("=")
-    published = published.strip().lstrip("/")
+    published = published.strip()
     if not published:
         sys.stderr.write("ERROR: --file %r has an empty published path\n" % pair)
+        sys.exit(2)
+    # The published path is where the file is served NEXT TO the page. An
+    # absolute one used to be silently stripped to a relative one and
+    # published somewhere the caller never asked for, under a success line.
+    if published.startswith("/") or published.startswith("\\"):
+        sys.stderr.write(
+            "ERROR: --file published path must be relative, not %r — it is "
+            "the path the\n       page references (<script src=\"app.js\">), "
+            "not a path on this box.\n       Did you mean %r?\n"
+            % (published, published.lstrip("/\\")))
         sys.exit(2)
     if published in files:
         sys.stderr.write("ERROR: --file publishes %r twice\n" % published)
@@ -380,6 +503,18 @@ PY
     code="$(_api POST /api/artifacts "$REQ")" || exit $?
     _check "$code" "publish"
     _render published
+    # publish() ignores an empty description (it never clears metadata), so an
+    # explicit --description "" is honored with the one call that does:
+    # PATCH, the same route `visibility` uses.
+    if [[ $desc_set -eq 1 && -z "$description" ]]; then
+      _pub_id="$(_body_id)"
+      if [[ -n "$_pub_id" ]]; then
+        printf '{"description": ""}' > "$REQ"
+        code="$(_api PATCH "/api/artifacts/$(_urlenc "$_pub_id")" "$REQ")" || exit $?
+        _check "$code" "clearing the description"
+        echo "  description: cleared"
+      fi
+    fi
     ;;
 
   list)
@@ -406,7 +541,8 @@ PY
         *)      _die "unknown option for show: $1" ;;
       esac
     done
-    code="$(_api GET "/api/artifacts/$art_id")" || exit $?
+    _check_id "$art_id" "show"
+    code="$(_api GET "/api/artifacts/$(_urlenc "$art_id")")" || exit $?
     _check "$code" "show"
     if [[ $json -eq 1 ]]; then _render json; else _render show; fi
     ;;
@@ -416,7 +552,8 @@ PY
     [[ -n "$art_id" ]] || _die "usage: artifact.sh versions <id>"
     shift
     [[ $# -eq 0 ]] || _die "unknown option for versions: $1"
-    code="$(_api GET "/api/artifacts/$art_id")" || exit $?
+    _check_id "$art_id" "versions"
+    code="$(_api GET "/api/artifacts/$(_urlenc "$art_id")")" || exit $?
     _check "$code" "versions"
     _render versions
     ;;
@@ -430,9 +567,10 @@ PY
       ''|*[!0-9]*) _die "version must be a positive integer (got: $n)" ;;
     esac
     [[ "$n" -ge 1 ]] || _die "version must be >= 1 (got: $n)"
+    _check_id "$art_id" "rollback"
     _need_token
     printf '{"current": %s}' "$n" > "$REQ"
-    code="$(_api PATCH "/api/artifacts/$art_id" "$REQ")" || exit $?
+    code="$(_api PATCH "/api/artifacts/$(_urlenc "$art_id")" "$REQ")" || exit $?
     _check "$code" "rollback"
     _render patched "now serving v$n"
     ;;
@@ -446,9 +584,10 @@ PY
       private|tailnet) ;;
       *) _die "visibility takes 'private' or 'tailnet' (got: $vis)" ;;
     esac
+    _check_id "$art_id" "visibility"
     _need_token
     printf '{"visibility": "%s"}' "$vis" > "$REQ"
-    code="$(_api PATCH "/api/artifacts/$art_id" "$REQ")" || exit $?
+    code="$(_api PATCH "/api/artifacts/$(_urlenc "$art_id")" "$REQ")" || exit $?
     _check "$code" "visibility"
     _render patched "visibility = $vis"
     ;;
@@ -472,8 +611,9 @@ PY
       echo "  Really delete it: ./scripts/artifact.sh remove $art_id --yes" >&2
       exit 2
     fi
+    _check_id "$art_id" "remove"
     _need_token
-    code="$(_api DELETE "/api/artifacts/$art_id")" || exit $?
+    code="$(_api DELETE "/api/artifacts/$(_urlenc "$art_id")")" || exit $?
     _check "$code" "remove"
     echo "Removed artifact $art_id (all versions)."
     ;;

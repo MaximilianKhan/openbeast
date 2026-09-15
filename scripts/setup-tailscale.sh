@@ -35,9 +35,11 @@
 # --publish-artifact publishes beast-artifact at :8446 (→ the artifact
 # server on ARTIFACT_PORT, default :3004): the gallery and the pages the
 # model publishes, so an artifact URL opens on a phone. Requires
-# BEAST_ARTIFACT=true in openbeast.conf. READ access is gated on the
-# tailnet login (ARTIFACT_OPERATORS); WRITES stay loopback-only, so nothing
-# on the phone path can publish or delete. Undo with --unpublish-artifact.
+# BEAST_ARTIFACT=true in openbeast.conf. READ access is gated on the tailnet
+# login ONLY when ARTIFACT_OPERATORS lists someone — an empty list means every
+# signed-in tailnet device can read, and the flag says so out loud when it is.
+# WRITES stay loopback-only either way, so nothing on the phone path can
+# publish or delete. Undo with --unpublish-artifact.
 #
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
@@ -219,8 +221,24 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   fi
   sudo tailscale serve --bg --https=8446 "http://127.0.0.1:${ARTIFACT_PORT:-3004}"
   echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
-  echo "      Reads are gated on the tailnet login (ARTIFACT_OPERATORS);"
-  echo "      publishing stays loopback-only — a phone can view, never write."
+  # Honesty about the READ gate: "gated on ARTIFACT_OPERATORS" is only true
+  # when that list has somebody in it. Empty means every signed-in device on
+  # the tailnet reads the gallery — the operator must hear that now, at the
+  # moment they open the port, not discover it later.
+  _ART_OPS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_OPERATORS || true)}"
+  if [[ -z "$_ART_OPS" ]]; then
+    _ART_OPS="$(_ob_conf_value CHAT_OPERATORS || true)"
+  fi
+  if [[ -z "${_ART_OPS// /}" ]]; then
+    echo "      NOTE: ARTIFACT_OPERATORS is EMPTY — reads are NOT gated to a"
+    echo "            list. Every device signed in to your tailnet can open"
+    echo "            the gallery and every artifact marked 'tailnet'."
+    echo "            Gate it:  echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf"
+    echo "                      ./stop.sh && ./start.sh"
+  else
+    echo "      Reads are gated on the tailnet login (ARTIFACT_OPERATORS=$_ART_OPS)."
+  fi
+  echo "      Publishing stays loopback-only — a phone can view, never write."
 fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'

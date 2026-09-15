@@ -92,7 +92,12 @@ beast-artifact and get back a durable tailnet URL (`:8446/a/<uuid>`), private
 by default, re-publishable into a new version at the same URL. The store and
 client helpers live in `agents/artifact.py` (deliberately *not* in
 `agents/tools.py`, which stays byte-identical so the eval cache era doesn't
-roll); the tools post to the artifact server on loopback `:3004`. Opt-in via
+roll). The tools call that store **in process** — they do not speak HTTP to
+the artifact server; `:3004` exists to *serve* the pages, and
+`scripts/artifact.sh` is the client that talks to it (with the proof-of-
+locality token, on write verbs only). Two consequences: the tool path writes
+no `.run/artifact-audit.jsonl` row, and it checks `BEAST_ARTIFACT` itself
+rather than discovering the service is off by failing to connect. Opt-in via
 `BEAST_ARTIFACT=true`. Neither tool is in `GUEST_TOOLS` (guest → 404) and
 neither is in the autonomous runner's registry — background agents publish
 through `scripts/artifact.sh` with `bash`. Authoring rules, the sandbox/CSP

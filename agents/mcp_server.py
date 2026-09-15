@@ -44,6 +44,7 @@ import difflib
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import uuid
@@ -888,6 +889,102 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
 # module scope: beast-artifact is opt-in (BEAST_ARTIFACT), and a missing or
 # broken module must degrade to one tool returning "Error: ..." rather than
 # taking the other 16 tools down with an ImportError at registration time.
+#
+# Both tools call the store IN PROCESS. They do not speak HTTP to
+# agents/artifact_server.py: that server exists to *serve* the pages (and is
+# what scripts/artifact.sh talks to over loopback with the locality token).
+# Two consequences worth knowing: the tool path writes no row to
+# .run/artifact-audit.jsonl (a publish still appends the store's own
+# index.jsonl ledger), and it needs the opt-in flag checked here rather than
+# discovering the service is off by failing to connect.
+
+
+def _artifact_enabled() -> bool:
+    """Is beast-artifact turned on for this rig?
+
+    start.sh sources scripts/lib/conf.sh, which exports BEAST_ARTIFACT into
+    every child — including the tool server this module runs inside. Without
+    this check `publish_artifact` happily writes into the store and hands the
+    model a confident URL that nothing is serving (reg#3).
+    """
+    val = (os.environ.get("OPENBEAST_BEAST_ARTIFACT")
+           or os.environ.get("BEAST_ARTIFACT") or "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+_ARTIFACT_OFF = ("Error: beast-artifact is not enabled on this rig. Enable it "
+                 "with BEAST_ARTIFACT=true in openbeast.conf and restart the "
+                 "stack (./stop.sh && ./start.sh).")
+
+
+def _read_artifact_page(path: str, cap: int):
+    """Read `path` as the page to publish. Returns (html, None) or (None, err).
+
+    The MODEL picks this path and publishing mints a durable, shareable URL,
+    so a plain open().read() here is an arbitrary-file-read exfiltration
+    channel: a review published /etc/passwd and /proc/self/maps through it,
+    wedged a worker thread forever on a named pipe, and could have exhausted
+    memory on a character device long before any size cap applied. Reuse the
+    four guards tools.read_file earned in the 2026-09-10 hardening — refuse
+    pseudo-filesystems, open O_NONBLOCK, fstat + S_ISREG, and check the size
+    BEFORE reading — and return a string for every failure, including the
+    ValueError a NUL byte in the path raises (which otherwise leaves the tool
+    server as a 500, breaking the "tools never raise" contract).
+
+    Those four guards are necessary and not sufficient: /etc/passwd is a
+    regular file comfortably under the cap, and it published cleanly with all
+    four in place. read_file may leave reads open ("an agent may legitimately
+    read config") because its output lands in one model's context; THIS tool
+    mints a durable, shareable URL, which is a different blast radius. So the
+    page must come from the caller's own workspace — the directory write_file
+    puts it in. Publishing an arbitrary path on the rig stays available to the
+    human through scripts/artifact.sh, which is loopback- and token-gated.
+    """
+    fd = -1
+    try:
+        resolved = _tools._resolve(path)
+        if _tools._hazard_path(resolved):
+            return None, (f"Error: refusing to read {path} — pseudo-filesystem "
+                          f"paths (/proc, /sys, /dev) can be infinite or "
+                          f"side-effecting")
+        base = os.path.realpath(_tools._base_dir())
+        rel = os.path.relpath(resolved, base)
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+            return None, (f"Error: refusing to publish {path} — it is outside "
+                          f"your workspace ({base}), and publishing mints a "
+                          f"durable URL anyone with the link can open. Write "
+                          f"the page there first (write_file) and publish that "
+                          f"path.")
+        # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
+        # regular-file check and the read see the same inode.
+        fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, (f"Error: not a regular file (refusing to publish "
+                          f"{path}) — publish_artifact takes an HTML file")
+        if st.st_size > cap:
+            return None, (f"Error: {path} is {st.st_size} bytes, over the "
+                          f"{cap} byte page cap")
+        os.set_blocking(fd, True)
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # the file object owns it now
+            # Bound the read regardless of the stat'd size: a file growing
+            # under us can report one size and stream another.
+            raw = fh.read(cap + 1)
+        if len(raw) > cap:
+            return None, (f"Error: {path} is over the {cap} byte page cap")
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as e:
+        return None, (f"Error: {path} is not UTF-8 text ({e}) — "
+                      f"publish_artifact takes an HTML file, not a binary.")
+    except (OSError, ValueError) as e:
+        return None, f"Error: cannot read {path}: {e}"
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 @_tool()
@@ -931,7 +1028,9 @@ def publish_artifact(path: str, title: str = "", description: str = "",
          phone.
 
     Args:
-        path: Path to the .html file to publish.
+        path: Path to the .html file to publish. It must be in your workspace
+              — the directory write_file writes to — because publishing turns
+              it into a durable URL. Write the page first, then publish it.
         title: Page title; falls back to the file's own <title>, then the
                filename. Keep it stable across updates.
         description: One sentence shown as the subtitle in the gallery.
@@ -949,20 +1048,20 @@ def publish_artifact(path: str, title: str = "", description: str = "",
     Returns:
         A line naming the page and its URL, or a string starting with "Error:".
     """
+    # The opt-in check comes FIRST and is its own branch: the old guard below
+    # only fired on an ImportError, so on a rig with BEAST_ARTIFACT unset the
+    # import succeeded, the store wrote a version, and the model got a URL
+    # that nothing serves.
+    if not _artifact_enabled():
+        return _ARTIFACT_OFF
     try:
         import artifact as _artifact  # lazy: see the note above
     except Exception as e:
         return (f"Error: artifact store unavailable ({e}). Enable it with "
                 f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
-    try:
-        resolved = _tools._resolve(path)
-        with open(resolved, "r", encoding="utf-8") as f:
-            html = f.read()
-    except OSError as e:
-        return f"Error: cannot read {path}: {e}"
-    except UnicodeDecodeError as e:
-        return (f"Error: {path} is not UTF-8 text ({e}) — publish_artifact "
-                f"takes an HTML file, not a binary.")
+    html, err = _read_artifact_page(path, _artifact.CAPS["page_bytes"])
+    if err:
+        return err
     if not html.strip():
         return f"Error: {path} is empty — nothing to publish."
     try:
@@ -998,7 +1097,11 @@ def list_artifacts(limit: int = 25) -> str:
         return (f"Error: artifact store unavailable ({e}). Enable it with "
                 f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
     try:
-        rows = _artifact.list_artifacts(limit=max(1, int(limit)))
+        # viewer= is not optional: without it the gallery enumerates EVERY
+        # operator's private artifacts to whoever called the tool. The identity
+        # server sets the ContextVar that default_owner() reads.
+        rows = _artifact.list_artifacts(viewer=_artifact.default_owner(),
+                                        limit=max(1, int(limit)))
     except Exception as e:
         return f"Error: could not list artifacts: {e}"
     if not rows:
