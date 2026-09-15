@@ -42,6 +42,11 @@ def build() -> dict:
         "claims": [
             {"id": e["entry"], "topic": e["entry"],
              "old": e.get("old") or [], "new": e.get("new") or [],
+             # The one line that would have prevented the mistake. A claim
+             # without one is verifiable but UNDELIVERABLE — escalation
+             # refuses to attach a card it cannot state in a sentence, which
+             # is how every zig claim silently matched nothing at first.
+             "summary": e.get("summary", ""),
              "doc_must_contain": e.get("pack_must_contain") or []}
             for e in man["entries"]
         ],

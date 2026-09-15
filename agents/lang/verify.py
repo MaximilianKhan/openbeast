@@ -143,6 +143,21 @@ def load_claims(path: str, lang: str | None = None) -> list[Claim]:
     return out
 
 
+def old_snippets(claim: Claim) -> tuple[list[str], str | None]:
+    """(the snippets that must FAIL, the variant to compile them under).
+
+    An AVAILABILITY claim carries no explicit `old` code — the old form IS the
+    new code compiled under the older language version. Both verify() and the
+    escalation index need that rule, and two copies of it would drift, so it
+    lives here.
+    """
+    if claim.old:
+        return claim.old, claim.old_variant
+    if claim.old_variant and claim.old_variant != claim.new_variant:
+        return claim.new, claim.old_variant
+    return [], claim.old_variant
+
+
 def verify(claim: Claim) -> dict:
     d = D.driver_for(claim.lang)
     if d is None or not d.available():
@@ -158,11 +173,9 @@ def verify(claim: Claim) -> dict:
     # An AVAILABILITY claim gives no `old` code — the old form IS the new
     # code, compiled under the older language version. Re-use it rather than
     # duplicating the snippet, which would drift.
-    old_snips = claim.old
-    if not old_snips and claim.old_variant and claim.old_variant != claim.new_variant:
-        old_snips = claim.new
+    old_snips, old_variant = old_snippets(claim)
     for i, snip in enumerate(old_snips, 1):
-        r = d.compile_source(d.wrap(snip), claim.old_variant)
+        r = d.compile_source(d.wrap(snip), old_variant)
         if r:
             still_ok_old.append(i)
 

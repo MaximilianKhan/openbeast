@@ -15,6 +15,7 @@
         "main_io.new.2.zig",
         "main_io.new.3.zig"
       ],
+      "summary": "every I/O call needs an `Io`: `pub fn main(init: std.process.Init) !void { const io = init.io; ... }`, or from a plain main() `const io = std.Io.Threaded.global_single_threaded.io();`",
       "doc_must_contain": [
         "std.process.Init",
         "global_single_threaded"
@@ -31,6 +32,7 @@
         "stdout.new.1.zig",
         "stdout.new.2.zig"
       ],
+      "summary": "`std.io` and `std.fs.File` are GONE \u2014 stdout is `var fw: std.Io.File.Writer = .init(.stdout(), io, &buf); const w = &fw.interface; try w.print(...); try w.flush();`",
       "doc_must_contain": [
         "std.Io.File.Writer = .init(.stdout(), io, &buf)",
         "&fw.interface",
@@ -49,6 +51,7 @@
         "stdin.new.2.zig",
         "stdin.new.3.zig"
       ],
+      "summary": "stdin by line: `var fr: std.Io.File.Reader = .init(.stdin(), io, &rb); while (try fr.interface.takeDelimiter('\\n')) |line| {...}` \u2014 `readUntilDelimiterOrEof`/`readAll` are gone",
       "doc_must_contain": [
         "takeDelimiter('\\n')",
         "allocRemaining(gpa, .unlimited)"
@@ -63,6 +66,7 @@
       "new": [
         "files.new.1.zig"
       ],
+      "summary": "`std.fs.cwd()` is gone \u2014 use `std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20))` / `.writeFile(io, .{ .sub_path = p, .data = bytes })`",
       "doc_must_contain": [
         "std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited",
         ".writeFile(io, .{ .sub_path",
@@ -78,6 +82,7 @@
       "new": [
         "args.new.1.zig"
       ],
+      "summary": "`std.process.argsAlloc` is gone \u2014 `const args = try init.minimal.args.toSlice(init.arena.allocator());`",
       "doc_must_contain": [
         "init.minimal.args.toSlice(init.arena.allocator())"
       ]
@@ -96,6 +101,7 @@
         "time_random.new.1.zig",
         "time_random.new.2.zig"
       ],
+      "summary": "`std.time.*`, `std.Thread.sleep` and `std.crypto.random` are gone \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`",
       "doc_must_contain": [
         "std.Io.Clock.now(.awake, io)",
         "io.sleep(.fromMilliseconds",
@@ -116,6 +122,7 @@
         "arraylist.new.2.zig",
         "arraylist.new.3.zig"
       ],
+      "summary": "`std.ArrayList` is UNMANAGED now: `var l: std.ArrayList(T) = .empty; defer l.deinit(gpa); try l.append(gpa, x);` \u2014 `.init(gpa)` and `append(x)` are gone; `pop()` returns `?T`",
       "doc_must_contain": [
         "std.ArrayList(T) = .empty",
         "list.append(gpa, x)",
@@ -134,6 +141,7 @@
         "arraylist_writer.new.1.zig",
         "arraylist_writer.new.2.zig"
       ],
+      "summary": "`list.writer()` is gone \u2014 `var aw: std.Io.Writer.Allocating = .init(gpa); try aw.writer.print(...); const s = aw.written();` or `try list.print(gpa, ...)` on an ArrayList(u8)",
       "doc_must_contain": [
         "std.Io.Writer.Allocating = .init(gpa)",
         "aw.written()",
@@ -151,6 +159,7 @@
         "pq_hashmap.new.1.zig",
         "pq_hashmap.new.2.zig"
       ],
+      "summary": "PriorityQueue went unmanaged: `var pq: std.PriorityQueue(T, void, cmp) = .empty; try pq.push(gpa, x); const top = pq.pop();` \u2014 AutoHashMap/StringHashMap are still managed `.init(gpa)`",
       "doc_must_contain": [
         "std.PriorityQueue(T, void, cmp) = .empty",
         "pq.push(gpa, x)",
@@ -171,6 +180,7 @@
         "math.new.2.zig",
         "math.new.3.zig"
       ],
+      "summary": "`std.math.abs/min/max` are gone \u2014 use the builtins `@abs(x)`, `@min(a, b)`, `@max(a, b)` (`sqrt`, `pow`, `cast`, `maxInt`, `divCeil`, `clamp` are still there)",
       "doc_must_contain": [
         "`std.math.abs/absInt` \u2192 `@abs(x)`",
         "`std.math.min/max` \u2192 `@min(a, b)` / `@max(a, b)`",
@@ -197,6 +207,7 @@
         "mem.new.3.zig",
         "mem.new.4.zig"
       ],
+      "summary": "`mem.trimRight/trimLeft` -> `trimEnd/trimStart`; `mem.tokenize/split` -> `tokenizeScalar/splitScalar`; `mem.copy/set` -> `@memcpy/@memset`; `std.sort.sort` -> `std.mem.sort`",
       "doc_must_contain": [
         "trimEnd/trimStart(u8, s, \" \")",
         "tokenizeScalar(u8, s, ' ')",
@@ -221,6 +232,7 @@
         "fmt.new.4.zig",
         "fmt.new.5.zig"
       ],
+      "summary": "`std.fmt.format(w, ..)` -> `w.print(..)`; `formatIntBuf` -> `fmt.printInt`; `fmtSliceHexLower(b)` -> `\"{x}\"` with the slice; a custom `format` takes `(self, w: *std.Io.Writer)` and prints with `{f}`",
       "doc_must_contain": [
         "`std.fmt.format(w, ..)` \u2192 `w.print(..)`",
         "fmt.printInt(&buf, v, 10, .lower, .{})",
@@ -243,6 +255,7 @@
       "new": [
         "casts.new.1.zig"
       ],
+      "summary": "casts take ONE argument and read the type from context: `@intCast(x)`, `@floatFromInt(i)`, `@intFromFloat(f)`, `@intFromEnum(e)`, `@enumFromInt(n)`, `@intFromBool(b)` \u2014 the two-arg `@intToFloat`-style builtins are gone",
       "doc_must_contain": [
         "const f: f64 = @floatFromInt(i)",
         "@intFromFloat(f)",
@@ -264,6 +277,7 @@
         "alloc_exit.new.1.zig",
         "alloc_exit.new.2.zig"
       ],
+      "summary": "`std.heap.GeneralPurposeAllocator` is gone \u2014 `var dbg: std.heap.DebugAllocator(.{}) = .init; const gpa = dbg.allocator();` (or `init.gpa`); `std.os.exit` -> `std.process.exit(code)`",
       "doc_must_contain": [
         "std.heap.DebugAllocator(.{}) = .init",
         "dbg.allocator()",
@@ -280,6 +294,7 @@
       "new": [
         "ascii.new.1.zig"
       ],
+      "summary": "`std.ascii.isAlpha/isSpace` -> `isAlphabetic/isWhitespace` (also `isDigit`, `isAlphanumeric`, `toLower`, `toUpper`, `eqlIgnoreCase`)",
       "doc_must_contain": [
         "`std.ascii.isAlpha/isSpace` \u2192 `isAlphabetic/isWhitespace`"
       ]
