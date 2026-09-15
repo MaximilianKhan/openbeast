@@ -16,8 +16,13 @@ Layout, under $OPENBEAST_FILES_DIR/artifacts (0700 all the way down):
         v1/files/app.js    supporting files at their published paths
         v2/...
       index.jsonl          append-only publish log (ts, id, n, owner, bytes)
-      .lock                flock target; every mutator holds it (three
-                           separate processes write this store)
+      .locks/<id>.lock     one flock target PER ARTIFACT; every mutator of
+                           that id holds it (three separate processes write
+                           this store). Never store-wide: one exclusive lock
+                           over everything, held across a 64 MB fsync, made
+                           the health endpoint and every page view wait on a
+                           publish (security model D25). Read paths take no
+                           lock at all.
 
 Three invariants the rest of the system leans on:
 
@@ -44,6 +49,7 @@ Env:
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import html as _html
 import json
@@ -55,6 +61,7 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -64,11 +71,11 @@ except ImportError:                   # pragma: no cover - not our platform
     fcntl = None
 
 __all__ = [
-    "ArtifactError", "CAPS", "store_root", "publish", "get_meta",
-    "list_artifacts", "read_file", "set_visibility", "set_description",
-    "set_current", "remove", "artifact_url", "can_view", "extract_title",
-    "wrap_skeleton", "set_owner_override", "reset_owner_override",
-    "default_owner",
+    "ArtifactError", "CAPS", "store_root", "is_store_path", "publish",
+    "get_meta", "list_artifacts", "read_file", "set_visibility",
+    "set_description", "set_current", "remove", "artifact_url", "can_view",
+    "extract_title", "wrap_skeleton", "set_owner_override",
+    "reset_owner_override", "default_owner", "default_owner_alias",
 ]
 
 
@@ -106,51 +113,142 @@ _TEXT_TYPES = {
     "application/xhtml+xml", "image/svg+xml", "application/manifest+json",
 }
 
-_LOCK = threading.Lock()   # serializes version allocation within a process
-
 # The store is written by THREE processes in the shipped stack (the artifact
 # server, the MCP tool host and scripts/artifact.sh), so an in-process lock is
 # not enough: two publishes that interleave their read-modify-write of
 # meta.json lose a version and leave a vN directory with no meta entry, which
-# wedges that id forever. Every mutator therefore takes an flock on
-# <store>/.lock for the whole read-modify-write.
-_LOCK_NAME = ".lock"
+# wedges that id forever.
+#
+# The lock is therefore an flock — but PER ARTIFACT, non-blocking, and
+# bounded (D25). Round one took one exclusive flock over the whole store with
+# no timeout and held it across fsyncs of up to 64 MB, on sync handlers that
+# occupy anyio's bounded threadpool: with it held, /api/artifacts/health and
+# /a/<id> both timed out at 8 s, which blinds doctor.sh and healthcheck.sh.
+# Publishing into page A now contends only with page A, a caller that cannot
+# get in raises a named error instead of hanging, and no read path locks at
+# all (read_file, get_meta and list_artifacts are lock-free by construction —
+# versions are immutable and meta.json is replaced atomically).
+#
+# The lock files live in <store>/.locks/, NOT inside the artifact directory:
+# remove() rmtree's that directory, and a lock held on an unlinked inode
+# excludes nobody. A hard kill cannot wedge anything either — the kernel drops
+# an flock when the process dies, and the leftover file is just an empty file.
+_LOCKS_DIR = ".locks"
+_LOCK_DEFAULT_TIMEOUT = 10.0        # seconds, per mutation; env-overridable
+
+# Per-id in-process locks, so threads in ONE process queue on the mutex rather
+# than burning the flock retry budget against themselves (flock conflicts even
+# between two file descriptions in the same process).
+_LOCKS_MUTEX = threading.Lock()
+_ID_LOCKS: dict[str, threading.Lock] = {}
+_HELD = threading.local()           # ids this thread already holds: re-entrant
 
 
-@contextlib.contextmanager
-def _store_lock():
-    """Exclusive, cross-process lock over the whole store.
+def _lock_timeout() -> float:
+    raw = (os.environ.get("OPENBEAST_ARTIFACT_LOCK_TIMEOUT") or "").strip()
+    try:
+        val = float(raw)
+    except ValueError:
+        return _LOCK_DEFAULT_TIMEOUT
+    return val if val > 0 else _LOCK_DEFAULT_TIMEOUT
 
-    Always takes the in-process lock first (a single, fixed order, so nested
-    waiters can never deadlock), then the flock. Degrades to the in-process
-    lock alone if the filesystem has no working flock (some network mounts) —
-    a store that cannot lock must still publish.
+
+def _busy(aid: str, waited: float) -> "ArtifactError":
+    return ArtifactError(
+        f"artifact {aid} is busy: another process is publishing to it "
+        f"(waited {waited:.1f}s). Try again.")
+
+
+def _id_mutex(aid: str) -> threading.Lock:
+    with _LOCKS_MUTEX:
+        lk = _ID_LOCKS.get(aid)
+        if lk is None:
+            lk = _ID_LOCKS[aid] = threading.Lock()
+        return lk
+
+
+def _lock_path(aid: str):
+    d = os.path.join(store_root(), _LOCKS_DIR)
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    except OSError:
+        return None
+    return os.path.join(d, f"{aid}.lock")
+
+
+def _flock_nb(path: str, aid: str, deadline: float):
+    """LOCK_EX|LOCK_NB with a bounded retry. Returns the fd (locked, or
+    unlocked on a filesystem with no working flock), or raises ArtifactError.
+
+    Never LOCK_EX-blocking: an unbounded wait here is what took health down.
     """
-    path = os.path.join(store_root(), _LOCK_NAME)
-    with _LOCK:
-        fd = None
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None            # cannot even open it: in-process lock only
+    delay = 0.005
+    while True:
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        except OSError:
-            fd = None
-        if fd is not None and fcntl is not None:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            except OSError:
-                pass       # no locking on this filesystem; carry on
-        try:
-            yield
-        finally:
-            if fd is not None:
-                if fcntl is not None:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                    except OSError:
-                        pass
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError as e:
+            if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES,
+                               errno.EINTR):
+                return fd      # no locking on this filesystem; carry on
+            left = deadline - time.monotonic()
+            if left <= 0:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
+                raise _busy(aid, _lock_timeout())
+            time.sleep(min(delay, left))
+            delay = min(delay * 2, 0.05)
+
+
+@contextlib.contextmanager
+def _artifact_lock(artifact_id: str):
+    """Exclusive, cross-process lock over ONE artifact id (D25).
+
+    Bounded: a caller that cannot get in within OPENBEAST_ARTIFACT_LOCK_TIMEOUT
+    seconds (default 10) raises ArtifactError rather than hanging forever.
+    Re-entrant per thread, and always in-process-mutex-then-flock, one fixed
+    order, so nested or concurrent mutators cannot deadlock.
+    """
+    aid = _check_id(artifact_id)
+    held = getattr(_HELD, "ids", None)
+    if held is None:
+        held = _HELD.ids = set()
+    if aid in held:
+        yield                                  # already ours; do not re-lock
+        return
+    timeout = _lock_timeout()
+    deadline = time.monotonic() + timeout
+    mutex = _id_mutex(aid)
+    if not mutex.acquire(timeout=timeout):
+        raise _busy(aid, timeout)
+    fd = None
+    try:
+        path = _lock_path(aid)
+        if path is not None and fcntl is not None:
+            fd = _flock_nb(path, aid, deadline)
+        held.add(aid)
+        try:
+            yield
+        finally:
+            held.discard(aid)
+    finally:
+        if fd is not None:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        mutex.release()
 
 
 # --- paths -------------------------------------------------------------------
@@ -178,6 +276,38 @@ def store_root() -> str:
     return root
 
 
+def is_store_path(path) -> bool:
+    """True when `path` IS the artifact store, or anything inside it (D26).
+
+    The tool surface refuses to publish a page from outside the caller's
+    workspace — but the store lives *inside* that workspace whenever no
+    per-user shard is set (FILES_SHARDING=off, and the MCP stdio surface), so
+    the workspace check alone let a second user publish another user's private
+    page by naming the store's own internal path (…/artifacts/<id>/v1/
+    index.html) and then re-share it as `tailnet`. Callers reading a file to
+    publish must refuse anything this returns True for.
+
+    Correct for the three shapes that beat a string comparison:
+      * a relative path (resolved against the working directory first),
+      * a symlinked parent — both sides are realpath'd, so a symlink ANYWHERE
+        on either path still lands on the same real directory,
+      * a path that resolves into the store from outside it (a symlink in the
+        workspace pointing at …/artifacts, the classic bypass).
+    A path that does not exist is still judged: realpath resolves the part
+    that does, which is what makes "publish into the store" refusable before
+    the file is ever opened.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return False
+    try:
+        target = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+        root = os.path.realpath(store_root())
+    except (OSError, ValueError):
+        return False
+    return target == root or target.startswith(root + os.sep)
+
+
 def _artifact_dir(artifact_id: str) -> str:
     return os.path.join(store_root(), _check_id(artifact_id))
 
@@ -199,6 +329,46 @@ def _check_id(artifact_id: str) -> str:
     if not _ID_RE.match(aid) or aid in (".", ".."):
         raise ArtifactError(f"invalid artifact id: {artifact_id!r}")
     return aid
+
+
+def _norm_login(value) -> str:
+    """One spelling for an identity: stripped, lowercased. Owners are stored
+    this way, so every comparison in this module goes through here."""
+    return str(value or "").strip().lower()
+
+
+def _owner_identities(meta) -> set:
+    """Every identity that counts as this artifact's owner (D21).
+
+    Two of them, because a publish crosses two namespaces: `owner` is the
+    login a reader presents (a tailnet login, an email), and
+    `owner_webui_id` is the raw Open WebUI user id the publish came in under.
+    A page owned by a namespace no principal can ever present is a tombstone
+    — unreadable AND unmanageable — so the alias is recorded beside the owner
+    and both can_view() and every ownership guard accept either.
+    """
+    out = set()
+    if isinstance(meta, dict):
+        for key in ("owner", "owner_webui_id"):
+            val = _norm_login(meta.get(key))
+            if val:
+                out.add(val)
+    return out
+
+
+def _require_owner(meta, owner) -> str:
+    """The ownership guard every mutator shares (D5/D22).
+
+    `owner` is who is asking (the server passes the resolved principal);
+    absent, the resolved caller. An artifact with no recorded identity at all
+    is legacy and stays mutable — everything else is owner-only, and the
+    message says nothing about who the owner is, so a probe learns nothing.
+    """
+    who = _norm_login(owner) or default_owner()
+    known = _owner_identities(meta)
+    if known and who not in known:
+        raise ArtifactError("not your artifact")
+    return who
 
 
 def _check_file_path(path: str) -> str:
@@ -391,7 +561,7 @@ def _append_log(entry: dict) -> None:
 
 def publish(html, *, title=None, description=None, favicon=None,
             files=None, artifact_id=None, label=None,
-            visibility="private", owner=None) -> dict:
+            visibility="private", owner=None, owner_alias=None) -> dict:
     """Write a new version and return {id, version, url, title, bytes}.
 
     html        str or bytes — exactly what gets stored as vN/index.html.
@@ -404,10 +574,21 @@ def publish(html, *, title=None, description=None, favicon=None,
                 `set_visibility()` is the only path (security model D5), so a
                 republish can neither silently re-share a page nor un-share
                 one.
-    owner       the publisher's login; immutable after creation. Republishing
-                into an id owned by someone else raises — otherwise a second
-                operator could take over the id, flip it to `tailnet` and
-                read every earlier private version through /a/<id>/v/<n>.
+    owner       an ASSERTION, not an identity, and it is IGNORED unless it
+                matches the resolved caller (D28). Attribution comes from
+                `default_owner()` — the identity the server put in the
+                ContextVar, else the rig's first operator, else "local".
+                Round one deleted the `owner` field from the HTTP body but
+                left this kwarg, so every in-process caller kept a primitive
+                that could publish a page under anyone's name. Ownership is
+                immutable after creation: republishing into an id owned by
+                someone else raises — otherwise a second operator could take
+                over the id, flip it to `tailnet` and read every earlier
+                private version through /a/<id>/v/<n>.
+    owner_alias the caller's identity in its OWN namespace (the raw Open WebUI
+                user id), recorded as meta["owner_webui_id"] for provenance
+                and accepted by can_view() and the ownership guards as an
+                alias for the owner (D21). Set once, at creation.
 
     Raises ArtifactError on any cap or validation failure — nothing is
     written when it does (the version directory is created exclusively and
@@ -447,18 +628,25 @@ def publish(html, *, title=None, description=None, favicon=None,
             f"{CAPS['version_bytes']} byte per-version cap")
 
     store_root()  # ensure 0700 root exists before we touch anything
-    resolved_owner = (owner or "").strip().lower() or default_owner()
-    with _store_lock():
-        if artifact_id:
-            aid = _check_id(artifact_id)
-        else:
-            aid = str(uuid.uuid4())
+    # D28: `owner=` never names the publisher. The resolved caller does, and a
+    # kwarg that disagrees with it is ignored rather than honoured (the server
+    # passes the principal it already resolved, so agreement is the norm).
+    resolved_owner = default_owner()
+    alias = _norm_login(owner_alias) or default_owner_alias()
+    if alias == resolved_owner:
+        alias = ""                      # no point aliasing an identity to itself
+    # The id is minted BEFORE the lock because the lock is per-artifact now
+    # (D25): a publish into page A must not make page B, health or any read
+    # wait on it.
+    aid = _check_id(artifact_id) if artifact_id else str(uuid.uuid4())
+    with _artifact_lock(aid):
         meta = _read_meta(aid)
         new = meta is None
         if new:
             meta = {
                 "id": aid,
                 "owner": resolved_owner,
+                "owner_webui_id": alias or None,
                 "title": None,
                 "description": None,
                 "favicon": None,
@@ -470,10 +658,14 @@ def publish(html, *, title=None, description=None, favicon=None,
             }
         else:
             # D5: republish requires ownership. The message says nothing about
-            # who does own it — a probe must not learn that either.
-            existing_owner = str(meta.get("owner") or "").strip().lower()
-            if existing_owner and existing_owner != resolved_owner:
-                raise ArtifactError("not your artifact")
+            # who does own it — a probe must not learn that either. Either
+            # recorded identity satisfies it (D21), so a page published under
+            # a WebUI id is still the caller's own page.
+            _require_owner(meta, resolved_owner)
+            # Backfill provenance, never rewrite it: the alias identifies the
+            # creator, and a later publisher must not overwrite whose it was.
+            if alias and not _norm_login(meta.get("owner_webui_id")):
+                meta["owner_webui_id"] = alias
         if not isinstance(meta.get("versions"), list):
             meta["versions"] = []
         if len(meta["versions"]) >= CAPS["versions"]:
@@ -579,8 +771,18 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
         if not isinstance(meta, dict) or not meta:
             continue
         try:
-            if owner is not None and (meta.get("owner") or "") != owner:
-                continue
+            if owner is not None:
+                # D29: owners are STORED lowercased, so a case-sensitive
+                # compare here dropped every row for a caller who spelled
+                # their own login the way their identity provider does
+                # (Max@Example.com). Either recorded identity matches (D21).
+                want = _norm_login(owner)
+                ids = _owner_identities(meta)
+                if want:
+                    if want not in ids:
+                        continue
+                elif ids:
+                    continue        # owner="" asks for the unowned records
             if viewer is not None and not can_view(meta, viewer):
                 continue
             versions = meta.get("versions")
@@ -670,27 +872,31 @@ def set_visibility(artifact_id, visibility, *, owner=None) -> dict:
         raise ArtifactError(
             f"visibility must be one of {VISIBILITIES}, got {visibility!r}")
     aid = _check_id(artifact_id)
-    who = str(owner or "").strip().lower() or default_owner()
-    with _store_lock():
+    with _artifact_lock(aid):
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
-        existing_owner = str(meta.get("owner") or "").strip().lower()
-        if existing_owner and existing_owner != who:
-            raise ArtifactError("not your artifact")
+        _require_owner(meta, owner)
         meta["visibility"] = visibility
         meta["updated_at"] = _now()
         _write_meta(aid, meta)
     return meta
 
 
-def set_description(artifact_id, description) -> dict:
-    """Gallery subtitle. Metadata only — the stored pages are untouched."""
+def set_description(artifact_id, description, *, owner=None) -> dict:
+    """Gallery subtitle. Metadata only — the stored pages are untouched.
+
+    Owner-only, the same guard set_visibility carries (D22). Round one gated
+    publish and visibility and left this one open: a second operator holding
+    the locality token could rewrite the subtitle of anyone's page, which is
+    the gallery text every other operator reads.
+    """
     aid = _check_id(artifact_id)
-    with _store_lock():
+    with _artifact_lock(aid):
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
+        _require_owner(meta, owner)
         meta["description"] = (str(description).strip()[:1000]
                                if description is not None else None) or None
         meta["updated_at"] = _now()
@@ -698,14 +904,20 @@ def set_description(artifact_id, description) -> dict:
     return meta
 
 
-def set_current(artifact_id, version) -> dict:
+def set_current(artifact_id, version, *, owner=None) -> dict:
     """Rollback: move the `current` pointer. Every version stays on disk and
-    stays reachable at /a/<id>/v/<n>."""
+    stays reachable at /a/<id>/v/<n>.
+
+    Owner-only (D22): an ungated rollback silently serves an OLDER page at a
+    URL the owner believes is current — a deface that leaves no trace in the
+    version list.
+    """
     aid = _check_id(artifact_id)
-    with _store_lock():
+    with _artifact_lock(aid):
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
+        _require_owner(meta, owner)
         try:
             n = int(version)
         except (TypeError, ValueError):
@@ -718,18 +930,29 @@ def set_current(artifact_id, version) -> dict:
     return meta
 
 
-def remove(artifact_id) -> bool:
-    """Delete an artifact and every version. True if something was removed."""
+def remove(artifact_id, *, owner=None) -> bool:
+    """Delete an artifact and every version. True if something was removed.
+
+    Owner-only (D22), and it is the loudest of the three: round one left
+    DELETE the one mutation with no ownership check at all, so a second
+    operator could destroy another owner's page and every version it ever
+    had — irreversibly, since versions are the only copy.
+    """
     aid = _check_id(artifact_id)
     d = _artifact_dir(aid)
     root = os.path.realpath(store_root())
     real = os.path.realpath(d)
     if not real.startswith(root + os.sep):
         raise ArtifactError(f"refusing to remove outside the store: {aid}")
-    if not os.path.isdir(real):
-        return False
-    shutil.rmtree(real)
-    _append_log({"ts": _now(), "id": aid, "n": None, "owner": None,
+    with _artifact_lock(aid):
+        meta = _read_meta(aid) if os.path.isdir(real) else None
+        if meta is not None:
+            _require_owner(meta, owner)
+        if not os.path.isdir(real):
+            return False
+        shutil.rmtree(real)
+    _append_log({"ts": _now(), "id": aid, "n": None,
+                 "owner": _norm_login(owner) or default_owner(),
                  "bytes": 0, "event": "remove"})
     return True
 
@@ -753,15 +976,22 @@ def artifact_url(artifact_id, version=None) -> str:
 _OWNER_OVERRIDE: ContextVar = ContextVar("openbeast_artifact_owner", default=None)
 
 
-def set_owner_override(login):
-    """Attribute publishes in this context to `login`.
+def set_owner_override(login, alias=None):
+    """Attribute publishes in this context to `login`, with an optional
+    `alias` — the caller's id in its own namespace (D21).
 
     The identity server knows who is calling; `mcp_server`'s tool functions
     never see the request. Same shape as `tools.set_base_dir_override`:
     the server sets this around the call and resets it after. Returns a
     token for `reset_owner_override()`.
+
+    `login` must be an identity a reader can actually present (a tailnet
+    login / email). When the surface only has an opaque id — an Open WebUI
+    UUID — pass it as `alias`, not as `login`: a page owned by a namespace
+    nobody can present is readable by no one and manageable by no one.
     """
-    return _OWNER_OVERRIDE.set((login or "").strip().lower() or None)
+    return _OWNER_OVERRIDE.set(
+        (_norm_login(login) or None, _norm_login(alias) or None))
 
 
 def reset_owner_override(token):
@@ -782,7 +1012,7 @@ def default_owner() -> str:
     with the whole tailnet. "local" is a real principal instead: the rig's own
     processes publish as it, and `can_view` treats it like any other owner.
     """
-    who = _OWNER_OVERRIDE.get()
+    who = _owner_override()[0]
     if who:
         return who
     for var in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS"):
@@ -791,6 +1021,26 @@ def default_owner() -> str:
             if part:
                 return part
     return "local"
+
+
+def _owner_override() -> tuple:
+    """(login, alias) from the ContextVar, tolerating the bare-string shape
+    an older caller may still set."""
+    cur = _OWNER_OVERRIDE.get()
+    if isinstance(cur, tuple):
+        return (cur[0] or None, (cur[1] if len(cur) > 1 else None) or None)
+    return ((cur or None), None)
+
+
+def default_owner_alias() -> str:
+    """The caller's id in its own namespace for this context, or "" (D21).
+
+    Recorded as meta["owner_webui_id"] at publish and accepted as an alias by
+    can_view() and the ownership guards, so a page published through the tool
+    server is reachable BOTH as the tailnet login and as the WebUI id that
+    published it.
+    """
+    return _owner_override()[1] or ""
 
 
 def can_view(meta, viewer_login) -> bool:
@@ -804,17 +1054,25 @@ def can_view(meta, viewer_login) -> bool:
     A legacy artifact with no owner at all is still readable, but only by an
     IDENTIFIED caller — and the server (D1) gives an anonymous request a 404
     before it ever gets here, so `viewer_login` is never None on a real read.
+
+    "The owner" is either recorded identity (D21): meta["owner"], the login a
+    reader presents, or meta["owner_webui_id"], the publishing surface's own
+    id for the same human. A publish that crossed namespaces used to mint a
+    page no principal could ever present an identity for — 404 to the human
+    who asked for it, and unrecoverable.
     """
     if not isinstance(meta, dict):
         return False
     if meta.get("visibility") == "tailnet":
         return True
-    owner = str(meta.get("owner") or "").strip()
     if viewer_login is None:
         return False         # NEVER open to anonymous
-    if not owner:
+    owners = _owner_identities(meta)
+    if not owners:
         return True          # legacy/unowned: an identified caller may read
-    return str(viewer_login).strip().lower() == owner.lower()
+    # Either recorded identity (D21): the login, or the publishing surface's
+    # own id for the same human.
+    return _norm_login(viewer_login) in owners
 
 
 # --- html helpers ------------------------------------------------------------

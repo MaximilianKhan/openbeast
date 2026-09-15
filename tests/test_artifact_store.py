@@ -8,16 +8,20 @@ Covers:
   - caps: oversize page, 256th file, oversize binary, per-version total
   - path safety: traversal / absolute / backslash / reserved index.html keys
     rejected on the way IN and again on the way OUT
-  - visibility, rollback, remove, can_view
+  - visibility, rollback, remove, can_view — every one of them owner-gated
+  - the lock is per-artifact, bounded, and never in a reader's way
+  - the store's own path is not publishable, and owners carry an alias
   - extract_title only looks at the first 8 KB
   - wrap_skeleton wraps a fragment, passes a full document through
 
 Run: pytest tests/test_artifact_store.py
 """
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -27,6 +31,39 @@ sys.path.insert(0, os.path.join(REPO, "agents"))
 import artifact  # noqa: E402
 
 PAGE = "<title>Hello</title><p>hi</p>"
+
+
+@contextlib.contextmanager
+def as_user(login, alias=None):
+    """Publish as `login` the only way a caller legitimately can.
+
+    `publish(owner=...)` is an assertion the store ignores unless it matches
+    the resolved caller (D28), so a test that wants a page owned by someone
+    else has to BE someone else — which is exactly the constraint the server
+    and the tool host live under.
+    """
+    token = artifact.set_owner_override(login, alias)
+    try:
+        yield
+    finally:
+        artifact.reset_owner_override(token)
+
+
+def _child(tmp_path, name, body):
+    """Write a helper script that talks to the same store and return its path."""
+    script = tmp_path / name
+    script.write_text(
+        "import sys, time\n"
+        f"sys.path.insert(0, {os.path.join(REPO, 'agents')!r})\n"
+        "import artifact\n" + body)
+    return script
+
+
+def _spawn(tmp_path, script):
+    return subprocess.Popen(
+        [sys.executable, str(script)],
+        env=dict(os.environ, OPENBEAST_FILES_DIR=str(tmp_path / "files")),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 @pytest.fixture()
@@ -280,6 +317,17 @@ def test_corrupt_record_does_not_poison_the_listing(store):
             store.list_artifacts(owner="local")] == [good["id"]]
     assert [r["id"] for r in
             store.list_artifacts(viewer="max@example.com")] == ["corrupt3"]
+    # ...and the store's read paths degrade the same way rather than blowing
+    # up: an unparseable record is an ArtifactError (the server turns it into
+    # a 404/500 of its choosing), never a raw ValueError out of json.
+    with pytest.raises(artifact.ArtifactError):
+        store.get_meta("corrupt1")
+    with pytest.raises(artifact.ArtifactError):
+        store.read_file("corrupt1", 1)
+    assert store.get_meta("corrupt2") is None
+    with pytest.raises(artifact.ArtifactError):
+        store.read_file("corrupt3", 1)              # no version resolves
+    assert store.read_file(good["id"], 1)[0] == b"<title>Good</title>ok"
 
 
 def test_read_falls_back_to_the_versions_on_disk(store):
@@ -339,6 +387,122 @@ def test_two_processes_publishing_lose_no_version(store, tmp_path):
         if d.startswith("v")) == sorted(f"v{i}" for i in nums)
 
 
+_HOLD = """
+aid = sys.argv[1]
+with artifact._artifact_lock(aid):
+    print("locked", flush=True)
+    time.sleep(float(sys.argv[2]))
+"""
+
+
+def _hold_lock(tmp_path, aid, seconds=5.0):
+    """Spawn a process that takes the lock on `aid` and sits on it.
+
+    Returns the Popen once the child confirms it holds the lock. The caller
+    kills it BY PID — never by pattern.
+    """
+    script = _child(tmp_path, f"hold_{aid}.py", _HOLD)
+    p = subprocess.Popen(
+        [sys.executable, str(script), aid, str(seconds)],
+        env=dict(os.environ, OPENBEAST_FILES_DIR=str(tmp_path / "files")),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    line = p.stdout.readline()
+    assert line.strip() == b"locked", (line, p.stderr.read()[-2000:])
+    return p
+
+
+def test_a_held_lock_blocks_nothing_but_that_artifact(store, tmp_path):
+    """D25: the lock was ONE exclusive flock over the whole store, with no
+    timeout, held across fsyncs of up to 64 MB. With it held, a reviewer
+    measured /api/artifacts/health and /a/<id> timing out at 8 s — the health
+    endpoint doctor.sh and healthcheck.sh --restart depend on.
+
+    So: while a publish holds page A, reads of page A still answer (no read
+    path takes the lock at all) and page B still publishes.
+    """
+    a = store.publish("<title>A</title>locked", artifact_id="held")
+    b = store.publish("<title>B</title>other", artifact_id="free")
+    holder = _hold_lock(tmp_path, "held", seconds=5.0)
+    try:
+        t0 = time.monotonic()
+        assert store.read_file("held", 1)[0] == b"<title>A</title>locked"
+        assert store.get_meta("held")["current"] == 1
+        assert {r["id"] for r in store.list_artifacts()} == {"held", "free"}
+        assert store.can_view(store.get_meta("held"), "local") is True
+        # ...and a mutation of a DIFFERENT artifact is not queued behind it
+        assert store.publish("v2", artifact_id="free")["version"] == 2
+        assert store.set_description("free", "still mutable")["description"] \
+            == "still mutable"
+        elapsed = time.monotonic() - t0
+        assert elapsed < 2.0, f"a held lock delayed unrelated work ({elapsed}s)"
+    finally:
+        holder.kill()                       # by pid, never by pattern
+        holder.wait(timeout=30)
+        holder.stdout.close()
+        holder.stderr.close()
+    assert a["id"] == "held" and b["id"] == "free"
+
+
+def test_contended_publish_raises_instead_of_hanging(store, tmp_path,
+                                                     monkeypatch):
+    """D25: LOCK_NB + a bounded retry. A caller that cannot get in says so —
+    the old LOCK_EX with no timeout parked the request (and its anyio worker
+    thread) for as long as the holder felt like."""
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_LOCK_TIMEOUT", "0.4")
+    store.publish("one", artifact_id="busy")
+    holder = _hold_lock(tmp_path, "busy", seconds=5.0)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(artifact.ArtifactError) as e:
+            store.publish("two", artifact_id="busy")
+        waited = time.monotonic() - t0
+        assert "busy" in str(e.value)
+        assert waited < 3.0, f"bounded retry took {waited}s"
+        assert store.get_meta("busy")["current"] == 1     # nothing half-done
+        assert not os.path.exists(
+            os.path.join(store.store_root(), "busy", "v2"))
+        # reads are still untouched by the contention
+        assert store.read_file("busy", 1)[0] == b"one"
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+        holder.stdout.close()
+        holder.stderr.close()
+    # and once the holder is gone the id publishes normally again
+    assert store.publish("two", artifact_id="busy")["version"] == 2
+
+
+def test_hard_kill_while_holding_the_lock_leaves_no_wedge(store, tmp_path):
+    """The other half of what the flock bought: a SIGKILL'd holder must not
+    wedge the id. The kernel drops an flock when the process dies, so the
+    leftover .locks/<id>.lock file is just a file."""
+    store.publish("one", artifact_id="killme")
+    holder = _hold_lock(tmp_path, "killme", seconds=60.0)
+    holder.kill()                           # by pid
+    holder.wait(timeout=30)
+    holder.stdout.close()
+    holder.stderr.close()
+    assert store.publish("two", artifact_id="killme")["version"] == 2
+    assert store.set_current("killme", 1)["current"] == 1
+    assert store.remove("killme") is True
+
+
+def test_lock_files_live_beside_the_artifacts_not_inside_them(store):
+    """A lock inside <store>/<id>/ is unlinked by remove()'s rmtree, and a
+    lock held on an unlinked inode excludes nobody."""
+    store.publish("one", artifact_id="locus")
+    assert os.path.isfile(os.path.join(
+        store.store_root(), ".locks", "locus.lock"))
+    assert not [f for f in os.listdir(
+        os.path.join(store.store_root(), "locus")) if f.endswith(".lock")]
+    # the lock directory is not an artifact and never shows up as one
+    assert "locks" not in {r["id"] for r in store.list_artifacts()}
+    assert ".locks" not in {r["id"] for r in store.list_artifacts()}
+    store.remove("locus")
+    assert os.path.isfile(os.path.join(
+        store.store_root(), ".locks", "locus.lock"))
+
+
 # --- path safety -------------------------------------------------------------
 
 @pytest.mark.parametrize("bad", [
@@ -381,7 +545,8 @@ def test_stable_human_id_allowed(store):
 # --- visibility / listing ----------------------------------------------------
 
 def test_visibility_and_can_view(store):
-    r = store.publish(PAGE, owner="max@example.com")
+    with as_user("max@example.com"):
+        r = store.publish(PAGE)
     meta = store.get_meta(r["id"])
     assert store.can_view(meta, "max@example.com") is True
     assert store.can_view(meta, "other@example.com") is False
@@ -395,7 +560,8 @@ def test_can_view_fails_closed_for_anonymous(store):
     """D2: an unidentified viewer never reads a non-tailnet page. The old
     `viewer_login is None -> True` branch handed every private artifact to
     anyone who simply omitted the login header."""
-    owned = store.get_meta(store.publish(PAGE, owner="max@example.com")["id"])
+    with as_user("max@example.com"):
+        owned = store.get_meta(store.publish(PAGE)["id"])
     assert store.can_view(owned, None) is False
     # ...not even a legacy record with no owner at all
     legacy = dict(owned, owner=None)
@@ -412,15 +578,15 @@ def test_can_view_fails_closed_for_anonymous(store):
 def test_republish_never_changes_visibility(store):
     """D5: publish() applies `visibility` on CREATION only. A republish moves
     it in neither direction — set_visibility() is the only path."""
-    r = store.publish(PAGE, owner="max@example.com", visibility="tailnet")
-    store.publish(PAGE, artifact_id=r["id"], owner="max@example.com")
-    assert store.get_meta(r["id"])["visibility"] == "tailnet"   # not narrowed
-    store.set_visibility(r["id"], "private", owner="max@example.com")
-    assert store.get_meta(r["id"])["visibility"] == "private"
-    # and the widening direction is gone too: this is what let a republish
-    # re-share a page nobody asked to share
-    store.publish(PAGE, artifact_id=r["id"], owner="max@example.com",
-                  visibility="tailnet")
+    with as_user("max@example.com"):
+        r = store.publish(PAGE, visibility="tailnet")
+        store.publish(PAGE, artifact_id=r["id"])
+        assert store.get_meta(r["id"])["visibility"] == "tailnet"  # not narrowed
+        store.set_visibility(r["id"], "private", owner="max@example.com")
+        assert store.get_meta(r["id"])["visibility"] == "private"
+        # and the widening direction is gone too: this is what let a republish
+        # re-share a page nobody asked to share
+        store.publish(PAGE, artifact_id=r["id"], visibility="tailnet")
     assert store.get_meta(r["id"])["visibility"] == "private"
 
 
@@ -428,11 +594,12 @@ def test_republish_by_another_owner_is_refused(store):
     """D5 / the live confidentiality hole: a second operator republishing into
     someone else's id could take the page over, flip it to `tailnet` and read
     every earlier PRIVATE version at /a/<id>/v/<n>."""
-    r = store.publish("<title>Mine</title>secret", owner="max@example.com",
-                      artifact_id="t117-verdict")
-    with pytest.raises(artifact.ArtifactError) as e:
+    with as_user("max@example.com"):
+        r = store.publish("<title>Mine</title>secret",
+                          artifact_id="t117-verdict")
+    with as_user("kid@example.com"), pytest.raises(artifact.ArtifactError) as e:
         store.publish("<title>Yours</title>pwned", artifact_id="t117-verdict",
-                      owner="kid@example.com", visibility="tailnet")
+                      visibility="tailnet")
     assert "not your artifact" in str(e.value)
     # nothing moved: no v2, no owner change, still private, v1 intact
     meta = store.get_meta(r["id"])
@@ -443,14 +610,15 @@ def test_republish_by_another_owner_is_refused(store):
     assert not os.path.exists(
         os.path.join(store.store_root(), r["id"], "v2"))
     # the owner is still free to publish over his own id
-    assert store.publish("v2", artifact_id=r["id"],
-                         owner="max@example.com")["version"] == 2
+    with as_user("max@example.com"):
+        assert store.publish("v2", artifact_id=r["id"])["version"] == 2
 
 
 def test_set_visibility_by_another_owner_is_refused(store):
     """set_visibility() is the only path to `tailnet`, so it carries the same
     ownership check the republish hole used to bypass."""
-    r = store.publish(PAGE, owner="max@example.com")
+    with as_user("max@example.com"):
+        r = store.publish(PAGE)
     with pytest.raises(artifact.ArtifactError) as e:
         store.set_visibility(r["id"], "tailnet", owner="kid@example.com")
     assert "not your artifact" in str(e.value)
@@ -483,8 +651,10 @@ def test_default_owner_is_never_none(store, monkeypatch):
 
 
 def test_list_filters_and_orders(store):
-    a = store.publish("<title>A</title>a", owner="max@example.com")
-    b = store.publish("<title>B</title>b", owner="kid@example.com")
+    with as_user("max@example.com"):
+        a = store.publish("<title>A</title>a")
+    with as_user("kid@example.com"):
+        b = store.publish("<title>B</title>b")
     ids = [r["id"] for r in store.list_artifacts()]
     assert set(ids) == {a["id"], b["id"]}
     assert ids[0] == b["id"]                           # newest first
@@ -496,10 +666,243 @@ def test_list_filters_and_orders(store):
 
 
 def test_remove(store):
-    a = store.publish(PAGE)
-    assert store.remove(a["id"]) is True
-    assert store.get_meta(a["id"]) is None
-    assert store.remove(a["id"]) is False
+    """The owner may remove; a second operator may not (D22).
+
+    This test used to assert only that removal WORKS — never who may do it —
+    which is precisely how `remove()` shipped as the one mutation with no
+    ownership check at all: a second operator holding the locality token
+    could destroy another owner's page and every version it ever had.
+    """
+    with as_user("max@example.com"):
+        a = store.publish(PAGE)
+    with as_user("kid@example.com"), pytest.raises(artifact.ArtifactError) as e:
+        store.remove(a["id"])
+    assert "not your artifact" in str(e.value)
+    # nothing was deleted, and the page still reads
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    assert store.read_file(a["id"], 1)[0] == PAGE.encode()
+    assert os.path.isdir(os.path.join(store.store_root(), a["id"]))
+    # an explicit owner= is the server's path, and it is gated the same way
+    with pytest.raises(artifact.ArtifactError):
+        store.remove(a["id"], owner="kid@example.com")
+
+    with as_user("max@example.com"):
+        assert store.remove(a["id"]) is True
+        assert store.get_meta(a["id"]) is None
+        assert store.remove(a["id"]) is False       # gone stays gone
+    # an unowned legacy record is nobody's, so anyone identified may remove it
+    legacy = store.publish(PAGE, artifact_id="legacy-del")
+    meta = store.get_meta("legacy-del")
+    meta["owner"] = None
+    artifact._write_meta("legacy-del", meta)
+    with as_user("kid@example.com"):
+        assert store.remove(legacy["id"]) is True
+
+
+def test_list_owner_filter_is_case_insensitive(store):
+    """D29: owners are stored lowercased, and the filter compared raw — so a
+    caller who spelled their own login the way their identity provider does
+    (Max@Example.com) got an empty gallery."""
+    with as_user("Max@Example.COM"):
+        a = store.publish("<title>A</title>a")
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    for spelling in ("Max@Example.COM", "max@example.com", " MAX@example.com "):
+        assert [r["id"] for r in store.list_artifacts(owner=spelling)] \
+            == [a["id"]], spelling
+    assert store.list_artifacts(owner="someone@example.com") == []
+
+
+# --- D28: the owner kwarg is not an identity ---------------------------------
+
+def test_publish_owner_kwarg_cannot_forge_attribution(store):
+    """D28: D4 deleted `owner` from the HTTP body, but the store kwarg stayed
+    — an attribution-forging primitive for every in-process caller. It is an
+    assertion now: honoured when it matches the resolved caller, ignored
+    otherwise, and it never mints a page in someone else's name."""
+    r = store.publish(PAGE, owner="victim@example.com")
+    assert store.get_meta(r["id"])["owner"] == "local"       # the real caller
+    assert store.can_view(store.get_meta(r["id"]), "victim@example.com") is False
+    # ...and it cannot be used to dodge the republish guard either
+    with as_user("max@example.com"):
+        mine = store.publish("<title>Mine</title>x", artifact_id="attrib")
+    with pytest.raises(artifact.ArtifactError):
+        store.publish("pwned", artifact_id="attrib", owner="max@example.com")
+    assert store.get_meta(mine["id"])["owner"] == "max@example.com"
+    assert store.read_file("attrib", 1)[0] == b"<title>Mine</title>x"
+    # agreeing with the caller is fine — that is the server's shape
+    with as_user("max@example.com"):
+        assert store.publish("v2", artifact_id="attrib",
+                             owner="MAX@example.com")["version"] == 2
+
+
+# --- D22: every mutator is owner-gated ---------------------------------------
+
+def test_set_description_by_another_owner_is_refused(store):
+    """D22: round one gated publish and visibility and left description open,
+    so a second operator could rewrite the gallery text on anyone's page."""
+    with as_user("max@example.com"):
+        r = store.publish(PAGE)
+        store.set_description(r["id"], "mine")
+    with pytest.raises(artifact.ArtifactError) as e:
+        store.set_description(r["id"], "defaced", owner="kid@example.com")
+    assert "not your artifact" in str(e.value)
+    with as_user("kid@example.com"), pytest.raises(artifact.ArtifactError):
+        store.set_description(r["id"], "defaced")
+    assert store.get_meta(r["id"])["description"] == "mine"
+    with as_user("max@example.com"):
+        assert store.set_description(r["id"], "still mine")["description"] \
+            == "still mine"
+
+
+def test_set_current_by_another_owner_is_refused(store):
+    """D22: an ungated rollback silently serves an OLDER page at the URL the
+    owner believes is current — a deface that leaves no trace in the version
+    list."""
+    with as_user("max@example.com"):
+        r = store.publish("v1 body")
+        store.publish("v2 body", artifact_id=r["id"])
+    assert store.get_meta(r["id"])["current"] == 2
+    with pytest.raises(artifact.ArtifactError) as e:
+        store.set_current(r["id"], 1, owner="kid@example.com")
+    assert "not your artifact" in str(e.value)
+    with as_user("kid@example.com"), pytest.raises(artifact.ArtifactError):
+        store.set_current(r["id"], 1)
+    assert store.get_meta(r["id"])["current"] == 2           # not rolled back
+    with as_user("max@example.com"):
+        assert store.set_current(r["id"], 1)["current"] == 1
+
+
+def test_mutators_leave_an_unowned_legacy_record_open(store):
+    """The legacy branch is deliberate and must stay: a record with no
+    recorded identity is nobody's, so an identified caller may still manage
+    it. Anything WITH an owner is owner-only."""
+    store.publish(PAGE, artifact_id="legacy2")
+    meta = store.get_meta("legacy2")
+    meta["owner"] = None
+    artifact._write_meta("legacy2", meta)
+    with as_user("kid@example.com"):
+        assert store.set_description("legacy2", "hi")["description"] == "hi"
+        assert store.set_current("legacy2", 1)["current"] == 1
+
+
+# --- D21: ownership lives in the reader's namespace, plus an alias -----------
+
+def test_owner_alias_is_recorded_and_accepted(store):
+    """D21: a publish that crossed namespaces (Open WebUI's UUID vs the
+    tailnet login) minted a page that was 404 to the human who asked for it
+    AND unmanageable, because no principal can ever present a UUID. The login
+    owns the page; the surface's own id is recorded beside it and counts as
+    the same person."""
+    with as_user("max@example.com", "3f1c-uuid-9a2b"):
+        r = store.publish(PAGE)
+    meta = store.get_meta(r["id"])
+    assert meta["owner"] == "max@example.com"            # the reader's namespace
+    assert meta["owner_webui_id"] == "3f1c-uuid-9a2b"    # provenance
+    assert store.can_view(meta, "max@example.com") is True
+    assert store.can_view(meta, "3f1c-uuid-9a2b") is True   # the alias reads
+    assert store.can_view(meta, "kid@example.com") is False
+    assert store.can_view(meta, None) is False
+    # the alias manages, too — a page nobody can manage is a tombstone
+    assert store.set_visibility(r["id"], "tailnet",
+                                owner="3f1c-uuid-9a2b")["visibility"] \
+        == "tailnet"
+    assert store.set_description(r["id"], "d", owner="3f1c-uuid-9a2b")
+    assert store.set_current(r["id"], 1, owner="3f1c-uuid-9a2b")
+    with as_user("3f1c-uuid-9a2b"):
+        assert store.publish("v2", artifact_id=r["id"])["version"] == 2
+    # ...and the listing finds it under either name
+    for who in ("max@example.com", "3f1c-uuid-9a2b"):
+        assert [x["id"] for x in store.list_artifacts(owner=who)] == [r["id"]]
+    assert store.remove(r["id"], owner="3f1c-uuid-9a2b") is True
+
+
+def test_a_page_owned_by_an_id_alone_is_still_reachable(store):
+    """The pages published BEFORE the fix: owner is the raw WebUI id. They
+    stay readable and manageable by whoever can present that id — the point
+    of accepting the alias at all is that nothing becomes a tombstone."""
+    with as_user("3f1c-uuid-9a2b"):
+        r = store.publish(PAGE)
+    meta = store.get_meta(r["id"])
+    assert meta["owner"] == "3f1c-uuid-9a2b"
+    assert meta["owner_webui_id"] is None
+    assert store.can_view(meta, "3f1c-uuid-9a2b") is True
+    assert store.can_view(meta, "kid@example.com") is False
+    with as_user("3f1c-uuid-9a2b"):
+        assert store.set_visibility(r["id"], "tailnet")["visibility"] \
+            == "tailnet"
+
+
+def test_owner_override_alias_does_not_leak(store):
+    token = store.set_owner_override("max@example.com", "3f1c-uuid")
+    assert store.default_owner() == "max@example.com"
+    assert store.default_owner_alias() == "3f1c-uuid"
+    store.reset_owner_override(token)
+    assert store.default_owner() == "local"
+    assert store.default_owner_alias() == ""
+    assert store.get_meta(store.publish(PAGE)["id"])["owner_webui_id"] is None
+
+
+# --- D26: the store is not a publishable source ------------------------------
+
+def test_is_store_path_refuses_the_store_and_everything_in_it(store, tmp_path,
+                                                              monkeypatch):
+    """D26: the guard that says "the page must come from your workspace" is
+    satisfied BY THE STORE ITSELF whenever no per-user shard is set
+    ($OPENBEAST_FILES_DIR/artifacts lives inside $OPENBEAST_FILES_DIR), so a
+    second user published another user's private page by naming the store's
+    own internal path — and then re-shared it as tailnet."""
+    with as_user("max@example.com"):
+        r = store.publish("<title>Private</title>secret")
+    root = store.store_root()
+    page = os.path.join(root, r["id"], "v1", "index.html")
+    assert os.path.isfile(page)
+
+    assert store.is_store_path(root) is True             # the store itself
+    assert store.is_store_path(page) is True             # a page inside it
+    assert store.is_store_path(os.path.join(root, "meta-does-not-exist")) \
+        is True                                          # even if absent
+    assert store.is_store_path(os.path.join(root, "index.jsonl")) is True
+    assert store.is_store_path(os.path.join(root, ".locks")) is True
+
+    # a relative path: resolved against the working directory first, so
+    # "artifacts/<id>/v1/index.html" from the workspace is the same file
+    monkeypatch.chdir(os.path.dirname(root))
+    assert store.is_store_path(os.path.join("artifacts", r["id"], "v1",
+                                            "index.html")) is True
+    assert store.is_store_path("./artifacts") is True
+    assert store.is_store_path(os.path.join("artifacts", "..", "artifacts")) \
+        is True
+
+    # a symlinked PARENT: the link is anywhere on the path, the target is the
+    # store all the same
+    link = tmp_path / "shortcut"
+    os.symlink(root, link)
+    assert store.is_store_path(str(link)) is True
+    assert store.is_store_path(os.path.join(str(link), r["id"], "v1",
+                                            "index.html")) is True
+    deep = tmp_path / "files" / "deep"
+    os.symlink(os.path.dirname(root), deep)
+    assert store.is_store_path(os.path.join(str(deep), "artifacts",
+                                            r["id"])) is True
+
+    # a path that resolves INTO the store from outside it: the classic bypass,
+    # a symlink sitting in the caller's own workspace
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    bait = outside / "innocent.html"
+    os.symlink(page, bait)
+    assert store.is_store_path(str(bait)) is True
+    assert store.is_store_path(str(outside / "real.html")) is False
+
+    # ...and it does not over-refuse: ordinary workspace files are publishable
+    (tmp_path / "files" / "page.html").write_text("<p>hi</p>")
+    assert store.is_store_path(str(tmp_path / "files" / "page.html")) is False
+    assert store.is_store_path(str(tmp_path / "files")) is False
+    assert store.is_store_path(root + "-not-the-store") is False
+    assert store.is_store_path("") is False
+    assert store.is_store_path(None) is False
+    assert store.is_store_path("/etc/passwd") is False
+    assert store.is_store_path("x\x00y") is False        # NUL: no exception
 
 
 def test_get_meta_missing_is_none(store):
