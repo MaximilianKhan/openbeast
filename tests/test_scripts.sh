@@ -1089,14 +1089,29 @@ _BD_FN="$(sed -n '/^ob_python_deps_satisfied()/,/^}$/p' "$REPO_DIR/bootstrap.sh"
 if [[ -z "$_BD_FN" ]]; then
   fail "bootstrap.sh has no ob_python_deps_satisfied guard"
 else
-  # satisfied: the repo's own requirements, which this box has installed
-  if bash -c "REPO_DIR='$REPO_DIR'
-$_BD_FN
-ob_python_deps_satisfied >/dev/null" 2>/dev/null; then
-    pass "the guard reports SATISFIED for already-installed pins (no index query)"
+  # A pin that IS installed must not be reported missing. Asserted against a
+  # SYNTHETIC requirements file rather than the ambient environment: CI
+  # installs agents/requirements.txt but NOT huggingface_hub, so "is this box
+  # fully satisfied?" is not a property that holds everywhere — and a test
+  # that depends on what happens to be installed is a test that fails
+  # somewhere else, which is exactly how this one first broke.
+  _BD_OK="$(mktemp -d)"
+  mkdir -p "$_BD_OK/agents"
+  _BD_VER="$(python3 -c 'import importlib.metadata as m; print(m.version("pytest"))' 2>/dev/null || true)"
+  if [[ -z "$_BD_VER" ]]; then
+    pass "satisfied-pin check skipped (pytest not installed here)"
   else
-    fail "the guard says the repo's own installed pins are unsatisfied"
+    printf 'pytest==%s\n' "$_BD_VER" > "$_BD_OK/agents/requirements.txt"
+    _BD_OUT="$(bash -c "REPO_DIR='$_BD_OK'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+    if grep -q 'pytest' <<< "$_BD_OUT"; then
+      fail "the guard reported an INSTALLED pin as missing: $_BD_OUT"
+    else
+      pass "the guard does not report an installed pin as missing"
+    fi
   fi
+  rm -rf "$_BD_OK"
   # unsatisfied: a synthetic requirements file naming something impossible
   _BD_TMP="$(mktemp -d)"
   mkdir -p "$_BD_TMP/agents"
