@@ -1,0 +1,39 @@
+{
+  "_comment": "Python claims are the awkward case: staleness here is a RUNTIME property, not a syntax one. The verifier resolves dotted stdlib attributes statically against the installed interpreter (importlib + getattr) and NEVER executes the snippet — see agents/lang/drivers.py PythonDriver. So an 'old' form fails because the attribute does not exist on this interpreter, which is exactly the fact an agent needs.",
+  "lang": "python",
+  "toolchain": "3.14",
+  "claims": [
+    {
+      "id": "string-maketrans-gone",
+      "topic": "str translation",
+      "note": "string.maketrans was a Python 2 module function; it is str.maketrans now",
+      "old": ["import string\nt = string.maketrans('a', 'b')\n"],
+      "new": ["s = 'abc'\nt = str.maketrans('a', 'b')\nout = s.translate(t)\n"],
+      "doc_must_contain": ["str.maketrans"]
+    },
+    {
+      "id": "asyncio-no-async-coroutine",
+      "topic": "asyncio",
+      "note": "asyncio.async() was removed (it was a keyword after 3.5); ensure_future is the survivor",
+      "old": ["import asyncio\nf = asyncio.async\n"],
+      "new": ["import asyncio\nf = asyncio.ensure_future\n"],
+      "doc_must_contain": ["ensure_future"]
+    },
+    {
+      "id": "unittest-aliases-removed",
+      "topic": "unittest",
+      "note": "the camelCase deprecated aliases (assertEquals, failUnless) were removed in 3.12",
+      "old": ["import unittest\nf = unittest.TestCase.assertEquals\n"],
+      "new": ["import unittest\nf = unittest.TestCase.assertEqual\n"],
+      "doc_must_contain": ["assertEqual"]
+    },
+    {
+      "id": "imp-module-gone",
+      "topic": "imports",
+      "note": "the imp module was removed in 3.12; importlib is the replacement",
+      "old": ["import imp\n"],
+      "new": ["import importlib\nm = importlib.import_module\n"],
+      "doc_must_contain": ["importlib"]
+    }
+  ]
+}

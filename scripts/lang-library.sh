@@ -4,6 +4,8 @@
 #   ./scripts/lang-library.sh acquire [lang ...]   fetch sources (default: all wired)
 #   ./scripts/lang-library.sh check                verify what is on disk vs its manifest
 #   ./scripts/lang-library.sh list                 what we hold, with provenance
+#   ./scripts/lang-library.sh verify [lang]        compile every claim against
+#                                                  the INSTALLED toolchains
 #   ./scripts/lang-library.sh where                print the library root
 #
 # Design rules (docs/BEAST_LANG_PLAN.md):
@@ -362,11 +364,22 @@ print(f"\n{len(rows)} artifacts, {total/1e6:.1f} MB total, root={root}")
 PY
 }
 
+cmd_verify() {
+  # L1 of the design: documents PROPOSE, the toolchain CONFIRMS. This is the
+  # gate every synthesized line has to pass before it may be auto-injected.
+  local args=(--claims "$SCRIPT_DIR/agents/lang/claims")
+  [[ -n "${1:-}" ]] && args+=(--lang "$1")
+  [[ -f "$SCRIPT_DIR/agents/packs/zig-0.16.md" && "${1:-}" == "zig" ]] \
+    && args+=(--pack "$SCRIPT_DIR/agents/packs/zig-0.16.md")
+  python3 "$SCRIPT_DIR/agents/lang/verify.py" "${args[@]}"
+}
+
 case "${1:-}" in
   acquire) shift; cmd_acquire "$@" ;;
+  verify)  shift; cmd_verify "${1:-}" ;;
   check)   cmd_check ;;
   list)    cmd_list ;;
   where)   say "$LANG_DIR" ;;
-  -h|--help|"") sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (try --help)" ;;
 esac
