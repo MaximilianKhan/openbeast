@@ -932,6 +932,68 @@ else
   fail "configure-webui.sh writes config without triggering a reload"
 fi
 
+# FAST_BOOT must DEGRADE, never fail the boot. The bridge weight
+# (Qwen3-0.6B-Q8_0.gguf) is registry-pinned, conf-exposed and documented — and
+# bootstrap.sh never downloads it, so on a fresh install with FAST_BOOT=true
+# the whole stack used to die at the health wait with "bootstrap model failed
+# to load", a message pointing at llama-server rather than at a file nobody
+# fetched. Fast boot is an optimisation; a missing optimisation degrades.
+echo ""
+echo "Fast boot degradation:"
+_FB_TMP="$(mktemp -d)"
+trap 'rm -rf "$_FB_TMP"' EXIT
+mkdir -p "$_FB_TMP/scripts/lib" "$_FB_TMP/weights"
+install -m 755 "$REPO_DIR/scripts/serve-bootstrap.sh" "$_FB_TMP/scripts/serve-bootstrap.sh"
+printf 'WEIGHTS_DIR="%s/weights"\n' "$_FB_TMP" > "$_FB_TMP/scripts/lib/weights.sh"
+# Lift the gate out of start.sh and drive it directly — no server, no GPU.
+python3 - "$REPO_DIR/start.sh" "$_FB_TMP/gate.sh" <<'PYGATE'
+import sys
+src = open(sys.argv[1]).read()
+a = src.index('FAST_BOOT_ACTIVE=0\nif [[ "${FAST_BOOT:-false}" == "true"')
+b = src.index('echo "Waiting for llama.cpp server to be ready..."')
+open(sys.argv[2], "w").write(src[a:b])
+PYGATE
+_fb_run() {                      # _fb_run -> prints "ACTIVE=<0|1>"
+  bash -c '
+    SCRIPT_DIR="'"$_FB_TMP"'"; FAST_BOOT=true
+    SERVE_SCRIPT="serve-real.sh"; BOOTSTRAP_SERVE="serve-bootstrap.sh"
+    REAL_SERVE_SCRIPT="$SERVE_SCRIPT"
+    source "'"$_FB_TMP"'/gate.sh"
+    echo "ACTIVE=$FAST_BOOT_ACTIVE SCRIPT=$SERVE_SCRIPT"' 2>&1
+}
+rm -f "$_FB_TMP/weights/Qwen3-0.6B-Q8_0.gguf"
+_FB_OUT="$(_fb_run)"
+if grep -q 'ACTIVE=0 SCRIPT=serve-real.sh' <<< "$_FB_OUT" \
+   && grep -q 'fetch-weight.sh' <<< "$_FB_OUT"; then
+  pass "FAST_BOOT with no bridge weight falls back to the real model and says how to fix it"
+else
+  fail "FAST_BOOT with no bridge weight did not degrade cleanly: $_FB_OUT"
+fi
+: > "$_FB_TMP/weights/Qwen3-0.6B-Q8_0.gguf"
+_FB_OUT="$(_fb_run)"
+if grep -q 'ACTIVE=1 SCRIPT=serve-bootstrap.sh' <<< "$_FB_OUT"; then
+  pass "FAST_BOOT with the bridge weight present still takes the fast path"
+else
+  fail "FAST_BOOT stopped working when the weight IS present: $_FB_OUT"
+fi
+
+# fetch-weight.sh is what that message names, so it must exist, be executable,
+# and refuse an unknown name instead of inventing a download.
+if [[ -x "$REPO_DIR/scripts/fetch-weight.sh" ]]; then
+  pass "scripts/fetch-weight.sh exists and is executable"
+  # Capture first, THEN grep: the script correctly exits non-zero on an
+  # unknown name, and under `set -o pipefail` that failure propagates through
+  # the pipe and inverts the test even when grep matches.
+  _FW_OUT="$("$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  if grep -q 'no registry entry' <<< "$_FW_OUT"; then
+    pass "fetch-weight.sh refuses a name that is not in the registry"
+  else
+    fail "fetch-weight.sh did not refuse an unregistered weight name: $_FW_OUT"
+  fi
+else
+  fail "scripts/fetch-weight.sh missing — start.sh names it in its fallback message"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

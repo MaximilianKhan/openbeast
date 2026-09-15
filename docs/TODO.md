@@ -111,19 +111,38 @@ failure modes and each ranker's reasoning:
 **The verdict in one line: an already-installed rig SERVES fine offline. What
 is broken is installing, updating, rebuilding, and telling the truth about it.**
 
-### Two bugs that bite ON the network too — fix these first, they are not air-gap work
+### Two bugs that bite ON the network too — BOTH FIXED 2026-09-15
 
-- [ ] **`bootstrap.sh:312` clones llama.cpp unpinned.** A fresh install gets
-      whatever `master` is today, NOT the b10865 every eval row and serve
-      script was validated against. The revision exists nowhere
-      machine-readable — only in prose (`docs/MODELS.md:349`). This is a
-      reproducibility hole independent of air-gap. Fix: `scripts/llamacpp.pin`
-      with `d4389a4dd920d24c9592f1dc3badbd69be23bd09` (b10865).
-- [ ] **`scripts/serve-bootstrap.sh:15` needs a weight nothing acquires.**
-      FAST_BOOT wants `Qwen3-0.6B-Q8_0.gguf`; it is registry-pinned
-      (`weights.registry:36`), conf-exposed and documented — and `bootstrap.sh`
-      never downloads it. `FAST_BOOT=true` on any install where it was not
-      hand-fetched fails the WHOLE stack at `start.sh:415`.
+- [x] **llama.cpp pinning: REJECTED by Max** — *"No, I don't want to pin
+      llama.cpp. I always want to use the latest."* Legitimate: this repo has
+      repeatedly needed a fresh llama.cpp for a new model architecture, and the
+      pin would fight that every time. **But it makes provenance the only
+      thing preserving reproducibility, and provenance was broken.** The
+      version parser knew one upstream format (`version: 8893 (6217b4958)`)
+      and llama.cpp now prints `version: 0.4.0-dev (build 10865, commit
+      d4389a4dd)`, so `build` and `commit` were absent from **every row** —
+      silently, because the parse failure was a quiet `if m:`. What rows *did*
+      carry is `source_head`, the source TREE's HEAD, which is **not** what the
+      binary was built from: on this rig the tree is `8e126574` while the
+      running binary is build 10865 / `d4389a4dd`. So the field naming what
+      produced a measurement was empty and the populated one named something
+      else. Fixed: both formats parse, an unknown third is recorded as
+      `version_raw` + `version_parse: UNRECOGNISED` instead of vanishing, and
+      the parse is now a pure `parse_engine_version()` with tests
+      (`tests/test_engine_provenance.py`). No pin.
+- [x] **`scripts/serve-bootstrap.sh:15` needed a weight nothing acquires.**
+      Verified: the file is registry-pinned (`weights.registry:30`),
+      conf-exposed, documented — and no code path downloaded it, so
+      `FAST_BOOT=true` on a fresh install died at `start.sh` with *"bootstrap
+      model failed to load"*, a message pointing at llama-server rather than at
+      a file nobody fetched. It could never bite this rig (the 0.6B has been on
+      disk since 2026-07-08), which is exactly why it survived. Fixed two ways:
+      **fast boot now DEGRADES** to a normal boot with a message naming the
+      fix — an optimisation must never fail a boot — and **`scripts/fetch-weight.sh`
+      now exists** so any of the ~20 registry weights can be fetched by name,
+      verified against its pin, with a corrupt download deleted rather than
+      left on disk, and a clear sideload procedure when there is no route.
+      Both paths covered in `tests/test_scripts.sh`.
 
 ### The four top-tier features
 
