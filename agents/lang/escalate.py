@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Escalation: a compiler error picks the card that fixes it.
+
+This is Tier 1.5 of docs/LANG_AWARENESS_PLAN.md and phase 4 of
+docs/BEAST_LANG_PLAN.md, and it is the layer the whole push/escalate/pull
+argument rests on. The repo measured that local models do not call optional
+tools, so *asking* the model to look something up does not work. But a
+COMPILE ERROR is not a request — it is proof that the model already holds a
+stale belief, at the exact moment it holds it. Attaching the right card then
+is the only delivery that is both targeted and unsolicited.
+
+HOW THE MATCHING IS DERIVED, and why it is not a pile of regexes. Every claim
+already ships OLD fixtures that MUST fail (that is what VERIFIED means), so
+compiling them yields the real diagnostic a model will actually see. The index
+is built from those compilations: error text -> signature -> claim. Nobody
+guesses what zig says about `std.io`; zig is asked.
+
+Measured on the shipped zig claim set: 39/39 OLD fixtures produce a diagnostic,
+in 8 distinct message shapes, and 28 of them are
+`root source file struct 'std' has no member named 'io'` — where the quoted
+identifiers ARE the signal.
+
+DRIFT. Diagnostics change between toolchain versions, so the index is stamped
+with the version that produced it and is refused when that does not match the
+installed one. A card selected by a stale error signature is the same class of
+mistake as a pack written for the wrong compiler.
+
+AMBIGUITY IS NOT AN ERROR. `'std' + 'io'` legitimately selects both the stdout
+and stdin claims — `std.io` is gone and both cards are relevant. Matches are
+returned ranked by signature overlap, not narrowed to one by a tiebreak nobody
+can justify.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_AGENTS = os.path.dirname(_HERE)
+if _AGENTS not in sys.path:
+    sys.path.insert(0, _AGENTS)
+
+from lang import drivers as D     # noqa: E402
+from lang import packs as P       # noqa: E402
+from lang import verify as V      # noqa: E402
+
+INDEX_PATH = os.path.join(_HERE, "escalate-index.json")
+#: How many cards one escalation may attach. A compile error that drags in six
+#: cards has stopped being targeted delivery and become a second pack.
+MAX_CARDS = int(os.environ.get("OPENBEAST_LANG_MAX_CARDS", "2"))
+_QUOTED = re.compile(r"'([^']{1,64})'")
+
+
+def extract_signatures(text: str) -> set[str]:
+    """Matchable tokens from a compiler diagnostic.
+
+    Two kinds, both cheap and both derived from the shapes actually observed:
+
+      ident:<name>   every quoted identifier. This is the workhorse — the
+                     missing member's name is quoted in 30 of the 39 zig
+                     diagnostics, and it is the most specific thing present.
+      shape:<form>   the message with quoted spans blanked, so
+                     "invalid builtin function: 'X'" can match even when the
+                     identifier differs from the fixture's.
+
+    Deliberately NOT a parse of the compiler's grammar: that would be a second
+    implementation of somebody else's error format, wrong on the next release.
+    """
+    sigs: set[str] = set()
+    lines = [ln for ln in text.splitlines() if "error:" in ln]
+    if not lines:
+        # Not every toolchain prefixes "error:". The python driver reports its
+        # OWN static-resolution failures ("import imp: ModuleNotFoundError",
+        # "unittest.TestCase.assertEquals does not exist"), and requiring the
+        # prefix meant python produced 4 diagnostics and 0 signatures — an
+        # index that silently covered one language.
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+    for line in lines:
+        msg = line.split("error:", 1)[1].strip() if "error:" in line else line.strip()
+        # Dotted API paths are the signal where nothing is quoted
+        # (`unittest.TestCase.assertEquals does not exist`), so harvest them
+        # too — the last segment is the name that moved.
+        for dotted in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", msg):
+            parts = dotted.split(".")
+            sigs.add(f"ident:{parts[-1]}")
+            sigs.add(f"ident:{dotted}")
+        for ident in _QUOTED.findall(msg):
+            # Skip paths and anything that is plainly not an identifier.
+            if "/" in ident or ident.count(".") > 2 or len(ident) > 48:
+                continue
+            sigs.add(f"ident:{ident}")
+        shape = _QUOTED.sub("'X'", msg)
+        shape = re.sub(r"\d+", "N", shape)[:80]
+        sigs.add(f"shape:{shape}")
+    return sigs
+
+
+def build_index(langs: list[str] | None = None) -> dict:
+    """Compile every claim's OLD fixtures and record what the toolchain says."""
+    claims = V.load_claims(os.path.join(_HERE, "claims"))
+    by_lang: dict[str, list] = {}
+    for c in claims:
+        by_lang.setdefault(c.lang, []).append(c)
+    index: dict = {"_comment": (
+        "GENERATED by agents/lang/escalate.py --rebuild. error signature -> "
+        "claim ids, derived by COMPILING each claim's OLD fixtures and reading "
+        "what the toolchain actually reports. Do not hand-edit: a hand-written "
+        "signature is a guess about somebody else's error format."), "langs": {}}
+    for lang, cs in sorted(by_lang.items()):
+        if langs and lang not in langs:
+            continue
+        drv = D.driver_for(lang)
+        if not drv or not drv.available():
+            continue
+        version = drv.version() or "?"
+        sig_map: dict[str, list[str]] = {}
+        compiled = failed = 0
+        for c in cs:
+            snips, variant = V.old_snippets(c)
+            for src in snips:
+                res = drv.compile_source(drv.wrap(src), variant)
+                if res:                      # the OLD form COMPILED — not a break
+                    failed += 1
+                    continue
+                compiled += 1
+                for sig in extract_signatures(res.detail):
+                    sig_map.setdefault(sig, [])
+                    if c.id not in sig_map[sig]:
+                        sig_map[sig].append(c.id)
+        index["langs"][lang] = {
+            "toolchain": version,
+            "fixtures_with_diagnostics": compiled,
+            "fixtures_that_compiled_anyway": failed,
+            "signatures": {k: v for k, v in sorted(sig_map.items())},
+        }
+    return index
+
+
+def load_index() -> dict:
+    try:
+        return json.load(open(INDEX_PATH))
+    except (OSError, ValueError):
+        return {"langs": {}}
+
+
+def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
+              index: dict | None = None) -> list[dict]:
+    """[{claim, summary, score}] for a diagnostic, best first, or [].
+
+    Empty when: the language has no index, the index was built by a DIFFERENT
+    toolchain version than the one installed, nothing matches, or the matching
+    claims carry no deliverable summary. Every one of those is a reason to say
+    nothing rather than to attach a card we cannot stand behind.
+    """
+    idx = index if index is not None else load_index()
+    entry = (idx.get("langs") or {}).get(lang)
+    if not entry:
+        return []
+    # The index must be CONFIRMED to describe this machine. Two ways to fail.
+    installed = D.driver_for(lang)
+    installed_v = installed.version() if installed and installed.available() else None
+    if not installed_v:
+        # No toolchain, so the match cannot be confirmed at all. This branch
+        # was a FAIL-OPEN: the version comparison was guarded on
+        # `if installed_v and ...`, so a box with no compiler served cards
+        # from ANY index, including one stamped for a different release. CI
+        # caught it — the runner has no zig, and a deliberately poisoned
+        # index handed it a card anyway. Unverifiable is never a pass here;
+        # that is the same rule keeping Swift claims out of every pack.
+        return []
+    if P._short_version(entry.get("toolchain", "")) != P._short_version(installed_v):
+        # Diagnostics move between releases; a card chosen from a stale
+        # signature is the same mistake as a pack for the wrong compiler.
+        return []
+    sigs = extract_signatures(diagnostic)
+    if not sigs:
+        return []
+    table = entry.get("signatures") or {}
+    score: dict[str, int] = {}
+    for sig in sigs:
+        for cid in table.get(sig, []):
+            # A PLAIN COUNT of matching signatures. The first version weighted
+            # `ident:` matches 4x over `shape:` ones, on the reasoning that an
+            # identifier is more specific than a sentence form — plausible,
+            # and measurably worthless: a mutation that removed the weight
+            # broke no test, so it was measured properly at weights 1, 2, 4
+            # and 8 against the held-out set. All four give identical results
+            # (#1 in 11/12, right card within the shipped 2-card limit in
+            # 12/12). An unmeasured knob carrying a confident comment is
+            # exactly the shape of thing this repo keeps getting burned by, so
+            # it is gone. If a future case needs ranking help, measure first
+            # and put the number here.
+            score[cid] = score.get(cid, 0) + 1
+    if not score:
+        return []
+    summaries = {c.id: c.summary for c in V.load_claims(os.path.join(_HERE, "claims"))
+                 if c.lang == lang}
+    ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
+    out = []
+    for cid, sc in ranked:
+        summary = summaries.get(cid) or ""
+        if not summary:
+            continue                       # verified but undeliverable
+        out.append({"claim": cid, "summary": summary, "score": sc})
+        if len(out) >= max_cards:
+            break
+    return out
+
+
+def render_escalation(lang: str, diagnostic: str, **kw) -> str:
+    """The text to attach to the next turn, or "" when there is nothing to say."""
+    cards = cards_for(lang, diagnostic, **kw)
+    if not cards:
+        return ""
+    head = (f"=== {lang}: this error has a known cause (beast-lang) ===\n"
+            f"Confirmed against the {lang} toolchain installed on this machine:\n")
+    body = "".join(f"- {c['summary']}\n" for c in cards)
+    return head + body
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--rebuild", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="fail if the committed index differs from a rebuild")
+    ap.add_argument("--lang")
+    ap.add_argument("--diagnostic", help="text to match (use - for stdin)")
+    a = ap.parse_args(argv)
+
+    if a.rebuild or a.check:
+        fresh = build_index([a.lang] if a.lang else None)
+        if a.check:
+            have = load_index()
+            # Compare only the languages we could actually rebuild, so a box
+            # without zig does not "fail" an index it cannot regenerate.
+            for lang, entry in fresh["langs"].items():
+                if have.get("langs", {}).get(lang) != entry:
+                    print(f"escalate-index.json is stale for {lang} — rebuild it",
+                          file=sys.stderr)
+                    return 1
+            print(f"escalate-index.json matches ({', '.join(fresh['langs']) or 'nothing rebuildable here'})")
+            return 0
+        with open(INDEX_PATH, "w") as fh:
+            json.dump(fresh, fh, indent=1)
+        for lang, e in fresh["langs"].items():
+            print(f"{lang}: {len(e['signatures'])} signatures from "
+                  f"{e['fixtures_with_diagnostics']} diagnostics "
+                  f"(toolchain {e['toolchain']})")
+            if e["fixtures_that_compiled_anyway"]:
+                print(f"  ! {e['fixtures_that_compiled_anyway']} OLD fixture(s) "
+                      f"COMPILED — those claims are not breaks any more")
+        return 0
+
+    if a.diagnostic:
+        text = sys.stdin.read() if a.diagnostic == "-" else a.diagnostic
+        lang = a.lang or ""
+        if not lang:
+            print("--lang is required with --diagnostic", file=sys.stderr)
+            return 2
+        out = render_escalation(lang, text)
+        print(out or "(no card matches this diagnostic)")
+        return 0
+
+    idx = load_index()
+    for lang, e in (idx.get("langs") or {}).items():
+        print(f"{lang}: {len(e.get('signatures', {}))} signatures, "
+              f"toolchain {e.get('toolchain')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

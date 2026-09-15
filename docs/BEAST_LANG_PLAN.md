@@ -358,11 +358,30 @@ must clear a v5-suite eval before joining the runner registry.
   change). `agents/lang/packs.py`.
 - **Phase 1 — toolchain introspection: next**, no GPU. Generalizes
   `gen_zig_pack.py`'s area/rank/budget machinery behind a per-language driver.
-- **Phase 4 — escalation (Tier 1.5): next**, small GPU cost only to A/B it.
-  Injection through `runner.py --context-file`, which already exists, so no
-  cache-era-hashed file needs to change. **`agents/tools.py` IS hashed**, so
-  wiring `start_agent`'s spawn path waits until the Tier-3 A/B's five
-  remaining cells are done.
+- **Phase 4 — escalation (Tier 1.5): THE MATCHER IS BUILT AND MEASURED.**
+  `agents/lang/escalate.py`. A compile error selects the card that fixes it,
+  and the matching index is **generated, not hand-written**: every claim
+  already ships OLD fixtures that must fail, so compiling them yields the real
+  diagnostic a model will see. Nobody guesses what zig says about `std.io`;
+  zig is asked. 86 signatures across zig/cpp/python from 49 real diagnostics.
+  - **Round-trip** (the index maps its own evidence): 49/49.
+  - **Held-out** (stale code the index has never seen): **14/14 have the right
+    card in the top 3, 13/14 rank it #1.** The one exception is the `std.io`
+    ambiguity where `stdin` outranks `stdout` — both cards are true, and the
+    shipped 2-card limit delivers the right one either way.
+  - Refuses to speak when it should: no match, no index, a claim with no
+    one-line summary, or an index whose stamped toolchain differs from the
+    installed one (diagnostics move between releases).
+  - **What building it exposed:** every zig claim was VERIFIED but
+    UNDELIVERABLE — the set is generated from the fixture manifest, which
+    carried no `summary` — so escalation silently matched nothing for the one
+    language it matters most for (zig is 9/30 on the suite; everything else is
+    saturated). Summaries now live in `MANIFEST.json`, the source of truth.
+  - **Still to do: the wiring, ~5 lines, era-locked.** The checker that
+    produces the diagnostic lives in `agents/tools.py` and the injection point
+    in `agents/runner.py` — both are cache-hashed, and the Tier-3 A/B has five
+    cells outstanding. `runner.py --context-file` already exists, so no new
+    plumbing is needed once the lock lifts.
 - **Phase 3 — synthesis: needs the GPU.** Note that a pack does NOT need an
   LLM: the verified claims already *are* the summary, one `summary` line each.
   The local model's job in phase 3 is to DRAFT new candidate claims from the

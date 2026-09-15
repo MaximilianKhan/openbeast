@@ -14,7 +14,8 @@
       "pack_must_contain": [
         "std.process.Init",
         "global_single_threaded"
-      ]
+      ],
+      "summary": "every I/O call needs an `Io`: `pub fn main(init: std.process.Init) !void { const io = init.io; ... }`, or from a plain main() `const io = std.Io.Threaded.global_single_threaded.io();`"
     },
     {
       "entry": "stdout",
@@ -30,7 +31,8 @@
         "std.Io.File.Writer = .init(.stdout(), io, &buf)",
         "&fw.interface",
         "w.flush()"
-      ]
+      ],
+      "summary": "`std.io` and `std.fs.File` are GONE \u2014 stdout is `var fw: std.Io.File.Writer = .init(.stdout(), io, &buf); const w = &fw.interface; try w.print(...); try w.flush();`"
     },
     {
       "entry": "stdin",
@@ -46,7 +48,8 @@
       "pack_must_contain": [
         "takeDelimiter('\\n')",
         "allocRemaining(gpa, .unlimited)"
-      ]
+      ],
+      "summary": "stdin by line: `var fr: std.Io.File.Reader = .init(.stdin(), io, &rb); while (try fr.interface.takeDelimiter('\\n')) |line| {...}` \u2014 `readUntilDelimiterOrEof`/`readAll` are gone"
     },
     {
       "entry": "files",
@@ -60,7 +63,8 @@
         "std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited",
         ".writeFile(io, .{ .sub_path",
         "f.close(io)"
-      ]
+      ],
+      "summary": "`std.fs.cwd()` is gone \u2014 use `std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20))` / `.writeFile(io, .{ .sub_path = p, .data = bytes })`"
     },
     {
       "entry": "args",
@@ -72,7 +76,8 @@
       ],
       "pack_must_contain": [
         "init.minimal.args.toSlice(init.arena.allocator())"
-      ]
+      ],
+      "summary": "`std.process.argsAlloc` is gone \u2014 `const args = try init.minimal.args.toSlice(init.arena.allocator());`"
     },
     {
       "entry": "time_random",
@@ -92,7 +97,8 @@
         "io.sleep(.fromMilliseconds",
         "io.random(&buf)",
         "DefaultPrng.init(42)"
-      ]
+      ],
+      "summary": "`std.time.*`, `std.Thread.sleep` and `std.crypto.random` are gone \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`"
     },
     {
       "entry": "arraylist",
@@ -112,7 +118,8 @@
         "toOwnedSlice(gpa)",
         "`pop()` returns `?T`",
         "std.array_list.Managed(T).init(gpa)"
-      ]
+      ],
+      "summary": "`std.ArrayList` is UNMANAGED now: `var l: std.ArrayList(T) = .empty; defer l.deinit(gpa); try l.append(gpa, x);` \u2014 `.init(gpa)` and `append(x)` are gone; `pop()` returns `?T`"
     },
     {
       "entry": "arraylist_writer",
@@ -128,7 +135,8 @@
         "aw.written()",
         "list.print(gpa,",
         "std.Io.Writer = .fixed(&buf)"
-      ]
+      ],
+      "summary": "`list.writer()` is gone \u2014 `var aw: std.Io.Writer.Allocating = .init(gpa); try aw.writer.print(...); const s = aw.written();` or `try list.print(gpa, ...)` on an ArrayList(u8)"
     },
     {
       "entry": "pq_hashmap",
@@ -143,7 +151,8 @@
         "std.PriorityQueue(T, void, cmp) = .empty",
         "pq.push(gpa, x)",
         "AutoHashMap/StringHashMap are still managed"
-      ]
+      ],
+      "summary": "PriorityQueue went unmanaged: `var pq: std.PriorityQueue(T, void, cmp) = .empty; try pq.push(gpa, x); const top = pq.pop();` \u2014 AutoHashMap/StringHashMap are still managed `.init(gpa)`"
     },
     {
       "entry": "math",
@@ -164,7 +173,8 @@
         "cast(T, x) ?T",
         "isPowerOfTwo",
         "divCeil"
-      ]
+      ],
+      "summary": "`std.math.abs/min/max` are gone \u2014 use the builtins `@abs(x)`, `@min(a, b)`, `@max(a, b)` (`sqrt`, `pow`, `cast`, `maxInt`, `divCeil`, `clamp` are still there)"
     },
     {
       "entry": "mem",
@@ -190,7 +200,8 @@
         "@memcpy(dst, src)",
         "@memset(dst, 0)",
         "std.mem.sort(T, items, {}, std.sort.asc(T))"
-      ]
+      ],
+      "summary": "`mem.trimRight/trimLeft` -> `trimEnd/trimStart`; `mem.tokenize/split` -> `tokenizeScalar/splitScalar`; `mem.copy/set` -> `@memcpy/@memset`; `std.sort.sort` -> `std.mem.sort`"
     },
     {
       "entry": "fmt",
@@ -213,7 +224,8 @@
         "pub fn format(self: T, w: *std.Io.Writer) std.Io.Writer.Error!void",
         "{f}",
         "{d:.3}"
-      ]
+      ],
+      "summary": "`std.fmt.format(w, ..)` -> `w.print(..)`; `formatIntBuf` -> `fmt.printInt`; `fmtSliceHexLower(b)` -> `\"{x}\"` with the slice; a custom `format` takes `(self, w: *std.Io.Writer)` and prints with `{f}`"
     },
     {
       "entry": "casts",
@@ -235,7 +247,8 @@
         "@enumFromInt(n)",
         "@intFromBool(b)",
         "@as(f64, @floatFromInt(n))"
-      ]
+      ],
+      "summary": "casts take ONE argument and read the type from context: `@intCast(x)`, `@floatFromInt(i)`, `@intFromFloat(f)`, `@intFromEnum(e)`, `@enumFromInt(n)`, `@intFromBool(b)` \u2014 the two-arg `@intToFloat`-style builtins are gone"
     },
     {
       "entry": "alloc_exit",
@@ -251,7 +264,8 @@
         "std.heap.DebugAllocator(.{}) = .init",
         "dbg.allocator()",
         "std.process.exit(code)"
-      ]
+      ],
+      "summary": "`std.heap.GeneralPurposeAllocator` is gone \u2014 `var dbg: std.heap.DebugAllocator(.{}) = .init; const gpa = dbg.allocator();` (or `init.gpa`); `std.os.exit` -> `std.process.exit(code)`"
     },
     {
       "entry": "ascii",
@@ -264,7 +278,8 @@
       ],
       "pack_must_contain": [
         "`std.ascii.isAlpha/isSpace` \u2192 `isAlphabetic/isWhitespace`"
-      ]
+      ],
+      "summary": "`std.ascii.isAlpha/isSpace` -> `isAlphabetic/isWhitespace` (also `isDigit`, `isAlphanumeric`, `toLower`, `toUpper`, `eqlIgnoreCase`)"
     }
   ]
 }
