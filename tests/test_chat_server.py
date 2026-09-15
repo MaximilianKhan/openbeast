@@ -1839,3 +1839,156 @@ def test_sending_to_an_agent_session_still_works(rig, tmp_path):
                            headers=rig.local, json={"text": "hello"})
     assert send.status_code == 200, send.text
     assert send.json()["queued"] is True
+
+
+# ---------------------------------------------------------------------------
+# an op that did not land is not "queued" (review [48])
+# ---------------------------------------------------------------------------
+
+def test_send_does_not_claim_queued_when_the_inbox_write_fails(rig,
+                                                               monkeypatch):
+    """append_op swallowed the write's failure, so a /send on a full disk was
+    DROPPED while this route answered {"queued": true, "detail": "queued —
+    lands at the next turn"}. A silently dropped operator instruction with a
+    positive acknowledgement is the same shape of bug this route was already
+    fixed for once (job sessions)."""
+    sid = rig.session(kind="agent", state="running")
+    monkeypatch.setattr(sessions, "append_op", lambda *a, **k: False)
+    r = rig.client.post(f"/api/chat/sessions/{sid}/send",
+                        json={"text": "focus on the zig ports"},
+                        headers=rig.local)
+    assert r.status_code == 503, r.text
+    assert "NOT queued" in r.text
+
+
+def test_stop_still_works_when_the_inbox_write_fails(rig, monkeypatch):
+    """The ASYMMETRY is deliberate. /stop does not depend on the inbox:
+    escalation signals the process group on a timer whether or not the
+    cooperative op was ever read, so refusing a stop because its op could not
+    be written would refuse a stop we can still deliver."""
+    sid = rig.session(kind="agent", state="running", pid=os.getpid())
+    monkeypatch.setattr(sessions, "append_op", lambda *a, **k: False)
+    calls = []
+    monkeypatch.setattr(chat_server, "start_escalation",
+                        lambda *a, **k: calls.append(a))
+    r = rig.client.post(f"/api/chat/sessions/{sid}/stop",
+                        json={}, headers=rig.local)
+    assert r.status_code == 200, r.text
+    assert calls, "escalation must still be armed"
+
+
+# ---------------------------------------------------------------------------
+# the kill path needs the boot, not just the pid (review [54])
+# ---------------------------------------------------------------------------
+
+def test_signalling_refuses_a_record_from_another_boot(rig):
+    """meta['pid_start'] is ticks since BOOT, so across a reboot the equality
+    compares two different clocks and can match by coincidence — the
+    killpg-a-stranger case this guard exists to prevent. Checking the boot in
+    sessions.is_alive alone would fix the status column and leave this path
+    open, because it reads meta itself."""
+    sid = rig.session(kind="agent", state="running", pid=os.getpid())
+    rec = sessions.get(sid)
+    assert chat_server.signal_identity_ok(rec) is True
+    rec["meta"]["boot_id"] = "00000000-0000-0000-0000-000000000000"
+    assert chat_server.signal_identity_ok(rec) is False
+    # a record with no boot_id at all keeps the old behaviour
+    rec["meta"].pop("boot_id")
+    assert chat_server.signal_identity_ok(rec) is True
+
+
+# ---------------------------------------------------------------------------
+# console.html invariants (review [46], [51])
+# ---------------------------------------------------------------------------
+# STRUCTURAL, and deliberately so: there is no browser here, so these assert
+# the SOURCE carries the two properties rather than observing them. Weaker
+# than a behavioural test, stronger than the nothing that covered this file
+# before — a reader who deletes either line will be told which invariant they
+# broke and why it mattered.
+
+def _console_js() -> str:
+    return open(chat_server.CONSOLE_PATH, encoding="utf-8").read()
+
+
+def test_the_lost_frame_rewinds_the_resume_bookkeeping():
+    """`lost` means the SERVER rewound to 0. `lost` frames carry no id, so the
+    monotonic guard cannot lower S.offset by itself — it would reject every id
+    of the replayed transcript and freeze the offset (and its localStorage
+    copy) at a stale forward value, so a later same-page resume asks for an
+    offset past the end and is served a silent blank."""
+    js = _console_js()
+    i = js.index('if(name === "lost")')
+    branch = js[i:js.index("return;", i)]
+    assert "S.offset = 0" in branch, branch
+    assert "lsDel(OFF(S.id))" in branch, branch
+    # and the rewind must come BEFORE the view reset, so nothing in between
+    # can re-read the stale value
+    assert branch.index("S.offset = 0") < branch.index("resetStream()")
+
+
+def test_a_permanently_dead_stream_is_not_painted_as_reconnecting():
+    """EventSource does not retry a non-200, and this handler never looked at
+    readyState — so a stream the /events gate refuses (a caller whose only
+    credential is a device key, which EventSource cannot send) was reported
+    as "reconnecting" forever."""
+    js = _console_js()
+    i = js.index("es.onerror")
+    handler = js[i:js.index("};", i)]
+    assert "readyState === 2" in handler, handler
+    assert "stream unavailable" in handler, handler
+    # CONNECTING(0) must NOT be treated as permanent: the transient-drop path
+    # is the whole reason the handler is quiet by default
+    assert "readyState === 0" not in handler
+    assert "reconnecting" in handler
+
+
+# ---------------------------------------------------------------------------
+# the docs must describe the gate that exists (review [35], [50])
+# ---------------------------------------------------------------------------
+
+def _chat_doc() -> str:
+    import pathlib
+    return (pathlib.Path(chat_server.__file__).resolve().parents[1]
+            / "docs" / "BEAST_CHAT.md").read_text(encoding="utf-8")
+
+
+def test_the_doc_does_not_call_mcp_spawned_agents_unsteerable():
+    """[35] start_agent always mints an agent_id and passes it as
+    --session-id, and --session-id implies --steer — so every agent the local
+    model spawns through the tool server IS a ledger session with an inbox,
+    steerable and stoppable by any chat-scoped device key. The doc listed it
+    among the entry points that are NOT sessions, which is the opposite, and
+    it is the entry point an operator is least likely to have expected."""
+    import mcp_server
+    src = open(mcp_server.__file__, encoding="utf-8").read()
+    body = src[src.index("def start_agent("):]
+    body = body[:body.index("\ndef ")]
+    # it mints an id and hands it over unconditionally — no flag, no branch
+    assert "session_id=agent_id" in body, body[-1500:]
+    doc = _chat_doc()
+    bullet = doc[doc.index("- An agent started any other way"):]
+    bullet = bullet[:bullet.index("\n-")] if "\n-" in bullet else bullet
+    assert "start_agent" not in bullet, bullet
+
+
+def test_the_doc_does_not_promise_a_404_on_the_console_page():
+    """[50] `/` and `/icon.svg` are deliberately ungated and answer 200 to an
+    anonymous caller, so the documented symptom "404 on every route,
+    including the console page" describes something that cannot happen — and
+    a reader who loads the page and sees it render concludes their identity
+    works when the API is still refusing them."""
+    doc = _chat_doc()
+    assert "404 on every route, including the console page" not in doc
+    assert "404 on every API route" in doc
+
+
+def test_the_console_page_and_icon_really_are_ungated(rig):
+    """The other half of [50]: the doc's new wording is only right if these
+    two routes DO answer 200 with no identity at all. Asserted here so the
+    doc and the gate cannot drift apart in either direction."""
+    anon = rig.anon                               # no credential of any kind
+    for path in ("/", "/icon.svg"):
+        r = anon.get(path)
+        assert r.status_code == 200, (path, r.status_code)
+    # ...and an API route with the same (absent) identity is still refused
+    assert anon.get("/api/chat/sessions").status_code == 404

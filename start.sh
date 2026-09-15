@@ -566,26 +566,35 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   if [[ ! -f "$SCRIPT_DIR/agents/chat_server.py" ]]; then
     echo "Warning: BEAST_CHAT=true but agents/chat_server.py is missing — skipping." >&2
   else
-    echo "Starting beast-chat console on http://localhost:${CHAT_PORT:-3003}..."
-    python3 "$SCRIPT_DIR/agents/chat_server.py" &
-    CHAT_PID=$!
-    echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
-    CHAT_UP=0
-    for _i in $(seq 1 20); do
-      kill -0 "$CHAT_PID" 2>/dev/null || break
-      curl -s -m 2 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" >/dev/null 2>&1 \
-        && { CHAT_UP=1; break; }
-      sleep 1
-    done
-    if [[ $CHAT_UP -eq 1 ]]; then
-      echo "beast-chat ready on http://localhost:${CHAT_PORT:-3003}"
-      if [[ -z "${CHAT_OPERATORS:-}" ]]; then
-        echo "  CHAT_OPERATORS is empty — once published, EVERY tailnet login can"
-        echo "  read every session. Set it in openbeast.conf to pin it to you."
-      fi
+    if _pid_alive "$RUN_DIR/chat.pid" "$(_pid_pattern chat)"; then
+      # The same guard, for the same reason as beast-artifact below: this
+      # branch overwrote chat.pid with an unbindable replacement in the
+      # orphaned-stack state too. The review named the artifact branch; the
+      # defect is the class, and fixing one of two identical holes is not
+      # fixing it.
+      echo "beast-chat already running (pid $(cat "$RUN_DIR/chat.pid")) — leaving it alone."
     else
-      echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
-      echo "         Diagnose with: ./scripts/doctor.sh" >&2
+      echo "Starting beast-chat console on http://localhost:${CHAT_PORT:-3003}..."
+      python3 "$SCRIPT_DIR/agents/chat_server.py" &
+      CHAT_PID=$!
+      echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
+      CHAT_UP=0
+      for _i in $(seq 1 20); do
+        kill -0 "$CHAT_PID" 2>/dev/null || break
+        curl -s -m 2 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" >/dev/null 2>&1 \
+          && { CHAT_UP=1; break; }
+        sleep 1
+      done
+      if [[ $CHAT_UP -eq 1 ]]; then
+        echo "beast-chat ready on http://localhost:${CHAT_PORT:-3003}"
+        if [[ -z "${CHAT_OPERATORS:-}" ]]; then
+          echo "  CHAT_OPERATORS is empty — once published, EVERY tailnet login can"
+          echo "  read every session. Set it in openbeast.conf to pin it to you."
+        fi
+      else
+        echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
+        echo "         Diagnose with: ./scripts/doctor.sh" >&2
+      fi
     fi
   fi
 fi
@@ -598,33 +607,47 @@ fi
 # process. scripts/artifact.sh is the one that speaks HTTP to it, with the
 # proof-of-locality token. So a failure here costs viewing, not publishing.
 if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
-  echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
-  OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
-  OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
-    python3 "$SCRIPT_DIR/agents/artifact_server.py" &
-  ARTIFACT_PID=$!
-  echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
-  ARTIFACT_UP=0
-  for _i in $(seq 1 20); do
-    kill -0 "$ARTIFACT_PID" 2>/dev/null || break
-    curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
-      && { ARTIFACT_UP=1; break; }
-    sleep 1
-  done
-  if [[ $ARTIFACT_UP -eq 1 ]]; then
-    echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
+  # [17] GUARD THE SPAWN, not the delete. In the orphaned-stack state (the
+  # supervisor was SIGKILLed, so its EXIT trap never reaped the children) a
+  # fresh ./start.sh passed the supervisor guard and spawned a replacement
+  # that CANNOT BIND the port — then wrote its pid over the pidfile and, when
+  # the health probe failed, deleted the file, erasing the still-live server's
+  # recorded pid. The cost is not cosmetic: scripts/healthcheck.sh --restart
+  # (driven every 5 minutes by openbeast-watchdog.timer) then finds no pid,
+  # never kills the wedged orphan, and loops on an unbindable replacement
+  # forever. Refusing to spawn prevents the destroying write in the first
+  # place, rather than trying to patch the erasure after it happened.
+  if _pid_alive "$RUN_DIR/artifact.pid" "$(_pid_pattern artifact)"; then
+    echo "beast-artifact already running (pid $(cat "$RUN_DIR/artifact.pid")) — leaving it alone."
   else
-    # WARNING, not fatal: this is an opt-in cosmetic service. Taking the whole
-    # stack — the model included — down because a page viewer failed to bind
-    # is a far worse outcome than not being able to open an artifact URL.
-    echo "WARNING: beast-artifact did not come up (see its output above)." >&2
-    echo "         The rest of the stack, llama-server included, is unaffected;" >&2
-    echo "         artifact URLs will not serve until it starts. Publishing" >&2
-    echo "         through the model's tools still works (in-process store)." >&2
-    echo "         Retry it on its own:  ./scripts/healthcheck.sh --restart" >&2
-    kill "$ARTIFACT_PID" 2>/dev/null || true
-    rm -f "$RUN_DIR/artifact.pid"
-    ARTIFACT_PID=""
+    echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
+    OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
+    OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
+      python3 "$SCRIPT_DIR/agents/artifact_server.py" &
+    ARTIFACT_PID=$!
+    echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
+    ARTIFACT_UP=0
+    for _i in $(seq 1 20); do
+      kill -0 "$ARTIFACT_PID" 2>/dev/null || break
+      curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
+        && { ARTIFACT_UP=1; break; }
+      sleep 1
+    done
+    if [[ $ARTIFACT_UP -eq 1 ]]; then
+      echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
+    else
+      # WARNING, not fatal: this is an opt-in cosmetic service. Taking the whole
+      # stack — the model included — down because a page viewer failed to bind
+      # is a far worse outcome than not being able to open an artifact URL.
+      echo "WARNING: beast-artifact did not come up (see its output above)." >&2
+      echo "         The rest of the stack, llama-server included, is unaffected;" >&2
+      echo "         artifact URLs will not serve until it starts. Publishing" >&2
+      echo "         through the model's tools still works (in-process store)." >&2
+      echo "         Retry it on its own:  ./scripts/healthcheck.sh --restart" >&2
+      kill "$ARTIFACT_PID" 2>/dev/null || true
+      rm -f "$RUN_DIR/artifact.pid"
+      ARTIFACT_PID=""
+    fi
   fi
 fi
 

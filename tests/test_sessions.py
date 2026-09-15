@@ -28,6 +28,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+import errno
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -691,3 +692,123 @@ def test_prune_leaves_a_live_session_log_alone(ledger):
     _age(sid, 45)
     assert sessions.prune(30) == 0
     assert os.path.exists(log)
+
+
+# ---------------------------------------------------------------------------
+# append_op reports whether the op actually landed (review [48])
+# ---------------------------------------------------------------------------
+
+def test_append_op_reports_a_failed_write(ledger, monkeypatch):
+    """The write's return value was discarded and its OSError swallowed, so a
+    /send on a full disk was dropped while the API answered
+    {"queued": true}."""
+    sid = "s-enospc"
+    sessions.register(sid, pid=os.getpid())
+    real = os.write
+
+    def enospc(fd, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "write", enospc)
+    assert sessions.append_op(sid, {"op": "say", "text": "hi"}) is False
+    monkeypatch.setattr(os, "write", real)
+    # nothing to read: the op did not land
+    assert sessions.read_new_ops(sid)[0] == []
+
+
+def test_a_short_write_does_not_take_the_next_op_down_with_it(ledger,
+                                                              monkeypatch):
+    """A newline-less remnant used to swallow the FOLLOWING op too, because
+    read_new_ops advances its cursor past a line before json.loads rejects
+    it — two ops gone, no error anywhere. A partial line must be terminated
+    so the loss stops at one."""
+    sid = "s-short"
+    sessions.register(sid, pid=os.getpid())
+    real = os.write
+    state = {"calls": 0}
+
+    def short_then_full(fd, data):
+        """ENOSPC *after* a partial transfer — the realistic shape. A short
+        write the loop CAN continue is continued (that is the loop working);
+        what has to be survivable is the one it cannot."""
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return real(fd, bytes(data)[:len(bytes(data)) // 3])   # partial
+        if state["calls"] == 2:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(fd, data)            # the terminating "\n", and later ops
+
+    monkeypatch.setattr(os, "write", short_then_full)
+    assert sessions.append_op(sid, {"op": "say", "text": "A" * 300}) is False
+    monkeypatch.setattr(os, "write", real)
+    # the SECOND op is intact and readable — the whole point
+    assert sessions.append_op(sid, {"op": "say", "text": "second"}) is True
+    ops, _ = sessions.read_new_ops(sid)
+    texts = [o.get("text") for o in ops]
+    assert "second" in texts, ops
+    assert not any(t and t.startswith("AAA") and len(t) < 300 for t in texts)
+
+
+def test_append_op_returns_true_on_the_happy_path(ledger):
+    sid = "s-ok"
+    sessions.register(sid, pid=os.getpid())
+    assert sessions.append_op(sid, {"op": "say", "text": "hello"}) is True
+    assert sessions.append_op(sid, "not-a-dict") is False
+    ops, _ = sessions.read_new_ops(sid)
+    assert [o.get("text") for o in ops] == ["hello"]
+
+
+# ---------------------------------------------------------------------------
+# a record from a previous boot (review [54])
+# ---------------------------------------------------------------------------
+
+def test_register_stamps_the_boot(ledger):
+    sid = "s-boot"
+    rec = sessions.register(sid, pid=os.getpid())
+    if sessions._boot_id() is None:
+        pytest.skip("kernel does not report a boot id")
+    assert rec["meta"]["boot_id"] == sessions._boot_id()
+
+
+def test_a_record_from_another_boot_is_never_alive(ledger, monkeypatch):
+    """pid_start is ticks since BOOT, so across a reboot the comparison is
+    two different clocks — the documented reboot guarantee was void by
+    construction for exactly the event it names."""
+    sid = "s-prev-boot"
+    rec = sessions.register(sid, pid=os.getpid())     # genuinely alive NOW
+    assert sessions.is_alive(rec) is True
+    rec["meta"]["boot_id"] = "00000000-0000-0000-0000-000000000000"
+    assert sessions.from_another_boot(rec) is True
+    assert sessions.is_alive(rec) is False
+    # ...and a running record reconciles to lost, saying why
+    rec["state"] = "running"
+    out = sessions.reconcile(rec)
+    assert out["state"] == "lost"
+    assert "boot" in out["summary"]
+
+
+def test_a_record_with_no_boot_id_keeps_todays_behaviour(ledger):
+    """LOAD-BEARING. Every record written before this change has no boot_id;
+    treating absent as mismatched would flip every live session on the rig to
+    `lost` the moment the change lands."""
+    sid = "s-legacy"
+    rec = sessions.register(sid, pid=os.getpid())
+    rec["meta"].pop("boot_id", None)
+    assert sessions.from_another_boot(rec) is False
+    assert sessions.is_alive(rec) is True
+    assert sessions.reconcile(dict(rec, state="running"))["state"] == "running"
+    # an empty string is no information either
+    rec["meta"]["boot_id"] = ""
+    assert sessions.from_another_boot(rec) is False
+    assert sessions.is_alive(rec) is True
+
+
+def test_an_unknowable_boot_invalidates_nothing(ledger, monkeypatch):
+    """A kernel that will not report a boot id must not invalidate records
+    that DO carry one."""
+    sid = "s-noproc"
+    rec = sessions.register(sid, pid=os.getpid())
+    rec["meta"]["boot_id"] = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(sessions, "_boot_id", lambda: None)
+    assert sessions.from_another_boot(rec) is False
+    assert sessions.is_alive(rec) is True

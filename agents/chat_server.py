@@ -541,6 +541,13 @@ def signal_identity_ok(record: dict) -> bool:
     pid = _int_or_zero(record.get("pid"))
     if pid <= 1:
         return False
+    # [54] pid_start is ticks since BOOT, so across a reboot the equality
+    # below compares two different clocks and can match by coincidence —
+    # precisely the killpg-a-stranger case this function exists to prevent.
+    # Checking it in sessions.is_alive alone would fix the status column and
+    # leave the signal path open, because this function reads meta itself.
+    if sessions.from_another_boot(record):
+        return False
     meta = record.get("meta")
     want = meta.get("pid_start") if isinstance(meta, dict) else None
     if want is None:
@@ -1437,14 +1444,24 @@ def create_app() -> FastAPI:
                         detail="job sessions have no inbox — stop is the "
                                "only action")
                 op_id = uuid.uuid4().hex[:12]
-                sessions.append_op(session_id, {
+                # [48] append_op used to return None whether the op landed or
+                # was dropped on a full disk, and this route answered
+                # {"queued": true, "detail": "queued — lands at the next
+                # turn"} either way. A silently dropped operator instruction
+                # with a positive acknowledgement is the shape of bug this
+                # route already got fixed for once (jobs, below).
+                if not sessions.append_op(session_id, {
                     "op": "say",
                     "id": op_id,
                     "text": text,
                     "ts": _now_iso(),
                     "by": principal.get("login"),
                     "device": principal.get("device"),
-                })
+                }):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="could not write to the session inbox — the "
+                               "message was NOT queued (check disk space)")
                 # Hash + length only. The whole point of the audit trail is to
                 # prove WHO steered an agent and WHEN, not to keep a copy of
                 # everything anyone ever typed into their phone.
@@ -1486,6 +1503,12 @@ def create_app() -> FastAPI:
                     # is inside, writes its own `done`, and the transcript
                     # stays coherent. Escalation only if it does not.
                     op_id = uuid.uuid4().hex[:12]
+                    # Return value deliberately ignored, unlike /send above:
+                    # stop does NOT depend on the inbox. start_escalation
+                    # signals the process group on a timer whether or not the
+                    # cooperative op was ever read, so a failed write costs a
+                    # clean shutdown, not the shutdown. Answering 503 here
+                    # would refuse a stop we can still deliver.
                     sessions.append_op(session_id, {
                         "op": "stop", "id": op_id, "ts": _now_iso(),
                         "by": principal.get("login"),
