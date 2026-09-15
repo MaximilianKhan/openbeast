@@ -1206,6 +1206,115 @@ else
   fail "doctor still compares reads against a value the server never sends"
 fi
 
+# The GPU lease (docs/BEAST_CAMPAIGN_PLAN.md P0). Nothing on this box has ever
+# claimed the GPU, and the cost is documented: six parallel build agents ran
+# inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
+# Those agents did not IGNORE a lease — they had nothing to consult.
+echo ""
+echo "GPU lease:"
+_GL="$REPO_DIR/scripts/gpu-lease.sh"
+_GL_DIR="$(mktemp -d)"
+# A high VRAM floor so the real card (which may be busy) cannot skew the test.
+_gl() { OPENBEAST_RUN_DIR="$_GL_DIR" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$_GL" "$@"; }
+if [[ ! -x "$_GL" ]]; then
+  fail "scripts/gpu-lease.sh missing or not executable"
+else
+  # A bare acquire must be held by the CALLER, or it is stale the instant it
+  # returns — which is how the first version shipped, with a usage example
+  # promising otherwise.
+  # export, not a bare assignment: the script reads these from the
+  # ENVIRONMENT, and an assignment on its own line only sets a shell variable
+  # — which is how this test first "failed" against a perfectly good lease.
+  _GL_OUT="$(bash -c "export OPENBEAST_RUN_DIR='$_GL_DIR' OPENBEAST_LEASE_VRAM_FLOOR=99999999
+    '$_GL' acquire probe >/dev/null && '$_GL' status | head -1" 2>&1 || true)"
+  if grep -q '^HELD' <<< "$_GL_OUT"; then
+    pass "a bare acquire is held by the caller and survives the call"
+  else
+    fail "acquire did not produce a live lease: $_GL_OUT"
+  fi
+  rm -f "$_GL_DIR/gpu.lease"
+
+  # A LIVE holder must be refused, with a distinguishable exit code.
+  bash -c "export OPENBEAST_RUN_DIR='$_GL_DIR' OPENBEAST_LEASE_VRAM_FLOOR=99999999
+           '$_GL' run holder -- sleep 4" >/dev/null 2>&1 &
+  _GL_BG=$!
+  sleep 1
+  # Capture the code without letting `set -e` fire: a non-zero exit is the
+  # EXPECTED result here, and testing $? after the fact aborts the whole file
+  # before the `if` can read it. (Third time today this pattern bit a test of
+  # mine — the others were a pipefail-through-grep and a bare assignment.)
+  _GL_RC=0
+  _gl acquire second >/dev/null 2>&1 || _GL_RC=$?
+  if [[ "$_GL_RC" -eq 4 ]]; then
+    pass "a live holder is refused (exit 4)"
+  else
+    fail "the lease was handed out while another process held it (rc=$_GL_RC)"
+  fi
+  wait "$_GL_BG" 2>/dev/null || true
+  # run's EXIT trap must have released it
+  _GL_OUT="$(_gl status 2>&1 || true)"
+  if grep -q '^FREE' <<< "$_GL_OUT"; then
+    pass "run releases the lease when its command exits"
+  else
+    fail "run leaked the lease: $_GL_OUT"
+  fi
+
+  # A RECYCLED pid must not look alive: identity is pid + start time, the
+  # lesson agents/sessions.py already carries.
+  printf 'pid=%s\nstart=1\nlabel=recycled\nsince=then\n' "$$" > "$_GL_DIR/gpu.lease"
+  # Capture, THEN grep. `grep -q` exits on its first match, so acquire takes
+  # SIGPIPE writing its next line and `pipefail` reports the whole pipeline
+  # as failed — making a passing behaviour look broken. Fourth variant of the
+  # same family today (pipefail-through-grep, set -e on an expected non-zero,
+  # a bare env assignment, and now SIGPIPE).
+  _GL_OUT="$(_gl acquire after-recycle 2>&1 || true)"
+  if grep -q 'stale' <<< "$_GL_OUT"; then
+    pass "a recycled pid does not make a dead lease look live"
+  else
+    fail "a lease was treated as live on pid alone: $_GL_OUT"
+  fi
+  rm -f "$_GL_DIR/gpu.lease"
+
+  # And it must refuse to claim a card somebody else is quietly using.
+  _GL_OUT="$(OPENBEAST_RUN_DIR="$_GL_DIR" OPENBEAST_LEASE_VRAM_FLOOR=0 \
+             "$_GL" acquire greedy 2>&1 || true)"
+  if grep -qE 'refusing|already allocated' <<< "$_GL_OUT"; then
+    pass "refuses to claim a GPU that has an unclaimed user"
+  else
+    fail "claimed a GPU already in use: $_GL_OUT"
+  fi
+fi
+rm -rf "$_GL_DIR"
+
+# The era assertion. Rows either side of a change to the six hashed files are
+# not comparable, and until now era was a thing people remembered — the
+# 2026-09-08 plan put the churn floor before a git pull and the cells it
+# calibrates after it, and review did not catch it because it was nobody's job.
+echo ""
+echo "Eval era assertion:"
+_EE="$REPO_DIR/scripts/eval-era.sh"
+if [[ ! -x "$_EE" ]]; then
+  fail "scripts/eval-era.sh missing or not executable"
+else
+  _EE_NOW="$("$_EE" 2>/dev/null || true)"
+  if [[ "$_EE_NOW" =~ ^[0-9a-f]{16}$ ]]; then
+    pass "eval-era.sh prints a 16-hex era ($_EE_NOW)"
+  else
+    fail "eval-era.sh printed '$_EE_NOW'"
+  fi
+  if "$_EE" --check "$_EE_NOW" >/dev/null 2>&1; then
+    pass "--check passes against the current era"
+  else
+    fail "--check failed against the era it just printed"
+  fi
+  _EE_OUT="$("$_EE" --check deadbeefdeadbeef 2>&1 || true)"
+  if grep -q 'ERA MOVED' <<< "$_EE_OUT" && grep -q 'runner.py' <<< "$_EE_OUT"; then
+    pass "--check fails on a moved era and names the hashed inputs"
+  else
+    fail "--check did not report a moved era usefully: $_EE_OUT"
+  fi
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
