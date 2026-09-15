@@ -470,8 +470,14 @@ def test_a_signed_token_with_no_email_claim_is_refused(surfaces, monkeypatch):
     """R1, JWT mode — and this repo's OWN fixture shape: the token minted by
     tests/test_identity_jwt.py carried {sub, role, iss, iat, exp} and no
     email, so on a `--with-jwt` rig every user collapsed onto the operator.
-    The claim is required at decode time, so the failure lands at the door,
-    where the message can name the setting."""
+
+    The refusal is scoped to PUBLISHING, not to the token. A token with no
+    email is a perfectly good identity for the other 16 tools; requiring the
+    claim at decode time would 401 the whole surface — bash, read_file, every
+    agent tool — on any rig whose WebUI omits it, which is a far larger blast
+    radius than the feature it protects. So this asserts both halves: the
+    unrelated tool still works, and publishing refuses with the setting named.
+    """
     import datetime
 
     import jwt as pyjwt
@@ -484,20 +490,23 @@ def test_a_signed_token_with_no_email_claim_is_refused(surfaces, monkeypatch):
               + datetime.timedelta(minutes=5)}
     token = {"X-OpenWebUI-User-JWT": pyjwt.encode(claims, secret,
                                                   algorithm="HS256")}
+    # An unrelated tool is UNAFFECTED: no email is needed to write a file.
     r = tools.post("/write_file", json={"path": "report.html",
                                         "content": PAGE}, headers=token)
-    assert r.status_code == 401, r.text          # at the door, not at publish
-    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
+    assert r.status_code == 200, r.text
+    # Publishing is what needs a login a reader can present, so it refuses
+    # here, and the message names the setting to turn on.
     r = tools.post("/publish_artifact", json={"path": "report.html"},
                    headers=token)
-    assert r.status_code == 401, r.text
+    assert r.status_code == 400, r.text
+    assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
     assert artifact.list_artifacts(viewer="max@example.com") == []
     # an unsigned email header next to the token does not rescue it: in JWT
     # mode the token is the whole identity.
     r = tools.post("/publish_artifact", json={"path": "report.html"},
                    headers={**token,
                             "X-OpenWebUI-User-Email": "attacker@example.invalid"})
-    assert r.status_code == 401, r.text
+    assert r.status_code == 400, r.text
 
 
 @pytest.mark.parametrize("bogus", ["@", " ", "not-an-email", "@example.com",

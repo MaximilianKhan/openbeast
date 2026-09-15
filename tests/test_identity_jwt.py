@@ -32,14 +32,14 @@ SECRET = "test-jwt-secret"
 
 def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET,
          iss="open-webui", email="alice@example.com"):
-    """A token the way Open WebUI really signs one.
+    """Mint an identity token the way Open WebUI forwards one.
 
-    `email` is part of the fixture shape as of R1: the tool server resolves a
-    published page's OWNER from it, and a token without it used to validate
-    happily and then collapse its bearer onto the rig's first operator. The
-    claim is now REQUIRED at decode time, so omitting it here (email=None) is
-    how a test asks for the 401 — see
-    tests/test_artifact_mcp_tools.py::test_a_signed_token_with_no_email_claim_is_refused.
+    `email` is optional on purpose. A token without one is a valid identity
+    for the other 16 tools — only publishing a page needs a login a reader
+    can present, and that path refuses on its own with a message naming the
+    setting to turn on. Requiring it at decode time would 401 the entire tool
+    surface on any --with-jwt rig whose WebUI omits it, which is a far larger
+    blast radius than the feature it protects.
     """
     now = int(time.time())
     claims = {"sub": sub, "role": role, "iss": iss, "iat": now,
