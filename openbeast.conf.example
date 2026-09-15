@@ -136,6 +136,31 @@
 # (useful while migrating; it gives up per-device attribution and revocation).
 #EDGE_ALLOW_ANON=false
 
+# ---------------------------------------------------------------------------
+# beast-artifact — a durable URL for anything the model renders
+#                  (see docs/BEAST_ARTIFACT_PLAN.md)
+# ---------------------------------------------------------------------------
+
+# Opt-in. When true, start.sh runs agents/artifact_server.py on ARTIFACT_PORT
+# (loopback only). The model gains two tools — publish_artifact and
+# list_artifacts — that turn an HTML file into a versioned page with a
+# permanent URL, and scripts/artifact.sh does the same from the shell for
+# campaign scripts and background agents. Republishing keeps the URL and adds
+# a version; pages are private to their publisher unless flipped to "tailnet".
+# Put the gallery on a phone with:
+#   ./scripts/setup-tailscale.sh --publish-artifact      # https://<rig>:8446/
+# Writes stay loopback-only either way, so a tailnet device can only view.
+#BEAST_ARTIFACT=false
+#ARTIFACT_PORT=3004
+
+# Tailnet logins allowed to READ the gallery and its pages, comma-separated
+# (the same values Tailscale shows as "Tailscale-User-Login", e.g. an email).
+# An unlisted login gets 404 everywhere — never 403, so an artifact's
+# existence does not leak. Leave unset to inherit CHAT_OPERATORS.
+# NOTE: values must stand alone — the conf parser does NOT strip trailing
+# comments (same caveat as EDGE_RATE_LIMIT above).
+#ARTIFACT_OPERATORS=you@example.com
+
 # Model supply chain. Before loading a GGUF, serve.sh checks it against
 # scripts/weights.registry (sha256 + byte size for every shipped weight) —
 # the same discipline as digest-pinned images and hash-pinned Python deps.

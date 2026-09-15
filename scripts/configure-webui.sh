@@ -136,7 +136,7 @@ fi
 # Models reference both (meta.toolIds). Open WebUI enforces per-connection
 # access at tool-resolution time, so a `user`-role (family/guest) account
 # resolves web_search + fetch ONLY — never bash/file/agent tools. `admin`
-# accounts get all 15 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
+# accounts get all 17 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
 # exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
 if [[ "$TOKEN_OK" != "1" ]]; then

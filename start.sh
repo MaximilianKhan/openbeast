@@ -62,13 +62,14 @@ _pid_pattern() {
     router)     echo 'router\.py' ;;
     edge)       echo 'edge\.py' ;;
     chat)       echo 'chat_server\.py' ;;
-    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge|chat_server' ;;
+    artifact)   echo 'artifact_server\.py' ;;
+    *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge|chat_server|artifact_server' ;;
   esac
 }
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
-  for name in supervisor llama mcpo router edge chat; do
+  for name in supervisor llama mcpo router edge chat artifact; do
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"
@@ -263,6 +264,9 @@ cleanup() {
   if [[ -n "${CHAT_PID:-}" ]]; then
     kill "$CHAT_PID" 2>/dev/null && echo "beast-chat console stopped."
   fi
+  if [[ -n "${ARTIFACT_PID:-}" ]]; then
+    kill "$ARTIFACT_PID" 2>/dev/null && echo "beast-artifact stopped."
+  fi
   if [[ -n "${MCPO_PID:-}" ]]; then
     kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
   fi
@@ -276,7 +280,8 @@ cleanup() {
     rm -f "$_pf"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid" "$RUN_DIR/chat.pid"
+        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid" "$RUN_DIR/chat.pid" \
+        "$RUN_DIR/artifact.pid"
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -563,6 +568,44 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
       echo "         Diagnose with: ./scripts/doctor.sh" >&2
     fi
+  fi
+fi
+
+# beast-artifact (opt-in, BEAST_ARTIFACT=true) — the publish-and-view service
+# for model- or script-authored HTML (docs/BEAST_ARTIFACT_PLAN.md). Loopback
+# only; setup-tailscale.sh --publish-artifact puts it on :8446 for phones.
+# It SERVES the pages; it is not on the publish path for the tools —
+# publish_artifact/list_artifacts call the store (agents/artifact.py) in
+# process. scripts/artifact.sh is the one that speaks HTTP to it, with the
+# proof-of-locality token. So a failure here costs viewing, not publishing.
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
+  OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
+  OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
+    python3 "$SCRIPT_DIR/agents/artifact_server.py" &
+  ARTIFACT_PID=$!
+  echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
+  ARTIFACT_UP=0
+  for _i in $(seq 1 20); do
+    kill -0 "$ARTIFACT_PID" 2>/dev/null || break
+    curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
+      && { ARTIFACT_UP=1; break; }
+    sleep 1
+  done
+  if [[ $ARTIFACT_UP -eq 1 ]]; then
+    echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
+  else
+    # WARNING, not fatal: this is an opt-in cosmetic service. Taking the whole
+    # stack — the model included — down because a page viewer failed to bind
+    # is a far worse outcome than not being able to open an artifact URL.
+    echo "WARNING: beast-artifact did not come up (see its output above)." >&2
+    echo "         The rest of the stack, llama-server included, is unaffected;" >&2
+    echo "         artifact URLs will not serve until it starts. Publishing" >&2
+    echo "         through the model's tools still works (in-process store)." >&2
+    echo "         Retry it on its own:  ./scripts/healthcheck.sh --restart" >&2
+    kill "$ARTIFACT_PID" 2>/dev/null || true
+    rm -f "$RUN_DIR/artifact.pid"
+    ARTIFACT_PID=""
   fi
 fi
 

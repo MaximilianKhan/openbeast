@@ -22,6 +22,10 @@ session ledger in agents/sessions.py, so agents outlive this process):
   - list_agents: see all tracked agents and their status
   - stop_agent: terminate a running agent
 
+Artifacts (a durable URL for anything the model renders):
+  - publish_artifact: publish an HTML file as a versioned page on the rig
+  - list_artifacts: list published pages (title, URL, versions, visibility)
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -41,6 +45,7 @@ import difflib
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import uuid
@@ -1271,6 +1276,280 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         time_range: Restrict to recent pages: 'day', 'month' or 'year' (default: none).
     """
     return _tools.web_search(query, max_results, pageno, time_range)
+
+
+# ---------------------------------------------------------------------------
+# Artifacts — a durable URL for anything the model renders
+# ---------------------------------------------------------------------------
+# The store (agents/artifact.py) is imported INSIDE each function, never at
+# module scope: beast-artifact is opt-in (BEAST_ARTIFACT), and a missing or
+# broken module must degrade to one tool returning "Error: ..." rather than
+# taking the other 16 tools down with an ImportError at registration time.
+#
+# Both tools call the store IN PROCESS. They do not speak HTTP to
+# agents/artifact_server.py: that server exists to *serve* the pages (and is
+# what scripts/artifact.sh talks to over loopback with the locality token).
+# Two consequences worth knowing: the tool path writes no row to
+# .run/artifact-audit.jsonl (a publish still appends the store's own
+# index.jsonl ledger), and it needs the opt-in flag checked here rather than
+# discovering the service is off by failing to connect.
+
+
+def _artifact_enabled() -> bool:
+    """Is beast-artifact turned on for this rig?
+
+    start.sh sources scripts/lib/conf.sh, which exports BEAST_ARTIFACT into
+    every child — including the tool server this module runs inside. Without
+    this check `publish_artifact` happily writes into the store and hands the
+    model a confident URL that nothing is serving (reg#3).
+    """
+    val = (os.environ.get("OPENBEAST_BEAST_ARTIFACT")
+           or os.environ.get("BEAST_ARTIFACT") or "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+_ARTIFACT_OFF = ("Error: beast-artifact is not enabled on this rig. Enable it "
+                 "with BEAST_ARTIFACT=true in openbeast.conf and restart the "
+                 "stack (./stop.sh && ./start.sh).")
+
+
+def _is_store_path(resolved: str) -> bool:
+    """Is this path the artifact store, or inside it (D26)?
+
+    `artifact.is_store_path()` is the store's own helper for the question —
+    it realpaths both sides, so a symlink on either path still lands on the
+    same real directory. Imported lazily like everything else here (the store
+    is opt-in), and a store that will not import cannot be published into
+    anyway.
+    """
+    try:
+        import artifact as _artifact
+        return bool(_artifact.is_store_path(resolved))
+    except Exception:
+        return False
+
+
+def _read_artifact_page(path: str, cap: int):
+    """Read `path` as the page to publish. Returns (html, None) or (None, err).
+
+    The MODEL picks this path and publishing mints a durable, shareable URL,
+    so a plain open().read() here is an arbitrary-file-read exfiltration
+    channel: a review published /etc/passwd and /proc/self/maps through it,
+    wedged a worker thread forever on a named pipe, and could have exhausted
+    memory on a character device long before any size cap applied. Reuse the
+    four guards tools.read_file earned in the 2026-09-10 hardening — refuse
+    pseudo-filesystems, open O_NONBLOCK, fstat + S_ISREG, and check the size
+    BEFORE reading — and return a string for every failure, including the
+    ValueError a NUL byte in the path raises (which otherwise leaves the tool
+    server as a 500, breaking the "tools never raise" contract).
+
+    Those four guards are necessary and not sufficient: /etc/passwd is a
+    regular file comfortably under the cap, and it published cleanly with all
+    four in place. read_file may leave reads open ("an agent may legitimately
+    read config") because its output lands in one model's context; THIS tool
+    mints a durable, shareable URL, which is a different blast radius. So the
+    page must come from the caller's own workspace — the directory write_file
+    puts it in — and NOT from the store's own tree inside it (D26). Publishing
+    an arbitrary path on the rig stays available to the human through
+    scripts/artifact.sh, which is loopback- and token-gated.
+    """
+    fd = -1
+    try:
+        resolved = _tools._resolve(path)
+        if _tools._hazard_path(resolved):
+            return None, (f"Error: refusing to read {path} — pseudo-filesystem "
+                          f"paths (/proc, /sys, /dev) can be infinite or "
+                          f"side-effecting")
+        base = os.path.realpath(_tools._base_dir())
+        rel = os.path.relpath(resolved, base)
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+            return None, (f"Error: refusing to publish {path} — it is outside "
+                          f"your workspace ({base}), and publishing mints a "
+                          f"durable URL anyone with the link can open. Write "
+                          f"the page there first (write_file) and publish that "
+                          f"path.")
+        if _is_store_path(resolved):
+            # D26. "Inside the workspace" is NOT the same as "yours": the
+            # store is $OPENBEAST_FILES_DIR/artifacts and the workspace is
+            # $OPENBEAST_FILES_DIR itself whenever no per-user shard is in
+            # play (FILES_SHARDING=off, and every MCP stdio caller). A
+            # reviewer republished another user's PRIVATE page by naming the
+            # store's own internal path — the bytes are read as a file, so
+            # ownership never enters into it — and then re-shared it as
+            # tailnet. The store is addressed by artifact_id, never by path.
+            return None, (f"Error: refusing to publish {path} — that is the "
+                          f"artifact store's own storage. To add a version to "
+                          f"an existing page use "
+                          f"publish_artifact(path, artifact_id=\"<id>\"); the "
+                          f"id is the last part of its URL.")
+        # O_NONBLOCK so opening a FIFO can't hang; fstat (not stat) so the
+        # regular-file check and the read see the same inode.
+        fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, (f"Error: not a regular file (refusing to publish "
+                          f"{path}) — publish_artifact takes an HTML file")
+        if st.st_size > cap:
+            return None, (f"Error: {path} is {st.st_size} bytes, over the "
+                          f"{cap} byte page cap")
+        os.set_blocking(fd, True)
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # the file object owns it now
+            # Bound the read regardless of the stat'd size: a file growing
+            # under us can report one size and stream another.
+            raw = fh.read(cap + 1)
+        if len(raw) > cap:
+            return None, (f"Error: {path} is over the {cap} byte page cap")
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as e:
+        return None, (f"Error: {path} is not UTF-8 text ({e}) — "
+                      f"publish_artifact takes an HTML file, not a binary.")
+    except (OSError, ValueError) as e:
+        return None, f"Error: cannot read {path}: {e}"
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@_tool()
+def publish_artifact(path: str, title: str = "", description: str = "",
+                     favicon: str = "", artifact_id: str = "",
+                     label: str = "", visibility: str = "private") -> str:
+    """Publish an HTML file as a page with a durable, shareable URL on the rig,
+    and return that URL. Use it whenever the answer is worth more as a page
+    than as chat text — a report, a table, a dashboard, a chart, a checklist,
+    a small interactive tool — or whenever the user asks for something they
+    will reopen, send to someone, or read on their phone. Write the file first
+    (write_file), then publish it. Republishing with the same artifact_id
+    keeps the URL and adds a version, so prefer updating over publishing a
+    second page.
+
+    HOW TO WRITE THE FILE — the page is served inside a locked-down sandbox,
+    so these are hard rules, not style advice:
+
+      1. Write ONLY a <title>, a <style>, and the body content. No <!doctype>,
+         <html>, <head> or <body> tags — a skeleton (doctype, charset,
+         viewport, small reset) is added at serve time. The <title> names the
+         page in the tab and the gallery: a short noun phrase, not a sentence.
+      2. Inline all CSS and JS in the file. External <script> may ONLY load
+         from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net/npm/,
+         https://cdn.tailwindcss.com or https://code.jquery.com (pin an exact
+         version, UMD build); external stylesheets ONLY from
+         https://fonts.googleapis.com. Every other host is blocked silently.
+      3. Embed images, fonts and any other asset as data: URIs.
+      4. fetch(), XMLHttpRequest and WebSocket are blocked — the page cannot
+         call home, so compute from data you write into the file itself.
+      5. localStorage THROWS in the sandbox. Wrap every read and write in
+         try/catch and render correctly when there is no stored value.
+      6. Support both themes: define colors as CSS custom properties on
+         :root, then redefine those properties inside
+         @media (prefers-color-scheme: dark). Never give a color its only
+         definition inside the media block.
+      7. Set an explicit background (and color) on body — a transparent body
+         borrows the host page's theme and can end up unreadable.
+      8. Wide content — tables, pre/code, diagrams — goes in a container with
+         overflow-x: auto so the page itself never scrolls sideways on a
+         phone.
+
+    Args:
+        path: Path to the .html file to publish. It must be in your workspace
+              — the directory write_file writes to — because publishing turns
+              it into a durable URL. Write the page first, then publish it.
+        title: Page title; falls back to the file's own <title>, then the
+               filename. Keep it stable across updates.
+        description: One sentence shown as the subtitle in the gallery.
+        favicon: One or two emoji (e.g. "📊") used as the tab icon. Set it on
+                 the FIRST publish and never change it — people find the page
+                 by its icon. Omit when updating.
+        artifact_id: Publish into an EXISTING artifact: same URL, new version.
+                     Omit to create a new one (the returned id is what you
+                     pass back later).
+        label: Short name for this version (e.g. "with Q3 numbers"), shown in
+               the version picker.
+        visibility: "private" (default, only you) or "tailnet" (any device
+                    signed in to the tailnet can open the link).
+
+    Returns:
+        A line naming the page and its URL, or a string starting with "Error:".
+    """
+    # The opt-in check comes FIRST and is its own branch: the old guard below
+    # only fired on an ImportError, so on a rig with BEAST_ARTIFACT unset the
+    # import succeeded, the store wrote a version, and the model got a URL
+    # that nothing serves.
+    if not _artifact_enabled():
+        return _ARTIFACT_OFF
+    try:
+        import artifact as _artifact  # lazy: see the note above
+    except Exception as e:
+        return (f"Error: artifact store unavailable ({e}). Enable it with "
+                f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
+    html, err = _read_artifact_page(path, _artifact.CAPS["page_bytes"])
+    if err:
+        return err
+    if not html.strip():
+        return f"Error: {path} is empty — nothing to publish."
+    try:
+        meta = _artifact.publish(
+            html,
+            title=title.strip() or None,
+            description=description.strip() or None,
+            favicon=favicon.strip() or None,
+            artifact_id=artifact_id.strip() or None,
+            label=label.strip() or None,
+            visibility=(visibility.strip() or "private"),
+        )
+    except Exception as e:  # ArtifactError and anything else: tool contract
+        return f"Error: publish failed: {e}"
+    name = meta.get("title") or os.path.basename(path)
+    return (f'Published "{name}" → {meta.get("url")} '
+            f'(v{meta.get("version")}, id {meta.get("id")})')
+
+
+@_tool()
+def list_artifacts(limit: int = 25) -> str:
+    """List the published artifact pages you can see, newest first: title, URL,
+    version count, visibility and when it was last updated. Use it to find the
+    id of a page you want to update with publish_artifact(artifact_id=...), or
+    to hand the user a link to something published earlier.
+
+    Args:
+        limit: Maximum number of artifacts to list (default 25).
+    """
+    try:
+        import artifact as _artifact  # lazy: see the note above
+    except Exception as e:
+        return (f"Error: artifact store unavailable ({e}). Enable it with "
+                f"BEAST_ARTIFACT=true in openbeast.conf and restart the stack.")
+    try:
+        # viewer= is not optional: without it the gallery enumerates EVERY
+        # operator's private artifacts to whoever called the tool. The identity
+        # server sets the ContextVar that default_owner() reads.
+        rows = _artifact.list_artifacts(viewer=_artifact.default_owner(),
+                                        limit=max(1, int(limit)))
+    except Exception as e:
+        return f"Error: could not list artifacts: {e}"
+    if not rows:
+        return ("No artifacts published yet. Write an HTML file and call "
+                "publish_artifact(path) to make one.")
+    lines = [f"{len(rows)} artifact(s):", ""]
+    for r in rows:
+        versions = r.get("versions")
+        if isinstance(versions, list):
+            versions = len(versions)
+        updated = str(r.get("updated_at") or r.get("created_at") or "")[:16]
+        updated = updated.replace("T", " ")
+        lines.append(
+            f"  {str(r.get('title') or '(untitled)')[:40]:40s}  "
+            f"{r.get('url', '')}  "
+            f"v{versions or 1}  {r.get('visibility', '?')}  {updated}"
+        )
+    lines.append("")
+    lines.append('Update one in place: publish_artifact(path, '
+                 'artifact_id="<id>") — the id is the last part of the URL.')
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

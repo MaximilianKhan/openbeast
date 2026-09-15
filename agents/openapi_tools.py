@@ -12,7 +12,13 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              $OPENBEAST_FILES_DIR/users/<user-id>[/chats/<chat-id>], so one
              family member's files are namespaced away from another's.
              Headerless (single-user) requests keep the shared root —
-             fresh-install behavior is unchanged.
+             fresh-install behavior is unchanged. Published artifacts are the
+             exception to the sharding rule: they are addressed by owner, and
+             the owner is the caller's forwarded EMAIL, because that is the
+             namespace the artifact server authorises readers in (D21). An
+             identified caller with no usable email is REFUSED (R1) — the
+             old fallback to the rig's first operator let a second account
+             publish, list and republish as that operator.
   PROFILES   Both RBAC Phase 2 keys are checked natively in ONE process:
              the admin key reaches all tools, the guest key only
              web_search/fetch (403 elsewhere), no key configured = open
@@ -22,7 +28,7 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 15 tool functions,
+real MCP client; this module imports and serves the same 17 tool functions,
 so the two surfaces cannot drift.
 
 Env:
@@ -66,12 +72,13 @@ import tools as _tools     # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 15 functions the MCP server exposes.
+# The full WebUI tool surface — same 17 functions the MCP server exposes.
 TOOL_NAMES = [
     "bash", "read_file", "write_file", "edit_file", "list_files", "grep",
     "fetch", "web_search", "skill",
     "start_agent", "start_skill_agent", "check_agent", "list_agents",
     "stop_agent", "tail_agent",
+    "publish_artifact", "list_artifacts",
 ]
 GUEST_TOOLS = {"web_search", "fetch"}
 
@@ -79,6 +86,44 @@ _HDR_USER = "x-openwebui-user-id"
 _HDR_ROLE = "x-openwebui-user-role"
 _HDR_CHAT = "x-openwebui-chat-id"
 _HDR_JWT = "x-openwebui-user-jwt"
+# The bridge between the two identity namespaces (D21). Open WebUI forwards
+# it whenever ENABLE_FORWARD_USER_INFO_HEADERS is on (docker-compose.yml sets
+# it), and a tailnet login IS an email address — which the WebUI user id,
+# a UUID, can never be.
+_HDR_EMAIL = "x-openwebui-user-email"
+
+# Tools whose output is addressed by IDENTITY rather than by workspace path.
+_ARTIFACT_TOOLS = ("publish_artifact", "list_artifacts")
+
+# Every header that says WHO is calling (R8). The artifact server refuses a
+# duplicated identity header (D29); this server — now the surface that
+# RESOLVES OWNERSHIP for a publish — silently took the first, which is the
+# same defect on the newer surface. `authorization` is in the list because it
+# selects the RBAC profile: "take the first" is a silent answer there too.
+_IDENTITY_HEADERS = (_HDR_USER, _HDR_ROLE, _HDR_CHAT, _HDR_JWT, _HDR_EMAIL,
+                     "authorization")
+
+# A plausible local@domain, checked as a SHAPE (R1). `"@" in login` was the
+# whole test before, so the literal string "@" minted an owner named "@", and
+# a non-string claim was str()'d into `"['max@example.com']"` and accepted.
+# The domain deliberately allows a single label with no dot: a Tailscale login
+# from a GitHub/Okta connector really is `someone@github`.
+_EMAIL_RE = re.compile(
+    r"^[^\s@,;:<>\"'\\/]{1,64}@[a-z0-9](?:[a-z0-9.-]{0,253}[a-z0-9])?$")
+
+# What an identified caller is told when nothing usable reached us. It names
+# the setting, because the fix is one env var away and the caller is a model
+# that will otherwise retry forever.
+_NO_EMAIL_HEADER = (
+    "publish/list refused: this request carries a user id but no usable email "
+    "address, and an artifact is owned by the email its reader presents. "
+    "Turn on ENABLE_FORWARD_USER_INFO_HEADERS for Open WebUI (it is set in "
+    "docker-compose.yml) so it forwards X-OpenWebUI-User-Email, then retry.")
+_NO_EMAIL_JWT = (
+    "publish/list refused: the signed identity token carries no usable "
+    "`email` claim, and an artifact is owned by the email its reader "
+    "presents. Configure Open WebUI's ENABLE_FORWARD_USER_INFO_HEADERS so the "
+    "token it signs carries the user's email, then retry.")
 
 # Shard path components come from headers — sanitize hard.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -92,6 +137,31 @@ def _sanitize(component: str) -> str:
     s = _UNSAFE.sub("_", component)[:48].strip("._") or "u"
     digest = hashlib.sha256(component.encode()).hexdigest()[:8]
     return f"{s}-{digest}"
+
+
+def ambiguous_identity_headers(request: Request) -> list:
+    """The identity headers this request sent more than once (R8).
+
+    Starlette keeps every copy and `headers.get()` returns the FIRST, so
+    `X-OpenWebUI-User-Email: max@…` + `X-OpenWebUI-User-Email: kid@…`
+    published as max without a word. Two answers to "who are you" is not an
+    identity, it is a question about one — and this server is the surface
+    that turns that answer into a page's OWNER. Refuse, the way the artifact
+    server already refuses a doubled `Tailscale-User-Login` (D29).
+    """
+    return [h for h in _IDENTITY_HEADERS
+            if len(request.headers.getlist(h)) > 1]
+
+
+def _refuse_ambiguous_identity(request: Request) -> None:
+    dupes = ambiguous_identity_headers(request)
+    if dupes:
+        raise HTTPException(
+            status_code=400,
+            detail=("ambiguous identity: " + ", ".join(sorted(dupes)) +
+                    " sent more than once. Send each identity header exactly "
+                    "once — this server resolves the owner of a published "
+                    "page from them."))
 
 
 def create_app() -> FastAPI:
@@ -130,10 +200,12 @@ def create_app() -> FastAPI:
     latency_ms = defaultdict(float)  # (tool,) -> total ms
 
     def identity_from(request: Request) -> tuple:
-        """Resolve (user_id, role, chat_id) for this call.
+        """Resolve (user_id, role, chat_id, email) for this call.
 
         JWT mode (secret set): identity comes ONLY from the verified token —
-        plain identity headers are ignored (they'd be forgeable).
+        plain identity headers are ignored (they'd be forgeable), and that
+        includes the email: an unsigned X-OpenWebUI-User-Email next to a
+        signed token would be a way to publish as somebody else.
         Header mode (no secret): the legacy X-OpenWebUI-User-* headers,
         trusted as sent (loopback threat model; see module docstring).
         """
@@ -145,20 +217,29 @@ def create_app() -> FastAPI:
         if jwt_secret:
             token = request.headers.get(_HDR_JWT, "").strip()
             if not token:
-                return None, None, chat  # anonymous caller (router, curl)
+                return None, None, chat, None   # anonymous (router, curl)
             try:
                 claims = pyjwt.decode(
                     token, jwt_secret, algorithms=["HS256"],
                     issuer="open-webui",
+                    # NOT "email". A token without one is a perfectly valid
+                    # identity for the other 16 tools, and requiring it here
+                    # would 401 the whole surface on any --with-jwt rig whose
+                    # WebUI does not put an email in the token — breaking
+                    # bash, read_file and every agent tool to protect
+                    # publishing. The publish path refuses on its own, with a
+                    # message that names the setting; see artifact_owner().
                     options={"require": ["exp", "sub"]},
                 )
             except pyjwt.PyJWTError as e:
                 raise HTTPException(status_code=401,
                                     detail=f"invalid identity token: {e}")
-            return str(claims["sub"]), claims.get("role"), chat
+            return (str(claims["sub"]), claims.get("role"), chat,
+                    claims.get("email"))
         user = request.headers.get(_HDR_USER, "").strip() or None
         role = request.headers.get(_HDR_ROLE, "").strip() or None
-        return user, role, chat
+        email = request.headers.get(_HDR_EMAIL, "").strip() or None
+        return user, role, chat, email
 
     app = FastAPI(
         title="OpenBeast local tools",
@@ -184,6 +265,50 @@ def create_app() -> FastAPI:
             return "guest"
         raise HTTPException(status_code=403, detail="Invalid API key")
 
+    def artifact_owner(user, email) -> str:
+        """Who a page published through THIS server belongs to (D21/R1).
+
+        The two identity surfaces do not share a namespace. Open WebUI names
+        a caller by a UUID; agents/artifact_server.py authorises a reader by
+        their TAILNET LOGIN, which is an email address. Handing the store the
+        UUID minted an owner that no principal can ever present: the page
+        came back 404 to the human who asked for it, 404 to the rig, and
+        could not be recovered — sharing it is owner-only, so only DELETE was
+        left. So the forwarded email is the bridge: it is in the reader's
+        namespace by construction.
+
+        R1 — WHAT HAPPENS WHEN THERE ISN'T ONE. D21 fell back to
+        `default_owner()` for everybody, which is worse than the tombstone it
+        replaced: a SECOND WebUI account with no forwarded email publishes AS
+        the rig's first operator, and from there enumerates that operator's
+        private pages through list_artifacts and republishes over them at the
+        operator's own URL (demonstrated). The fallback survives for exactly
+        one case — `user is None`, meaning NO caller identity reached this
+        server at all: the rig itself, the agent router, a curl from the box.
+        An IDENTIFIED caller with no usable email is REFUSED, loudly, with the
+        setting named. Never mint someone else as owner.
+
+        And the email is validated as a SHAPE, not by `"@" in login`: that
+        test passed the literal string "@" (minting an owner named "@") and
+        str()'d a list claim into an owner nobody can present.
+        """
+        login = email.strip().lower() if isinstance(email, str) else ""
+        if login and len(login) <= 254 and _EMAIL_RE.match(login):
+            return login
+        if user is None:
+            # No identity at all: the rig / CLI / router path. `default_owner`
+            # is the rig's own first operator, which is a principal a real
+            # person can present — and nobody else's identity was available
+            # to steal here in the first place.
+            try:
+                import artifact as _artifact
+                return _artifact.default_owner()
+            except Exception:
+                return "local"
+        raise HTTPException(status_code=400,
+                            detail=_NO_EMAIL_JWT if jwt_secret
+                            else _NO_EMAIL_HEADER)
+
     def shard_for(user: str | None, chat: str | None) -> str | None:
         """Workspace shard for this caller, or None for the shared root."""
         if not files_dir or sharding == "off" or not user:
@@ -196,7 +321,7 @@ def create_app() -> FastAPI:
         return shard
 
     def audit(user, role, chat, tool: str, profile: str, ok: bool,
-              ms: int, args: dict, err: str = "") -> None:
+              ms: int, args: dict, err: str = "", owner: str = "") -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
         only a digest and size, so the audit trail can't leak chats."""
         try:
@@ -216,6 +341,11 @@ def create_app() -> FastAPI:
             }
             if err:
                 entry["error"] = err[:200]
+            if owner:
+                # D21 provenance: BOTH halves of the bridge, so an operator
+                # can tie a page owned by an email back to the WebUI account
+                # that published it (`user` above is that raw id).
+                entry["artifact_owner"] = owner
             os.makedirs(os.path.dirname(audit_path), exist_ok=True)
             with open(audit_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
@@ -240,8 +370,13 @@ def create_app() -> FastAPI:
             # probing /bash, a wrong-key brute force, or forged JWTs are
             # exactly the events an audit log exists for.
             try:
+                # R8: two answers to "who is calling" is not an identity.
+                # First, before the key check, because a doubled
+                # `authorization` picks the PROFILE by the same first-wins
+                # accident.
+                _refuse_ambiguous_identity(request)
                 profile = check_auth(request, name)
-                user, role, chat = identity_from(request)
+                user, role, chat, email = identity_from(request)
             except HTTPException as e:
                 audit(request.headers.get(_HDR_USER) or None,
                       request.headers.get(_HDR_ROLE) or None,
@@ -274,6 +409,33 @@ def create_app() -> FastAPI:
                         detail="relative workdir escapes the caller's workspace")
                 kwargs["workdir"] = anchored
             token = _tools.set_base_dir_override(shard) if shard else None
+            # Published pages are owned by their publisher: mcp_server's
+            # tool functions never see the request, so hand the identity
+            # down the same way the workspace shard travels. What travels is
+            # the TAILNET-NAMESPACE login (artifact_owner, D21) — never the
+            # WebUI UUID, which no reader can ever present.
+            otoken, owner = None, ""
+            if name in _ARTIFACT_TOOLS:
+                # R1: the refusal must ESCAPE. It used to be computed inside
+                # a bare `except Exception`, which would have swallowed it
+                # and published under whatever the ContextVar still held.
+                try:
+                    owner = artifact_owner(user, email)
+                except HTTPException as e:
+                    audit(user, role, chat, name, profile, False, 0, {},
+                          f"http {e.status_code}: {e.detail}")
+                    with metrics_lock:
+                        calls[(name, profile, "error")] += 1
+                    raise
+                try:
+                    import artifact as _artifact
+                    # The raw WebUI id rides along as the ALIAS: the store
+                    # records it as meta["owner_webui_id"] for PROVENANCE
+                    # only (R6) — it authorises nothing, and the API never
+                    # returns it. `owner` above is the whole of the identity.
+                    otoken = _artifact.set_owner_override(owner, user)
+                except Exception:
+                    otoken = None
             t0 = time.monotonic()
             ok, err = True, ""
             try:
@@ -284,8 +446,15 @@ def create_app() -> FastAPI:
             finally:
                 if token is not None:
                     _tools.reset_base_dir_override(token)
+                if otoken is not None:
+                    try:
+                        import artifact as _artifact
+                        _artifact.reset_owner_override(otoken)
+                    except Exception:
+                        pass
                 elapsed = int((time.monotonic() - t0) * 1000)
-                audit(user, role, chat, name, profile, ok, elapsed, kwargs, err)
+                audit(user, role, chat, name, profile, ok, elapsed, kwargs,
+                      err, owner)
                 with metrics_lock:
                     calls[(name, profile, "ok" if ok else "error")] += 1
                     latency_ms[(name,)] += elapsed

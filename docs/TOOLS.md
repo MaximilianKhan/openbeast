@@ -4,7 +4,7 @@ The single source of truth for **every tool a model can call in OpenBeast**:
 what it does, where the code lives, what external software powers it, and
 which surfaces can see it.
 
-TL;DR: **all 15 MCP tools are custom OpenBeast code** — there is no
+TL;DR: **all 17 MCP tools are custom OpenBeast code** — there is no
 third-party tool plugin in the chain. The open source projects we pull in
 (llama.cpp, Open WebUI, SearXNG, OpenCode) provide *serving, frontends,
 and search*; the transport is our own identity tool server
@@ -14,10 +14,10 @@ and search*; the transport is our own identity tool server
 
 | Surface | Transport | Where tools execute | Tools visible |
 |---|---|---|---|
-| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 15 (admin) / 2 (guest — see RBAC) |
-| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 15 from us, *plus OpenCode's own built-in tools* (see below) |
-| **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 9 |
-| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 15, inference over the tailnet at `:8443` |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 17 (admin) / 2 (guest — see RBAC) |
+| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 17 from us, *plus OpenCode's own built-in tools* (see below) |
+| **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 10 |
+| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 17, inference over the tailnet at `:8443` |
 
 The client row is the one that breaks the usual assumption: tools execute
 where the *process* runs, not where the model runs. On a client, `bash`,
@@ -30,7 +30,7 @@ device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
 client ever needs one. See `docs/BEAST_SLOT.md`.
 
-## The 15 MCP tools
+## The 17 MCP tools
 
 All implemented in this repo. `agents/tools.py` holds the hardened
 implementations; `agents/mcp_server.py` registers them with MCP and adds the
@@ -85,6 +85,24 @@ skill pre-activated (also accepts `base_url`). All custom. The former
 `skill` (PRODUCTION_ROADMAP §B — fewer always-on meta-tools in a local
 model's context).
 
+### Artifacts (2) — `agents/mcp_server.py`
+
+`publish_artifact`, `list_artifacts` — hand a self-contained HTML file to
+beast-artifact and get back a durable tailnet URL (`:8446/a/<uuid>`), private
+by default, re-publishable into a new version at the same URL. The store and
+client helpers live in `agents/artifact.py` (deliberately *not* in
+`agents/tools.py`, which stays byte-identical so the eval cache era doesn't
+roll). The tools call that store **in process** — they do not speak HTTP to
+the artifact server; `:3004` exists to *serve* the pages, and
+`scripts/artifact.sh` is the client that talks to it (with the proof-of-
+locality token, on write verbs only). Two consequences: the tool path writes
+no `.run/artifact-audit.jsonl` row, and it checks `BEAST_ARTIFACT` itself
+rather than discovering the service is off by failing to connect. Opt-in via
+`BEAST_ARTIFACT=true`. Neither tool is in `GUEST_TOOLS` (guest → 404) and
+neither is in the autonomous runner's registry — background agents publish
+through `scripts/artifact.sh` with `bash`. Authoring rules, the sandbox/CSP
+posture, versions and visibility: [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
+
 ## The autonomous runner's 10 tools
 
 `agents/runner.py` binds `TOOL_SCHEMAS` from `agents/tools.py` directly (no
@@ -112,7 +130,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server |
 | **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
-| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 15 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
+| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 17 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
 ## RBAC visibility (who sees what)
@@ -120,7 +138,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 15 tools.
+- **Admin** (WebUI admin role): all 17 tools.
 - **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
@@ -148,15 +166,31 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 > role header is absent (e.g. header forwarding disabled). Details:
 > `docs/RBAC_PLAN.md`.
 
-## Why 15 and not more
+## Why 17 and not more
 
-Deliberate. The production review (`docs/archive/PRODUCTION_ROADMAP.md` §B) found
-the current pain is *too much always-on meta-machinery for a local model's
-context* — which is why the skill-discovery trio was collapsed to one tool
-(17 → 15; 7 of 15 tools remain agent-mgmt/skills plumbing) — not missing
-capabilities. Expansion is planned and researched — sandboxed execution
-(Sandlock), semantic code search (ChunkHound), and a Playwright browsing
-*skill* — in `docs/archive/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1
+Deliberate, and the number has moved in both directions. The production review
+(`docs/archive/PRODUCTION_ROADMAP.md` §B) found the pain was *too much
+always-on meta-machinery for a local model's context* — which is why the
+skill-discovery trio was collapsed into the single `skill` tool, taking the
+surface from 17 down to 15 (7 of those 15 still agent-mgmt/skills plumbing).
+beast-artifact's two tools took it back to 17 in 2026-09; they are capability,
+not plumbing, so the meta-machinery share went *down*, from 7/15 to 7/17.
+
+**The real argument is tool-selection accuracy, which degrades as a registry
+grows — so note which surface the two new tools do and do not appear on.** The
+surface where a bad pick costs most is the autonomous runner's: it chooses a
+tool every turn, unattended, with nobody to correct it. `publish_artifact` and
+`list_artifacts` ship on the **MCP/WebUI surface only** and are deliberately
+**not** in `agents/runner.py`'s 10-tool registry, so the runner's selection
+pressure is byte-for-byte what it was before — a background agent that wants a
+URL shells out to `scripts/artifact.sh` through `bash`. (The same split is what
+keeps `agents/tools.py` unchanged, so the eval cache era doesn't roll;
+`evals/cache.py`.) On the MCP/WebUI side a human is in the loop and "publish
+this as a page" is an unambiguous ask.
+
+Further expansion is planned and researched — sandboxed execution (Sandlock),
+semantic code search (ChunkHound), and a Playwright browsing *skill* — in
+`docs/archive/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1
 so new power arrives together with stronger sandboxing.
 
 ## Verifying the live surface

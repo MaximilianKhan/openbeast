@@ -1,8 +1,10 @@
 #!/bin/bash
 # OpenBeast remote access — one-shot Tailscale setup. Idempotent.
 #
-#   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot] [--publish-chat]
-#   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot | --unpublish-chat
+#   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
+#                                [--publish-chat] [--publish-artifact]
+#   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
+#                               | --unpublish-chat | --unpublish-artifact
 #
 # What it does:
 #   1. Installs tailscale (pacman) and enables tailscaled
@@ -37,6 +39,14 @@
 # READING is your tailnet login against CHAT_OPERATORS; WRITING (send, stop,
 # start an agent) also needs a chat-scoped device key, because starting an
 # agent is remote code execution on the rig. Undo with --unpublish-chat.
+# --publish-artifact publishes beast-artifact at :8446 (→ the artifact
+# server on ARTIFACT_PORT, default :3004): the gallery and the pages the
+# model publishes, so an artifact URL opens on a phone. Requires
+# BEAST_ARTIFACT=true in openbeast.conf. READ access is gated on the tailnet
+# login ONLY when ARTIFACT_OPERATORS lists someone — an empty list means every
+# signed-in tailnet device can read, and the flag says so out loud when it is.
+# WRITES stay loopback-only either way, so nothing on the phone path can
+# publish or delete. Undo with --unpublish-artifact.
 #
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
@@ -45,6 +55,7 @@ set -euo pipefail
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
 PUBLISH_CHAT=0
+PUBLISH_ARTIFACT=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -66,7 +77,12 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8445 off
       echo "beast-chat unpublished from the tailnet (:8445 off)."
       exit 0 ;;
-    -h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --publish-artifact)  PUBLISH_ARTIFACT=1 ;;
+    --unpublish-artifact)
+      sudo tailscale serve --https=8446 off
+      echo "beast-artifact unpublished from the tailnet (:8446 off)."
+      exit 0 ;;
+    -h|--help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -229,6 +245,36 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
   echo "      Writing (send/stop/start) needs a chat-scoped device key:"
   echo "        ./scripts/clients.sh enroll phone --label \"My phone\" --scope chat"
 fi
+if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
+  # beast-artifact (docs/BEAST_ARTIFACT_PLAN.md): the gallery + the pages the
+  # model publishes. Best-effort preflight — publishing while BEAST_ARTIFACT
+  # is off just serves 502s until the server is running. conf.sh is already
+  # sourced above, so ARTIFACT_PORT/BEAST_ARTIFACT are resolved here.
+  if [[ "${BEAST_ARTIFACT:-false}" != "true" ]]; then
+    echo "      WARNING: BEAST_ARTIFACT is not true — :8446 will 502 until:"
+    echo "               set BEAST_ARTIFACT=true in openbeast.conf, then ./stop.sh && ./start.sh"
+  fi
+  sudo tailscale serve --bg --https=8446 "http://127.0.0.1:${ARTIFACT_PORT:-3004}"
+  echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
+  # Honesty about the READ gate: "gated on ARTIFACT_OPERATORS" is only true
+  # when that list has somebody in it. Empty means every signed-in device on
+  # the tailnet reads the gallery — the operator must hear that now, at the
+  # moment they open the port, not discover it later.
+  _ART_OPS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_OPERATORS || true)}"
+  if [[ -z "$_ART_OPS" ]]; then
+    _ART_OPS="$(_ob_conf_value CHAT_OPERATORS || true)"
+  fi
+  if [[ -z "${_ART_OPS// /}" ]]; then
+    echo "      NOTE: ARTIFACT_OPERATORS is EMPTY — reads are NOT gated to a"
+    echo "            list. Every device signed in to your tailnet can open"
+    echo "            the gallery and every artifact marked 'tailnet'."
+    echo "            Gate it:  echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf"
+    echo "                      ./stop.sh && ./start.sh"
+  else
+    echo "      Reads are gated on the tailnet login (ARTIFACT_OPERATORS=$_ART_OPS)."
+  fi
+  echo "      Publishing stays loopback-only — a phone can view, never write."
+fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
 
@@ -254,6 +300,7 @@ for _row in \
   "8443|inference (llama-server / beast-gate)" \
   "8444|beast-slot status API (:3002)" \
   "8445|beast-chat console (:${CHAT_PORT:-3003})" \
+  "8446|beast-artifact pages (:${ARTIFACT_PORT:-3004})" \
   "8889|SearXNG for thin clients (:8888)"; do
   _port="${_row%%|*}"; _what="${_row#*|}"
   if _serve_has "$_port"; then _state="published"; else _state="-"; fi
@@ -308,6 +355,12 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
   echo "          your tailnet login; sending/stopping needs a chat-scoped"
   echo "          device key (./scripts/clients.sh enroll phone --scope chat)."
   echo "          Undo with ./scripts/setup-tailscale.sh --unpublish-chat"
+fi
+if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
+  echo ""
+  echo "  Artifacts (beast-artifact):  https://$FQDN:8446/"
+  echo "          (gallery + published pages, view-only from the tailnet —"
+  echo "           undo with ./scripts/setup-tailscale.sh --unpublish-artifact)"
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"

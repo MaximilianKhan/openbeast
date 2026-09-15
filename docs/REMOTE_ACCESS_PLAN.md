@@ -12,7 +12,7 @@ hostname = `beast`; no API key for now (tailnet device identity is the
 boundary; `LLAMA_API_KEY` stays wired but off).
 
 > **⚠️ SUPERSEDED IN PART (2026-07-30).** This doc records the ORIGINAL
-> 2026-07-07 remote-access design and is kept for that history. Two things
+> 2026-07-07 remote-access design and is kept for that history. Three things
 > have since changed materially, so read
 > **[BEAST_SLOT.md](BEAST_SLOT.md)** for current behavior:
 > 1. **More is published now.** Beyond `:443` (WebUI) and `:8443`
@@ -25,6 +25,13 @@ boundary; `LLAMA_API_KEY` stays wired but off).
 >    (`EDGE_GATE=true`, `agents/edge.py`, `:8090`). That also answers open
 >    question #3 below ("should tooling on other machines get API-key auth
 >    from day one?"): yes, per device, opt-in.
+> 3. **One more port (2026-09-14): `--publish-artifact` (`:8446`).**
+>    beast-artifact serves model-authored HTML pages at durable URLs, and it
+>    is the first published surface whose *content* is untrusted — reads are
+>    gated on the tailnet login (`ARTIFACT_OPERATORS`, unlisted → 404),
+>    writes stay loopback-only, and each page renders in an opaque-origin
+>    sandbox under the repo's first CSP. See
+>    **[BEAST_ARTIFACT.md](BEAST_ARTIFACT.md)**.
 >
 > 3. **(2026-09-14) A third published surface, and it accepts WRITES.**
 >    `--publish-chat` maps `:8445` at **beast-chat** — the operator console

@@ -199,7 +199,16 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
        "http://${HEALTH_HOST:-127.0.0.1}:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
     if $RESTART; then
       echo "       → restarting beast-chat console..."
-      pkill -f "$REPO_DIR/agents/chat_server.py" 2>/dev/null || true
+      # Kill by RECORDED PID first, exactly as the artifact path does: a
+      # pattern kill on this box has already reaped a live measurement run
+      # (2026-09-14). The path-qualified pkill stays as the fallback for a
+      # console started outside start.sh, which records no pid.
+      _chat_pid="$(cat "$REPO_DIR/.run/chat.pid" 2>/dev/null || true)"
+      if [[ -n "$_chat_pid" ]] && kill -0 "$_chat_pid" 2>/dev/null; then
+        kill "$_chat_pid" 2>/dev/null || true
+      else
+        pkill -f "$REPO_DIR/agents/chat_server.py" 2>/dev/null || true
+      fi
       sleep 1
       python3 "$REPO_DIR/agents/chat_server.py" >/dev/null 2>&1 &
       CHAT_NEW_PID=$!
@@ -219,6 +228,50 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
         echo "       → restarted (pid $CHAT_NEW_PID)"
       else
         echo "       → restart FAILED: beast-chat not serving after 15s"
+      fi
+    fi
+  fi
+fi
+
+# beast-artifact (opt-in) — the page server for everything the model and the
+# campaign scripts publish. doctor.sh sends the operator here ("run
+# ./scripts/healthcheck.sh --restart") when artifact URLs stop answering, so
+# without this branch that advice was a no-op: the doctor named a repair that
+# did not exist.
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  ARTIFACT_HEALTH="http://${HEALTH_HOST:-127.0.0.1}:${ARTIFACT_PORT:-3004}/api/artifacts/health"
+  if ! check "beast-artifact" "$ARTIFACT_HEALTH" "ok"; then
+    if $RESTART; then
+      echo "       → restarting beast-artifact..."
+      # Kill by RECORDED PID, never by pattern. A `pkill -f artifact_server`
+      # on this box would also reap a sibling worktree's server — and worse,
+      # a mistyped pattern has already destroyed a live measurement run here
+      # (2026-09-14). start.sh wrote the pid; if it is gone or stale we just
+      # start a new one and let the old (dead) record be overwritten.
+      _art_pid="$(cat "$REPO_DIR/.run/artifact.pid" 2>/dev/null || true)"
+      if [[ -n "$_art_pid" ]] && kill -0 "$_art_pid" 2>/dev/null; then
+        kill "$_art_pid" 2>/dev/null || true
+        sleep 1
+      fi
+      OPENBEAST_REPO_DIR="$REPO_DIR" \
+        OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
+        python3 "$REPO_DIR/agents/artifact_server.py" >/dev/null 2>&1 &
+      mkdir -p "$REPO_DIR/.run"
+      echo "$!" > "$REPO_DIR/.run/artifact.pid"
+      ARTIFACT_OK=0
+      for _i in $(seq 1 15); do
+        if curl -s --max-time 2 "$ARTIFACT_HEALTH" 2>/dev/null | grep -qi ok; then
+          ARTIFACT_OK=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ $ARTIFACT_OK -eq 1 ]]; then
+        echo "       → restarted"
+      else
+        echo "       → restart FAILED: beast-artifact not serving after 15s"
+        echo "         (publishing still works — the tools use the store"
+        echo "          in process; only viewing the URLs is down)"
       fi
     fi
   fi
