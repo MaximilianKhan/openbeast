@@ -129,13 +129,19 @@ spawner, so every spawn path appears without changing the spawners.
   so the single lock happens to cover the whole current suite — but a
   future path-less task would silently lose the guard. Locks as built:
   (1) `OPENBEAST_TASK_PATHS` set → steering off, checked as the first
-  statement of `runner._steering_enabled()`; (2) steering is **opt-in**
-  regardless — off unless `BEAST_CHAT=true`, `--steer`, or `--session-id`.
+  statement of `runner._steering_enabled()`; (2) steering is **opt-in** and the opt-in is **explicit argv only** —
+  `--steer` or `--session-id`. The environment opt-in was DELETED:
+  `scripts/lib/conf.sh` exports `OPENBEAST_BEAST_CHAT` unconditionally and
+  `run_eval.py` copies the whole environment into the child, so on a
+  configured rig that "lock" was open for every eval unit. (3) a THIRD,
+  unconditional lock: `run_eval.py` sets `OPENBEAST_EVAL=1` on every child
+  and strips `OPENBEAST_BEAST_CHAT`; the runner checks it first and no argv
+  can override it.
   Evaluated once at startup and cached; under eval mode the inbox is
   never opened, created, or stat-ed. Cache-key purity holds because the
   era hash never sees a steer unless one happened, and one cannot happen
   in eval mode.
-  **Follow-up (integration pass, not yet done):** add an unconditional
+  **DONE 2026-09-15 (was the follow-up):** an unconditional
   `child_env["OPENBEAST_EVAL"] = "1"` in `run_eval.py` and check it as a
   third lock. `run_eval.py` is NOT in `evals/cache.py CONTEXT_FILES`, so
   that change costs no era — but it must still land at a row boundary

@@ -719,13 +719,17 @@ def run_agent(
                         _print_token_summary(tokens_prompt, tokens_completion,
                                              tokens_total, compactions)
                         log_event({
-                            # E20: the iteration counter, not counter-1. Every
-                            # other `done`/`max_iterations` event in this file
-                            # reports `iteration`; the lone -1 here made an
-                            # operator stop the one event whose count did not
-                            # line up with the transcript's last `iteration`.
+                            # COMPLETED turns, so counter-1 — ops are consumed
+                            # at the TOP of iteration N, before that turn runs
+                            # and before its `iteration` event is logged, so
+                            # N-1 turns have finished. It also matches the last
+                            # `iteration` event in the transcript, which is the
+                            # previous pass's. (An adversarial review claimed
+                            # this was an off-by-one and a spec item propagated
+                            # the claim; both were wrong. A stop at the first
+                            # boundary takes no turn at all and must record 0.)
                             "type": "done", "summary": "stopped by operator",
-                            "iterations": iteration,
+                            "iterations": iteration - 1,
                             "tokens_prompt": tokens_prompt,
                             "tokens_completion": tokens_completion,
                             "tokens_total": tokens_total,

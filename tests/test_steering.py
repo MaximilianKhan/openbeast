@@ -416,8 +416,8 @@ def test_stop_emits_done_with_the_right_summary_and_returns_cleanly(tmp_path):
     done = [e for e in events if e["type"] == "done"]
     assert len(done) == 1
     assert done[0]["summary"] == "stopped by operator"
-    # E20: the iteration counter, not counter-1.
-    assert done[0]["iterations"] == 1
+    # Zero turns ran (client.requests is empty above), so the count is 0.
+    assert done[0]["iterations"] == 0
     assert result == "stopped by operator"
     assert sessions.get(sid)["state"] == "stopped"
 
@@ -433,7 +433,8 @@ def test_stop_after_a_turn_finishes_that_turn_first(tmp_path):
     assert [e["type"] for e in events if e["type"] == "tool_call"], \
         "the tool call it was in the middle of still ran"
     assert result == "stopped by operator"
-    assert [e for e in events if e["type"] == "done"][0]["iterations"] == 2
+    # Exactly one turn completed, so the count is 1.
+    assert [e for e in events if e["type"] == "done"][0]["iterations"] == 1
 
 
 def test_stop_beats_a_pause_in_the_same_batch(tmp_path):
