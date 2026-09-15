@@ -71,7 +71,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 This is macOS — OpenBeast's rig (server) is Linux + NVIDIA/CUDA only.
 
 You almost certainly want CLIENT mode, which is fully supported here: it runs
-OpenCode and the complete 15-tool arsenal on THIS Mac, against this Mac's own
+OpenCode and the complete 17-tool arsenal on THIS Mac, against this Mac's own
 files, and sends only inference to a rig over your tailnet. No GPU, no CUDA,
 no model download.
 

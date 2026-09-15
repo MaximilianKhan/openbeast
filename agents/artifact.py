@@ -42,6 +42,7 @@ import html as _html
 import json
 import mimetypes
 import os
+from contextvars import ContextVar
 import re
 import shutil
 import socket
@@ -323,7 +324,7 @@ def publish(html, *, title=None, description=None, favicon=None,
         if new:
             meta = {
                 "id": aid,
-                "owner": (owner or "").strip() or None,
+                "owner": (owner or "").strip().lower() or default_owner(),
                 "title": None,
                 "description": None,
                 "favicon": None,
@@ -554,6 +555,43 @@ def artifact_url(artifact_id, version=None) -> str:
     if version is None:
         return f"{base}/a/{aid}"
     return f"{base}/a/{aid}/v/{int(version)}"
+
+
+_OWNER_OVERRIDE: ContextVar = ContextVar("openbeast_artifact_owner", default=None)
+
+
+def set_owner_override(login):
+    """Attribute publishes in this context to `login`.
+
+    The identity server knows who is calling; `mcp_server`'s tool functions
+    never see the request. Same shape as `tools.set_base_dir_override`:
+    the server sets this around the call and resets it after. Returns a
+    token for `reset_owner_override()`.
+    """
+    return _OWNER_OVERRIDE.set((login or "").strip().lower() or None)
+
+
+def reset_owner_override(token):
+    try:
+        _OWNER_OVERRIDE.reset(token)
+    except Exception:
+        pass
+
+
+def default_owner():
+    """Who owns a publish that named no owner: the caller if the identity
+    server told us, else the rig's first operator, else nobody (single-user
+    rig, where `can_view` lets every reader through anyway)."""
+    who = _OWNER_OVERRIDE.get()
+    if who:
+        return who
+    ops = (os.environ.get("OPENBEAST_ARTIFACT_OPERATORS")
+           or os.environ.get("OPENBEAST_CHAT_OPERATORS") or "")
+    for part in ops.split(","):
+        part = part.strip().lower()
+        if part:
+            return part
+    return None
 
 
 def can_view(meta, viewer_login) -> bool:

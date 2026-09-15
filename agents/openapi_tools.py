@@ -22,7 +22,7 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 15 tool functions,
+real MCP client; this module imports and serves the same 17 tool functions,
 so the two surfaces cannot drift.
 
 Env:
@@ -275,6 +275,16 @@ def create_app() -> FastAPI:
                         detail="relative workdir escapes the caller's workspace")
                 kwargs["workdir"] = anchored
             token = _tools.set_base_dir_override(shard) if shard else None
+            # Published pages are owned by their publisher: mcp_server's
+            # tool functions never see the request, so hand the identity
+            # down the same way the workspace shard travels.
+            otoken = None
+            if name in ("publish_artifact", "list_artifacts"):
+                try:
+                    import artifact as _artifact
+                    otoken = _artifact.set_owner_override(user)
+                except Exception:
+                    otoken = None
             t0 = time.monotonic()
             ok, err = True, ""
             try:
@@ -285,6 +295,12 @@ def create_app() -> FastAPI:
             finally:
                 if token is not None:
                     _tools.reset_base_dir_override(token)
+                if otoken is not None:
+                    try:
+                        import artifact as _artifact
+                        _artifact.reset_owner_override(otoken)
+                    except Exception:
+                        pass
                 elapsed = int((time.monotonic() - t0) * 1000)
                 audit(user, role, chat, name, profile, ok, elapsed, kwargs, err)
                 with metrics_lock:

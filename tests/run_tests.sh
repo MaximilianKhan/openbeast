@@ -43,6 +43,15 @@ else
   OVERALL=1
 fi
 
+if bash "$REPO_DIR/tests/test_artifact_cli.sh"; then
+  echo ""
+  echo "Artifact CLI tests: ALL PASSED"
+else
+  echo ""
+  echo "Artifact CLI tests: SOME FAILED"
+  OVERALL=1
+fi
+
 echo ""
 echo ""
 
