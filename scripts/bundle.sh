@@ -4,7 +4,9 @@
 #   ./scripts/bundle.sh build <dir> [--with-weights[=A,B]] [--no-images]
 #   ./scripts/bundle.sh show <dir>        what is in it
 #   ./scripts/bundle.sh verify <dir>      re-hash everything it claims
-#   ./scripts/bundle.sh install <dir>     place it, verifying as it goes
+#   ./scripts/bundle.sh install <dir> [--key <allowed-signers>]
+#   ./scripts/bundle.sh sign   <dir> --key <ssh-private-key> [--identity ID]
+#   ./scripts/bundle.sh verify <dir> [--key <allowed-signers>] [--identity ID]
 #
 # WHAT IT SOLVES. The closed-network review found exactly four fetches a first
 # install cannot do offline: llama.cpp source, the python wheels, the ~20 GB
@@ -32,6 +34,36 @@
 # is rewritten to that ID. The original docker-compose.yml is kept, so the
 # rewrite is reversible.
 #
+# HASHES ARE INTEGRITY; A SIGNATURE IS AUTHENTICITY, and they answer different
+# questions. MANIFEST.json proves the bundle did not change in transit. It
+# proves nothing about WHO built it: anyone who can write to the stick can
+# rebuild the manifest to match their own payload, and every hash would then
+# verify perfectly. `sign` closes that, and `verify --key` is what makes it
+# mean anything.
+#
+# ssh-keygen -Y, deliberately: it uses keys an operator already has, needs no
+# CA and no PKI decision, and the allowed-signers file is the same format
+# ssh/git already use. NO KEY MATERIAL LIVES IN THIS REPO — the operator
+# supplies both halves. An unsigned bundle is not refused (integrity alone is
+# still useful on a stick you carried yourself), but `verify` and `install`
+# SAY it is unsigned rather than letting silence imply trust.
+#
+# WHICH COMPONENTS HAVE A SECOND LINE OF DEFENCE, measured by rebuilding the
+# manifest around a malicious payload and watching what still caught it:
+#   wheels   TWO independent checks. agents/requirements.lock lives in the
+#            REPO, not the bundle, so an attacker who rewrites the manifest
+#            cannot rewrite the lock — the swapped wheel's hash is in no lock
+#            entry and pydeps refuses. Verified.
+#   weights  TWO. scripts/weights.registry is also in the repo, and a weight
+#            that does not match it is DELETED, not just rejected.
+#   images   ONE. The image ID is recorded in the manifest, so a rebuilt
+#            manifest can name the attacker's image and the load-time ID
+#            check will agree with it.
+#   source   ONE. Nothing offline can independently confirm a llama.cpp
+#            tarball is the commit it claims to be.
+# So the signature matters MOST for images and source. That is not a reason to
+# skip it for the others — it is the reason it exists at all.
+#
 # WEIGHTS ARE OPT-IN. A 20 GB copy is a different operation from a 60 MB one,
 # and most transfers are a rebuild of a box that already has its weight. So
 # `build` skips weights unless asked, and SAYS SO in the manifest rather than
@@ -49,6 +81,10 @@ source "$REPO_DIR/scripts/lib/conf.sh"
 source "$REPO_DIR/scripts/lib/weights.sh"
 
 HELPER="$REPO_DIR/scripts/lib/bundle_manifest.py"
+# The ssh-signature namespace. A signature is only valid for the namespace it
+# was made in, so a signature an operator made over some other file for some
+# other purpose can never be replayed as a bundle signature.
+SIG_NS="openbeast-bundle"
 PY="${OPENBEAST_PYTHON:-python3}"
 
 c_grn=$'\e[32m'; c_ylw=$'\e[33m'; c_red=$'\e[31m'; c_rst=$'\e[0m'
@@ -62,6 +98,54 @@ step() { echo; echo "==> $*"; }
 _compose_images() {
   grep -oE '^\s*image:\s*\S+' "$REPO_DIR/docker-compose.yml" \
     | sed -E 's/^\s*image:\s*//' | sort -u
+}
+
+# _check_signature <dir> <allowed-signers-or-empty> <identity-or-empty>
+# Returns 0 when the bundle is acceptable to proceed with, and PRINTS what it
+# concluded either way. Three outcomes, kept distinct on purpose:
+#   signed + key given + good      -> authenticated
+#   no key given                   -> integrity only, said out loud
+#   key given + bad/missing sig    -> REFUSE (exit 1)
+# The last one is the whole point: if an operator asked for authenticity, a
+# missing signature must be a failure, not a shrug.
+_check_signature() {
+  local dir="$1" key="$2" ident="$3"
+  local sig="$dir/MANIFEST.json.sig"
+  if [[ -z "$key" ]]; then
+    if [[ -f "$sig" ]]; then
+      warn "this bundle IS signed, but no --key was given, so the signature
+      was not checked. Hashes prove it did not change in transit; they prove
+      nothing about who built it. Pass --key <allowed-signers> to check."
+    else
+      warn "unsigned bundle: hashes prove it did not change in transit, but
+      anyone who can write to the medium could have rebuilt the manifest to
+      match their own payload. ./scripts/bundle.sh sign closes that."
+    fi
+    return 0
+  fi
+  [[ -f "$key" ]] || die "allowed-signers file $key does not exist"
+  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is not installed"
+  [[ -f "$sig" ]] || die "you passed --key, so authenticity was REQUIRED, and
+       this bundle carries no MANIFEST.json.sig. Refusing: a missing signature
+       is a failure here, not a shrug."
+  local out rc=0
+  if [[ -n "$ident" ]]; then
+    out="$(ssh-keygen -Y verify -n "$SIG_NS" -f "$key" -I "$ident" \
+             -s "$sig" < "$dir/MANIFEST.json" 2>&1)" || rc=$?
+  else
+    # No identity given: accept any signer in the file. `find-principals`
+    # answers WHICH key signed it, which is what a log should record.
+    out="$(ssh-keygen -Y find-principals -n "$SIG_NS" -f "$key" \
+             -s "$sig" < "$dir/MANIFEST.json" 2>&1)" || rc=$?
+  fi
+  if [[ $rc -ne 0 ]]; then
+    die "the signature on MANIFEST.json is NOT valid for $key
+       ssh-keygen said: $(head -1 <<< "$out")
+       Refusing to install. Either the bundle was built by someone whose key
+       is not in that file, or the manifest was modified after signing."
+  fi
+  ok "signature verified: $(head -1 <<< "$out")"
+  return 0
 }
 
 CMD="${1:-show}"
@@ -190,6 +274,10 @@ case "$CMD" in
     fi
 
     step "manifest"
+    # MANIFEST.json.sig is deliberately NOT recorded in the manifest: it is
+    # made AFTER the manifest exists, and a manifest that claimed a hash for
+    # its own signature could never be satisfied.
+    rm -f "$DIR/MANIFEST.json.sig"
     _era="$(bash "$REPO_DIR/scripts/eval-era.sh" 2>/dev/null | grep -oE '[0-9a-f]{16}' | head -1 || true)"
     "$PY" "$HELPER" write "$DIR" \
       --built-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -212,21 +300,84 @@ Carry $DIR to the closed box (it may sit anywhere), then there:
 EOF
     ;;
 
+  sign)
+    DIR="${1:-}"; shift || true
+    [[ -n "$DIR" ]] || die "sign needs a bundle directory"
+    KEY=""; IDENT=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --key)      KEY="${2:-}"; shift 2 ;;
+        --identity) IDENT="${2:-}"; shift 2 ;;
+        *) die "unknown flag $1" ;;
+      esac
+    done
+    [[ -n "$KEY" ]] || die "sign needs --key <ssh-private-key>.
+       No key material lives in this repo: you supply both halves. Any ssh
+       key works — make one with
+         ssh-keygen -t ed25519 -f ~/.ssh/openbeast-bundle -C 'openbeast bundles'"
+    [[ -f "$KEY" ]] || die "$KEY does not exist"
+    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is not installed"
+    _m="$DIR/MANIFEST.json"
+    [[ -f "$_m" ]] || die "$_m is missing — this is not a bundle"
+    # Sign the MANIFEST, not the files: the manifest already names every file
+    # by sha256, so one signature over it covers the whole bundle and stays
+    # cheap on a 20 GB weight.
+    ssh-keygen -Y sign -n "$SIG_NS" -f "$KEY" "$_m" >/dev/null \
+      || die "ssh-keygen could not sign $_m"
+    ok "wrote $(basename "$_m").sig"
+    _fp="$(ssh-keygen -lf "${KEY}.pub" 2>/dev/null | awk '{print $2}' || true)"
+    cat <<EOF
+
+  Signed with ${_fp:-that key}.
+  On the closed box, verification needs an allowed-signers file — the same
+  format ssh and git use, one line per key:
+
+    echo '${IDENT:-builder} \$(cat ${KEY}.pub)' > ~/.config/openbeast/allowed-signers
+
+  then:
+    ./scripts/bundle.sh verify  $DIR --key ~/.config/openbeast/allowed-signers${IDENT:+ --identity $IDENT}
+    ./scripts/bundle.sh install $DIR --key ~/.config/openbeast/allowed-signers${IDENT:+ --identity $IDENT}
+
+EOF
+    ;;
+
   show)
     DIR="${1:?show needs a bundle directory}"
     "$PY" "$HELPER" show "$DIR"
     ;;
 
   verify)
-    DIR="${1:?verify needs a bundle directory}"
+    DIR="${1:-}"; shift || true
+    [[ -n "$DIR" ]] || die "verify needs a bundle directory"
+    KEY=""; IDENT=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --key)      KEY="${2:-}"; shift 2 ;;
+        --identity) IDENT="${2:-}"; shift 2 ;;
+        *) die "unknown flag $1" ;;
+      esac
+    done
+    # SIGNATURE FIRST. The manifest is what names every hash, so checking the
+    # hashes before checking who signed the manifest is checking a document
+    # against itself.
+    _check_signature "$DIR" "$KEY" "$IDENT"
     "$PY" "$HELPER" verify "$DIR"
     ;;
 
   install)
-    DIR="${1:-}"
+    DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "install needs a bundle directory"
+    KEY=""; IDENT=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --key)      KEY="${2:-}"; shift 2 ;;
+        --identity) IDENT="${2:-}"; shift 2 ;;
+        *) die "unknown flag $1" ;;
+      esac
+    done
     DIR="$(cd "$DIR" && pwd)"
     step "verifying the bundle before using any of it"
+    _check_signature "$DIR" "$KEY" "$IDENT"
     "$PY" "$HELPER" verify "$DIR" \
       || die "the bundle does not match its manifest — refusing to install it.
        A directory that travelled is not trusted because it arrived."
@@ -379,6 +530,6 @@ EOF
     ;;
 
   *)
-    die "unknown command '$CMD' — build | show | verify | install"
+    die "unknown command '$CMD' — build | sign | show | verify | install"
     ;;
 esac

@@ -37,6 +37,12 @@ import os
 import sys
 
 MANIFEST = "MANIFEST.json"
+#: The detached signature over MANIFEST.json. Not a manifest entry by
+#: construction — it is made AFTER the manifest exists, so a manifest
+#: claiming a hash for its own signature could never be satisfied. It is
+#: skipped when recording AND when scanning for unrecorded files, or every
+#: signed bundle would fail its own verification for carrying a signature.
+SIGNATURE = MANIFEST + ".sig"
 #: Bump when a field changes meaning. An installer that does not recognise a
 #: version must refuse rather than guess at a layout it does not know.
 VERSION = 1
@@ -100,7 +106,7 @@ def walk_component(root: str, rel_dir: str) -> list:
         for name in sorted(files):
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root)
-            if os.path.basename(rel) == MANIFEST:
+            if os.path.basename(rel) in (MANIFEST, SIGNATURE):
                 continue
             add_file(entries, root, rel)
     return sorted(entries, key=lambda e: e["path"])
@@ -141,7 +147,7 @@ def verify(root: str) -> tuple[list, list]:
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             rel = os.path.relpath(os.path.join(dirpath, name), root)
-            if rel == MANIFEST or rel in recorded:
+            if rel in (MANIFEST, SIGNATURE) or rel in recorded:
                 continue
             problems.append(f"{rel}: present but NOT in the manifest")
     return ok, problems

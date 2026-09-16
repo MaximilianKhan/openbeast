@@ -229,9 +229,34 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       the wrong closure would land silently. Supersedes the
       existing "Air-gapped bundle (M/L)" line below, which is the getting-bits-
       IN half and is unusable until the OFFLINE key exists.
-- [ ] **`openbeast-bundle` — a signed offline install/update artifact** (airgap
-      9, feasibility 6). Land the CONSUMER side first, against parts already on
-      disk, before writing any tarball builder.
+- [x] **`openbeast-bundle` — a signed offline install/update artifact** — DONE
+      2026-09-15. `bundle.sh sign|verify --key`, detached `ssh-keygen -Y`
+      signatures over MANIFEST.json.
+      **Why it is a separate thing from the hashes:** hashes are integrity, a
+      signature is authenticity. Demonstrated by carrying out the attack —
+      swap a wheel for `MALICIOUS PAYLOAD`, rebuild the manifest around it,
+      and hash verification reports **45/45 files verified, 0 problems**. Only
+      `--key` catches it.
+      `ssh-keygen -Y` because it uses keys an operator already has, needs no
+      CA, and the allowed-signers file is the format ssh and git already use.
+      **No key material in the repo** — the operator supplies both halves, and
+      a test asserts none is ever committed. Signatures are namespaced
+      (`openbeast-bundle`), so an unrelated ssh signature cannot be replayed
+      as a bundle signature.
+      Six states tested: good signature; no `--key` (integrity only, said out
+      loud); `--key` + tampered manifest (refused); `--key` + unknown signer
+      (refused, "No principal matched"); `--key` + unsigned bundle (refused —
+      asking for authenticity makes a missing signature a failure, not a
+      shrug); and the signature being present without breaking the
+      unrecorded-file scan.
+      **Which components have a SECOND line of defence, measured not assumed:**
+      wheels and weights have two, because `agents/requirements.lock` and
+      `scripts/weights.registry` live in the REPO and an attacker rewriting
+      the manifest cannot rewrite them — the swapped wheel was caught a second
+      time by pydeps, "is in no lock entry". images and source have one: the
+      recorded image ID and the llama.cpp commit are both manifest-resident,
+      so the signature is what protects them. That is the argument for the
+      signature, not an argument against it for the others.
 - [ ] **Local PKI for the published surfaces** (airgap 8, feasibility 6).
       **First step done 2026-09-15:** `doctor.sh` now reads the served
       certificate's expiry off the LIVE port (openssl, no root needed, and it
