@@ -1265,6 +1265,71 @@ fi
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
+echo "Offline bundle:"
+if [[ -x "$REPO_DIR/scripts/bundle.sh" ]]; then
+  pass "bundle.sh exists and is executable"
+else
+  fail "scripts/bundle.sh missing or not executable"
+fi
+# A bundle is INSTALLED — it writes a source tree, installs packages, loads
+# images and places a weight — so "verify before using any of it" is the whole
+# safety property. Assert the order, not just the presence.
+_BN="$REPO_DIR/scripts/bundle.sh"
+_V_AT=$(grep -n 'verifying the bundle before using' "$_BN" | head -1 | cut -d: -f1)
+_L_AT=$(grep -n 'docker load' "$_BN" | head -1 | cut -d: -f1)
+_I_AT=$(grep -n 'pydeps.sh" install --from' "$_BN" | head -1 | cut -d: -f1)
+if [[ -n "$_V_AT" && -n "$_L_AT" && -n "$_I_AT" && $_V_AT -lt $_L_AT && $_V_AT -lt $_I_AT ]]; then
+  pass "install verifies the manifest BEFORE loading images or installing wheels"
+else
+  fail "install uses bundle contents before verifying them (verify@${_V_AT:-none} load@${_L_AT:-none} pip@${_I_AT:-none})"
+fi
+# The digest trap: compose pins by REGISTRY digest, which save/load cannot
+# carry, so install must rewrite the reference to the content ID — and must
+# keep the original, because the rewrite loses digest pinning.
+if grep -q 'docker-compose.yml.pre-bundle' "$_BN"; then
+  pass "the compose rewrite keeps the original (it is reversible)"
+else
+  fail "install rewrites docker-compose.yml with no way back"
+fi
+if grep -qE 'docker inspect --format .\{\{\.Id\}\}' "$_BN"; then
+  pass "install verifies the LOADED image against the recorded content ID"
+else
+  fail "install loads images without checking what it loaded"
+fi
+# Weights are opt-in; the manifest must SAY they were skipped rather than let
+# a reader find out at install time.
+if grep -q 'skipped "weights' "$_BN"; then
+  pass "a bundle without weights records that it has none"
+else
+  fail "a weightless bundle does not say so"
+fi
+# build must refuse to run on the closed box — it is the connected side.
+if grep -A2 'ob_offline && die' "$_BN" | grep -q 'BUILT on a connected box'; then
+  pass "build refuses to run with OFFLINE=true (it is the connected-side step)"
+else
+  fail "build does not refuse on a closed network"
+fi
+# The lock travels with the wheels but NOT inside wheels/ — pydeps audits that
+# directory for files the lock does not name, so a copy in there fails its own
+# audit. (It did, during development.)
+if grep -q 'DIR/meta/requirements.lock' "$_BN"; then
+  pass "the bundled lock lives outside wheels/ (it would fail its own audit inside)"
+else
+  fail "the bundled lock is inside the wheelhouse it is meant to describe"
+fi
+if grep -q "bundle's lock differs" "$_BN"; then
+  pass "install refuses a bundle whose lock does not match this checkout"
+else
+  fail "install would silently place a closure this checkout does not pin"
+fi
+_BN_OUT="$(cd "$REPO_DIR" && ./scripts/bundle.sh show /nonexistent-bundle 2>&1 || true)"
+if grep -qiE 'missing|not a bundle' <<< "$_BN_OUT"; then
+  pass "show on a non-bundle says so instead of crashing"
+else
+  fail "show on a non-bundle: $_BN_OUT"
+fi
+
+echo ""
 echo "OFFLINE (closed network):"
 # The closed-network review's finding was not that the stack cannot run
 # offline — an installed rig serves fine with no internet. It was that nothing

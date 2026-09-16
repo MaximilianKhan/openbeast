@@ -194,12 +194,39 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       who configured the first reads as a fault report about their own
       decision. The two summaries are now distinct, and the unreachable one
       points at this key.
-- [ ] **Offline bundle — build connected, install from USB** (airgap 10,
-      feasibility 7). Four fatal fetches with no local alternative: llama.cpp
-      source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.
-      **Note the trap the ranker caught: a digest-pinned image reference cannot
-      be satisfied by a locally retagged image**, so `docker save`/`load` alone
-      does not work — the compose reference has to change too. Supersedes the
+- [x] **Offline bundle — build connected, install from USB** — DONE
+      2026-09-15. `scripts/bundle.sh build|show|verify|install`. All four
+      fetches covered: llama.cpp source (`git archive`, so the commit is
+      recorded and `build/` is excluded), the hash-pinned wheel closure, the
+      container images, and optionally the weight.
+      **The digest trap is SOLVED, not worked around.** `docker save`/`load`
+      does not carry a registry manifest digest — a loaded image has no
+      RepoDigest at all — so a digest-pinned compose reference can never be
+      satisfied from a tarball. But an image's **ID is itself a content
+      digest**, it DOES survive save/load, and `docker compose` accepts
+      `image: sha256:<id>` and resolves it locally with no pull. All three
+      measured on this box, not assumed: built a `FROM scratch` probe image,
+      recorded its ID, `docker rmi`, `docker load`, and the ID resolved; and a
+      compose file referencing an ID validated and created a container with
+      `--pull never`. So install loads, verifies the loaded image against the
+      recorded ID, and rewrites the reference to that ID — keeping content
+      addressing, involving no registry, and leaving
+      `docker-compose.yml.pre-bundle` so the rewrite is reversible when the
+      box gets a network back.
+      **Nothing is trusted because it arrived.** MANIFEST.json records every
+      file's sha256; `verify` re-hashes before anything is used and also
+      reports files that are present but UNRECORDED (what a tampered or
+      half-rebuilt bundle looks like); `install` refuses on any mismatch.
+      Tested against four states: clean, one flipped byte, an extra file, a
+      deleted file.
+      **Two scope decisions, made rather than parked:** weights are opt-in
+      (`--with-weights`), because a 20 GB copy is a different operation from a
+      60 MB one and most transfers rebuild a box that already has its weight —
+      and the manifest RECORDS that they were skipped rather than letting a
+      reader discover it at install time; and install cross-checks the
+      bundle's lock against this checkout's, refusing a bundle built from a
+      different commit, because every individual hash would still verify and
+      the wrong closure would land silently. Supersedes the
       existing "Air-gapped bundle (M/L)" line below, which is the getting-bits-
       IN half and is unusable until the OFFLINE key exists.
 - [ ] **`openbeast-bundle` — a signed offline install/update artifact** (airgap
