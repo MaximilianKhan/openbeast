@@ -210,10 +210,33 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       private address and the only escape hatch is the tailnet CGNAT range.
       Put the check in the single choke point `_resolve_vetted`, not both
       callers.
-- [ ] **Hash-pinned lockfile + wheelhouse** (hours).
-      `agents/requirements.txt` has version pins but no hashes, so
-      `--require-hashes` is impossible and a local mirror cannot be
-      integrity-verified. `docs/SOC2_READINESS.md:111` already claims we do this.
+- [x] **Hash-pinned lockfile + wheelhouse** — DONE 2026-09-15, PR pending.
+      `agents/requirements.lock` pins the whole **43-package** closure by
+      sha256 (`requirements.txt` pins 6 direct versions and no content), and
+      `scripts/pydeps.sh` owns it: `lock` regenerates, `verify` is the offline
+      check, `check` re-resolves to catch staleness, `wheelhouse` fills a
+      directory with hash-verified artifacts, `audit` re-verifies one that
+      travelled, `install --from` installs with `--require-hashes --no-index`.
+      `docs/SOC2_READINESS.md` CC9.2 claimed this already — it was
+      **aspirational**, and now is not; the doc says so.
+      Measured, not asserted:
+      * the closed-network path works end to end — 43 packages installed into
+        a clean venv from a local directory, with `PIP_INDEX_URL` pointed at a
+        dead port to prove no index was contacted, and all four servers
+        (`chat_server`, `artifact_server`, `sessions`, `artifact`) import
+        against it.
+      * cross-platform, which is why the lock lists **every file** of each
+        release rather than one box's wheel: linux x86_64 on python 3.12 AND
+        3.14 ✓, macOS arm64 ✓. macOS **x86_64** cannot be covered by wheels
+        alone (`cffi 2.1.1` publishes none) — pip must build it from the sdist
+        the lock also pins, which needs a compiler. Stated in the script
+        header so nobody debugs it twice.
+      * tampering is caught at both ends: one flipped byte in a wheel, or one
+        extra file, and `audit` names it and `install` refuses.
+      Bootstrap PREFERS the lock and falls back loudly to `requirements.txt`
+      if the closure cannot be satisfied on that python — an installer's job
+      is to make the box work. `OPENBEAST_PIP_STRICT=1` makes the fallback
+      fatal for a deployment that mandates hash pinning.
 - [ ] **`agents/runner.py:560` routes loopback through the proxy.** No
       `http_client=httpx.Client(trust_env=False)`, so an exported `HTTP_PROXY`
       — the most common closed-network configuration — sends the agent's own

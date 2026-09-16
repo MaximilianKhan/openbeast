@@ -439,12 +439,42 @@ if _unsat="$(ob_python_deps_satisfied)"; then
   ok "python deps already satisfied — skipping the install (no index query)"
 else
   warn "installing python deps: ${_unsat:-unknown}"
-  python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
-    || die "pip install failed. On a closed network, pre-stage the wheels:
-       on a connected box:  pip download -d wheels -r agents/requirements.txt huggingface_hub
-       copy ./wheels here, then: pip install --user --no-index --find-links wheels \\
-                                     -r agents/requirements.txt huggingface_hub"
-  ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+  # PREFER THE HASH-PINNED LOCK. requirements.txt pins 6 direct versions
+  # and says nothing about the other 37 packages that actually get installed,
+  # nor about their CONTENT. agents/requirements.lock pins the whole closure
+  # by sha256, so pip refuses substituted bytes.
+  #
+  # It is a PREFERENCE, not a requirement, because the lock is resolved on one
+  # python and an installer's job is to make the box work: a python the
+  # closure cannot satisfy must degrade to the looser file rather than refuse
+  # to install at all. The fallback is loud, and OPENBEAST_PIP_STRICT=1 makes
+  # it fatal for a deployment that mandates hash pinning.
+  _ob_lock="$REPO_DIR/agents/requirements.lock"
+  _ob_locked_ok=0
+  if [[ -f "$_ob_lock" ]]; then
+    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock"; then
+      _ob_locked_ok=1
+      ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
+    elif [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then
+      die "the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids
+       falling back to the unpinned closure. Regenerate the lock on this
+       python (./scripts/pydeps.sh lock), or pre-stage a wheelhouse:
+         connected box:  ./scripts/pydeps.sh wheelhouse wheels
+         this box:       ./scripts/pydeps.sh install --from wheels"
+    else
+      warn "the hash-pinned install failed on this python — falling back to
+       agents/requirements.txt, which pins VERSIONS but not content.
+       ./scripts/pydeps.sh lock regenerates the lock for this interpreter."
+    fi
+  fi
+  if [[ $_ob_locked_ok -eq 0 ]]; then
+    python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
+      || die "pip install failed. On a closed network, pre-stage the wheels:
+       on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
+       copy ./wheels and agents/requirements.lock here, then:
+                            ./scripts/pydeps.sh install --from wheels"
+    ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+  fi
 fi
 # hf / mcpo land in ~/.local/bin — make sure it's reachable for this run
 export PATH="$HOME/.local/bin:$PATH"

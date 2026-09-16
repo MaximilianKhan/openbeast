@@ -25,10 +25,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python dependencies
+      # INSTALL FROM THE LOCK, with hashes enforced. This is the one place
+      # that proves the lockfile is installable on a python and platform that
+      # are NOT the box it was generated on (CI is 3.12/ubuntu; the lock is
+      # resolved on 3.14/arch) — which is the whole reason it lists every file
+      # of each release rather than just the wheel one machine happened to
+      # resolve. If this step ever fails, the lock's cross-platform claim is
+      # false and a Mac client install would fail the same way.
+      - name: Install Python dependencies (hash-pinned lock)
         run: |
           python -m pip install -q -U pip pytest
-          python -m pip install -q -r agents/requirements.txt
+          python -m pip install -q --require-hashes -r agents/requirements.lock
+
+      - name: Lockfile matches requirements.txt
+        run: ./scripts/pydeps.sh verify
 
       - name: Script structure tests
         run: bash tests/test_scripts.sh
