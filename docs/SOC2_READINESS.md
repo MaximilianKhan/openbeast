@@ -108,9 +108,18 @@ the gap list.
 | Mechanism | Where | State |
 |---|---|---|
 | Container images digest-pinned | `docker-compose.yml` | Provided |
-| Python dependencies hash-pinned, CVE-audited in CI | `agents/requirements.txt`, CI | Provided |
+| Python dependencies hash-pinned, CVE-audited in CI | `agents/requirements.lock`, CI | Provided — the lock pins the **whole 43-package closure by sha256** (`requirements.txt` pins 6 direct versions and no content); CI installs with `--require-hashes` and `pip-audit` runs against the closure, not just the direct pins |
 | **Model weights SHA-256 and size pinned, verified at load** | `scripts/weights.registry`, `scripts/serve.sh` | Provided (`WEIGHT_ENFORCE=warn` by default, `strict` available) |
 | Third-party component inventory with licences | [`NOTICE`](../NOTICE), README credits | Provided |
+
+This row was **aspirational until 2026-09-15**: it pointed at
+`agents/requirements.txt`, which carries `==` version pins and no hashes at
+all, so `--require-hashes` was impossible and 37 of the 43 packages that
+actually get installed were unpinned in every sense. A reviewer who followed
+the reference would have found the claim unsupported. The lock, the
+`--require-hashes` install in CI, and the closure-wide audit are what make it
+true; `./scripts/pydeps.sh verify` is the one-command check, and `doctor.sh`
+reports it on every run.
 
 Weight pinning is worth calling out to a reviewer. Model weights are the one
 shipped artifact most stacks never verify, and an unverified GGUF is arbitrary

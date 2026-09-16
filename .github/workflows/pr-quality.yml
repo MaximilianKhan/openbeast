@@ -75,3 +75,8 @@ jobs:
         run: |
           python3 -m pip install -q pip-audit
           pip-audit -r agents/requirements.txt --disable-pip --no-deps
+          # ...and the TRANSITIVE closure, which is where most of the supply
+          # chain actually lives: requirements.txt names 4 packages, the lock
+          # names 43. Auditing only the four meant an advisory against any of
+          # the other 39 was invisible here.
+          pip-audit -r agents/requirements.lock --disable-pip --no-deps

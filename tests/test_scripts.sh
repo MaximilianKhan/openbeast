@@ -1167,9 +1167,24 @@ ob_python_deps_satisfied" 2>/dev/null || true)"
   rm -rf "$_BD_TMP"
 fi
 # The failure message has to teach the offline path, or the guard just moves
-# the dead end one line later.
-if grep -q 'no-index --find-links' "$REPO_DIR/bootstrap.sh"; then
+# the dead end one line later. The recipe it teaches is now pydeps.sh (which
+# hash-verifies the wheelhouse at both ends) rather than a raw
+# `pip --no-index --find-links`, so the assertion is on the INTENT — and it
+# goes further than the old one did: every command the message names must
+# actually be a subcommand pydeps.sh implements. A recipe that points at a
+# verb the script does not have is worse than no recipe.
+if grep -q 'pydeps.sh wheelhouse' "$REPO_DIR/bootstrap.sh"; then
   pass "a failed pip install prints the pre-staged-wheelhouse recipe"
+  _VERBS="$(grep -oE 'pydeps\.sh [a-z]+' "$REPO_DIR/bootstrap.sh" | awk '{print $2}' | sort -u)"
+  _MISSING=""
+  for _v in $_VERBS; do
+    grep -qE "^  $_v\)" "$REPO_DIR/scripts/pydeps.sh" || _MISSING="$_MISSING $_v"
+  done
+  if [[ -z "$_MISSING" ]]; then
+    pass "every pydeps.sh verb bootstrap recommends exists ($(echo "$_VERBS" | tr '\n' ' '))"
+  else
+    fail "bootstrap recommends pydeps.sh verbs that do not exist:$_MISSING"
+  fi
 else
   fail "pip failure gives no offline recipe"
 fi
@@ -1249,6 +1264,61 @@ fi
 # claimed the GPU, and the cost is documented: six parallel build agents ran
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
+echo ""
+echo "Hash-pinned python closure:"
+if [[ -x "$REPO_DIR/scripts/pydeps.sh" ]]; then
+  pass "pydeps.sh exists and is executable"
+else
+  fail "scripts/pydeps.sh missing or not executable"
+fi
+if [[ -f "$REPO_DIR/agents/requirements.lock" ]]; then
+  pass "agents/requirements.lock is committed"
+else
+  fail "no committed lock — only 4 direct versions are pinned, and no content"
+fi
+# OFFLINE. `verify` reads two files and hashes nothing over the network, which
+# is what makes it safe to run in CI and on a closed box.
+_PD_OUT="$(cd "$REPO_DIR" && ./scripts/pydeps.sh verify 2>&1 || true)"
+if grep -q ': OK' <<< "$_PD_OUT"; then
+  pass "the lock covers every direct pin at the same version"
+else
+  fail "lock verify: $(head -3 <<< "$_PD_OUT" | tr '\n' ' ')"
+fi
+# The closure must be bigger than the direct pins, or the lock is just
+# requirements.txt with extra steps.
+_PD_N=$(grep -cE '^[A-Za-z0-9][A-Za-z0-9._-]*==' "$REPO_DIR/agents/requirements.lock" || echo 0)
+_PD_D=$(grep -cE '^[A-Za-z0-9][A-Za-z0-9._-]*==' "$REPO_DIR/agents/requirements.txt" || echo 0)
+if [[ "$_PD_N" -gt "$_PD_D" ]]; then
+  pass "the lock pins $_PD_N packages where requirements.txt pins $_PD_D"
+else
+  fail "the lock pins $_PD_N packages — it is not a closure"
+fi
+# Every pin must carry at least one hash: pip refuses the WHOLE file over one
+# unhashed line, so a partial lock is not a weaker lock, it is no lock.
+if grep -qE '^\s*--hash=sha256:[0-9a-f]{64}' "$REPO_DIR/agents/requirements.lock"; then
+  pass "the lock carries sha256 hashes"
+else
+  fail "the lock has no hashes — --require-hashes would refuse it"
+fi
+# A committed generated file must not carry one machine's paths.
+if grep -qE '/home/|/usr/lib/python' "$REPO_DIR/agents/requirements.lock"; then
+  fail "the committed lock embeds an absolute path from the box that made it"
+else
+  pass "the lock carries no machine-specific path"
+fi
+# CI must install FROM the lock — that is the only place the cross-platform
+# claim (a 3.14-resolved closure installing on 3.12) is actually tested.
+if grep -q 'require-hashes -r agents/requirements.lock' "$REPO_DIR/.github/workflows/ci.yml"; then
+  pass "CI installs from the lock with hashes enforced"
+else
+  fail "CI does not install from the lock — its cross-platform claim is untested"
+fi
+if grep -q 'pip-audit -r agents/requirements.lock' "$REPO_DIR/.github/workflows/pr-quality.yml"; then
+  pass "the vulnerability audit covers the whole closure, not just the 4 direct pins"
+else
+  fail "pip-audit only sees requirements.txt — 39 of 43 packages are unaudited"
+fi
+
 echo ""
 echo "beast-lang L1 (toolchain introspection):"
 _LI="$REPO_DIR/scripts/lang-introspect.sh"

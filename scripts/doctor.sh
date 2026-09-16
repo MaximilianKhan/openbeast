@@ -224,6 +224,22 @@ if command -v python3 >/dev/null 2>&1; then
       pass "$pkg==$ver"
     fi
   done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  # The four lines above are the DIRECT pins. The closure is 43 packages, and
+  # the lock is what pins their content — so the question this row answers is
+  # not "is the lock pretty" but "could this box reinstall exactly what it is
+  # running, offline". A stale lock means it could not.
+  if [[ -f "$REPO_DIR/agents/requirements.lock" ]]; then
+    _lk="$(cd "$REPO_DIR" && ./scripts/pydeps.sh verify 2>&1 || true)"
+    if grep -q '^agents/requirements.lock: OK' <<< "$_lk"; then
+      pass "$(sed 's|agents/requirements.lock: OK — |hash-pinned lock: |' <<< "$_lk" | head -1)"
+    else
+      warn "the hash-pinned lock does not match agents/requirements.txt" \
+           "./scripts/pydeps.sh lock   ($(sed -n '2p' <<< "$_lk" | sed 's/^\s*-\s*//'))"
+    fi
+  else
+    warn "no agents/requirements.lock — only the 4 direct versions are pinned, and no content is" \
+         "./scripts/pydeps.sh lock  (also what makes an offline install verifiable)"
+  fi
 fi
 
 # ── Docker ──────────────────────────────────────────────────────────────────
