@@ -218,7 +218,12 @@ def test_audit_catches_a_tampered_file(tmp_path):
     wh = _wheelhouse(tmp_path, {"a-1.0-py3-none-any.whl": b"AAB"})
     matched, problems = L.audit_dir(lock, wh)
     assert matched == []
-    assert len(problems) == 1 and "is in no lock entry" in problems[0]
+    # Two problems now, and both are right: the file's hash is in no lock
+    # entry, AND the package it should have provided is uncovered — an empty
+    # or incomplete wheelhouse used to report success, so coverage is checked
+    # as well as content.
+    assert any("is in no lock entry" in p for p in problems), problems
+    assert any("have NO file" in p for p in problems), problems
 
 
 def test_audit_catches_an_extra_file_the_lock_never_named(tmp_path):
@@ -417,3 +422,30 @@ def test_a_line_the_parser_cannot_read_becomes_a_PROBLEM(tmp_path):
         req = _one_req(tmp_path, bad)
         problems = L.verify(lock, [req], [])
         assert any("NOT checked" in p for p in problems), (bad, problems)
+
+
+def test_audit_does_not_call_an_empty_wheelhouse_verified(tmp_path):
+    """SHIPPED FAIL-OPEN. "every file present matches the lock" was reported
+    as success for an EMPTY directory — 0 matched, 0 wrong, rc 0 — so
+    "nothing to check" read as "verified" and `install --from` accepted it,
+    failing later inside pip on the box that can least afford it."""
+    files = {"a-1.0-py3-none-any.whl": b"AAA"}
+    lock = _lock_for(tmp_path, files)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    matched, problems = L.audit_dir(lock, str(empty))
+    assert matched == []
+    assert any("have NO file" in p for p in problems), problems
+
+
+def test_audit_names_the_packages_a_short_wheelhouse_is_missing(tmp_path):
+    """An incomplete wheelhouse — one built for another platform, or a
+    half-finished copy — passed the gate when every file that WAS present
+    happened to match. The question an offline install has is coverage."""
+    files = {"a-1.0-py3-none-any.whl": b"AAA", "b-1.0-py3-none-any.whl": b"BBB"}
+    lock = _lock_for(tmp_path, files)
+    wh = _wheelhouse(tmp_path, {"a-1.0-py3-none-any.whl": b"AAA"})
+    matched, problems = L.audit_dir(lock, wh)
+    assert matched == ["a-1.0-py3-none-any.whl"]
+    assert any("1 of 2 locked package(s) have NO file" in p for p in problems), \
+        problems

@@ -363,6 +363,13 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     A file whose hash is not in the lock is the interesting case: it is what a
     tampered or stale wheelhouse looks like, and installing from it with
     --no-index would never touch an index that could contradict it.
+
+    IT ALSO CHECKS COVERAGE, which is the question an offline install actually
+    has. "Every file present matches the lock" was reported as success for an
+    EMPTY directory — 0 matched, 0 wrong, rc=0 — so "nothing to check" read as
+    "verified", and an incomplete wheelhouse (one built for another platform,
+    or a half-finished copy) passed the gate and failed later inside pip. A
+    package with no file present is a problem, named.
     """
     pkgs = parse(lock_path)
     known = {h for p in pkgs.values() for h in p["hashes"]}
@@ -373,6 +380,7 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     #: a Mac or a file manager actually leaves on a USB stick.
     BENIGN = {".DS_Store", ".Trashes", ".directory", "Thumbs.db"}
     matched, problems = [], []
+    seen_hashes: set = set()
     for entry in sorted(os.listdir(directory)):
         path = os.path.join(directory, entry)
         if entry in BENIGN:
@@ -390,8 +398,22 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
         digest = h.hexdigest()
         if digest in known:
             matched.append(entry)
+            seen_hashes.add(digest)
         else:
             problems.append(f"{entry}: sha256:{digest} is in no lock entry")
+    # COVERAGE: every package the lock pins needs at least one file here, or
+    # an install from this directory cannot succeed.
+    uncovered = sorted(
+        f"{p['name']}=={p['version']}"
+        for p in pkgs.values()
+        if not (set(p["hashes"]) & seen_hashes))
+    if uncovered:
+        shown = ", ".join(uncovered[:6])
+        more = f" (+{len(uncovered) - 6} more)" if len(uncovered) > 6 else ""
+        problems.append(
+            f"{len(uncovered)} of {len(pkgs)} locked package(s) have NO file "
+            f"in this directory, so an install from it cannot complete: "
+            f"{shown}{more}")
     return matched, problems
 
 
@@ -464,8 +486,14 @@ def main(argv=None) -> int:
             matched, problems = audit_dir(args.lock, args.dir)
             for p in problems:
                 print(f"  ! {p}")
-            print(f"{args.dir}: {len(matched)} file(s) match the lock, "
-                  f"{len(problems)} do not")
+            # "N do not" counted coverage problems as mismatched FILES, which
+            # they are not. Say what each number means.
+            bad_files = [p for p in problems if "locked package(s) have NO" not in p]
+            cover = len(problems) - len(bad_files)
+            tail = (f", {len(bad_files)} file(s) the lock does not name"
+                    if bad_files else "")
+            tail += ", and it does not cover the whole closure" if cover else ""
+            print(f"{args.dir}: {len(matched)} file(s) match the lock{tail}")
             return 1 if problems else 0
     except LockError as e:
         print(f"error: {e}", file=sys.stderr)

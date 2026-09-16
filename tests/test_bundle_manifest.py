@@ -229,19 +229,30 @@ def test_the_signature_is_not_treated_as_an_unrecorded_file(tmp_path):
 
 def test_the_signature_is_never_recorded_as_a_component_file(tmp_path):
     """A manifest that claimed a hash for its own signature could not be
-    satisfied: signing changes the directory after the hashes were taken."""
+    satisfied: signing changes the directory after the hashes were taken.
+
+    THE COMPONENT MUST BE THE BUNDLE ROOT for this to test anything. The
+    first version of this test used `--component meta:meta` with the signature
+    at the bundle root — which no component walk reaches — so it passed
+    whether or not the recorder skipped SIGNATURE at all. Verified: removing
+    the skip left the whole suite green."""
     root = tmp_path / "bundle"
-    (root / "meta").mkdir(parents=True)
-    with open(root / "meta" / "x", "wb") as fh:
+    root.mkdir()
+    with open(root / "x", "wb") as fh:
         fh.write(b"x")
-    # a signature already present when the manifest is written must be skipped
     with open(root / B.SIGNATURE, "w") as fh:
-        fh.write("sig")
-    assert B.main(["write", str(root), "--component", "meta:meta"]) == 0
+        fh.write("-----BEGIN SSH SIGNATURE-----\nstub\n")
+    # "." walks the bundle root itself, where MANIFEST.json and its signature
+    # live — the only arrangement in which the basename skip is load-bearing.
+    assert B.main(["write", str(root), "--component", "all:."]) == 0
     doc = B.load(str(root))
     paths = [f["path"] for c in doc["components"] for f in c["files"]]
-    assert B.SIGNATURE not in paths
-    assert paths == ["meta/x"]
+    assert B.SIGNATURE not in paths, paths
+    assert B.MANIFEST not in paths, paths
+    assert paths == ["x"], paths
+    # and it verifies clean with the signature sitting there
+    ok, problems = B.verify(str(root))
+    assert problems == [], problems
 
 
 # --------------------------------------------------------------------------

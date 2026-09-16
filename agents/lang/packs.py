@@ -211,7 +211,12 @@ def _short_version(version: str) -> str:
     introspect._short, deliberately — two helpers answering "which version is
     this" differently is a drift guard waiting to disagree with itself.
     """
-    m = re.search(r"\d+(?:\.\d+){1,3}", version or "")
+    # The prerelease suffix is part of the version: without it a zig
+    # dev-build move (0.16.0-dev.412 -> 0.16.0-dev.500) compared EQUAL and the
+    # drift guard served stale facts. Kept identical to introspect._short,
+    # which a test pins — two answers to "which version is this" is a drift
+    # guard waiting to disagree with itself.
+    m = re.search(r"\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?", version or "")
     return m.group(0) if m else (version or "").strip()
 
 

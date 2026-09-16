@@ -378,17 +378,14 @@ else
   # (the reference profile, unchanged); hip/sycl/cpu per the backend.
   CMAKE_FLAGS="$(ob_cmake_flags)" \
     || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
-  # OFFLINE ONLY. llama.cpp's cmake fetches a prebuilt Web UI; on a closed
-  # network that fetch stalls ~660 s and then fails, taking the whole build
-  # with it. Disabling it offline is not a preference about upstream features
-  # — the fetch CANNOT succeed there, so attempting it only buys a stall.
-  # The default build is untouched: Max wants latest llama.cpp with whatever
-  # upstream ships (2026-09-15), and this stack never serves that UI anyway
-  # (Open WebUI is the front end).
+  # The offline -DLLAMA_USE_PREBUILT_UI=OFF now comes from ob_cmake_flags
+  # itself (scripts/lib/hardware.sh), so scripts/update.sh's rebuild gets it
+  # too. It was inlined here, which meant the path advertised as the offline
+  # work re-armed the 11-minute stall.
   if ob_offline; then
-    CMAKE_FLAGS="$CMAKE_FLAGS -DLLAMA_USE_PREBUILT_UI=OFF"
-    warn "OFFLINE=true → adding -DLLAMA_USE_PREBUILT_UI=OFF (that fetch would
-      stall ~11 min and then fail; the stack serves Open WebUI, not it)"
+    warn "OFFLINE=true → building with -DLLAMA_USE_PREBUILT_UI=OFF (that
+      fetch would stall ~11 min and then fail; the stack serves Open WebUI,
+      not llama.cpp's bundled one)"
   fi
   ok "backend $OB_BACKEND → cmake flags: ${CMAKE_FLAGS:-none (CPU-only)}"
   # "CAN I BUILD?" not "is there a clone?". The guard used to test for

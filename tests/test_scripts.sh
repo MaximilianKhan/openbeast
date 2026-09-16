@@ -1474,6 +1474,47 @@ PYRESTORE
 else
   skip "no ssh-keygen — cannot exercise the signature paths"
 fi
+# A sharded weight travels as a SET. llama.cpp is handed only the first
+# shard and finds its siblings, so a serve script names one file while the
+# model is three — shipping 1 of 3 produces a bundle that verifies perfectly
+# and cannot load the model. scripts/weights.registry has a real 3-shard
+# entry today, so this is reachable, not hypothetical.
+if grep -q 'of-\[0-9\]{5}\\.gguf\|of-([0-9]{5})' "$_BN"; then
+  pass "build expands a sharded weight to the whole set"
+else
+  fail "build ships whichever shard the serve script names — a partial set cannot load"
+fi
+# Rebuilding into a directory that already holds a bundle used to leave BOTH
+# sets of artifacts; the manifest recorded both, verify passed, and install
+# picked one arbitrarily.
+if grep -q 'already holds bundle content' "$_BN"; then
+  pass "build refuses a dirty target (or --force clears it)"
+else
+  fail "build into a dirty target leaves stale artifacts the manifest then blesses"
+fi
+# ...and install must pick the source tarball the MANIFEST names, since the
+# manifest is what the signature covers.
+if grep -q '_want_commit' "$_BN"; then
+  pass "install selects the source tarball by the recorded commit"
+else
+  fail "install picks a source tarball arbitrarily (head -1)"
+fi
+# The offline prebuilt-UI flag belongs in the SHARED cmake function, or
+# update.sh's rebuild — the path advertised as the offline work — re-arms the
+# 11-minute fetch that bootstrap avoids.
+if grep -q 'LLAMA_USE_PREBUILT_UI=OFF' "$REPO_DIR/scripts/lib/hardware.sh"; then
+  pass "the offline cmake flag lives in the shared ob_cmake_flags"
+else
+  fail "the offline cmake flag is inlined in one caller — bootstrap and update.sh will drift"
+fi
+# update.sh must gate the network call, not the branch that only prints advice.
+if grep -A6 'update_opencode()' "$REPO_DIR/scripts/update.sh" | grep -q 'ob_offline' \
+   && grep -B6 'if opencode upgrade' "$REPO_DIR/scripts/update.sh" | grep -q 'ob_offline'; then
+  pass "update.sh gates 'opencode upgrade' itself when offline"
+else
+  fail "update.sh leaves the network call ungated and guards the advice branch instead"
+fi
+
 _BN_OUT="$(cd "$REPO_DIR" && ./scripts/bundle.sh show /nonexistent-bundle 2>&1 || true)"
 if grep -qiE 'missing|not a bundle' <<< "$_BN_OUT"; then
   pass "show on a non-bundle says so instead of crashing"
@@ -1621,11 +1662,27 @@ if grep -q 'pull never' "$REPO_DIR/start.sh"; then
 else
   fail "start.sh lets compose reach a registry on a closed network"
 fi
-for _stage in 'not pulling' 'needs the index' 'registry pull'; do
-  if grep -q "$_stage" "$REPO_DIR/scripts/update.sh"; then
-    pass "update.sh has an offline path for: $_stage"
+# Per FUNCTION, not per message string: the first version of this check
+# grepped for the words "not pulling", and rewording the message broke it
+# while the behaviour was intact. What matters is that each stage that does
+# network work has an ob_offline branch.
+for _fn in update_llama update_images update_python update_opencode; do
+  if python3 - "$REPO_DIR/scripts/update.sh" "$_fn" <<'PYFN'
+import sys
+src = open(sys.argv[1]).read()
+fn = sys.argv[2]
+i = src.find(fn + "() {")
+if i < 0:
+    sys.exit(1)
+# to the next top-level function definition (or EOF)
+j = src.find("\n}\n", i)
+body = src[i:j if j > i else len(src)]
+sys.exit(0 if "ob_offline" in body else 1)
+PYFN
+  then
+    pass "update.sh: $_fn has an offline branch"
   else
-    fail "update.sh has no offline path for: $_stage"
+    fail "update.sh: $_fn does network work with no offline branch"
   fi
 done
 

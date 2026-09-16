@@ -276,10 +276,21 @@ def test_the_cpp_rendering_spends_its_budget_on_availability():
     for lv in I.facts("cpp")["facts"]["levels_supported"]:
         assert f"-std={lv}" in joined, f"{lv} is not mentioned at all"
     assert "library" in joined and "language" in joined
-    assert "agents/lang/generated/cpp.json" in joined, \
-        "the summary must say where the complete set is"
+    # The reader must always learn how to get the complete set...
     assert "lang-introspect.sh write" in joined, \
-        "and how to regenerate it"
+        "the summary must say how to produce the complete set"
+    # ...but the pack must NOT cite a path that does not exist. The generated
+    # directory is gitignored per-rig state, so on a fresh clone there is no
+    # such file, and pointing a model at one would be a false claim in a pack
+    # whose premise is that it carries only true ones.
+    cited = "agents/lang/generated/cpp.json" in joined
+    assert cited == os.path.exists(I.artifact_path("cpp")), (
+        f"pack cites the artifact: {cited}, but it exists: "
+        f"{os.path.exists(I.artifact_path('cpp'))}")
+    # and when it DOES exist, the citation must appear
+    I.write("cpp")
+    joined2 = " ".join(I.render("cpp"))
+    assert "agents/lang/generated/cpp.json" in joined2
 
 
 def test_c_renders_something_at_all():
@@ -543,3 +554,29 @@ def test_check_calls_a_moved_toolchain_STALE_without_a_toolchain(_fake_probe):
     state, detail = I.check("fakelang")
     assert state == "STALE", (state, detail)
     assert "9.9.9" in detail and "9.9.10" in detail
+
+
+def test_the_prerelease_part_of_a_version_is_not_thrown_away():
+    """SHIPPED BUG. `_short` matched only `\\d+(\\.\\d+){1,3}`, so
+    `0.16.0-dev.412` and `0.16.0-dev.500` compared EQUAL — a zig dev-build
+    move, which is exactly when std changes most, was invisible to the drift
+    guard and stale facts would have been served as current."""
+    assert I._short("0.16.0-dev.412") != I._short("0.16.0-dev.500")
+    assert I._short("0.14.0-dev.1") != I._short("0.14.0")
+    assert I._short("0.16.0") == "0.16.0"
+    # and the two helpers that answer "which version is this" must still agree
+    from lang import packs as P
+    for v in ("0.16.0-dev.412", "g++ (GCC) 16.2.1 20260810",
+              "go version go1.26.2 linux/amd64", "Python 3.14.7",
+              "rustc 1.98.1 (48a229cea 2026-09-01)"):
+        assert I._short(v) == P._short_version(v), v
+
+
+def test_a_prerelease_move_is_reported_as_STALE(_fake_probe):
+    """The consequence, end to end, with no toolchain needed."""
+    _fake_probe["toolchain"] = "0.16.0-dev.412"
+    I.write("fakelang")
+    assert I.check("fakelang")[0] == "OK"
+    _fake_probe["toolchain"] = "0.16.0-dev.500"
+    state, detail = I.check("fakelang")
+    assert state == "STALE", (state, detail)

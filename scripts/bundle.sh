@@ -182,13 +182,14 @@ case "$CMD" in
   build)
     DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "build needs a target directory"
-    WITH_WEIGHTS=""; DO_IMAGES=1; DO_SOURCE=1
+    WITH_WEIGHTS=""; DO_IMAGES=1; DO_SOURCE=1; FORCE=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --with-weights)   WITH_WEIGHTS="__default__"; shift ;;
         --with-weights=*) WITH_WEIGHTS="${1#*=}"; shift ;;
         --no-images)      DO_IMAGES=0; shift ;;
         --no-source)      DO_SOURCE=0; shift ;;
+        --force)          FORCE=1; shift ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -196,6 +197,30 @@ case "$CMD" in
        Run this where there is a network, then carry the directory here."
     mkdir -p "$DIR"
     DIR="$(cd "$DIR" && pwd)"
+    # A DIRTY TARGET IS REFUSED. Rebuilding into a directory that already
+    # holds a bundle left BOTH artifacts in place — two llama.cpp tarballs,
+    # for instance — and the manifest then recorded both, so `verify` passed
+    # clean while `install` picked one arbitrarily, possibly the stale commit
+    # the manifest does not describe. --force cleans the directories this
+    # command owns (and only those).
+    _dirty=()
+    for _c in wheels source images weights meta; do
+      [[ -d "$DIR/$_c" ]] && [[ -n "$(ls -A "$DIR/$_c" 2>/dev/null)" ]] \
+        && _dirty+=("$_c")
+    done
+    if [[ ${#_dirty[@]} -gt 0 ]]; then
+      if [[ $FORCE -eq 1 ]]; then
+        for _c in "${_dirty[@]}"; do rm -rf "$DIR/$_c"; done
+        rm -f "$DIR/MANIFEST.json" "$DIR/MANIFEST.json.sig"
+        warn "--force: cleared ${_dirty[*]} in $DIR before rebuilding"
+      else
+        die "$DIR already holds bundle content (${_dirty[*]}).
+       Rebuilding into it would leave BOTH sets of artifacts, and a manifest
+       that records two versions of the same component verifies clean while
+       install picks one arbitrarily. Use a fresh directory, or --force to
+       clear ${_dirty[*]} first."
+      fi
+    fi
     COMPONENTS=(); METAS=(); SKIPPED=()
 
     step "python wheels (the hash-pinned closure)"
@@ -275,16 +300,49 @@ case "$CMD" in
       # actually loads. Never "everything in weights/" — that is how a 400 GB
       # bundle happens by accident.
       if [[ "$WITH_WEIGHTS" == "__default__" ]]; then
-        _names="$(grep -oE '[A-Za-z0-9._-]+\.gguf' "$REPO_DIR/scripts/$DEFAULT_SERVE_SCRIPT" 2>/dev/null | sort -u || true)"
+        # NON-COMMENT LINES ONLY: serve scripts mention alternative and draft
+        # models in comments, and scraping those shipped files nobody asked
+        # for while the real one might be missing.
+        _names="$(grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/$DEFAULT_SERVE_SCRIPT" 2>/dev/null \
+                  | grep -oE '[A-Za-z0-9._-]+\.gguf' | sort -u || true)"
         [[ -n "$_names" ]] || die "could not tell which weight $DEFAULT_SERVE_SCRIPT loads — pass --with-weights=<file.gguf>"
       else
         _names="$(printf '%s' "$WITH_WEIGHTS" | tr ',' '\n')"
       fi
+      # SHARDED WEIGHTS TRAVEL AS A SET. llama.cpp is given only the FIRST
+      # shard on its command line and finds the siblings itself, so a serve
+      # script names one file while the model is three — and this shipped
+      # 1 of 3 with nothing saying so, producing a bundle that cannot load
+      # the model it claims to carry. scripts/weights.registry has a real
+      # 3-shard entry today.
+      _expanded=""
+      while IFS= read -r _nm; do
+        [[ -n "$_nm" ]] || continue
+        _expanded="$_expanded$_nm"$'\n'
+        if [[ "$_nm" =~ ^(.*)-([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
+          _stem="${BASH_REMATCH[1]}"; _tot="${BASH_REMATCH[3]}"
+          for _i in $(seq 1 "$((10#$_tot))"); do
+            _expanded="$_expanded$(printf '%s-%05d-of-%s.gguf' "$_stem" "$_i" "$_tot")"$'\n'
+          done
+          warn "$_nm is shard $(printf '%d' "$((10#${BASH_REMATCH[2]}))") of $((10#$_tot)) — including the whole set"
+        fi
+      done <<< "$_names"
+      _names="$(printf '%s' "$_expanded" | sort -u | sed '/^$/d')"
       while IFS= read -r _wf; do
         [[ -n "$_wf" ]] || continue
         _src="$WEIGHTS_DIR/$_wf"
-        [[ -f "$_src" ]] || { warn "$_wf not found at $_src — skipping"; \
-                              SKIPPED+=(--skipped "weight $_wf (not on the build box)"); continue; }
+        if [[ ! -f "$_src" ]]; then
+          # A MISSING SHARD IS FATAL. Skipping one silently produces a bundle
+          # that verifies perfectly and cannot load the model.
+          if [[ "$_wf" =~ -[0-9]{5}-of-[0-9]{5}\.gguf$ ]]; then
+            die "$_wf is part of a sharded weight and is not at $_src.
+       A partial shard set cannot load, so this bundle would verify clean and
+       be useless. Bring every shard, or pass --with-weights= without it."
+          fi
+          warn "$_wf not found at $_src — skipping"
+          SKIPPED+=(--skipped "weight $_wf (not on the build box)")
+          continue
+        fi
         _reg="$(awk -F'\t' -v f="$_wf" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
         echo "  copying $_wf ($(du -h "$_src" | cut -f1))..."
         cp "$_src" "$DIR/weights/$_wf"
@@ -412,7 +470,28 @@ EOF
     ok "every recorded file matches its sha256"
 
     # --- source ---------------------------------------------------------
-    _tar="$(find "$DIR/source" -maxdepth 1 -name 'llama.cpp-*.tar.gz' 2>/dev/null | head -1 || true)"
+    # BY THE RECORDED COMMIT, not `head -1`. If a directory ever holds two
+    # tarballs, an arbitrary pick can install a revision the manifest does
+    # not describe — and the manifest is what the signature covers.
+    _want_commit="$("$PY" -c '
+import json, sys
+doc = json.load(open(sys.argv[1] + "/MANIFEST.json"))
+for c in doc.get("components", []):
+    if c.get("kind") == "source" and c.get("commit"):
+        print(c["commit"]); break
+' "$DIR" 2>/dev/null || true)"
+    _tar=""
+    if [[ -n "$_want_commit" ]]; then
+      _tar="$(find "$DIR/source" -maxdepth 1 \
+                -name "llama.cpp-${_want_commit:0:12}.tar.gz" 2>/dev/null | head -1 || true)"
+      [[ -n "$_tar" ]] || die "the manifest records llama.cpp $_want_commit but
+       source/llama.cpp-${_want_commit:0:12}.tar.gz is not in the bundle."
+    else
+      _n_tars="$(find "$DIR/source" -maxdepth 1 -name 'llama.cpp-*.tar.gz' 2>/dev/null | wc -l)"
+      [[ "$_n_tars" -le 1 ]] || die "$_n_tars source tarballs and no recorded
+       commit to choose between them — refusing to guess. Rebuild the bundle."
+      _tar="$(find "$DIR/source" -maxdepth 1 -name 'llama.cpp-*.tar.gz' 2>/dev/null | head -1 || true)"
+    fi
     if [[ -n "$_tar" ]]; then
       step "llama.cpp source"
       if [[ -e "$REPO_DIR/llama.cpp" ]]; then

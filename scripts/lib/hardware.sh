@@ -250,6 +250,19 @@ ob_backend_preflight() {
 # stay behavior-identical to the original bootstrap flags: -DGGML_CUDA=ON
 # -DCMAKE_CUDA_ARCHITECTURES=<detected, fallback 120>.
 ob_cmake_flags() {
+  # OFFLINE: llama.cpp's cmake fetches a prebuilt Web UI, and on a closed
+  # network that fetch stalls ~11 minutes and then fails, taking the build
+  # with it. Disabling it offline is not a preference about upstream features
+  # — the fetch cannot succeed there.
+  #
+  # HERE, in the SHARED function, because the flag was inlined in bootstrap.sh
+  # only: scripts/update.sh calls this same function for its rebuild — the
+  # path advertised as the offline work — and so re-armed the 11-minute stall.
+  # This file's own header says bootstrap and update must never drift.
+  local _ob_offline_flags=""
+  if declare -F ob_offline >/dev/null 2>&1 && ob_offline; then
+    _ob_offline_flags=" -DLLAMA_USE_PREBUILT_UI=OFF"
+  fi
   case "${OB_BACKEND:-cpu}" in
     cuda)
       # || true: under pipefail a failing nvidia-smi would kill the caller
@@ -257,7 +270,7 @@ ob_cmake_flags() {
       local cuda_arch
       cuda_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)
       cuda_arch="${cuda_arch:-120}"
-      echo "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$cuda_arch"
+      echo "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$cuda_arch$_ob_offline_flags"
       ;;
     hip)
       # Auto-detect the gfx target so ROCm doesn't build for every arch
@@ -266,16 +279,16 @@ ob_cmake_flags() {
       local gfx
       gfx=$(rocminfo 2>/dev/null | grep -oE 'gfx[0-9a-f]+' | grep -v '^gfx000$' | head -1 || true)
       if [[ -n "$gfx" ]]; then
-        echo "-DGGML_HIP=ON -DAMDGPU_TARGETS=$gfx"
+        echo "-DGGML_HIP=ON -DAMDGPU_TARGETS=$gfx$_ob_offline_flags"
       else
-        echo "-DGGML_HIP=ON"
+        echo "-DGGML_HIP=ON$_ob_offline_flags"
       fi
       ;;
     sycl)
-      echo "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
+      echo "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx$_ob_offline_flags"
       ;;
     cpu)
-      echo ""
+      echo "${_ob_offline_flags# }"
       ;;
     *)
       return 1

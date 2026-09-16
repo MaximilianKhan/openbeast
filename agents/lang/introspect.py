@@ -452,10 +452,17 @@ def check(lang: str) -> tuple[str, str]:
 
 
 def _short(v) -> str:
-    """Compare toolchains on their version number, not their banner text."""
+    """Compare toolchains on their version, not their banner text.
+
+    THE PRERELEASE PART IS PART OF THE VERSION. Dropping it made
+    `0.16.0-dev.412` and `0.16.0-dev.500` compare EQUAL, so a zig dev-build
+    move — the case where std changes most — was invisible to the drift guard
+    and stale facts would have been served as current. Same for
+    `0.14.0-dev.1` vs `0.14.0`.
+    """
     if not isinstance(v, str):
         return ""
-    m = re.search(r"\d+(?:\.\d+){1,3}", v)
+    m = re.search(r"\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?", v)
     return m.group(0) if m else v.strip()
 
 
@@ -539,11 +546,21 @@ def render(lang: str, budget_chars: int = BUDGET_CHARS) -> list[str]:
         if rejected:
             out.append(f"this compiler REFUSES -std={', -std='.join(rejected)}")
         probe = "__cpp_lib_format" if lang == "cpp" else "__STDC_VERSION__"
+        # DO NOT CITE A FILE THAT MAY NOT EXIST. agents/lang/generated/ is
+        # gitignored per-rig state, so on a fresh clone there is no such file
+        # — and a pack that points a model at a nonexistent path is making a
+        # false claim, in a pack whose whole premise is that it only carries
+        # true ones. Say where it IS when it exists, and how to produce it
+        # when it does not.
+        where = (f"The complete set for THIS compiler ({tc}) is in "
+                 f"agents/lang/generated/{lang}.json"
+                 if os.path.exists(artifact_path(lang)) else
+                 f"The complete set for THIS compiler ({tc}) can be written "
+                 f"out with")
         out.append(
             f"Test one at compile time rather than guessing: "
-            f"`#if defined({probe})`. The complete set for THIS compiler "
-            f"({tc}) is in agents/lang/generated/{lang}.json — regenerate with "
-            f"./scripts/lang-introspect.sh write {lang}.")
+            f"`#if defined({probe})`. {where} "
+            f"(./scripts/lang-introspect.sh write {lang}).")
         if dis:
             # A JUSTIFIED selection, unlike the enumeration above: these are
             # the DISAGREEMENTS between the two installed compilers, a small
