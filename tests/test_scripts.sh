@@ -1322,6 +1322,43 @@ if grep -q "bundle's lock differs" "$_BN"; then
 else
   fail "install would silently place a closure this checkout does not pin"
 fi
+# Hashes are integrity, a signature is authenticity, and the distinction is
+# load-bearing: anyone who can write to the medium can rebuild the manifest to
+# match their own payload, and every hash would then verify. Demonstrated
+# during development by doing exactly that.
+if grep -q 'ssh-keygen -Y sign' "$_BN"; then
+  pass "bundle.sh can sign a manifest (ssh keys, no PKI to stand up)"
+else
+  fail "no signing path — a rebuilt manifest would be indistinguishable"
+fi
+# NO key material in the repo, ever.
+if grep -qE 'BEGIN (OPENSSH|RSA|EC) PRIVATE KEY' "$_BN" "$REPO_DIR"/scripts/lib/bundle_manifest.py 2>/dev/null; then
+  fail "a private key is embedded in the bundle tooling"
+else
+  pass "no key material lives in the repo (the operator supplies both halves)"
+fi
+# --key means authenticity was REQUIRED, so a missing signature must fail.
+if grep -q 'authenticity was REQUIRED' "$_BN"; then
+  pass "--key on an unsigned bundle is refused, not shrugged at"
+else
+  fail "--key on an unsigned bundle would silently fall back to hashes only"
+fi
+# The signature must be checked BEFORE the hashes: the manifest is what names
+# the hashes, so checking them first checks a document against itself.
+_S_AT=$(grep -n '_check_signature "\$DIR"' "$_BN" | head -1 | cut -d: -f1)
+_H_AT=$(grep -n '"\$PY" "\$HELPER" verify "\$DIR"' "$_BN" | head -1 | cut -d: -f1)
+if [[ -n "$_S_AT" && -n "$_H_AT" && $_S_AT -lt $_H_AT ]]; then
+  pass "the signature is checked before the hashes it vouches for"
+else
+  fail "hashes are checked before the signature (sig@${_S_AT:-none} hash@${_H_AT:-none})"
+fi
+# A signature is only valid in its own namespace, so an operator's unrelated
+# ssh signature can never be replayed as a bundle signature.
+if grep -q 'SIG_NS="openbeast-bundle"' "$_BN"; then
+  pass "signatures are namespaced (no replay of an unrelated ssh signature)"
+else
+  fail "signatures have no namespace — one made for another purpose could be replayed"
+fi
 _BN_OUT="$(cd "$REPO_DIR" && ./scripts/bundle.sh show /nonexistent-bundle 2>&1 || true)"
 if grep -qiE 'missing|not a bundle' <<< "$_BN_OUT"; then
   pass "show on a non-bundle says so instead of crashing"

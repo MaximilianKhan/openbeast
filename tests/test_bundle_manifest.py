@@ -204,3 +204,41 @@ def test_the_summary_reports_a_total_size(tmp_path):
     out = B.summarise(B.load(root))
     assert "TOTAL" in out
     assert "KB" in out or "MB" in out
+
+
+# --------------------------------------------------------------------------
+# the detached signature (review of the air-gap threat model)
+# --------------------------------------------------------------------------
+# Hashes are integrity; a signature is authenticity. MANIFEST.json proves the
+# bundle did not change in transit and proves NOTHING about who built it —
+# anyone who can write to the medium can rebuild the manifest to match their
+# own payload, and every hash would then verify. The signature closes that,
+# which means the manifest machinery has to tolerate it existing.
+
+def test_the_signature_is_not_treated_as_an_unrecorded_file(tmp_path):
+    """It is created AFTER the manifest, so it can never be a manifest entry
+    — and if the unrecorded-file scan flagged it, every signed bundle would
+    fail its own verification for the crime of being signed."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    with open(os.path.join(root, B.SIGNATURE), "w") as fh:
+        fh.write("-----BEGIN SSH SIGNATURE-----\nnot-a-real-signature\n")
+    ok, problems = B.verify(root)
+    assert problems == [], problems
+    assert ok == ["wheels/a.whl"]
+
+
+def test_the_signature_is_never_recorded_as_a_component_file(tmp_path):
+    """A manifest that claimed a hash for its own signature could not be
+    satisfied: signing changes the directory after the hashes were taken."""
+    root = tmp_path / "bundle"
+    (root / "meta").mkdir(parents=True)
+    with open(root / "meta" / "x", "wb") as fh:
+        fh.write(b"x")
+    # a signature already present when the manifest is written must be skipped
+    with open(root / B.SIGNATURE, "w") as fh:
+        fh.write("sig")
+    assert B.main(["write", str(root), "--component", "meta:meta"]) == 0
+    doc = B.load(str(root))
+    paths = [f["path"] for c in doc["components"] for f in c["files"]]
+    assert B.SIGNATURE not in paths
+    assert paths == ["meta/x"]
