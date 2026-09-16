@@ -230,9 +230,11 @@ def test_audit_catches_an_extra_file_the_lock_never_named(tmp_path):
     assert any("evil" in p for p in problems)
 
 
-def test_audit_ignores_dotfiles_and_subdirectories(tmp_path):
-    """A `.DS_Store` from a Mac-mounted USB stick is not a supply-chain
-    event, and failing on it would train an operator to ignore the audit."""
+def test_audit_ignores_only_the_named_benign_dotfiles(tmp_path):
+    """A `.DS_Store` from a Mac-mounted USB stick is not a supply-chain event,
+    and failing on it would train an operator to ignore the audit. But
+    exempting EVERY dotfile let anything hidden ride in unaudited — so the
+    exemption is a short explicit list, not a rule about leading dots."""
     files = {"a-1.0-py3-none-any.whl": b"AAA"}
     lock = _lock_for(tmp_path, files)
     wh = _wheelhouse(tmp_path, dict(files, **{".DS_Store": b"junk"}))
@@ -240,6 +242,25 @@ def test_audit_ignores_dotfiles_and_subdirectories(tmp_path):
     matched, problems = L.audit_dir(lock, wh)
     assert matched == ["a-1.0-py3-none-any.whl"]
     assert problems == []
+    # ...and an UNLISTED hidden file is audited like anything else
+    with open(os.path.join(wh, ".index.html"), "wb") as fh:
+        fh.write(b"<a href=...>")
+    _m, problems = L.audit_dir(lock, wh)
+    assert any(".index.html" in p for p in problems), problems
+
+
+def test_audit_refuses_a_symlink_in_a_wheelhouse(tmp_path):
+    """The audit hashes what the link POINTS AT, which is not what travelled
+    and can change after the audit. A wheelhouse holds files."""
+    files = {"a-1.0-py3-none-any.whl": b"AAA"}
+    lock = _lock_for(tmp_path, files)
+    wh = _wheelhouse(tmp_path, files)
+    target = tmp_path / "elsewhere.whl"
+    with open(target, "wb") as fh:
+        fh.write(b"AAA")            # same bytes: the hash would MATCH
+    os.symlink(str(target), os.path.join(wh, "b-1.0-py3-none-any.whl"))
+    _m, problems = L.audit_dir(lock, wh)
+    assert any("symlink" in p for p in problems), problems
 
 
 # --------------------------------------------------------------------------
@@ -324,3 +345,75 @@ def test_the_committed_lock_has_no_machine_specific_path():
     text = open(lock, encoding="utf-8").read()
     assert "/home/" not in text
     assert os.path.expanduser("~") not in text
+
+
+# --------------------------------------------------------------------------
+# requirement parsing (adversarial review, 2026-09-15 — SHIPPED fail-open)
+# --------------------------------------------------------------------------
+# The old pattern was `^(name)\s*==\s*(\S+)$`, and pip's two ordinary
+# decorations broke it in OPPOSITE directions: an extra or a spaced marker
+# yielded version=None, which made verify's comparison a no-op while it still
+# printed "every direct pin matches" (a silent fail-open in the install gate);
+# a tight marker was swallowed INTO the version, producing a permanent "the
+# lock is stale" that no regeneration could clear. All three reproduced.
+
+def _one_req(tmp_path, line):
+    return _write(tmp_path / "r.txt", line + "\n")
+
+
+@pytest.mark.parametrize("line,want", [
+    ("uvicorn==0.52.4", "0.52.4"),
+    ("uvicorn[standard]==0.52.4", "0.52.4"),
+    ("uvicorn == 0.52.4", "0.52.4"),
+    ('uvicorn==0.52.4 ; python_version >= "3.9"', "0.52.4"),
+    ('uvicorn==0.52.4;python_version>="3.9"', "0.52.4"),
+    ('uvicorn[standard]==0.52.4 ; sys_platform == "linux"', "0.52.4"),
+])
+def test_a_pinned_requirement_is_read_whatever_pip_decorations_it_carries(
+        tmp_path, line, want):
+    pins, unparsed = L.direct_pins(_one_req(tmp_path, line))
+    assert unparsed == [], unparsed
+    assert pins == {"uvicorn": want}, (line, pins)
+
+
+def test_a_decorated_stale_pin_is_caught_not_skipped(tmp_path):
+    """The fail-open itself: with the old parser this printed OK."""
+    lock = _write(tmp_path / "l.lock",
+                  f"uvicorn==0.52.4 \\\n    --hash=sha256:{H1}\n")
+    for line in ("uvicorn[standard]==0.99.9",
+                 'uvicorn==0.99.9 ; python_version >= "3.9"'):
+        req = _one_req(tmp_path, line)
+        problems = L.verify(lock, [req], [])
+        assert any("the lock is stale" in p for p in problems), (line, problems)
+
+
+def test_a_tight_marker_does_not_brick_verify(tmp_path):
+    """The mirror image: `==0.52.4;marker` was read as the VERSION, so a
+    correct lock reported stale forever and no regeneration could clear it."""
+    lock = _write(tmp_path / "l.lock",
+                  f"uvicorn==0.52.4 \\\n    --hash=sha256:{H1}\n")
+    req = _one_req(tmp_path, 'uvicorn==0.52.4;python_version>="3.9"')
+    assert L.verify(lock, [req], []) == []
+
+
+def test_an_unpinned_requirement_is_not_a_parse_failure(tmp_path):
+    """A name with no `==` is legitimate — presence is all that can be
+    checked — and must not be reported as unreadable."""
+    lock = _write(tmp_path / "l.lock",
+                  f"uvicorn==0.52.4 \\\n    --hash=sha256:{H1}\n")
+    req = _one_req(tmp_path, "uvicorn")
+    pins, unparsed = L.direct_pins(req)
+    assert pins == {"uvicorn": None} and unparsed == []
+    assert L.verify(lock, [req], []) == []
+
+
+def test_a_line_the_parser_cannot_read_becomes_a_PROBLEM(tmp_path):
+    """The old signature could not express "I could not check this", so it
+    said nothing. A pinned line that does not parse must be reported, not
+    silently treated as unversioned."""
+    lock = _write(tmp_path / "l.lock",
+                  f"uvicorn==0.52.4 \\\n    --hash=sha256:{H1}\n")
+    for bad in ("uvicorn==", "uvicorn===0.1", "uvicorn==0.1 extra junk"):
+        req = _one_req(tmp_path, bad)
+        problems = L.verify(lock, [req], [])
+        assert any("NOT checked" in p for p in problems), (bad, problems)

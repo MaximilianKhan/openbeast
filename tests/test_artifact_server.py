@@ -1823,3 +1823,46 @@ def test_a_whitespace_spelled_index_html_still_gets_the_skeleton(make_client):
         assert "viewport" in r.text, spelling
         # and the isolation policy is the same one the plain spelling gets
         assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP, spelling
+
+
+def test_an_UNREADABLE_record_does_not_bypass_the_ownership_check(make_client):
+    """The fix for [32] (an unparseable meta.json made an artifact
+    undeletable) originally caught `ArtifactError`, and _read_meta folded
+    OSError and ValueError into that one class. So a transient read failure —
+    EIO, a permissions accident — was treated as "no recorded owner" and the
+    ownership check was SKIPPED. That is worse than the bug it closed:
+    ownership is the only thing DELETE cannot guess at.
+
+    Tested at the STORE, not through the HTTP route: DELETE is locality-gated,
+    so a foreign-login request 404s before it ever reaches remove() — a route
+    test here passes whether the store is right or wrong, which is exactly the
+    vacuous shape this suite keeps catching. (It caught this one: the first
+    version of this test passed against the reverted fix.)"""
+    c = make_client()
+    a = publish(c)                                    # owner: the local rig
+    meta = _meta_file(a["id"])
+    adir = os.path.join(store.store_root(), a["id"])
+
+    # (1) UNPARSEABLE stays deletable — that is the [32] fix itself.
+    with open(meta, "w", encoding="utf-8") as fh:
+        fh.write('{"id": "' + a["id"] + '", "versions": [')
+    assert store.remove(a["id"], owner="stranger@example.com") is True
+    assert not os.path.isdir(adir)
+
+    # (2) UNREADABLE must refuse, and leave the artifact alone.
+    b = publish(c)
+    bdir = os.path.join(store.store_root(), b["id"])
+    bmeta = _meta_file(b["id"])
+    os.chmod(bmeta, 0o000)
+    try:
+        if os.access(bmeta, os.R_OK):
+            pytest.skip("cannot make a file unreadable here (running as root?)")
+        with pytest.raises(store.ArtifactError) as e:
+            store.remove(b["id"], owner="stranger@example.com")
+        assert not isinstance(e.value, store.ArtifactMetaCorrupt), \
+            "a read failure was classified as a parse failure"
+        assert os.path.isdir(bdir), "the artifact was removed anyway"
+    finally:
+        os.chmod(bmeta, 0o600)
+    # the real owner can still delete it once the record is readable
+    assert store.remove(b["id"], owner=store.default_owner()) is True

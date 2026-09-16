@@ -242,3 +242,100 @@ def test_the_signature_is_never_recorded_as_a_component_file(tmp_path):
     paths = [f["path"] for c in doc["components"] for f in c["files"]]
     assert B.SIGNATURE not in paths
     assert paths == ["meta/x"]
+
+
+# --------------------------------------------------------------------------
+# path containment (adversarial review, 2026-09-15 — all SHIPPED)
+# --------------------------------------------------------------------------
+# A bundle's manifest is attacker-controlled in the threat model the bundle
+# exists for: a directory that travelled on a stick. os.path.join is not a
+# containment primitive, and os.walk does not descend into symlinked
+# directories — both were load-bearing mistakes here.
+
+def test_an_absolute_path_in_a_manifest_entry_is_refused(tmp_path):
+    """SHIPPED BUG. join(root, "/etc/hostname") returns "/etc/hostname", so
+    verify() hashed the TARGET MACHINE'S file and reported it as verified
+    bundle content."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    path = B.manifest_path(root)
+    doc = json.load(open(path))
+    doc["components"][0]["files"].append(
+        {"path": "/etc/hostname", "bytes": 1, "sha256": "0" * 64})
+    json.dump(doc, open(path, "w"))
+    ok, problems = B.verify(root)
+    assert "/etc/hostname" not in ok
+    assert any("not relative" in p for p in problems), problems
+
+
+def test_a_parent_escape_in_a_manifest_entry_is_refused(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    path = B.manifest_path(root)
+    doc = json.load(open(path))
+    doc["components"][0]["files"].append(
+        {"path": "../../../etc/hostname", "bytes": 1, "sha256": "0" * 64})
+    json.dump(doc, open(path, "w"))
+    ok, problems = B.verify(root)
+    assert not any(".." in x for x in ok)
+    assert any("not contained" in p for p in problems), problems
+
+
+def test_safe_join_refuses_every_shape_of_escape(tmp_path):
+    root = str(tmp_path)
+    for bad in ("/etc/passwd", "../x", "a/../../x", "", "./x", "a//b",
+                "a/./b", "x\x00y"):
+        with pytest.raises(B.BundleError):
+            B.safe_join(root, bad)
+    # and accepts the ordinary case
+    (tmp_path / "wheels").mkdir()
+    assert B.safe_join(root, "wheels/a.whl").endswith("wheels/a.whl")
+
+
+def test_safe_join_refuses_a_path_that_escapes_through_a_symlink(tmp_path):
+    """Containment has to survive a symlink COMPONENT, not just a literal
+    '..' — otherwise a link inside the bundle redirects the resolved path."""
+    (tmp_path / "wheels").mkdir()
+    outside = tmp_path.parent / "outside-target"
+    outside.mkdir(exist_ok=True)
+    os.symlink(str(outside), str(tmp_path / "wheels" / "out"))
+    with pytest.raises(B.BundleError) as e:
+        B.safe_join(str(tmp_path), "wheels/out/payload")
+    assert "escapes" in str(e.value) or "not contained" in str(e.value)
+
+
+def test_the_writer_refuses_a_symlinked_directory(tmp_path):
+    """SHIPPED BUG. os.walk does not descend into a symlinked directory, so
+    everything under one was invisible to BOTH the manifest and verify()'s
+    unrecorded-file scan: a bundle carrying a hidden payload.whl behind a
+    symlink reported "1 file verified, 0 problems"."""
+    root = tmp_path / "bundle"
+    (root / "wheels").mkdir(parents=True)
+    with open(root / "wheels" / "a.whl", "wb") as fh:
+        fh.write(b"AAA")
+    stash = tmp_path / "stash"
+    stash.mkdir()
+    with open(stash / "payload.whl", "wb") as fh:
+        fh.write(b"PAYLOAD")
+    os.symlink(str(stash), str(root / "wheels" / "sub"))
+    rc = B.main(["write", str(root), "--component", "wheels:wheels"])
+    assert rc == 1, "the writer recorded a bundle with a symlinked directory"
+
+
+def test_verify_catches_a_symlink_planted_after_the_manifest_was_written(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    stash = tmp_path / "stash2"
+    stash.mkdir()
+    with open(stash / "payload.whl", "wb") as fh:
+        fh.write(b"PAYLOAD")
+    os.symlink(str(stash), os.path.join(root, "wheels", "sub"))
+    _ok, problems = B.verify(root)
+    assert any("symlink" in p for p in problems), problems
+
+
+def test_a_symlinked_FILE_is_not_silently_accepted(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    target = tmp_path / "elsewhere.whl"
+    with open(target, "wb") as fh:
+        fh.write(b"ELSEWHERE")
+    os.symlink(str(target), os.path.join(root, "wheels", "b.whl"))
+    _ok, problems = B.verify(root)
+    assert any("symlink" in p for p in problems), problems

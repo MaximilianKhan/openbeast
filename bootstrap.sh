@@ -391,14 +391,29 @@ else
       stall ~11 min and then fail; the stack serves Open WebUI, not it)"
   fi
   ok "backend $OB_BACKEND → cmake flags: ${CMAKE_FLAGS:-none (CPU-only)}"
-  if [[ ! -d "$REPO_DIR/llama.cpp/.git" ]]; then
-    ob_offline && die "OFFLINE=true and there is no llama.cpp/ tree to build.
-       The source clone is one of the four fetches a first install cannot do
-       on a closed network. Bring the tree in by hand:
-         connected box:  git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
-         copy it to:     $REPO_DIR/llama.cpp
-       Then re-run. (A tarball works too — it needs the SOURCE, not the git
-       history; but update.sh's rebuild path does want a .git.)"
+  # "CAN I BUILD?" not "is there a clone?". The guard used to test for
+  # llama.cpp/.git, and `bundle.sh install` deliberately lays down a SOURCE
+  # tree with no git history (a `git archive`, so the commit is recorded and
+  # build/ is excluded). So the documented closed-network sequence — bundle
+  # install, set OFFLINE=true, ./bootstrap.sh — died on "there is no
+  # llama.cpp/ tree to build" with the tree sitting right there. Two features
+  # of mine that were each tested alone and never together.
+  if [[ -d "$REPO_DIR/llama.cpp/.git" ]]; then
+    :                                   # a clone: the normal case
+  elif [[ -f "$REPO_DIR/llama.cpp/CMakeLists.txt" ]]; then
+    ok "llama.cpp SOURCE tree present without git history (a bundle install
+      or a tarball) — building it as-is. NOTE: scripts/update.sh --llama wants
+      a .git to pull into and will say so; the build path does not care."
+  elif ob_offline; then
+    die "OFFLINE=true and there is no llama.cpp source to build.
+       The source is one of the four fetches a first install cannot do on a
+       closed network. Bring it in with a bundle:
+         connected box:  ./scripts/bundle.sh build ./bundle
+         here:           ./scripts/bundle.sh install ./bundle
+       or by hand: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+       into $REPO_DIR/llama.cpp (a source tarball is enough — this build
+       needs the SOURCE, not the history). Then re-run."
+  else
     git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
   fi
   # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
@@ -618,11 +633,29 @@ step "Frontend images (Open WebUI + SearXNG)"
 # Pull the EXACT digest-pinned refs from docker-compose.yml — pulling the
 # moving :main/:latest tags could report "image ready" for a different image
 # than the one compose actually runs.
+# OFFLINE: a registry pull is the FOURTH of the four fetches a closed network
+# cannot do, and this loop had no guard — so bootstrap stalled on two pulls
+# and then warned, in the one script that had just refused the other three by
+# name. The claim "all four are refused up front" was false here, which is
+# how a review found it.
+if ob_offline; then
+  _n_img=$(grep -cE '^\s+image:' "$REPO_DIR/docker-compose.yml" || echo 0)
+  warn "OFFLINE=true → not pulling the $_n_img frontend image(s); a registry
+      pull cannot succeed here. Images already in the local store are used as
+      they are. To bring them in from a connected box:
+        connected:  ./scripts/bundle.sh build ./bundle
+        here:       ./scripts/bundle.sh install ./bundle
+      That loads them AND rewrites docker-compose.yml to reference them by
+      content id, because a digest-pinned ref cannot be satisfied from a
+      tarball. Without images the model API (:8080) and the tool server still
+      work; Open WebUI and SearXNG do not."
+else
 while IFS= read -r image_ref; do
   short="${image_ref##*/}"; short="${short%%@*}"
   docker pull -q "$image_ref" >/dev/null && ok "$short image ready" \
     || warn "$short image pull FAILED (network/registry?) — ./start.sh will retry the pull"
 done < <(grep -E '^\s+image:' "$REPO_DIR/docker-compose.yml" | awk '{print $2}')
+fi
 
 # ---- OpenCode (optional terminal frontend) ---------------------------------
 if ! command -v opencode >/dev/null 2>&1; then

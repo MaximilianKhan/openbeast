@@ -812,3 +812,44 @@ def test_an_unknowable_boot_invalidates_nothing(ledger, monkeypatch):
     monkeypatch.setattr(sessions, "_boot_id", lambda: None)
     assert sessions.from_another_boot(rec) is False
     assert sessions.is_alive(rec) is True
+
+
+def test_append_op_does_not_block_on_a_fifo_at_the_inbox_path(ledger):
+    """SHIPPED BUG. An O_WRONLY open on a FIFO blocks until a reader appears,
+    and the caller is a request handler in chat_server — so a FIFO planted by
+    anything running as this user wedged `/send` forever.
+
+    read_new_ops has carried this guard since E13 and has a test named for it
+    (test_a_fifo_at_the_inbox_path_does_not_block_the_runner). The writer did
+    not: the same defect on the other side of the same file, which is the
+    pattern worth watching for."""
+    import threading
+    sid = "s-fifo"
+    sessions.register(sid, pid=os.getpid())
+    path = sessions.inbox_path(sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        os.unlink(path)
+    os.mkfifo(path)
+    done = {}
+
+    def call():
+        done["r"] = sessions.append_op(sid, {"op": "say", "text": "hi"})
+
+    t = threading.Thread(target=call, daemon=True)
+    t.start()
+    t.join(timeout=10)
+    assert "r" in done, "append_op blocked on a FIFO instead of failing fast"
+    assert done["r"] is False
+
+
+def test_o_nonblock_does_not_change_the_regular_file_path(ledger):
+    """The guard must be free: Linux ignores O_NONBLOCK on a regular file, so
+    ordinary appends and the reader's view of them are unchanged."""
+    sid = "s-regular"
+    sessions.register(sid, pid=os.getpid())
+    for i in range(3):
+        assert sessions.append_op(sid, {"op": "say", "text": f"m{i}"}) is True
+    ops, cursor = sessions.read_new_ops(sid)
+    assert [o["text"] for o in ops] == ["m0", "m1", "m2"]
+    assert cursor == os.path.getsize(sessions.inbox_path(sid))

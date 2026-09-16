@@ -75,10 +75,23 @@ cd "$REPO_DIR"
 # shellcheck source=scripts/lib/conf.sh
 source "$REPO_DIR/scripts/lib/conf.sh"
 # WEIGHTS_DIR comes from the SHARED resolver (env -> openbeast.conf -> default),
-# not from a local guess: weights are relocatable and a second answer here
-# would put a bundle's weight somewhere the serve scripts do not look.
-# shellcheck source=scripts/lib/weights.sh
-source "$REPO_DIR/scripts/lib/weights.sh"
+# never a local guess: weights are relocatable and a second answer here would
+# put a bundle's weight somewhere the serve scripts do not look.
+#
+# RESOLVED LAZILY, and that matters. scripts/lib/weights.sh `exit 1`s when the
+# directory does not exist, and it is SOURCED — so sourcing it at the top made
+# `bundle.sh show` and `bundle.sh verify` die about weights they never touch,
+# on a box with no weights/ yet. That box is precisely the one this tool
+# exists to set up, so the tool refused to run exactly where it was needed.
+# Only the two branches that actually handle weights ask for it.
+_need_weights_dir() {
+  # install PLACES weights, so creating the directory is its job (the same
+  # escape hatch bootstrap.sh uses). build READS them, so a missing directory
+  # there is a real error and weights.sh says so.
+  local mk="${1:-0}"
+  # shellcheck source=scripts/lib/weights.sh
+  OPENBEAST_WEIGHTS_MKDIR="$mk" source "$REPO_DIR/scripts/lib/weights.sh"
+}
 
 HELPER="$REPO_DIR/scripts/lib/bundle_manifest.py"
 # The ssh-signature namespace. A signature is only valid for the namespace it
@@ -129,15 +142,29 @@ _check_signature() {
        this bundle carries no MANIFEST.json.sig. Refusing: a missing signature
        is a failure here, not a shrug."
   local out rc=0
-  if [[ -n "$ident" ]]; then
-    out="$(ssh-keygen -Y verify -n "$SIG_NS" -f "$key" -I "$ident" \
-             -s "$sig" < "$dir/MANIFEST.json" 2>&1)" || rc=$?
-  else
-    # No identity given: accept any signer in the file. `find-principals`
-    # answers WHICH key signed it, which is what a log should record.
-    out="$(ssh-keygen -Y find-principals -n "$SIG_NS" -f "$key" \
-             -s "$sig" < "$dir/MANIFEST.json" 2>&1)" || rc=$?
+  # ALWAYS `-Y verify`. NEVER `find-principals` alone.
+  #
+  # This was a FAIL-OPEN and it shipped: `ssh-keygen -Y find-principals` only
+  # matches the signature's embedded public key against the allowed-signers
+  # file — it does NOT check the signature over the content. Measured:
+  #   tampered manifest, find-principals -> rc=0 "builder"      (accepted!)
+  #   tampered manifest, verify -I builder -> rc=255 "incorrect signature"
+  # So the no---identity path — the DEFAULT when an operator passes --key
+  # without naming a signer — accepted a manifest modified after signing,
+  # in the one feature whose entire purpose is authenticity.
+  #
+  # find-principals is still the right tool for DISCOVERING which principal
+  # signed, when the operator did not say. It just cannot be the only step:
+  # discover, then verify against what was discovered.
+  if [[ -z "$ident" ]]; then
+    ident="$(ssh-keygen -Y find-principals -n "$SIG_NS" -f "$key" \
+               -s "$sig" < "$dir/MANIFEST.json" 2>/dev/null | head -1 || true)"
+    [[ -n "$ident" ]] || die "no key in $key matches the signature on this
+       bundle. Either it was signed by someone not in your allowed-signers
+       file, or the signature is not a bundle signature at all."
   fi
+  out="$(ssh-keygen -Y verify -n "$SIG_NS" -f "$key" -I "$ident" \
+           -s "$sig" < "$dir/MANIFEST.json" 2>&1)" || rc=$?
   if [[ $rc -ne 0 ]]; then
     die "the signature on MANIFEST.json is NOT valid for $key
        ssh-keygen said: $(head -1 <<< "$out")
@@ -241,6 +268,7 @@ case "$CMD" in
 
     if [[ -n "$WITH_WEIGHTS" ]]; then
       step "weights"
+      _need_weights_dir 0
       mkdir -p "$DIR/weights"
       _w_json="[]"
       # Which files: the named ones, or whatever the configured serve script
@@ -390,8 +418,44 @@ EOF
       if [[ -e "$REPO_DIR/llama.cpp" ]]; then
         warn "llama.cpp/ already exists — left alone (delete it first to replace)"
       else
-        mkdir -p "$REPO_DIR/llama.cpp"
-        tar -xzf "$_tar" -C "$REPO_DIR/llama.cpp"
+        # EXTRACT ELSEWHERE, VALIDATE, THEN MOVE. The old form created
+        # llama.cpp/ and then ran an UNCHECKED tar into it, so a corrupt or
+        # hostile archive left a PARTIAL tree — and every later run saw
+        # "already exists — left alone" and skipped it forever. The recovery
+        # path was broken by the failure it was supposed to survive.
+        #
+        # Measured while reviewing this: GNU tar does contain the direct
+        # escapes (it strips a leading `/`, refuses `..` members, refuses to
+        # write THROUGH a symlink, and exits non-zero), so nothing escaped.
+        # What it does do is CREATE a symlink pointing outside the tree, and a
+        # later build step following one is not something to rely on tar for.
+        # A real `git archive` of llama.cpp contains ZERO symlinks (checked),
+        # so refusing them costs nothing and closes that.
+        _stage="$(mktemp -d "${TMPDIR:-/tmp}/ob-src-XXXXXX")"
+        if ! tar -xzf "$_tar" -C "$_stage"; then
+          rm -rf "$_stage"
+          die "the source archive did not extract cleanly (tar reported the
+       error above). NOTHING was written to llama.cpp/, so re-running after
+       fixing or rebuilding the bundle will work."
+        fi
+        _links="$(find "$_stage" -type l -printf '%p -> %l\n' 2>/dev/null | head -5 || true)"
+        if [[ -n "$_links" ]]; then
+          rm -rf "$_stage"
+          die "the source archive contains symlinks, which a legitimate
+       llama.cpp archive does not:
+$(sed 's/^/         /' <<< "$_links")
+       Refusing: a planted symlink redirects whatever the build writes next."
+        fi
+        mkdir -p "$(dirname "$REPO_DIR/llama.cpp")"
+        # One entry or many at the top of the archive — move the tree itself.
+        if [[ $(find "$_stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 1 \
+              && -d "$(find "$_stage" -mindepth 1 -maxdepth 1)" ]]; then
+          mv "$(find "$_stage" -mindepth 1 -maxdepth 1)" "$REPO_DIR/llama.cpp"
+        else
+          mv "$_stage" "$REPO_DIR/llama.cpp"
+          _stage=""
+        fi
+        [[ -z "$_stage" ]] || rm -rf "$_stage"
         ok "extracted $(basename "$_tar") into llama.cpp/"
         warn "this is a SOURCE snapshot, not a git clone: scripts/update.sh
       wants a .git to pull into, so it will refuse until one exists. The
@@ -436,6 +500,43 @@ EOF
       step "container images"
       command -v docker >/dev/null 2>&1 || die "docker is not installed here"
       _rewrote=0
+      # MATERIALISE THE LIST FIRST, and check that it succeeded.
+      # This used to be `while read ... done < <(python ...)`: a process
+      # substitution's exit status is not the loop's, so when the manifest
+      # validation below rejected a hostile entry the loop simply read zero
+      # lines and install reported SUCCESS. A validation that cannot fail the
+      # thing it validates is decoration.
+      _imglist="$(mktemp)"
+      if ! "$PY" -c '
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[2], "scripts", "lib"))
+import bundle_manifest as B
+root = sys.argv[1]
+doc = json.load(open(os.path.join(root, "MANIFEST.json")))
+for comp in doc.get("components", []):
+    if comp.get("kind") != "images":
+        continue
+    for img in comp.get("images", []):
+        f, ref, iid = img.get("file",""), img.get("ref",""), img.get("id","")
+        # The FILE PATH COMES FROM THE MANIFEST — the very thing we are
+        # deciding whether to trust — and it is handed to `gzip -dc`. Contain
+        # it with the same primitive verify() uses, not a second weaker rule.
+        try:
+            B.safe_join(root, f)
+        except B.BundleError as e:
+            sys.exit(f"refusing this bundle: {e}")
+        # An EMPTY id makes the load-time identity check pass vacuously:
+        # `docker inspect ""` compared against `""` proves nothing.
+        if not iid.startswith("sha256:") or len(iid) < 20:
+            sys.exit(f"manifest records an unusable image id for {ref!r}: {iid!r}")
+        if not ref:
+            sys.exit(f"manifest records an image with no ref: {f!r}")
+        print("\t".join([f, ref, iid]))
+' "$DIR" "$REPO_DIR" > "$_imglist"; then
+        rm -f "$_imglist"
+        die "the bundle's image records are not usable (see above). Nothing
+       was loaded and docker-compose.yml was not touched."
+      fi
       while IFS=$'\t' read -r _file _ref _id; do
         [[ -n "$_file" ]] || continue
         echo "  loading $_file..."
@@ -449,31 +550,73 @@ EOF
         # THE DIGEST REWRITE. compose pins by registry manifest digest, which
         # save/load cannot carry; the image ID is a content digest that
         # survives it and compose resolves locally. Keep the original file.
-        if grep -qF "$_ref" "$REPO_DIR/docker-compose.yml"; then
+        #
+        # ANCHORED to an `image:` line, not a bare substring search. A literal
+        # replace of the ref anywhere in the file would also rewrite it inside
+        # a comment, and a ref that happens to appear in two services would be
+        # rewritten in both — correct only by accident.
+        # MATCH THE REF **OR** AN ID THIS SERVICE WAS PREVIOUSLY REWRITTEN
+        # TO. After the first install, compose holds `image: sha256:<old id>`
+        # and no longer contains the ref at all — so a SECOND bundle (the
+        # sanctioned way to update images offline) loaded and verified its new
+        # image and then left compose pinned to the PREVIOUS one, silently.
+        # The fix has to work from either starting state, so the search is
+        # ref-or-any-sha256-image-line, and the replacement below rewrites the
+        # line whose current value is either.
+        _prev_id="$(OB_REF="$_ref" "$PY" - "$REPO_DIR/docker-compose.yml.pre-bundle" "$REPO_DIR/docker-compose.yml" <<'PYPREV'
+import os, sys
+ref = os.environ["OB_REF"]
+# Which image: line held this ref originally? Its position tells us which
+# line to rewrite now, even though its value has since become an id.
+try:
+    orig = open(sys.argv[1], encoding="utf-8").read().splitlines()
+except OSError:
+    orig = []
+cur = open(sys.argv[2], encoding="utf-8").read().splitlines()
+for i, line in enumerate(orig):
+    st = line.strip()
+    if st.startswith("image:") and st[len("image:"):].strip() == ref:
+        if i < len(cur):
+            cst = cur[i].strip()
+            if cst.startswith("image:"):
+                print(cst[len("image:"):].strip())
+        break
+PYPREV
+)" || _prev_id=""
+        if grep -qE "^[[:space:]]*image:[[:space:]]*($(printf '%s' "$_ref" | sed 's/[][\.*^$(){}?+|/]/\\&/g')|$(printf '%s' "${_prev_id:-__none__}" | sed 's/[][\.*^$(){}?+|/]/\\&/g'))[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
           [[ -f "$REPO_DIR/docker-compose.yml.pre-bundle" ]] \
             || cp "$REPO_DIR/docker-compose.yml" "$REPO_DIR/docker-compose.yml.pre-bundle"
-          # Literal replacement via python: an image ref contains / : @ and
-          # sed would need escaping that is easy to get subtly wrong.
-          OB_OLD="$_ref" OB_NEW="$_id" "$PY" - "$REPO_DIR/docker-compose.yml" <<'PYREW'
+          # Replacement via python, on the `image:` line only: an image ref
+          # contains / : @ and sed would need escaping that is easy to get
+          # subtly wrong.
+          OB_OLD="$_ref" OB_PREV="${_prev_id:-}" OB_NEW="$_id" \
+            "$PY" - "$REPO_DIR/docker-compose.yml" <<'PYREW'
 import os, sys
 p = sys.argv[1]
-old, new = os.environ["OB_OLD"], os.environ["OB_NEW"]
-s = open(p, encoding="utf-8").read()
-if old in s:
-    open(p, "w", encoding="utf-8").write(s.replace(old, new))
-    print(f"  rewrote {old} -> {new[:19]}…")
+old, prev, new = (os.environ["OB_OLD"], os.environ.get("OB_PREV", ""),
+                  os.environ["OB_NEW"])
+# Either the original ref, or the id a previous install rewrote it to. Both
+# are matched ONLY as the whole value of an `image:` line, so a ref mentioned
+# in a comment or in prose is never touched.
+targets = {t for t in (old, prev) if t}
+out, n = [], 0
+for line in open(p, encoding="utf-8").read().splitlines(keepends=True):
+    st = line.strip()
+    if st.startswith("image:") and st[len("image:"):].strip() in targets:
+        out.append(line.replace(st[len("image:"):].strip(), new)); n += 1
+    else:
+        out.append(line)
+if n:
+    open(p, "w", encoding="utf-8").write("".join(out))
+    print(f"  rewrote {n} image reference(s) -> {new[:19]}…")
+else:
+    sys.exit(f"could not find an image: line for {old!r} "
+             f"(previously {prev!r}) — compose was NOT updated")
 PYREW
           _rewrote=1
         fi
-      done < <("$PY" -c '
-import json, sys
-doc = json.load(open(sys.argv[1] + "/MANIFEST.json"))
-for comp in doc.get("components", []):
-    if comp.get("kind") != "images":
-        continue
-    for img in comp.get("images", []):
-        print("\t".join([img.get("file", ""), img.get("ref", ""), img.get("id", "")]))
-' "$DIR")
+      done < "$_imglist"
+      rm -f "$_imglist"
       if [[ $_rewrote -eq 1 ]]; then
         warn "docker-compose.yml now references images by CONTENT ID instead of
       registry digest, because save/load cannot carry a registry digest. The
@@ -485,6 +628,7 @@ for comp in doc.get("components", []):
     # --- weights --------------------------------------------------------
     if [[ -d "$DIR/weights" ]]; then
       step "weights"
+      _need_weights_dir 1
       _wd="$WEIGHTS_DIR"
       mkdir -p "$_wd"
       for _w in "$DIR"/weights/*; do

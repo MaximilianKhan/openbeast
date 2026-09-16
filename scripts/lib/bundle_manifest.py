@@ -65,6 +65,35 @@ def manifest_path(root: str) -> str:
     return os.path.join(root, MANIFEST)
 
 
+def safe_join(root: str, rel: str) -> str:
+    """Resolve `rel` INSIDE `root`, or raise.
+
+    Every path in a manifest is attacker-controlled in the threat model this
+    bundle exists for (a directory that travelled on a stick), and os.path.join
+    is not a containment primitive: join(root, "/etc/hostname") returns
+    "/etc/hostname", and "../../../etc/hostname" walks out. Measured — before
+    this, a manifest entry naming an absolute path made verify() hash the
+    TARGET MACHINE'S file and report it as verified bundle content, and
+    install() reads image tarballs from a manifest-supplied path.
+    """
+    if not rel or os.path.isabs(rel) or rel.startswith(("/", "\\")):
+        raise BundleError(f"manifest path is not relative: {rel!r}")
+    if "\x00" in rel:
+        raise BundleError(f"manifest path contains a NUL: {rel!r}")
+    parts = rel.replace("\\", "/").split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise BundleError(f"manifest path is not contained: {rel!r}")
+    full = os.path.join(root, *parts)
+    # Belt: resolve and confirm containment, so a symlink component cannot
+    # redirect the result either.
+    rroot = os.path.realpath(root)
+    rfull = os.path.realpath(full)
+    if rfull != rroot and not rfull.startswith(rroot + os.sep):
+        raise BundleError(
+            f"manifest path escapes the bundle: {rel!r} -> {rfull}")
+    return full
+
+
 def load(root: str) -> dict:
     path = manifest_path(root)
     try:
@@ -87,7 +116,13 @@ def load(root: str) -> dict:
 def add_file(entries: list, root: str, rel: str) -> dict:
     """Record one file. Raises rather than recording a file it cannot read:
     a manifest entry for something unreadable is worse than no entry."""
-    full = os.path.join(root, rel)
+    full = safe_join(root, rel)
+    if os.path.islink(full):
+        raise BundleError(
+            f"{rel}: symlink. A bundle carries wheels, tarballs, image tars "
+            f"and weights — all regular files — and a symlink inside one both "
+            f"hides its target from this recorder and redirects whatever "
+            f"reads it later.")
     if not os.path.isfile(full):
         raise BundleError(f"{rel}: not a file")
     rec = {"path": rel, "bytes": os.path.getsize(full),
@@ -102,7 +137,17 @@ def walk_component(root: str, rel_dir: str) -> list:
     base = os.path.join(root, rel_dir)
     if not os.path.isdir(base):
         return entries
-    for dirpath, _dirs, files in os.walk(base):
+    for dirpath, dirs, files in os.walk(base):
+        # os.walk does NOT descend into a symlinked directory, so a symlink
+        # here would hide every file beneath it from the manifest AND from
+        # verify()'s unrecorded-file scan — measured: a bundle carrying a
+        # hidden payload.whl behind one reported "1 ok, 0 problems".
+        for name in sorted(dirs):
+            if os.path.islink(os.path.join(dirpath, name)):
+                raise BundleError(
+                    f"{os.path.relpath(os.path.join(dirpath, name), root)}: "
+                    f"symlinked directory. Everything under it would be "
+                    f"invisible to this manifest and to verification.")
         for name in sorted(files):
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root)
@@ -129,7 +174,14 @@ def verify(root: str) -> tuple[list, list]:
                 problems.append(f"{comp.get('kind')}: an entry with no path")
                 continue
             recorded.add(rel)
-            full = os.path.join(root, rel)
+            try:
+                full = safe_join(root, rel)
+            except BundleError as e:
+                problems.append(str(e))
+                continue
+            if os.path.islink(full):
+                problems.append(f"{rel}: is a symlink, not a file")
+                continue
             if not os.path.isfile(full):
                 problems.append(f"{rel}: recorded but MISSING")
                 continue
@@ -144,10 +196,20 @@ def verify(root: str) -> tuple[list, list]:
                                 f"{str(rec.get('sha256'))[:16]}…")
                 continue
             ok.append(rel)
-    for dirpath, _dirs, files in os.walk(root):
+    for dirpath, dirs, files in os.walk(root):
+        for name in sorted(dirs):
+            if os.path.islink(os.path.join(dirpath, name)):
+                rel = os.path.relpath(os.path.join(dirpath, name), root)
+                problems.append(
+                    f"{rel}: symlinked directory — everything under it is "
+                    f"invisible to this scan")
         for name in files:
-            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root)
             if rel in (MANIFEST, SIGNATURE) or rel in recorded:
+                continue
+            if os.path.islink(full):
+                problems.append(f"{rel}: unrecorded symlink")
                 continue
             problems.append(f"{rel}: present but NOT in the manifest")
     return ok, problems
