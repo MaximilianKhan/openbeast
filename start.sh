@@ -671,8 +671,25 @@ fi
 # alongside the core compose file so optional services come up with the stack.
 COMPOSE_FILES=(-f "$SCRIPT_DIR/docker-compose.yml")
 while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(ob_ext_compose_args)
-docker compose "${COMPOSE_FILES[@]}" up -d \
-  || echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose up -d" >&2
+# OFFLINE: compose's default pull policy reaches a registry whenever the local
+# store lacks the pinned digest, which on a closed network is a stall followed
+# by a confusing failure. `--pull never` turns that into an immediate, honest
+# "the image is not here".
+COMPOSE_UP=(up -d)
+if ob_offline; then
+  COMPOSE_UP+=(--pull never)
+fi
+if ! docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_UP[@]}"; then
+  echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose up -d" >&2
+  if ob_offline; then
+    echo "         OFFLINE=true, so nothing was pulled. Images are the fourth of" >&2
+    echo "         the four fetches a closed network cannot do. Move them with" >&2
+    echo "         docker save/load from a connected box — and note the trap:" >&2
+    echo "         docker-compose.yml pins by DIGEST, and a digest-pinned" >&2
+    echo "         reference cannot be satisfied by a locally retagged image," >&2
+    echo "         so the compose reference has to change too." >&2
+  fi
+fi
 
 # Launch enabled process-kind extensions (each run.sh execs its server in the
 # foreground; we background + pidfile it, and cleanup() reaps them on exit).

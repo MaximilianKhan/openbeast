@@ -478,6 +478,32 @@ except Exception: print("")' 2>/dev/null)"
   fi
 fi
 
+# ── Closed network ──────────────────────────────────────────────────────────
+# Reported unconditionally, because the mode changes what several other rows
+# MEAN. A cert-expiry warning on a box that can never reach the coordination
+# server is not actionable the way it is on a connected one, and a reader who
+# does not know OFFLINE is set will chase it.
+if ob_offline; then
+  pass "OFFLINE=true — install/update steps that need the internet are refused up front"
+  # The one thing worth checking in this mode: can this box actually REBUILD
+  # what it is running? That is the difference between "serves offline" (which
+  # every installed rig does) and "can be maintained offline".
+  _off_missing=()
+  [[ -d "$REPO_DIR/llama.cpp/.git" || -d "$REPO_DIR/llama.cpp" ]] || _off_missing+=("llama.cpp source")
+  [[ -f "$REPO_DIR/agents/requirements.lock" ]] || _off_missing+=("agents/requirements.lock")
+  _off_wh=""
+  for _d in "$REPO_DIR/wheels" "$REPO_DIR/wheelhouse" "${OPENBEAST_WHEELHOUSE:-}"; do
+    [[ -n "$_d" && -d "$_d" ]] && { _off_wh="$_d"; break; }
+  done
+  [[ -n "$_off_wh" ]] || _off_missing+=("a wheelhouse (./wheels)")
+  if [[ ${#_off_missing[@]} -eq 0 ]]; then
+    pass "offline self-sufficiency: source, lock and wheelhouse ($_off_wh) are all present"
+  else
+    warn "offline, but a REBUILD would need: ${_off_missing[*]}" \
+         "serving is unaffected; stage them on a connected box (./scripts/pydeps.sh wheelhouse wheels)"
+  fi
+fi
+
 # ── beast-lang: what this rig can tell a model about a language ────────────
 # Always shown, never a failure. The point of the row is that the answer is a
 # property of the BOX, not of the repo: which packs a model gets here depends

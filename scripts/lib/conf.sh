@@ -27,6 +27,13 @@
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
+#   OFFLINE          (env OPENBEAST_OFFLINE)     default false
+#       "This box has no route to the internet and never will." An installed
+#       rig SERVES fine offline already; what OFFLINE changes is that steps
+#       which cannot possibly succeed are not attempted, so a closed network
+#       reports a clear refusal instead of a multi-minute stall followed by a
+#       misdiagnosis. Affects bootstrap.sh, scripts/update.sh, the compose
+#       pull policy and doctor's reporting. Use `ob_offline` as the predicate.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto
 #       llama.cpp build backend: auto | cuda | hip | sycl | cpu. "auto" maps
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
@@ -65,6 +72,26 @@ LLAMA_API_KEY="${OPENBEAST_API_KEY:-$(_ob_conf_value LLAMA_API_KEY || true)}"
 WEBUI_ADMIN_EMAIL="${WEBUI_ADMIN_EMAIL:-$(_ob_conf_value WEBUI_ADMIN_EMAIL || true)}"
 WEBUI_ADMIN_PASSWORD="${WEBUI_ADMIN_PASSWORD:-$(_ob_conf_value WEBUI_ADMIN_PASSWORD || true)}"
 GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)}"
+# OFFLINE: this box has no route to the internet and never will.
+#
+# The closed-network review's finding was not that the stack cannot run
+# offline — an installed rig SERVES fine with no internet at all. It was that
+# nothing could be TOLD there is no internet, so every install/update path
+# stalled on a connect timeout and then misdiagnosed the stall as something
+# local. This key is how you tell it. It never changes what the stack serves;
+# it changes whether a step that CANNOT succeed is attempted.
+#
+# Presence, not truthiness, per the LANG_PACKS precedent: only the explicit
+# strings below mean "on", so a typo does not silently enable an
+# install-blocking mode.
+OFFLINE="${OPENBEAST_OFFLINE:-$(_ob_conf_value OFFLINE || echo false)}"
+case "$(printf '%s' "$OFFLINE" | tr 'A-Z' 'a-z')" in
+  true|yes|1|on) OFFLINE=true ;;
+  *)             OFFLINE=false ;;
+esac
+# ob_offline is the predicate every script should use rather than re-deriving
+# the string comparison — one answer to "are we offline", in one place.
+ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }
 # Serve script launched when start.sh gets no positional arg — also what
 # healthcheck.sh --restart falls back to when no supervisor (and no
 # .run/serve-script record) exists. Conf key SERVE_SCRIPT.

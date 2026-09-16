@@ -159,16 +159,74 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       every pin is present, and on failure prints the pre-staged-wheelhouse
       recipe. Upgrades were not lost: `update.sh --python` already owns them,
       which is the right place — bootstrap's job is to make the box work.
-      **Still open:** `-DLLAMA_USE_PREBUILT_UI=OFF` in `ob_cmake_flags`
-      (660 s of cmake stall fetching a Web UI we never use — ⚠ MAX'S CALL, it
-      disables an upstream feature and he wants latest llama.cpp), the compose
-      stanza, and the conf key itself that ties them together.
-- [ ] **Offline bundle — build connected, install from USB** (airgap 10,
-      feasibility 7). Four fatal fetches with no local alternative: llama.cpp
-      source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.
-      **Note the trap the ranker caught: a digest-pinned image reference cannot
-      be satisfied by a locally retagged image**, so `docker save`/`load` alone
-      does not work — the compose reference has to change too. Supersedes the
+      **DONE 2026-09-15 — the conf key now exists and ties it together.**
+      `OFFLINE` (env `OPENBEAST_OFFLINE`), resolved in `scripts/lib/conf.sh`
+      with the `ob_offline` predicate so there is one answer to "are we
+      offline" in one place. Presence-not-truthiness, per the LANG_PACKS
+      precedent: only `true|yes|1|on` count, so a typo cannot silently enable
+      a mode that refuses installs.
+      * `bootstrap.sh` — skips the reachability probe (proved by a stub curl
+        that records every call: **zero** probe invocations offline, and the
+        same test asserts the probe DOES run when the key is off, or it would
+        prove nothing); refuses each of the four fetches BY NAME with the
+        recipe to stage it; installs python from a wheelhouse
+        (`./wheels`, `./wheelhouse`, `$OPENBEAST_WHEELHOUSE`) via the
+        hash-verified `pydeps.sh install --from`.
+      * `update.sh` — rebuilds llama.cpp as checked out instead of pulling
+        (which is the useful work offline); `--check` reports the local rev
+        rather than burning a connect timeout to print "? commits behind";
+        skips the pip and registry-digest stages, both of which are index
+        queries, and says what IS reinstallable offline.
+      * `start.sh` — `docker compose up --pull never`, plus the digest trap
+        spelled out in the failure message.
+      * `doctor.sh` — reports the mode (it changes what other rows MEAN: a
+        cert-expiry warning is not actionable on a box that can never reach
+        the coordination server) and checks offline SELF-SUFFICIENCY, which is
+        the difference between "serves offline" (every installed rig does) and
+        "can be maintained offline".
+      * **`-DLLAMA_USE_PREBUILT_UI=OFF` — resolved without needing a
+        decision.** It is applied *only* when `OFFLINE=true`, where that fetch
+        cannot succeed by construction (~11 min stall, then failure). The
+        default build is untouched and still follows upstream, which is what
+        Max asked for. A test asserts the flag is gated and not unconditional.
+      Also corrected the framing: a box **told** it is offline is not a box
+      whose network is "unreachable", and reporting the second to an operator
+      who configured the first reads as a fault report about their own
+      decision. The two summaries are now distinct, and the unreachable one
+      points at this key.
+- [x] **Offline bundle — build connected, install from USB** — DONE
+      2026-09-15. `scripts/bundle.sh build|show|verify|install`. All four
+      fetches covered: llama.cpp source (`git archive`, so the commit is
+      recorded and `build/` is excluded), the hash-pinned wheel closure, the
+      container images, and optionally the weight.
+      **The digest trap is SOLVED, not worked around.** `docker save`/`load`
+      does not carry a registry manifest digest — a loaded image has no
+      RepoDigest at all — so a digest-pinned compose reference can never be
+      satisfied from a tarball. But an image's **ID is itself a content
+      digest**, it DOES survive save/load, and `docker compose` accepts
+      `image: sha256:<id>` and resolves it locally with no pull. All three
+      measured on this box, not assumed: built a `FROM scratch` probe image,
+      recorded its ID, `docker rmi`, `docker load`, and the ID resolved; and a
+      compose file referencing an ID validated and created a container with
+      `--pull never`. So install loads, verifies the loaded image against the
+      recorded ID, and rewrites the reference to that ID — keeping content
+      addressing, involving no registry, and leaving
+      `docker-compose.yml.pre-bundle` so the rewrite is reversible when the
+      box gets a network back.
+      **Nothing is trusted because it arrived.** MANIFEST.json records every
+      file's sha256; `verify` re-hashes before anything is used and also
+      reports files that are present but UNRECORDED (what a tampered or
+      half-rebuilt bundle looks like); `install` refuses on any mismatch.
+      Tested against four states: clean, one flipped byte, an extra file, a
+      deleted file.
+      **Two scope decisions, made rather than parked:** weights are opt-in
+      (`--with-weights`), because a 20 GB copy is a different operation from a
+      60 MB one and most transfers rebuild a box that already has its weight —
+      and the manifest RECORDS that they were skipped rather than letting a
+      reader discover it at install time; and install cross-checks the
+      bundle's lock against this checkout's, refusing a bundle built from a
+      different commit, because every individual hash would still verify and
+      the wrong closure would land silently. Supersedes the
       existing "Air-gapped bundle (M/L)" line below, which is the getting-bits-
       IN half and is unusable until the OFFLINE key exists.
 - [ ] **`openbeast-bundle` — a signed offline install/update artifact** (airgap

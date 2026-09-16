@@ -1,0 +1,206 @@
+"""The offline bundle's manifest: what it must refuse to say.
+
+A bundle is carried in on a USB stick and then INSTALLED — it writes a source
+tree, installs python packages, loads container images and places a weight. So
+the manifest is not bookkeeping, it is the only thing standing between "a
+directory arrived" and "a directory is trusted".
+
+The failures worth pinning are the quiet ones:
+
+  * an EMPTY component must not be recordable. It would verify perfectly and
+    install nothing, and the operator would have no way to tell the difference
+    from a bundle that worked.
+  * a file present but UNRECORDED must be a problem. `install` reads from this
+    directory; an unrecorded file is what a tampered or half-rebuilt bundle
+    looks like.
+  * a size that matches with a hash that does not, and vice versa, must both
+    be caught — a truncated transfer changes size, a substituted file often
+    does not.
+  * an unknown bundle_version must REFUSE rather than guess at a layout.
+"""
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "scripts", "lib"))
+
+import bundle_manifest as B     # noqa: E402
+
+
+def _bundle(tmp_path, files: dict) -> str:
+    """A bundle directory with the given {relpath: bytes}, manifest written."""
+    root = tmp_path / "bundle"
+    for rel, body in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "wb") as fh:
+            fh.write(body)
+    kinds = sorted({rel.split("/")[0] for rel in files})
+    args = ["write", str(root), "--built-at", "2026-01-01T00:00:00Z",
+            "--repo-commit", "deadbeef", "--eval-era", "abc123"]
+    for k in kinds:
+        args += ["--component", f"{k}:{k}"]
+    assert B.main(args) == 0
+    return str(root)
+
+
+# --------------------------------------------------------------------------
+# writing
+# --------------------------------------------------------------------------
+
+def test_a_written_manifest_records_every_file_with_its_hash(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA", "wheels/b.whl": b"BBB"})
+    doc = B.load(root)
+    assert doc["bundle_version"] == B.VERSION
+    assert doc["repo_commit"] == "deadbeef"
+    assert doc["eval_era"] == "abc123"
+    files = doc["components"][0]["files"]
+    assert [f["path"] for f in files] == ["wheels/a.whl", "wheels/b.whl"]
+    assert files[0]["bytes"] == 3
+    assert files[0]["sha256"] == B.hashlib.sha256(b"AAA").hexdigest()
+
+
+def test_an_empty_component_is_refused(tmp_path):
+    """It would verify clean and install NOTHING, and nothing about the
+    output would tell the operator which of those happened."""
+    root = tmp_path / "bundle"
+    (root / "wheels").mkdir(parents=True)
+    rc = B.main(["write", str(root), "--component", "wheels:wheels"])
+    assert rc == 1
+
+
+def test_a_component_spec_must_name_a_directory(tmp_path):
+    root = tmp_path / "bundle"
+    root.mkdir()
+    assert B.main(["write", str(root), "--component", "justakind"]) == 1
+
+
+def test_the_manifest_never_records_itself(tmp_path):
+    """MANIFEST.json cannot contain its own hash, and an entry claiming to
+    would fail verification on every bundle, forever."""
+    root = _bundle(tmp_path, {"meta/x": b"x"})
+    doc = B.load(root)
+    paths = [f["path"] for c in doc["components"] for f in c["files"]]
+    assert B.MANIFEST not in paths
+
+
+# --------------------------------------------------------------------------
+# verifying
+# --------------------------------------------------------------------------
+
+def test_verify_passes_on_an_untouched_bundle(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA", "source/s.tar.gz": b"SRC"})
+    ok, problems = B.verify(root)
+    assert problems == []
+    assert sorted(ok) == ["source/s.tar.gz", "wheels/a.whl"]
+
+
+def test_verify_catches_a_substituted_file_of_the_same_length(tmp_path):
+    """The case a size check alone would miss, and the one that matters: a
+    substitution does not have to change the length."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    with open(os.path.join(root, "wheels/a.whl"), "wb") as fh:
+        fh.write(b"BBB")
+    ok, problems = B.verify(root)
+    assert ok == []
+    assert len(problems) == 1 and "sha256" in problems[0]
+
+
+def test_verify_catches_a_truncated_file(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAAAAAAA"})
+    with open(os.path.join(root, "wheels/a.whl"), "wb") as fh:
+        fh.write(b"AAA")
+    _ok, problems = B.verify(root)
+    assert len(problems) == 1 and "bytes" in problems[0]
+
+
+def test_verify_catches_a_missing_file(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA", "wheels/b.whl": b"BBB"})
+    os.unlink(os.path.join(root, "wheels/b.whl"))
+    ok, problems = B.verify(root)
+    assert ok == ["wheels/a.whl"]
+    assert any("MISSING" in p for p in problems)
+
+
+def test_verify_catches_a_file_the_manifest_does_not_record(tmp_path):
+    """`install` reads from this directory. An unrecorded file is what a
+    tampered or half-rebuilt bundle looks like, and a manifest that only
+    checks what it already knows about would never see it."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    with open(os.path.join(root, "wheels/evil.whl"), "wb") as fh:
+        fh.write(b"X")
+    _ok, problems = B.verify(root)
+    assert any("NOT in the manifest" in p for p in problems)
+
+
+def test_verify_refuses_a_bundle_version_it_does_not_know(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    path = B.manifest_path(root)
+    doc = json.load(open(path))
+    doc["bundle_version"] = 99
+    json.dump(doc, open(path, "w"))
+    with pytest.raises(B.BundleError) as e:
+        B.verify(root)
+    assert "99" in str(e.value)
+
+
+def test_a_directory_with_no_manifest_is_not_a_bundle(tmp_path):
+    d = tmp_path / "notabundle"
+    d.mkdir()
+    with pytest.raises(B.BundleError) as e:
+        B.load(str(d))
+    assert "not a bundle" in str(e.value)
+
+
+def test_an_unparseable_manifest_says_so_rather_than_crashing(tmp_path):
+    d = tmp_path / "b"
+    d.mkdir()
+    with open(B.manifest_path(str(d)), "w") as fh:
+        fh.write("{ not json")
+    with pytest.raises(B.BundleError) as e:
+        B.load(str(d))
+    assert "parseable" in str(e.value)
+
+
+# --------------------------------------------------------------------------
+# the summary a human reads before trusting it
+# --------------------------------------------------------------------------
+
+def test_the_summary_names_what_is_NOT_included(tmp_path):
+    """Weights are opt-in, so the common bundle is missing the largest thing
+    the target needs. That has to be visible at `show` time, not discovered
+    at install time."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    path = B.manifest_path(root)
+    doc = json.load(open(path))
+    doc["skipped"] = ["weights (not requested)"]
+    json.dump(doc, open(path, "w"))
+    out = B.summarise(B.load(root))
+    assert "NOT INCLUDED" in out and "weights" in out
+
+
+def test_the_summary_shows_image_ids_because_that_is_what_gets_installed(tmp_path):
+    """compose is rewritten to reference images by content ID, so the ID is
+    the thing a reviewer needs to see — not just a filename."""
+    root = _bundle(tmp_path, {"images/i.tar.gz": b"IMG"})
+    path = B.manifest_path(root)
+    doc = json.load(open(path))
+    for comp in doc["components"]:
+        if comp["kind"] == "images":
+            comp["images"] = [{"ref": "searxng/searxng:latest@sha256:abc",
+                               "id": "sha256:" + "d" * 64,
+                               "file": "images/i.tar.gz"}]
+    json.dump(doc, open(path, "w"))
+    out = B.summarise(B.load(root))
+    assert "searxng" in out
+    assert "sha256:dddd" in out
+
+
+def test_the_summary_reports_a_total_size(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"A" * 4096})
+    out = B.summarise(B.load(root))
+    assert "TOTAL" in out
+    assert "KB" in out or "MB" in out
