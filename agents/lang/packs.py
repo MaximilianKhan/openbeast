@@ -111,14 +111,14 @@ def allow_list() -> tuple[str, list[str]]:
         return raw, [lang for lang in sorted(_eligible_langs())
                      if _toolchain_ok(lang)]
     wanted = [x.strip().lower() for x in raw.split(",") if x.strip()]
-    # _toolchain_ok HERE TOO, not only in the `auto` branch. An explicit list
-    # skipped it, so `LANG_PACKS=cpp,zig,go,rust` on a box with none of them
-    # installed reported all four as active — and doctor.sh printed a green
-    # "beast-lang packs active for: ..." row for languages this rig cannot say
-    # anything about. pack_for() would then return None for each, so the row
-    # and the reality disagreed.
-    return raw, [w for w in wanted
-                 if w in _eligible_langs() and _toolchain_ok(w)]
+    # NO toolchain filter here. An explicit list is the operator's REQUEST,
+    # and availability is a different question — two pre-existing tests pin
+    # that contract, and CI was right to fail when this filtered. The real
+    # defect the review found was the REPORTING: doctor printed a green
+    # "packs active for: cpp, zig, go, rust" on a box with none of them
+    # installed. That belongs where the claim is made, not in the config
+    # reader, so the CLI below distinguishes requested from actually served.
+    return raw, [w for w in wanted if w in _eligible_langs()]
 
 
 def _claim_langs() -> set[str]:
@@ -423,8 +423,15 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     raw, allowed = allow_list()
-    print(f"LANG_PACKS={raw!r} -> active: {', '.join(allowed) or '(none)'}")
-    langs = [a.lang] if a.lang else allowed
+    # REQUESTED vs SERVED. doctor.sh greps this line, and reporting the
+    # request as "active" printed a green row for languages the rig has no
+    # toolchain for — a pack_for() of None each. Say both.
+    served = [lang for lang in allowed if _toolchain_ok(lang)]
+    unavailable = [lang for lang in allowed if lang not in served]
+    print(f"LANG_PACKS={raw!r} -> active: {', '.join(served) or '(none)'}"
+          + (f"  [requested but no toolchain here: {', '.join(unavailable)}]"
+             if unavailable else ""))
+    langs = [a.lang] if a.lang else served
     if not langs:
         print("\nnothing active. Set LANG_PACKS in openbeast.conf "
               "(auto | off | comma-separated languages).")
