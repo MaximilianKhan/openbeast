@@ -147,8 +147,8 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
 
 ### The four top-tier features
 
-- [ ] **`OFFLINE=true` conf key + egress kill switch** (airgap 9, feasibility
-      8). Nothing can be told "there is no internet". **Partly done 2026-09-15:**
+- [x] **`OFFLINE=true` conf key + egress kill switch** (airgap 9) — DONE
+      2026-09-15. Nothing could be told "there is no internet". **History:**
       `update.sh`'s half is fixed — it keeps git's stderr, bounds the wait with
       `http.lowSpeedLimit/Time` (a multi-minute hang becomes ~15 s), and tells
       *"cannot reach the remote"* apart from *"your worktree is dirty"* instead
