@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -107,13 +108,38 @@ def allow_list() -> tuple[str, list[str]]:
     if raw.lower() in ("off", "false", "none", "0", ""):
         return raw, []
     if raw.lower() == "auto":
-        return raw, [lang for lang in sorted(_claim_langs()) if _toolchain_ok(lang)]
+        return raw, [lang for lang in sorted(_eligible_langs())
+                     if _toolchain_ok(lang)]
     wanted = [x.strip().lower() for x in raw.split(",") if x.strip()]
-    return raw, [w for w in wanted if w in _claim_langs()]
+    return raw, [w for w in wanted if w in _eligible_langs()]
 
 
 def _claim_langs() -> set[str]:
     return {c.lang for c in V.load_claims(CLAIMS_DIR)}
+
+
+def _eligible_langs() -> set[str]:
+    """Languages this rig can say something TRUE about.
+
+    Claims are no longer the gate, and that change is the point of L1: a
+    language with a hand-authored claims file was the only thing that could
+    ever be served, so `go` — whose toolchain is installed and can be asked
+    directly what its std contains — was unreachable no matter what the
+    operator put in LANG_PACKS. That defeats the requirement this layer exists
+    for ("any model dropped in can know how to use a language, irrespective of
+    what we happened to test"): a fact does not need a fixture to be true if
+    the compiler is the one saying it.
+
+    Breadth here is close to free at delivery time: a pack is injected only
+    for the language a task is actually in (see `languages_in`), so activating
+    every toolchain on the box costs nothing on a task that never touches it.
+    """
+    langs = set(_claim_langs())
+    try:
+        from lang import introspect as I         # noqa: PLC0415
+    except ImportError:                           # pragma: no cover
+        return langs
+    return langs | set(I.PROBES)
 
 
 def _toolchain_ok(lang: str) -> bool:
@@ -168,11 +194,18 @@ def _handwritten(lang: str, version: str | None) -> tuple[str, str] | None:
 
 
 def _short_version(version: str) -> str:
-    """'zig 0.16.0' / 'rustc 1.98.1 (…)' / '0.16.0' -> a comparable prefix."""
-    for tok in version.replace("(", " ").split():
-        if tok and tok[0].isdigit():
-            return tok
-    return version.strip()
+    """'zig 0.16.0' / 'rustc 1.98.1 (…)' / '0.16.0' -> a comparable prefix.
+
+    Matches the NUMBER anywhere in the token, not only a token that starts
+    with a digit: `go version go1.26.2 linux/amd64` failed the old rule
+    entirely, so go's pack header read "go go version go1.26.2 linux/amd64"
+    and every version comparison for go was a whole-banner string compare.
+    It only surfaced when L1 made go eligible at all. Same rule as
+    introspect._short, deliberately — two helpers answering "which version is
+    this" differently is a drift guard waiting to disagree with itself.
+    """
+    m = re.search(r"\d+(?:\.\d+){1,3}", version or "")
+    return m.group(0) if m else (version or "").strip()
 
 
 def pack_for(lang: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) -> Pack | None:
@@ -203,6 +236,46 @@ def active_packs(budget_tokens: int = DEFAULT_BUDGET_TOKENS) -> list[Pack]:
 # 3. the renderer
 # --------------------------------------------------------------------------
 
+def _generated_lines(lang: str, version: str) -> tuple[list[str], str]:
+    """L1 facts for `lang`, or ([], why-not).
+
+    THE SAME DRIFT GUARD AS EVERYTHING ELSE HERE. A generated artifact
+    describes one toolchain; served against a different one it is a confident
+    falsehood, which is the exact failure mode this module exists to prevent.
+    `introspect.check()` distinguishes the two ways that goes wrong: STALE
+    (the compiler moved — regenerate) and DRIFTED (same compiler, different
+    facts — somebody edited a generated file). Neither is served.
+    """
+    # Absolute, like the D/V imports at the top of this file: packs.py is also
+    # a CLI (`python3 agents/lang/packs.py`), and as __main__ it has no parent
+    # package, so a relative import here failed at exactly the moment a human
+    # was looking at the output — reporting "introspect unavailable" on a rig
+    # where it was sitting right next to it.
+    try:
+        from lang import introspect as I         # noqa: PLC0415
+    except ImportError as e:                      # pragma: no cover
+        return [], f"generated: introspect unavailable ({e})"
+    rec = I.facts(lang)
+    if rec is None:
+        return [], f"generated: no probe could observe {lang} on this machine"
+    # The drift guard is STRUCTURAL here, not a check: I.facts() asks the
+    # installed toolchain every call (~0.03s per language, measured), so the
+    # facts cannot describe a compiler that is not the one present. The
+    # stamped-vs-installed comparison every other source in this module needs
+    # has nothing to compare — which is the point. `lang-introspect.sh check`
+    # exists for the separate question of whether a COMMITTED artifact still
+    # matches, for a rig that chooses to keep one for review.
+    stamped = rec.get("toolchain") or ""
+    if _short_version(stamped) != _short_version(version):
+        # Belt: two different ways of asking the same machine for a version
+        # disagreeing means one of them is wrong, and serving either would be
+        # a guess.
+        return [], (f"generated: introspect saw {stamped!r} but the pack path "
+                    f"saw {version!r} — refusing to guess which is right")
+    return I.render(lang), ""
+
+
+
 def render(lang: str, version: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) -> Pack | None:
     """Render a pack from the VERIFIED claims for `lang`.
 
@@ -212,9 +285,12 @@ def render(lang: str, version: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) 
     anything else in it would be a confident falsehood.
     """
     claims = [c for c in V.load_claims(CLAIMS_DIR) if c.lang == lang]
-    if not claims:
+    gen_lines, gen_note = _generated_lines(lang, version)
+    if not claims and not gen_lines:
         return None
     lines, skipped, n = [], [], 0
+    if gen_note:
+        skipped.append(gen_note)
     for c in claims:
         r = V.verify(c)
         if r["verdict"] != V.VERIFIED:
@@ -228,15 +304,28 @@ def render(lang: str, version: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) 
             variant = f" [{c.new_variant}]"
         lines.append(f"- {c.summary}{variant}")
         n += 1
+    # GENERATED lines (L1) go in ALONGSIDE the VERIFIED ones, and they are
+    # what makes this work for a language nobody wrote claims for: they cost
+    # no fixture and no review because the toolchain is the author. They are
+    # marked, because the two tiers earn belief differently — VERIFIED means a
+    # fixture proved a migration, GENERATED means the compiler was asked what
+    # it supports. Both are observations of THIS machine; neither is a prior.
+    verified_n = len(lines)
+    lines.extend(f"- {ln}" for ln in gen_lines)
     if not lines:
         return None
 
+    tiers = []
+    if verified_n:
+        tiers.append(f"{verified_n} CONFIRMED by compiling (the old form was "
+                     f"checked to fail, the new form to compile)")
+    if gen_lines:
+        tiers.append(f"{len(gen_lines)} GENERATED by asking the toolchain "
+                     f"what it supports")
     head = (f"=== Language notes: {lang} {_short_version(version)} "
             f"(beast-lang, generated) ===\n"
-            f"Toolchain on this machine: {version}. Every line below was "
-            f"CONFIRMED by compiling against it — the old form was checked to "
-            f"fail and the new form to compile. Nothing here is from a web "
-            f"search or from model priors.\n\n")
+            f"Toolchain on this machine: {version}. " + "; ".join(tiers)
+            + ". Nothing here is from a web search or from model priors.\n\n")
     body = "\n".join(lines) + "\n"
     budget_chars = budget_tokens * CHARS_PER_TOKEN
     if len(head) + len(body) > budget_chars:

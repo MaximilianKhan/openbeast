@@ -462,6 +462,38 @@ except Exception: print("")' 2>/dev/null)"
   fi
 fi
 
+# ── beast-lang: what this rig can tell a model about a language ────────────
+# Always shown, never a failure. The point of the row is that the answer is a
+# property of the BOX, not of the repo: which packs a model gets here depends
+# on which toolchains are installed, so "why did the model not know that"
+# should be answerable without reading any Python.
+if [[ -f "$REPO_DIR/agents/lang/packs.py" ]]; then
+  _lang_out="$(cd "$REPO_DIR" && timeout 60 python3 agents/lang/packs.py 2>&1 || true)"
+  _lang_active="$(sed -n 's/.*-> active: //p' <<< "$_lang_out" | head -1)"
+  if [[ -n "$_lang_active" ]]; then
+    pass "beast-lang packs active for: $_lang_active"
+  elif grep -q "active:" <<< "$_lang_out"; then
+    # Deliberately off, or no toolchain the rig can ask. Both are choices.
+    warn "beast-lang has no active language packs" \
+         "LANG_PACKS=auto in openbeast.conf, and install the toolchains you want asked"
+  else
+    warn "beast-lang did not report (see: python3 agents/lang/packs.py)" \
+         "$(head -1 <<< "$_lang_out")"
+  fi
+  # A hand-edited GENERATED file is the one state worth failing on: it is no
+  # longer generated, and it would be served as though a compiler had said it.
+  if [[ -d "$REPO_DIR/agents/lang/generated" ]]; then
+    _lang_chk="$(cd "$REPO_DIR" && timeout 60 ./scripts/lang-introspect.sh check 2>&1 || true)"
+    if grep -q DRIFTED <<< "$_lang_chk"; then
+      fail "a beast-lang generated fact file was EDITED by hand" \
+           "it is no longer generated: ./scripts/lang-introspect.sh write <lang>"
+    elif grep -q STALE <<< "$_lang_chk"; then
+      warn "a beast-lang generated fact file predates the installed toolchain" \
+           "./scripts/lang-introspect.sh write   (the serving path probes live, so this is cosmetic)"
+    fi
+  fi
+fi
+
 # ── Verdict ─────────────────────────────────────────────────────────────────
 [[ $QUIET -eq 1 ]] || echo ""
 echo "doctor: ${PASS} ok, ${WARN} warning(s), ${FAIL} failure(s)"

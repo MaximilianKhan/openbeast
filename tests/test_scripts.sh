@@ -1250,6 +1250,51 @@ fi
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
+echo "beast-lang L1 (toolchain introspection):"
+_LI="$REPO_DIR/scripts/lang-introspect.sh"
+if [[ -x "$_LI" ]]; then
+  pass "lang-introspect.sh exists and is executable"
+else
+  fail "scripts/lang-introspect.sh missing or not executable"
+fi
+_LI_OUT="$(cd "$REPO_DIR" && timeout 120 ./scripts/lang-introspect.sh list 2>&1 || true)"
+if grep -q 'lang' <<< "$_LI_OUT" && grep -qE 'swift' <<< "$_LI_OUT"; then
+  pass "list names every probe, including the one with no toolchain here"
+else
+  fail "lang-introspect.sh list did not report: $(head -2 <<< "$_LI_OUT")"
+fi
+# A language this box cannot build must be reported as such, never rendered
+# as an authoritative blank — the whole point of the UNVERIFIABLE tier.
+if grep -qE 'swift.*(no toolchain|not installed)' <<< "$_LI_OUT"; then
+  pass "a language with no toolchain is named as such, not silently omitted"
+else
+  fail "swift is not reported as toolchain-less: $_LI_OUT"
+fi
+_LI_BAD="$(cd "$REPO_DIR" && ./scripts/lang-introspect.sh probe cobol 2>&1 || true)"
+if grep -q 'no probe for' <<< "$_LI_BAD"; then
+  pass "an unknown language is refused, not invented"
+else
+  fail "probe cobol did not refuse: $_LI_BAD"
+fi
+# The generated artifacts are per-rig state (a full probe costs ~0.2s), so
+# they must NOT be committed — a machine's toolchain inventory is not source.
+# Ask about a path INSIDE the directory, not the directory. The pattern ends
+# in a slash so it matches directories only, and `git check-ignore` cannot
+# tell that a path which does not EXIST is a directory — so the directory form
+# passed on this box (where probes had created it) and failed on CI (where it
+# never exists). A file path inside matches the pattern either way.
+if git -C "$REPO_DIR" check-ignore -q agents/lang/generated/zig.json 2>/dev/null; then
+  pass "agents/lang/generated/ is gitignored (per-rig state, not source)"
+else
+  fail "generated L1 artifacts are not gitignored — one box's toolchain would be committed"
+fi
+if git -C "$REPO_DIR" ls-files --error-unmatch agents/lang/generated >/dev/null 2>&1; then
+  fail "a generated L1 artifact is tracked in git"
+else
+  pass "no generated L1 artifact is tracked"
+fi
+
+echo ""
 echo "Orphaned-stack pid discipline:"
 # [17] In the orphaned-stack state (supervisor SIGKILLed, EXIT trap never ran)
 # a fresh start.sh spawned a replacement that cannot bind the port, wrote its

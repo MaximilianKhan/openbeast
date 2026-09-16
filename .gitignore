@@ -30,3 +30,8 @@ evals/cache/
 
 # llama.cpp experiment worktrees
 .wt-*/
+
+# beast-lang L1 artifacts: generated from the INSTALLED toolchain in ~0.2s,
+# so they are per-rig state, not source. The serving path probes live; these
+# files exist only for review (./scripts/lang-introspect.sh write).
+agents/lang/generated/

@@ -105,6 +105,16 @@ def test_version_shortening_handles_every_driver_format():
     assert P._short_version("rustc 1.98.1 (48a229cea 2026-09-01)") == "1.98.1"
     assert P._short_version("g++ (GCC) 16.2.1 20260810") == "16.2.1"
     assert P._short_version("Python 3.14.7") == "3.14.7"
+    # go's banner puts the number INSIDE a token ("go1.26.2"), which the
+    # starts-with-a-digit rule missed entirely — so go's header printed the
+    # whole banner and its version comparisons were string compares.
+    assert P._short_version("go version go1.26.2 linux/amd64") == "1.26.2"
+    # and the two helpers that answer "which version is this" must agree, or
+    # the drift guard can disagree with itself
+    from lang import introspect as _I
+    for v in ("go version go1.26.2 linux/amd64", "g++ (GCC) 16.2.1 20260810",
+              "rustc 1.98.1 (48a229cea 2026-09-01)", "0.16.0", "Python 3.14.7"):
+        assert P._short_version(v) == _I._short(v), v
 
 
 # --- the renderer ----------------------------------------------------------
@@ -120,8 +130,18 @@ def test_only_verified_claims_reach_a_pack(monkeypatch):
             r = dict(r, verdict=V.NOT_A_BREAK)
         return r
     monkeypatch.setattr(V, "verify", poison)
-    assert P.render("python", "Python 3.14.7") is None, \
-        "rendered a pack with nothing verified"
+    # L1 changed what "nothing verified" produces, not what it may CLAIM. A
+    # pack may still exist, built purely from GENERATED facts — the compiler
+    # was asked and answered — but not one line of it may be a claim the
+    # verifier refused, and its header may not say anything was confirmed.
+    pack = P.render("python", "Python 3.14.7")
+    if pack is not None:
+        assert pack.claims == 0, pack.text
+        assert "CONFIRMED by compiling" not in pack.text, pack.text
+        for c in V.load_claims(P.CLAIMS_DIR):
+            if c.lang == "python" and c.summary:
+                assert c.summary not in pack.text, \
+                    f"an unverified claim reached the pack: {c.summary}"
 
 
 def test_a_verified_claim_with_no_summary_is_reported_not_silently_dropped(monkeypatch):
@@ -132,7 +152,12 @@ def test_a_verified_claim_with_no_summary_is_reported_not_silently_dropped(monke
     for c in claims:
         c.summary = ""
     monkeypatch.setattr(V, "load_claims", lambda _d: claims)
-    assert P.render("python", "Python 3.14.7") is None
+    # Same as above: a generated-only pack is legitimate, a pack that COUNTS
+    # an undeliverable claim is not, and the skip must name it.
+    pack = P.render("python", "Python 3.14.7")
+    if pack is not None:
+        assert pack.claims == 0, pack.text
+        assert any("no summary" in sk for sk in pack.skipped), pack.skipped
     for c in claims:
         c.summary = "x"
     pack = P.render("python", "Python 3.14.7")

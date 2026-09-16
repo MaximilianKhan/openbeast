@@ -356,8 +356,48 @@ must clear a v5-suite eval before joining the runner registry.
   three.
 - **Pack resolution + the allow list + the drift guard: SHIPPED** (this
   change). `agents/lang/packs.py`.
-- **Phase 1 — toolchain introspection: next**, no GPU. Generalizes
-  `gen_zig_pack.py`'s area/rank/budget machinery behind a per-language driver.
+- **Phase 1 — toolchain introspection: SHIPPED.** `agents/lang/introspect.py`
+  + `scripts/lang-introspect.sh`. Six probes, all mechanical, none of which
+  executes a snippet or imports a module:
+
+  | lang | what the toolchain is asked | what it yields here |
+  |---|---|---|
+  | **cpp** | `g++ -std=<lvl> -dM -E` at five levels, diffed | the AVAILABILITY axis, generated: `__cpp_concepts` appears at c++20 and is absent at c++17, so "concepts need C++20" is *observed*. Plus `clang++` as a second opinion — 40 feature macros the two compilers disagree about, i.e. exactly where a claim proved on one is not a language fact |
+  | **c** | the same, four levels | only `__STDC_VERSION__` MOVES between c99 and c23 — nothing is newly defined — so an additions-only map rendered C as having no facts at all. Value changes are tracked for this reason |
+  | **zig** | `zig env` → parse `lib/std/std.zig` | 89 top-level names, 58 of them namespaces, at their exact spelling. `std.Io` vs `std.io` is the suite's most expensive trap and a model handed the real list does not have to guess |
+  | **python** | `sys.stdlib_module_names` | 297 modules of the interpreter that will actually run the code |
+  | **go** | `go list std` | 362 packages |
+  | **rust** | `rustc --edition=N --emit=metadata` | which editions the installed rustc ACCEPTS — the refusal is the fact |
+
+  Three design decisions worth keeping:
+
+  1. **Nothing serves from a file.** A full probe of all six costs ~0.2s
+     (measured), so the pack path asks the toolchain live on every call. That
+     is the L1 rule — the installed toolchain is ground truth — made
+     structural: there is no stale-artifact path to guard because there is no
+     artifact on the serving path. `agents/lang/generated/` is gitignored
+     per-rig state, like the L0 corpus. `check` exists for the one question a
+     written file can still get wrong: *was it edited?*
+  2. **The allow list is no longer gated on hand-authored claims.** It was,
+     and that made L1 pointless: `go` — whose toolchain is installed and can
+     be asked directly — was unreachable no matter what `LANG_PACKS` said.
+     Eligibility is now *claims ∪ probes*, which is what "any model dropped
+     in can know how to use a language, irrespective of what we tested"
+     actually requires. Breadth is close to free: a pack is injected only for
+     the language a task is in. This rig now serves **six** languages; it
+     served three.
+  3. **GENERATED lines are labelled and dropped first.** The header says how
+     many lines were confirmed by compiling and how many by asking the
+     toolchain, because the two tiers earn belief differently — and under
+     budget pressure the generated tier is what goes, since VERIFIED means a
+     fixture proved a migration.
+
+  Two bugs this phase produced and the tests now pin: `check` compared the
+  stored `sha256` *field* against a fresh probe, so a hand edit that left the
+  field alone reported **OK** — the one thing it exists to catch; and the
+  rendering budget was counted in LINES, so a twelve-line cap was a 5,500
+  character pack. The budget is characters, the truncation notice has room
+  reserved *before* facts are spent, and both are mutation-checked.
 - **Phase 4 — escalation (Tier 1.5): THE MATCHER IS BUILT AND MEASURED.**
   `agents/lang/escalate.py`. A compile error selects the card that fixes it,
   and the matching index is **generated, not hand-written**: every claim
