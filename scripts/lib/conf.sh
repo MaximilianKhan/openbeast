@@ -85,6 +85,22 @@ GPU_BACKEND="${OPENBEAST_GPU_BACKEND:-$(_ob_conf_value GPU_BACKEND || echo auto)
 # strings below mean "on", so a typo does not silently enable an
 # install-blocking mode.
 OFFLINE="${OPENBEAST_OFFLINE:-$(_ob_conf_value OFFLINE || echo false)}"
+# FIRST TOKEN ONLY. `_ob_conf_value` returns the rest of the line verbatim, so
+# `OFFLINE=true  # air-gapped rig` arrived as "true  # air-gapped rig",
+# matched none of the arms below, and silently resolved to FALSE — the whole
+# mode failing open on a line an operator would plausibly write (this file's
+# own example uses `#` comments). Fixed HERE and not in _ob_conf_value,
+# because a blanket comment-strip would corrupt the keys whose values may
+# legitimately contain " #": WEBUI_ADMIN_PASSWORD and SEARXNG_SECRET.
+# `read`, NOT `set --`. `set --` REPLACES THE POSITIONAL PARAMETERS OF THE
+# SOURCING SHELL, and this file is sourced by start.sh, doctor.sh, update.sh,
+# bundle.sh and pydeps-adjacent scripts that then parse "$@" — so it silently
+# clobbered their arguments. `bundle.sh sign` became `bundle.sh false`, which
+# is how this was caught: the test suite aborted on it. A 20-minute-old fix
+# for one fail-open that broke every conf-sourcing CLI.
+read -r _ob_off_first _ob_off_rest <<< "$OFFLINE" || true
+OFFLINE="${_ob_off_first:-false}"
+unset _ob_off_first _ob_off_rest
 case "$(printf '%s' "$OFFLINE" | tr 'A-Z' 'a-z')" in
   true|yes|1|on) OFFLINE=true ;;
   *)             OFFLINE=false ;;

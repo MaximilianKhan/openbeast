@@ -7,6 +7,8 @@
 #   ./scripts/update.sh --python     # only Python deps (mcp, openai, fastapi, uvicorn, PyJWT, hf)
 #   ./scripts/update.sh --opencode   # only OpenCode
 #   ./scripts/update.sh --check      # show current vs available, change nothing
+#   --force    rebuild llama.cpp even if the revision has not moved
+#             (the only way to rebuild offline, where there is no pull)
 #
 # Flags compose: `--llama --images` updates just those two. Full docs and
 # per-component notes: docs/UPDATING.md.
@@ -35,6 +37,11 @@ warn() { echo "  ${c_ylw}!${c_rst} $*"; }
 die()  { echo "  ${c_red}✗ $*${c_rst}" >&2; exit 1; }
 
 DO_LLAMA=0; DO_IMAGES=0; DO_PYTHON=0; DO_OPENCODE=0; CHECK_ONLY=0; ANY=0
+# --force: rebuild even when the revision has not moved. Needed because on a
+# closed network there is no pull, so `before` always equals `after` and the
+# "already up to date and built" gate can never open — there was no way to
+# ask for a rebuild at all.
+FORCE_REBUILD=0
 for arg in "$@"; do
   case "$arg" in
     --llama)    DO_LLAMA=1;    ANY=1 ;;
@@ -42,6 +49,7 @@ for arg in "$@"; do
     --python)   DO_PYTHON=1;   ANY=1 ;;
     --opencode) DO_OPENCODE=1; ANY=1 ;;
     --check)    CHECK_ONLY=1 ;;
+    --force)    FORCE_REBUILD=1 ;;
     -h|--help)  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
@@ -82,7 +90,19 @@ update_llama() {
   # serve offline, it just cannot FETCH. Pulling anyway would buy a connect
   # timeout and a warning that reads like a fault.
   if ob_offline; then
-    warn "OFFLINE=true → not pulling; building llama.cpp as checked out ($before)"
+    # HONEST ABOUT WHAT FOLLOWS. Offline there is no pull, so `before` always
+    # equals `after` and the gate below ("already up to date and built")
+    # SKIPS the rebuild — while this message promised one. Say what actually
+    # happens: the binary is rebuilt only if it is missing, and --force is
+    # how you ask for one anyway.
+    if [[ -x "$build/bin/llama-server" ]]; then
+      warn "OFFLINE=true → no pull, and llama-server is already built from
+      the checked-out revision ($before), so there is nothing to rebuild.
+      Use ./scripts/update.sh --llama --force to rebuild it anyway."
+    else
+      warn "OFFLINE=true → no pull; building the checked-out revision
+      ($before), because llama-server is not built yet"
+    fi
   elif git -C "$src" symbolic-ref -q HEAD >/dev/null; then
     # The old form was `pull 2>/dev/null || pull || die "local changes in
     # llama.cpp/?"`. On an unreachable remote that swallowed git's real
@@ -116,7 +136,8 @@ update_llama() {
     warn "detached HEAD (pinned checkout) — skipping pull, building as-is"
   fi
   after=$(git -C "$src" rev-parse --short HEAD)
-  if [[ "$before" == "$after" && -x "$build/bin/llama-server" ]]; then
+  if [[ "$before" == "$after" && -x "$build/bin/llama-server" \
+        && ${FORCE_REBUILD:-0} -eq 0 ]]; then
     ok "already up to date ($before) and built — skipping rebuild"
     return 0
   fi
@@ -350,6 +371,15 @@ update_opencode() {
   fi
   if [[ $CHECK_ONLY -eq 1 ]]; then
     ok "installed: $(opencode --version 2>/dev/null || echo '?')"
+    return 0
+  fi
+  # THE UPGRADE is the network call. The guard was on the "not installed"
+  # branch above, which only prints advice — so offline this ran
+  # `opencode upgrade` and stalled, in the script whose whole offline story
+  # is "do not attempt what cannot succeed".
+  if ob_offline; then
+    ok "installed: $(opencode --version 2>/dev/null || echo '?') — OFFLINE=true,
+      so no upgrade was attempted (it downloads a release)"
     return 0
   fi
   if opencode upgrade; then

@@ -1218,6 +1218,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
             exists = False
         if not exists:
             raise HTTPException(status_code=404, detail="Not Found")
+        # VALIDATE CALLER INPUT BEFORE ANY WRITE. The ordering below limits
+        # the damage of a late failure but cannot remove it: a mixed body with
+        # a valid `current` and an INVALID visibility VALUE committed the
+        # rollback and then answered 400, so the comment's claim that
+        # set_current "is the only one that can fail after a successful
+        # sibling" was false. Measured.
+        #
+        # This check is safe to hoist where a `current` pre-check is not: an
+        # enum test on the caller's own input reveals nothing about the
+        # artifact, so it cannot become the existence-and-version oracle the
+        # note below describes.
+        if body.visibility is not None and body.visibility not in store.VISIBILITIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"visibility must be one of "
+                       f"{', '.join(store.VISIBILITIES)}")
         # ORDER IS LOAD-BEARING. These are three independent locked store
         # writes with no rollback, so a mixed body whose LATER field fails
         # returns 4xx with the EARLIER field already committed. `set_current`

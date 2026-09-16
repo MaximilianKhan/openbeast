@@ -144,9 +144,11 @@ def build(req_files: list[str], extra: list[str], pip: list[str]) -> dict:
                         + "\n  ".join(mismatches))
     direct = 0
     for f in req_files:
-        for k, v in direct_pins(f).items():
-            if v:
-                direct += 1
+        pins, unparsed = direct_pins(f)
+        if unparsed:
+            raise LockError("refusing to build a lock from requirements this "
+                            "parser cannot read:\n  " + "\n  ".join(unparsed))
+        direct += sum(1 for v in pins.values() if v)
     return {
         "generator": "scripts/pydeps.sh lock",
         "direct_pins": direct,
@@ -255,22 +257,63 @@ def parse(path: str) -> dict:
     return pkgs
 
 
-def direct_pins(req_path: str) -> dict:
-    """{normalised name: version or None} from a requirements.txt."""
-    out = {}
+#: name, optional [extras], ==version, optional ; marker — the shapes pip
+#: accepts and PEP 508 defines. The old pattern was
+#: `^(name)\s*==\s*(\S+)$`, which broke on BOTH ordinary decorations and
+#: broke them in opposite directions:
+#:   uvicorn[standard]==0.52.4                 -> version None  (fail OPEN)
+#:   uvicorn==0.52.4 ; python_version >= "3.9" -> version None  (fail OPEN)
+#:   uvicorn==0.52.4;python_version>="3.9"     -> version '0.52.4;python_...'
+#: The first two made verify's comparison a NO-OP while it still printed
+#: "every direct pin matches" — a silent fail-open in the install gate, on a
+#: line as ordinary as `uvicorn[standard]`. The third made verify report a
+#: permanent "the lock is stale" that no regeneration could clear, because
+#: the lock renders the plain version — bricking lock/verify/install on a
+#: legal requirements line. Reproduced all three.
+_REQ_LINE = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)"      # name
+    r"\s*(?:\[[^\]]*\])?"                 # optional extras
+    r"\s*==(?!=)\s*([^\s;]+)"             # == version, and NOT PEP 440's
+                                          # `===` arbitrary-equality, which
+                                          # this parser read as version
+                                          # "=0.1" — a legal pip line
+                                          # silently mis-pinned. The lock can
+                                          # only render `==`, so `===` is
+                                          # reported as unreadable rather
+                                          # than guessed at.
+    r"\s*(?:;.*)?$"                        # optional environment marker
+)
+
+
+def direct_pins(req_path: str) -> tuple[dict, list]:
+    """({normalised name: version or None}, [unparseable lines]).
+
+    The second element exists so a line this parser does not fully understand
+    becomes a REPORTED PROBLEM rather than a silently unversioned entry. The
+    old signature could not express "I could not check this", so it said
+    nothing and verify printed success.
+    """
+    out: dict = {}
+    unparsed: list = []
     with open(req_path, "r", encoding="utf-8") as fh:
-        for raw in fh:
+        for lineno, raw in enumerate(fh, 1):
             line = raw.split("#")[0].strip()
             if not line:
                 continue
-            m = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*(\S+)$", line)
+            m = _REQ_LINE.match(line)
             if m:
                 out[_norm(m.group(1))] = m.group(2)
-            else:
-                name = re.split(r"[<>=!~\[]", line, maxsplit=1)[0].strip()
-                if name:
-                    out[_norm(name)] = None
-    return out
+                continue
+            # No `==` at all is a legitimate unpinned requirement: presence is
+            # all that can be checked, and that is not a parse failure.
+            name = re.split(r"[<>=!~\[;]", line, maxsplit=1)[0].strip()
+            if name and "==" not in line:
+                out[_norm(name)] = None
+                continue
+            unparsed.append(f"{os.path.basename(req_path)}:{lineno}: cannot "
+                            f"read this pinned requirement, so its version was "
+                            f"NOT checked: {line!r}")
+    return out, unparsed
 
 
 def verify(lock_path: str, req_paths: list[str], extra: list[str]) -> list[str]:
@@ -293,15 +336,20 @@ def verify(lock_path: str, req_paths: list[str], extra: list[str]) -> list[str]:
                             f"--require-hashes would refuse the whole file")
         if len(set(pkg["hashes"])) != len(pkg["hashes"]):
             problems.append(f"{pkg['name']}: duplicate hash lines")
+    checked = 0
     for req in req_paths:
-        for key, want in direct_pins(req).items():
+        pins, unparsed = direct_pins(req)
+        problems.extend(unparsed)
+        for key, want in pins.items():
             if key not in pkgs:
                 problems.append(f"{os.path.basename(req)} requires {key!r}, "
                                 f"which the lock does not pin at all")
-            elif want and pkgs[key]["version"] != want:
-                problems.append(
-                    f"{key}: {os.path.basename(req)} pins {want}, the lock "
-                    f"pins {pkgs[key]['version']} — the lock is stale")
+            elif want:
+                checked += 1
+                if pkgs[key]["version"] != want:
+                    problems.append(
+                        f"{key}: {os.path.basename(req)} pins {want}, the lock "
+                        f"pins {pkgs[key]['version']} — the lock is stale")
     for name in extra:
         if _norm(name) not in pkgs:
             problems.append(f"{name} is installed by bootstrap but the lock "
@@ -315,13 +363,33 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     A file whose hash is not in the lock is the interesting case: it is what a
     tampered or stale wheelhouse looks like, and installing from it with
     --no-index would never touch an index that could contradict it.
+
+    IT ALSO CHECKS COVERAGE, which is the question an offline install actually
+    has. "Every file present matches the lock" was reported as success for an
+    EMPTY directory — 0 matched, 0 wrong, rc=0 — so "nothing to check" read as
+    "verified", and an incomplete wheelhouse (one built for another platform,
+    or a half-finished copy) passed the gate and failed later inside pip. A
+    package with no file present is a problem, named.
     """
     pkgs = parse(lock_path)
     known = {h for p in pkgs.values() for h in p["hashes"]}
+    #: Files a wheelhouse legitimately picks up in transit. NARROW ON PURPOSE:
+    #: the old rule exempted EVERY dotfile, so anything hidden rode in
+    #: unaudited — and pip's find-links treatment of a directory that contains
+    #: an index page is not something to leave to chance. These three are what
+    #: a Mac or a file manager actually leaves on a USB stick.
+    BENIGN = {".DS_Store", ".Trashes", ".directory", "Thumbs.db"}
     matched, problems = [], []
+    seen_hashes: set = set()
     for entry in sorted(os.listdir(directory)):
         path = os.path.join(directory, entry)
-        if not os.path.isfile(path) or entry.startswith("."):
+        if entry in BENIGN:
+            continue
+        if os.path.islink(path):
+            problems.append(f"{entry}: symlink — a wheelhouse holds files, and "
+                            f"a link's target is not what was audited")
+            continue
+        if not os.path.isfile(path):
             continue
         h = hashlib.sha256()
         with open(path, "rb") as fh:
@@ -330,8 +398,22 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
         digest = h.hexdigest()
         if digest in known:
             matched.append(entry)
+            seen_hashes.add(digest)
         else:
             problems.append(f"{entry}: sha256:{digest} is in no lock entry")
+    # COVERAGE: every package the lock pins needs at least one file here, or
+    # an install from this directory cannot succeed.
+    uncovered = sorted(
+        f"{p['name']}=={p['version']}"
+        for p in pkgs.values()
+        if not (set(p["hashes"]) & seen_hashes))
+    if uncovered:
+        shown = ", ".join(uncovered[:6])
+        more = f" (+{len(uncovered) - 6} more)" if len(uncovered) > 6 else ""
+        problems.append(
+            f"{len(uncovered)} of {len(pkgs)} locked package(s) have NO file "
+            f"in this directory, so an install from it cannot complete: "
+            f"{shown}{more}")
     return matched, problems
 
 
@@ -385,8 +467,16 @@ def main(argv=None) -> int:
                 for p in problems:
                     print(f"  - {p}")
                 return 1
+            nchecked = 0
+            for r in reqs:
+                pins, _ = direct_pins(r)
+                nchecked += sum(1 for v in pins.values() if v)
+            # REPORT THE COUNT. "every direct pin matches" was printed whether
+            # the versions had been compared or silently skipped; a number a
+            # reader can sanity-check against requirements.txt makes a no-op
+            # visible.
             print(f"{args.lock}: OK — {len(pkgs)} packages, {nh} file hashes, "
-                  f"every direct pin matches")
+                  f"{nchecked} direct pin(s) version-checked")
             return 0
 
         if args.action == "audit":
@@ -396,8 +486,14 @@ def main(argv=None) -> int:
             matched, problems = audit_dir(args.lock, args.dir)
             for p in problems:
                 print(f"  ! {p}")
-            print(f"{args.dir}: {len(matched)} file(s) match the lock, "
-                  f"{len(problems)} do not")
+            # "N do not" counted coverage problems as mismatched FILES, which
+            # they are not. Say what each number means.
+            bad_files = [p for p in problems if "locked package(s) have NO" not in p]
+            cover = len(problems) - len(bad_files)
+            tail = (f", {len(bad_files)} file(s) the lock does not name"
+                    if bad_files else "")
+            tail += ", and it does not cover the whole closure" if cover else ""
+            print(f"{args.dir}: {len(matched)} file(s) match the lock{tail}")
             return 1 if problems else 0
     except LockError as e:
         print(f"error: {e}", file=sys.stderr)

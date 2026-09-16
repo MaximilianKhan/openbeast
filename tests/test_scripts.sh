@@ -25,6 +25,23 @@ skip() { echo "  SKIP: $1"; SKIP=$((SKIP + 1)); }
 
 echo "=== Script structure tests ==="
 echo ""
+# FOUNDATIONAL — checked first, because every other check below runs scripts
+# that source conf.sh.
+echo "Config library invariants:"
+# conf.sh is SOURCED by start.sh, doctor.sh, update.sh and bundle.sh, each of
+# which then parses "$@". A `set --` inside it replaces the sourcing shell's
+# positional parameters — which happened: a fix for the inline-comment
+# fail-open used `set -- $OFFLINE`, and `bundle.sh sign` silently became
+# `bundle.sh false`. The suite caught it by aborting. Pin the invariant.
+_CF_OUT="$(REPO_DIR="$REPO_DIR" bash -c \
+    'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; printf "%s|%s" "${1:-}" "$#"' \
+    -- alpha beta 2>/dev/null || true)"
+if [[ "$_CF_OUT" == "alpha|2" ]]; then
+  pass "sourcing conf.sh leaves the caller's positional parameters intact"
+else
+  fail "conf.sh clobbers \$@ — every CLI that sources it loses its arguments (got '$_CF_OUT')"
+fi
+
 
 # --- 1. Entry points exist and are executable ---
 echo "Entry points:"
@@ -1265,6 +1282,12 @@ fi
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
+# NOTE on the `|| true` on every grep-to-variable below: under
+# `set -euo pipefail` a grep that matches nothing fails the PIPELINE, and the
+# assignment then ABORTS the whole suite mid-run with no summary line — so a
+# renamed string would look like a crash instead of a failed check, and every
+# check after it would silently not run. Each caller treats an empty value as
+# a named failure, which is the behaviour we actually want.
 echo "Offline bundle:"
 # The docs and every failure message tell an operator to create these IN the
 # repo root. Un-ignored, that is 43+ untracked wheels (or a multi-GB bundle) in
@@ -1292,9 +1315,9 @@ fi
 # images and places a weight — so "verify before using any of it" is the whole
 # safety property. Assert the order, not just the presence.
 _BN="$REPO_DIR/scripts/bundle.sh"
-_V_AT=$(grep -n 'verifying the bundle before using' "$_BN" | head -1 | cut -d: -f1)
-_L_AT=$(grep -n 'docker load' "$_BN" | head -1 | cut -d: -f1)
-_I_AT=$(grep -n 'pydeps.sh" install --from' "$_BN" | head -1 | cut -d: -f1)
+_V_AT=$(grep -n 'verifying the bundle before using' "$_BN" | head -1 | cut -d: -f1 || true)
+_L_AT=$(grep -n 'docker load' "$_BN" | head -1 | cut -d: -f1 || true)
+_I_AT=$(grep -n 'pydeps.sh" install --from' "$_BN" | head -1 | cut -d: -f1 || true)
 if [[ -n "$_V_AT" && -n "$_L_AT" && -n "$_I_AT" && $_V_AT -lt $_L_AT && $_V_AT -lt $_I_AT ]]; then
   pass "install verifies the manifest BEFORE loading images or installing wheels"
 else
@@ -1362,20 +1385,136 @@ else
 fi
 # The signature must be checked BEFORE the hashes: the manifest is what names
 # the hashes, so checking them first checks a document against itself.
-_S_AT=$(grep -n '_check_signature "\$DIR"' "$_BN" | head -1 | cut -d: -f1)
-_H_AT=$(grep -n '"\$PY" "\$HELPER" verify "\$DIR"' "$_BN" | head -1 | cut -d: -f1)
+_S_AT=$(grep -n '_check_signature "\$DIR"' "$_BN" | head -1 | cut -d: -f1 || true)
+_H_AT=$(grep -n '"\$PY" "\$HELPER" verify "\$DIR"' "$_BN" | head -1 | cut -d: -f1 || true)
 if [[ -n "$_S_AT" && -n "$_H_AT" && $_S_AT -lt $_H_AT ]]; then
   pass "the signature is checked before the hashes it vouches for"
 else
   fail "hashes are checked before the signature (sig@${_S_AT:-none} hash@${_H_AT:-none})"
 fi
-# A signature is only valid in its own namespace, so an operator's unrelated
-# ssh signature can never be replayed as a bundle signature.
+# A signature is only valid in its own namespace. The grep below proves the
+# constant EXISTS; it cannot prove ssh-keygen enforces it, and asserting a
+# constant against itself is the shape this suite keeps finding. The
+# behavioural half is in the signature block further down, which signs in a
+# foreign namespace and requires the verify to refuse.
 if grep -q 'SIG_NS="openbeast-bundle"' "$_BN"; then
-  pass "signatures are namespaced (no replay of an unrelated ssh signature)"
+  pass "a signature namespace is set (enforcement is asserted behaviourally below)"
 else
   fail "signatures have no namespace — one made for another purpose could be replayed"
 fi
+# BEHAVIOURAL, and it exists because the structural checks above all passed
+# while the feature FAILED OPEN. `ssh-keygen -Y find-principals` only matches
+# the signature's embedded key — it does NOT check the signature over the
+# content — so the no---identity path (the DEFAULT when an operator passes
+# --key without naming a signer) accepted a manifest modified after signing.
+# Measured: tampered + find-principals -> rc=0; tampered + verify -I -> 255.
+# The lesson generalises: I tested the strict path and shipped the loose one.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  _SG="$(mktemp -d)"
+  ssh-keygen -t ed25519 -N '' -C t -f "$_SG/k" </dev/null >/dev/null 2>&1
+  mkdir -p "$_SG/b/meta"
+  printf 'x\n' > "$_SG/b/meta/x"
+  ( cd "$REPO_DIR" && python3 scripts/lib/bundle_manifest.py write "$_SG/b" \
+      --component meta:meta >/dev/null 2>&1 )
+  printf 'builder %s\n' "$(cat "$_SG/k.pub")" > "$_SG/allowed"
+  # NOT an unguarded subshell: `( ... )` that fails aborts the whole suite
+  # under `set -e`, with no named failure and every later check skipped. That
+  # is exactly what happened when a conf.sh change clobbered bundle.sh's
+  # arguments — the suite died here instead of reporting anything.
+  ( cd "$REPO_DIR" && ./scripts/bundle.sh sign "$_SG/b" --key "$_SG/k" >/dev/null 2>&1 ) \
+    || fail "bundle.sh sign failed outright (see: ./scripts/bundle.sh sign)"
+  if [[ -f "$_SG/b/MANIFEST.json.sig" ]]; then
+    # good signature, NO --identity: must pass
+    if ( cd "$REPO_DIR" && ./scripts/bundle.sh verify "$_SG/b" --key "$_SG/allowed" >/dev/null 2>&1 ); then
+      pass "a good signature verifies without --identity"
+    else
+      fail "a good signature is rejected when --identity is omitted"
+    fi
+    # TAMPER the manifest, still no --identity: must FAIL
+    python3 - "$_SG/b/MANIFEST.json" <<'PYT'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["repo_commit"] = "ATTACKER"
+json.dump(d, open(p, "w"), indent=2, sort_keys=True)
+PYT
+    if ( cd "$REPO_DIR" && ./scripts/bundle.sh verify "$_SG/b" --key "$_SG/allowed" >/dev/null 2>&1 ); then
+      fail "FAIL-OPEN: a tampered manifest verified when --identity was omitted"
+    else
+      pass "a tampered manifest is refused even without --identity"
+    fi
+    # NAMESPACE ENFORCEMENT, behaviourally: an operator's signature over the
+    # same bytes for a DIFFERENT purpose must not be replayable as a bundle
+    # signature. (Measured directly: ssh-keygen -Y verify answers
+    # "namespace does not match", rc=255.)
+    ( cd "$REPO_DIR" && python3 - "$_SG/b/MANIFEST.json" <<'PYRESTORE'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["repo_commit"] = "restored"
+json.dump(d, open(p, "w"), indent=2, sort_keys=True)
+PYRESTORE
+    )
+    rm -f "$_SG/b/MANIFEST.json.sig"
+    ssh-keygen -Y sign -n some-other-purpose -f "$_SG/k" \
+      "$_SG/b/MANIFEST.json" </dev/null >/dev/null 2>&1
+    if [[ -f "$_SG/b/MANIFEST.json.sig" ]]; then
+      if ( cd "$REPO_DIR" && ./scripts/bundle.sh verify "$_SG/b" --key "$_SG/allowed" >/dev/null 2>&1 ); then
+        fail "a signature from ANOTHER namespace was accepted as a bundle signature"
+      else
+        pass "a foreign-namespace signature is refused (no replay)"
+      fi
+    else
+      skip "could not produce a foreign-namespace signature to test with"
+    fi
+  else
+    skip "ssh-keygen present but signing produced no signature"
+  fi
+  rm -rf "$_SG"
+else
+  skip "no ssh-keygen — cannot exercise the signature paths"
+fi
+# A sharded weight travels as a SET. llama.cpp is handed only the first
+# shard and finds its siblings, so a serve script names one file while the
+# model is three — shipping 1 of 3 produces a bundle that verifies perfectly
+# and cannot load the model. scripts/weights.registry has a real 3-shard
+# entry today, so this is reachable, not hypothetical.
+if grep -q 'of-\[0-9\]{5}\\.gguf\|of-([0-9]{5})' "$_BN"; then
+  pass "build expands a sharded weight to the whole set"
+else
+  fail "build ships whichever shard the serve script names — a partial set cannot load"
+fi
+# Rebuilding into a directory that already holds a bundle used to leave BOTH
+# sets of artifacts; the manifest recorded both, verify passed, and install
+# picked one arbitrarily.
+if grep -q 'already holds bundle content' "$_BN"; then
+  pass "build refuses a dirty target (or --force clears it)"
+else
+  fail "build into a dirty target leaves stale artifacts the manifest then blesses"
+fi
+# ...and install must pick the source tarball the MANIFEST names, since the
+# manifest is what the signature covers.
+if grep -q '_want_commit' "$_BN"; then
+  pass "install selects the source tarball by the recorded commit"
+else
+  fail "install picks a source tarball arbitrarily (head -1)"
+fi
+# The offline prebuilt-UI flag belongs in the SHARED cmake function, or
+# update.sh's rebuild — the path advertised as the offline work — re-arms the
+# 11-minute fetch that bootstrap avoids.
+if grep -q 'LLAMA_USE_PREBUILT_UI=OFF' "$REPO_DIR/scripts/lib/hardware.sh"; then
+  pass "the offline cmake flag lives in the shared ob_cmake_flags"
+else
+  fail "the offline cmake flag is inlined in one caller — bootstrap and update.sh will drift"
+fi
+# update.sh must gate the network call, not the branch that only prints advice.
+if grep -A6 'update_opencode()' "$REPO_DIR/scripts/update.sh" | grep -q 'ob_offline' \
+   && grep -B6 'if opencode upgrade' "$REPO_DIR/scripts/update.sh" | grep -q 'ob_offline'; then
+  pass "update.sh gates 'opencode upgrade' itself when offline"
+else
+  fail "update.sh leaves the network call ungated and guards the advice branch instead"
+fi
+
 _BN_OUT="$(cd "$REPO_DIR" && ./scripts/bundle.sh show /nonexistent-bundle 2>&1 || true)"
 if grep -qiE 'missing|not a bundle' <<< "$_BN_OUT"; then
   pass "show on a non-bundle says so instead of crashing"
@@ -1410,6 +1549,51 @@ for _v in maybe off false 0 ''; do
     fail "OFFLINE='$_v' resolved to $_got — a typo enabled offline mode"
   fi
 done
+# ob_offline comes from conf.sh, which bootstrap sources inside
+# run_preflight. A call that runs BEFORE that source is "command not found",
+# and under `set -euo pipefail` that is fatal — in the installer. Pin the
+# order: every top-level use must come after the unconditional run_preflight,
+# and any earlier use must live inside a function (called later).
+_OB_SRC=$(grep -n 'run_preflight$' "$REPO_DIR/bootstrap.sh" | grep -v '()' | head -1 | cut -d: -f1 || true)
+if [[ -n "$_OB_SRC" ]]; then
+  pass "bootstrap calls run_preflight at line $_OB_SRC (which sources conf.sh)"
+  _OB_BAD=""
+  while IFS=: read -r _ln _txt; do
+    [[ -n "$_ln" ]] || continue
+    # indented uses are inside a function body; those are fine
+    [[ "$_txt" =~ ^[[:space:]] ]] && continue
+    [[ "$_ln" -gt "$_OB_SRC" ]] || _OB_BAD="$_OB_BAD $_ln"
+  done < <(grep -n 'ob_offline' "$REPO_DIR/bootstrap.sh")
+  if [[ -z "$_OB_BAD" ]]; then
+    pass "no top-level ob_offline call precedes the conf.sh source"
+  else
+    fail "bootstrap calls ob_offline at top level before conf.sh is sourced (lines:$_OB_BAD)"
+  fi
+else
+  fail "bootstrap no longer calls run_preflight unconditionally"
+fi
+# The FOURTH fetch — container images — must be refused too. It was not: the
+# docker pull loop had no guard, so a closed network stalled on two registry
+# pulls in the script that had just refused the other three by name.
+# Section-based, not line-distance-based: a -B4 window broke the moment the
+# refusal message grew past four lines, which is a property of the prose and
+# not of the guard.
+if python3 - "$REPO_DIR/bootstrap.sh" <<'PYSEC'
+import re, sys
+src = open(sys.argv[1]).read()
+i = src.find("Frontend images")
+j = src.find("# ---- OpenCode", i)
+sec = src[i:j] if i >= 0 and j > i else ""
+pull = "docker pull -q" in sec
+guard = re.search(r"if ob_offline; then", sec) is not None
+sys.exit(0 if (pull and guard) else 1)
+PYSEC
+then
+  pass "the container-image pull is refused when offline (the 4th fetch)"
+else
+  fail "OFFLINE does not stop the image pull — the 'all four refused' claim is false"
+fi
+
 # BEHAVIOURAL, not structural: prove the probe does not happen. A stub curl
 # that records every invocation is the only way to tell "skipped" from
 # "succeeded quickly".
@@ -1478,11 +1662,27 @@ if grep -q 'pull never' "$REPO_DIR/start.sh"; then
 else
   fail "start.sh lets compose reach a registry on a closed network"
 fi
-for _stage in 'not pulling' 'needs the index' 'registry pull'; do
-  if grep -q "$_stage" "$REPO_DIR/scripts/update.sh"; then
-    pass "update.sh has an offline path for: $_stage"
+# Per FUNCTION, not per message string: the first version of this check
+# grepped for the words "not pulling", and rewording the message broke it
+# while the behaviour was intact. What matters is that each stage that does
+# network work has an ob_offline branch.
+for _fn in update_llama update_images update_python update_opencode; do
+  if python3 - "$REPO_DIR/scripts/update.sh" "$_fn" <<'PYFN'
+import sys
+src = open(sys.argv[1]).read()
+fn = sys.argv[2]
+i = src.find(fn + "() {")
+if i < 0:
+    sys.exit(1)
+# to the next top-level function definition (or EOF)
+j = src.find("\n}\n", i)
+body = src[i:j if j > i else len(src)]
+sys.exit(0 if "ob_offline" in body else 1)
+PYFN
+  then
+    pass "update.sh: $_fn has an offline branch"
   else
-    fail "update.sh has no offline path for: $_stage"
+    fail "update.sh: $_fn does network work with no offline branch"
   fi
 done
 
@@ -1622,11 +1822,38 @@ PY
 done
 # and the orphan with no recorded pid must still be reapable, path-anchored so
 # a sibling worktree's server is never touched (healthcheck.sh's own rule)
-if grep -q 'pkill -f "\$REPO_DIR/agents/artifact_server.py"' "$REPO_DIR/scripts/healthcheck.sh"; then
-  pass "healthcheck can reap an unrecorded beast-artifact orphan"
+if grep -qE 'pkill -f "\$\(_ob_ere "\$REPO_DIR/agents/artifact_server\.py"\)"' \
+        "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "healthcheck can reap an unrecorded beast-artifact orphan (ERE-quoted)"
 else
   fail "a beast-artifact orphan with no pidfile is unreapable — restart loops forever"
 fi
+# pkill -f takes an EXTENDED REGEX, not a literal, so a path-anchored pattern
+# is only anchored if the path is QUOTED for ERE use. Measured: a `+` in the
+# repo path makes the pattern fail to match its own process (the reap silently
+# does nothing) and a `.` makes it match other paths (the sibling-worktree
+# reap the comments call impossible). All four call sites must quote.
+_HC_BARE=0
+while IFS= read -r _ln; do
+  _t="${_ln#"${_ln%%[![:space:]]*}"}"
+  [[ "$_t" == \#* ]] && continue
+  [[ "$_t" == *'$REPO_DIR'* ]] || continue
+  [[ "$_t" == *'_ob_ere'* ]] || _HC_BARE=1
+done < <(grep 'pkill -f' "$REPO_DIR/scripts/healthcheck.sh" || true)
+if [[ $_HC_BARE -eq 0 ]]; then
+  pass "every path-anchored pkill is ERE-quoted (a '+' or '.' in the repo path is safe)"
+else
+  fail "a pkill pattern uses \$REPO_DIR unquoted — a regex metacharacter in the path breaks it both ways"
+fi
+# The [17] guard deliberately leaves a live chat/artifact server alone, so its
+# pidfile belongs to another process — and cleanup() must not delete it, or the
+# guard's whole purpose (a reapable recorded pid) is undone on exit.
+if grep -qE 'CHAT_OWNED|ARTIFACT_OWNED' "$REPO_DIR/start.sh"; then
+  pass "cleanup only removes the pidfiles this start.sh actually created"
+else
+  fail "cleanup deletes chat.pid/artifact.pid unconditionally, including for a server it left alone"
+fi
+
 # Every pkill of artifact_server must be path-anchored. Checking for the
 # absence of the string "artifact_server" after pkill would flag the anchored
 # line too, so the assertion is per-line: each one must name $REPO_DIR.

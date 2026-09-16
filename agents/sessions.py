@@ -652,8 +652,15 @@ def append_op(session_id: str, op: dict) -> bool:
     newline-less remnant swallowed the NEXT op too, because read_new_ops
     advances its cursor past a line before json.loads rejects it, so TWO ops
     vanished with no error anywhere. Now the write is looped, a partial line
-    is TERMINATED so it can never merge with its successor (costing one op
-    instead of two), and the caller is told.
+    is terminated where possible, and the caller is told.
+
+    HONEST LIMIT: terminating the partial line needs one more byte from the
+    very resource that just refused one, so on a genuinely full disk that
+    write fails too and the remnant stays unterminated — the next op then
+    concatenates onto it and both are lost. The earlier wording here claimed
+    "one op instead of two" unconditionally, which is only true when the
+    newline lands. What is unconditional is that the caller LEARNS the op did
+    not land (False -> 503), which is the part that was silently absent.
 
     O_NOFOLLOW (E13): the ledger is 0700, but a symlink planted at the inbox
     path by anything that ever ran as this user would turn "append an
@@ -674,8 +681,18 @@ def append_op(session_id: str, op: dict) -> bool:
         return False
     try:
         os.makedirs(os.path.dirname(path), mode=_DIR_MODE, exist_ok=True)
+        # O_NONBLOCK: a FIFO planted at the inbox path makes an O_WRONLY
+        # open BLOCK FOREVER waiting for a reader, and the caller here is a
+        # request handler in chat_server — so `/send` wedged a thread, from a
+        # file anything running as this user could create. read_new_ops has
+        # carried exactly this guard since E13 (and a test named for it); the
+        # writer did not, which is the same defect on the other side of the
+        # same file. On a REGULAR file Linux ignores O_NONBLOCK, so the append
+        # path is unchanged; on a FIFO with no reader the open fails ENXIO
+        # immediately and this returns False.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
-                     | os.O_NOFOLLOW | os.O_CLOEXEC, _FILE_MODE)
+                     | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     _FILE_MODE)
     except OSError:
         return False                     # incl. ELOOP: the path is a symlink
     mv = memoryview(line)

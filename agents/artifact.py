@@ -87,6 +87,20 @@ class ArtifactError(Exception):
     (server) or a plain string (tool contract) — never a traceback."""
 
 
+class ArtifactMetaCorrupt(ArtifactError):
+    """meta.json exists and does not PARSE.
+
+    A subclass, so every existing handler (and the server's _store_error)
+    treats it exactly as before. It exists for one caller: remove() may treat
+    an unparseable record as having no recorded owner — that is what makes a
+    corrupted artifact deletable at all — but it must NOT do that for a record
+    it merely failed to READ. _read_meta folded OSError and ValueError into
+    one error, so a transient EIO would have skipped the ownership check and
+    deleted somebody else's page. The undeletable-record fix would then have
+    introduced a worse bug than the one it closed.
+    """
+
+
 # Claude Code's caps, verbatim, so pages port both ways.
 CAPS = {
     "page_bytes": 16 * 1024 * 1024,      # index.html
@@ -501,8 +515,13 @@ def _read_meta(artifact_id: str) -> dict | None:
             meta = json.load(fh)
     except (FileNotFoundError, NotADirectoryError):
         return None
-    except (OSError, ValueError) as e:
-        raise ArtifactError(f"unreadable artifact metadata: {e}")
+    except ValueError as e:
+        # The record EXISTS and does not parse. Distinct from "could not be
+        # read", because remove() treats this case as having no recorded owner
+        # and therefore deletable — see the note there.
+        raise ArtifactMetaCorrupt(f"unreadable artifact metadata: {e}")
+    except OSError as e:
+        raise ArtifactError(f"cannot read artifact metadata: {e}")
     return meta if isinstance(meta, dict) else None
 
 
@@ -1105,8 +1124,14 @@ def remove(artifact_id, *, owner=None) -> bool:
         # store-root containment check above still bounds what can be removed.
         try:
             meta = _read_meta(aid) if os.path.isdir(real) else None
-        except ArtifactError:
+        except ArtifactMetaCorrupt:
+            # Unparseable: treat as the no-recorded-owner case the next line
+            # handles. This is what makes a corrupted record deletable.
             meta = None
+        # NOT `except ArtifactError`: a plain read failure (EIO, permissions)
+        # must propagate, or a failing disk would bypass the ownership check
+        # below and delete another owner's page. Ownership is the one thing
+        # DELETE cannot guess at.
         if meta is not None:
             _require_owner(meta, owner)
         if not os.path.isdir(real):

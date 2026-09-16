@@ -31,11 +31,23 @@ into the interpreter, not an import walk.
 
 Two probes are worth understanding because they carry most of the value:
 
-  cpp/c  `-dM -E` dumps every predefined macro AT A GIVEN -std LEVEL. The
-         DIFF between levels is therefore a mechanically-derived availability
-         map: on this gcc, __cpp_lib_format appears at c++20 and is absent at
-         c++17, so "std::format needs -std=c++20" is observed, not recalled.
-         This is the AVAILABILITY axis of the plan, generated.
+  cpp/c  `-dM -E`, WITH <version> INCLUDED, dumps every macro available at a
+         given -std level. The DIFF between levels is therefore a
+         mechanically-derived availability map: on this gcc __cpp_lib_format
+         is absent at c++17 and 202304L at c++20, so "std::format needs
+         -std=c++20" is observed, not recalled. This is the AVAILABILITY axis
+         of the plan, generated.
+         The <version> include is load-bearing and was missing: with empty
+         stdin the preprocessor reports only the compiler's own predefined
+         macros, so ZERO __cpp_lib_* were observed at any level while this
+         paragraph claimed one as its example.
+         The PACK summarises this rather than enumerating it. 269 facts do not
+         fit in 2000 characters, and every mechanical way of picking ~30 is
+         arbitrary — alphabetical kept std::adaptor_iterator_pair_constructor
+         and dropped std::format — while a non-arbitrary pick would be CURATED,
+         which this tier may not be. So the pack states the levels, their
+         counts, the standard-version mapping and where the full set is; a
+         specific feature is the escalation path's question to answer.
 
   zig    the top-level names in lib/std/std.zig, at their exact spelling.
          `std.Io` vs `std.io` is the single most expensive trap in the eval
@@ -87,10 +99,27 @@ def _run(argv: list[str], stdin: str | None = None) -> tuple[int, str]:
 # probes
 # --------------------------------------------------------------------------
 
+#: What we feed the preprocessor per language. EMPTY STDIN WAS A BUG: with no
+#: includes, `-dM -E` reports only the compiler's own predefined macros, so
+#: ZERO `__cpp_lib_*` were ever observed at any level — measured 0/0/0 at
+#: c++17/20/23 — while this module's docstring cited `__cpp_lib_format` as its
+#: headline example and `_fmt_feature` carried a `__cpp_lib_` branch that
+#: could never fire. Library feature macros live in <version>, and including
+#: it yields 72 at c++17 and 138 at c++20 — and `__cpp_lib_format` really is
+#: absent at c++17 and 202304L at c++20, which is the claim that was being
+#: made without evidence.
+_PROBE_STDIN = {
+    "c++": "#include <version>\n",
+    # C has no <version>; its library feature macros are per-header and its
+    # real signal is __STDC_VERSION__, which is predefined. Nothing to include.
+    "c": "",
+}
+
+
 def _macros_at(exe: str, lang_flag: str, std: str) -> dict:
-    """Every predefined macro the compiler admits at one -std level."""
+    """Every macro the compiler admits at one -std level, library included."""
     rc, out = _run([exe, f"-std={std}", "-dM", "-E", "-x", lang_flag, "-"],
-                   stdin="")
+                   stdin=_PROBE_STDIN.get(lang_flag, ""))
     if rc != 0:
         raise ProbeError(f"{exe} -std={std} rejected: {out.strip()[:200]}")
     got = {}
@@ -105,16 +134,29 @@ def _macros_at(exe: str, lang_flag: str, std: str) -> dict:
 
 def _feature_map(exe: str, lang_flag: str, levels) -> dict:
     """{level: sorted feature macros}, plus what each level ADDS."""
-    per, added, changed, supported = {}, {}, {}, []
+    per, added, changed, supported, unsupported = {}, {}, {}, [], []
     prev: set[str] = set()
     prev_vals: dict = {}
     for std in levels:
         try:
             macros = _macros_at(exe, lang_flag, std)
-        except ProbeError:
+        except ProbeError as e:
             # An -std this compiler does not know is a FACT about the
-            # compiler, not a failure of the probe. Record it by absence.
-            continue
+            # compiler, recorded by absence. ANY OTHER FAILURE IS NOT: an ICE,
+            # an OOM, a missing libstdc++ header or a broken wrapper would
+            # have been silently filed as "this standard is unsupported", and
+            # the map served afterwards would look confident and be wrong. So
+            # only the recognisable "unknown -std" message is tolerated.
+            msg = str(e).lower()
+            if ("invalid value" in msg or "unrecognized" in msg
+                    or "unknown" in msg or "not valid" in msg
+                    or "is not supported" in msg):
+                unsupported.append(std)
+                continue
+            raise ProbeError(
+                f"{exe} failed at -std={std} for a reason that is NOT an "
+                f"unknown standard, so this is a broken toolchain rather than "
+                f"a fact about it: {e}") from e
         supported.append(std)
         feats = {k: v for k, v in macros.items() if k.startswith("__cpp_")
                  or k in ("__STDC_VERSION__", "__cplusplus")}
@@ -131,8 +173,8 @@ def _feature_map(exe: str, lang_flag: str, levels) -> dict:
         prev, prev_vals = now, dict(per[std])
     if not supported:
         raise ProbeError(f"{exe}: no probed -std level was accepted")
-    return {"levels_supported": supported, "features": per,
-            "added_at": added, "changed_at": changed}
+    return {"levels_supported": supported, "levels_rejected": unsupported,
+            "features": per, "added_at": added, "changed_at": changed}
 
 
 def probe_cpp() -> dict:
@@ -410,10 +452,17 @@ def check(lang: str) -> tuple[str, str]:
 
 
 def _short(v) -> str:
-    """Compare toolchains on their version number, not their banner text."""
+    """Compare toolchains on their version, not their banner text.
+
+    THE PRERELEASE PART IS PART OF THE VERSION. Dropping it made
+    `0.16.0-dev.412` and `0.16.0-dev.500` compare EQUAL, so a zig dev-build
+    move — the case where std changes most — was invisible to the drift guard
+    and stale facts would have been served as current. Same for
+    `0.14.0-dev.1` vs `0.14.0`.
+    """
     if not isinstance(v, str):
         return ""
-    m = re.search(r"\d+(?:\.\d+){1,3}", v)
+    m = re.search(r"\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?", v)
     return m.group(0) if m else v.strip()
 
 
@@ -455,24 +504,68 @@ def render(lang: str, budget_chars: int = BUDGET_CHARS) -> list[str]:
     out: list[str] = []
     if lang in ("cpp", "c"):
         added = facts_d.get("added_at") or {}
-        changed = facts_d.get("changed_at") or {}
         feats = facts_d.get("features") or {}
         levels = list(facts_d.get("levels_supported", []))
+        rejected = list(facts_d.get("levels_rejected") or [])
         tc = _short(rec.get("toolchain")) or rec.get("toolchain")
         second = facts_d.get("second_opinion") or {}
         dis = second.get("disagreements") or {}
 
-        # BUILD THE TAIL FIRST, then reserve its ACTUAL length. Reserving a
-        # guessed constant was the same bug in a smaller costume: the
-        # portability line is 299 characters, the guess was 210, so it was
-        # silently dropped — exactly the truncation the reserve exists to
-        # prevent. The tail does not depend on the fill, so there is no reason
-        # to guess at it.
-        portability = ""
+        # SUMMARISE, DO NOT ENUMERATE — and this replaced an enumeration that
+        # was quietly useless. Including <version> (the fix for observing any
+        # library macro at all) took the fact count from ~90 to 269, and a
+        # 2000-character pack has room for about 30. Every way of choosing
+        # those 30 that stays MECHANICAL is also arbitrary: alphabetical put
+        # std::adaptor_iterator_pair_constructor in the pack and left
+        # std::format, std::ranges and std::span out — the three anyone
+        # actually asks about. Choosing better would mean a curated
+        # importance list, which is exactly what the GENERATED tier may not
+        # contain (§3: CURATED is never auto-injected).
+        #
+        # So the pack states what it can state completely and truly: which
+        # -std levels this compiler has, how many facts each adds, the
+        # standard-version mapping, how to TEST one at compile time, and where
+        # the full machine-readable set is. A specific answer for a specific
+        # feature is the ESCALATION path's job (§3 L3), which is triggered by
+        # the compiler error that names it — not a guess made in advance.
+        for lv in reversed(levels):
+            names = [n for n in added.get(lv, []) if n.startswith("__cpp")]
+            lib = len([n for n in names if n.startswith("__cpp_lib_")])
+            lang_n = len(names) - lib
+            ver = (feats.get(lv) or {}).get("__cplusplus") \
+                or (feats.get(lv) or {}).get("__STDC_VERSION__")
+            bits = []
+            if lib:
+                bits.append(f"{lib} library")
+            if lang_n:
+                bits.append(f"{lang_n} language")
+            what = " + ".join(bits) + " feature macro(s) newly available" \
+                if bits else "no newly available feature macros"
+            out.append(f"-std={lv}: {what}"
+                       + (f"; the level sets it to {ver}" if ver else ""))
+        if rejected:
+            out.append(f"this compiler REFUSES -std={', -std='.join(rejected)}")
+        probe = "__cpp_lib_format" if lang == "cpp" else "__STDC_VERSION__"
+        # DO NOT CITE A FILE THAT MAY NOT EXIST. agents/lang/generated/ is
+        # gitignored per-rig state, so on a fresh clone there is no such file
+        # — and a pack that points a model at a nonexistent path is making a
+        # false claim, in a pack whose whole premise is that it only carries
+        # true ones. Say where it IS when it exists, and how to produce it
+        # when it does not.
+        where = (f"The complete set for THIS compiler ({tc}) is in "
+                 f"agents/lang/generated/{lang}.json"
+                 if os.path.exists(artifact_path(lang)) else
+                 f"The complete set for THIS compiler ({tc}) can be written "
+                 f"out with")
+        out.append(
+            f"Test one at compile time rather than guessing: "
+            f"`#if defined({probe})`. {where} "
+            f"(./scripts/lang-introspect.sh write {lang}).")
         if dis:
-            # NAME them. "disagrees at these levels" was true at every level
-            # and therefore unactionable noise; these are the specific macros
-            # where a claim proved on one compiler is not a language fact.
+            # A JUSTIFIED selection, unlike the enumeration above: these are
+            # the DISAGREEMENTS between the two installed compilers, a small
+            # set, and each one is a place where a claim proved on one is not
+            # a language fact.
             worst = []
             for lv in reversed(levels):
                 v = dis.get(lv) or {}
@@ -483,74 +576,31 @@ def render(lang: str, budget_chars: int = BUDGET_CHARS) -> list[str]:
                 if len(worst) >= 4:
                     break
             if worst:
-                portability = (
-                    "NOT portable between the two compilers installed here: "
-                    + "; ".join(worst[:4])
-                    + " — a claim proved on one is not a language fact")
-        NOTICE_MAX = 130
-        reserve = NOTICE_MAX + len(portability)
-
-        def fits(line: str, tail: bool = False) -> bool:
-            room = budget_chars - (0 if tail else reserve)
-            return sum(len(x) for x in out) + len(line) <= room
-
-        # PRIORITY ORDER, and it is the whole design of this rendering:
-        #   1. what each level ADDS — the availability answer, the thing a
-        #      model gets wrong ("concepts need c++20")
-        #   2. the macro that NAMES the standard, so a model can test for it
-        #   3. cross-compiler disagreements — where a proved claim is still a
-        #      portability trap
-        # Everything else is value churn: "__cpp_constexpr is 202211L at
-        # c++23" is true, occupies 40 characters, and changes no decision. It
-        # spent most of the budget before this ordering existed.
-        dropped = 0
-        for lv in reversed(levels):                            # newest first
-            names = [n for n in added.get(lv, []) if n.startswith("__cpp")]
-            if not names:
-                continue
-            head = f"-std={lv} adds, on {tc}: "
-            shown: list[str] = []
-            for n in names:
-                cand = head + "; ".join(shown + [_fmt_feature(n)])
-                if not fits(cand):
-                    dropped += 1
-                    continue
-                shown.append(_fmt_feature(n))
-            if shown:
-                out.append(head + "; ".join(shown))
-            dropped += len(names) - len(shown)
-        # (2) the standard-naming macro, per level. For C this is the ONLY
-        # signal — nothing is newly defined between c99 and c23, only
-        # __STDC_VERSION__ moves — so an additions-only rendering left C blank.
-        for lv in reversed(levels):
-            for name in ("__cplusplus", "__STDC_VERSION__"):
-                if name not in changed.get(lv, []) and not (
-                        lv == levels[0] and name in (feats.get(lv) or {})):
-                    continue
-                val = (feats.get(lv) or {}).get(name)
-                if val is None:
-                    continue
-                line = f"-std={lv} sets {name} to {val}"
-                if fits(line):
+                line = ("NOT portable between the two compilers installed "
+                        "here: " + "; ".join(worst[:4])
+                        + " — a claim proved on one is not a language fact")
+                if sum(len(x) for x in out) + len(line) <= budget_chars:
                     out.append(line)
-                else:
-                    dropped += 1
-        if dropped:
-            line = (f"({dropped} further feature macros omitted — full set in "
-                    f"agents/lang/generated/{lang}.json)")
-            if fits(line, tail=True):
-                out.append(line)
-        if portability and fits(portability, tail=True):
-            # Reserved above — but a budget SMALLER than the reserve is still
-            # possible (a caller asking for 300 chars when the portability
-            # line alone is 299), and appending it unconditionally on that
-            # reasoning blew the budget it was supposed to protect.
-            out.append(portability)
+        # A budget too small for the summary must not yield a PARTIAL level
+        # list with no indication — that is the silent truncation this module
+        # refuses to do. Degrade to the one statement that is complete on its
+        # own (where the full set lives), and to nothing if even that will not
+        # fit. `packs.py` already treats an empty render as "nothing to say".
+        if sum(len(x) for x in out) > budget_chars:
+            pointer = [ln for ln in out if "agents/lang/generated/" in ln]
+            out = pointer if pointer and len(pointer[0]) <= budget_chars else []
     elif lang == "zig":
-        mods = facts_d.get("modules") or []
-        if mods:
-            out.append("std namespaces, EXACT spelling, from the installed "
-                       "lib/std: " + ", ".join(mods))
+        # top_level, NOT `modules`. The line below claims that a name absent
+        # from the list does not exist — and `modules` is only the subset
+        # whose backing file is spelled the same way, so rendering it made
+        # the pack ASSERT that std.AutoHashMap and std.StringHashMap do not
+        # exist. They do. An authoritative falsehood injected into a model's
+        # context is worse than saying nothing, and it is the exact failure
+        # this whole layer exists to prevent.
+        names = facts_d.get("top_level") or facts_d.get("modules") or []
+        if names:
+            out.append("std top-level names, EXACT spelling, from the "
+                       "installed lib/std: " + ", ".join(names))
             out.append("A name not in that list does not exist on this "
                        "toolchain — including lower-case variants of the ones "
                        "that are (std.Io is a namespace; std.io is not).")

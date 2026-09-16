@@ -12,6 +12,14 @@
 #   1 — one or more services down
 
 set -euo pipefail
+
+# pkill -f takes an EXTENDED REGEX, not a literal. A repo path containing a
+# regex metacharacter therefore breaks both directions: `+` makes the pattern
+# fail to match its own process (the orphan reap silently does nothing), and
+# `.` makes it match OTHER paths (the sibling-worktree reap this file's own
+# comments call impossible). Measured both. Quote the path before using it as
+# a pattern — all four call sites, not just the new one.
+_ob_ere() { printf '%s' "$1" | sed -E 's/[][(){}.^$*+?|\]/\\&/g'; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
@@ -82,7 +90,7 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; the
       # Path-anchored: never kill an unrelated llama-server from another
       # project on the same box.
       if pgrep -f "$REPO_DIR/llama.cpp/build/bin/llama-server" >/dev/null 2>&1; then
-        pkill -f "$REPO_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null || true
+        pkill -f "$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null || true
         sleep 2
       fi
       # Relaunch the serve script the stack was STARTED with (.run/serve-script,
@@ -174,7 +182,7 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   if ! check "beast-gate" "http://${HEALTH_HOST:-127.0.0.1}:${EDGE_PORT:-8090}/gate/health" "beast-gate"; then
     if $RESTART; then
       echo "       → restarting beast-gate..."
-      pkill -f "$REPO_DIR/agents/edge.py" 2>/dev/null || true
+      pkill -f "$(_ob_ere "$REPO_DIR/agents/edge.py")" 2>/dev/null || true
       sleep 1
       # Record the pid like the llama/mcpo relaunch paths do — without it
       # ./start.sh --status reports the gate down after a watchdog restart,
@@ -207,7 +215,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       if [[ -n "$_chat_pid" ]] && kill -0 "$_chat_pid" 2>/dev/null; then
         kill "$_chat_pid" 2>/dev/null || true
       else
-        pkill -f "$REPO_DIR/agents/chat_server.py" 2>/dev/null || true
+        pkill -f "$(_ob_ere "$REPO_DIR/agents/chat_server.py")" 2>/dev/null || true
       fi
       sleep 1
       python3 "$REPO_DIR/agents/chat_server.py" >/dev/null 2>&1 &
@@ -260,7 +268,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
         # actually forbids the bare form of: "$REPO_DIR/agents/..." cannot
         # match a sibling worktree's server, because its path differs. Same
         # form stop.sh uses for every service it reaps.
-        pkill -f "$REPO_DIR/agents/artifact_server.py" 2>/dev/null || true
+        pkill -f "$(_ob_ere "$REPO_DIR/agents/artifact_server.py")" 2>/dev/null || true
         sleep 1
       fi
       OPENBEAST_REPO_DIR="$REPO_DIR" \

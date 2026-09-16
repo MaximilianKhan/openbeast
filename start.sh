@@ -247,6 +247,13 @@ done
 # Idempotent: the TERM path exits, which fires the EXIT trap a second time.
 CLEANED=0
 STOPPING=0
+# Did THIS start.sh spawn them? The [17] guard deliberately leaves a live
+# chat/artifact server alone, which means their pidfiles belong to another
+# process — and cleanup() was deleting those pidfiles anyway on exit,
+# recreating the very no-recorded-pid state the guard exists to prevent.
+CHAT_OWNED=0
+ARTIFACT_OWNED=0
+
 cleanup() {
   [[ $CLEANED -eq 1 ]] && return 0
   CLEANED=1
@@ -280,8 +287,13 @@ cleanup() {
     rm -f "$_pf"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid" "$RUN_DIR/chat.pid" \
-        "$RUN_DIR/artifact.pid"
+        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
+  # ...but only the pidfiles of servers WE started. Removing a live server's
+  # recorded pid is what makes an orphan unreapable, which is the whole point
+  # of the [17] guard above.
+  [[ ${CHAT_OWNED:-0} -eq 1 ]] && rm -f "$RUN_DIR/chat.pid"
+  [[ ${ARTIFACT_OWNED:-0} -eq 1 ]] && rm -f "$RUN_DIR/artifact.pid"
+  return 0
 }
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
@@ -578,6 +590,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       python3 "$SCRIPT_DIR/agents/chat_server.py" &
       CHAT_PID=$!
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
+      CHAT_OWNED=1
       CHAT_UP=0
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
@@ -626,6 +639,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       python3 "$SCRIPT_DIR/agents/artifact_server.py" &
     ARTIFACT_PID=$!
     echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
+    ARTIFACT_OWNED=1
     ARTIFACT_UP=0
     for _i in $(seq 1 20); do
       kill -0 "$ARTIFACT_PID" 2>/dev/null || break

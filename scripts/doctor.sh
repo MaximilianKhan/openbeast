@@ -489,18 +489,32 @@ if ob_offline; then
   # what it is running? That is the difference between "serves offline" (which
   # every installed rig does) and "can be maintained offline".
   _off_missing=()
-  [[ -d "$REPO_DIR/llama.cpp/.git" || -d "$REPO_DIR/llama.cpp" ]] || _off_missing+=("llama.cpp source")
   [[ -f "$REPO_DIR/agents/requirements.lock" ]] || _off_missing+=("agents/requirements.lock")
+  # A wheelhouse that EXISTS is not a wheelhouse that WORKS: an empty
+  # directory (or one built for another platform) made this row print a green
+  # "all present" while a rebuild would fail. Ask pydeps whether it actually
+  # covers the locked closure — the same check `install --from` gates on.
   _off_wh=""
   for _d in "$REPO_DIR/wheels" "$REPO_DIR/wheelhouse" "${OPENBEAST_WHEELHOUSE:-}"; do
-    [[ -n "$_d" && -d "$_d" ]] && { _off_wh="$_d"; break; }
+    [[ -n "$_d" && -d "$_d" ]] || continue
+    if (cd "$REPO_DIR" && ./scripts/pydeps.sh audit "$_d" >/dev/null 2>&1); then
+      _off_wh="$_d"; break
+    fi
+    _off_missing+=("a COMPLETE wheelhouse ($_d exists but does not cover the lock)")
+    break
   done
-  [[ -n "$_off_wh" ]] || _off_missing+=("a wheelhouse (./wheels)")
+  [[ -n "$_off_wh" || ${#_off_missing[@]} -gt 0 ]] \
+    || _off_missing+=("a wheelhouse (./wheels)")
+  # llama.cpp needs SOURCE, not a clone — bundle.sh install lays down a
+  # tarball with no .git, and that builds fine.
+  if [[ ! -f "$REPO_DIR/llama.cpp/CMakeLists.txt" ]]; then
+    _off_missing+=("llama.cpp source (llama.cpp/CMakeLists.txt)")
+  fi
   if [[ ${#_off_missing[@]} -eq 0 ]]; then
-    pass "offline self-sufficiency: source, lock and wheelhouse ($_off_wh) are all present"
+    pass "offline self-sufficiency: source, lock and a wheelhouse that covers the lock ($_off_wh)"
   else
     warn "offline, but a REBUILD would need: ${_off_missing[*]}" \
-         "serving is unaffected; stage them on a connected box (./scripts/pydeps.sh wheelhouse wheels)"
+         "serving is unaffected; stage them on a connected box (./scripts/bundle.sh build ./bundle)"
   fi
 fi
 

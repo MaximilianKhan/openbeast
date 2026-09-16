@@ -1749,9 +1749,19 @@ def test_every_directory_in_the_store_is_0700(make_client):
     it — so one deep call left <root>/<id>, vN/files and every intermediate
     files/ subdirectory at 0777 & ~umask while the module header claimed
     "0700 all the way down"."""
-    c = make_client()
-    a = publish(c, files={"deep/nested/app.js": "console.log(1)",
-                          "deep/other.css": "b{}"})
+    # A PERMISSIVE UMASK, SET HERE. The assertion is that the code passes an
+    # explicit 0700 — but a directory created with NO mode inherits
+    # 0777 & ~umask, so on a runner with umask 077 it is 0700 anyway and this
+    # test passed with the fix fully reverted. Measured: reverted + umask 022
+    # fails, reverted + umask 077 passes. Constructing the umask is the
+    # difference between testing the code and testing the machine.
+    old_umask = os.umask(0o022)
+    try:
+        c = make_client()
+        a = publish(c, files={"deep/nested/app.js": "console.log(1)",
+                              "deep/other.css": "b{}"})
+    finally:
+        os.umask(old_umask)
     root = store.store_root()
     checked = 0
     for dirpath, dirnames, _files in os.walk(root):
@@ -1823,3 +1833,72 @@ def test_a_whitespace_spelled_index_html_still_gets_the_skeleton(make_client):
         assert "viewport" in r.text, spelling
         # and the isolation policy is the same one the plain spelling gets
         assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP, spelling
+
+
+def test_an_UNREADABLE_record_does_not_bypass_the_ownership_check(make_client):
+    """The fix for [32] (an unparseable meta.json made an artifact
+    undeletable) originally caught `ArtifactError`, and _read_meta folded
+    OSError and ValueError into that one class. So a transient read failure —
+    EIO, a permissions accident — was treated as "no recorded owner" and the
+    ownership check was SKIPPED. That is worse than the bug it closed:
+    ownership is the only thing DELETE cannot guess at.
+
+    Tested at the STORE, not through the HTTP route: DELETE is locality-gated,
+    so a foreign-login request 404s before it ever reaches remove() — a route
+    test here passes whether the store is right or wrong, which is exactly the
+    vacuous shape this suite keeps catching. (It caught this one: the first
+    version of this test passed against the reverted fix.)"""
+    c = make_client()
+    a = publish(c)                                    # owner: the local rig
+    meta = _meta_file(a["id"])
+    adir = os.path.join(store.store_root(), a["id"])
+
+    # (1) UNPARSEABLE stays deletable — that is the [32] fix itself.
+    with open(meta, "w", encoding="utf-8") as fh:
+        fh.write('{"id": "' + a["id"] + '", "versions": [')
+    assert store.remove(a["id"], owner="stranger@example.com") is True
+    assert not os.path.isdir(adir)
+
+    # (2) UNREADABLE must refuse, and leave the artifact alone.
+    b = publish(c)
+    bdir = os.path.join(store.store_root(), b["id"])
+    bmeta = _meta_file(b["id"])
+    os.chmod(bmeta, 0o000)
+    try:
+        if os.access(bmeta, os.R_OK):
+            pytest.skip("cannot make a file unreadable here (running as root?)")
+        with pytest.raises(store.ArtifactError) as e:
+            store.remove(b["id"], owner="stranger@example.com")
+        assert not isinstance(e.value, store.ArtifactMetaCorrupt), \
+            "a read failure was classified as a parse failure"
+        assert os.path.isdir(bdir), "the artifact was removed anyway"
+    finally:
+        os.chmod(bmeta, 0o600)
+    # the real owner can still delete it once the record is readable
+    assert store.remove(b["id"], owner=store.default_owner()) is True
+
+
+def test_a_bad_visibility_value_commits_nothing(make_client):
+    """The ordering comment in api_patch claimed set_current is "the only one
+    that can fail after a successful sibling". It was not: a mixed body with a
+    valid `current` and an INVALID visibility VALUE committed the rollback and
+    then answered 400 — the caller told the request failed while the artifact
+    had already moved.
+
+    Validating the enum is safe to do FIRST, unlike pre-checking `current`:
+    it tests the caller's own input and so cannot become an existence oracle
+    for a non-owner."""
+    c = make_client()
+    a = publish(c)
+    publish(c, artifact_id=a["id"])                  # now at v2
+    before = store.get_meta(a["id"])
+    assert before["current"] == 2
+    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+                       base_url="http://127.0.0.1:3004")
+    r = quiet.patch(f"/api/artifacts/{a['id']}",
+                    json={"current": 1, "visibility": "public-please"},
+                    headers=local(c))
+    assert r.status_code == 400, r.text
+    after = store.get_meta(a["id"])
+    assert after["current"] == 2, "the rollback committed despite the 400"
+    assert after.get("visibility") == before.get("visibility")
