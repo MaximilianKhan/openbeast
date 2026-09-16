@@ -36,6 +36,32 @@
 # The $OPENBEAST_GPU_BACKEND env var overrides this per-shell.
 #GPU_BACKEND=auto
 
+# ── Closed network ──────────────────────────────────────────────────────────
+# OFFLINE=true means "this box has no route to the internet and never will".
+#
+# It does NOT change what the stack serves — an installed rig already serves
+# with no internet at all. What it changes is that steps which cannot possibly
+# succeed are refused up front instead of stalling on a connect timeout and
+# then misdiagnosing the stall as something local. Concretely:
+#   bootstrap.sh   skips the network probe; refuses (with the recipe) rather
+#                  than attempting the four fetches a first install needs —
+#                  llama.cpp source, python wheels, the weight, the images;
+#                  installs python from a wheelhouse (./wheels, ./wheelhouse
+#                  or $OPENBEAST_WHEELHOUSE); adds
+#                  -DLLAMA_USE_PREBUILT_UI=OFF, because that fetch stalls
+#                  ~11 min and then fails, and this stack serves Open WebUI
+#                  rather than llama.cpp's bundled one
+#   update.sh      rebuilds llama.cpp as checked out instead of pulling;
+#                  skips the pip and registry-digest checks (both are index
+#                  queries) and says what IS reinstallable offline
+#   start.sh       `docker compose up --pull never`
+#   doctor.sh      reports the mode so a reader is not left guessing
+# Stage the artifacts once on a connected box:
+#   ./scripts/pydeps.sh wheelhouse wheels     (hash-verified at both ends)
+#   ./scripts/fetch-weight.sh --list
+#OFFLINE=false
+
+
 # Daemon-mode memory cap, as a PERCENT of this machine's physical RAM
 # (1-100; default 75). `./start.sh -d` computes the byte value fresh at
 # every launch, so the cap adapts to the box automatically — a runaway

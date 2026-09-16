@@ -281,6 +281,16 @@ preflight_extras() {
 # happen is a green verdict on a box that cannot finish a FIRST install.
 PF_NO_NET=0
 preflight_network() {
+  # OFFLINE=true is the operator telling us there is no route. Probing anyway
+  # costs three connect timeouts and produces a warning that reads like a
+  # fault — the exact misdiagnosis this key exists to stop.
+  if ob_offline; then
+    ok "network: not probed (OFFLINE=true). An installed rig serves fine with
+      no internet; what OFFLINE changes is that steps which cannot succeed are
+      refused up front instead of stalling."
+    PF_NO_NET=1
+    return 0
+  fi
   local unreachable=() host
   for host in github.com pypi.org huggingface.co; do
     # -I, 6s, no retries: this is a reachability question, not a download.
@@ -321,12 +331,27 @@ pf_summary() {
       echo "  ${c_red}…and the network is unreachable: a first install will fail"
       echo "  at the llama.cpp clone even once the ✗ items are fixed.${c_rst}"
     fi
+  elif ob_offline; then
+    # DELIBERATELY offline is not the same as unreachable, and saying
+    # "not reachable" to an operator who configured OFFLINE=true reads as a
+    # fault report about a decision they made.
+    echo "  ${c_ylw}Local environment is ready. OFFLINE=true, so the four"
+    echo "  fetches a first install needs are refused up front rather than"
+    echo "  attempted: llama.cpp source, the python wheels, the weight, and"
+    echo "  the two container images. Stage them once on a connected box —"
+    echo "    ./scripts/pydeps.sh wheelhouse wheels"
+    echo "    ./scripts/fetch-weight.sh --list"
+    echo "  — and an existing install rebuilds and serves with no network at"
+    echo "  all.${c_rst}"
   elif [[ ${PF_NO_NET:-0} -eq 1 ]]; then
     # Everything LOCAL is fine, so this is not a ✗ — but "looks ready" would
     # be a lie on a box that cannot fetch a single one of its four artifacts.
     echo "  ${c_ylw}Local environment is ready, but the network is not reachable."
     echo "  A first install will fail at the llama.cpp clone. An existing"
-    echo "  install can still rebuild and serve.${c_rst}"
+    echo "  install can still rebuild and serve."
+    echo "  If that is permanent, set OFFLINE=true in openbeast.conf and the"
+    echo "  installer will refuse those steps up front instead of stalling on"
+    echo "  each one.${c_rst}"
   else
     echo "  ${c_grn}Environment looks ready — run ./bootstrap.sh to install.${c_rst}"
   fi
@@ -353,8 +378,29 @@ else
   # (the reference profile, unchanged); hip/sycl/cpu per the backend.
   CMAKE_FLAGS="$(ob_cmake_flags)" \
     || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
+  # OFFLINE ONLY. llama.cpp's cmake fetches a prebuilt Web UI; on a closed
+  # network that fetch stalls ~660 s and then fails, taking the whole build
+  # with it. Disabling it offline is not a preference about upstream features
+  # — the fetch CANNOT succeed there, so attempting it only buys a stall.
+  # The default build is untouched: Max wants latest llama.cpp with whatever
+  # upstream ships (2026-09-15), and this stack never serves that UI anyway
+  # (Open WebUI is the front end).
+  if ob_offline; then
+    CMAKE_FLAGS="$CMAKE_FLAGS -DLLAMA_USE_PREBUILT_UI=OFF"
+    warn "OFFLINE=true → adding -DLLAMA_USE_PREBUILT_UI=OFF (that fetch would
+      stall ~11 min and then fail; the stack serves Open WebUI, not it)"
+  fi
   ok "backend $OB_BACKEND → cmake flags: ${CMAKE_FLAGS:-none (CPU-only)}"
-  [[ -d "$REPO_DIR/llama.cpp/.git" ]] || git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
+  if [[ ! -d "$REPO_DIR/llama.cpp/.git" ]]; then
+    ob_offline && die "OFFLINE=true and there is no llama.cpp/ tree to build.
+       The source clone is one of the four fetches a first install cannot do
+       on a closed network. Bring the tree in by hand:
+         connected box:  git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+         copy it to:     $REPO_DIR/llama.cpp
+       Then re-run. (A tarball works too — it needs the SOURCE, not the git
+       history; but update.sh's rebuild path does want a .git.)"
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
+  fi
   # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
   cmake -S "$REPO_DIR/llama.cpp" -B "$REPO_DIR/llama.cpp/build" \
         $CMAKE_FLAGS -DCMAKE_BUILD_TYPE=Release
@@ -451,7 +497,28 @@ else
   # it fatal for a deployment that mandates hash pinning.
   _ob_lock="$REPO_DIR/agents/requirements.lock"
   _ob_locked_ok=0
-  if [[ -f "$_ob_lock" ]]; then
+  # OFFLINE: a wheelhouse is the only way this can work, so look for one and
+  # say exactly how to make one if it is absent. Reaching for the index here
+  # is the stall the operator already told us to avoid.
+  if ob_offline; then
+    for _wh in "$REPO_DIR/wheels" "$REPO_DIR/wheelhouse" "${OPENBEAST_WHEELHOUSE:-}"; do
+      [[ -n "$_wh" && -d "$_wh" ]] || continue
+      if "$REPO_DIR/scripts/pydeps.sh" install --from "$_wh"; then
+        _ob_locked_ok=1
+        ok "installed the hash-pinned closure from $_wh (no index contacted)"
+        break
+      fi
+      warn "wheelhouse $_wh did not satisfy the lock — see the audit above"
+    done
+    [[ $_ob_locked_ok -eq 1 ]] || die "OFFLINE=true and no usable wheelhouse.
+       Python packages are the second of the four fetches a closed network
+       cannot do. Stage them once on a connected box:
+         ./scripts/pydeps.sh wheelhouse wheels
+       copy ./wheels AND agents/requirements.lock here, then re-run. Every
+       artifact is hash-checked at both ends, so the USB stick does not have
+       to be trusted."
+  fi
+  if [[ $_ob_locked_ok -eq 0 && -f "$_ob_lock" ]]; then
     if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock"; then
       _ob_locked_ok=1
       ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
@@ -504,6 +571,15 @@ WEIGHT_SHA256="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $1}' "$REPO_DIR/
 if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
   ok "already downloaded ($WEIGHTS_DIR/$WEIGHT_FILE)"
 else
+  ob_offline && die "OFFLINE=true and $WEIGHT_FILE is not in $WEIGHTS_DIR.
+       The ~20 GB weight is the third of the four fetches a closed network
+       cannot do, and the stack has nothing to serve without a weight. Copy
+       one in and verify it:
+         ./scripts/fetch-weight.sh --list      (on a connected box)
+         copy the .gguf into $WEIGHTS_DIR
+         ./scripts/verify-weights.sh           (checks size + sha256)
+       Any registry weight works, not just this default — set SERVE_SCRIPT in
+       openbeast.conf to match what you brought."
   warn "downloading the default 27B model — this is the long step, grab coffee."
   HF_BIN="$(command -v hf || command -v huggingface-cli || true)"
   [[ -n "$HF_BIN" ]] || die "hf CLI not found after install; add ~/.local/bin to PATH and re-run"

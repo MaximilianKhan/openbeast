@@ -159,10 +159,41 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
       every pin is present, and on failure prints the pre-staged-wheelhouse
       recipe. Upgrades were not lost: `update.sh --python` already owns them,
       which is the right place — bootstrap's job is to make the box work.
-      **Still open:** `-DLLAMA_USE_PREBUILT_UI=OFF` in `ob_cmake_flags`
-      (660 s of cmake stall fetching a Web UI we never use — ⚠ MAX'S CALL, it
-      disables an upstream feature and he wants latest llama.cpp), the compose
-      stanza, and the conf key itself that ties them together.
+      **DONE 2026-09-15 — the conf key now exists and ties it together.**
+      `OFFLINE` (env `OPENBEAST_OFFLINE`), resolved in `scripts/lib/conf.sh`
+      with the `ob_offline` predicate so there is one answer to "are we
+      offline" in one place. Presence-not-truthiness, per the LANG_PACKS
+      precedent: only `true|yes|1|on` count, so a typo cannot silently enable
+      a mode that refuses installs.
+      * `bootstrap.sh` — skips the reachability probe (proved by a stub curl
+        that records every call: **zero** probe invocations offline, and the
+        same test asserts the probe DOES run when the key is off, or it would
+        prove nothing); refuses each of the four fetches BY NAME with the
+        recipe to stage it; installs python from a wheelhouse
+        (`./wheels`, `./wheelhouse`, `$OPENBEAST_WHEELHOUSE`) via the
+        hash-verified `pydeps.sh install --from`.
+      * `update.sh` — rebuilds llama.cpp as checked out instead of pulling
+        (which is the useful work offline); `--check` reports the local rev
+        rather than burning a connect timeout to print "? commits behind";
+        skips the pip and registry-digest stages, both of which are index
+        queries, and says what IS reinstallable offline.
+      * `start.sh` — `docker compose up --pull never`, plus the digest trap
+        spelled out in the failure message.
+      * `doctor.sh` — reports the mode (it changes what other rows MEAN: a
+        cert-expiry warning is not actionable on a box that can never reach
+        the coordination server) and checks offline SELF-SUFFICIENCY, which is
+        the difference between "serves offline" (every installed rig does) and
+        "can be maintained offline".
+      * **`-DLLAMA_USE_PREBUILT_UI=OFF` — resolved without needing a
+        decision.** It is applied *only* when `OFFLINE=true`, where that fetch
+        cannot succeed by construction (~11 min stall, then failure). The
+        default build is untouched and still follows upstream, which is what
+        Max asked for. A test asserts the flag is gated and not unconditional.
+      Also corrected the framing: a box **told** it is offline is not a box
+      whose network is "unreachable", and reporting the second to an operator
+      who configured the first reads as a fault report about their own
+      decision. The two summaries are now distinct, and the unreachable one
+      points at this key.
 - [ ] **Offline bundle — build connected, install from USB** (airgap 10,
       feasibility 7). Four fatal fetches with no local alternative: llama.cpp
       source, PyPI wheels, the 20 GB GGUF, and the two digest-pinned images.

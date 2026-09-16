@@ -58,6 +58,13 @@ update_llama() {
   local before after
   before=$(git -C "$src" rev-parse --short HEAD)
   if [[ $CHECK_ONLY -eq 1 ]]; then
+    # OFFLINE: --check compares against a remote. Report what is on disk and
+    # say why there is nothing to compare to, rather than burning a connect
+    # timeout to print "?" commits behind.
+    if ob_offline; then
+      ok "local $before (OFFLINE=true — no remote to compare against)"
+      return 0
+    fi
     git -C "$src" fetch -q origin
     after=$(git -C "$src" rev-parse --short origin/master 2>/dev/null || git -C "$src" rev-parse --short origin/HEAD)
     local behind
@@ -68,7 +75,15 @@ update_llama() {
 
   # A detached HEAD means the user pinned a known-good SHA (see
   # docs/UPDATING.md) — honor the pin: rebuild what's checked out, no pull.
-  if git -C "$src" symbolic-ref -q HEAD >/dev/null; then
+  #
+  # OFFLINE is the same shape of case and takes the same path: skip the pull,
+  # rebuild what is on disk. That IS the useful work on a closed network —
+  # the review's finding in one line is that an installed rig can rebuild and
+  # serve offline, it just cannot FETCH. Pulling anyway would buy a connect
+  # timeout and a warning that reads like a fault.
+  if ob_offline; then
+    warn "OFFLINE=true → not pulling; building llama.cpp as checked out ($before)"
+  elif git -C "$src" symbolic-ref -q HEAD >/dev/null; then
     # The old form was `pull 2>/dev/null || pull || die "local changes in
     # llama.cpp/?"`. On an unreachable remote that swallowed git's real
     # message, spent a SECOND full connect timeout, and then blamed a dirty
@@ -155,6 +170,15 @@ update_images() {
   # would just re-fetch the pinned digest, so --images is the SANCTIONED
   # bump: pull the moving TAG, read its new digest, rewrite the pin (same
   # pattern as requirements.txt). Repo:tag pairs, keep in sync with compose.
+  if ob_offline; then
+    warn "OFFLINE=true → not bumping image digests (that is a registry pull).
+       The pinned digests keep working from the local image store; a closed
+       box updates images the same way it installs them — docker save/load
+       from a connected box, and note that a digest-pinned reference cannot
+       be satisfied by a locally retagged image, so docker-compose.yml has to
+       change too (docs/TODO.md, offline bundle)."
+    return 0
+  fi
   local compose="$REPO_DIR/docker-compose.yml"
   local bumped=0
   for _spec in \
@@ -193,6 +217,21 @@ update_images() {
 update_python() {
   step "Python packages (mcp, openai, fastapi, uvicorn, huggingface_hub)"
   if [[ $CHECK_ONLY -eq 1 ]]; then
+    # `pip list --outdated` is an INDEX QUERY. Under OFFLINE it stalls per
+    # package and then reports nothing, so --check looked like it had
+    # answered when it had not. Report what the lock says instead, which is
+    # the honest offline answer: these are the versions this box is pinned to
+    # and can reinstall without a network.
+    if ob_offline; then
+      ok "OFFLINE=true — 'pip list --outdated' needs the index, so there is no
+      upstream to compare against. Pinned here:"
+      grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt" | sed 's/^/        /'
+      if [[ -f "$REPO_DIR/agents/requirements.lock" ]]; then
+        ok "the hash-pinned closure is reinstallable offline from a wheelhouse:
+      ./scripts/pydeps.sh install --from wheels"
+      fi
+      return 0
+    fi
     python3 -m pip list --user --outdated 2>/dev/null \
       | grep -Ei '^mcp |openai|fastapi|uvicorn|pyjwt|huggingface' || ok "all current"
     return 0
@@ -239,6 +278,13 @@ update_python() {
     fi
   }
 
+  if ob_offline; then
+    warn "OFFLINE=true → skipping the python upgrade check (it needs the index).
+       To move pins on a closed box: regenerate the lock on a connected one
+       (./scripts/pydeps.sh lock), bring a fresh wheelhouse, then
+       ./scripts/pydeps.sh install --from wheels"
+    return 0
+  fi
   if ! python3 -m pip install --user $pip_flags -q -U huggingface_hub "${pkgs[@]}"; then
     _py_restore
     die "pip upgrade failed — rolled back to the previous pins"
@@ -298,7 +344,8 @@ PY
 update_opencode() {
   step "OpenCode"
   if ! command -v opencode >/dev/null 2>&1; then
-    warn "opencode not installed — skip (install: curl -fsSL https://opencode.ai/install | bash)"
+    ob_offline && warn "opencode not installed, and OFFLINE=true — its installer is a network fetch; skip" \
+      || warn "opencode not installed — skip (install: curl -fsSL https://opencode.ai/install | bash)"
     return 0
   fi
   if [[ $CHECK_ONLY -eq 1 ]]; then

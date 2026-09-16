@@ -1265,6 +1265,109 @@ fi
 # inside a measurement's window on 2026-09-14 and contaminated 5 eval units.
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
+echo "OFFLINE (closed network):"
+# The closed-network review's finding was not that the stack cannot run
+# offline — an installed rig serves fine with no internet. It was that nothing
+# could be TOLD there is no internet, so every install/update path stalled on
+# a connect timeout and then misdiagnosed the stall. These checks are about
+# the telling.
+for _v in true TRUE yes 1 on; do
+  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  if [[ "$_got" == "on" ]]; then
+    pass "OFFLINE=$_v resolves to on"
+  else
+    fail "OFFLINE=$_v resolved to $_got"
+  fi
+done
+# PRESENCE, not truthiness (the LANG_PACKS precedent): a typo must not
+# silently enable a mode that refuses installs.
+for _v in maybe off false 0 ''; do
+  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  if [[ "$_got" == "off" ]]; then
+    pass "OFFLINE='$_v' resolves to off (a typo must not enable it)"
+  else
+    fail "OFFLINE='$_v' resolved to $_got — a typo enabled offline mode"
+  fi
+done
+# BEHAVIOURAL, not structural: prove the probe does not happen. A stub curl
+# that records every invocation is the only way to tell "skipped" from
+# "succeeded quickly".
+_OF_TMP="$(mktemp -d)"
+cat > "$_OF_TMP/curl" <<'CURLSTUB'
+#!/bin/bash
+echo "$@" >> "$OB_CURL_LOG"
+exit 6
+CURLSTUB
+chmod +x "$_OF_TMP/curl"
+: > "$_OF_TMP/calls"
+_OF_OUT="$(cd "$REPO_DIR" && PATH="$_OF_TMP:$PATH" OB_CURL_LOG="$_OF_TMP/calls" \
+           OPENBEAST_OFFLINE=true OPENBEAST_GPU_BACKEND=cpu \
+           ./bootstrap.sh --preflight --minimal 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+if grep -q 'not probed' <<< "$_OF_OUT"; then
+  pass "offline preflight says it did not probe"
+else
+  fail "offline preflight did not report skipping the probe"
+fi
+if grep -qE 'github\.com|pypi\.org|huggingface\.co' "$_OF_TMP/calls"; then
+  fail "offline preflight called curl against $(tr '\n' ' ' < "$_OF_TMP/calls" | head -c 120)"
+else
+  pass "offline preflight called curl for NO reachability probe at all"
+fi
+if grep -q 'network is not reachable' <<< "$_OF_OUT"; then
+  fail "offline mode reports the network as UNREACHABLE — it was told it is absent, which is not a fault"
+else
+  pass "offline mode does not report a fault for a configured absence"
+fi
+# ...and with OFFLINE off, the probe MUST happen, or the check above would
+# pass on a bootstrap that simply never probes.
+: > "$_OF_TMP/calls"
+(cd "$REPO_DIR" && PATH="$_OF_TMP:$PATH" OB_CURL_LOG="$_OF_TMP/calls" \
+   OPENBEAST_OFFLINE=false OPENBEAST_GPU_BACKEND=cpu \
+   ./bootstrap.sh --preflight --minimal >/dev/null 2>&1 || true)
+if grep -qE 'github\.com|pypi\.org|huggingface\.co' "$_OF_TMP/calls"; then
+  pass "with OFFLINE off the reachability probe still runs"
+else
+  fail "the probe never runs at all — the offline check above proves nothing"
+fi
+rm -rf "$_OF_TMP"
+# Every fetch a closed network cannot do must be refused BY NAME, with a
+# recipe. A guard that dies without saying how to proceed just moves the dead
+# end one line later.
+for _need in 'llama.cpp' 'wheelhouse' 'WEIGHT_FILE'; do
+  if grep -q "OFFLINE=true and" "$REPO_DIR/bootstrap.sh" \
+     && grep -A6 "OFFLINE=true and" "$REPO_DIR/bootstrap.sh" | grep -q "$_need"; then
+    pass "bootstrap refuses the $_need fetch with a recipe"
+  else
+    fail "bootstrap has no offline refusal naming $_need"
+  fi
+done
+if grep -q 'LLAMA_USE_PREBUILT_UI=OFF' "$REPO_DIR/bootstrap.sh"; then
+  pass "offline builds skip the prebuilt-UI fetch (it cannot succeed there)"
+else
+  fail "offline builds still attempt the prebuilt-UI fetch (~11 min stall, then fail)"
+fi
+# ...but ONLY offline: the default build follows upstream (Max, 2026-09-15).
+if grep -B8 'LLAMA_USE_PREBUILT_UI=OFF' "$REPO_DIR/bootstrap.sh" | grep -q 'ob_offline'; then
+  pass "the prebuilt-UI flag is gated on OFFLINE, not applied unconditionally"
+else
+  fail "the prebuilt-UI flag is unconditional — that changes the default build"
+fi
+if grep -q 'pull never' "$REPO_DIR/start.sh"; then
+  pass "start.sh uses --pull never when offline"
+else
+  fail "start.sh lets compose reach a registry on a closed network"
+fi
+for _stage in 'not pulling' 'needs the index' 'registry pull'; do
+  if grep -q "$_stage" "$REPO_DIR/scripts/update.sh"; then
+    pass "update.sh has an offline path for: $_stage"
+  else
+    fail "update.sh has no offline path for: $_stage"
+  fi
+done
+
+echo ""
 echo "Hash-pinned python closure:"
 if [[ -x "$REPO_DIR/scripts/pydeps.sh" ]]; then
   pass "pydeps.sh exists and is executable"
