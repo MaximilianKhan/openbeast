@@ -35,3 +35,15 @@ evals/cache/
 # so they are per-rig state, not source. The serving path probes live; these
 # files exist only for review (./scripts/lang-introspect.sh write).
 agents/lang/generated/
+
+# Per-rig transfer artifacts, not source. The docs and every failure message
+# tell an operator to run `./scripts/pydeps.sh wheelhouse wheels` or
+# `./scripts/bundle.sh build ./bundle` FROM THE REPO ROOT, which without these
+# lines drops 43+ untracked wheels (or a multi-GB bundle, images and weights
+# included) into `git status` — and a hurried `git add -A` on a closed box
+# would commit them. Everything here is regenerable from
+# agents/requirements.lock, which IS source.
+wheels/
+wheelhouse/
+bundle/
+*.bundle/

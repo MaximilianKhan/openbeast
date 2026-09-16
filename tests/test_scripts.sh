@@ -1266,6 +1266,23 @@ fi
 # Those agents did not IGNORE a lease — they had nothing to consult.
 echo ""
 echo "Offline bundle:"
+# The docs and every failure message tell an operator to create these IN the
+# repo root. Un-ignored, that is 43+ untracked wheels (or a multi-GB bundle) in
+# `git status`, and a hurried `git add -A` on a closed box commits them.
+for _art in wheels/x.whl wheelhouse/x.whl bundle/MANIFEST.json; do
+  if git -C "$REPO_DIR" check-ignore -q "$_art" 2>/dev/null; then
+    pass "$(dirname "$_art")/ is gitignored (per-rig transfer artifact)"
+  else
+    fail "$(dirname "$_art")/ is not gitignored — following our own instructions dirties the repo"
+  fi
+done
+# ...but the LOCK is source and must stay tracked, or an offline box has
+# nothing to verify a wheelhouse against.
+if git -C "$REPO_DIR" ls-files --error-unmatch agents/requirements.lock >/dev/null 2>&1; then
+  pass "agents/requirements.lock is tracked (it is the source of truth)"
+else
+  fail "the lock is not tracked — a closed box would have nothing to verify against"
+fi
 if [[ -x "$REPO_DIR/scripts/bundle.sh" ]]; then
   pass "bundle.sh exists and is executable"
 else
