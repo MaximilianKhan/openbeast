@@ -81,6 +81,7 @@ SHIPPED_SUFFIX = "-synthesized.json"
 ENV_URL = "OPENBEAST_LANG_SYNTH_URL"
 ENV_MODEL = "OPENBEAST_LANG_SYNTH_MODEL"
 ENV_KEY = "OPENBEAST_LANG_SYNTH_KEY"
+ENV_THINKING = "OPENBEAST_LANG_SYNTH_THINKING"
 
 # Budgets. Every one is a bound on something a model or a corpus controls.
 MAX_PROMPTS = _proc.env_number("OPENBEAST_LANG_SYNTH_MAX_PROMPTS", 8, int, 1)
@@ -92,6 +93,10 @@ MAX_SNIPPETS_PER_SIDE = 4
 MAX_SNIPPET_CHARS = 4_000
 MAX_SUMMARY_CHARS = 300
 HTTP_TIMEOUT_S = _proc.env_number("OPENBEAST_LANG_SYNTH_TIMEOUT", 600.0, float, 1.0)
+#: Generous on purpose: this rig's default is a REASONING model, and one that
+#: spends its whole budget thinking returns an empty `content` — which would
+#: read as "malformed" when the truth is "never got to answer".
+MAX_TOKENS = _proc.env_number("OPENBEAST_LANG_SYNTH_MAX_TOKENS", 16384, int, 256)
 
 _TEXT_EXT = (".txt", ".md", ".rst", ".html", ".htm", ".zig", ".go", ".rs")
 _TAR_EXT = (".tar.xz", ".tar.bz2", ".tar.gz", ".tgz", ".tar")
@@ -154,20 +159,27 @@ class HTTPClient:
     """
 
     def __init__(self, url: str, model: str = "local", api_key: str = "",
-                 timeout: float = HTTP_TIMEOUT_S):
+                 timeout: float = HTTP_TIMEOUT_S, thinking: bool | None = None):
         if not re.match(r"https?://[^/\s]+", url or ""):
             raise SynthError(f"{ENV_URL} must be an http(s) URL, got {url!r}")
         url = url.rstrip("/")
         if not url.endswith("/chat/completions"):
             url += "/chat/completions"
         self.url, self.model, self.api_key, self.timeout = url, model, api_key, timeout
+        #: None = say nothing (portable to any OpenAI-compatible server);
+        #: True/False = llama-server's per-request toggle, as agents/router.py
+        #: sends it.
+        self.thinking = thinking
 
     def draft(self, prompt: str) -> str:
-        body = json.dumps({
-            "model": self.model, "temperature": 0.2, "max_tokens": 4096,
+        payload = {
+            "model": self.model, "temperature": 0.2, "max_tokens": MAX_TOKENS,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT},
                          {"role": "user", "content": prompt}],
-        }).encode()
+        }
+        if self.thinking is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": self.thinking}
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(self.url, data=body, method="POST",
                                      headers={"Content-Type": "application/json"})
         if self.api_key:
@@ -192,8 +204,11 @@ def client_from_env(env=None) -> HTTPClient:
             f"  {ENV_URL}=http://<host>:<port>/v1\n"
             f"— and only at a server nothing else is measuring on. "
             f"--dry-run shows the prompts without calling anything.", 2)
+    raw = (env.get(ENV_THINKING) or "").strip().lower()
+    thinking = {"1": True, "true": True, "on": True,
+                "0": False, "false": False, "off": False}.get(raw)
     return HTTPClient(url, (env.get(ENV_MODEL) or "local").strip(),
-                      (env.get(ENV_KEY) or "").strip())
+                      (env.get(ENV_KEY) or "").strip(), thinking=thinking)
 
 
 # --------------------------------------------------------------------------
@@ -927,7 +942,8 @@ def main(argv: list[str] | None = None, client=None,
     d.add_argument("--max-candidates", type=int, default=MAX_CANDIDATES)
     d.add_argument("--max-prompt-chars", type=int, default=MAX_PROMPT_CHARS)
     d.add_argument("--dry-run", action="store_true",
-                   help="print the prompts that WOULD be sent; call nothing, compile nothing")
+                   help="print the prompts that WOULD be sent; no model call, "
+                        "no candidate compiled, nothing written")
     d.add_argument("--ignore-lease", action="store_true")
     d.add_argument("--report", help="where to write the JSON run report")
     pr = sub.add_parser("promote", help="move REVIEWED staging claims into the shipped set")
@@ -988,7 +1004,7 @@ def main(argv: list[str] | None = None, client=None,
         for i, p in enumerate(report["would_send"], 1):
             print(f"===== prompt {i}/{report['prompts']} ({len(p)} chars) =====\n{p}\n")
         print(f"dry run: {report['prompts']} prompt(s) WOULD be sent; nothing "
-              f"was sent, compiled or written.")
+              f"was sent, no candidate was compiled, nothing was written.")
         return 0
     path = a.report or _report_path(a.lang)
     _atomic_write(path, report)

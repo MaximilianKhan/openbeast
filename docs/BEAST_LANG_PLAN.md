@@ -422,8 +422,122 @@ must clear a v5-suite eval before joining the runner registry.
     in `agents/runner.py` — both are cache-hashed, and the Tier-3 A/B has five
     cells outstanding. `runner.py --context-file` already exists, so no new
     plumbing is needed once the lock lifts.
-- **Phase 3 — synthesis: needs the GPU.** Note that a pack does NOT need an
-  LLM: the verified claims already *are* the summary, one `summary` line each.
-  The local model's job in phase 3 is to DRAFT new candidate claims from the
-  corpus, which the verifier then accepts or rejects. That ordering is what
-  keeps a model-written claim from ever reaching a pack unverified.
+- **Phase 5 — the pull surface: SHIPPED.** Both halves, and neither touches
+  the runner.
+  - **`language_reference(language, topic="", error="")`** on the MCP/WebUI
+    surface (`agents/mcp_server.py`, `agents/openapi_tools.py`; 17 → 18
+    tools). `error` → the escalation cards for that diagnostic, `topic` → the
+    VERIFIED claims whose topic / summary / named identifiers match, most
+    specific first, plus what the toolchain says about that ONE name
+    (GENERATED, labelled: "`std.io` does NOT exist … the installed spelling is
+    `std.Io`"); neither → the pack. It goes through two new facade calls
+    (`safe_reference`, `safe_languages` — no-raise, silent under eval), is
+    imported lazily, clips at ~8 KB on a line boundary and says so, and answers
+    an unserved language with the list this rig *can* serve. **It never
+    improvises:** no fuzzy match, no third tier; a miss is "no verified
+    reference for …". Admin profile only — `GUEST_TOOLS` stays web-only.
+    **Not in the runner's registry** (§7 P5: it must clear a v5-suite eval
+    first), which a test asserts by *reading* `agents/tools.py`.
+  - What building it exposed: a bare topic like `maketrans` produced
+    "`import maketrans` does NOT exist" — true, useless, and it read as a
+    verdict on the function the caller asked about. An ABSENCE line is now
+    stated only when the caller named the namespace (`import imp`, `std.io`).
+  - **The `beast-lang` skill** (`skills/beast-lang/SKILL.md`): what the library
+    is, how to look something up, how to add a claim, what each verdict means,
+    the hard rules. It carries `prompt_index: false`, a new generator opt-out:
+    the skill menu lives in `system-prompt-tools.md`, which is era-locked, so
+    before this *any* new skill either rolled the eval era or failed
+    `test_scripts.sh`. It is the right answer on its merits too — skills fire
+    ~0% on local models (§2.1) and the menu is paid for every turn.
+- **Phase 3 — synthesis: THE HARNESS IS BUILT; the real run is pending the
+  GPU.** `agents/lang/synthesize.py` + `scripts/lang-synthesize.sh`. Note that
+  a pack does NOT need an LLM: the verified claims already *are* the summary,
+  one `summary` line each. The local model's job in phase 3 is to DRAFT new
+  candidate claims from the corpus, which the verifier then accepts or
+  rejects. That ordering is what keeps a model-written claim from ever
+  reaching a pack unverified, and it is now structural:
+
+  ```
+  L0 corpus + L1 facts -> bounded prompts -> model -> strict parse
+     -> duplicate check -> verify.verify (the REAL drivers) -> claims/staging/
+                                        reviewed by a person -> promote
+  ```
+
+  - **Tested end to end with a stub model; no endpoint has been touched.** The
+    model is an interface (`draft(prompt) -> str`). The HTTP client has **no
+    default URL** — `OPENBEAST_LANG_SYNTH_URL` unset is a refusal, never a
+    fallback to whatever `:8080` is serving — and `draft` refuses while
+    `scripts/gpu-lease.sh status` says `HELD` by anyone but its own
+    `gpu-lease.sh run` ancestor. Unknown is not free either.
+  - **Never repaired.** Prose, fences, `<think>` blocks and a broken envelope
+    are tolerated; a *record* is taken only if it parses exactly as written. A
+    trailing comma or a reply cut off mid-record costs that record, counted.
+  - **Two holes closed before they shipped.** `verify.Claim` reads a one-line
+    snippet ending in `.py`/`.c` as a fixture *path*, so a drafted
+    `"new": ["/home/u/secret.py"]` was a file-read primitive — refused, and the
+    Claim is built from newline-terminated snippets as the belt. And `verify()`
+    calls a claim with no OLD form VERIFIED; a drafted claim must show what
+    stopped working.
+  - **Staging is not served** (`load_claims` lists one directory, no
+    recursion — pinned by a test). `promote` re-validates hand edits,
+    re-verifies, is all-or-nothing, writes `claims/<lang>-synthesized.json`
+    (never a hand-authored set, never the generated zig set) and rebuilds that
+    language's escalation index.
+  - **A bug this found in phase 4:** `escalate.py --rebuild --lang X` wrote the
+    one-language result over the whole index, deleting every other language;
+    a full `--rebuild` on a box without zig deleted zig. `write_index()` now
+    merges, atomically, byte-identical for a full rebuild.
+  - **Still to do: the run itself** (§11), then a human review of whatever it
+    stages. P3's *other* output in §7 — model-written pack prose — is
+    deliberately NOT built: every pack line is a claim summary or a generated
+    fact, and a free-prose tier would be CURATED by definition.
+
+## 11. How to run synthesis
+
+Not before the GPU campaign is over: drafting runs on the card, and every
+candidate is compiled on the CPU next to whatever is being measured.
+
+```bash
+cd ~/Documents/openbeast                 # the MAIN tree, not a worktree: the
+                                         # lease file lives in ITS .run/, and a
+                                         # worktree's copy of gpu-lease.sh reads
+                                         # an empty one and says FREE
+./scripts/gpu-lease.sh status            # must say FREE
+./scripts/lang-library.sh list           # is there a corpus for the language?
+
+# 1. Look at what WOULD be sent. No model call, no candidate compiled, no lease.
+./scripts/lang-synthesize.sh draft python --dry-run --match 'whatsnew/3\.1[2-4]'
+
+# 2. The run. The endpoint is this rig's own llama-server (./start.sh, the
+#    default model — today Qwen3.8-27B-Uncensored MTP Q5 on :8080); there is no
+#    default, so it is named explicitly, and the lease is held for the run.
+OPENBEAST_LANG_SYNTH_URL=http://127.0.0.1:8080/v1 \
+  ./scripts/gpu-lease.sh run "beast-lang P3 python" -- \
+  ./scripts/lang-synthesize.sh draft python --match 'whatsnew/3\.1[2-4]'
+
+# 3. Review. Is each summary TRUE and useful, not merely compilable? Delete
+#    the ones that are not, straight out of the staging file.
+./scripts/lang-synthesize.sh status
+$EDITOR agents/lang/claims/staging/python-<date>.json
+
+# 4. Promote what survived (re-verifies; all or nothing; rebuilds the index),
+#    then the usual gates.
+./scripts/lang-synthesize.sh promote agents/lang/claims/staging/python-<date>.json --all
+python3 agents/lang/verify.py --lang python && python3 agents/lang/escalate.py --check
+```
+
+Knobs: `OPENBEAST_LANG_SYNTH_KEY` (bearer token, when `LLAMA_API_KEY` is set
+on the rig), `OPENBEAST_LANG_SYNTH_MODEL` (llama-server ignores it),
+`OPENBEAST_LANG_SYNTH_THINKING=off` (sends `enable_thinking: false`; unset
+sends nothing), `OPENBEAST_LANG_SYNTH_MAX_TOKENS` (default 16384 — a reasoning
+model that spends its budget thinking returns an empty answer, which would
+read as malformed), `--max-prompts` (8), `--max-candidates` (40),
+`--max-prompt-chars` (12000), `--source FILE` for material outside the library
+(zig's release notes, say — there is no zig corpus directory on this rig, and
+with no source material the run exits 3 rather than draft from thin air). The
+JSON report lands in `.run/lang-synth/`; exit codes are 0 ok · 2 config ·
+3 no corpus / no toolchain · 4 lease held · 5 every model call failed.
+
+Order of languages, by where the instrument has range (§2.2): **zig first**
+(needs `--source` with the 0.15/0.16 release notes, or an acquired corpus),
+then python and cpp, whose corpora are already on disk.

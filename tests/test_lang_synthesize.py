@@ -421,6 +421,12 @@ def test_the_http_client_speaks_openai_chat(monkeypatch):
     assert c.draft("PROMPT") == "DRAFT"
     assert sent["url"].endswith("/v1/chat/completions") and sent["auth"] == "Bearer k"
     assert sent["body"]["messages"][-1] == {"role": "user", "content": "PROMPT"}
+    # unset = the request says nothing about thinking (portable); set = the
+    # per-request toggle llama-server understands
+    assert "chat_template_kwargs" not in sent["body"]
+    off = S.client_from_env({S.ENV_URL: "http://drafter.example:9/v1", S.ENV_THINKING: "off"})
+    off.draft("PROMPT")
+    assert sent["body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_a_failing_model_call_is_a_note_not_a_crash(rig, capsys):
