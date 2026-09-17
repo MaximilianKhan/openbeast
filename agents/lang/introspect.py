@@ -90,13 +90,15 @@ def _run(argv: list[str], stdin: str | None = None,
     # Same guarded runner as the drivers (group-kill on timeout, memory cap,
     # bounded output): a probe is a compiler invocation like any other.
     try:
-        return _proc.run(argv, TIMEOUT_S, stdin=stdin, env=env)
-    except FileNotFoundError as e:
-        raise ProbeError(f"{argv[0]}: not installed") from e
+        rc, out = _proc.run(argv, TIMEOUT_S, stdin=stdin,
+                            env=_proc.scrubbed_env() if env is None else env)
     except subprocess.TimeoutExpired as e:
         raise ProbeError(f"{' '.join(argv)}: timed out") from e
     except OSError as e:
         raise ProbeError(f"{argv[0]}: could not be started ({e})") from e
+    if rc is None:
+        raise ProbeError(out)
+    return rc, out
 
 
 # --------------------------------------------------------------------------

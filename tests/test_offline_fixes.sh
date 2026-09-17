@@ -32,6 +32,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 PASS=0
 FAIL=0
+# HERMETIC: a rig with OPENBEAST_OFFLINE (or _PIP_STRICT, …) exported would
+# otherwise steer the scripts under test — 14 failures, measured.
+for _v in $(compgen -e | grep '^OPENBEAST_' || true); do unset "$_v"; done
+
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 # has <haystack> <needle> — fixed-string, and no pipe, so there is no
@@ -611,6 +615,46 @@ if [[ $_rc -ne 0 ]] && has "$_out" "NOT in" && has "$_out" "$REF_SEARCH" && has 
   pass "an image compose needs but nothing provides is LISTED and the exit status is non-zero"
 else
   fail "unresolved compose image (rc=$_rc): $_out"
+fi
+
+# A STALE .pre-bundle. It is written once and never refreshed; the previous-id
+# lookup used the LINE INDEX in it, so once compose gained a service above
+# `web` (a git pull), a second bundle rewrote TWO services to one image and
+# still printed "every image resolves locally", rc=0.
+ID_NEW="sha256:$(printf '7%.0s' {1..64})"
+mk_bundle "$B" classic "$REF_WEB" "$ID_REC"; reset_box "$CLASSIC"
+printf '%s\t%s\n' "$ID_REC" "$ID_REC" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_REC" > "$T/state/load_says"
+install_bundle "$B"                                   # bundle 1: web -> ID_REC
+REF_CACHE="reg.example/cache:1@sha256:$(printf 'c%.0s' {1..64})"
+printf 'services:\n  cache:\n    image: %s\n  web:\n    image: %s\n  search:\n    image: %s\n' \
+  "$REF_CACHE" "$ID_REC" "$REF_SEARCH" > "$SB/docker-compose.yml"   # compose moved on
+printf '%s\t%s\n' "$REF_CACHE" "sha256:$(printf 'd%.0s' {1..64})" >> "$T/state/ids"
+mk_bundle "$B" classic "$REF_WEB" "$ID_NEW"
+printf '%s\t%s\n' "$ID_NEW" "$ID_NEW" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_NEW" > "$T/state/load_says"
+install_bundle "$B"                                   # bundle 2: web -> ID_NEW
+_cache_now="$(sed -n '/^  cache:/,/^  web:/s/^ *image: *//p' "$SB/docker-compose.yml")"
+if [[ $_rc -eq 0 && "$(compose_web)" == "$ID_NEW" && "$_cache_now" == "$REF_CACHE" ]]; then
+  pass "a second bundle rewrites ITS service by name — a service added above it is untouched"
+else
+  fail "stale .pre-bundle (rc=$_rc web=$(compose_web) cache=$_cache_now): $_out"
+fi
+# ...and a RE-RUN of the same bundle is the documented recovery path, not
+# "image pins differ".
+install_bundle "$B"
+if [[ $_rc -eq 0 && "$(compose_web)" == "$ID_NEW" && "$_cache_now" == "$REF_CACHE" ]] \
+   && ! has "$_out" "image pins differ"; then
+  pass "re-running an install is idempotent (control: compose unchanged)"
+else
+  fail "re-run of an installed bundle (rc=$_rc): $_out"
+fi
+# --identity with no --key would be silently ignored: same family as --key "".
+install_bundle "$B" --identity someone@example.com
+if [[ $_rc -ne 0 ]] && has "$_out" "--identity needs --key"; then
+  pass "--identity without --key is an error, not an ignored flag"
+else
+  fail "--identity without --key (rc=$_rc): $_out"
 fi
 
 # Build side: the store kind is detected and recorded (both kinds).

@@ -1999,6 +1999,12 @@ fi
 echo ""
 echo "Signalling (review 2026-09-17):"
 _RV="$(mktemp -d)"
+# Nothing this section starts may outlive it, pass or fail: every stub below
+# `exec`s its sleeper (so the recorded pid IS the process — killing a bash
+# wrapper orphaned a `sleep 300` that held the suite's stdout open for five
+# minutes under `| tee`), and this trap sweeps whatever an abort leaves.
+_RV_PIDS=""
+trap 'for _p in $_RV_PIDS; do kill "$_p" 2>/dev/null || true; done; rm -rf "${_FB_TMP:-}" "$_RV"' EXIT
 # shellcheck disable=SC1091
 _rv_proc() { bash -c "source '$REPO_DIR/scripts/lib/proc.sh'; $1"; }
 
@@ -2013,7 +2019,7 @@ fi
 
 # A pidfile is a number on disk and .run/ survives a reboot. The STRANGER here
 # is a real live process that merely owns the recorded pid.
-sleep 300 & _RV_STRANGER=$!
+sleep 300 & _RV_STRANGER=$!; _RV_PIDS="$_RV_PIDS $!"
 if _rv_proc "ob_pid_matches $_RV_STRANGER 'chat_server\\.py'"; then
   fail "ob_pid_matches accepted an unrelated process as chat_server"
 else
@@ -2057,8 +2063,8 @@ else
 fi
 # Control: a process that IS the recorded server is stopped by that pid.
 mkdir -p "$_RV/agents"
-printf '#!/bin/bash\nsleep 300\n' > "$_RV/agents/chat_server.py"; chmod +x "$_RV/agents/chat_server.py"
-bash "$_RV/agents/chat_server.py" & _RV_OURS=$!
+printf '#!/bin/bash\nexec -a "$0" sleep 300\n' > "$_RV/agents/chat_server.py"; chmod +x "$_RV/agents/chat_server.py"
+bash "$_RV/agents/chat_server.py" & _RV_OURS=$!; _RV_PIDS="$_RV_PIDS $!"
 sleep 0.3
 echo "$_RV_OURS" > "$_RV/chat.pid"
 _RV_OUT="$(RV_PIDFILE="$_RV/chat.pid" RV_PATH="$_RV/agents/chat_server.py" \
@@ -2130,8 +2136,8 @@ else
   pass "nothing answering and no recorded pid is DOWN, not loading (control)"
 fi
 # port not bound yet, but the recorded llama-server is seconds old
-printf '#!/bin/bash\nsleep 300\n' > "$_RV/llama-server"; chmod +x "$_RV/llama-server"
-bash "$_RV/llama-server" & _RV_LL=$!
+printf '#!/bin/bash\nexec -a "$0" sleep 300\n' > "$_RV/llama-server"; chmod +x "$_RV/llama-server"
+bash "$_RV/llama-server" & _RV_LL=$!; _RV_PIDS="$_RV_PIDS $!"
 sleep 0.3
 echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
 if _rv_hc '' _llama_loading; then
@@ -2146,8 +2152,8 @@ else
   pass "past the grace, a recorded server that is STILL loading is down"
 fi
 # argv[0], not a mention: `tail -f llama-server.log` is not the server.
-printf '#!/bin/bash\nsleep 300\n' > "$_RV/tailer"; chmod +x "$_RV/tailer"
-bash "$_RV/tailer" llama-server.log & _RV_TAIL=$!
+printf '#!/bin/bash\nexec -a "tail -f llama-server.log" sleep 300\n' > "$_RV/tailer"; chmod +x "$_RV/tailer"
+bash "$_RV/tailer" & _RV_TAIL=$!; _RV_PIDS="$_RV_PIDS $!"
 sleep 0.3
 echo "$_RV_TAIL" > "$_RV/repo/.run/llama.pid"
 _rv_hc '' _kill_own_llama || true; sleep 0.2
@@ -2164,7 +2170,7 @@ else
   pass "past the grace period a silent server IS down (control)"
 fi
 # _kill_own_llama takes the recorded pid, and only when it is a llama-server
-sleep 300 & _RV_STRANGER=$!
+sleep 300 & _RV_STRANGER=$!; _RV_PIDS="$_RV_PIDS $!"
 echo "$_RV_STRANGER" > "$_RV/repo/.run/llama.pid"
 _rv_hc '' _kill_own_llama || true; sleep 0.2
 if kill -0 "$_RV_STRANGER" 2>/dev/null; then
@@ -2231,7 +2237,7 @@ done
 # The unlock must not take stderr with it (a bare `exec 9>&- 2>/dev/null` is
 # permanent): a campaign's tracebacks went to /dev/null.
 mkdir -p "$_RV/lease0"
-_RV_ERR="$(OPENBEAST_RUN_DIR="$_RV/lease0" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
+_RV_ERR="$(PATH="$_RV/bin:$PATH" OPENBEAST_RUN_DIR="$_RV/lease0" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
   "$REPO_DIR/scripts/gpu-lease.sh" run rv0 -- bash -c 'echo to-stderr >&2' 2>&1 >/dev/null || true)"
 if [[ "$_RV_ERR" == *to-stderr* ]]; then
   pass "gpu-lease run passes the command's stderr through"
@@ -2241,18 +2247,26 @@ fi
 
 # gpu-lease run: an operator's SIGTERM reaches the command, and the lease
 # lasts exactly as long as the command does.
-_RV_GL() { OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$REPO_DIR/scripts/gpu-lease.sh" "$@"; }
+# A stub nvidia-smi: gpu-lease calls it in acquire AND status, and on this rig
+# the real one can take a second under a campaign — which is timing luck.
+printf '#!/bin/bash\necho 0\n' > "$_RV/bin/nvidia-smi"; chmod +x "$_RV/bin/nvidia-smi"
+_RV_GL() { PATH="$_RV/bin:$PATH" OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$REPO_DIR/scripts/gpu-lease.sh" "$@"; }
 mkdir -p "$_RV/lease"
 # The wrapper records ITS OWN pid (exec keeps it): finding it with pgrep -f
 # would match any process whose command line merely mentions the pattern.
-( OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
-    bash -c 'echo $$ > "$1/wrapper.pid"; exec "$2" run rv -- bash -c "trap \"echo got-TERM; exit 7\" TERM; sleep 3 & wait"' \
+( PATH="$_RV/bin:$PATH" OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
+    bash -c 'echo $$ > "$1/wrapper.pid"; exec "$2" run rv -- bash -c "trap \"echo got-TERM; exit 7\" TERM; sleep 5 & wait"' \
     _ "$_RV" "$REPO_DIR/scripts/gpu-lease.sh" > "$_RV/lease.out" 2>&1 \
     && echo "rc=0" >> "$_RV/lease.out" || echo "rc=$?" >> "$_RV/lease.out" ) &   # set -e: never a bare `; echo $?`
-sleep 1
+# Wait for the lease to EXIST (the wrapper has reached its wait), then signal.
+for _i in $(seq 1 50); do
+  [[ -s "$_RV/lease/gpu.lease" ]] && grep -q '^label=rv$' "$_RV/lease/gpu.lease" 2>/dev/null && break
+  sleep 0.2
+done
+sleep 0.3
 _RV_W="$(cat "$_RV/wrapper.pid" 2>/dev/null || echo 0)"
 kill -TERM "$_RV_W" 2>/dev/null || true
-sleep 0.4
+for _i in $(seq 1 25); do grep -q got-TERM "$_RV/lease.out" 2>/dev/null && break; sleep 0.2; done
 # Captured, never `| grep -q` under pipefail: the early-exiting grep SIGPIPEs
 # the writer and a HELD lease reads as not-held.
 _RV_ST="$(_RV_GL status 2>/dev/null || true)"

@@ -9,9 +9,13 @@ name: Dependabot relock
 #
 # THREE THINGS HERE ARE NOT OBVIOUS, and each is load-bearing:
 #
-#  1. A push made with GITHUB_TOKEN does NOT start workflows (GitHub's guard
-#     against recursion). Left at that, the PR's new head commit would carry
-#     NO checks at all and could never satisfy branch protection.
+#  1. A push made with GITHUB_TOKEN does not RUN workflows (GitHub's guard
+#     against recursion) — at best it queues pull_request runs that wait for
+#     a human to click "Approve workflows to run". Left at that, the PR's new
+#     head commit would carry no completed checks and could never satisfy
+#     branch protection. (If someone does click Approve you get a duplicate
+#     run; it cannot loop, because the actor on that event is
+#     github-actions[bot] and the job below is Dependabot-only.)
 #     workflow_dispatch is the documented exception to that rule, so after
 #     pushing this DISPATCHES ci.yml and pr-quality.yml on the branch — which
 #     is the only reason those two workflows declare `workflow_dispatch:`.
@@ -70,6 +74,11 @@ jobs:
           # The BRANCH, not the merge ref a pull_request run checks out by
           # default — a commit made on refs/pull/N/merge cannot be pushed.
           ref: ${{ github.event.pull_request.head.ref }}
+          # The write token is NOT left in .git/config: `pydeps.sh lock`
+          # resolves with pip, and resolving a bumped SDIST runs that
+          # package's build backend — arbitrary code, in a job whose token can
+          # push. The push step below authenticates for itself, and only then.
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         with:
@@ -102,6 +111,8 @@ jobs:
       - name: Commit and push the lock
         id: push
         if: steps.state.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git diff --quiet -- agents/requirements.lock; then
             echo "the lock did not change — nothing to push"
@@ -114,7 +125,8 @@ jobs:
           git commit -q \
             -m "deps: regenerate agents/requirements.lock for the bumped pin" \
             -m "[dependabot skip]"
-          git push origin "HEAD:refs/heads/${HEAD_REF}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push origin "HEAD:refs/heads/${HEAD_REF}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Run CI on the pushed commit

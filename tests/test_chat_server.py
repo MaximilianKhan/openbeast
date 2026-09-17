@@ -202,6 +202,10 @@ class Rig:
 
 @pytest.fixture()
 def rig(tmp_path, monkeypatch):
+    # NEVER the real systemd: run inside a user unit (the rig's own service, a
+    # CI runner) every job-spawning test would otherwise create REAL transient
+    # scopes. The tests that are ABOUT the scope prefix reset this themselves.
+    monkeypatch.setattr(chat_server, "_SCOPE_PREFIX", [])
     return Rig(tmp_path, monkeypatch)
 
 

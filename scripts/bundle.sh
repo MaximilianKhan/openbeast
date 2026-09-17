@@ -182,6 +182,11 @@ _compose_images() {
 # The last one is the whole point: if an operator asked for authenticity, a
 # missing signature must be a failure, not a shrug.
 _check_signature() {
+  # Same family as `--key ""`: an operator who names the signer they expect
+  # has asked for a signature check, and without --key there is none — the
+  # identity was silently ignored and the bundle "verified" on hashes alone.
+  [[ -z "${3:-}" || -n "${2:-}" ]] || die "--identity needs --key <allowed-signers file>:
+       without it nothing is verified and the identity would be ignored."
   local dir="$1" key="$2" ident="$3"
   local sig="$dir/MANIFEST.json.sig"
   if [[ -z "$key" ]]; then
@@ -786,22 +791,35 @@ for comp in doc.get("components", []):
         # and escaping it made GNU grep print "stray \ before /" on every
         # install, for every image.)
         _prev_id="$(OB_REF="$_ref" "$PY" - "$REPO_DIR/docker-compose.yml.pre-bundle" "$REPO_DIR/docker-compose.yml" <<'PYPREV'
-import os, sys
+import os, re, sys
 ref = os.environ["OB_REF"]
-# Which image: line held this ref originally? Its position tells us which
-# line to rewrite now, even though its value has since become an id.
-try:
-    orig = open(sys.argv[1], encoding="utf-8").read().splitlines()
-except OSError:
-    orig = []
-cur = open(sys.argv[2], encoding="utf-8").read().splitlines()
-for i, line in enumerate(orig):
-    st = line.strip()
-    if st.startswith("image:") and st[len("image:"):].strip() == ref:
-        if i < len(cur):
-            cst = cur[i].strip()
-            if cst.startswith("image:"):
-                print(cst[len("image:"):].strip())
+# Which SERVICE held this ref originally? Its NAME tells us which image: line
+# to look at now, even though that line's value has since become an id.
+#
+# By name, never by LINE INDEX. .pre-bundle is written once and never
+# refreshed, so after any edit to compose (a `git pull` that adds a service
+# above this one) the same index is a different service: install rewrote TWO
+# services to one image, printed "every image resolves locally", and exited 0.
+def images_by_service(path):
+    out, svc = {}, None
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line)
+        if m:
+            svc = m.group(1)
+            continue
+        st = line.strip()
+        if svc and st.startswith("image:"):
+            out.setdefault(svc, st[len("image:"):].strip())
+    return out
+orig = images_by_service(sys.argv[1])
+cur = images_by_service(sys.argv[2])
+for svc, image in orig.items():
+    if image == ref and svc in cur:
+        print(cur[svc])
         break
 PYPREV
 )" || _prev_id=""
@@ -836,6 +854,11 @@ else:
              f"(previously {prev!r}) — compose was NOT updated")
 PYREW
           _rewrote=1
+        elif grep -qE "^[[:space:]]*image:[[:space:]]*$(printf '%s' "$_use_id" | sed 's/[][\.*^$(){}?+|]/\\&/g')[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
+          # Already pointing at exactly this image: a RE-RUN, which is the
+          # recovery path the weights step tells operators to take ("re-run
+          # once there is room"). Dying here called that "image pins differ".
+          ok "compose already uses this image — nothing to rewrite"
         else
           # THIS BRANCH DID NOT EXIST, and its absence was silent: the image
           # loaded, nothing in compose was rewritten, NOTHING WAS PRINTED,

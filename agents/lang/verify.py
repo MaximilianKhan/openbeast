@@ -228,6 +228,16 @@ def verify(claim: Claim) -> dict:
             "summary": claim.summary, "note": claim.note}
 
 
+def _not_judged(r) -> bool:
+    """A timeout, a program that would not start, or a REFUSAL: none of them
+    is the toolchain's opinion of the snippet. The refusal case is the subtle
+    one — it returns ok=False like a compile error does, and a synthetic claim
+    whose OLD form was valid C carrying the comment
+    `/* never #include "/etc/passwd" */` came back VERIFIED on the strength of
+    a refusal."""
+    return bool(getattr(r, "transient", False) or getattr(r, "refused", False))
+
+
 def _judge(claim: Claim, d, old_snips, old_variant) -> tuple[str, str, bool]:
     """(verdict, detail, judged). `judged` is False when a compile never
     produced the toolchain's verdict (timeout, could not start): that is
@@ -236,7 +246,7 @@ def _judge(claim: Claim, d, old_snips, old_variant) -> tuple[str, str, bool]:
     bad_new, still_ok_old = [], []
     for i, snip in enumerate(claim.new, 1):
         r = d.compile_source(d.wrap(snip), claim.new_variant)
-        if getattr(r, "transient", False):
+        if _not_judged(r):
             return UNVERIFIABLE, f"new[{i}] was never judged: {r.detail}", False
         if not r:
             bad_new.append((i, r.detail.splitlines()[0] if r.detail else "?"))
@@ -245,7 +255,7 @@ def _judge(claim: Claim, d, old_snips, old_variant) -> tuple[str, str, bool]:
     # duplicating the snippet, which would drift.
     for i, snip in enumerate(old_snips, 1):
         r = d.compile_source(d.wrap(snip), old_variant)
-        if getattr(r, "transient", False):
+        if _not_judged(r):
             return UNVERIFIABLE, f"old[{i}] was never judged: {r.detail}", False
         if r:
             still_ok_old.append(i)
