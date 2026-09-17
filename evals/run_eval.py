@@ -511,6 +511,41 @@ def packs_flag() -> tuple[bool, str | None, dict]:
     return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
 
 
+ESCALATE_INDEX = os.path.join(EVALS_DIR, "..", "agents", "lang", "escalate-index.json")
+
+
+def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
+    """Derive the beast-lang escalation state ONCE per run (the same rule as
+    diagnostics_flag / packs_flag: the cache-key component and what the agent
+    sees come from one read). Enabled by BEAST_ESCALATE=1 (user-facing),
+    OPENBEAST_ESCALATE=1, or run_eval/benchmark_all --escalate.
+
+    Escalation rides INSIDE the push-diagnostics block (agents/tools.py), so
+    it REQUIRES diagnostics: an --escalate arm with the checker off would be
+    a measured row that silently did nothing, under a name that says it did.
+
+    Returns (enabled, cache_component, meta). The component is
+    `esc1-<sha8 of agents/lang/escalate-index.json>` — the index IS the
+    treatment (which errors select which cards, and the toolchain it was
+    built against), so a rebuilt index is a new era by construction."""
+    enabled = (os.environ.get("BEAST_ESCALATE", "").strip() == "1"
+               or os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1")
+    if not enabled:
+        return False, None, {}
+    if not diag_on:
+        raise SystemExit("--escalate / BEAST_ESCALATE=1 needs push-diagnostics on "
+                         "(BEAST_ASSIST=1): the card is attached to the checker's "
+                         "verdict, so without the checker this arm would measure nothing.")
+    import hashlib
+    try:
+        with open(ESCALATE_INDEX, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise SystemExit(f"--escalate: cannot read {ESCALATE_INDEX} ({e})")
+    sha8 = hashlib.sha256(data).hexdigest()[:8]
+    return True, f"esc1-{sha8}", {"index_sha": sha8}
+
+
 _ITER_LINE = re.compile(r"^\[iter (\d+)/(\d+)\]\s*$", re.MULTILINE)
 _DONE_LINE = re.compile(r"^Task complete \(iteration (\d+)\)\s*$", re.MULTILINE)
 
@@ -882,6 +917,20 @@ def run_eval(
         os.environ["OPENBEAST_DIAG_TIMING_LOG"] = diag_timing_log
     else:
         os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
+    # beast-lang escalation (Tier 1.5): derived ONCE, pinned in BOTH spellings
+    # so an ambient BEAST_ESCALATE=1 cannot leak into an escalate-OFF arm. The
+    # facade is silent under OPENBEAST_EVAL unless OPENBEAST_LANG_IN_EVAL=1, so
+    # that second lock is opened HERE and only here, for the arm that carries
+    # the cache component. It folds into the diagnostics component because it
+    # lives inside that block: diag-only rows keep their existing keys.
+    esc_on, esc_component, esc_meta = escalate_flag(diag_on)
+    os.environ["BEAST_ESCALATE"] = "1" if esc_on else "0"
+    os.environ["OPENBEAST_ESCALATE"] = "1" if esc_on else "0"
+    if esc_on:
+        os.environ["OPENBEAST_LANG_IN_EVAL"] = "1"
+        diag_component = f"{diag_component}+{esc_component}"
+    else:
+        os.environ.pop("OPENBEAST_LANG_IN_EVAL", None)
     # Tier-3 awareness packs: derived ONCE, pinned in both env spellings so
     # an ambient rig-wide BEAST_PACKS=1 cannot leak into a packs-OFF arm.
     packs_on, packs_component, packs_meta = packs_flag()
@@ -974,6 +1023,9 @@ def run_eval(
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
+    if esc_on:
+        print(f"Escal:  beast-lang escalation ON (index {esc_meta['index_sha']}) — "
+              f"cache era {esc_component} (leaderboard-ineligible experiment rows)")
     if packs_on:
         packed = sum(1 for t in tasks if t.get("_context_file"))
         print(f"Packs:  awareness packs ON ({', '.join(f'{k}={v}' for k, v in packs_meta['sha'].items())}) — "
@@ -1003,6 +1055,8 @@ def run_eval(
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
+                    **({"escalate": esc_meta, "escalate_component": esc_component}
+                       if esc_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
@@ -1293,12 +1347,20 @@ def main():
                              "inject agents/packs/<lang>.md into the agent system prompt for units "
                              "whose language has a pack (zig only today). Own pack1-<sha8> cache "
                              "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
+    parser.add_argument("--escalate", action="store_true",
+                        help="beast-lang escalation (docs/BEAST_LANG_PLAN.md §7 P4): when the "
+                             "push-diagnostics checker reports an error with a toolchain-CONFIRMED "
+                             "known cause, attach the one-line fix to the same tool result. Needs "
+                             "BEAST_ASSIST=1. Own esc1-<sha8> cache era; leaderboard-ineligible. "
+                             "Same as BEAST_ESCALATE=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
     if args.packs:
         os.environ["BEAST_PACKS"] = "1"
+    if args.escalate:
+        os.environ["BEAST_ESCALATE"] = "1"
 
     if args.list:
         tasks = load_tasks()

@@ -417,11 +417,27 @@ must clear a v5-suite eval before joining the runner registry.
     carried no `summary` — so escalation silently matched nothing for the one
     language it matters most for (zig is 9/30 on the suite; everything else is
     saturated). Summaries now live in `MANIFEST.json`, the source of truth.
-  - **Still to do: the wiring, ~5 lines, era-locked.** The checker that
-    produces the diagnostic lives in `agents/tools.py` and the injection point
-    in `agents/runner.py` — both are cache-hashed, and the Tier-3 A/B has five
-    cells outstanding. `runner.py --context-file` already exists, so no new
-    plumbing is needed once the lock lifts.
+  - **The wiring: BUILT 2026-09-17, held as a DRAFT PR until the campaign
+    boundary** (it edits `agents/tools.py`, one of the six cache-hashed files,
+    and Tier-3 / greedy-floor / IQ2 rows are being measured in era
+    `3b7c2adb8da7968d`). It turned out to need `tools.py` only, not
+    `runner.py`: the card rides INSIDE the push-diagnostics block, in the same
+    tool result as the compiler error that selected it, so there is no "next
+    turn" plumbing at all. `BEAST_ESCALATE=1` opts in (needs `BEAST_ASSIST=1`
+    — the checker's verdict is the evidence); off, the file's output is
+    byte-identical, pinned by `tests/test_escalation_wiring.py`. Under eval it
+    is doubly locked: the facade is silent under `OPENBEAST_EVAL` unless
+    `run_eval.py --escalate` opens it, and that arm stamps its own cache era
+    (`<diag component>+esc1-<sha8 of escalate-index.json>` — the index IS the
+    treatment, so a rebuilt index is a new era by construction).
+  - **The A/B to run once the GPU is free** (zig-only, greedy, same shape as
+    the Tier-3 mini-A/B; diagnostics ON in BOTH arms so the only difference is
+    the card): `BEAST_ASSIST=1 python3 evals/benchmark_all.py --models
+    qwen38-27b-uncensored-q5 --tasks <the 30 v5-fast zig units> --greedy
+    --jobs 4 --no-leaderboard` vs the same with `--escalate`, two replicates
+    each, read against the greedy floor. Note for the verdict: on the `std.io`
+    family the curated diag2 hint table already fires, so the card's marginal
+    value is on the ~45 migrations that table does not cover.
 - **Phase 3 — synthesis: needs the GPU.** Note that a pack does NOT need an
   LLM: the verified claims already *are* the summary, one `summary` line each.
   The local model's job in phase 3 is to DRAFT new candidate claims from the

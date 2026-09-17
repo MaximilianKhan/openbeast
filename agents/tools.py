@@ -578,6 +578,62 @@ def diagnostics_enabled() -> bool:
             or os.environ.get("BEAST_ASSIST", "").strip() == "1")
 
 
+# ---------------------------------------------------------------------------
+# beast-lang escalation (docs/BEAST_LANG_PLAN.md §7 P4, "Tier 1.5") —
+# experiment-gated, and it rides INSIDE the diagnostics block above.
+# Default OFF; BEAST_ESCALATE=1 (user-facing) / OPENBEAST_ESCALATE=1 opts in,
+# and only does anything while push-diagnostics are on, because the checker's
+# verdict IS the evidence: when the compiler reports an error whose shape
+# matches a migration the installed toolchain has CONFIRMED (agents/lang/
+# escalate.py — a generated index, never a hand-written table), the one-line
+# fix is attached to the same tool result. Pushed at the exact moment the
+# model is provably wrong; never model-initiated (local models do not call
+# optional tools — plan §2.1).
+#
+# With the flag off this file's output is byte-identical to what it was before
+# the feature existed; `_diag_format(..., escalation="")` is the old function.
+# The lookup goes through the package's no-raise facade, which is ALSO silent
+# under OPENBEAST_EVAL unless the run says it is measuring beast-lang
+# (evals/run_eval.py --escalate sets OPENBEAST_LANG_IN_EVAL=1 and stamps its
+# own cache era) — two locks, because a hint that appears in a measured unit
+# without moving its cache key corrupts the row silently.
+# ---------------------------------------------------------------------------
+
+_ESC_MAX_BYTES = 600             # its share of the 2 KB block, budgeted first
+# The diagnostics layer's language names -> beast-lang's.
+_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "python": "python",
+             "rust": "rust", "go": "go"}
+
+
+def escalation_enabled() -> bool:
+    """Read per-call, like diagnostics_enabled()."""
+    return (os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1"
+            or os.environ.get("BEAST_ESCALATE", "").strip() == "1")
+
+
+def _escalation_for(lang: str, rc: int, out: str | None) -> str:
+    """The beast-lang card block for a FAILED check, or "". Never raises, and
+    says nothing for a clean check: a card is evidence-triggered by design."""
+    if not escalation_enabled() or rc == 0 or not (out or "").strip():
+        return ""
+    name = _ESC_LANG.get(lang)
+    if not name:
+        return ""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import lang as _beast_lang               # noqa: PLC0415 — lazy, optional
+        text = _beast_lang.safe_escalation(name, out) or ""
+    except Exception:                            # noqa: BLE001
+        return ""
+    text = text.strip()
+    if len(text) > _ESC_MAX_BYTES:
+        # Whole lines only: half a fix is a different fix.
+        text = text[:_ESC_MAX_BYTES].rsplit("\n", 1)[0]
+    return text
+
+
 def _diag_log_timing(lang: str, ms: float, status: str) -> None:
     """Append one JSONL timing row when OPENBEAST_DIAG_TIMING_LOG is set.
     The per-write latency clause of the beast-assist ship rule was
@@ -911,11 +967,16 @@ def _zig_extras(body: str, checked_path: str = "",
     return extras
 
 
-def _diag_format(lang: str, rc: int, out: str | None, path: str = "") -> str:
+def _diag_format(lang: str, rc: int, out: str | None, path: str = "",
+                 escalation: str = "") -> str:
     """Render one checker verdict — pure, testable without any toolchain.
     Extras (did-you-mean + fix hints, zig only) are budgeted before the
     body so truncation can never eat the remedy; the whole block stays
-    within _DIAG_MAX_LINES / _DIAG_MAX_BYTES."""
+    within _DIAG_MAX_LINES / _DIAG_MAX_BYTES.
+
+    `escalation` is the beast-lang card block (already looked up and capped
+    by the caller, so this stays pure). Empty — always, unless the opt-in
+    flag is set — leaves the output byte-identical to the pre-feature one."""
     out = (out or "").strip()
     if rc == 0 and not out:
         return f"\ndiagnostics: OK ({lang})"
@@ -925,8 +986,9 @@ def _diag_format(lang: str, rc: int, out: str | None, path: str = "") -> str:
         body = _zig_compact(out)
         extras = _zig_extras(body, path)
     extra_txt = "\n".join(extras)[:_DIAG_EXTRA_BYTES]
-    budget_lines = max(_DIAG_MAX_LINES - len(extras), 5)
-    budget_bytes = max(_DIAG_MAX_BYTES - len(extra_txt), 512)
+    esc_lines = len(escalation.splitlines()) if escalation else 0
+    budget_lines = max(_DIAG_MAX_LINES - len(extras) - esc_lines, 5)
+    budget_bytes = max(_DIAG_MAX_BYTES - len(extra_txt) - len(escalation), 512)
     block = "\n".join(body.splitlines()[:budget_lines])[:budget_bytes]
     n = _diag_count_errors(lang, out)
     shown = _diag_count_errors(lang, block)
@@ -940,6 +1002,8 @@ def _diag_format(lang: str, rc: int, out: str | None, path: str = "") -> str:
         label = f"errors (rc={rc})"
     if extra_txt:
         block += "\n" + extra_txt
+    if escalation:
+        block += "\n" + escalation
     return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──"
 
 
@@ -969,8 +1033,9 @@ def _run_diagnostics(path: str) -> str:
             rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
         finally:
             _DIAG_SLOTS.release()
+        escalation = _escalation_for(lang, rc, out)
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok")
-        return _diag_format(lang, rc, out, path)
+        return _diag_format(lang, rc, out, path, escalation=escalation)
     except subprocess.TimeoutExpired:
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"
