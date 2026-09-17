@@ -7,9 +7,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Dispatched by dependabot-relock.yml after it pushes a regenerated lock: a
-  # push made with GITHUB_TOKEN starts no workflows, so without this the PR's
-  # new head commit would carry no checks at all.
+  # Manual runs only. (dependabot-relock.yml used to dispatch this; measured
+  # 2026-09-17: a PR's required-checks rollup ignores workflow_dispatch runs.)
   workflow_dispatch:
 
 permissions:
