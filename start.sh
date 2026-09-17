@@ -604,9 +604,9 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
       CHAT_OWNED=1
       CHAT_UP=0
-      case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
-        ''|0.*|localhost|::) _chat_host="127.0.0.1" ;;
-        *)                   _chat_host="$OPENBEAST_CHAT_BIND" ;;
+      _chat_host="${OPENBEAST_CHAT_BIND:-127.0.0.1}"    # set -u: normally unset
+      case "$_chat_host" in
+        0.*|localhost|::) _chat_host="127.0.0.1" ;;
       esac
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
