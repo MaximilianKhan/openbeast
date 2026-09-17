@@ -156,7 +156,7 @@ it broke.
 ## The two tools
 
 `publish_artifact` and `list_artifacts` ship on the **MCP / Open WebUI
-surface** (17 tools) and are deliberately **not** in the autonomous runner's
+surface** (18 tools) and are deliberately **not** in the autonomous runner's
 10-tool registry — see [TOOLS.md](TOOLS.md). Background agents publish through
 the CLI instead, which keeps the runner's tool-selection pressure exactly
 where it was.

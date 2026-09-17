@@ -27,7 +27,7 @@ three-localities check below).**
 
 ## The feature (Max, 2026-07-13)
 
-Let a laptop (the Mac) become a full OpenBeast **thick client**: the 17-tool
+Let a laptop (the Mac) become a full OpenBeast **thick client**: the 18-tool
 arsenal + the MCP server run **locally on the laptop** (so `bash`/`edit_file`
 act on the laptop's own project files), while the **model** and **web search**
 are served by the big rig (the 5090 box) over the tailnet. One install script

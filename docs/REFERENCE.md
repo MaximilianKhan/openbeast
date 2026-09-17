@@ -56,7 +56,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `ARTIFACT_PORT` | `OPENBEAST_ARTIFACT_PORT` | `3004` | Loopback port the artifact server listens on when `BEAST_ARTIFACT=true`. `setup-tailscale.sh --publish-artifact` mounts `:8446` at it |
 | `ARTIFACT_OPERATORS` | `OPENBEAST_ARTIFACT_OPERATORS` | *(empty)* | Comma-separated tailnet logins allowed to READ published pages; falls back to `CHAT_OPERATORS`. An unlisted login gets 404, never 403. **Empty means every identified tailnet login can read** — anonymous callers are refused either way. Writes are loopback-only regardless |
 | `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
-| `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 17 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
+| `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 18 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
 | `IDENTITY_JWT_SECRET` | `OPENBEAST_IDENTITY_JWT_SECRET` | empty (header mode) | Shared HS256 secret: Open WebUI mints a signed JWT per tool call and the identity tool server verifies it, killing header forgery. Requests without a token stay anonymous; a present-but-invalid token is 401. Generate with `scripts/setup-mcpo-keys.sh --with-jwt` |
 | `AGENT_INFERENCE_URL` | `OPENBEAST_AGENT_INFERENCE_URL` | empty (local) | Distributed agents Phase 1 (opt-in): OpenAI-compatible endpoint a worker box serves — spawned agents (`start_agent`, `agent.sh`) send their *inference* there while still executing files/shell on this machine. Tokens (and the file contents agents read) flow over your tailnet. Empty = local model server. See `docs/DISTRIBUTED_AGENTS_PLAN.md` |
@@ -387,7 +387,7 @@ Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
 Connects to the llama.cpp server on port 8080 via `localhost`.
 
 Tools are exposed via the **identity tool server** (`agents/openapi_tools.py`)
-on port 3001, which serves the 17 tools as OpenAPI endpoints that Open WebUI
+on port 3001, which serves the 18 tools as OpenAPI endpoints that Open WebUI
 consumes natively (Open WebUI's native MCP Streamable HTTP support has a known
 bug, which is why an OpenAPI surface is used at all). It replaced the generic
 MCPO proxy (v1.1, 2026-07-09) because MCPO dropped the identity headers Open
@@ -484,15 +484,16 @@ with `./start.sh`). Changes take effect on the next new chat.
 
 ### Tool surfaces: MCP server + identity tool server
 
-Two surfaces expose the same 17 tools, in five groups:
+Two surfaces expose the same 18 tools, in six groups:
 
 - **Code & files** (5): `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - **Shell + web** (3): `bash`, `fetch`, `web_search`
 - **Long-running agent management** (5): `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent`
 - **Skills** (2): `skill`, `start_skill_agent`
 - **Artifacts** (2): `publish_artifact`, `list_artifacts` — opt-in (`BEAST_ARTIFACT=true`), and on these two surfaces only; see [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md)
+- **Language reference** (1): `language_reference` — beast-lang's pull surface: what the *installed* toolchain confirmed about a language (the pack, the cards for a compile error, or one topic); never improvises, and on these two surfaces only; see [`docs/BEAST_LANG_PLAN.md`](BEAST_LANG_PLAN.md)
 
-All 17 are custom OpenBeast code — full inventory, provenance, hardening
+All 18 are custom OpenBeast code — full inventory, provenance, hardening
 notes, and RBAC visibility in [`docs/TOOLS.md`](TOOLS.md).
 
 Surfaces:
@@ -505,7 +506,7 @@ Surfaces:
   HTTP support), reads the `X-OpenWebUI-User-Id`/`-Chat-Id` headers WebUI
   forwards, shards each user's files into `$OPENBEAST_FILES_DIR/users/<id>/`,
   enforces the RBAC profile keys, and writes the audit trail. It imports the
-  same 17 tool functions from the MCP server, so the two surfaces can't drift.
+  same 18 tool functions from the MCP server, so the two surfaces can't drift.
 
 #### Long-running agents via MCP
 

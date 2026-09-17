@@ -498,7 +498,7 @@ def test_a_signed_token_with_no_email_claim_is_refused(surfaces, monkeypatch):
     email, so on a `--with-jwt` rig every user collapsed onto the operator.
 
     The refusal is scoped to PUBLISHING, not to the token. A token with no
-    email is a perfectly good identity for the other 16 tools; requiring the
+    email is a perfectly good identity for the other 17 tools; requiring the
     claim at decode time would 401 the whole surface — bash, read_file, every
     agent tool — on any rig whose WebUI omits it, which is a far larger blast
     radius than the feature it protects. So this asserts both halves: the

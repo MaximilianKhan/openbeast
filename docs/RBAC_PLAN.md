@@ -4,7 +4,7 @@
 guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
 access-control code.** A `user`-role account resolves `web_search` +
 `fetch` (SSRF-guarded) ONLY (bash/file/agent tools denied at the connection
-layer); an `admin` account gets all 17. Baked into `configure-webui.sh` so
+layer); an `admin` account gets all 18. Baked into `configure-webui.sh` so
 fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
 keys + Sandlock (below-app enforcement).
 
@@ -87,7 +87,7 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 
 | Tier | WebUI role | Tools they get | How |
 |---|---|---|---|
-| **Owner** | `admin` | all 17 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills, artifacts) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
+| **Owner** | `admin` | all 18 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills, artifacts, language_reference) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
 | **Guest** (family) | `user` | **`web_search` + `fetch`** (scheme-filtered, private-network-blocked) | public grant on a filtered connection |
 | *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
 
@@ -108,12 +108,12 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 
 ### Two-connection wiring (implemented by `configure-webui.sh`)
 - **`local-mcp`** (privileged): `function_name_filter_list =
-  "!web_search,!fetch"` (the other 15 tools), `access_grants = []` →
+  "!web_search,!fetch"` (the other 16 tools), `access_grants = []` →
   admin-only.
 - **`local-mcp-web`** (public): `function_name_filter_list =
   "web_search,fetch"`, `access_grants = [{user:*}]` → everyone.
 - Every model's `meta.toolIds = ["server:<priv>","server:<web>"]`.
-  - Admin resolves both → 15 + web_search + fetch = all 17, **no duplicate**
+  - Admin resolves both → 16 + web_search + fetch = all 18, **no duplicate**
     (web_search and fetch live only on the public connection).
   - Guest resolves only the public one → **web_search + fetch, nothing
     else.**

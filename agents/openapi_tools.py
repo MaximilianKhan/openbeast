@@ -28,7 +28,7 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 17 tool functions,
+real MCP client; this module imports and serves the same 18 tool functions,
 so the two surfaces cannot drift.
 
 Env:
@@ -72,13 +72,18 @@ import tools as _tools     # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 17 functions the MCP server exposes.
+# The full WebUI tool surface — same 18 functions the MCP server exposes.
+# `language_reference` (beast-lang's pull surface) is read-only and harmless,
+# and it is STILL admin-only: GUEST_TOOLS below is web-only on purpose, and a
+# profile that is "web-only, plus the things that seemed safe" is not a
+# profile anyone can reason about. tests/test_lang_reference_tool.py pins it.
 TOOL_NAMES = [
     "bash", "read_file", "write_file", "edit_file", "list_files", "grep",
     "fetch", "web_search", "skill",
     "start_agent", "start_skill_agent", "check_agent", "list_agents",
     "stop_agent", "tail_agent",
     "publish_artifact", "list_artifacts",
+    "language_reference",
 ]
 GUEST_TOOLS = {"web_search", "fetch"}
 
@@ -223,7 +228,7 @@ def create_app() -> FastAPI:
                     token, jwt_secret, algorithms=["HS256"],
                     issuer="open-webui",
                     # NOT "email". A token without one is a perfectly valid
-                    # identity for the other 16 tools, and requiring it here
+                    # identity for the other 17 tools, and requiring it here
                     # would 401 the whole surface on any --with-jwt rig whose
                     # WebUI does not put an email in the token — breaking
                     # bash, read_file and every agent tool to protect
