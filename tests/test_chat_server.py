@@ -2060,6 +2060,10 @@ def test_shutdown_is_bounded_even_with_a_stream_attached(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_CHAT_BIND", "127.0.0.1")
     monkeypatch.setattr(uvicorn, "Server", FakeServer)
     monkeypatch.setattr(chat_server, "_prune_ledger_soon", lambda *a, **k: None)
+    # main() warms the systemd-scope probe in a thread. Left real, on a box
+    # that IS inside a service cgroup (CI) it held _SCOPE_LOCK for the probe's
+    # 10 s and then wrote its answer over a LATER test's state.
+    monkeypatch.setattr(chat_server, "scope_prefix", lambda: [])
     chat_server.main()
     bound = seen["config"].timeout_graceful_shutdown
     assert bound is not None and 0 < bound <= 10

@@ -75,26 +75,40 @@ def test_an_unknown_language_is_refused_not_invented():
     assert "cobol" in str(e.value)
 
 
-def test_facts_never_raises_and_caches():
-    """`facts` is the serving path: it must degrade to None, never explode."""
-    calls = []
-    monkey = I.PROBES.get("zig")
+def test_facts_never_raises_and_caches(monkeypatch):
+    """`facts` is the serving path: it must degrade to None, never explode.
+
+    The toolchain is a STUB: this used to probe the real zig, so on a box
+    without one (CI) the probe returned None — which is never cached, by
+    design — and "cached once" could not be observed at all."""
     assert I.facts("cobol") is None          # unknown language
-    if monkey is None:                        # pragma: no cover
-        return
-    real = I.probe
+    calls = []
 
-    def counting(lang):
-        calls.append(lang)
-        return real(lang)
+    class FakeDriver:
+        v = "9.9.9"
+        def available(self): return True
+        def version(self): return self.v
 
+    fake = FakeDriver()
+    monkeypatch.setattr(I.drivers, "driver_for", lambda lang: fake)
+    monkeypatch.setattr(I, "probe", lambda lang: calls.append(lang) or {"facts": {}})
     I._CACHE.clear()
-    I.probe = counting
     try:
         I.facts("zig"); I.facts("zig"); I.facts("zig")
+        assert len(calls) == 1, "the live probe must be cached per process"
+        fake.v = "10.0.0"                     # a toolchain upgrade: re-asked
+        I.facts("zig")
+        assert len(calls) == 2
+        # control: a probe that cannot observe is NEVER remembered
+        def boom(lang):
+            calls.append(lang)
+            raise I.ProbeError("nope")
+        monkeypatch.setattr(I, "probe", boom)
+        fake.v = "11.0.0"
+        assert I.facts("zig") is None and I.facts("zig") is None
+        assert len(calls) == 4
     finally:
-        I.probe = real
-    assert len(calls) == 1, "the live probe must be cached per process"
+        I._CACHE.clear()
 
 
 # --------------------------------------------------------------------------

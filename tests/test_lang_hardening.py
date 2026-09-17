@@ -40,6 +40,27 @@ from lang import introspect as I      # noqa: E402
 from lang import packs as P           # noqa: E402
 from lang import verify as V          # noqa: E402
 
+
+def _driver_compiles(lang_name: str, src: str) -> bool:
+    """Does this box's toolchain accept the DRIVER'S OWN flags? `which gcc` is
+    not that question: CI's gcc predates -std=c23, so every compile there is
+    "unrecognized command-line option", and a test about what gcc ECHOES was
+    asserting against that error text."""
+    try:
+        d = D.driver_for(lang_name)
+        return bool(d and d.available() and d.compile_source(src))
+    except Exception:                                 # noqa: BLE001
+        return False
+
+
+_C_WORKS: list = []
+
+
+def _c_works() -> bool:
+    if not _C_WORKS:
+        _C_WORKS.append(_driver_compiles("c", "int main(void){return 0;}\n"))
+    return _C_WORKS[0]
+
 CLAIMS = os.path.join(ROOT, "agents", "lang", "claims")
 SECRET = "BEASTLANG_SECRET=hunter2-do-not-leak"
 
@@ -481,8 +502,9 @@ def test_c_family_snippets_that_read_a_host_file_are_refused(lang, secret, monke
     assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
 
 
-@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc absent")
 def test_the_leak_was_real_and_ordinary_includes_are_untouched(secret, tmp_path, monkeypatch):
+    if not _c_works():
+        pytest.skip("no C toolchain here that accepts the driver's flags")
     c = D.driver_for("c")
     # what the refusal prevents, demonstrated with the refusal switched off
     monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
@@ -847,7 +869,7 @@ C_NOT_DIRECTIVES = [
 @pytest.mark.parametrize("src", C_NOT_DIRECTIVES)
 def test_c_text_that_only_MENTIONS_an_include_is_not_refused(src):
     assert D.driver_for("c").refusal(src) is None, src
-    if shutil.which("gcc"):
+    if _c_works():
         assert D.driver_for("c").compile_source(src), "and it is valid C"
 
 
