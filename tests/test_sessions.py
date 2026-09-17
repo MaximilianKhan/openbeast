@@ -853,3 +853,27 @@ def test_o_nonblock_does_not_change_the_regular_file_path(ledger):
     ops, cursor = sessions.read_new_ops(sid)
     assert [o["text"] for o in ops] == ["m0", "m1", "m2"]
     assert cursor == os.path.getsize(sessions.inbox_path(sid))
+
+
+def test_override_lost_replaces_a_guess_and_never_a_verdict(ledger):
+    """`lost` is terminal, but it is the reconciler's INFERENCE and any
+    concurrent reader persists it. The writer that holds the real verdict (it
+    stopped the process, or reaped it) must be able to replace that guess —
+    and must not be able to replace anything else."""
+    sessions.register("s1", pid=os.getpid())
+    assert sessions.finalize("s1", "lost", summary="process gone without a terminal event")
+    assert sessions.finalize("s1", "stopped", summary="stopped by operator") is False
+    assert sessions.get("s1")["state"] == "lost"          # the old behaviour
+    assert sessions.finalize("s1", "stopped", summary="stopped by operator",
+                             override_lost=True) is True
+    rec = sessions.get("s1")
+    assert rec["state"] == "stopped" and "operator" in rec["summary"]
+    # negative controls: a real verdict is never re-decided, and `running`
+    # is never a destination.
+    for verdict in ("done", "failed", "stopped"):
+        sid = f"v-{verdict}"
+        sessions.register(sid, pid=os.getpid())
+        assert sessions.finalize(sid, verdict)
+        assert sessions.finalize(sid, "lost", override_lost=True) is False
+        assert sessions.get(sid)["state"] == verdict
+    assert sessions.finalize("s1", "running", override_lost=True) is False

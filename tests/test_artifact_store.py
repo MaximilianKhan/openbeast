@@ -1080,10 +1080,88 @@ def test_wrap_skeleton_document_detection(store):
     assert store.wrap_skeleton("").decode().startswith("<!doctype html>")
 
 
+SERVE_STATUS = """https://beast.tail4109f9.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:3000
+
+https://beast.tail4109f9.ts.net:8446 (tailnet only)
+|-- / proxy http://127.0.0.1:3004
+
+https://beast.tail4109f9.ts.net:8443 (tailnet only)
+|-- / proxy http://127.0.0.1:8080
+"""
+
+
+def _fresh_base_url(store, monkeypatch, status):
+    """The test BUILDS its own tailscale: the real one is never asked, so the
+    result cannot depend on what this box happens to publish."""
+    calls = []
+
+    def fake():
+        calls.append(1)
+        return status
+
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_BASE_URL", raising=False)
+    monkeypatch.setattr(store, "_serve_status", fake)
+    monkeypatch.setitem(store._BASE_URL_CACHE, "value", "")
+    return calls
+
+
 def test_artifact_url(store, monkeypatch):
     a = store.publish(PAGE)
     assert store.artifact_url(a["id"], 3) == \
         f"https://beast:8446/a/{a['id']}/v/3"
-    monkeypatch.delenv("OPENBEAST_ARTIFACT_BASE_URL")
-    assert store.artifact_url(a["id"]).startswith("https://")
-    assert ":8446/a/" in store.artifact_url(a["id"])
+
+
+def test_the_default_url_is_the_name_tailscale_actually_serves(store, monkeypatch):
+    """It was https://<gethostname()>:8446 — and the tailnet machine name is
+    chosen independently of the OS hostname, with a certificate for the full
+    ts.net name only. On the rig this was written on that is `omarchy` vs
+    `beast.tail4109f9.ts.net`: every URL the model handed out was dead."""
+    a = store.publish(PAGE)
+    calls = _fresh_base_url(store, monkeypatch, SERVE_STATUS)
+    assert store.artifact_url(a["id"]) == \
+        f"https://beast.tail4109f9.ts.net:8446/a/{a['id']}"
+    # cached: a gallery listing builds one URL per row
+    store.artifact_url(a["id"]); store.artifact_url(a["id"], 2)
+    assert len(calls) == 1
+    # an explicit base always wins over detection
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_BASE_URL", "https://proxy.example/x/")
+    assert store.artifact_url(a["id"]) == f"https://proxy.example/x/a/{a['id']}"
+
+
+@pytest.mark.parametrize("status", [
+    "",                                             # no tailscale at all
+    "No serve config\n",
+    SERVE_STATUS.replace(":8446", ":8447"),          # published, but not us
+    "https://evil.example:84460 (tailnet only)\n",  # a longer port is not 8446
+])
+def test_an_unpublished_viewer_gets_the_loopback_url(store, monkeypatch, status):
+    """Negative control: nothing on :8446 means the viewer is loopback-only,
+    and the honest URL says so instead of naming a port nothing listens on."""
+    a = store.publish(PAGE)
+    _fresh_base_url(store, monkeypatch, status)
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_PORT", "3999")
+    assert store.artifact_url(a["id"]) == f"http://localhost:3999/a/{a['id']}"
+
+
+def test_serve_status_never_raises_and_never_hangs(store, monkeypatch):
+    import subprocess as sp
+
+    def boom(*a, **kw):
+        raise sp.TimeoutExpired(cmd="tailscale", timeout=3)
+    monkeypatch.setattr(store.subprocess, "run", boom)
+    assert store._serve_status() == ""
+    monkeypatch.setattr(store.subprocess, "run",
+                        lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    assert store._serve_status() == ""
+
+
+def test_the_lock_table_drains(store):
+    """One Lock per uuid4, kept forever, is a leak in a server that publishes
+    all day. An entry lives only while somebody holds or waits on it."""
+    for _ in range(25):
+        store.publish(PAGE)
+    assert store._ID_LOCKS == {}
+    with store._artifact_lock("held"):
+        assert "held" in store._ID_LOCKS       # negative control: it IS used
+    assert store._ID_LOCKS == {}

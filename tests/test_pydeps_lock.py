@@ -254,6 +254,26 @@ def test_audit_ignores_only_the_named_benign_dotfiles(tmp_path):
     assert any(".index.html" in p for p in problems), problems
 
 
+def test_audit_tolerates_appledouble_sidecars_by_magic_not_by_name(tmp_path):
+    """macOS writes `._<name>` next to every xattr-carrying file on a FAT
+    stick, so a Mac-browsed wheelhouse grows one per wheel — and
+    scripts/lib/bundle_manifest.py tolerates them, so this audit must too or
+    `bundle install` dies at the wheels step on a bundle `verify` accepted.
+    By MAGIC NUMBER, so the rule cannot hide a payload."""
+    files = {"a-1.0-py3-none-any.whl": b"AAA"}
+    lock = _lock_for(tmp_path, files)
+    sidecar = b"\x00\x05\x16\x07" + b"\x00" * 40
+    wh = _wheelhouse(tmp_path, dict(files, **{"._a-1.0-py3-none-any.whl": sidecar}))
+    matched, problems = L.audit_dir(lock, wh)
+    assert matched == ["a-1.0-py3-none-any.whl"]
+    assert problems == []
+    # NEGATIVE CONTROL: the same NAME with zip content is audited and refused
+    with open(os.path.join(wh, "._evil-9-py3-none-any.whl"), "wb") as fh:
+        fh.write(b"PK\x03\x04payload")
+    _m, problems = L.audit_dir(lock, wh)
+    assert any("._evil" in p and "in no lock entry" in p for p in problems), problems
+
+
 def test_audit_refuses_a_symlink_in_a_wheelhouse(tmp_path):
     """The audit hashes what the link POINTS AT, which is not what travelled
     and can change after the audit. A wheelhouse holds files."""

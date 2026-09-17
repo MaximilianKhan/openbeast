@@ -114,6 +114,14 @@ cmd_acquire() {                   # cmd_acquire <label> [--wait SECONDS] [--forc
     esac
   done
   mkdir -p "$RUN_DIR"
+  # The check below and the write after it are two steps; two acquirers that
+  # both read FREE both wrote, and both believed they held the card. flock
+  # makes them one step. Held on fd 9 until this process exits or
+  # _unlock_acquire runs; if flock(1) is missing the old behaviour remains.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LEASE.lock"
+    flock -w 30 9 || die "could not take $LEASE.lock in 30s — another acquire is stuck"
+  fi
   local waited=0
   while :; do
     if _read_lease && _holder_alive "$LH_PID" "$LH_START"; then
@@ -123,9 +131,15 @@ cmd_acquire() {                   # cmd_acquire <label> [--wait SECONDS] [--forc
       fi
       if [[ "$waited" -ge "$wait_s" ]]; then
         say "GPU is held by pid $LH_PID — ${LH_LABEL:-unlabelled} (since ${LH_SINCE:-?})" >&2
+        _unlock_acquire
         return 4
       fi
-      sleep 5; waited=$((waited + 5)); continue
+      # Never SLEEP holding the lock: a --wait would block every other
+      # acquire, and `status` callers reading the lease, for its whole wait.
+      _unlock_acquire
+      sleep 5; waited=$((waited + 5))
+      if command -v flock >/dev/null 2>&1; then exec 9>"$LEASE.lock"; flock -w 30 9 || true; fi
+      continue
     fi
     [[ -f "$LEASE" ]] && [[ -n "${LH_PID:-}" ]] \
       && say "taking over a stale lease (pid $LH_PID is gone)"
@@ -137,18 +151,26 @@ cmd_acquire() {                   # cmd_acquire <label> [--wait SECONDS] [--forc
   if [[ $force -eq 0 && "${used:-0}" -gt "$VRAM_FLOOR_MIB" ]] 2>/dev/null; then
     say "refusing: ${used} MiB already allocated on the GPU (floor ${VRAM_FLOOR_MIB})." >&2
     say "  Nothing holds the lease, so this is an unclaimed user. Stop it, or --force." >&2
+    _unlock_acquire
     return 5
   fi
-  local start; start="$(_pid_start "$HOLDER_PID")" || start="?"
-  local tmp="$LEASE.$$"
+  _write_lease "$HOLDER_PID" "$label"
+  _unlock_acquire
+  say "lease acquired by pid $HOLDER_PID — $label"
+}
+
+_unlock_acquire() { exec 9>&- 2>/dev/null || true; }
+
+_write_lease() {                  # _write_lease <pid> <label> — atomic replace
+  local start tmp="$LEASE.$$"
+  start="$(_pid_start "$1")" || start="?"
   {
-    printf 'pid=%s\n' "$HOLDER_PID"
+    printf 'pid=%s\n' "$1"
     printf 'start=%s\n' "$start"
-    printf 'label=%s\n' "$label"
+    printf 'label=%s\n' "$2"
     printf 'since=%s\n' "$(date -Is)"
   } > "$tmp"
   mv "$tmp" "$LEASE"
-  say "lease acquired by pid $HOLDER_PID — $label"
 }
 
 cmd_release() {
@@ -167,17 +189,30 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   [[ "${1:-}" == "--" ]] || die "expected -- before the command"
   shift
   [[ $# -gt 0 ]] || die "no command given"
-  # The lease is held by THIS shell, and the trap releases it on any exit —
-  # including the SIGTERM an operator sends to stop a campaign.
+  # The lease is held by THIS shell for exactly as long as the command lives.
   cmd_acquire "$label" || exit $?
-  # cmd_acquire recorded the CALLER; for `run` the holder is this shell, which
-  # lives exactly as long as the command does.
+  # cmd_acquire recorded the CALLER; for `run` the holder is this shell.
   HOLDER_PID="$$"
-  local start; start="$(_pid_start $$)" || start="?"
-  { printf 'pid=%s\n' "$$"; printf 'start=%s\n' "$start"
-    printf 'label=%s\n' "$label"; printf 'since=%s\n' "$(date -Is)"; } > "$LEASE"
-  trap 'rm -f "$LEASE"' EXIT INT TERM
-  "$@"
+  _write_lease "$$" "$label"
+  trap 'rm -f "$LEASE"' EXIT
+  # The command runs in the BACKGROUND and we `wait` on it, because bash does
+  # not run a trap while a foreground child is running: the old
+  # `trap … TERM; "$@"` SWALLOWED an operator's SIGTERM outright — wrapper and
+  # campaign both kept running and the final status was 0. Now the signal is
+  # FORWARDED to the command, and the lease is released only once the command
+  # has actually gone: a lease that says FREE while the campaign it covered is
+  # still unwinding on the card would be the lie this script exists to end.
+  local child rc=0 stopping=0
+  "$@" <&0 &
+  child=$!
+  trap 'stopping=1; kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
+  while :; do
+    wait "$child"; rc=$?
+    # >128 with the child still alive = `wait` was interrupted by our trap.
+    kill -0 "$child" 2>/dev/null || break
+  done
+  [[ $stopping -eq 1 && $rc -eq 0 ]] && rc=143
+  exit "$rc"
 }
 
 case "${1:-}" in

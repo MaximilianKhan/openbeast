@@ -111,12 +111,21 @@ update_llama() {
     # operator reaches for precisely when they are already confused.
     #
     # So: keep git's stderr, bound the wait, and tell the two failures apart.
-    # lowSpeedLimit/Time turn a multi-minute hang into ~15s.
+    # lowSpeedLimit/Time turn a multi-minute hang into a bounded one. 60s, not
+    # the original 15: a slow-but-alive link (a tether, a congested uplink)
+    # dips under 1 KB/s for 15s in the middle of a healthy fetch.
+    #
+    # AND THE STALL THOSE TWO SETTINGS PRODUCE MUST BE IN THE REGEX. It was
+    # not: curl reports it as "Operation too slow. Less than 1000 bytes/sec
+    # transferred the last N seconds" (curl 28), mid-transfer git wraps it as
+    # "RPC failed; curl 28 …" followed by "early EOF" / "the remote end hung
+    # up unexpectedly" — and none of those matched, so the very timeout this
+    # script configures was reported as a LOCAL fault ("dirty worktree?").
     local pull_out rc=0
-    pull_out="$(git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+    pull_out="$(git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                     pull --ff-only origin master 2>&1)" || rc=$?
     if [[ $rc -ne 0 ]]; then
-      if grep -qiE 'could not resolve host|unable to access|connection (timed out|refused)|network is unreachable|failed to connect|no route to host|operation timed out|temporary failure in name resolution' <<< "$pull_out"; then
+      if grep -qiE 'could not resolve host|unable to access|connection (timed out|refused|reset)|network is unreachable|failed to connect|no route to host|operation timed out|operation too slow|rpc failed|early eof|remote end hung up|unexpected disconnect|temporary failure in name resolution' <<< "$pull_out"; then
         warn "cannot reach the llama.cpp remote — NOT a local problem"
         echo "        git said: $(head -n1 <<< "$pull_out")"
         echo "        Rebuilding the revision already checked out ($before)."
@@ -124,7 +133,7 @@ update_llama() {
         # A real local failure (dirty tree, diverged branch, or a default
         # branch that is not called master). Try the branch-agnostic form,
         # then fail with git's OWN words rather than a guess.
-        git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=15 \
+        git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
             pull --ff-only >/dev/null 2>&1 \
           || die "git pull failed in llama.cpp/ — git said:
        $(head -n2 <<< "$pull_out" | sed 's/^/       /')
@@ -355,9 +364,31 @@ PY
   rm -f "$req_backup"
   ok "agents/ imports cleanly against the new versions"
   ok "upgraded + pins rewritten: $(grep -v '^#' "$req" | tr '\n' ' ')"
+  # THE LOCK MOVES WITH THE PINS, or it is stale the moment this returns. It
+  # used to be left alone: requirements.txt said the new versions, the
+  # hash-pinned lock still said the old ones, CI's `pydeps.sh verify` went red
+  # on the commit, and bootstrap installed the OLD closure from the lock on
+  # every fresh box. `lock` needs what this function already has — the index
+  # (pip's resolver) plus pypi.org's JSON API — and it only writes the file
+  # after a complete resolve, so a failure here leaves the old lock intact
+  # and detectably stale rather than half-written.
+  local lock_ok=0
+  if "$REPO_DIR/scripts/pydeps.sh" lock; then
+    lock_ok=1
+    ok "regenerated agents/requirements.lock for the new pins"
+  else
+    warn "could NOT regenerate agents/requirements.lock (pypi.org unreachable?).
+       It is now STALE against the pins above: bootstrap will say so and use
+       requirements.txt, and CI will fail 'pydeps.sh verify'. Before committing:
+           ./scripts/pydeps.sh lock"
+  fi
   (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before committing"
   warn "a running MCPO/mcp_server keeps old code until restarted"
-  warn "commit the requirements.txt pin bump after verifying the stack"
+  if [[ $lock_ok -eq 1 ]]; then
+    warn "commit agents/requirements.txt AND agents/requirements.lock together after verifying the stack"
+  else
+    warn "commit the requirements.txt pin bump only TOGETHER with a regenerated lock (see above)"
+  fi
   return 0
 }
 

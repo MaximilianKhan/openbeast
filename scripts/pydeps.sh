@@ -32,6 +32,11 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Captured BEFORE the cd: a <dir> argument is relative to where the operator
+# is standing. Resolved after it, `/path/openbeast/scripts/pydeps.sh wheelhouse
+# ./wheels` run from /media/usb filled $REPO_DIR/wheels instead of the stick,
+# and `install --from ./wheels` looked for the wheelhouse inside the repo.
+ORIG_PWD="$PWD"
 cd "$REPO_DIR"
 
 LOCK="agents/requirements.lock"
@@ -46,6 +51,13 @@ EXTRA=(--extra huggingface_hub)
 PY="${OPENBEAST_PYTHON:-python3}"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+_from_caller() {                 # a relative path is relative to the CALLER
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *)  printf '%s\n' "$ORIG_PWD/$1" ;;
+  esac
+}
 
 _pip_flags() {
   # INSIDE A VENV, --user is not merely unnecessary — pip REFUSES it ("User
@@ -110,7 +122,7 @@ case "$CMD" in
     ;;
 
   wheelhouse)
-    DIR="${1:-wheels}"; shift || true
+    DIR="$(_from_caller "${1:-wheels}")"; shift || true
     [[ -f "$LOCK" ]] || die "$LOCK does not exist — ./scripts/pydeps.sh lock"
     mkdir -p "$DIR"
     # --require-hashes on the DOWNLOAD, so the wheelhouse is verified as it is
@@ -137,7 +149,7 @@ EOF
     ;;
 
   audit)
-    DIR="${1:-wheels}"
+    DIR="$(_from_caller "${1:-wheels}")"
     [[ -d "$DIR" ]] || die "$DIR is not a directory"
     [[ -f "$LOCK" ]] || die "$LOCK does not exist"
     "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR"
@@ -147,7 +159,10 @@ EOF
     FROM=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --from) FROM="${2:-}"; shift 2 ;;
+        # A bare or empty --from must not fall through to the INDEX install
+        # below: the operator asked for "no index contacted".
+        --from) [[ $# -ge 2 && -n "$2" ]] || die "--from needs a wheelhouse directory"
+                FROM="$(_from_caller "$2")"; shift 2 ;;
         *) break ;;
       esac
     done

@@ -493,6 +493,26 @@ suspect). A `lost` job whose log ends cleanly means the supervisor died
 between the work finishing and the record being written — rare, and the log
 is authoritative over the state.
 
+**Does a console-started job survive `./stop.sh`?** Yes, since the 2026-09-17
+review. Under `./start.sh -d` the supervisor, `chat_server` and everything it
+spawns used to share ONE systemd unit: `start_new_session` leaves the process
+group, not the cgroup, so any `./stop.sh` — including the `./stop.sh &&
+./start.sh` an update asks for — killed every job started from the phone, and
+those jobs shared llama-server's memory cap (an OOM in a job could take the
+model down). `chat_server` now starts each session through `systemd-run
+--user --scope` when it finds itself inside a service cgroup and systemd-run
+can reach the user manager; otherwise it spawns plainly, as before. The pid,
+the ledger record and Stop are unchanged (a scope execs the command in place).
+What does NOT survive a `chat_server` restart is the *reaper*: a console job
+that finishes while no server holds it reconciles to `lost`, and its log is
+authoritative. `scripts/job.sh` jobs carry their own supervisor and are
+unaffected either way.
+
+**`./stop.sh` with a phone attached.** The server ends open streams after 5
+seconds of SIGTERM instead of waiting for the phone to hang up (it used to
+linger indefinitely, still streaming from a stack that was "stopped"). The
+console's EventSource reconnects by itself and resumes from its last offset.
+
 **`job.sh stop` says "already stopped" but the work is still running.**
 Something escaped the process group — a `systemd-run` scope or a
 `setsid`-wrapped child. Those detach on purpose and no group signal reaches

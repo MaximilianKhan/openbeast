@@ -91,6 +91,14 @@ def _install_signal_reaper() -> None:
     """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
     def _handler(signum, _frame):
         _reap_live_agents()
+        # os._exit skips the interpreter's own flush, and under nohup or a
+        # log file stdout is BLOCK-buffered: a stopped campaign lost the last
+        # screenful of its log — exactly the lines that say where it stopped.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
         # os._exit: no atexit, no threads to join, no chance of a worker
         # spawning a fresh agent on the way out.
         os._exit(128 + signum)

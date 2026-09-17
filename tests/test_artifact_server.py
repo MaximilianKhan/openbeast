@@ -82,11 +82,11 @@ FLAT_404 = {"detail": "Not Found"}
 EXPECTED_RAW_CSP = (
     "sandbox allow-scripts allow-forms allow-modals allow-popups; "
     "default-src 'none'; "
-    "script-src 'unsafe-inline' https://cdnjs.cloudflare.com "
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
     "https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com "
     "https://code.jquery.com; "
-    "style-src 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com data:; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob:; "
     "media-src 'self' data: blob:; "
     "connect-src 'none'; frame-src 'none'; object-src 'none'; "
@@ -130,6 +130,14 @@ def make_client(env, monkeypatch):
         c.asgi_app = app                         # type: ignore[attr-defined]
         return c
     return _make
+
+
+def _raw_src(tag: str, artifact_id: str, n: int) -> str:
+    """The iframe's src when it is this version's CAPABILITY path, else ""."""
+    import re
+    m = re.search(r'src="(/raw/%s/v/%d/~[0-9a-f]{32}/)"'
+                  % (re.escape(artifact_id), n), tag)
+    return m.group(1) if m else ""
 
 
 def local(c, extra=None):
@@ -230,7 +238,7 @@ def test_shell_embeds_the_raw_route_in_a_sandboxed_iframe(make_client):
     a = publish(c)
     body = c.get(f"/a/{a['id']}", headers=local(c)).text
     tag = _iframe_tag(body)
-    assert f'src="/raw/{a["id"]}/v/1/"' in tag
+    assert _raw_src(tag, a["id"], 1)
     assert IFRAME_SANDBOX in tag
     # exactly one frame, and the sandbox never gains the escape hatch
     assert body.count("<iframe") == 1
@@ -926,7 +934,7 @@ def test_a_placeholder_in_a_title_cannot_delete_the_iframe_sandbox(make_client):
     publish(c, artifact_id=a["id"], html="<p>v2</p>", label="two")
     body = c.get(f"/a/{a['id']}", headers=local(c)).text
     tag = _iframe_tag(body)
-    assert f'src="/raw/{a["id"]}/v/2/"' in tag      # the iframe still loads
+    assert _raw_src(tag, a["id"], 2)                # the iframe still loads
     assert IFRAME_SANDBOX in tag                    # ...and is still boxed in
     assert "<option" not in tag
     # the title renders as text, not as a placeholder
@@ -942,7 +950,7 @@ def test_no_placeholder_in_a_title_reaches_the_second_pass(make_client, evil):
     a = publish(c, title=evil)
     body = c.get(f"/a/{a['id']}", headers=local(c)).text
     tag = _iframe_tag(body)
-    assert f'src="/raw/{a["id"]}/v/1/"' in tag
+    assert _raw_src(tag, a["id"], 1)
     assert IFRAME_SANDBOX in tag
     gallery = c.get("/", headers=local(c)).text
     assert f'href="/a/{a["id"]}"' in gallery
@@ -1144,7 +1152,7 @@ def test_a_corrupt_record_never_500s_any_route(make_client, corruption):
         quiet.get(f"/raw/{a['id']}/v/1/app.js", headers=h).text
     # ...and the shell still frames it, sandbox intact
     tag = _iframe_tag(quiet.get(f"/a/{a['id']}", headers=h).text)
-    assert f'src="/raw/{a["id"]}/v/1/"' in tag and IFRAME_SANDBOX in tag
+    assert _raw_src(tag, a["id"], 1) and IFRAME_SANDBOX in tag
 
 
 @pytest.mark.parametrize("corruption", sorted(CORRUPTIONS))
@@ -1902,3 +1910,102 @@ def test_a_bad_visibility_value_commits_nothing(make_client):
     after = store.get_meta(a["id"])
     assert after["current"] == 2, "the rollback committed despite the 400"
     assert after.get("visibility") == before.get("visibility")
+
+
+# ---------------------------------------------------------------------------
+# The capability path — supporting files have to LOAD, not merely be served
+# ---------------------------------------------------------------------------
+# Measured in headless Chromium against v1.4.0: a page published with
+# `--file app.js --file style.css --file dot.png` rendered NONE of them. The
+# sandboxed document has an opaque origin, so its own subresources are
+# cross-site loads that `CORP: same-origin` refuses, and script-src/style-src
+# had no 'self' at all. Every header test passed throughout, because a header
+# test never asks a browser. These pin the three facts a browser needs.
+
+def _shell_raw_url(c, a, n=1):
+    import re
+    html = c.get(f"/a/{a['id']}/v/{n}", headers=local(c)).text
+    tag = re.search(r"<iframe[^>]*>", html).group(0)
+    src = _raw_src(tag, a["id"], n)
+    assert src, tag
+    return src
+
+
+def test_supporting_files_are_loadable_from_the_sandboxed_page(make_client):
+    c = make_client()
+    a = publish(c, files={"app.js": "x=1", "img/dot.png": {"b64": "iVBORw0KGgo="}})
+    base = _shell_raw_url(c, a)
+    page = c.get(base, headers=local(c))
+    assert page.status_code == 200 and PAGE in page.text
+    assert page.headers["content-security-policy"] == EXPECTED_RAW_CSP
+    # the PAGE keeps same-origin: nothing legitimate embeds it cross-origin
+    assert page.headers["cross-origin-resource-policy"] == "same-origin"
+    for path in ("app.js", "img/dot.png"):
+        r = c.get(base + path, headers=local(c))
+        assert r.status_code == 200, path
+        assert r.headers["cross-origin-resource-policy"] == "cross-origin", path
+        assert r.headers["access-control-allow-origin"] == "*", path
+        assert r.headers["content-security-policy"] == EXPECTED_RAW_CSP, path
+        assert r.headers["x-content-type-options"] == "nosniff", path
+    # 'self' is what lets <script src="app.js"> and <link href="x.css"> run
+    for directive in ("script-src 'self'", "style-src 'self'", "font-src 'self'"):
+        assert directive in EXPECTED_RAW_CSP
+
+
+def test_the_untokenized_file_route_stays_same_origin(make_client):
+    """Negative control: the relaxation is bought WITH the token, never
+    without it — this is the route a hostile page can name."""
+    c = make_client()
+    a = publish(c, files={"app.js": "x=1"})
+    r = c.get(f"/raw/{a['id']}/v/1/app.js", headers=local(c))
+    assert r.status_code == 200
+    assert r.headers["cross-origin-resource-policy"] == "same-origin"
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_a_wrong_token_is_the_flat_404_and_a_token_is_not_an_identity(make_client):
+    c = make_client()
+    a = publish(c, files={"app.js": "x=1"})
+    b = publish(c, files={"app.js": "y=2"})
+    base = _shell_raw_url(c, a)
+    good = base.split("~")[1].strip("/")
+    for bad in ("0" * 32, good[:-1], good.upper() + "x", "%ff"):
+        for leaf in ("", "app.js"):
+            r = c.get(f"/raw/{a['id']}/v/1/~{bad}/{leaf}", headers=local(c))
+            assert r.status_code == 404 and r.json() == FLAT_404, (bad, leaf)
+    # a token is scoped to ONE artifact version
+    assert c.get(f"/raw/{b['id']}/v/1/~{good}/app.js",
+                 headers=local(c)).status_code == 404
+    # ...and it opens nothing by itself: no identity, no service (D1), and
+    # someone else's private page stays 404 with a perfectly good token.
+    assert c.get(base + "app.js").status_code == 404
+    assert c.get(base + "app.js", headers=KID).status_code == 404
+
+
+def test_the_raw_token_survives_a_restart(make_client, tmp_path, monkeypatch):
+    """The key is persisted (0600): a tab left open across a stack restart
+    must not lose its images."""
+    c = make_client()
+    a = publish(c, files={"app.js": "x=1"})
+    base = _shell_raw_url(c, a)
+    c2 = make_client()
+    assert c2.get(base + "app.js", headers=local(c2)).status_code == 200
+    key = os.path.join(os.environ["OPENBEAST_RUN_DIR"], "artifact-raw.key")
+    assert stat.S_IMODE(os.stat(key).st_mode) == 0o600
+
+
+def test_a_legal_binary_version_is_not_refused_as_oversize(make_client,
+                                                          monkeypatch):
+    """base64 inflates by 4/3. Gating the BODY at the decoded cap refused a
+    version that was inside every cap."""
+    import base64
+    c = make_client()
+    monkeypatch.setitem(store.CAPS, "version_bytes", 4096)
+    blob = base64.b64encode(os.urandom(3900)).decode()      # ~5.2 KB of body
+    r = c.post("/api/artifacts", headers=local(c),
+               json={"html": "<p>x</p>", "files": {"b.bin": {"b64": blob}}})
+    assert r.status_code == 201, r.text
+    # negative control: a body past even the inflated bound still dies first
+    r = c.post("/api/artifacts", headers=local(c),
+               json={"html": "x" * 8000})
+    assert r.status_code == 404 and r.json() == FLAT_404

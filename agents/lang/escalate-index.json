@@ -5,6 +5,7 @@
    "toolchain": "g++ (GCC) 16.2.1 20260810",
    "fixtures_with_diagnostics": 6,
    "fixtures_that_compiled_anyway": 0,
+   "decoys_that_compiled_anyway": 0,
    "signatures": {
     "shape:C++ designated initializers only available with \u2018-std=c++N\u2019 or \u2018-std=gnu++N\u2019 [-W": [
      "designated-initializers"
@@ -45,12 +46,22 @@
     "shape:\u2018std::ranges\u2019 has not been declared": [
      "ranges-sort"
     ]
-   }
+   },
+   "generic": [
+    "shape:expected unqualified-id before \u2018>\u2019 token",
+    "shape:expected \u2018;\u2019 at end of member declaration",
+    "shape:expected \u2018;\u2019 before \u2018{\u2019 token",
+    "shape:missing template arguments before \u2018{\u2019 token",
+    "shape:no match for \u2018operator<\u2019 (operand types are \u2018P\u2019 and \u2018P\u2019)",
+    "shape:non-constant condition for static assertion"
+   ],
+   "unreachable": []
   },
   "python": {
    "toolchain": "Python 3.14.7",
    "fixtures_with_diagnostics": 4,
    "fixtures_that_compiled_anyway": 0,
+   "decoys_that_compiled_anyway": 0,
    "signatures": {
     "ident:assertEquals": [
      "unittest-aliases-removed"
@@ -76,12 +87,19 @@
     "shape:unittest.TestCase.assertEquals does not exist": [
      "unittest-aliases-removed"
     ]
-   }
+   },
+   "generic": [
+    "shape:SyntaxError: invalid syntax (<unknown>, line N)"
+   ],
+   "unreachable": [
+    "asyncio-no-async-coroutine"
+   ]
   },
   "zig": {
    "toolchain": "0.16.0",
    "fixtures_with_diagnostics": 39,
    "fixtures_that_compiled_anyway": 0,
+   "decoys_that_compiled_anyway": 0,
    "signatures": {
     "ident:))": [
      "pq_hashmap"
@@ -294,7 +312,21 @@
     "shape:struct 'X'lt'X' has no member named 'X'": [
      "pq_hashmap"
     ]
-   }
+   },
+   "generic": [
+    "ident:?i32",
+    "ident:i32",
+    "ident:init",
+    "ident:std",
+    "ident:writer",
+    "shape:expected N argument, found N",
+    "shape:expected type 'X', found 'X'",
+    "shape:missing struct field: items",
+    "shape:no field or member function named 'X' in 'X'",
+    "shape:root source file struct 'X' has no member named 'X'",
+    "shape:struct 'X' has no member named 'X'"
+   ],
+   "unreachable": []
   }
  }
 }

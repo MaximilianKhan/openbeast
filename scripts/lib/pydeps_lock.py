@@ -379,11 +379,31 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     #: an index page is not something to leave to chance. These three are what
     #: a Mac or a file manager actually leaves on a USB stick.
     BENIGN = {".DS_Store", ".Trashes", ".directory", "Thumbs.db"}
+    #: ...plus AppleDouble sidecars (`._<name>`), which macOS writes next to
+    #: EVERY file carrying an xattr on a FAT/exFAT stick — so a wheelhouse
+    #: browsed on a Mac grows a `._foo.whl` per wheel. Matched by name AND by
+    #: magic number, never by the prefix alone: a payload merely NAMED
+    #: `._x.whl` is still audited. Kept in step with
+    #: scripts/lib/bundle_manifest.py (is_transit_dropping) — the two disagreed
+    #: once, and a bundle this audit accepted was refused by `bundle verify`.
+    APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
+
+    def _appledouble(p: str) -> bool:
+        if os.path.islink(p) or not os.path.isfile(p):
+            return False
+        try:
+            with open(p, "rb") as fh:
+                return fh.read(4) == APPLEDOUBLE_MAGIC
+        except OSError:
+            return False
+
     matched, problems = [], []
     seen_hashes: set = set()
     for entry in sorted(os.listdir(directory)):
         path = os.path.join(directory, entry)
         if entry in BENIGN:
+            continue
+        if entry.startswith("._") and _appledouble(path):
             continue
         if os.path.islink(path):
             problems.append(f"{entry}: symlink — a wheelhouse holds files, and "

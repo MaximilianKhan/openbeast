@@ -350,3 +350,94 @@ def test_a_symlinked_FILE_is_not_silently_accepted(tmp_path):
     os.symlink(str(target), os.path.join(root, "wheels", "b.whl"))
     _ok, problems = B.verify(root)
     assert any("symlink" in p for p in problems), problems
+
+
+# --------------------------------------------------------------------------
+# Finder droppings: a stick that was BROWSED on a Mac is not a tampered bundle
+# --------------------------------------------------------------------------
+
+_APPLEDOUBLE = b"\x00\x05\x16\x07" + b"\x00" * 60
+
+
+def test_verify_tolerates_finder_droppings_and_says_which(tmp_path):
+    """`.DS_Store` and AppleDouble `._x` sidecars appear the moment a Mac
+    mounts the stick. scripts/lib/pydeps_lock.py already tolerated them, so
+    `pydeps audit` passed a directory `bundle verify` then refused. The
+    exemption must be VISIBLE, hence the `ignored` out-parameter."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    for rel, body in ((".DS_Store", b"\x00\x00\x00\x01Bud1"),
+                      ("wheels/.DS_Store", b"junk"),
+                      ("wheels/._a.whl", _APPLEDOUBLE)):
+        with open(os.path.join(root, rel), "wb") as fh:
+            fh.write(body)
+    ignored: list = []
+    ok, problems = B.verify(root, ignored)
+    assert ok == ["wheels/a.whl"]
+    assert problems == []
+    assert sorted(ignored) == [".DS_Store", "wheels/.DS_Store", "wheels/._a.whl"]
+    # the old two-value call still works, and still passes
+    assert B.verify(root) == (["wheels/a.whl"], [])
+
+
+def test_the_cli_prints_what_it_ignored(tmp_path, capsys):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    with open(os.path.join(root, ".DS_Store"), "wb") as fh:
+        fh.write(b"x")
+    assert B.main(["verify", root]) == 0
+    out = capsys.readouterr().out
+    assert "ignored 1 Finder dropping" in out and ".DS_Store" in out
+    # NEGATIVE CONTROL: a clean bundle prints no such note
+    os.unlink(os.path.join(root, ".DS_Store"))
+    assert B.main(["verify", root]) == 0
+    assert "ignored" not in capsys.readouterr().out
+
+
+def test_every_OTHER_unrecorded_file_is_still_a_problem(tmp_path):
+    """The negative control, and the reason the rule is two names and a magic
+    number rather than "any dotfile"."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    planted = {
+        "wheels/.hidden.whl": b"PK\x03\x04",        # a dotfile, not a dropping
+        "wheels/._evil.whl": b"PK\x03\x04payload",  # NAMED like AppleDouble, is a zip
+        "wheels/Thumbs.db": b"x",                   # not a dotfile: a glob WOULD see it
+        "weights/._": b"",                          # empty: no magic
+    }
+    for rel, body in planted.items():
+        full = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as fh:
+            fh.write(body)
+    ignored: list = []
+    _ok, problems = B.verify(root, ignored)
+    assert ignored == []
+    for rel in planted:
+        assert any(rel in p and "NOT in the manifest" in p for p in problems), \
+            (rel, problems)
+
+
+def test_a_symlink_named_like_a_dropping_is_not_ignored(tmp_path):
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
+    os.symlink("/etc/hostname", os.path.join(root, "wheels", ".DS_Store"))
+    ignored: list = []
+    _ok, problems = B.verify(root, ignored)
+    assert ignored == []
+    assert any("unrecorded symlink" in p for p in problems), problems
+
+
+def test_a_RECORDED_file_named_like_a_dropping_is_still_hashed(tmp_path):
+    """The exemption is for UNRECORDED files only. If the manifest names a
+    `.DS_Store`, changing it is a changed bundle."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA", "wheels/.DS_Store": b"one"})
+    assert B.verify(root)[1] == []
+    with open(os.path.join(root, "wheels", ".DS_Store"), "wb") as fh:
+        fh.write(b"two")
+    _ok, problems = B.verify(root)
+    assert any(".DS_Store" in p and "sha256" in p for p in problems), problems
+
+
+def test_the_summary_shows_the_image_store_kind_when_recorded(tmp_path):
+    root = _bundle(tmp_path, {"images/x.tar.gz": b"IMG"})
+    doc = B.load(root)
+    assert "image store" not in B.summarise(doc)      # old manifests: no field
+    doc["components"][0]["image_store"] = "containerd"
+    assert "[image store: containerd]" in B.summarise(doc)

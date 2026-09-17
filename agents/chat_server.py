@@ -629,6 +629,63 @@ _CHILDREN: dict[str, subprocess.Popen] = {}
 _CHILDREN_LOCK = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Spawned sessions must not live inside the STACK's systemd unit
+# ---------------------------------------------------------------------------
+# `./start.sh -d` (what docs/BEAST_CHAT.md tells operators to run) puts the
+# supervisor, this server and therefore every session spawned below into ONE
+# transient unit. start_new_session=True leaves the process group; it does not
+# leave the cgroup. Measured: `systemctl --user stop <unit>` killed a setsid
+# child and spared one started through `systemd-run --scope`. Two consequences,
+# both contrary to what this feature promises:
+#   * a job started from the phone dies on ANY ./stop.sh — including the
+#     `./stop.sh && ./start.sh` that update.sh asks for — and a job that
+#     itself restarts the stack kills itself halfway through;
+#   * the job shares llama-server's MemoryMax, so an OOM kill inside the unit
+#     can take the MODEL down: an optional console costing the core stack.
+# `systemd-run --user --scope` execs the command in place (the pid Popen
+# returns IS the command, so the ledger, the reaper and signal_session are
+# unchanged) inside a scope of its own. Probed once, and skipped entirely
+# when we are not in a service cgroup or systemd-run cannot reach the user
+# manager — a session that starts un-scoped beats one that does not start.
+
+_SCOPE_PREFIX: list[str] | None = None
+_SCOPE_LOCK = threading.Lock()
+
+
+def _in_service_cgroup() -> bool:
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
+            leaf = fh.read().strip().splitlines()[-1].rsplit("/", 1)[-1]
+    except (OSError, IndexError):
+        return False
+    return leaf.endswith(".service")
+
+
+def _probe_scope() -> list[str]:
+    import shutil
+    exe = shutil.which("systemd-run")
+    if not exe or not _in_service_cgroup():
+        return []
+    prefix = [exe, "--user", "--scope", "--quiet", "--collect", "--"]
+    try:
+        ok = subprocess.run(prefix + ["true"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    return prefix if ok else []
+
+
+def scope_prefix() -> list[str]:
+    """argv prefix that detaches a spawned session from our unit, or []."""
+    global _SCOPE_PREFIX
+    with _SCOPE_LOCK:
+        if _SCOPE_PREFIX is None:
+            _SCOPE_PREFIX = _probe_scope()
+        return list(_SCOPE_PREFIX)
+
+
 def terminal_state_for(returncode: int) -> str:
     """Exit status -> ledger state. 0 done, >0 failed, <0 (signalled) stopped."""
     rc = _int_or_zero(returncode)
@@ -765,23 +822,14 @@ def record_terminal_state(session_id: str, state: str,
     session wrote for ITSELF is left exactly as it is.
     """
     try:
-        if sessions.finalize(session_id, state, summary=summary):
+        if sessions.finalize(session_id, state, summary=summary,
+                             override_lost=True):
             return True
     except Exception:
         return False
     rec = read_record_raw(session_id)
-    if rec is None:
-        return False
-    if rec.get("state") == state:
-        return True                      # it landed (older finalize -> None)
-    if rec.get("state") != "lost":
-        return False                     # a real verdict; leave it alone
-    with contextlib.suppress(Exception):
-        sessions.touch(session_id, state=state,
-                       summary=summary if summary is not None
-                       else rec.get("summary"),
-                       ended_at=_now_iso())
-    return True
+    # False from finalize is also "it already says exactly this".
+    return bool(rec) and rec.get("state") == state
 
 
 def _still_running(session_id: str) -> bool:
@@ -1638,6 +1686,9 @@ def create_app() -> FastAPI:
                     # descendant that calls setsid (evals/run_eval.py does,
                     # deliberately, so a task timeout can kill one agent group)
                     # is outside this group and must reap itself on SIGTERM.
+                    # Out of the stack's unit (see scope_prefix). `display`,
+                    # the audit row and the ledger keep the command as asked.
+                    cmd = scope_prefix() + cmd
                     if kind == "agent":
                         proc = subprocess.Popen(
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
@@ -1869,13 +1920,60 @@ def _tail_line(path: str, window: int = 8192) -> str:
     return ""
 
 
+# How long uvicorn waits for open connections on SIGTERM before cancelling
+# them. Without a bound the wait is FOREVER, and an SSE stream is a connection
+# that never finishes on its own: measured, a server with one phone attached
+# ignored stop.sh's SIGTERM indefinitely (it had already closed its listener,
+# so the next start bound the port and the old process lingered, still
+# streaming to that phone from a stack that was "stopped"). Cancelling the
+# stream ends the response; the console's EventSource reconnects by itself and
+# resumes from its last offset against whatever is serving then.
+GRACEFUL_SHUTDOWN_S = 5
+
+
+def _prune_ledger_soon(days: int = 30) -> None:
+    """sessions.prune() existed and nothing ever called it, so the ledger grew
+    by one record per agent or job forever — and every console list request
+    reads and reconciles every record. Once per start, off the startup path,
+    and never allowed to matter if it fails."""
+    def run():
+        with contextlib.suppress(Exception):
+            sessions.prune(days)
+    threading.Thread(target=run, name="chat-prune", daemon=True).start()
+
+
 def main() -> None:
+    """Bind the port FIRST, then build the app (which mints the token).
+
+    create_app() rewrites .run/chat-local.token. Built before the bind, a
+    second start that was about to fail on a busy port had already replaced
+    the LIVE server's token with one nobody honours — the same defect
+    agents/artifact_server.py fixed as D18, left open here.
+    """
+    import socket
     import uvicorn
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    family, stype, proto, _, addr = socket.getaddrinfo(
+        host, port, type=socket.SOCK_STREAM)[0]
+    sock = socket.socket(family, stype, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(addr)
+        sock.listen(128)
+    except OSError as e:
+        sock.close()
+        print(f"ERROR: cannot bind {host}:{port} ({e}) — another beast-chat "
+              f"is probably already running. Its locality token has been "
+              f"left alone.", file=sys.stderr)
+        raise SystemExit(1)
+    app = create_app()
+    _prune_ledger_soon()
     print(f"OpenBeast beast-chat on {host}:{port} "
           f"(sessions: {sessions.SESSIONS_DIR})")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning",
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    uvicorn.Server(config).run(sockets=[sock])
 
 
 if __name__ == "__main__":

@@ -1993,6 +1993,259 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# 2026-09-17 review — the scripts that SIGNAL things, and what they signal
+# ---------------------------------------------------------------------------
+echo ""
+echo "Signalling (review 2026-09-17):"
+_RV="$(mktemp -d)"
+# shellcheck disable=SC1091
+_rv_proc() { bash -c "source '$REPO_DIR/scripts/lib/proc.sh'; $1"; }
+
+# lib/proc.sh is SOURCED by stop.sh and healthcheck.sh, which parse "$@" — so
+# it must define functions and do nothing else (the `set --` lesson above).
+_RV_ARGS="$(bash -c "set -- keep these; source '$REPO_DIR/scripts/lib/proc.sh'; echo \"\$*\"")"
+if [[ "$_RV_ARGS" == "keep these" ]]; then
+  pass "lib/proc.sh leaves the sourcing shell's arguments alone"
+else
+  fail "sourcing lib/proc.sh clobbered \$@: '$_RV_ARGS'"
+fi
+
+# A pidfile is a number on disk and .run/ survives a reboot. The STRANGER here
+# is a real live process that merely owns the recorded pid.
+sleep 300 & _RV_STRANGER=$!
+if _rv_proc "ob_pid_matches $_RV_STRANGER 'chat_server\\.py'"; then
+  fail "ob_pid_matches accepted an unrelated process as chat_server"
+else
+  pass "a recycled pid is NOT the server it used to be (identity, not liveness)"
+fi
+if _rv_proc "ob_pid_matches $_RV_STRANGER '^sleep 300'"; then
+  pass "…and the same helper does match the process it should (control)"
+else
+  fail "ob_pid_matches rejected a process whose command line matches"
+fi
+for _bad in "" 0 1 abc "12 34"; do
+  if _rv_proc "ob_pid_matches '$_bad' '.*'"; then
+    fail "ob_pid_matches accepted the junk pid '$_bad'"
+  fi
+done
+pass "junk pids (empty, 0, 1, non-numeric) never match"
+
+# stop.sh's _stop_recorded, run for real against that stranger: it must
+# survive, and the path fallback must still be reached.
+# The harness is a script FILE fed by the environment: pkill -f matches whole
+# command lines, so a `bash -c "<text containing the pattern>"` harness is
+# itself a match and gets killed by the very sweep it is testing.
+{
+  echo 'set -euo pipefail'
+  echo "source '$REPO_DIR/scripts/lib/proc.sh'"
+  sed -n '/^_stop_recorded() {/,/^}/p' "$REPO_DIR/stop.sh"
+  echo '_stop_recorded "chat server" "$RV_PIDFILE" "$RV_PATH"'
+} > "$_RV/stop_recorded.sh"
+echo "$_RV_STRANGER" > "$_RV/chat.pid"
+_RV_OUT="$(RV_PIDFILE="$_RV/chat.pid" RV_PATH="$_RV/no/such/agents/chat_server.py" \
+           bash "$_RV/stop_recorded.sh" 2>&1 || true)"
+if kill -0 "$_RV_STRANGER" 2>/dev/null; then
+  pass "stop.sh does not SIGTERM a stranger that inherited a stale chat.pid"
+else
+  fail "stop.sh killed an unrelated process via a stale pidfile: $_RV_OUT"
+fi
+if grep -q "was not running" <<< "$_RV_OUT"; then
+  pass "…and falls through to the path sweep instead of reporting 'stopped'"
+else
+  fail "stale pidfile short-circuited the path fallback: $_RV_OUT"
+fi
+# Control: a process that IS the recorded server is stopped by that pid.
+mkdir -p "$_RV/agents"
+printf '#!/bin/bash\nsleep 300\n' > "$_RV/agents/chat_server.py"; chmod +x "$_RV/agents/chat_server.py"
+bash "$_RV/agents/chat_server.py" & _RV_OURS=$!
+sleep 0.3
+echo "$_RV_OURS" > "$_RV/chat.pid"
+_RV_OUT="$(RV_PIDFILE="$_RV/chat.pid" RV_PATH="$_RV/agents/chat_server.py" \
+           bash "$_RV/stop_recorded.sh" 2>&1 || true)"
+sleep 0.3
+if ! kill -0 "$_RV_OURS" 2>/dev/null && grep -q "stopped (pid $_RV_OURS)" <<< "$_RV_OUT"; then
+  pass "the real recorded server IS stopped by its pid (control)"
+else
+  fail "stop.sh did not stop its own recorded server: $_RV_OUT"
+fi
+kill "$_RV_STRANGER" 2>/dev/null || true; pkill -P "$_RV_OURS" 2>/dev/null || true
+
+# Every path-anchored pkill/pgrep in BOTH signalling scripts is ERE-quoted.
+for _f in stop.sh scripts/healthcheck.sh; do
+  _RV_BARE=0
+  while IFS= read -r _ln; do
+    _t="${_ln#"${_ln%%[![:space:]]*}"}"
+    [[ "$_t" == \#* ]] && continue
+    [[ "$_t" == *'$REPO_DIR'* || "$_t" == *'$SCRIPT_DIR'* ]] || continue
+    [[ "$_t" == *'_ob_ere'* ]] || _RV_BARE=1
+  done < <(grep -E 'pkill -f|pgrep -f' "$REPO_DIR/$_f" || true)
+  if [[ $_RV_BARE -eq 0 ]]; then
+    pass "$_f: every path-anchored pkill/pgrep is ERE-quoted"
+  else
+    fail "$_f: a pkill/pgrep pattern uses the repo path unquoted"
+  fi
+done
+if grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/healthcheck.sh" | grep -qE 'pkill -f "llama-server"'; then
+  fail "healthcheck still kills llama-server by BARE name (reaps campaigns and sibling worktrees)"
+else
+  pass "healthcheck never kills llama-server by bare name"
+fi
+
+# THE WATCHDOG MUST NOT SHOOT A LOADING MODEL. The functions are lifted out of
+# healthcheck.sh and run against a stub curl that answers what llama-server
+# really answers during a load, and a stub `kill` target that records.
+mkdir -p "$_RV/bin" "$_RV/repo/.run"
+cat > "$_RV/bin/curl" <<'STUB'
+#!/bin/bash
+cat "$RV_CURL_BODY" 2>/dev/null
+STUB
+chmod +x "$_RV/bin/curl"
+{
+  echo 'set -uo pipefail'
+  echo "source '$REPO_DIR/scripts/lib/proc.sh'"
+  echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
+  sed -n '/^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
+  echo '"$@"'
+} > "$_RV/hc.sh"
+_rv_hc() { # _rv_hc <curl body> <function> — status is the function's
+  printf '%s' "$1" > "$_RV/body"
+  RV_CURL_BODY="$_RV/body" RV_REPO="$_RV/repo" RV_BIN_ERE='/no/such/build/bin/llama-server' \
+    PATH="$_RV/bin:$PATH" bash "$_RV/hc.sh" "$2"
+}
+if _rv_hc '{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}' _llama_loading; then
+  pass "a server answering 'Loading model' is LOADING, not down"
+else
+  fail "healthcheck reads a loading llama-server as down — --restart would kill it mid-load"
+fi
+if _rv_hc '{"status":"ok"}' _llama_loading; then
+  fail "a healthy server was classed as loading"
+else
+  pass "a healthy server is not 'loading' (control)"
+fi
+rm -f "$_RV/repo/.run/llama.pid"
+if _rv_hc '' _llama_loading; then
+  fail "no server and no pid was classed as loading — a dead stack would never be restarted"
+else
+  pass "nothing answering and no recorded pid is DOWN, not loading (control)"
+fi
+# port not bound yet, but the recorded llama-server is seconds old
+printf '#!/bin/bash\nsleep 300\n' > "$_RV/llama-server"; chmod +x "$_RV/llama-server"
+bash "$_RV/llama-server" & _RV_LL=$!
+sleep 0.3
+echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
+if _rv_hc '' _llama_loading; then
+  pass "a seconds-old recorded llama-server with no port yet is still loading"
+else
+  fail "a just-launched llama-server is treated as down"
+fi
+if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
+  fail "the load grace never expires — a wedged server would be left forever"
+else
+  pass "past the grace period a silent server IS down (control)"
+fi
+# _kill_own_llama takes the recorded pid, and only when it is a llama-server
+sleep 300 & _RV_STRANGER=$!
+echo "$_RV_STRANGER" > "$_RV/repo/.run/llama.pid"
+_rv_hc '' _kill_own_llama || true; sleep 0.2
+if kill -0 "$_RV_STRANGER" 2>/dev/null; then
+  pass "a stale llama.pid naming a stranger is not killed"
+else
+  fail "_kill_own_llama killed an unrelated process via a stale llama.pid"
+fi
+echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
+_rv_hc '' _kill_own_llama || true; sleep 0.3
+if kill -0 "$_RV_LL" 2>/dev/null; then
+  fail "_kill_own_llama did not kill the recorded llama-server"
+else
+  pass "the recorded llama-server is killed by its pid (control)"
+fi
+kill "$_RV_STRANGER" 2>/dev/null || true; pkill -P "$_RV_LL" 2>/dev/null || true
+if grep -q '_gpu_leased' "$REPO_DIR/scripts/healthcheck.sh" \
+   && grep -q 'gpu-lease.sh" status' "$REPO_DIR/stop.sh"; then
+  pass "the watchdog and stop.sh both consult the GPU lease before touching llama-server"
+else
+  fail "a held GPU lease is ignored — the watchdog would relaunch into a campaign"
+fi
+
+# start.sh: cleanup() removes a pidfile only while it still names OUR child.
+_RV_CL="$(sed -n '/^  _rm_own_pidfile() {/,/^  }/p' "$REPO_DIR/start.sh")"
+if [[ -n "$_RV_CL" ]]; then
+  echo 4242 > "$_RV/own.pid"; echo 9999 > "$_RV/replaced.pid"
+  bash -c "set -euo pipefail; $_RV_CL
+    _rm_own_pidfile '$_RV/own.pid' 4242; _rm_own_pidfile '$_RV/replaced.pid' 4242
+    _rm_own_pidfile '$_RV/replaced.pid' ''; _rm_own_pidfile '$_RV/missing.pid' 4242"
+  if [[ ! -e "$_RV/own.pid" && "$(cat "$_RV/replaced.pid")" == "9999" ]]; then
+    pass "cleanup keeps a pidfile healthcheck rewrote for its replacement"
+  else
+    fail "cleanup deleted a pidfile that names another process"
+  fi
+else
+  fail "start.sh cleanup no longer checks the pidfile's CONTENT before deleting it"
+fi
+if grep -A3 "WEIGHTS_DIR/\[A-Za-z0-9._-\]" "$REPO_DIR/start.sh" | grep -q '|| true)"'; then
+  pass "the fast-boot weight probe cannot abort start.sh under pipefail"
+else
+  fail "start.sh: grep|head|sed in a substitution without || true aborts under pipefail"
+fi
+
+# OFFLINE, as an operator would plausibly WRITE it.
+for _v in '"true"' "'true'" '"true" # air-gapped rig' 'true# x' 'TRUE  # x'; do
+  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  if [[ "$_got" == "on" ]]; then
+    pass "OFFLINE=$_v resolves to on (quotes and a comment do not fail OPEN)"
+  else
+    fail "OFFLINE=$_v resolved to $_got — offline mode failed open"
+  fi
+done
+for _v in '"maybe"' '#true' '"" # true' "'false'"; do
+  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  if [[ "$_got" == "off" ]]; then
+    pass "OFFLINE=$_v resolves to off (control)"
+  else
+    fail "OFFLINE=$_v resolved to on"
+  fi
+done
+
+# gpu-lease run: an operator's SIGTERM reaches the command, and the lease
+# lasts exactly as long as the command does.
+_RV_GL() { OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$REPO_DIR/scripts/gpu-lease.sh" "$@"; }
+mkdir -p "$_RV/lease"
+# The wrapper records ITS OWN pid (exec keeps it): finding it with pgrep -f
+# would match any process whose command line merely mentions the pattern.
+( OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
+    bash -c 'echo $$ > "$1/wrapper.pid"; exec "$2" run rv -- bash -c "trap \"echo got-TERM; sleep 1; exit 7\" TERM; sleep 300 & wait"' \
+    _ "$_RV" "$REPO_DIR/scripts/gpu-lease.sh" > "$_RV/lease.out" 2>&1 \
+    && echo "rc=0" >> "$_RV/lease.out" || echo "rc=$?" >> "$_RV/lease.out" ) &   # set -e: never a bare `; echo $?`
+sleep 1
+_RV_W="$(cat "$_RV/wrapper.pid" 2>/dev/null || echo 0)"
+kill -TERM "$_RV_W" 2>/dev/null || true
+sleep 0.4
+# Captured, never `| grep -q` under pipefail: the early-exiting grep SIGPIPEs
+# the writer and a HELD lease reads as not-held.
+_RV_ST="$(_RV_GL status 2>/dev/null || true)"
+if [[ "$_RV_ST" == HELD* ]]; then
+  pass "the lease is still HELD while the signalled command unwinds"
+else
+  fail "the lease was released while its command was still running"
+fi
+# Poll, don't sleep-and-hope: this suite runs under load.
+for _i in $(seq 1 50); do grep -q '^rc=' "$_RV/lease.out" 2>/dev/null && break; sleep 0.2; done
+if grep -q "got-TERM" "$_RV/lease.out" && grep -q "rc=7" "$_RV/lease.out"; then
+  pass "gpu-lease run forwards SIGTERM and returns the command's status"
+else
+  fail "gpu-lease run swallowed SIGTERM: $(tr '\n' ' ' < "$_RV/lease.out")"
+fi
+_RV_ST="$(_RV_GL status 2>/dev/null || true)"
+if [[ "$_RV_ST" == FREE* ]]; then
+  pass "…and the lease is released once the command has gone"
+else
+  fail "lease not released after the command exited"
+fi
+rm -rf "$_RV"
+
 # --- Summary ---
 echo ""
 echo "================================"

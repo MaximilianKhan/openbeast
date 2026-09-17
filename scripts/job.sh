@@ -132,7 +132,12 @@ elif CMD == "register":
 
 elif CMD == "finalize":
     session_id, state, summary = ARGV[0], ARGV[1], (ARGV[2] if len(ARGV) > 2 else "")
-    sessions.finalize(session_id, state, summary=summary or None)
+    # OB_OVERRIDE_LOST: `stop` sets it. finalize() is a compare-and-set that
+    # refuses a record already terminal, and `lost` IS terminal — so both of
+    # stop's "the operator did this, it is not a crash" corrections were
+    # no-ops that still printed "is now 'stopped'" over a ledger saying `lost`.
+    sessions.finalize(session_id, state, summary=summary or None,
+                      override_lost=os.environ.get("OB_OVERRIDE_LOST") == "1")
 
 elif CMD == "list":
     state = ARGV[0] if ARGV and ARGV[0] else None
@@ -484,7 +489,7 @@ case "$cmd" in
       else
         case "$state" in
           running|lost|unknown)
-            OB_CMD=finalize _ledger_op "$session_id" stopped "force-killed by operator"
+            OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" stopped "force-killed by operator"
             state="stopped"
             ;;
         esac
@@ -492,7 +497,7 @@ case "$cmd" in
     elif [[ "$state" == "lost" ]]; then
       # SIGTERM reached the group and the supervisor went away without a
       # terminal event. Same correction, same reason: the operator did this.
-      OB_CMD=finalize _ledger_op "$session_id" stopped "stopped by operator"
+      OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" stopped "stopped by operator"
       state="stopped"
     fi
     echo "Job '$session_id' is now '$state'."

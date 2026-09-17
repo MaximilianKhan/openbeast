@@ -267,3 +267,144 @@ def test_claim_sets_that_ship_summaries_declare_them_in_json():
             if c.get("summary"):
                 with_sum += 1
     assert with_sum >= 10, f"only {with_sum} claims are deliverable"
+
+
+# --- review 2026-09-17 ------------------------------------------------------
+
+def test_a_release_stamped_pack_does_not_serve_a_dev_build(tmp_path, monkeypatch):
+    """`short.startswith(stamped)` made zig-0.16.md serve 0.16.0-dev.412 —
+    while every other drift check here treats the prerelease part as
+    significant, because a dev build is exactly where std moves."""
+    hw = tmp_path / "packs"
+    hw.mkdir()
+    (hw / "zig-0.16.md").write_text("release notes\n")
+    monkeypatch.setattr(P, "HANDWRITTEN_DIR", str(hw))
+    assert P._handwritten("zig", "0.16.0-dev.412+abc") is None, \
+        "a pack written for the 0.16 RELEASE was served to a dev build"
+    # negative control: the release it was written for still gets it
+    assert P._handwritten("zig", "0.16.0") is not None
+    assert P._handwritten("zig", "zig 0.16.1") is not None
+    # and the other direction: a dev-stamped pack serves that dev build only
+    (hw / "zig-0.16.md").unlink()
+    (hw / "zig-0.17.0-dev.9.md").write_text("dev notes\n")
+    assert P._handwritten("zig", "0.17.0-dev.9+fff") is not None
+    assert P._handwritten("zig", "0.17.0") is None
+    assert P._handwritten("zig", "0.17.0-dev.10") is None
+
+
+def test_a_version_stamp_is_compared_by_component_not_by_character(tmp_path, monkeypatch):
+    hw = tmp_path / "packs"
+    hw.mkdir()
+    (hw / "zig-0.1.md").write_text("ancient\n")
+    monkeypatch.setattr(P, "HANDWRITTEN_DIR", str(hw))
+    assert P._handwritten("zig", "0.16.0") is None, "a 0.1 pack served 0.16"
+    assert P._handwritten("zig", "0.1.3") is not None
+
+
+def test_an_unreadable_handwritten_pack_is_absent_not_a_crash(tmp_path, monkeypatch):
+    hw = tmp_path / "packs"
+    hw.mkdir()
+    (hw / "zig-0.16.md").mkdir()              # open() on this raises OSError
+    monkeypatch.setattr(P, "HANDWRITTEN_DIR", str(hw))
+    assert P._handwritten("zig", "0.16.0") is None
+
+
+def test_prose_is_not_mistaken_for_a_language():
+    """languages_in() was substring matching: "c:" sits inside "basic:" and
+    "public:", "rust:" inside "trust:", and " go " is an English verb."""
+    assert P.languages_in(
+        "Fix the basic: handler, then let us go to the next task") == []
+    assert P.languages_in("public: void run(); // trust: nobody") == []
+    assert P.languages_in("Go to the next task. Then go home.") == []
+    assert P.languages_in("here we go: done") == []
+    assert P.languages_in("a C# service on the C:\\ drive, objective-c too") == []
+
+
+@pytest.mark.parametrize("text,lang", [
+    ("Create /tmp/x/main.c that prints a table", "c"),
+    ("write it in C", "c"),
+    ("C: implement a ring buffer", "c"),
+    ("edit util.h", "c"),
+    ("fix server.go", "go"),
+    ("rewrite this in Go", "go"),
+    ("Write a Go HTTP server", "go"),
+    ("use golang for it", "go"),
+    ("make `go build ./...` pass", "go"),
+    ("bump the version in go.mod", "go"),
+    ("Rust: implement a parser", "rust"),
+    ("zig: read stdin", "zig"),
+    ("use python3 for the script", "python"),
+])
+def test_a_real_mention_is_still_found(text, lang):
+    """The negative control for the test above."""
+    assert lang in P.languages_in(text), text
+
+
+def test_a_verdict_is_compiled_once_not_on_every_render(monkeypatch):
+    """render() re-compiled every fixture on every call — ~0.5 s per
+    pack_for("cpp"), 74 compiles for zig without its hand-written pack. The
+    stub driver RECORDS its compiles; that count is the assertion."""
+    calls = []
+
+    class Stub(D.Driver):
+        lang, exe = "stublang", sys.executable
+        v = "stub 1.0.0"
+
+        def available(self):
+            return True
+
+        def version(self):
+            return self.v
+
+        def compile_source(self, source, variant=None):
+            calls.append(source)
+            return D.Result("GOOD" in source, "" if "GOOD" in source else "error: no")
+
+    stub = Stub()
+    monkeypatch.setitem(D.DRIVERS, "stublang", stub)
+    monkeypatch.setattr(V, "_VERDICTS", {})
+    claim = V.Claim({"id": "k", "lang": "stublang", "old": ["BAD one"],
+                     "new": ["GOOD one"], "summary": "s"}, "inline", ".")
+    assert V.verify(claim)["verdict"] == V.VERIFIED
+    assert len(calls) == 2
+    assert V.verify(claim)["verdict"] == V.VERIFIED
+    assert len(calls) == 2, "the same claim was compiled again"
+    # negative controls: what MUST invalidate the memo does
+    claim.summary = "edited"
+    assert V.verify(claim)["summary"] == "edited", "the memo froze the summary"
+    claim.old = ["BAD two"]                     # the fixture text changed
+    V.verify(claim)
+    assert len(calls) == 4
+    stub.v = "stub 2.0.0"                       # the toolchain moved
+    V.verify(claim)
+    assert len(calls) == 6
+
+
+def test_a_compile_that_was_never_judged_is_not_a_verdict(monkeypatch):
+    """A timeout on the OLD form used to read as "the old form fails", which
+    is half of VERIFIED. It is UNVERIFIABLE, and it is not remembered."""
+    state = {"transient": True}
+
+    class Stub(D.Driver):
+        lang, exe = "stublang", sys.executable
+
+        def available(self):
+            return True
+
+        def version(self):
+            return "stub 1.0.0"
+
+        def compile_source(self, source, variant=None):
+            if "BAD" in source:
+                return D.Result(False, "timed out after 90s",
+                                transient=state["transient"])
+            return D.Result(True)
+
+    monkeypatch.setitem(D.DRIVERS, "stublang", Stub())
+    monkeypatch.setattr(V, "_VERDICTS", {})
+    claim = V.Claim({"id": "k", "lang": "stublang", "old": ["BAD"],
+                     "new": ["GOOD"]}, "inline", ".")
+    r = V.verify(claim)
+    assert r["verdict"] == V.UNVERIFIABLE and "never judged" in r["detail"]
+    state["transient"] = False                  # the compiler answers now
+    assert V.verify(claim)["verdict"] == V.VERIFIED, "the timeout was cached"

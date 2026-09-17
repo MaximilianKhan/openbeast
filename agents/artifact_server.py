@@ -13,6 +13,18 @@ the service:
              closes fetch/XHR/WebSocket. Scripts may come only from the four
              CDNs Claude Code allows, so a page written for one system
              renders on the other.
+  /raw/<id>/v/<n>/~<token>/…
+             the SAME content under a capability path, and the one the shell's
+             iframe uses. An opaque-origin document is cross-origin to
+             everything, this server included, so its own supporting files
+             (<img src="chart.png">) are cross-site no-cors loads that
+             `Cross-Origin-Resource-Policy: same-origin` refuses — measured in
+             Chromium: every supporting file ever published failed to load.
+             Files under the token path are served `cross-origin`; the token
+             (an HMAC over id+version, keyed by .run/artifact-raw.key) is what
+             stops a hostile page in the viewer's browser from embedding them,
+             because it cannot read the shell that carries it. The token is
+             NOT an identity: every gate below still applies.
   /a/…, /    OUR shell and gallery. Different, stricter policy: no CDN hosts,
              `frame-ancestors 'none'`, scripts from self only.
 
@@ -69,6 +81,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import html as _html
 import http.client
@@ -135,6 +148,17 @@ PRIVATE_META_FIELDS = frozenset({"owner_webui_id"})
 # unconfigured rig is readable by the CLI that made it.
 LOCAL_LOGIN = "local"
 
+# The request-size gate. CAPS["version_bytes"] bounds the DECODED version; a
+# binary supporting file travels as base64 inside JSON, which inflates it by
+# 4/3, so gating the body at the decoded cap refused a legal 50 MB version as
+# "oversize" — a flat 404 the CLI then explained as "owned by someone else".
+# 4/3 for base64 plus an eighth for JSON escaping; read at REQUEST time, like
+# every other cap, so a test (or an operator) that lowers the cap lowers this.
+def _max_body_bytes() -> int:
+    cap = int(store.CAPS["version_bytes"])
+    return cap * 4 // 3 + cap // 8
+
+
 MAX_LIST_LIMIT = 200          # D12: limit=0 must not mean "scan everything"
 COUNT_LIMIT = 1_000_000       # operator-only counters, explicitly bounded
 
@@ -173,11 +197,11 @@ DENY_AUDIT_WINDOW_S = 300.0
 RAW_CSP = (
     "sandbox allow-scripts allow-forms allow-modals allow-popups; "
     "default-src 'none'; "
-    "script-src 'unsafe-inline' https://cdnjs.cloudflare.com "
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
     "https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com "
     "https://code.jquery.com; "
-    "style-src 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com data:; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
     "img-src 'self' data: blob:; "
     "media-src 'self' data: blob:; "
     "connect-src 'none'; frame-src 'none'; object-src 'none'; "
@@ -206,6 +230,16 @@ RAW_HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
     "Cache-Control": "private, max-age=60",
 }
+
+# Supporting files reached through the capability path. `cross-origin` because
+# the only legitimate requester — the sandboxed page — IS cross-origin to us
+# (see the module docstring); ACAO because module scripts and fonts are
+# CORS-mode fetches and the sandbox's Origin is the literal "null". Neither
+# header appears on the untokenized routes, which stay `same-origin`.
+RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Access-Control-Allow-Origin": "*",
+})
 
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
@@ -300,6 +334,32 @@ def _mint_local_token() -> str:
               f"(scripts/artifact.sh, the MCP tool) will be refused",
               file=sys.stderr)
     return token
+
+
+def _raw_key() -> bytes:
+    """The HMAC key behind the /raw capability path. PERSISTED (unlike the
+    locality token): it is baked into URLs sitting in open tabs, and rotating
+    it on every restart would break their images for no gain. 0600 in .run/;
+    if that cannot be written the key lives for this process only.
+    """
+    path = os.path.join(_run_dir(), "artifact-raw.key")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            got = fh.read().strip()
+        if len(got) >= 32:
+            return got.encode()
+    except OSError:
+        pass
+    key = uuid.uuid4().hex + uuid.uuid4().hex
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(key)
+    except OSError:
+        pass
+    return key.encode()
 
 
 def _operators() -> list[str]:
@@ -544,6 +604,14 @@ def create_app(local_token: str | None = None) -> FastAPI:
     )
     app.state.local_token = local_token
     app.state.operators = operators
+    raw_key = _raw_key()
+
+    def raw_token(artifact_id: str, n: int) -> str:
+        """The capability for one version's /raw tree (module docstring)."""
+        msg = f"{artifact_id}\x00{int(n)}".encode("utf-8")
+        return hmac.new(raw_key, msg, hashlib.sha256).hexdigest()[:32]
+
+    app.state.raw_token = raw_token
 
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
@@ -684,7 +752,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         raw_len = request.headers.get("content-length")
         if raw_len:
             try:
-                oversize = int(raw_len) > store.CAPS["version_bytes"]
+                oversize = int(raw_len) > _max_body_bytes()
             except (TypeError, ValueError):
                 oversize = True        # unparseable length: not a request we serve
 
@@ -754,12 +822,17 @@ def create_app(local_token: str | None = None) -> FastAPI:
     # promises it cannot do. Writes were never reachable (the locality token
     # is a 0600 file a browser cannot read), so this is a read-confidentiality
     # fix. A browser cannot forge `Host`; that is what makes this the fix.
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=trusted_hosts(
-            os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", "")))
-    app.state.allowed_hosts = trusted_hosts(
-        os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", ""))
+    # The address we BIND is a Host we answer to. With BIND_HOST set to a LAN
+    # address, start.sh and healthcheck.sh probe http://<that address>:<port>,
+    # which this middleware refused with 400 "Invalid host header" — so the
+    # watchdog saw a healthy server as down and restarted it every five
+    # minutes. An IP literal is not a rebinding vector: the attack presents
+    # the ATTACKER'S hostname as Host, never the address it resolves to.
+    allowed = trusted_hosts(",".join((
+        os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", ""),
+        _configured_host())))
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed)
+    app.state.allowed_hosts = allowed
 
     # --- auth ---------------------------------------------------------------
 
@@ -1053,7 +1126,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
             "ARTIFACT_ID": _esc(aid),
             "VERSION": str(version),
             "VERSION_OPTIONS": "\n".join(opts),
-            "RAW_URL": f"/raw/{_esc(aid)}/v/{version}/",
+            # The capability path, so the page's own relative URLs
+            # (<img src="chart.png">) inherit the token and load.
+            "RAW_URL": f"/raw/{_esc(aid)}/v/{version}/"
+                       f"~{raw_token(aid, version)}/",
             "UPDATED": _esc(meta.get("updated_at") or ""),
             "VISIBILITY": _esc(meta.get("visibility") or "private"),
             "SANDBOX": IFRAME_SANDBOX,
@@ -1091,6 +1167,39 @@ def create_app(local_token: str | None = None) -> FastAPI:
         html = store.wrap_skeleton(
             data, theme=theme if theme in ("dark", "light") else None)
         return _raw_response(html, "text/html; charset=utf-8")
+
+    # --- raw, under the capability path --------------------------------------
+    # Registered BEFORE the catch-all file route below, which would otherwise
+    # claim "~<token>/…" as a published path (and 404 it: a published segment
+    # can never start with "~", so the two namespaces cannot collide).
+
+    def _token_ok(meta, artifact_id: str, n: int, token: str) -> None:
+        want = raw_token(_meta_id(meta, artifact_id), n)
+        got = token.encode("utf-8", "surrogateescape")
+        if not hmac.compare_digest(got, want.encode()):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+    @app.api_route("/raw/{artifact_id}/v/{n}/~{token}/",
+                   methods=["GET", "HEAD"])
+    def raw_page_tokened(request: Request, artifact_id: str, n: int,
+                         token: str, theme: str = ""):
+        viewer = viewer_of(request)
+        _token_ok(visible_meta(artifact_id, viewer), artifact_id, n, token)
+        return raw_page(request, artifact_id, n, theme)
+
+    @app.api_route("/raw/{artifact_id}/v/{n}/~{token}/{path:path}",
+                   methods=["GET", "HEAD"])
+    def raw_file_tokened(request: Request, artifact_id: str, n: int,
+                         token: str, path: str):
+        viewer = viewer_of(request)
+        _token_ok(visible_meta(artifact_id, viewer), artifact_id, n, token)
+        response = raw_file(request, artifact_id, n, path)
+        if path.strip().strip("/") not in ("", "index.html"):
+            # A supporting file, not the page: loadable by the sandboxed
+            # (and therefore cross-origin) document it belongs to.
+            for name, value in RAW_FILE_HEADERS.items():
+                response.headers[name] = value
+        return response
 
     @app.api_route("/raw/{artifact_id}/v/{n}/{path:path}",
                    methods=["GET", "HEAD"])

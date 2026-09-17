@@ -101,6 +101,12 @@ OFFLINE="${OPENBEAST_OFFLINE:-$(_ob_conf_value OFFLINE || echo false)}"
 read -r _ob_off_first _ob_off_rest <<< "$OFFLINE" || true
 OFFLINE="${_ob_off_first:-false}"
 unset _ob_off_first _ob_off_rest
+# ...and the token itself, cleaned. _ob_conf_value trims a quote only from the
+# two ENDS of the line, so `OFFLINE="true" # air-gapped` arrived here as
+# `"true"` (and `true# x` as itself) — again matching nothing, again failing
+# OPEN. Drop an attached comment and any quotes; what is left is the word.
+OFFLINE="${OFFLINE%%#*}"
+OFFLINE="${OFFLINE//[\"\']/}"
 case "$(printf '%s' "$OFFLINE" | tr 'A-Z' 'a-z')" in
   true|yes|1|on) OFFLINE=true ;;
   *)             OFFLINE=false ;;
@@ -203,6 +209,15 @@ BEAST_ARTIFACT="${OPENBEAST_BEAST_ARTIFACT:-$(_ob_conf_value BEAST_ARTIFACT || e
 ARTIFACT_PORT="${OPENBEAST_ARTIFACT_PORT:-$(_ob_conf_value ARTIFACT_PORT || echo 3004)}"
 export BEAST_ARTIFACT ARTIFACT_PORT
 export OPENBEAST_ARTIFACT_PORT="$ARTIFACT_PORT"
+# The public base of every artifact URL. Normally UNSET: agents/artifact.py
+# then asks `tailscale serve` for the name it publishes :8446 under, and falls
+# back to http://localhost:<ARTIFACT_PORT>. Set it only behind a proxy of your
+# own. Exported only when non-empty, so "unset" still means "detect".
+_ARTIFACT_BASE_URL="${OPENBEAST_ARTIFACT_BASE_URL:-$(_ob_conf_value ARTIFACT_BASE_URL || true)}"
+if [[ -n "$_ARTIFACT_BASE_URL" ]]; then
+  export OPENBEAST_ARTIFACT_BASE_URL="$_ARTIFACT_BASE_URL"
+fi
+unset _ARTIFACT_BASE_URL
 # Tailnet logins allowed to READ the gallery. Empty = fall back to
 # CHAT_OPERATORS (beast-chat's list). Only exported when non-empty, same
 # discipline as the keys above: an exported empty string reads as "configured

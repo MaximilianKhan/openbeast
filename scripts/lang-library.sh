@@ -33,7 +33,39 @@ step() { printf '\n==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-command -v curl >/dev/null || die "curl is required"
+# --- OFFLINE ----------------------------------------------------------------
+# Read WITHOUT sourcing scripts/lib/conf.sh: that file has a side effect (it
+# generates a SearXNG secret and appends it to openbeast.conf), and `list` on
+# a read-only checkout must not write anything. Same parsing conf.sh applies
+# to this key — env OPENBEAST_OFFLINE first, else OFFLINE= in openbeast.conf,
+# FIRST TOKEN ONLY (so `OFFLINE=true  # air-gapped` is true, not the string
+# "true  # air-gapped"), and only the explicit words mean on.
+_conf_value() {               # mirrors scripts/artifact.sh::_conf_value
+  local key="$1" conf="$SCRIPT_DIR/openbeast.conf" line
+  [[ -f "$conf" ]] || return 1
+  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" 2>/dev/null | tail -n1)" || return 1
+  [[ -n "$line" ]] || return 1
+  line="${line#*=}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  line="${line#\"}"; line="${line%\"}"
+  line="${line#\'}"; line="${line%\'}"
+  [[ -n "$line" ]] || return 1
+  printf '%s\n' "$line"
+}
+
+is_offline() {
+  local raw first _rest
+  raw="${OPENBEAST_OFFLINE:-$(_conf_value OFFLINE || echo false)}"
+  raw="${raw%%#*}"
+  read -r first _rest <<< "$raw" || true
+  first="${first#\"}"; first="${first%\"}"
+  first="${first#\'}"; first="${first%\'}"
+  case "$(printf '%s' "${first:-false}" | tr 'A-Z' 'a-z')" in
+    true|yes|1|on) return 0 ;;
+    *)             return 1 ;;
+  esac
+}
 
 # --- provenance -------------------------------------------------------------
 # One JSON file per artifact. Written only AFTER the bytes are on disk and
@@ -141,7 +173,13 @@ acq_zig() {
     || { warn "zig: index unreachable — skipping"; return 1; }
   local installed; installed="$(zig version 2>/dev/null || echo unknown)"
   say "    installed zig: $installed"
-  python3 - "$idx" <<'PY' | while IFS=$'\t' read -r ver url; do
+  # The picks go into a VARIABLE, and the loop reads a here-string — not
+  # `python3 … | while`. A pipeline runs the loop in a SUBSHELL: an rc set in
+  # there is gone when it ends, and the function's status was the last
+  # command's, which on failure was `warn` — i.e. 0. With every download
+  # failing, acquire printed two warnings, "library is empty", and exited 0.
+  local picks
+  picks="$(python3 - "$idx" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 vers = [k for k in d if k != "master"]
@@ -152,19 +190,39 @@ def key(v):
 for v in sorted(vers, key=key, reverse=True)[:2]:
     t = d[v].get("x86_64-linux") or {}
     if t.get("tarball"):
-        print(f"{v}\t{t['tarball']}")
+        # shasum rides along: the index publishes one per tarball, and not
+        # checking it made every tarball trust-on-first-use.
+        print(f"{v}\t{t['tarball']}\t{t.get('shasum', '')}")
 PY
-    local d="$LANG_DIR/zig/$ver" name
+)" || { warn "zig: release index is unreadable — skipping"; return 1; }
+  [[ -n "$picks" ]] || { warn "zig: the index lists no x86_64-linux tarball"; return 1; }
+  local rc=0 ver url want got d name
+  while IFS=$'\t' read -r ver url want; do
+    [[ -n "$ver" && -n "$url" ]] || continue
+    d="$LANG_DIR/zig/$ver"
     name="$(basename "$url")"
     mkdir -p "$d"
     if have "$d" "$name"; then say "    zig $ver: already held"; continue; fi
-    say "    zig $ver: fetching $(basename "$url")"
-    if fetch "$url" "$d/$name"; then
-      manifest_write "$d" "$url" "$d/$name" "MIT (zig)" "zig $ver"
-    else
-      warn "zig $ver: fetch failed"
+    say "    zig $ver: fetching $name"
+    if ! fetch "$url" "$d/$name"; then
+      warn "zig $ver: fetch failed"; rc=1; continue
     fi
-  done
+    if [[ -n "$want" ]]; then
+      got="$(sha256sum "$d/$name" | cut -d' ' -f1)"
+      if [[ "$got" != "$want" ]]; then
+        # Deleted, not kept-and-flagged: `have` trusts whatever the manifest
+        # says, and this file must never get one.
+        rm -f "$d/$name"
+        warn "zig $ver: sha256 MISMATCH — index says ${want:0:16}…, got ${got:0:16}… (deleted)"
+        rc=1; continue
+      fi
+      say "    zig $ver: sha256 matches the release index"
+    else
+      warn "zig $ver: the index carries no shasum for this tarball — trust on first use"
+    fi
+    manifest_write "$d" "$url" "$d/$name" "MIT (zig)" "zig $ver"
+  done <<< "$picks"
+  return $rc
 }
 
 acq_cpp() {
@@ -250,16 +308,23 @@ acq_swift() {
   local d="$LANG_DIR/swift" res tag url name
   mkdir -p "$d"
   command -v swiftc >/dev/null || warn "swift: no swiftc — anything derived stays UNVERIFIED"
+  # rc, not the loop's last status: that was `warn`'s, so both repos failing
+  # still returned 0 and swift never reached failed[].
+  local rc=0 repo
   for repo in swiftlang/swift-book swiftlang/swift-evolution; do
-    res="$(resolve_github_release "$repo")" || { warn "swift: $repo unresolved"; continue; }
+    res="$(resolve_github_release "$repo")" || { warn "swift: $repo unresolved"; rc=1; continue; }
     tag="${res%%$'\t'*}"; url="${res#*$'\t'}"
     name="$(basename "$repo")-${tag:-head}.tar.gz"
     if have "$d" "$name"; then say "    $repo ${tag:-head}: already held"; continue; fi
     say "    $repo: fetching ${tag:-head}"
-    fetch "$url" "$d/$name" && manifest_write "$d" "$url" "$d/$name" \
-      "Apache-2.0 (swiftlang)" "Swift ${tag:-head} (language modes 4/5/6)" \
-      || warn "swift: $repo fetch failed"
+    if fetch "$url" "$d/$name"; then
+      manifest_write "$d" "$url" "$d/$name" \
+        "Apache-2.0 (swiftlang)" "Swift ${tag:-head} (language modes 4/5/6)"
+    else
+      warn "swift: $repo fetch failed"; rc=1
+    fi
   done
+  return $rc
 }
 
 acq_python() {
@@ -294,6 +359,17 @@ PY
 }
 
 cmd_acquire() {
+  # Every other network-touching script refuses under OFFLINE; this one tried
+  # seven hosts and reported seven timeouts. Refuse BEFORE anything is created
+  # or contacted, and say what does work offline.
+  if is_offline; then
+    die "OFFLINE=true: 'acquire' downloads from the internet and this rig has none.
+       Build the library on a connected machine (./scripts/lang-library.sh acquire)
+       and copy \$OPENBEAST_LANG_DIR across; check/list/verify/pack/where all work offline."
+  fi
+  # Only acquire needs curl. The check used to sit at the top of the script,
+  # so `pack`, `verify`, `list` and `where` died on a box without it.
+  command -v curl >/dev/null || die "curl is required for 'acquire'"
   local langs=("$@")
   [[ ${#langs[@]} -eq 0 ]] && langs=("${WIRED[@]}")
   mkdir -p "$LANG_DIR"

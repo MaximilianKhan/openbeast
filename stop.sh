@@ -14,6 +14,7 @@ RUN_DIR="$SCRIPT_DIR/.run"
 REPO_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
+source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
 
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Identity-checked liveness: never TERM an unrelated process that recycled
@@ -71,10 +72,10 @@ fi
 # anchored to THIS repo's path so we never kill an unrelated llama-server
 # or router the user runs for another project on the same box.
 echo "Stopping agent router..."
-pkill -f "$SCRIPT_DIR/agents/router.py" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
+pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping beast-gate..."
-pkill -f "$SCRIPT_DIR/agents/edge.py" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
 
 # RECORDED PID FIRST for the two services that record one. The pattern below
 # is anchored to this repo's path, so it was never going to reap a sibling
@@ -84,11 +85,19 @@ pkill -f "$SCRIPT_DIR/agents/edge.py" 2>/dev/null && echo "beast-gate stopped." 
 # rules for the same hazard is one rule too many. The pattern stays as the
 # fallback for an instance started outside start.sh, which records no pid.
 # (router/edge still sweep by pattern only; they were not in this review.)
-_stop_recorded() {                 # _stop_recorded <label> <pidfile> <pattern>
-  local label="$1" pidfile="$2" pattern="$3" pid=""
+_stop_recorded() {                 # _stop_recorded <label> <pidfile> <script-path>
+  local label="$1" pidfile="$2" pattern pid=""
+  # ERE-quoted: pkill -f takes a regex, and a `+` or `(` in the repo path made
+  # every pattern below match nothing — stop.sh then "stopped" a stack whose
+  # llama-server kept the VRAM.
+  pattern="$(_ob_ere "$3")"
   echo "Stopping $label..."
   [[ -f "$pidfile" ]] && pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+  # IDENTITY-checked, like start.sh's _pid_alive: .run/ survives a reboot and
+  # a recycled pid is a stranger. `kill -0 && kill` on the bare number
+  # SIGTERMed whatever had inherited it, reported "stopped", and RETURNED —
+  # skipping the path fallback that would have found the real orphan.
+  if ob_pid_matches "$pid" "$pattern"; then
     kill "$pid" 2>/dev/null && echo "$label stopped (pid $pid)." && return 0
   fi
   pkill -f "$pattern" 2>/dev/null \
@@ -102,12 +111,24 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
   "$SCRIPT_DIR/agents/chat_server.py"
 
 echo "Stopping tool server..."
-pkill -f "$SCRIPT_DIR/agents/openapi_tools.py" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
+pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
 # Legacy mcpo instances (pre-identity-server stacks)
 pkill -f "mcpo --port" 2>/dev/null || true
 
 echo "Stopping llama.cpp server..."
-pkill -f "$SCRIPT_DIR/llama.cpp/build/bin/llama-server" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+# The supervisor's own llama-server is already gone by now (its trap stopped
+# it). What is left for this sweep is anything ELSE running the repo's binary
+# — and while a GPU lease is held that is a campaign's server, mid-measurement,
+# on a card it claimed on purpose. A pattern kill like this one destroyed a
+# live run here on 2026-09-14. Skip it and say so.
+if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]] \
+   && _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" status 2>/dev/null | head -n1 || true)" \
+   && [[ "$_lease" == HELD* ]]; then
+  echo "GPU lease is $_lease"
+  echo "  leaving llama-server processes alone — stop that job first (scripts/gpu-lease.sh status)."
+else
+pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+fi
 
 rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
       "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" \

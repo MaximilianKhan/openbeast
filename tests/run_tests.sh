@@ -70,6 +70,21 @@ fi
 echo ""
 echo ""
 
+# --- Offline / bundle / fetch-weight fixes (2026-09-17 review) ---
+echo "--- Offline + bundle + fetch-weight tests (stubbed hf/pip/docker/git) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_offline_fixes.sh"; then
+  echo ""
+  echo "Offline fixes tests: ALL PASSED"
+else
+  echo ""
+  echo "Offline fixes tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Drive wear tracking tests ---
 echo "--- SSD/NVMe wear tests (scripts/ssd-wear.sh) ---"
 echo ""

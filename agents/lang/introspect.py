@@ -63,6 +63,7 @@ import shutil
 import subprocess
 import sys
 
+from . import _proc
 from . import drivers
 
 #: Where generated artifacts live. IN the repo, unlike the L0 corpus: these are
@@ -84,15 +85,18 @@ class ProbeError(RuntimeError):
     """A probe could not observe what it promises. Never a silent empty fact."""
 
 
-def _run(argv: list[str], stdin: str | None = None) -> tuple[int, str]:
+def _run(argv: list[str], stdin: str | None = None,
+         env: dict | None = None) -> tuple[int, str]:
+    # Same guarded runner as the drivers (group-kill on timeout, memory cap,
+    # bounded output): a probe is a compiler invocation like any other.
     try:
-        p = subprocess.run(argv, capture_output=True, text=True,
-                           input=stdin, timeout=TIMEOUT_S)
+        return _proc.run(argv, TIMEOUT_S, stdin=stdin, env=env)
     except FileNotFoundError as e:
         raise ProbeError(f"{argv[0]}: not installed") from e
     except subprocess.TimeoutExpired as e:
         raise ProbeError(f"{' '.join(argv)}: timed out") from e
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except OSError as e:
+        raise ProbeError(f"{argv[0]}: could not be started ({e})") from e
 
 
 # --------------------------------------------------------------------------
@@ -293,7 +297,9 @@ def probe_go() -> dict:
     d = drivers.DRIVERS["go"]
     if not d.available():
         raise ProbeError("go is not installed")
-    rc, out = _run(["go", "list", "std"])
+    # Offline env, as in the driver. NOT CGO_ENABLED=0 here: that would drop
+    # runtime/cgo from the list and the fact would describe a different build.
+    rc, out = _run(["go", "list", "std"], env=d.env())
     if rc != 0:
         raise ProbeError(f"go list std failed: {out.strip()[:200]}")
     pkgs = sorted(ln.strip() for ln in out.splitlines() if ln.strip()
@@ -385,18 +391,36 @@ def write(lang: str) -> str:
 #: That is not a micro-optimisation, it is the L1 rule — the installed
 #: toolchain is ground truth — made structural: there is no stale-artifact
 #: path to guard, because there is no artifact on the serving path.
+#:
+#: The memo below is keyed on the driver's VERSION, asked every call (one
+#: `--version`, ~ms), not on the language alone: a process-lifetime cache meant
+#: a long-running server kept serving the OLD compiler's facts after a
+#: toolchain upgrade — the stale-artifact path this comment says cannot exist.
+#: And a FAILURE is never stored: one transient ProbeError (a timeout under
+#: load) used to pin None for the life of the process.
 _CACHE: dict = {}
 
 
 def facts(lang: str) -> dict | None:
-    """The live record for `lang`, probed once per process. None if the
-    toolchain is absent or the probe cannot observe what it promises."""
-    if lang not in _CACHE:
-        try:
-            _CACHE[lang] = probe(lang)
-        except ProbeError:
-            _CACHE[lang] = None
-    return _CACHE[lang]
+    """The live record for `lang`, probed once per (process, toolchain
+    version). None if the toolchain is absent or the probe cannot observe
+    what it promises — and that None is re-asked next time, not remembered."""
+    d = drivers.driver_for(lang)
+    try:
+        version = d.version() if d and d.available() else None
+    except Exception:                                 # noqa: BLE001
+        version = None
+    hit = _CACHE.get(lang)
+    if hit is not None and version is not None and hit[0] == version:
+        return hit[1]
+    try:
+        rec = probe(lang)
+    except ProbeError:
+        _CACHE.pop(lang, None)
+        return None
+    if version is not None:
+        _CACHE[lang] = (version, rec)
+    return rec
 
 
 def load(lang: str) -> dict | None:
@@ -605,11 +629,16 @@ def render(lang: str, budget_chars: int = BUDGET_CHARS) -> list[str]:
                        "toolchain — including lower-case variants of the ones "
                        "that are (std.Io is a namespace; std.io is not).")
     elif lang == "python":
+        # Same rule as the cpp/c pointer above: generated/ is gitignored
+        # per-rig state, so cite the file only when it is actually there.
+        where = ("A module not in agents/lang/generated/python.json"
+                 if os.path.exists(artifact_path(lang)) else
+                 "A module not in `sys.stdlib_module_names` (written out by "
+                 "./scripts/lang-introspect.sh write python)")
         out.append(f"stdlib of the interpreter that will run this: "
                    f"{facts_d.get('version')}, "
-                   f"{len(facts_d.get('modules') or [])} modules. A module not "
-                   f"in agents/lang/generated/python.json is not importable "
-                   f"here without installing it.")
+                   f"{len(facts_d.get('modules') or [])} modules. {where} is "
+                   f"not importable here without installing it.")
     elif lang == "rust":
         acc = facts_d.get("editions_accepted") or []
         rej = facts_d.get("editions_rejected") or []

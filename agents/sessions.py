@@ -511,8 +511,19 @@ def touch(session_id: str, **fields) -> None:
         _write_record(rec)
 
 
-def finalize(session_id: str, state: str, *, summary: str | None = None) -> bool:
+def finalize(session_id: str, state: str, *, summary: str | None = None,
+             override_lost: bool = False) -> bool:
     """Compare-and-set a session into a terminal state (E5).
+
+    `override_lost` is for the ONE caller that knows better than the
+    reconciler: whoever just stopped the process, or held it as a child and
+    read its exit status. `lost` is terminal, but it is an INFERENCE ("the pid
+    is gone and nobody said why") that any concurrent reader persists — an
+    attached console polls four times a second — so without this the writer
+    with the actual verdict loses the race to a guess and an operator stop is
+    filed as a crash. It replaces `lost` and nothing else; a done/failed/
+    stopped that somebody wrote on purpose is never re-decided. Under the same
+    flock as everything else, so the check and the write are one step.
 
     Returns True when this call made the transition. Unknown session, or a
     record that is ALREADY terminal, is a no-op returning False: the first
@@ -538,8 +549,11 @@ def finalize(session_id: str, state: str, *, summary: str | None = None) -> bool
         rec = _read_record(path)
         if rec is None:
             return False
-        if rec.get("state") in TERMINAL_STATES:
+        prior = rec.get("state")
+        if prior in TERMINAL_STATES and not (override_lost and prior == "lost"):
             return False                 # already decided; do not re-decide
+        if prior == "lost" and summary is None:
+            fields["summary"] = None     # drop the reconciler's guess with it
         _apply(rec, fields)
         rec["updated_at"] = _now()
         return _write_record(rec)

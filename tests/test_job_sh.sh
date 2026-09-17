@@ -350,6 +350,66 @@ else
   fail "$STUB_AFTER process(es) survived the SIGKILL escalation"
 fi
 
+# --- 7c. stop, when the reconciler got to the record first ---
+echo ""
+echo "stop (the record already reads 'lost'):"
+# finalize() is a compare-and-set that refuses a terminal record, and `lost`
+# IS terminal — so both of stop's "an operator did this" corrections were
+# no-ops that still PRINTED "is now 'stopped'" over a ledger saying `lost`.
+# The fixture is a session whose process dies on SIGTERM without ever writing
+# a terminal state (what a SIGKILLed or crashed supervisor looks like): the
+# wait loop's own reconciling read then persists `lost` before the correction
+# runs, which is exactly the ordering that made it dead code.
+# No job control in a script, so the background child is not a group leader
+# and setsid execs in place: $! IS the sleep, leading its own new group.
+setsid sleep 300 </dev/null >/dev/null 2>&1 &
+MUTE_PID=$!
+sleep 0.5
+MUTE_ID="mute-$$"
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" "$MUTE_ID" "$MUTE_PID" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+pid = int(sys.argv[3])
+assert sessions.register(sys.argv[2], kind="job", title="mute", pid=pid, pgid=pid)
+PY
+if [[ "$(_q "$MUTE_ID" 'rec["state"]')" == "running" ]]; then
+  pass "fixture: a live session that cannot write its own terminal state"
+else
+  fail "fixture did not register as running"
+fi
+MUTE_OUT="$("$CLI" stop "$MUTE_ID" --timeout 5 2>&1)"
+MUTE_STATE="$(_q "$MUTE_ID" 'rec["state"]')"
+if [[ "$MUTE_STATE" == "stopped" ]]; then
+  pass "an operator stop that raced the reconciler is recorded 'stopped'"
+else
+  fail "the ledger says '$MUTE_STATE' while stop printed: $MUTE_OUT"
+fi
+if [[ "$(_q "$MUTE_ID" 'rec.get("summary") or ""')" == *operator* ]]; then
+  pass "and the reconciler's guess left with it (summary names the operator)"
+else
+  fail "summary is $(_q "$MUTE_ID" 'repr(rec.get("summary"))')"
+fi
+# Negative control: override_lost replaces `lost` and NOTHING else — a verdict
+# somebody wrote on purpose is never re-decided.
+KEEP="$(OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+# pgid=0 ON PURPOSE: left to default it would be THIS TEST's own process
+# group, and the cleanup trap above SIGKILLs every recorded group.
+sessions.register("keep-done", kind="job", title="k", pid=os.getpid(), pgid=0)
+sessions.finalize("keep-done", "done", summary="exit 0")
+print(sessions.finalize("keep-done", "stopped", summary="x", override_lost=True),
+      sessions.get("keep-done")["state"])
+PY
+)"
+if [[ "$KEEP" == "False done" ]]; then
+  pass "override_lost never re-decides a real verdict (done stays done)"
+else
+  fail "override_lost re-decided a real verdict: $KEEP"
+fi
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"
