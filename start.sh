@@ -291,8 +291,17 @@ cleanup() {
   # ...but only the pidfiles of servers WE started. Removing a live server's
   # recorded pid is what makes an orphan unreapable, which is the whole point
   # of the [17] guard above.
-  [[ ${CHAT_OWNED:-0} -eq 1 ]] && rm -f "$RUN_DIR/chat.pid"
-  [[ ${ARTIFACT_OWNED:-0} -eq 1 ]] && rm -f "$RUN_DIR/artifact.pid"
+  # ...and only while the file still names OUR child. healthcheck.sh --restart
+  # replaces a crashed server and records the replacement's pid in the same
+  # file; "we started one once" (CHAT_OWNED) is not "this pid is ours", and
+  # deleting the replacement's record recreates the unreapable-orphan state.
+  _rm_own_pidfile() {                # _rm_own_pidfile <pidfile> <our-pid>
+    [[ -n "${2:-}" && -f "$1" ]] || return 0
+    [[ "$(cat "$1" 2>/dev/null || true)" == "$2" ]] && rm -f "$1"
+    return 0
+  }
+  [[ ${CHAT_OWNED:-0} -eq 1 ]] && _rm_own_pidfile "$RUN_DIR/chat.pid" "${CHAT_PID:-}"
+  [[ ${ARTIFACT_OWNED:-0} -eq 1 ]] && _rm_own_pidfile "$RUN_DIR/artifact.pid" "${ARTIFACT_PID:-}"
   return 0
 }
 trap cleanup EXIT
@@ -424,8 +433,11 @@ if [[ "${FAST_BOOT:-false}" == "true" && "$SERVE_SCRIPT" != "$BOOTSTRAP_SERVE" \
   # Fast boot is an OPTIMISATION. A missing optimisation must degrade to the
   # normal path, never fail the boot.
   _fb_w="$( (source "$SCRIPT_DIR/scripts/lib/weights.sh" >/dev/null 2>&1; printf '%s' "${WEIGHTS_DIR:-}") || true )"
+  # `|| true`: under pipefail a grep that matches nothing fails the whole
+  # substitution and set -e aborts start.sh — over an OPTIMISATION, which is
+  # the exact outcome the paragraph above exists to prevent.
   _fb_g="$(grep -oE 'WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$SCRIPT_DIR/scripts/$BOOTSTRAP_SERVE" \
-           | head -1 | sed 's|WEIGHTS_DIR/||')"
+           | head -1 | sed 's|WEIGHTS_DIR/||' || true)"
   if [[ -n "$_fb_w" && -n "$_fb_g" && ! -f "$_fb_w/$_fb_g" ]]; then
     echo "Fast boot is on but its bridge weight is missing: $_fb_w/$_fb_g" >&2
     echo "  Nothing downloads it — bootstrap.sh fetches only the default model." >&2
@@ -592,10 +604,17 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
       CHAT_OWNED=1
       CHAT_UP=0
+      case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
+        ''|0.*|localhost|::) _chat_host="127.0.0.1" ;;
+        *)                   _chat_host="$OPENBEAST_CHAT_BIND" ;;
+      esac
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
-        curl -s -m 2 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" >/dev/null 2>&1 \
-          && { CHAT_UP=1; break; }
+        # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
+        # (loopback) whatever BIND_HOST says, so probing the LAN address
+        # reported a healthy console as down.
+        _h="$(curl -fsS -m 2 "http://$_chat_host:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null || true)"
+        [[ "$_h" == *'"status"'* ]] && { CHAT_UP=1; break; }
         sleep 1
       done
       if [[ $CHAT_UP -eq 1 ]]; then
@@ -607,6 +626,12 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       else
         echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
         echo "         Diagnose with: ./scripts/doctor.sh" >&2
+        # Mirror the artifact branch below: a pid left on record after the
+        # process died is a number the kernel will hand to something else.
+        if ! kill -0 "$CHAT_PID" 2>/dev/null; then
+          rm -f "$RUN_DIR/chat.pid"
+          CHAT_PID=""
+        fi
       fi
     fi
   fi
@@ -643,8 +668,10 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
     ARTIFACT_UP=0
     for _i in $(seq 1 20); do
       kill -0 "$ARTIFACT_PID" 2>/dev/null || break
-      curl -s -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" >/dev/null 2>&1 \
-        && { ARTIFACT_UP=1; break; }
+      # -f plus a body match: a 400 from the server used to count as "ready"
+      # (curl -s exits 0 on any HTTP status).
+      _h="$(curl -fsS -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null || true)"
+      [[ "$_h" == *'"status"'* ]] && { ARTIFACT_UP=1; break; }
       sleep 1
     done
     if [[ $ARTIFACT_UP -eq 1 ]]; then

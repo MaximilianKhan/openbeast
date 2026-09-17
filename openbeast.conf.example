@@ -178,6 +178,11 @@
 # Writes stay loopback-only either way, so a tailnet device can only view.
 #BEAST_ARTIFACT=false
 #ARTIFACT_PORT=3004
+# The public base of the URLs publish_artifact hands out. Leave it unset: the
+# store asks `tailscale serve` which name it publishes :8446 under (so the
+# link matches the certificate), and uses http://localhost:<ARTIFACT_PORT>
+# when nothing is published. Set it only if you front the viewer yourself.
+#ARTIFACT_BASE_URL=https://artifacts.example.internal
 
 # Tailnet logins allowed to READ the gallery and its pages, comma-separated
 # (the same values Tailscale shows as "Tailscale-User-Login", e.g. an email).

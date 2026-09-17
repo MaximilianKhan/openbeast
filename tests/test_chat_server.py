@@ -24,6 +24,7 @@ no agent is ever spawned, no model is ever called, the GPU is never touched.
 
 Run: OPENBEAST_SKIP_NETWORK_TESTS=1 pytest tests/test_chat_server.py
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -201,6 +202,10 @@ class Rig:
 
 @pytest.fixture()
 def rig(tmp_path, monkeypatch):
+    # NEVER the real systemd: run inside a user unit (the rig's own service, a
+    # CI runner) every job-spawning test would otherwise create REAL transient
+    # scopes. The tests that are ABOUT the scope prefix reset this themselves.
+    monkeypatch.setattr(chat_server, "_SCOPE_PREFIX", [])
     return Rig(tmp_path, monkeypatch)
 
 
@@ -1992,3 +1997,194 @@ def test_the_console_page_and_icon_really_are_ungated(rig):
         assert r.status_code == 200, (path, r.status_code)
     # ...and an API route with the same (absent) identity is still refused
     assert anon.get("/api/chat/sessions").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# main(): the two ways a start could hurt a LIVE server
+# ---------------------------------------------------------------------------
+
+def _free_port():
+    import socket
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        return sk.getsockname()[1]
+
+
+def test_a_second_start_never_touches_the_live_servers_token(tmp_path, monkeypatch):
+    """create_app() mints .run/chat-local.token. Built BEFORE the bind, a start
+    that was about to die on a busy port had already replaced the live
+    server's token with one nobody honours (agents/artifact_server.py fixed
+    this as D18; this server had the same hole). The test BUILDS the busy
+    port itself and asserts the file is byte-identical afterwards."""
+    import socket
+    run = tmp_path / "run"
+    run.mkdir()
+    token = run / "chat-local.token"
+    token.write_text("the-live-servers-token")
+    monkeypatch.setenv("OPENBEAST_CHAT_RUN_DIR", str(run))
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        monkeypatch.setenv("OPENBEAST_CHAT_PORT", str(busy.getsockname()[1]))
+        monkeypatch.setenv("OPENBEAST_CHAT_BIND", "127.0.0.1")
+        built = []
+        monkeypatch.setattr(chat_server, "create_app",
+                            lambda: built.append(1) or None)
+        with pytest.raises(SystemExit) as exc:
+            chat_server.main()
+    assert exc.value.code == 1
+    assert built == [], "the app (and its token) was built before the bind"
+    assert token.read_text() == "the-live-servers-token"
+
+
+def test_shutdown_is_bounded_even_with_a_stream_attached(tmp_path, monkeypatch):
+    """Measured on v1.4.0: with one SSE client attached the server ignored
+    SIGTERM indefinitely, because uvicorn's graceful wait has no bound unless
+    given one and a stream never finishes by itself. Pin that main() hands
+    uvicorn a bound — and, as the control, that the free-port path DOES build
+    the app."""
+    import uvicorn
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            seen["config"] = config
+
+        def run(self, sockets=None):
+            seen["sockets"] = sockets
+            for sk in sockets or []:
+                sk.close()
+
+    monkeypatch.setenv("OPENBEAST_CHAT_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("OPENBEAST_CHAT_PORT", str(_free_port()))
+    monkeypatch.setenv("OPENBEAST_CHAT_BIND", "127.0.0.1")
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(chat_server, "_prune_ledger_soon", lambda *a, **k: None)
+    # main() warms the systemd-scope probe in a thread. Left real, on a box
+    # that IS inside a service cgroup (CI) it held _SCOPE_LOCK for the probe's
+    # 10 s and then wrote its answer over a LATER test's state.
+    monkeypatch.setattr(chat_server, "scope_prefix", lambda: [])
+    chat_server.main()
+    bound = seen["config"].timeout_graceful_shutdown
+    assert bound is not None and 0 < bound <= 10
+    assert seen["sockets"], "main() must hand uvicorn the socket it bound"
+    assert (tmp_path / "run" / "chat-local.token").exists()
+
+
+def test_the_ledger_is_pruned_at_start(tmp_path, monkeypatch):
+    """sessions.prune() existed and had no caller, so the ledger only grew."""
+    import threading
+    called = threading.Event()
+    seen = {}
+
+    def fake_prune(days=30, keep_logs=False):
+        seen["days"] = days
+        seen["keep_logs"] = keep_logs
+        called.set()
+        raise RuntimeError("a prune failure must never matter")
+
+    monkeypatch.setattr(chat_server.sessions, "prune", fake_prune)
+    chat_server._prune_ledger_soon()
+    assert called.wait(5) and seen["days"] == 30
+    # asserted HERE: inside the thread it would be swallowed with the rest
+    assert seen["keep_logs"] is True, "the automatic sweep must never delete job logs"
+
+
+# ---------------------------------------------------------------------------
+# Spawned sessions leave the stack's systemd unit
+# ---------------------------------------------------------------------------
+
+def _stub_systemd_run(tmp_path, rc):
+    """A systemd-run that RECORDS its argv and then execs what follows `--`,
+    which is exactly what the real --scope mode does (same pid)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    log = tmp_path / "systemd-run.calls"
+    stub = bindir / "systemd-run"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> {log}\n"
+        f"[[ {rc} -ne 0 ]] && exit {rc}\n"
+        "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done; shift\n"
+        "exec \"$@\"\n")
+    stub.chmod(0o755)
+    return bindir, log
+
+
+@pytest.mark.parametrize("in_service,rc,expect_scoped", [
+    (True, 0, True),      # inside a unit, systemd-run works -> scoped
+    (True, 1, False),     # inside a unit, no user manager  -> plain spawn
+    (False, 0, False),    # a terminal start.sh             -> nothing to leave
+])
+def test_a_spawned_job_leaves_the_stacks_unit(tmp_path, monkeypatch, rig,
+                                              in_service, rc, expect_scoped):
+    """start_new_session leaves the process GROUP, not the CGROUP: under
+    `./start.sh -d` every console job died with ./stop.sh and shared
+    llama-server's memory cap. The stub records its calls; the two negative
+    controls prove the prefix appears ONLY when it is needed and works."""
+    bindir, log = _stub_systemd_run(tmp_path, rc)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: in_service)
+    monkeypatch.setattr(chat_server, "_SCOPE_PREFIX", None)
+    out = tmp_path / "ran.txt"
+    r = rig.client.post("/api/chat/sessions", headers=rig.local,
+                        json={"kind": "job", "cmd": f"echo ran > {out}",
+                              "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    for _ in range(100):
+        if out.exists():
+            break
+        time.sleep(0.05)
+    assert out.exists(), "the job must RUN in every case — scoped or not"
+    calls = log.read_text().splitlines() if log.exists() else []
+    spawned = [c for c in calls if "echo ran" in c]
+    assert bool(spawned) is expect_scoped, calls
+    if expect_scoped:
+        assert spawned[0].startswith("--user --scope")
+    # the ledger and the audit trail record the command AS ASKED
+    rec = r.json()["session"]
+    assert "systemd-run" not in json.dumps(rec)
+
+
+def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
+    """Leaving the stack's unit leaves its MemoryMax; an UNBOUNDED phone job is
+    the OOM incident the stack cap exists to prevent. The probe carries the
+    same properties as the real spawn, so an old systemd falls back cleanly."""
+    bindir, log = _stub_systemd_run(tmp_path, 0)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: True)
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "25")
+    prefix = chat_server._probe_scope()
+    assert "MemorySwapMax=0" in prefix
+    cap = [a for a in prefix if a.startswith("MemoryMax=")]
+    assert cap and 0 < int(cap[0].split("=")[1]) < chat_server._job_mem_max_bytes() * 5
+    assert "MemoryMax=" in log.read_text(), "the PROBE must test the same flags"
+    # control: 0 disables the cap, and only the cap
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
+    assert not [a for a in chat_server._probe_scope() if "Memory" in a]
+
+
+def test_stop_of_a_job_nobody_reaps_is_stopped_not_lost(rig, tmp_path, monkeypatch):
+    """The /stop handler SIGTERMs a job ITSELF, then starts the escalation
+    thread — which was seeded "we sent nothing", so a job that died on that
+    signal was finalized by nobody and reconciled to `lost`. Invisible while
+    the spawning server always held a reaper; the normal case once jobs
+    outlive a server restart."""
+    proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        sid = sessions.new_id("job")
+        assert sessions.register(sid, kind="job", title="orphan", pid=proc.pid,
+                                 pgid=proc.pid, workdir=str(tmp_path))
+        threading.Thread(target=proc.wait, daemon=True).start()   # no zombie
+        r = rig.client.post(f"/api/chat/sessions/{sid}/stop", headers=rig.local,
+                            json={})
+        assert r.status_code == 200 and r.json()["signalled"] is True
+        for _ in range(100):
+            rec = chat_server.read_record_raw(sid) or {}
+            if rec.get("state") not in ("running", None):
+                break
+            time.sleep(0.1)
+        assert rec.get("state") == "stopped", rec
+    finally:
+        with contextlib.suppress(Exception):
+            proc.kill()

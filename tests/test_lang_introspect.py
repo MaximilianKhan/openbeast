@@ -75,26 +75,40 @@ def test_an_unknown_language_is_refused_not_invented():
     assert "cobol" in str(e.value)
 
 
-def test_facts_never_raises_and_caches():
-    """`facts` is the serving path: it must degrade to None, never explode."""
-    calls = []
-    monkey = I.PROBES.get("zig")
+def test_facts_never_raises_and_caches(monkeypatch):
+    """`facts` is the serving path: it must degrade to None, never explode.
+
+    The toolchain is a STUB: this used to probe the real zig, so on a box
+    without one (CI) the probe returned None — which is never cached, by
+    design — and "cached once" could not be observed at all."""
     assert I.facts("cobol") is None          # unknown language
-    if monkey is None:                        # pragma: no cover
-        return
-    real = I.probe
+    calls = []
 
-    def counting(lang):
-        calls.append(lang)
-        return real(lang)
+    class FakeDriver:
+        v = "9.9.9"
+        def available(self): return True
+        def version(self): return self.v
 
+    fake = FakeDriver()
+    monkeypatch.setattr(I.drivers, "driver_for", lambda lang: fake)
+    monkeypatch.setattr(I, "probe", lambda lang: calls.append(lang) or {"facts": {}})
     I._CACHE.clear()
-    I.probe = counting
     try:
         I.facts("zig"); I.facts("zig"); I.facts("zig")
+        assert len(calls) == 1, "the live probe must be cached per process"
+        fake.v = "10.0.0"                     # a toolchain upgrade: re-asked
+        I.facts("zig")
+        assert len(calls) == 2
+        # control: a probe that cannot observe is NEVER remembered
+        def boom(lang):
+            calls.append(lang)
+            raise I.ProbeError("nope")
+        monkeypatch.setattr(I, "probe", boom)
+        fake.v = "11.0.0"
+        assert I.facts("zig") is None and I.facts("zig") is None
+        assert len(calls) == 4
     finally:
-        I.probe = real
-    assert len(calls) == 1, "the live probe must be cached per process"
+        I._CACHE.clear()
 
 
 # --------------------------------------------------------------------------
@@ -580,3 +594,74 @@ def test_a_prerelease_move_is_reported_as_STALE(_fake_probe):
     _fake_probe["toolchain"] = "0.16.0-dev.500"
     state, detail = I.check("fakelang")
     assert state == "STALE", (state, detail)
+
+
+# --- review 2026-09-17 ------------------------------------------------------
+
+def test_python_render_never_cites_an_artifact_that_is_not_there():
+    """#84 fixed this for cpp and c and left python behind: its line ALWAYS
+    named agents/lang/generated/python.json, a gitignored path that does not
+    exist on a fresh clone. GEN_DIR is a fresh tmp dir here (see _isolate), so
+    the file is absent until this test writes it."""
+    assert not os.path.exists(I.artifact_path("python"))
+    joined = " ".join(I.render("python"))
+    assert joined, "python rendered nothing"
+    assert "generated/python.json" not in joined, \
+        "the pack cites a file that does not exist"
+    assert "lang-introspect.sh write python" in joined, \
+        "and it must still say how to get the complete list"
+    # negative control: once the artifact exists, it IS cited
+    I.write("python")
+    assert "agents/lang/generated/python.json" in " ".join(I.render("python"))
+
+
+class _FakeDriver:
+    exe = "fake"
+
+    def __init__(self):
+        self.v = "fake 1.0.0"
+
+    def available(self):
+        return True
+
+    def version(self):
+        return self.v
+
+
+def test_facts_are_re_probed_when_the_toolchain_version_moves(monkeypatch):
+    """The memo was keyed on the language alone, for the life of the process:
+    a server kept serving the OLD compiler's facts after an upgrade."""
+    drv, calls = _FakeDriver(), []
+
+    def probe(lang):
+        calls.append(drv.v)
+        return {"lang": lang, "toolchain": drv.v, "facts": {"n": len(calls)}}
+    monkeypatch.setattr(I, "probe", probe)
+    monkeypatch.setattr(I.drivers, "driver_for", lambda lang: drv)
+    assert I.facts("fakelang")["toolchain"] == "fake 1.0.0"
+    # negative control: same version -> served from the memo, not re-probed
+    assert I.facts("fakelang")["facts"] == {"n": 1}
+    assert calls == ["fake 1.0.0"]
+    drv.v = "fake 2.0.0"
+    assert I.facts("fakelang")["toolchain"] == "fake 2.0.0", \
+        "stale facts survived a toolchain upgrade"
+    assert calls == ["fake 1.0.0", "fake 2.0.0"]
+
+
+def test_a_transient_probe_failure_is_not_remembered(monkeypatch):
+    """One ProbeError (a timeout under load) used to pin None for the life of
+    the process."""
+    drv, state = _FakeDriver(), {"fail": True, "calls": 0}
+
+    def probe(lang):
+        state["calls"] += 1
+        if state["fail"]:
+            raise I.ProbeError("timed out")
+        return {"lang": lang, "toolchain": drv.v, "facts": {"ok": True}}
+    monkeypatch.setattr(I, "probe", probe)
+    monkeypatch.setattr(I.drivers, "driver_for", lambda lang: drv)
+    assert I.facts("fakelang") is None
+    state["fail"] = False
+    rec = I.facts("fakelang")
+    assert rec and rec["facts"] == {"ok": True}, "the failure was cached"
+    assert state["calls"] == 2

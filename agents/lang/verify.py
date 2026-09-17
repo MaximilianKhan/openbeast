@@ -118,25 +118,59 @@ def _read(snippet: str, base: str) -> str:
         return fh.read()
 
 
-def load_claims(path: str, lang: str | None = None) -> list[Claim]:
+def load_claims(path: str, lang: str | None = None,
+                problems: list[str] | None = None) -> list[Claim]:
+    """Every claim that can be LOADED; what could not be is reported.
+
+    This runs on the serving path (allow_list, pack_for, cards_for), and it
+    used to raise: one corrupt JSON file, or one claim naming a fixture that
+    is not on disk, took down every language at once. The zig set reads
+    ../../../tests/fixtures/zig016/*, so an install without tests/ lost its
+    cpp and python packs to a missing ZIG file. Now the damage stays where it
+    is — a bad file loses its own claims, a bad claim loses itself — and the
+    reason lands in `problems` when the caller passes a list. The CLI below
+    does, and FAILS on it: tolerance is for serving, never for the gate.
+    """
     files = []
-    if os.path.isdir(path):
-        for name in sorted(os.listdir(path)):
-            if name.endswith(".json"):
-                files.append(os.path.join(path, name))
-    else:
-        files.append(path)
+    try:
+        if os.path.isdir(path):
+            for name in sorted(os.listdir(path)):
+                if name.endswith(".json"):
+                    files.append(os.path.join(path, name))
+        else:
+            files.append(path)
+    except OSError as e:
+        files = []
+        if problems is not None:
+            problems.append(f"{path}: {e}")
     out: list[Claim] = []
     for f in files:
-        doc = json.load(open(f))
-        base = doc.get("fixture_dir") or os.path.dirname(os.path.abspath(f))
-        if not os.path.isabs(base):
-            base = os.path.join(os.path.dirname(os.path.abspath(f)), base)
-        default_lang = doc.get("lang")
-        for raw in doc.get("claims", []):
-            raw.setdefault("lang", default_lang)
-            raw.setdefault("variant", doc.get("variant"))
-            c = Claim(raw, os.path.basename(f), base)
+        try:
+            with open(f) as fh:
+                doc = json.load(fh)
+            if not isinstance(doc, dict):
+                raise ValueError("not a JSON object")
+            base = doc.get("fixture_dir") or os.path.dirname(os.path.abspath(f))
+            if not os.path.isabs(base):
+                base = os.path.join(os.path.dirname(os.path.abspath(f)), base)
+            raws = list(doc.get("claims") or [])
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            if problems is not None:
+                problems.append(f"{os.path.basename(f)}: unreadable claim set "
+                                f"({e.__class__.__name__}: {e})")
+            continue
+        for raw in raws:
+            try:
+                raw.setdefault("lang", doc.get("lang"))
+                raw.setdefault("variant", doc.get("variant"))
+                c = Claim(raw, os.path.basename(f), base)
+            except (OSError, ValueError, TypeError, KeyError,
+                    AttributeError) as e:
+                if problems is not None:
+                    rid = raw.get("id", "?") if isinstance(raw, dict) else "?"
+                    problems.append(f"{os.path.basename(f)}: claim {rid!r} "
+                                    f"dropped ({e.__class__.__name__}: {e})")
+                continue
             if lang and c.lang != lang:
                 continue
             out.append(c)
@@ -158,6 +192,16 @@ def old_snippets(claim: Claim) -> tuple[list[str], str | None]:
     return [], claim.old_variant
 
 
+#: (toolchain version, the claim's CODE) -> (verdict, detail). A verdict is a
+#: pure function of those two, and packs.render() asked for it again on every
+#: call: ~0.5 s per pack_for("cpp"), and 74 zig compiles per call the day the
+#: hand-written pack stops matching. Keyed on the snippet TEXT rather than the
+#: claims file's mtime, so an edited fixture file is seen too. Only the
+#: verdict is remembered — summary/note/topic are read off the claim each
+#: time — and a verdict that is not the toolchain's own is never stored.
+_VERDICTS: dict = {}
+
+
 def verify(claim: Claim) -> dict:
     d = D.driver_for(claim.lang)
     if d is None or not d.available():
@@ -165,17 +209,54 @@ def verify(claim: Claim) -> dict:
         return {"claim": claim.id, "lang": claim.lang, "topic": claim.topic,
                 "verdict": UNVERIFIABLE, "detail": why, "source": claim.source}
 
+    old_snips, old_variant = old_snippets(claim)
+    version = d.version()
+    key = (claim.lang, version, tuple(claim.new), claim.new_variant,
+           tuple(old_snips), old_variant, claim.old_variant)
+    if version and key in _VERDICTS:
+        verdict, detail = _VERDICTS[key]
+    else:
+        verdict, detail, judged = _judge(claim, d, old_snips, old_variant)
+        if version and judged:
+            _VERDICTS[key] = (verdict, detail)
+    return {"claim": claim.id, "lang": claim.lang, "topic": claim.topic,
+            "verdict": verdict, "detail": detail, "source": claim.source,
+            "variant": (f"{claim.old_variant}->{claim.new_variant}"
+                        if claim.old_variant != claim.new_variant
+                        else claim.variant),
+            "doc_must_contain": claim.doc_must_contain,
+            "summary": claim.summary, "note": claim.note}
+
+
+def _not_judged(r) -> bool:
+    """A timeout, a program that would not start, or a REFUSAL: none of them
+    is the toolchain's opinion of the snippet. The refusal case is the subtle
+    one — it returns ok=False like a compile error does, and a synthetic claim
+    whose OLD form was valid C carrying the comment
+    `/* never #include "/etc/passwd" */` came back VERIFIED on the strength of
+    a refusal."""
+    return bool(getattr(r, "transient", False) or getattr(r, "refused", False))
+
+
+def _judge(claim: Claim, d, old_snips, old_variant) -> tuple[str, str, bool]:
+    """(verdict, detail, judged). `judged` is False when a compile never
+    produced the toolchain's verdict (timeout, could not start): that is
+    UNVERIFIABLE — an OLD form "failing" because the compiler was killed is
+    not evidence of a break — and it is not remembered."""
     bad_new, still_ok_old = [], []
     for i, snip in enumerate(claim.new, 1):
         r = d.compile_source(d.wrap(snip), claim.new_variant)
+        if _not_judged(r):
+            return UNVERIFIABLE, f"new[{i}] was never judged: {r.detail}", False
         if not r:
             bad_new.append((i, r.detail.splitlines()[0] if r.detail else "?"))
     # An AVAILABILITY claim gives no `old` code — the old form IS the new
     # code, compiled under the older language version. Re-use it rather than
     # duplicating the snippet, which would drift.
-    old_snips, old_variant = old_snippets(claim)
     for i, snip in enumerate(old_snips, 1):
         r = d.compile_source(d.wrap(snip), old_variant)
+        if _not_judged(r):
+            return UNVERIFIABLE, f"old[{i}] was never judged: {r.detail}", False
         if r:
             still_ok_old.append(i)
 
@@ -201,13 +282,7 @@ def verify(claim: Claim) -> dict:
             + (f", {len(old_snips)} old fail"
                + (f" ({claim.old_variant})" if claim.old_variant else "")
                if old_snips else ", no old form given"))
-    return {"claim": claim.id, "lang": claim.lang, "topic": claim.topic,
-            "verdict": verdict, "detail": detail, "source": claim.source,
-            "variant": (f"{claim.old_variant}->{claim.new_variant}"
-                        if claim.old_variant != claim.new_variant
-                        else claim.variant),
-            "doc_must_contain": claim.doc_must_contain,
-            "summary": claim.summary, "note": claim.note}
+    return verdict, detail, True
 
 
 def check_doc_linkage(results: list[dict], pack_path: str) -> list[str]:
@@ -234,7 +309,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="UNVERIFIABLE also fails (use where a toolchain is expected)")
     a = ap.parse_args(argv)
 
-    claims = load_claims(a.claims, a.lang)
+    problems: list[str] = []
+    claims = load_claims(a.claims, a.lang, problems)
+    for msg in problems:
+        print(f"CLAIM SET PROBLEM: {msg}", file=sys.stderr)
     if not claims:
         print(f"no claims found in {a.claims}"
               + (f" for lang={a.lang}" if a.lang else ""), file=sys.stderr)
@@ -271,10 +349,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"\ndoc linkage: every verified claim appears in {os.path.basename(a.pack)}")
 
+    # UNVERIFIABLE is excused only when it means "no toolchain here". A
+    # compile that was killed or never started is a failure of this run.
     bad = [r for r in results
            if r["verdict"] not in GOOD
-           and (a.strict or r["verdict"] != UNVERIFIABLE)]
-    return 1 if bad else 0
+           and (a.strict or r["verdict"] != UNVERIFIABLE
+                or "never judged" in r["detail"])]
+    # A claim that could not even be LOADED is not a pass. load_claims
+    # tolerates it so that serving degrades per-language; the gate does not.
+    return 1 if (bad or problems) else 0
 
 
 if __name__ == "__main__":

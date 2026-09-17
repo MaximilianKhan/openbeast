@@ -530,19 +530,73 @@ else
        artifact is hash-checked at both ends, so the USB stick does not have
        to be trusted."
   fi
+  # IS THE LOCK CURRENT? Checked before it is trusted, offline and in well
+  # under a second. requirements.txt moves without the lock in two ordinary
+  # ways — a merged Dependabot bump, and scripts/update.sh --python on a box
+  # that could not regenerate it — and this step then installed the OLD
+  # versions from the lock, printed a green check, and did it again on every
+  # later run, because the satisfaction check above (which reads
+  # requirements.txt) could never pass. A stale lock is not a hash failure: it
+  # is an out-of-date file, so it takes the loud fallback, not the fatal path.
+  _ob_lock_usable=0
   if [[ $_ob_locked_ok -eq 0 && -f "$_ob_lock" ]]; then
-    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock"; then
-      _ob_locked_ok=1
-      ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
+    if _ob_stale="$("$REPO_DIR/scripts/pydeps.sh" verify 2>&1)"; then
+      _ob_lock_usable=1
     elif [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then
-      die "the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids
+      die "agents/requirements.lock does not match agents/requirements.txt, and
+       OPENBEAST_PIP_STRICT=1 forbids installing without hash pinning:
+$(sed 's/^/         /' <<< "$_ob_stale")
+       Regenerate it on a connected box:  ./scripts/pydeps.sh lock"
+    else
+      warn "agents/requirements.lock is STALE against agents/requirements.txt —
+       NOT installing from it (that would put the OLD versions on this box):
+$(sed 's/^/         /' <<< "$_ob_stale")
+       Using agents/requirements.txt, which pins VERSIONS but not content.
+       Regenerate the lock:  ./scripts/pydeps.sh lock"
+    fi
+  fi
+  if [[ $_ob_lock_usable -eq 1 ]]; then
+    # pip's stderr is KEPT, because why it failed decides what happens next.
+    _ob_pip_err="$(mktemp)"
+    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
+      _ob_locked_ok=1
+      rm -f "$_ob_pip_err"
+      ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
+    else
+      cat "$_ob_pip_err" >&2
+      # A HASH MISMATCH IS NEVER A REASON TO FALL BACK. It is the one event
+      # the lock exists to catch — an index or mirror served bytes that are
+      # not the pinned ones — and the old code answered it by installing the
+      # same names UNPINNED from the same index, under a warning that blamed
+      # "this python". pip's words for it (pip/_internal/exceptions.py,
+      # HashMismatch): the banner below, then "Expected sha256 … Got …".
+      #
+      # Deliberately NOT treated as tampering: "all requirements must have
+      # their versions pinned" / "Hashes are required in --require-hashes
+      # mode". Those mean the closure on THIS python needs a package the lock
+      # does not name — the compatibility case the fallback is for — and no
+      # bytes were compared at all.
+      if grep -qE 'DO NOT MATCH THE HASHES|^[[:space:]]*Expected sha(256|384|512) |hash mismatch' "$_ob_pip_err"; then
+        rm -f "$_ob_pip_err"
+        die "HASH MISMATCH installing from agents/requirements.lock (pip's report
+       is above). The index served bytes that are NOT the ones the lock pins.
+       Refusing to continue, and NOT falling back to requirements.txt — that
+       would install the same packages, unverified, from the same source.
+       If a mirror or proxy is configured (pip config list, PIP_INDEX_URL),
+       suspect it first. If you just regenerated or edited the lock, re-run
+       ./scripts/pydeps.sh lock and try again."
+      fi
+      rm -f "$_ob_pip_err"
+      if [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then
+        die "the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids
        falling back to the unpinned closure. Regenerate the lock on this
        python (./scripts/pydeps.sh lock), or pre-stage a wheelhouse:
          connected box:  ./scripts/pydeps.sh wheelhouse wheels
          this box:       ./scripts/pydeps.sh install --from wheels"
-    else
-      warn "the hash-pinned install failed on this python — falling back to
-       agents/requirements.txt, which pins VERSIONS but not content.
+      fi
+      warn "the hash-pinned install failed on this python, and NOT on a hash
+       (pip's report is above) — falling back to agents/requirements.txt,
+       which pins VERSIONS but not content.
        ./scripts/pydeps.sh lock regenerates the lock for this interpreter."
     fi
   fi
@@ -553,6 +607,23 @@ else
        copy ./wheels and agents/requirements.lock here, then:
                             ./scripts/pydeps.sh install --from wheels"
     ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
+  fi
+  # ASK AGAIN. "pip exited 0" and "the pins are installed" are different
+  # claims, and only the second one is what this step is for: every green
+  # check above was printed by the stale-lock bug too.
+  #
+  # A WARNING, not a die (fatal only under OPENBEAST_PIP_STRICT=1). pip just
+  # succeeded, so what is on the box is at worst a near-miss of the pins — and
+  # a checker false-negative (a marker-gated pin, a distro package shadowing
+  # --user) would otherwise turn every fresh install into a dead one. A stack
+  # that runs on a near-miss beats a bootstrap that refuses to finish.
+  if ! _unsat="$(ob_python_deps_satisfied)"; then
+    _msg="python deps are STILL not satisfied after installing: ${_unsat:-unknown}
+       The install reported success, so something else is putting a different
+       version in front of it (a second site-packages? PYTHONPATH?), or the
+       lock and agents/requirements.txt disagree: ./scripts/pydeps.sh verify"
+    if [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then die "$_msg"; fi
+    warn "$_msg"
   fi
 fi
 # hf / mcpo land in ~/.local/bin — make sure it's reachable for this run
@@ -636,7 +707,9 @@ step "Frontend images (Open WebUI + SearXNG)"
 # name. The claim "all four are refused up front" was false here, which is
 # how a review found it.
 if ob_offline; then
-  _n_img=$(grep -cE '^\s+image:' "$REPO_DIR/docker-compose.yml" || echo 0)
+  # NOT `grep -c … || echo 0`: on zero matches grep prints "0" AND exits 1, so
+  # that form yields "0\n0".
+  _n_img=$(grep -cE '^\s+image:' "$REPO_DIR/docker-compose.yml" || true); _n_img=${_n_img:-0}
   warn "OFFLINE=true → not pulling the $_n_img frontend image(s); a registry
       pull cannot succeed here. Images already in the local store are used as
       they are. To bring them in from a connected box:

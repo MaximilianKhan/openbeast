@@ -44,8 +44,10 @@ one system publishes on the other.
 
 Env:
   OPENBEAST_FILES_DIR            workspace root (default ~/openbeast-files)
-  OPENBEAST_ARTIFACT_BASE_URL    public base for artifact_url()
-                                 (default https://<hostname>:8446)
+  OPENBEAST_ARTIFACT_BASE_URL    public base for artifact_url(). Unset, it is
+                                 DETECTED (see _detect_base_url): the tailnet
+                                 name `tailscale serve` publishes :8446 under,
+                                 else http://localhost:<ARTIFACT_PORT>.
 """
 from __future__ import annotations
 
@@ -59,8 +61,8 @@ import os
 from contextvars import ContextVar
 import re
 import shutil
-import socket
 import stat as _stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -76,7 +78,7 @@ __all__ = [
     "ArtifactError", "CAPS", "store_root", "is_store_path", "publish",
     "get_meta", "list_artifacts", "read_file", "set_visibility",
     "set_description", "set_current", "remove", "artifact_url", "can_view",
-    "extract_title", "wrap_skeleton", "set_owner_override",
+    "url_caveat", "extract_title", "wrap_skeleton", "set_owner_override",
     "reset_owner_override", "default_owner", "default_owner_alias",
     "valid_email",
 ]
@@ -169,7 +171,7 @@ _LOCK_DEFAULT_TIMEOUT = 10.0        # seconds, per mutation; env-overridable
 # than burning the flock retry budget against themselves (flock conflicts even
 # between two file descriptions in the same process).
 _LOCKS_MUTEX = threading.Lock()
-_ID_LOCKS: dict[str, threading.Lock] = {}
+_ID_LOCKS: dict[str, list] = {}     # aid -> [Lock, holders+waiters]
 _HELD = threading.local()           # ids this thread already holds: re-entrant
 
 
@@ -188,12 +190,39 @@ def _busy(aid: str, waited: float) -> "ArtifactError":
         f"(waited {waited:.1f}s). Try again.")
 
 
-def _id_mutex(aid: str) -> threading.Lock:
+def _id_mutex_acquire(aid: str, timeout: float) -> bool:
+    """Take the in-process mutex for `aid`, REFCOUNTED so the table drains.
+
+    Every publish mints a fresh uuid4, and the table used to keep one Lock per
+    id for the life of the process: a server that published all day grew it
+    without bound. An entry now lives exactly as long as somebody holds or
+    waits on it.
+    """
     with _LOCKS_MUTEX:
-        lk = _ID_LOCKS.get(aid)
-        if lk is None:
-            lk = _ID_LOCKS[aid] = threading.Lock()
-        return lk
+        slot = _ID_LOCKS.get(aid)
+        if slot is None:
+            slot = _ID_LOCKS[aid] = [threading.Lock(), 0]
+        slot[1] += 1
+    if slot[0].acquire(timeout=timeout):
+        return True
+    _id_mutex_forget(aid, slot)
+    return False
+
+
+def _id_mutex_forget(aid: str, slot) -> None:
+    with _LOCKS_MUTEX:
+        slot[1] -= 1
+        if slot[1] <= 0 and _ID_LOCKS.get(aid) is slot:
+            del _ID_LOCKS[aid]
+
+
+def _id_mutex_release(aid: str) -> None:
+    with _LOCKS_MUTEX:
+        slot = _ID_LOCKS.get(aid)
+    if slot is None:                       # pragma: no cover - defensive
+        return
+    slot[0].release()
+    _id_mutex_forget(aid, slot)
 
 
 def _lock_path(aid: str):
@@ -253,8 +282,7 @@ def _artifact_lock(artifact_id: str):
         return
     timeout = _lock_timeout()
     deadline = time.monotonic() + timeout
-    mutex = _id_mutex(aid)
-    if not mutex.acquire(timeout=timeout):
+    if not _id_mutex_acquire(aid, timeout):
         raise _busy(aid, timeout)
     fd = None
     try:
@@ -277,7 +305,7 @@ def _artifact_lock(artifact_id: str):
                 os.close(fd)
             except OSError:
                 pass
-        mutex.release()
+        _id_mutex_release(aid)
 
 
 # --- paths -------------------------------------------------------------------
@@ -1145,13 +1173,87 @@ def remove(artifact_id, *, owner=None) -> bool:
 
 # --- urls / visibility -------------------------------------------------------
 
+# The tailnet port `setup-tailscale.sh --publish-artifact` mounts the viewer on.
+_PUBLISHED_PORT = 8446
+_BASE_URL_TTL = 60.0
+_BASE_URL_CACHE = {"at": 0.0, "value": ""}
+_BASE_URL_LOCK = threading.Lock()
+
+
+def _serve_status() -> str:
+    """`tailscale serve status`, or "" — never raises, never hangs."""
+    try:
+        done = subprocess.run(
+            ["tailscale", "serve", "status"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3,
+            text=True, errors="replace")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    return done.stdout or ""
+
+
+def _detect_base_url() -> str:
+    """Where a reader can ACTUALLY open an artifact, when nobody configured it.
+
+    The old default was https://<gethostname()>:8446, which is wrong on both
+    counts that matter. The tailnet machine name is chosen independently of
+    the OS hostname (setup-tailscale.sh says so; this rig is `omarchy` on the
+    box and `beast.<tailnet>.ts.net` on the tailnet), and the serve
+    certificate is issued for the full ts.net name only — so every URL the
+    model handed a user was a dead link or a certificate error. And on a rig
+    that never ran --publish-artifact nothing listens on :8446 at all.
+
+    So ask `tailscale serve` what it publishes on :8446 and use that exact
+    name; failing that, the viewer is reachable on loopback only and the
+    honest URL says so. Cached briefly: a gallery listing builds one URL per
+    row, and --publish-artifact run after start must still be picked up
+    without a restart.
+    """
+    now = time.monotonic()
+    with _BASE_URL_LOCK:
+        if _BASE_URL_CACHE["value"] and now - _BASE_URL_CACHE["at"] < _BASE_URL_TTL:
+            return _BASE_URL_CACHE["value"]
+    # ANCHORED to the start of a line: a mount HEADER, never text inside one.
+    # Unanchored, the first match won — and a lower-port mount whose proxy
+    # target or path merely mentioned "https://x:8446" became the base of
+    # every URL the model handed out.
+    m = re.search(r"^https://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):%d(?=\s|$)"
+                  % _PUBLISHED_PORT, _serve_status(), re.M)
+    if m:
+        value = f"https://{m.group(1).lower()}:{_PUBLISHED_PORT}"
+    else:
+        port = _coerce_int(os.environ.get("OPENBEAST_ARTIFACT_PORT"), 3004)
+        value = f"http://localhost:{port if 0 < port < 65536 else 3004}"
+    with _BASE_URL_LOCK:
+        _BASE_URL_CACHE.update(at=now, value=value)
+    return value
+
+
+def url_caveat(url) -> str:
+    """One sentence to hand over WITH a URL that a browser cannot open, or "".
+
+    The loopback fallback is the true address of the viewer, but the viewer
+    refuses anonymous callers and a browser cannot present an identity to it
+    (that arrives from `tailscale serve`, or from the locality token the CLI
+    reads). So an unpublished rig's link is a 404 in every browser — and a
+    model that hands it over without saying so has handed over a dead link.
+    """
+    if str(url or "").startswith(("http://localhost", "http://127.0.0.1")):
+        return ("This rig's artifact viewer is not published on the tailnet "
+                "yet, so that link will not open in a browser. The operator "
+                "publishes it once with: ./scripts/setup-tailscale.sh "
+                "--publish-artifact (the link then becomes "
+                "https://<rig>.<tailnet>.ts.net:8446/a/<id>; the page and "
+                "its id are already saved).")
+    return ""
+
+
 def artifact_url(artifact_id, version=None) -> str:
-    """The durable URL. Base from $OPENBEAST_ARTIFACT_BASE_URL, else
-    https://<hostname>:8446 (the tailscale-serve mount from the plan)."""
+    """The durable URL. Base from $OPENBEAST_ARTIFACT_BASE_URL (conf key
+    ARTIFACT_BASE_URL), else detected — see _detect_base_url()."""
     base = os.environ.get("OPENBEAST_ARTIFACT_BASE_URL", "").strip()
     if not base:
-        host = socket.gethostname() or "localhost"
-        base = f"https://{host}:8446"
+        base = _detect_base_url()
     base = base.rstrip("/")
     aid = _check_id(artifact_id)
     if version is None:

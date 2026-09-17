@@ -21,6 +21,80 @@
   can now publish their own tables with a stable id per verdict (a rerun
   becomes version 2 of the same URL instead of a new link). Not wired yet.
 
+## 🧭 FABLE REVIEW 2026-09-17 — what a fresh read found after the 152-agent pass
+
+Max's order: review beast-chat, beast-artifact and everything else merged on
+2026-09-15 for anything that could cost an OpenBeast user uptime; fix it; then
+a light adversarial pass over the fixes. Method that mattered: **run the thing
+the way a user does** (a real browser, a real SIGTERM, a real systemd unit) —
+the two worst artifact bugs were invisible to every header-level test.
+
+**Would have bitten a user (all fixed, each with a test that fails on the old code):**
+- **beast-artifact: no supporting file ever loaded in a browser.** `--file
+  app.js/style.css/chart.png` — all blocked (CSP had no `'self'`; the
+  sandboxed page's opaque origin makes its own files cross-site, which
+  `CORP: same-origin` refuses). Fixed with a capability path
+  (`/raw/<id>/v/<n>/~<hmac>/`); verified in headless Chromium.
+- **beast-artifact: every URL the model handed out was dead** —
+  `https://<OS hostname>:8446`, while the tailnet name (and the certificate) is
+  a different, independently chosen name. Now detected from `tailscale serve`.
+- **Watchdog could shoot a loading model.** `healthcheck.sh --restart` read
+  llama-server's `503 Loading model` as DOWN and killed it — by the BARE name
+  `llama-server`, which also reaps campaigns. `start.sh` then tears the whole
+  stack down. Now: loading ≠ down, recorded-pid/path-anchored kills only, and
+  both the watchdog and `stop.sh` respect a held GPU lease.
+- **`fetch-weight.sh` could destroy a weight you already had**: a renamed
+  remote was downloaded over the same-named local file of ANOTHER registry row
+  (the MTP / non-MTP pairs collide), then moved away. Now staged.
+- **Stale pidfiles killed strangers** (`stop.sh`, the watchdog): `.run/`
+  survives a reboot, pids do not. Identity-checked now (`scripts/lib/proc.sh`).
+- **beast-chat ignored SIGTERM while a phone was attached**; a second start
+  clobbered the live server's token; console-started jobs lived in the stack's
+  systemd unit (died on any `./stop.sh`, shared llama-server's memory cap);
+  `job.sh stop` printed "stopped" over a ledger that said `lost`;
+  `sessions.prune()` had no caller.
+- **Every `/agents` Dependabot PR was permanently red** (the lock is not
+  regenerated) and a merged bump made bootstrap install the OLD versions under
+  a green check. `dependabot-relock.yml` + a stale-lock gate in bootstrap. #85
+  and #86 need `@dependabot rebase` once this lands — deliberately NOT merged
+  mid-campaign (openai is the eval client).
+- Also: bootstrap fell back to unpinned on a genuine HASH MISMATCH;
+  `bundle.sh --key ""` downgraded to unsigned; bundle installs skipped
+  truncated weights and died silently on `--no-source` bundles;
+  `OFFLINE="true" # comment` failed open; `gpu-lease.sh run` swallowed SIGTERM.
+- **beast-lang** (not on a live path yet, fixed before it is wired): the
+  escalation matcher attached the WRONG card to common errors under a
+  "confirmed" header; compile timeouts orphaned `cc1plus`; the Go driver's
+  "offline" flag enabled network resolution and mutated `os.environ`;
+  `acquire` exited 0 with every download failed.
+
+**The adversarial pass over the fixes (5 reviewers, default-to-refuted) earned
+its keep — it caught regressions in the fixes themselves:** my
+`gpu-lease.sh` unlock (`exec 9>&- 2>/dev/null`, no command) sent the whole
+campaign's stderr to /dev/null for good, and backgrounding the command made
+Ctrl-C stop the wrapper while the campaign ran on; `stop.sh`'s new lease guard
+stranded the stack's own recorded llama-server; "Loading model" had no time
+bound; console jobs that left the stack's unit also left its memory cap (now
+capped per scope, `OPENBEAST_CHAT_JOB_MEM_PCT`); a job stopped after a server
+restart was filed `lost`; the automatic prune deleted `job.sh` logs; the
+tailscale regex took a proxy TARGET for the mount; `BIND_HOST=*` turned Host
+pinning off; `bundle.sh` matched services by line index against a stale
+backup. In beast-lang round 2: the matcher still gave 9/9 wrong cards on real
+zig diagnostics, `import unittest.__main__` EXECUTED code in the verifier, and
+a `use … as` alias walked around the Rust include/env refusals. The capability
+path itself held up in real Chromium against both a hostile page and a
+malicious artifact. Several of my own new tests leaked `sleep 300` orphans,
+read the real GPU, or self-matched `pkill -f` — fixed, and the lessons are in
+memory.
+
+**Era:** none of the six eval-hashed files moved — still `3b7c2adb8da7968d`,
+asserted by `scratch/campaign_master3.sh` before it spends a GPU-minute.
+
+**Left open on purpose:** `healthcheck.sh`'s core probes still assume
+`localhost` for llama/tool-server under a non-loopback `BIND_HOST`
+(pre-existing); bootstrap step 4 still downloads the DEFAULT weight straight
+into `WEIGHTS_DIR` (safe while its remote name equals its local name).
+
 ## 🔍 REVIEW FINDINGS — TRIAGED 2026-09-15 (Max: "address tonight, ASAP")
 
 The v1.4.0 review's lower-severity tail, put through a second pass: 13

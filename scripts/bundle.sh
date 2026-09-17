@@ -26,13 +26,26 @@
 # reference can NEVER be satisfied from a tarball. That is the trap the
 # air-gap ranker caught, and it is why "just docker save/load" does not work.
 #
-# The answer is not to give up content addressing. An image's ID *is* a
-# content digest (of its config), it DOES survive save/load, and
-# `docker compose` accepts `image: sha256:<id>` and resolves it locally with
-# no pull — measured on 2026-09-15, not assumed. So: the manifest records the
-# ID, install verifies the loaded image against it, and the compose reference
-# is rewritten to that ID. The original docker-compose.yml is kept, so the
-# rewrite is reversible.
+# The answer is not to give up content addressing. An image's ID is a content
+# digest, and `docker compose` accepts `image: sha256:<id>` and resolves it
+# locally with no pull — measured on 2026-09-15, not assumed. So: the manifest
+# records the ID, install checks the loaded image against it, and the compose
+# reference is rewritten to the ID the load ACTUALLY produced. The original
+# docker-compose.yml is kept, so the rewrite is reversible.
+#
+# WHICH digest the ID is DEPENDS ON THE IMAGE STORE — an earlier version of
+# this header said "of its config" as if that were universal, and it is not:
+#   classic store (overlay2)         .Id = the image CONFIG digest
+#   containerd snapshotter           .Id = the registry INDEX/manifest digest
+#     (the default on fresh Docker 29 installs, and what the reference box runs)
+# Same image, two different IDs. A bundle built on one kind and installed on
+# the other loaded fine and then died "image … is not present afterwards",
+# blaming docker's load for what was a comparison between two different kinds
+# of digest. So `build` records the store kind, and `install` compares IDs
+# only when the kinds match. When they differ it says the ID check was
+# skipped and why: the tarball's sha256 was already verified against the
+# (signed) manifest, so integrity is not what is lost — only a redundant
+# cross-check is.
 #
 # HASHES ARE INTEGRITY; A SIGNATURE IS AUTHENTICITY, and they answer different
 # questions. MANIFEST.json proves the bundle did not change in transit. It
@@ -71,6 +84,12 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# WHERE THE OPERATOR IS STANDING, captured before the cd below. Every path
+# argument used to be resolved AFTER it, so from /media/usb
+#   /path/openbeast/scripts/bundle.sh install ./bundle
+# looked in $REPO_DIR/bundle, and `build ./out` wrote the bundle into the repo
+# instead of onto the stick it was meant for.
+ORIG_PWD="$PWD"
 cd "$REPO_DIR"
 # shellcheck source=scripts/lib/conf.sh
 source "$REPO_DIR/scripts/lib/conf.sh"
@@ -106,6 +125,47 @@ warn() { echo "  ${c_ylw}!${c_rst} $*"; }
 die()  { echo "  ${c_red}✗${c_rst} $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
+# _from_caller <path>: a relative path means relative to where the operator
+# ran the command, not to the repo this script cd'd into.
+_from_caller() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *)  printf '%s\n' "$ORIG_PWD/$1" ;;
+  esac
+}
+
+# _need_value <flag> <args-left> <value>: a value-taking flag with no value, or
+# an EMPTY one, is an error. Two real failures hid here:
+#   --key ""   KEY stayed empty, which is also the "no --key given" state, so
+#              verification silently DOWNGRADED to integrity-only: a tampered
+#              signed bundle verified rc=0 with a warning. An operator who
+#              typed --key asked for authenticity (an unset $VAR is how the ""
+#              gets there) and must never get less without an error.
+#   --key      bare and last: `shift 2` fails under `set -e` and the script
+#              exited 1 having printed nothing at all.
+_need_value() {
+  local flag="$1" left="$2" val="${3-}"
+  if [[ "$left" -lt 2 || -z "$val" ]]; then
+    die "$flag needs a value, and got none (an empty or unset variable?)"
+  fi
+}
+
+# _image_store_kind: "containerd" | "classic" | "unknown". See the header:
+# the two kinds report DIFFERENT digests as an image's .Id. The snapshotter
+# announces itself in DriverStatus as `driver-type io.containerd.snapshotter.v1`
+# (measured on Docker 29.7); a classic store has no such entry. The storage
+# driver NAME is not the signal — `overlayfs` vs `overlay2` is one letter from
+# a false answer, and a classic store can sit on btrfs or zfs.
+_image_store_kind() {
+  local st
+  st="$(docker info --format '{{.DriverStatus}}' 2>/dev/null)" || { echo unknown; return 0; }
+  if [[ "$st" == *io.containerd.snapshotter* ]]; then
+    echo containerd
+  else
+    echo classic
+  fi
+}
+
 # The image refs the stack actually runs, read from compose rather than
 # restated here: a second list would drift from the first.
 _compose_images() {
@@ -122,6 +182,11 @@ _compose_images() {
 # The last one is the whole point: if an operator asked for authenticity, a
 # missing signature must be a failure, not a shrug.
 _check_signature() {
+  # Same family as `--key ""`: an operator who names the signer they expect
+  # has asked for a signature check, and without --key there is none — the
+  # identity was silently ignored and the bundle "verified" on hashes alone.
+  [[ -z "${3:-}" || -n "${2:-}" ]] || die "--identity needs --key <allowed-signers file>:
+       without it nothing is verified and the identity would be ignored."
   local dir="$1" key="$2" ident="$3"
   local sig="$dir/MANIFEST.json.sig"
   if [[ -z "$key" ]]; then
@@ -186,7 +251,11 @@ case "$CMD" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --with-weights)   WITH_WEIGHTS="__default__"; shift ;;
-        --with-weights=*) WITH_WEIGHTS="${1#*=}"; shift ;;
+        --with-weights=*) WITH_WEIGHTS="${1#*=}"
+                          # `--with-weights=$UNSET` used to mean "no weights",
+                          # quietly: the opposite of what was typed.
+                          [[ -n "$WITH_WEIGHTS" ]] || die "--with-weights= needs a file list (or drop the = for the default weight)"
+                          shift ;;
         --no-images)      DO_IMAGES=0; shift ;;
         --no-source)      DO_SOURCE=0; shift ;;
         --force)          FORCE=1; shift ;;
@@ -195,6 +264,7 @@ case "$CMD" in
     done
     ob_offline && die "OFFLINE=true — a bundle is BUILT on a connected box.
        Run this where there is a network, then carry the directory here."
+    DIR="$(_from_caller "$DIR")"
     mkdir -p "$DIR"
     DIR="$(cd "$DIR" && pwd)"
     # A DIRTY TARGET IS REFUSED. Rebuilding into a directory that already
@@ -265,6 +335,9 @@ case "$CMD" in
       else
         mkdir -p "$DIR/images"
         _img_json="[]"
+        _store="$(_image_store_kind)"
+        ok "image store on this box: $_store (recorded — an image ID only
+      compares across stores of the same kind)"
         while IFS= read -r _ref; do
           [[ -n "$_ref" ]] || continue
           _id="$(docker inspect --format '{{.Id}}' "$_ref" 2>/dev/null || true)"
@@ -284,7 +357,7 @@ case "$CMD" in
           rmdir "$DIR/images" 2>/dev/null || true
         else
           COMPONENTS+=(--component "images:images")
-          METAS+=(--meta "images:$(printf '{"images": %s}' "$_img_json")")
+          METAS+=(--meta "images:$(printf '{"images": %s, "image_store": "%s"}' "$_img_json" "$_store")")
         fi
       fi
     else
@@ -389,11 +462,12 @@ EOF
   sign)
     DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "sign needs a bundle directory"
+    DIR="$(_from_caller "$DIR")"
     KEY=""; IDENT=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --key)      KEY="${2:-}"; shift 2 ;;
-        --identity) IDENT="${2:-}"; shift 2 ;;
+        --key)      _need_value --key "$#" "${2-}"; KEY="$(_from_caller "$2")"; shift 2 ;;
+        --identity) _need_value --identity "$#" "${2-}"; IDENT="$2"; shift 2 ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -428,18 +502,21 @@ EOF
     ;;
 
   show)
-    DIR="${1:?show needs a bundle directory}"
+    DIR="${1:-}"
+    [[ -n "$DIR" ]] || die "show needs a bundle directory"
+    DIR="$(_from_caller "$DIR")"
     "$PY" "$HELPER" show "$DIR"
     ;;
 
   verify)
     DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "verify needs a bundle directory"
+    DIR="$(_from_caller "$DIR")"
     KEY=""; IDENT=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --key)      KEY="${2:-}"; shift 2 ;;
-        --identity) IDENT="${2:-}"; shift 2 ;;
+        --key)      _need_value --key "$#" "${2-}"; KEY="$(_from_caller "$2")"; shift 2 ;;
+        --identity) _need_value --identity "$#" "${2-}"; IDENT="$2"; shift 2 ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -456,11 +533,13 @@ EOF
     KEY=""; IDENT=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --key)      KEY="${2:-}"; shift 2 ;;
-        --identity) IDENT="${2:-}"; shift 2 ;;
+        --key)      _need_value --key "$#" "${2-}"; KEY="$(_from_caller "$2")"; shift 2 ;;
+        --identity) _need_value --identity "$#" "${2-}"; IDENT="$2"; shift 2 ;;
         *) die "unknown flag $1" ;;
       esac
     done
+    DIR="$(_from_caller "$DIR")"
+    [[ -d "$DIR" ]] || die "$DIR is not a directory"
     DIR="$(cd "$DIR" && pwd)"
     step "verifying the bundle before using any of it"
     _check_signature "$DIR" "$KEY" "$IDENT"
@@ -486,7 +565,13 @@ for c in doc.get("components", []):
                 -name "llama.cpp-${_want_commit:0:12}.tar.gz" 2>/dev/null | head -1 || true)"
       [[ -n "$_tar" ]] || die "the manifest records llama.cpp $_want_commit but
        source/llama.cpp-${_want_commit:0:12}.tar.gz is not in the bundle."
-    else
+    elif [[ -d "$DIR/source" ]]; then
+      # ONLY WHEN THERE IS A source/. `find` on a missing directory exits 1,
+      # pipefail makes that the pipeline's status, and `set -e` then killed
+      # the script ON THE ASSIGNMENT — silently, rc=1, straight after "every
+      # recorded file matches". So a bundle built with --no-source (or on a
+      # box with no llama.cpp clone) could not be installed at all, and said
+      # nothing about why.
       _n_tars="$(find "$DIR/source" -maxdepth 1 -name 'llama.cpp-*.tar.gz' 2>/dev/null | wc -l)"
       [[ "$_n_tars" -le 1 ]] || die "$_n_tars source tarballs and no recorded
        commit to choose between them — refusing to guess. Rebuild the bundle."
@@ -575,6 +660,7 @@ $(sed 's/^/         /' <<< "$_links")
     fi
 
     # --- images ---------------------------------------------------------
+    _img_missing=()
     if [[ -d "$DIR/images" ]]; then
       step "container images"
       command -v docker >/dev/null 2>&1 || die "docker is not installed here"
@@ -595,6 +681,11 @@ doc = json.load(open(os.path.join(root, "MANIFEST.json")))
 for comp in doc.get("components", []):
     if comp.get("kind") != "images":
         continue
+    # ABSENT in a bundle built before the field existed -> "unknown", which the
+    # shell side treats as "cannot tell", never as "matches".
+    store = comp.get("image_store") or "unknown"
+    if store not in ("containerd", "classic", "unknown"):
+        sys.exit(f"manifest records an image store this tool does not know: {store!r}")
     for img in comp.get("images", []):
         f, ref, iid = img.get("file",""), img.get("ref",""), img.get("id","")
         # The FILE PATH COMES FROM THE MANIFEST — the very thing we are
@@ -610,22 +701,76 @@ for comp in doc.get("components", []):
             sys.exit(f"manifest records an unusable image id for {ref!r}: {iid!r}")
         if not ref:
             sys.exit(f"manifest records an image with no ref: {f!r}")
-        print("\t".join([f, ref, iid]))
+        print("\t".join([f, ref, iid, store]))
 ' "$DIR" "$REPO_DIR" > "$_imglist"; then
         rm -f "$_imglist"
         die "the bundle's image records are not usable (see above). Nothing
        was loaded and docker-compose.yml was not touched."
       fi
-      while IFS=$'\t' read -r _file _ref _id; do
+      _here_store="$(_image_store_kind)"
+      while IFS=$'\t' read -r _file _ref _id _built_store; do
         [[ -n "$_file" ]] || continue
         echo "  loading $_file..."
-        _loaded="$(gzip -dc "$DIR/$_file" | docker load 2>&1 || true)"
+        # The load's OWN exit status, not `|| true`: a failed load used to be
+        # discovered one step later as "image is not present", minus the reason.
+        _load_rc=0
+        _loaded="$(gzip -dc "$DIR/$_file" | docker load 2>&1)" || _load_rc=$?
+        [[ $_load_rc -eq 0 ]] || die "docker load failed for $_file (rc=$_load_rc).
+       docker said: $(tail -n 1 <<< "$_loaded")
+       The file's sha256 matched the manifest, so the bytes are the ones that
+       were built — this is the daemon (disk space? permissions? not running?)."
+        # WHAT WAS ACTUALLY LOADED, from docker's own words, resolved to the ID
+        # THIS daemon gives it. `docker load` prints one of
+        #   Loaded image: <name>            Loaded image ID: sha256:<id>
+        # depending on whether the tarball carried a name. That ID — not the
+        # one the build box wrote down — is what compose must be pointed at,
+        # because the two differ across image-store kinds (see the header).
+        _use_id=""
+        while IFS= read -r _ln; do
+          case "$_ln" in
+            "Loaded image ID: "*) _cand="${_ln#Loaded image ID: }" ;;
+            "Loaded image: "*)    _cand="${_ln#Loaded image: }" ;;
+            *) continue ;;
+          esac
+          _use_id="$(docker inspect --format '{{.Id}}' "$_cand" 2>/dev/null || true)"
+          [[ -z "$_use_id" ]] || break
+        done <<< "$_loaded"
         _have="$(docker inspect --format '{{.Id}}' "$_id" 2>/dev/null || true)"
-        [[ "$_have" == "$_id" ]] \
-          || die "loaded $_file but image $_id is not present afterwards.
-       docker said: $(head -1 <<< "$_loaded")
-       The bundle's own hash verified, so this is docker's load, not the file."
-        ok "$_ref -> ${_id:0:19}… present locally"
+        if [[ "${_built_store:-unknown}" != "unknown" && "$_built_store" == "$_here_store" ]]; then
+          # Same kind of store at both ends: the IDs are the same kind of
+          # digest, so they must agree, and a disagreement is real.
+          [[ "$_have" == "$_id" ]] \
+            || die "loaded $_file, but the image ID recorded at build time is not in
+       this daemon's store afterwards.
+         recorded  $_id   (image store: $_built_store)
+         loaded    ${_use_id:-nothing docker load named}   (image store: $_here_store)
+       docker said: $(tail -n 1 <<< "$_loaded")
+       Both boxes use the same kind of image store, so these should be equal.
+       The tarball is not the image the manifest says it is — rebuild the bundle."
+          _use_id="$_id"
+          ok "$_ref -> ${_use_id:0:19}… present locally (ID matches the manifest)"
+        elif [[ -n "$_have" && "$_have" == "$_id" ]]; then
+          # Kinds differ or are unknown, but the recorded ID resolves anyway.
+          _use_id="$_id"
+          ok "$_ref -> ${_use_id:0:19}… present locally (ID matches the manifest)"
+        else
+          [[ -n "$_use_id" ]] || die "loaded $_file, but docker load named nothing this
+       daemon can resolve, and the recorded ID $_id is not present either.
+       docker said: $(tail -n 1 <<< "$_loaded")"
+          if [[ "${_built_store:-unknown}" == "unknown" || "$_here_store" == "unknown" ]]; then
+            _why="the image-store kind of one end is not known (built on:
+      ${_built_store:-unknown} — a bundle from before that was recorded says
+      unknown; this box: $_here_store), so a mismatch cannot be told apart from
+      a store difference"
+          else
+            _why="the image stores differ (built on: $_built_store, this box:
+      $_here_store) and the two kinds report different digests as an image's
+      ID, so the recorded ${_id:0:19}… cannot match here by construction"
+          fi
+          warn "$_ref: image-ID verification SKIPPED — $_why.
+      Integrity is NOT lost: $_file matched its sha256 in the manifest before
+      it was loaded. Using what docker load reported: ${_use_id:0:19}…"
+        fi
         # THE DIGEST REWRITE. compose pins by registry manifest digest, which
         # save/load cannot carry; the image ID is a content digest that
         # survives it and compose resolves locally. Keep the original file.
@@ -642,33 +787,49 @@ for comp in doc.get("components", []):
         # The fix has to work from either starting state, so the search is
         # ref-or-any-sha256-image-line, and the replacement below rewrites the
         # line whose current value is either.
+        # (`/` is NOT in the escape class below: it is not an ERE metacharacter,
+        # and escaping it made GNU grep print "stray \ before /" on every
+        # install, for every image.)
         _prev_id="$(OB_REF="$_ref" "$PY" - "$REPO_DIR/docker-compose.yml.pre-bundle" "$REPO_DIR/docker-compose.yml" <<'PYPREV'
-import os, sys
+import os, re, sys
 ref = os.environ["OB_REF"]
-# Which image: line held this ref originally? Its position tells us which
-# line to rewrite now, even though its value has since become an id.
-try:
-    orig = open(sys.argv[1], encoding="utf-8").read().splitlines()
-except OSError:
-    orig = []
-cur = open(sys.argv[2], encoding="utf-8").read().splitlines()
-for i, line in enumerate(orig):
-    st = line.strip()
-    if st.startswith("image:") and st[len("image:"):].strip() == ref:
-        if i < len(cur):
-            cst = cur[i].strip()
-            if cst.startswith("image:"):
-                print(cst[len("image:"):].strip())
+# Which SERVICE held this ref originally? Its NAME tells us which image: line
+# to look at now, even though that line's value has since become an id.
+#
+# By name, never by LINE INDEX. .pre-bundle is written once and never
+# refreshed, so after any edit to compose (a `git pull` that adds a service
+# above this one) the same index is a different service: install rewrote TWO
+# services to one image, printed "every image resolves locally", and exited 0.
+def images_by_service(path):
+    out, svc = {}, None
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line)
+        if m:
+            svc = m.group(1)
+            continue
+        st = line.strip()
+        if svc and st.startswith("image:"):
+            out.setdefault(svc, st[len("image:"):].strip())
+    return out
+orig = images_by_service(sys.argv[1])
+cur = images_by_service(sys.argv[2])
+for svc, image in orig.items():
+    if image == ref and svc in cur:
+        print(cur[svc])
         break
 PYPREV
 )" || _prev_id=""
-        if grep -qE "^[[:space:]]*image:[[:space:]]*($(printf '%s' "$_ref" | sed 's/[][\.*^$(){}?+|/]/\\&/g')|$(printf '%s' "${_prev_id:-__none__}" | sed 's/[][\.*^$(){}?+|/]/\\&/g'))[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
+        if grep -qE "^[[:space:]]*image:[[:space:]]*($(printf '%s' "$_ref" | sed 's/[][\.*^$(){}?+|]/\\&/g')|$(printf '%s' "${_prev_id:-__none__}" | sed 's/[][\.*^$(){}?+|]/\\&/g'))[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
           [[ -f "$REPO_DIR/docker-compose.yml.pre-bundle" ]] \
             || cp "$REPO_DIR/docker-compose.yml" "$REPO_DIR/docker-compose.yml.pre-bundle"
           # Replacement via python, on the `image:` line only: an image ref
           # contains / : @ and sed would need escaping that is easy to get
           # subtly wrong.
-          OB_OLD="$_ref" OB_PREV="${_prev_id:-}" OB_NEW="$_id" \
+          OB_OLD="$_ref" OB_PREV="${_prev_id:-}" OB_NEW="$_use_id" \
             "$PY" - "$REPO_DIR/docker-compose.yml" <<'PYREW'
 import os, sys
 p = sys.argv[1]
@@ -693,9 +854,47 @@ else:
              f"(previously {prev!r}) — compose was NOT updated")
 PYREW
           _rewrote=1
+        elif grep -qE "^[[:space:]]*image:[[:space:]]*$(printf '%s' "$_use_id" | sed 's/[][\.*^$(){}?+|]/\\&/g')[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
+          # Already pointing at exactly this image: a RE-RUN, which is the
+          # recovery path the weights step tells operators to take ("re-run
+          # once there is room"). Dying here called that "image pins differ".
+          ok "compose already uses this image — nothing to rewrite"
+        else
+          # THIS BRANCH DID NOT EXIST, and its absence was silent: the image
+          # loaded, nothing in compose was rewritten, NOTHING WAS PRINTED,
+          # install ended "done", and start.sh (--pull never when offline)
+          # then failed "image not here" with no trail back to this step.
+          rm -f "$_imglist"
+          die "loaded $_ref, but docker-compose.yml has no \`image:\` line for it
+       (nor for an ID a previous bundle install rewrote it to). The bundle was
+       built from a checkout whose image pins differ from this one's, so the
+       stack here would still ask for an image this bundle does not carry.
+         this checkout wants:
+$(_compose_images | sed 's/^/           /')
+       Check out the commit the bundle was built from ($("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]+"/MANIFEST.json")).get("repo_commit","?"))' "$DIR" 2>/dev/null || echo "?")),
+       or rebuild the bundle from this one."
         fi
       done < "$_imglist"
       rm -f "$_imglist"
+      # THE CLAIM THAT MATTERS is not "each tarball loaded" but "everything
+      # compose will ask for is here" — a bundle can legitimately carry a
+      # subset (build skips an image the build box lacks). Checked against
+      # compose as it NOW stands, and carried to the end rather than fatal
+      # here, so a box that still needs its weight gets it on this run.
+      while IFS= read -r _cref; do
+        [[ -n "$_cref" ]] || continue
+        docker image inspect "$_cref" >/dev/null 2>&1 || _img_missing+=("$_cref")
+      done < <(_compose_images)
+      if [[ ${#_img_missing[@]} -gt 0 ]]; then
+        warn "docker-compose.yml references ${#_img_missing[@]} image(s) that are NOT in
+      this box's image store, so ./start.sh cannot bring those services up
+      offline (it does not pull):
+$(printf '          %s\n' "${_img_missing[@]}")
+      The bundle did not carry them — \`./scripts/bundle.sh show\` lists what
+      it was built without. Pull them on the build box and rebuild."
+      else
+        ok "every image docker-compose.yml references resolves locally"
+      fi
       if [[ $_rewrote -eq 1 ]]; then
         warn "docker-compose.yml now references images by CONTENT ID instead of
       registry digest, because save/load cannot carry a registry digest. The
@@ -710,42 +909,113 @@ PYREW
       _need_weights_dir 1
       _wd="$WEIGHTS_DIR"
       mkdir -p "$_wd"
-      for _w in "$DIR"/weights/*; do
-        [[ -f "$_w" ]] || continue
-        _n="$(basename "$_w")"
-        if [[ -f "$_wd/$_n" ]]; then
-          warn "$_n already in $_wd — left alone"
-          continue
+      # FROM THE MANIFEST, not a glob of weights/. The manifest is what was
+      # verified (and signed); `weights/*` is whatever is in the directory. It
+      # also hands us each file's recorded sha256, which the copy is checked
+      # against below.
+      _wlist="$(mktemp)"
+      if ! "$PY" -c '
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[2], "scripts", "lib"))
+import bundle_manifest as B
+root = sys.argv[1]
+doc = json.load(open(os.path.join(root, "MANIFEST.json")))
+for comp in doc.get("components", []):
+    if comp.get("kind") != "weights":
+        continue
+    for rec in comp.get("files", []):
+        rel, sha, size = rec.get("path", ""), rec.get("sha256", ""), rec.get("bytes")
+        try:
+            B.safe_join(root, rel)
+        except B.BundleError as e:
+            sys.exit(f"refusing this bundle: {e}")
+        if len(sha) != 64 or not isinstance(size, int):
+            sys.exit(f"manifest records no usable sha256/size for {rel!r}")
+        print("\t".join([rel, sha, str(size)]))
+' "$DIR" "$REPO_DIR" > "$_wlist"; then
+        rm -f "$_wlist"
+        die "the bundle's weight records are not usable (see above). No weight
+       was copied."
+      fi
+      # A half-written copy must never be left under ANY name on a die or a
+      # Ctrl-C: this trap removes the one in flight.
+      _OB_PARTIAL=""
+      trap '[[ -z "${_OB_PARTIAL:-}" ]] || rm -f -- "$_OB_PARTIAL"' EXIT
+      trap 'exit 130' INT TERM
+      while IFS=$'\t' read -r _rel _msha _mbytes; do
+        [[ -n "$_rel" ]] || continue
+        _w="$DIR/$_rel"
+        _n="$(basename "$_rel")"
+        _dest="$_wd/$_n"
+        if [[ -f "$_dest" ]]; then
+          # "already there — left alone" USED TO BE UNCONDITIONAL, and the copy
+          # went straight to the final name. So an ENOSPC or a Ctrl-C left a
+          # truncated 20 GB x.gguf that every re-run reported as fine, and
+          # llama-server later failed on. Existing is not the same as correct:
+          # size first (free), then sha256 (a minute, once).
+          _have_bytes="$(stat -c%s "$_dest")"
+          if [[ "$_have_bytes" == "$_mbytes" ]]; then
+            echo "  $_n is already in $_wd — checking it (sha256)..."
+            _have_sha="$(sha256sum "$_dest" | awk '{print $1}')"
+          else
+            _have_sha="(not hashed: $_have_bytes bytes, the manifest says $_mbytes)"
+          fi
+          if [[ "$_have_sha" == "$_msha" ]]; then
+            ok "$_n already in $_wd and matches the bundle — left alone"
+            continue
+          fi
+          warn "$_n exists in $_wd but is NOT the file this bundle carries
+      (sha256 $_have_sha).
+      A truncated earlier copy looks exactly like this. REPLACING it — the
+      existing file is only removed once the new copy has verified."
         fi
         echo "  copying $_n ($(du -h "$_w" | cut -f1))..."
-        cp "$_w" "$_wd/$_n"
+        # TO A .partial, VERIFIED, THEN RENAMED. The final name only ever
+        # holds a file that matched its hash.
+        _OB_PARTIAL="$_dest.partial"
+        cp -- "$_w" "$_OB_PARTIAL" \
+          || die "could not copy $_n into $_wd (disk full? $(df -h "$_wd" 2>/dev/null | awk 'NR==2{print $4 " free"}')).
+       Nothing was left behind under the weight's name — re-run once there is room."
+        _got="$(sha256sum "$_OB_PARTIAL" | awk '{print $1}')"
+        [[ "$_got" == "$_msha" ]] || die "$_n changed while being copied into $_wd.
+       manifest $_msha
+       copy     $_got
+       The copy was removed. A failing disk or stick is the usual cause."
         # The manifest hash proved the TRANSFER. The registry hash proves it
         # is the weight OpenBeast pinned, which is a different claim.
         _reg="$(awk -F'\t' -v f="$_n" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
-        if [[ -n "$_reg" ]]; then
-          _got="$(sha256sum "$_wd/$_n" | awk '{print $1}')"
-          if [[ "$_got" == "$_reg" ]]; then
-            ok "$_n (sha256 matches scripts/weights.registry)"
-          else
-            rm -f "$_wd/$_n"
-            die "$_n does not match the registry sha256 — DELETED.
+        if [[ -n "$_reg" && "$_reg" != "PENDING" && "$_got" != "$_reg" ]]; then
+          die "$_n does not match the registry sha256 — NOT installed (the copy
+       was removed; anything already at $_dest was not touched).
        expected $_reg
        got      $_got"
-          fi
-        else
-          warn "$_n is not in scripts/weights.registry — copied, unverifiable
-      against the registry (the bundle's own hash did verify the transfer)"
         fi
-      done
+        mv -f -- "$_OB_PARTIAL" "$_dest" || die "could not move $_n into place in $_wd"
+        _OB_PARTIAL=""
+        if [[ -n "$_reg" && "$_reg" != "PENDING" ]]; then
+          ok "$_n (sha256 matches the manifest AND scripts/weights.registry)"
+        else
+          warn "$_n is not pinned in scripts/weights.registry — copied, unverifiable
+      against the registry (the bundle's own hash did verify the copy)"
+        fi
+      done < "$_wlist"
+      rm -f "$_wlist"
     fi
 
-    step "done"
+    if [[ ${#_img_missing[@]} -gt 0 ]]; then
+      step "installed, BUT ${#_img_missing[@]} image(s) compose needs are missing (listed above)"
+      _final_rc=1
+    else
+      step "done"
+      _final_rc=0
+    fi
     cat <<EOF
   Next, on this box:
     echo 'OFFLINE=true' >> openbeast.conf     # refuse the fetches, don't stall
     ./bootstrap.sh
     ./scripts/doctor.sh                       # reports offline self-sufficiency
 EOF
+    exit "$_final_rc"
     ;;
 
   -h|--help|help)

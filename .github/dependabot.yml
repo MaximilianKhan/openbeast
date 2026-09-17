@@ -1,6 +1,11 @@
 # Automated dependency PRs. Pins in agents/requirements.txt are the supply
 # chain — dependabot proposes bumps, CI (tests + pip-audit) validates them,
 # a human merges. Security updates arrive as soon as advisories publish.
+#
+# Dependabot only edits requirements.txt; the hash-pinned closure generated
+# from it (agents/requirements.lock) is regenerated ON THE PR BRANCH by
+# .github/workflows/dependabot-relock.yml. Without that, every /agents PR
+# fails CI's `pydeps.sh verify` step and stays red.
 version: 2
 updates:
   - package-ecosystem: pip

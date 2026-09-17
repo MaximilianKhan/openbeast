@@ -76,6 +76,7 @@ publish it."* The model calls `publish_artifact` and answers with the link.
 | `/a/<id>/v/<n>` | the shell pinned to version `n` |
 | `/raw/<id>/v/<n>/` | the artifact document itself, sandboxed (this is what the shell frames) |
 | `/raw/<id>/v/<n>/<path>` | a supporting file of that version |
+| `/raw/<id>/v/<n>/~<token>/…` | the same document and files under a **capability path** — what the shell actually frames (see *Why supporting files need a token* below) |
 | `/api/artifacts` | JSON listing; `/api/artifacts/<id>` for one artifact's meta |
 
 - **The id is a full `uuid4`.** No sortable prefix and no slug: the URL
@@ -191,6 +192,18 @@ publishes several, so `setup-tailscale.sh --status` prints the mount table:
 `:443` WebUI, `:8443` inference, `:8444` slot discovery, `:8889` search,
 `:8446` artifacts.
 
+**The URLs follow the mount.** With nothing configured, the store asks
+`tailscale serve status` which name it publishes `:8446` under and hands out
+`https://<that name>:8446/a/<id>` — the name the certificate was issued for,
+which is the tailnet machine name and **not** the OS hostname (they are chosen
+independently). Until you run `--publish-artifact` nothing listens on `:8446`,
+so the URL is the loopback one, `http://localhost:3004/a/<id>` — which **no
+browser can open** (the viewer refuses anonymous callers, and only `tailscale
+serve` or the CLI's locality token supplies an identity), so the tools say so
+next to the link instead of handing over a dead one. The
+answer is cached for a minute, so publishing the port needs no restart. Set
+`ARTIFACT_BASE_URL` in `openbeast.conf` only if you front the viewer yourself.
+
 **Read auth is tailnet identity.** Tailscale's proxy passes
 `Tailscale-User-Login`; the server checks it against `ARTIFACT_OPERATORS` in
 `openbeast.conf` (a comma-separated list of logins) and 404s everything for a
@@ -243,11 +256,11 @@ takes its capabilities away rather than auditing it.
 Content-Security-Policy:
   sandbox allow-scripts allow-forms allow-modals allow-popups;
   default-src 'none';
-  script-src 'unsafe-inline' https://cdnjs.cloudflare.com
+  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com
              https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com
              https://code.jquery.com;
-  style-src 'unsafe-inline' https://fonts.googleapis.com;
-  font-src https://fonts.gstatic.com data:;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src 'self' https://fonts.gstatic.com data:;
   img-src 'self' data: blob:;  media-src 'self' data: blob:;
   connect-src 'none';  frame-src 'none';  object-src 'none';
   form-action 'none';  base-uri 'none';  frame-ancestors 'self'
@@ -259,6 +272,34 @@ Cross-Origin-Resource-Policy: same-origin
 This is the first CSP in the OpenBeast codebase. A regression test pins the
 exact header string and the exact `sandbox` attribute; if you are changing
 either, that test failing is the feature working.
+
+### Why supporting files need a token
+
+Through v1.4.0 a page published with `--file app.js --file style.css --file
+chart.png` rendered **none of them** in a browser (measured in headless
+Chromium; every header test passed throughout, because a header test never
+asks a browser). Two independent causes:
+
+- `script-src` and `style-src` had no `'self'`, so the page's own
+  `<script src="app.js">` and `<link href="style.css">` were CSP violations.
+- The sandboxed document has an **opaque origin**, which makes it cross-origin
+  to everything — this server included. Its `<img src="chart.png">` is
+  therefore a cross-site no-cors load, and `Cross-Origin-Resource-Policy:
+  same-origin` refuses exactly that.
+
+Dropping CORP on supporting files would let any page open in your browser
+embed them (the tailnet identity is attached by the network, not by a cookie,
+so it rides along on cross-site requests). Instead the shell frames the
+artifact under `/raw/<id>/v/<n>/~<token>/`, where `<token>` is an HMAC over
+the id and version keyed by `.run/artifact-raw.key` (0600, persisted so open
+tabs survive a restart). Relative URLs in the page inherit the token; files
+under that path are served `Cross-Origin-Resource-Policy: cross-origin` with
+`Access-Control-Allow-Origin: *` (module scripts and fonts are CORS-mode
+fetches, and the sandbox's `Origin` is the literal `null`). A hostile page
+cannot learn the token — it cannot read the shell that carries it — and the
+untokenized file route keeps `same-origin`. **The token is not an identity:**
+every read gate above still applies to the capability path, and a wrong token
+is the same flat 404 as everything else.
 
 ### What a page can and cannot do
 
@@ -394,6 +435,8 @@ the first.
 | A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read |
 | The page renders blank | Almost always `localStorage` or `fetch` in the page's startup path. Both throw here. Open the browser console — the error is in the frame's context, not the shell's |
 | A chart library never loads | It is not on the allowlist, or the URL is not an exact pinned version on `cdnjs`. Non-allowlisted hosts fail **silently**, with no visible error |
+| The link the model gave you does not open | Through v1.4.0 the URL was built from the OS hostname, which is neither the tailnet name nor a name the certificate covers. It now follows `tailscale serve` (see *Publishing on the tailnet*). A `http://localhost:3004/…` link means the port is not published: run `./scripts/setup-tailscale.sh --publish-artifact` (a browser cannot present an identity to the loopback viewer, so that link is a 404 even on the rig) |
+| `--file` assets (script, stylesheet, image) do not load | Open the page through the shell (`/a/<id>`), whose frame uses the capability path. A hand-typed `/raw/<id>/v/<n>/` still serves the page, but its supporting files stay `same-origin` and a sandboxed document cannot load those (see *Why supporting files need a token*) |
 | An external image is missing | `img-src` admits `'self'` and `data:` only. Embed it as a `data:` URI |
 | A download button does nothing | `allow-downloads` is deliberately absent. The sandbox is working |
 | The theme toggle reloads the artifact | Expected. The page lives in an opaque origin, so the shell cannot script into it; re-serving with `?theme=` is the only channel, and it only happens on an explicit toggle |

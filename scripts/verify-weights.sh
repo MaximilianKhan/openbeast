@@ -95,7 +95,7 @@ done < "$REGISTRY"
 while IFS= read -r f; do
   base="$(basename "$f")"
   grep -qP "\t\Q$base\E\t" "$REGISTRY" || echo "info: $base present but not in the registry (user-supplied model? fine)"
-done < <(find "$WEIGHTS_DIR" -maxdepth 1 -name '*.gguf' 2>/dev/null)
+done < <(find "$WEIGHTS_DIR" -maxdepth 1 -type f -name '*.gguf' 2>/dev/null)   # -type f: fetch-weight's .fetch.<name>.gguf staging DIR is not a weight
 
 echo ""
 echo "Verified $checked file(s), $absent registered model(s) not downloaded, ${pending} awaiting a pin, $fails failure(s)."

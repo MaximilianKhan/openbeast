@@ -629,6 +629,105 @@ _CHILDREN: dict[str, subprocess.Popen] = {}
 _CHILDREN_LOCK = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Spawned sessions must not live inside the STACK's systemd unit
+# ---------------------------------------------------------------------------
+# `./start.sh -d` (what docs/BEAST_CHAT.md tells operators to run) puts the
+# supervisor, this server and therefore every session spawned below into ONE
+# transient unit. start_new_session=True leaves the process group; it does not
+# leave the cgroup. Measured: `systemctl --user stop <unit>` killed a setsid
+# child and spared one started through `systemd-run --scope`. Two consequences,
+# both contrary to what this feature promises:
+#   * a job started from the phone dies on ANY ./stop.sh — including the
+#     `./stop.sh && ./start.sh` that update.sh asks for — and a job that
+#     itself restarts the stack kills itself halfway through;
+#   * the job shares llama-server's MemoryMax, so an OOM kill inside the unit
+#     can take the MODEL down: an optional console costing the core stack.
+# `systemd-run --user --scope` execs the command in place (the pid Popen
+# returns IS the command, so the ledger, the reaper and signal_session are
+# unchanged) inside a scope of its own. Probed once, and skipped entirely
+# when we are not in a service cgroup or systemd-run cannot reach the user
+# manager — a session that starts un-scoped beats one that does not start.
+
+_SCOPE_PREFIX: list[str] | None = None
+_SCOPE_LOCK = threading.Lock()
+
+
+def _in_service_cgroup() -> bool:
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
+            leaf = fh.read().strip().splitlines()[-1].rsplit("/", 1)[-1]
+    except (OSError, IndexError):
+        return False
+    return leaf.endswith(".service")
+
+
+def _job_mem_max_bytes() -> int:
+    """The memory bound each spawned session carries in its own scope.
+
+    Leaving the stack's unit also leaves the stack's MemoryMax, and an
+    UNBOUNDED phone-started job is the 2026-07-07 OOM incident again — the one
+    start.sh's cap exists to prevent ("a runaway process can only take down
+    the stack, never the box"). So every scope gets a cap of its own:
+    OPENBEAST_CHAT_JOB_MEM_PCT percent of RAM (default 50; 0 disables).
+    """
+    try:
+        pct = int(os.environ.get("OPENBEAST_CHAT_JOB_MEM_PCT") or 50)
+    except ValueError:
+        pct = 50
+    if pct <= 0:
+        return 0
+    total_kb = 0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    total_kb = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        total_kb = 0
+    return total_kb * 1024 // 100 * min(pct, 100) if total_kb > 0 else 0
+
+
+def _probe_scope() -> list[str]:
+    import shutil
+    exe = shutil.which("systemd-run")
+    if not exe or not _in_service_cgroup():
+        return []
+    prefix = [exe, "--user", "--scope", "--quiet", "--collect"]
+    cap = _job_mem_max_bytes()
+    if cap:
+        # No swap escape hatch either: a job thrashing swap takes the box's
+        # responsiveness with it just as surely as one that fills RAM.
+        prefix += ["-p", f"MemoryMax={cap}", "-p", "MemorySwapMax=0"]
+    prefix.append("--")
+    # The probe carries the SAME properties the real spawn will, so a systemd
+    # too old for one of them falls back to a plain spawn instead of failing
+    # every job.
+    try:
+        ok = subprocess.run(prefix + ["true"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if not ok:
+        # Once, and out loud: a user bus that is slow at boot silently
+        # disabled this for the life of the process.
+        print("[beast-chat] systemd-run --scope is unavailable — sessions "
+              "started from the console will live inside this unit (they die "
+              "with ./stop.sh and share its memory cap)", file=sys.stderr)
+    return prefix if ok else []
+
+
+def scope_prefix() -> list[str]:
+    """argv prefix that detaches a spawned session from our unit, or []."""
+    global _SCOPE_PREFIX
+    with _SCOPE_LOCK:
+        if _SCOPE_PREFIX is None:
+            _SCOPE_PREFIX = _probe_scope()
+        return list(_SCOPE_PREFIX)
+
+
 def terminal_state_for(returncode: int) -> str:
     """Exit status -> ledger state. 0 done, >0 failed, <0 (signalled) stopped."""
     rc = _int_or_zero(returncode)
@@ -765,23 +864,14 @@ def record_terminal_state(session_id: str, state: str,
     session wrote for ITSELF is left exactly as it is.
     """
     try:
-        if sessions.finalize(session_id, state, summary=summary):
+        if sessions.finalize(session_id, state, summary=summary,
+                             override_lost=True):
             return True
     except Exception:
         return False
     rec = read_record_raw(session_id)
-    if rec is None:
-        return False
-    if rec.get("state") == state:
-        return True                      # it landed (older finalize -> None)
-    if rec.get("state") != "lost":
-        return False                     # a real verdict; leave it alone
-    with contextlib.suppress(Exception):
-        sessions.touch(session_id, state=state,
-                       summary=summary if summary is not None
-                       else rec.get("summary"),
-                       ended_at=_now_iso())
-    return True
+    # False from finalize is also "it already says exactly this".
+    return bool(rec) and rec.get("state") == state
 
 
 def _still_running(session_id: str) -> bool:
@@ -796,7 +886,8 @@ def _still_running(session_id: str) -> bool:
 
 
 def start_escalation(session_id: str, term_after: float, kill_after: float,
-                     poll: float = 0.5) -> threading.Thread:
+                     poll: float = 0.5, *,
+                     already_signalled: bool = False) -> threading.Thread:
     """Watch a stopping session and escalate if it does not go quietly.
 
     An agent's cooperative stop lands at the next turn, which can be a minute
@@ -816,7 +907,13 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
     done = threading.Event()
 
     def run():
-        sent_term = False
+        # The /stop handler SIGTERMs a JOB itself before starting this thread.
+        # Seeded False, a job that died on that signal looked like "gone, and
+        # not by us": nothing finalized it and the reconciler filed an
+        # operator stop as `lost`. (It only showed once a job could outlive
+        # the server that held its reaper — which is now the normal case.)
+        sent_term = bool(already_signalled)
+        term_at = term_after              # local: the retry below moves it
         sent_kill = False
         kill_deadline = None
 
@@ -848,9 +945,12 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
                 sent_kill = True
                 kill_deadline = now + max(poll * 4, 0.5)
                 continue
-            if elapsed >= term_after and not sent_term:
-                signal_session(rec, signal.SIGTERM)
-                sent_term = True
+            if elapsed >= term_at and not sent_term:
+                # The RETURN VALUE, not True: a session that died on its own
+                # in this window was not stopped by us and must not say so.
+                sent_term = bool(signal_session(rec, signal.SIGTERM))
+                if not sent_term:
+                    term_at = elapsed + max(poll, 1.0)      # try again shortly
 
     t = threading.Thread(target=run, name=f"chat-stop-{session_id}",
                          daemon=True)
@@ -1533,7 +1633,8 @@ def create_app() -> FastAPI:
                 sent = signal_session(rec, signal.SIGTERM)
                 start_escalation(session_id, 0.0,
                                  max(1.0, kill_after - term_after),
-                                 poll=min(1.0, max(0.05, poll)))
+                                 poll=min(1.0, max(0.05, poll)),
+                                 already_signalled=bool(sent))
                 ctx["extra"] = {"op": "signal", "signal": "SIGTERM",
                                 "delivered": sent}
                 with metrics_lock:
@@ -1638,6 +1739,14 @@ def create_app() -> FastAPI:
                     # descendant that calls setsid (evals/run_eval.py does,
                     # deliberately, so a task timeout can kill one agent group)
                     # is outside this group and must reap itself on SIGTERM.
+                    # Out of the stack's unit (see scope_prefix). `display`,
+                    # the audit row and the ledger keep the command as asked.
+                    # to_thread: the FIRST call probes systemd-run (up to
+                    # 10 s on a box with a broken user bus), and this handler
+                    # runs ON the event loop — blocking here stalls every SSE
+                    # stream and /api/chat/health, which the watchdog reads
+                    # as "down". main() also warms it at start.
+                    cmd = await asyncio.to_thread(scope_prefix) + cmd
                     if kind == "agent":
                         proc = subprocess.Popen(
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
@@ -1869,13 +1978,70 @@ def _tail_line(path: str, window: int = 8192) -> str:
     return ""
 
 
+# How long uvicorn waits for open connections on SIGTERM before cancelling
+# them. Without a bound the wait is FOREVER, and an SSE stream is a connection
+# that never finishes on its own: measured, a server with one phone attached
+# ignored stop.sh's SIGTERM indefinitely (it had already closed its listener,
+# so the next start bound the port and the old process lingered, still
+# streaming to that phone from a stack that was "stopped"). Cancelling the
+# stream ends the response; the console's EventSource reconnects by itself and
+# resumes from its last offset against whatever is serving then.
+GRACEFUL_SHUTDOWN_S = 5
+
+
+def _prune_ledger_soon(days: int = 30) -> None:
+    """sessions.prune() existed and nothing ever called it, so the ledger grew
+    by one record per agent or job forever — and every console list request
+    reads and reconciles every record. Once per start, off the startup path,
+    and never allowed to matter if it fails."""
+    def run():
+        with contextlib.suppress(Exception):
+            # keep_logs: a scripts/job.sh job's <id>.log is its ONLY output.
+            # An automatic sweep may forget the index entry; it may not
+            # destroy the work.
+            sessions.prune(days, keep_logs=True)
+    threading.Thread(target=run, name="chat-prune", daemon=True).start()
+
+
 def main() -> None:
+    """Bind the port FIRST, then build the app (which mints the token).
+
+    create_app() rewrites .run/chat-local.token. Built before the bind, a
+    second start that was about to fail on a busy port had already replaced
+    the LIVE server's token with one nobody honours — the same defect
+    agents/artifact_server.py fixed as D18, left open here.
+    """
+    import socket
     import uvicorn
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    # IPv4 FIRST. For a NAME, [0] is whatever the resolver lists first —
+    # `localhost` gives ::1 on most boxes — and every health probe in this
+    # repo speaks to 127.0.0.1, so a v6-only listener is a restart loop.
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)
+    family, stype, proto, _, addr = infos[0]
+    sock = socket.socket(family, stype, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(addr)
+        sock.listen(128)
+    except OSError as e:
+        sock.close()
+        print(f"ERROR: cannot bind {host}:{port} ({e}) — another beast-chat "
+              f"is probably already running. Its locality token has been "
+              f"left alone.", file=sys.stderr)
+        raise SystemExit(1)
+    app = create_app()
+    _prune_ledger_soon()
+    # Warm the systemd-scope probe off the request path (see scope_prefix).
+    threading.Thread(target=scope_prefix, name="chat-scope-probe",
+                     daemon=True).start()
     print(f"OpenBeast beast-chat on {host}:{port} "
           f"(sessions: {sessions.SESSIONS_DIR})")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning",
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    uvicorn.Server(config).run(sockets=[sock])
 
 
 if __name__ == "__main__":

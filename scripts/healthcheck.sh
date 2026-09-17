@@ -19,10 +19,10 @@ set -euo pipefail
 # `.` makes it match OTHER paths (the sibling-worktree reap this file's own
 # comments call impossible). Measured both. Quote the path before using it as
 # a pattern — all four call sites, not just the new one.
-_ob_ere() { printf '%s' "$1" | sed -E 's/[][(){}.^$*+?|\]/\\&/g'; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
+source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 
 LLAMA_URL="${LLAMA_URL:-http://localhost:8080}"
 MCPO_URL="${MCPO_URL:-http://localhost:3001}"
@@ -34,6 +34,12 @@ SEARXNG_URL="${SEARXNG_URL:-http://localhost:8888}"
 case "$BIND_HOST" in
   127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
   *)                   HEALTH_HOST="$BIND_HOST" ;;
+esac
+
+# beast-chat binds OPENBEAST_CHAT_BIND (loopback by default), NOT BIND_HOST.
+case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
+  ''|0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
+  *)                   CHAT_HEALTH_HOST="$OPENBEAST_CHAT_BIND" ;;
 esac
 
 RESTART=false
@@ -67,15 +73,81 @@ echo ""
 # key to a keyless server is harmless.
 LLAMA_AUTH=()
 [[ -n "${LLAMA_API_KEY:-}" ]] && LLAMA_AUTH=(-H "Authorization: Bearer $LLAMA_API_KEY")
-if ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
-  if $RESTART; then
+LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
+
+# Is llama-server still LOADING? Then it is not down, and killing it is the
+# outage. /health answers 503 {"error":{"message":"Loading model"...}} for the
+# whole load — minutes for a big model — and this script used to read that as
+# DOWN and, under --restart, kill the server. openbeast-watchdog.timer fires
+# every 5 minutes, so any ./stop.sh && ./start.sh had roughly a
+# load-time-in-300 chance of being shot mid-load: launch_and_wait then fails
+# and start.sh tears the WHOLE stack down. The few seconds before the port is
+# bound are covered by the recorded pid's age instead of the body.
+_LLAMA_ARGV0='(^|/)llama-server( |$)'   # argv[0], not "mentions llama-server"
+_llama_loading() {
+  local body pid age=""
+  pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
+  ob_pid_matches "$pid" "$_LLAMA_ARGV0" && age="$(ob_pid_age "$pid")"
+  body="$(curl -s --max-time 5 "${LLAMA_AUTH[@]}" "$LLAMA_URL/health" 2>/dev/null || true)"
+  if [[ "$body" == *"Loading model"* ]]; then
+    # BOUNDED. A server wedged mid-load (a CUDA hang, a stalled weight read)
+    # says "Loading model" forever, and nothing else in the stack bounds a
+    # load either — so past the grace a recorded server that is STILL loading
+    # is down. With no recorded pid there is no age to judge by: leave it.
+    [[ -z "$age" || "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+    return
+  fi
+  # Answering at all (healthy OR some other error) is not "loading": only a
+  # server that has not bound its port yet gets the benefit of its age.
+  [[ -n "$body" ]] && return 1
+  [[ -n "$age" && "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+}
+
+# Kill THIS stack's llama-server and nothing else: the recorded pid when it
+# still is one, else the path-anchored pattern. Never the bare name — that
+# reaps a campaign's server and any sibling worktree's (it destroyed a live
+# measurement run on this box on 2026-09-14).
+_kill_own_llama() {
+  local pid
+  pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
+  # The recorded pid is identified by NAME, not path: it is ours by virtue of
+  # being recorded, and a serve script may exec a build outside the default
+  # path. The pattern fallback has no such provenance, so it stays anchored.
+  if ob_pid_matches "$pid" "$_LLAMA_ARGV0"; then
+    kill "$pid" 2>/dev/null || true
+  elif pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
+    pkill -f "$LLAMA_BIN_ERE" 2>/dev/null || true
+  fi
+}
+
+# A live GPU lease means a campaign owns the card ON PURPOSE (the stack was
+# stopped for it). Relaunching the stack's model into that is the watchdog
+# contaminating — or OOMing — a measurement.
+_gpu_leased() {
+  local out
+  [[ -x "$SCRIPT_DIR/gpu-lease.sh" ]] || return 1
+  # Captured, not piped into `grep -q`: grep exits at the first match, the
+  # writer takes SIGPIPE on its second line, and under pipefail a HELD lease
+  # then reads as "not held" — the one answer this must never get wrong.
+  out="$("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null || true)"
+  [[ "$out" == HELD* ]]
+}
+
+if _llama_loading; then
+  echo "  LOAD llama.cpp server (model still loading — left alone)"
+  LOADING=1
+elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
+  if $RESTART && _gpu_leased; then
+    echo "       → the GPU lease is held ($("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null | head -n1 || true))"
+    echo "         not restarting llama.cpp into someone else's measurement."
+  elif $RESTART; then
     # If a start.sh supervisor is alive, it owns llama-server: kill the
     # server and let the supervisor's self-healing loop relaunch it —
     # starting our own copy here would race it for the port and the VRAM.
     SUP_PID_FILE="$REPO_DIR/.run/supervisor.pid"
-    if [[ -f "$SUP_PID_FILE" ]] && kill -0 "$(cat "$SUP_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    if ob_pid_matches "$(cat "$SUP_PID_FILE" 2>/dev/null || true)" 'start\.sh'; then
       echo "       → supervisor alive: killing llama-server, letting it relaunch..."
-      pkill -f "llama-server" 2>/dev/null || true
+      _kill_own_llama
       for i in $(seq 1 180); do
         if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
           echo "       → healthy after ${i}s (supervisor relaunched it)"
@@ -85,12 +157,10 @@ if ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; the
       done
     else
       echo "       → no supervisor: restarting llama.cpp directly..."
-      # pkill handles multiple stale PIDs; || true because "nothing to kill"
-      # (or a race with a process exiting) must not abort the healthcheck.
-      # Path-anchored: never kill an unrelated llama-server from another
-      # project on the same box.
-      if pgrep -f "$REPO_DIR/llama.cpp/build/bin/llama-server" >/dev/null 2>&1; then
-        pkill -f "$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null || true
+      # Path-anchored and ERE-quoted: never an unrelated llama-server from
+      # another project on the same box.
+      if pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
+        _kill_own_llama
         sleep 2
       fi
       # Relaunch the serve script the stack was STARTED with (.run/serve-script,
@@ -126,7 +196,7 @@ fi
 if ! check "Tool server" "$MCPO_URL/health" "ok"; then
   if $RESTART; then
     echo "       → restarting tool server..."
-    pkill -f "agents/openapi_tools.py" 2>/dev/null || true
+    pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
     pkill -f "mcpo --port" 2>/dev/null || true   # legacy instances
     sleep 1
     # Mirror start.sh: the chat model's file workspace must exist and be
@@ -204,7 +274,7 @@ fi
 # which is the whole point of the offset cursor).
 if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   if ! check "beast-chat console" \
-       "http://${HEALTH_HOST:-127.0.0.1}:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
+       "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
     if $RESTART; then
       echo "       → restarting beast-chat console..."
       # Kill by RECORDED PID first, exactly as the artifact path does: a
@@ -212,7 +282,10 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       # (2026-09-14). The path-qualified pkill stays as the fallback for a
       # console started outside start.sh, which records no pid.
       _chat_pid="$(cat "$REPO_DIR/.run/chat.pid" 2>/dev/null || true)"
-      if [[ -n "$_chat_pid" ]] && kill -0 "$_chat_pid" 2>/dev/null; then
+      # IDENTITY-checked: .run/ survives a reboot, and a recycled pid is a
+      # stranger (lib/proc.sh). A number that is no longer ours falls
+      # through to the path-anchored reap.
+      if ob_pid_matches "$_chat_pid" "$(_ob_ere "$REPO_DIR/agents/chat_server.py")"; then
         kill "$_chat_pid" 2>/dev/null || true
       else
         pkill -f "$(_ob_ere "$REPO_DIR/agents/chat_server.py")" 2>/dev/null || true
@@ -226,7 +299,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_NEW_PID" > "$REPO_DIR/.run/chat.pid"
       CHAT_OK=0
       for _i in $(seq 1 15); do
-        if curl -s --max-time 2 "http://${HEALTH_HOST:-127.0.0.1}:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
+        if curl -s --max-time 2 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
           CHAT_OK=1
           break
         fi
@@ -257,7 +330,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       # (2026-09-14). start.sh wrote the pid; if it is gone or stale we just
       # start a new one and let the old (dead) record be overwritten.
       _art_pid="$(cat "$REPO_DIR/.run/artifact.pid" 2>/dev/null || true)"
-      if [[ -n "$_art_pid" ]] && kill -0 "$_art_pid" 2>/dev/null; then
+      if ob_pid_matches "$_art_pid" "$(_ob_ere "$REPO_DIR/agents/artifact_server.py")"; then
         kill "$_art_pid" 2>/dev/null || true
         sleep 1
       else
@@ -393,7 +466,9 @@ echo "  Slots: $ACTIVE_SLOTS active"
 # Summary
 echo ""
 TOTAL=$((HEALTHY + UNHEALTHY))
-if [[ $UNHEALTHY -eq 0 ]]; then
+if [[ $UNHEALTHY -eq 0 && ${LOADING:-0} -eq 1 ]]; then
+  echo "$TOTAL services healthy; llama.cpp is still LOADING its model (not counted)."
+elif [[ $UNHEALTHY -eq 0 ]]; then
   echo "All $TOTAL services healthy."
 else
   echo "$UNHEALTHY of $TOTAL services unhealthy."

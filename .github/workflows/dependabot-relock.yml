@@ -1,0 +1,138 @@
+name: Dependabot relock
+
+# Dependabot bumps agents/requirements.txt and knows nothing about
+# agents/requirements.lock, the hash-pinned closure generated FROM it. So every
+# /agents Dependabot PR failed CI's `./scripts/pydeps.sh verify` step
+# ("requirements.txt pins 2.14.0, the lock pins 2.13.0 — the lock is stale")
+# and would have stayed red forever (#85, #86). This regenerates the lock on
+# the PR branch so the bump arrives as one reviewable, installable change.
+#
+# THREE THINGS HERE ARE NOT OBVIOUS, and each is load-bearing:
+#
+#  1. A push made with GITHUB_TOKEN does not RUN workflows (GitHub's guard
+#     against recursion) — at best it queues pull_request runs that wait for
+#     a human to click "Approve workflows to run". Left at that, the PR's new
+#     head commit would carry no completed checks and could never satisfy
+#     branch protection. (If someone does click Approve you get a duplicate
+#     run; it cannot loop, because the actor on that event is
+#     github-actions[bot] and the job below is Dependabot-only.)
+#     workflow_dispatch is the documented exception to that rule, so after
+#     pushing this DISPATCHES ci.yml and pr-quality.yml on the branch — which
+#     is the only reason those two workflows declare `workflow_dispatch:`.
+#     No PAT and no extra secret: a Dependabot run cannot read normal secrets.
+#
+#  2. `[dependabot skip]` in the commit message. Without it Dependabot treats
+#     the branch as edited by someone else and stops rebasing it. With it,
+#     Dependabot force-pushes over this commit when it rebases — which fires
+#     this workflow again (actor: dependabot[bot]) and the lock is rebuilt.
+#
+#  3. The lock is resolved on CI's python (3.12), then PROVEN on 3.14, the
+#     reference box's python, before anything is pushed. `pydeps.sh lock`
+#     records every file of each release, so the hashes are python-agnostic —
+#     but the SET of packages is whatever the resolving python needs, and a
+#     closure that is short one package on 3.14 would make bootstrap's
+#     hash-pinned install fail there. A lock that only installs where it was
+#     made is not pushed.
+#
+# WHAT IT NEEDS FROM THE NETWORK: the index (pip's resolver) and pypi.org's
+# JSON API. Both are reachable from a hosted runner. It is NOT byte-for-byte
+# deterministic across time — it re-resolves the whole closure, so an
+# unrelated transitive dependency can move in the same commit. That is visible
+# in the diff, and it is what a lock regeneration is.
+
+on:
+  pull_request:
+    paths:
+      - agents/requirements.txt
+
+# Least privilege by default; the one job that pushes raises it for itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: relock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  relock:
+    # ONLY Dependabot's own pushes. A human's PR that touches
+    # requirements.txt regenerates the lock locally (scripts/update.sh
+    # --python does it), and this guard is also what stops a fork's PR from
+    # ever reaching a job with a write token.
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # push the regenerated lock to the PR branch
+      actions: write    # dispatch CI on the new commit (see 1. above)
+    env:
+      # Never interpolated into a script: a branch name is attacker-shaped text.
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The BRANCH, not the merge ref a pull_request run checks out by
+          # default — a commit made on refs/pull/N/merge cannot be pushed.
+          ref: ${{ github.event.pull_request.head.ref }}
+          # The write token is NOT left in .git/config: `pydeps.sh lock`
+          # resolves with pip, and resolving a bumped SDIST runs that
+          # package's build backend — arbitrary code, in a job whose token can
+          # push. The push step below authenticates for itself, and only then.
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: |
+            3.14
+            3.12
+
+      - name: Is the lock already current?
+        id: state
+        run: |
+          if OPENBEAST_PYTHON=python3.12 ./scripts/pydeps.sh verify; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Regenerate agents/requirements.lock
+        if: steps.state.outputs.stale == 'true'
+        run: |
+          python3.12 -m pip install -q -U pip
+          OPENBEAST_PYTHON=python3.12 ./scripts/pydeps.sh lock
+
+      - name: The new lock installs on the reference python too (3.14)
+        if: steps.state.outputs.stale == 'true'
+        run: |
+          python3.14 -m pip install -q -U pip
+          python3.14 -m pip install -q --dry-run --ignore-installed \
+            --require-hashes -r agents/requirements.lock
+
+      - name: Commit and push the lock
+        id: push
+        if: steps.state.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- agents/requirements.lock; then
+            echo "the lock did not change — nothing to push"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add agents/requirements.lock
+          git commit -q \
+            -m "deps: regenerate agents/requirements.lock for the bumped pin" \
+            -m "[dependabot skip]"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push origin "HEAD:refs/heads/${HEAD_REF}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run CI on the pushed commit
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml         --ref "$HEAD_REF"
+          gh workflow run pr-quality.yml --ref "$HEAD_REF"

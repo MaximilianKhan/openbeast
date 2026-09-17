@@ -50,6 +50,7 @@ _REPO = os.path.dirname(_AGENTS)
 if _AGENTS not in sys.path:
     sys.path.insert(0, _AGENTS)
 
+from lang import _proc               # noqa: E402
 from lang import drivers as D        # noqa: E402
 from lang import verify as V         # noqa: E402
 
@@ -57,7 +58,8 @@ CLAIMS_DIR = os.path.join(_HERE, "claims")
 HANDWRITTEN_DIR = os.path.join(_AGENTS, "packs")
 #: 4 chars/token is the estimate the zig pack already budgets against.
 CHARS_PER_TOKEN = 4
-DEFAULT_BUDGET_TOKENS = int(os.environ.get("OPENBEAST_LANG_PACK_BUDGET", "2000"))
+# Parsed with a fallback — a mistyped value used to be a ValueError at import.
+DEFAULT_BUDGET_TOKENS = _proc.env_number("OPENBEAST_LANG_PACK_BUDGET", 2000, int, 1)
 
 
 # --------------------------------------------------------------------------
@@ -122,7 +124,13 @@ def allow_list() -> tuple[str, list[str]]:
 
 
 def _claim_langs() -> set[str]:
-    return {c.lang for c in V.load_claims(CLAIMS_DIR)}
+    # load_claims degrades PER FILE and per claim, so one corrupt claim set
+    # (or the zig set's fixtures going missing with tests/) cannot take the
+    # other languages off the allow list. The belt is for whatever it missed.
+    try:
+        return {c.lang for c in V.load_claims(CLAIMS_DIR) if c.lang}
+    except Exception:                                 # noqa: BLE001
+        return set()
 
 
 def _eligible_langs() -> set[str]:
@@ -193,11 +201,31 @@ def _handwritten(lang: str, version: str | None) -> tuple[str, str] | None:
         if not name.endswith(".md") or not name.startswith(f"{lang}-"):
             continue
         stamped = name[len(lang) + 1:-3]
-        # A pack for 0.16 serves 0.16.0; a pack for 0.15 does NOT serve 0.16.
-        if short.startswith(stamped):
+        if _stamp_serves(stamped, short):
             path = os.path.join(HANDWRITTEN_DIR, name)
-            return path, open(path).read()
+            try:
+                with open(path) as fh:
+                    return path, fh.read()
+            except OSError:
+                continue                   # unreadable is absent, not a crash
     return None
+
+
+def _stamp_serves(stamped: str, short: str) -> bool:
+    """A pack for 0.16 serves 0.16.0; a pack for 0.15 does NOT serve 0.16.
+
+    Two things the bare `short.startswith(stamped)` got wrong:
+      * it made a RELEASE-stamped pack serve a DEV build — 0.16 matched
+        0.16.0-dev.412 — while every other drift check in this module treats
+        the prerelease part as significant, because a dev build is exactly
+        where std moves. A dev build is served only by a pack stamped for it.
+      * it compared characters, not components: a pack for 0.1 served 0.16.
+    """
+    def pre(v: str) -> bool:
+        return "-" in v or "+" in v
+    if not stamped or pre(short) != pre(stamped):
+        return False
+    return short == stamped or short.startswith(stamped + ".")
 
 
 def _short_version(version: str) -> str:
@@ -241,7 +269,15 @@ def pack_for(lang: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) -> Pack | No
 
 def active_packs(budget_tokens: int = DEFAULT_BUDGET_TOKENS) -> list[Pack]:
     _, allowed = allow_list()
-    return [p for p in (pack_for(lang, budget_tokens) for lang in allowed) if p]
+    out = []
+    for lang in allowed:
+        try:                       # one language failing is ONE pack missing
+            p = pack_for(lang, budget_tokens)
+        except Exception:                             # noqa: BLE001
+            p = None
+        if p:
+            out.append(p)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -384,16 +420,35 @@ def render(lang: str, version: str, budget_tokens: int = DEFAULT_BUDGET_TOKENS) 
 # delivery: which packs a given task should receive
 # --------------------------------------------------------------------------
 
-#: Substrings that identify a task's language. Deliberately dumb and explicit:
+#: Patterns that identify a task's language. Deliberately dumb and explicit:
 #: a clever classifier that guesses wrong injects the wrong language's notes.
+#:
+#: They were plain SUBSTRINGS, and that was too dumb in one specific way:
+#: "Fix the basic: handler, then let us go to the next task" resolved to
+#: ['c', 'go'] — "c:" sits inside "basic:" and "public:", "rust:" inside
+#: "trust:", and " go " is an English verb. So names are matched as whole
+#: words, and bare "go" is not a language at all without a stronger signal
+#: next to it (.go, golang, go.mod, a go subcommand, "in go", "go code", …).
+#: All matched against the lower-cased text.
+_NOT_NAME = r"(?<![\w.+#/\\-])"           # not glued to a longer token
 LANG_HINTS = {
-    "zig": (".zig", " zig ", "zig:"),
-    "cpp": (".cpp", ".hpp", ".cc", "c++", "cpp:"),
-    "c": (".c ", ".h ", " c ", "c:"),
-    "rust": (".rs", " rust ", "rust:", "cargo"),
-    "go": (".go", " go ", "go:", "golang"),
-    "python": (".py", " python ", "python:"),
+    "zig": (r"\.zig\b", r"\bzig\b"),
+    "cpp": (r"\.(?:cpp|hpp|cc|cxx|hh)\b", r"c\+\+", r"\bcpp\b"),
+    # a lone "c" — not c++, c#, objective-c, a.c.b, or the C:\ drive
+    "c": (r"\.[ch]\b(?!\.\w)", _NOT_NAME + r"c(?![\w+#/-]|:\\|\.\w)"),
+    "rust": (r"\.rs\b", r"\brust\b", r"\bcargo\b", r"\brustc\b"),
+    "go": (r"\.go\b", r"\bgolang\b", r"\bgo\.(?:mod|sum|work)\b",
+           r"\bgo (?:build|run|test|vet|fmt|mod|get|install|generate)\b",
+           r"\bin go\b", r"\bgoroutines?\b",
+           r"\bgo (?:code|program|module|package|function|toolchain|compiler)\b"),
+    "python": (r"\.py\b", r"\bpython[23]?\b"),
 }
+_LANG_RES = {lang: [re.compile(p) for p in pats]
+             for lang, pats in LANG_HINTS.items()}
+#: The one CASE-SENSITIVE signal: a capitalised "Go" in the middle of a
+#: sentence ("write a Go HTTP server") is the proper noun. The verb is only
+#: capitalised at the start of one, which the lookbehind excludes.
+_GO_PROPER_NOUN = re.compile(r"(?<=[a-z,;:] )Go\b")
 
 
 def languages_in(text: str) -> list[str]:
@@ -404,11 +459,10 @@ def languages_in(text: str) -> list[str]:
     escalation path — inject the pack when the compiler reports an error in
     that language — not a guess made before the model writes anything.
     """
-    low = f" {text.lower()} "
-    hits = []
-    for lang, needles in LANG_HINTS.items():
-        if any(nd in low for nd in needles):
-            hits.append(lang)
+    low = (text or "").lower()
+    hits = [lang for lang, pats in _LANG_RES.items()
+            if any(p.search(low) for p in pats)
+            or (lang == "go" and _GO_PROPER_NOUN.search(text or ""))]
     # 'c' matches inside plenty of prose; only trust it if cpp did not hit.
     if "c" in hits and "cpp" in hits:
         hits.remove("c")

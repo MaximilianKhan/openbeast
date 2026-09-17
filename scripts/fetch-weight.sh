@@ -114,38 +114,75 @@ cmd_fetch() {
     exit 3
   fi
 
-  say "downloading…"
-  if ! "$hf" download "$repo" "$remote" --local-dir "$WEIGHTS_DIR"; then
-    die "download failed for $repo/$remote"
-  fi
-  # The remote name may differ from the local one the serve scripts expect.
-  if [[ "$remote" != "$name" && -f "$WEIGHTS_DIR/$remote" && ! -f "$dest" ]]; then
-    mv "$WEIGHTS_DIR/$remote" "$dest" || die "could not rename $remote -> $name"
-  fi
-  [[ -f "$dest" ]] || die "download reported success but $dest is not there"
+  # --- download into a PRIVATE staging dir, never into WEIGHTS_DIR itself ----
+  # THIS DESTROYED WEIGHTS. The download used to go `--local-dir "$WEIGHTS_DIR"`
+  # under the REMOTE name and get renamed afterwards. But one row's remote name
+  # can be ANOTHER row's local name, and in this registry it is:
+  #   Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf   remote: Qwen3.6-27B-UD-Q5_K_XL.gguf
+  #   Qwen3.6-27B-UD-Q5_K_XL.gguf       (a separate, non-MTP weight)
+  # (the 35B-A3B pair collides the same way). With the non-MTP file already on
+  # disk, hf saw a same-named file with a different etag, re-fetched OVER it,
+  # and the rename then moved it to the MTP name — 20 GB of the user's other
+  # model gone, and its serve script broken until re-downloaded.
+  #
+  # So nothing is ever written to "$WEIGHTS_DIR/$remote". The stage is:
+  #   - INSIDE $WEIGHTS_DIR, so it is the same filesystem and the final mv is
+  #     an atomic rename, not a second 20 GB copy across devices;
+  #   - keyed on the LOCAL name (unique in the registry), NOT on $$: hf keeps
+  #     its resume state in <local-dir>/.cache/huggingface/*.incomplete, so a
+  #     per-pid directory would throw away a half-finished 20 GB download on
+  #     every retry. A stable name means re-running this RESUMES.
+  # It is therefore kept when the DOWNLOAD fails or is interrupted (that is
+  # the resume case) and removed on every other exit — success, a verify
+  # failure, or a download that produced no file.
+  local stage="$WEIGHTS_DIR/.fetch.$name" staged
+  staged="$stage/$remote"
+  mkdir -p "$stage" || die "cannot create the staging dir $stage"
+  _FETCH_STAGE="$stage"; _FETCH_KEEP=1
+  trap '[[ "${_FETCH_KEEP:-0}" -eq 1 ]] || rm -rf -- "${_FETCH_STAGE:-}"' EXIT
 
-  # --- verify, and DELETE on mismatch ---------------------------------------
-  if [[ "$sha" == "PENDING" ]]; then
-    ok "downloaded ($(stat -c%s "$dest") bytes) — registry row is PENDING, nothing to verify"
-    say "  Pin it:  sha256sum '$dest'  &&  stat -c%s '$dest'   then edit $REGISTRY"
-    return 0
+  say "downloading…"
+  if ! "$hf" download "$repo" "$remote" --local-dir "$stage"; then
+    die "download failed for $repo/$remote
+       The partial download is kept in $stage —
+       re-run this command to resume it, or delete that directory to start over."
   fi
-  local got_bytes got_sha
-  got_bytes="$(stat -c%s "$dest")"
-  if [[ "$got_bytes" != "$bytes" ]]; then
-    rm -f "$dest"
-    die "SIZE MISMATCH for $name: got $got_bytes, pinned $bytes. Deleted — a corrupt
+  _FETCH_KEEP=0
+  [[ -f "$staged" ]] || die "download reported success but $staged is not there"
+
+  # --- verify IN THE STAGE, and DELETE on mismatch ---------------------------
+  # Verified before it is given its final name, so a file that fails its pin
+  # never exists under a name a serve script would load.
+  if [[ "$sha" != "PENDING" ]]; then
+    local got_bytes got_sha
+    got_bytes="$(stat -c%s "$staged")"
+    if [[ "$got_bytes" != "$bytes" ]]; then
+      rm -f "$staged"
+      die "SIZE MISMATCH for $name: got $got_bytes, pinned $bytes. Deleted — a corrupt
        weight on disk fails inside inference, which is far worse than a missing one."
-  fi
-  say "  verifying sha256…"
-  got_sha="$(sha256sum "$dest" | awk '{print $1}')"
-  if [[ "$got_sha" != "$sha" ]]; then
-    rm -f "$dest"
-    die "CHECKSUM MISMATCH for $name
+    fi
+    say "  verifying sha256…"
+    got_sha="$(sha256sum "$staged" | awk '{print $1}')"
+    if [[ "$got_sha" != "$sha" ]]; then
+      rm -f "$staged"
+      die "CHECKSUM MISMATCH for $name
        got    $got_sha
        pinned $sha
        Deleted. Either the upstream repo changed the file (vet it, then re-pin
        in $REGISTRY) or the transfer corrupted it (re-run this)."
+    fi
+  fi
+
+  # -n: never replace a weight that appeared at $dest while we were downloading.
+  [[ ! -e "$dest" ]] || die "$dest appeared during the download — left alone.
+       Verify it:  ./scripts/verify-weights.sh --file $name"
+  mv -n -- "$staged" "$dest" || die "could not move $staged -> $dest"
+  [[ -f "$dest" ]] || die "could not move $staged -> $dest"
+
+  if [[ "$sha" == "PENDING" ]]; then
+    ok "downloaded ($(stat -c%s "$dest") bytes) — registry row is PENDING, nothing to verify"
+    say "  Pin it:  sha256sum '$dest'  &&  stat -c%s '$dest'   then edit $REGISTRY"
+    return 0
   fi
   ok "downloaded and verified against the pin"
 }

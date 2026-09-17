@@ -20,13 +20,23 @@ digest-pinned reference can never be satisfied from a tarball, which is the
 trap the air-gap review flagged and the reason `docker save`/`load` alone does
 not work.
 
-The way out is not to abandon content addressing. An image's ID *is* a content
-digest (of its config), it DOES survive save/load, and `docker compose`
-accepts `image: sha256:<id>` and resolves it locally without pulling —
-measured 2026-09-15, not assumed. So the manifest records the image ID, the
-installer verifies the loaded image matches it, and the compose reference is
-rewritten to that ID. Integrity is preserved, no registry is involved, and the
-rewrite is reversible because the original file is kept.
+The way out is not to abandon content addressing. An image's ID is a content
+digest, it DOES survive save/load on the same kind of image store, and
+`docker compose` accepts `image: sha256:<id>` and resolves it locally without
+pulling — measured 2026-09-15, not assumed. So the manifest records the image
+ID, the installer checks the loaded image against it, and the compose
+reference is rewritten to the ID the load actually produced. Integrity is
+preserved, no registry is involved, and the rewrite is reversible because the
+original file is kept.
+
+WHICH digest the ID is DEPENDS ON THE IMAGE STORE, and the first version of
+this text said otherwise. A classic (overlay2) daemon reports the image
+CONFIG digest; a containerd-snapshotter daemon (the default on new installs
+since Docker 29) reports the registry INDEX digest. Same image, two IDs — so
+the manifest also records the build box's store kind (`image_store`), and the
+installer compares IDs only between stores of the same kind. Across kinds the
+tarball's sha256, which the manifest (and its signature) covers, is what
+carries integrity.
 """
 from __future__ import annotations
 
@@ -47,6 +57,37 @@ SIGNATURE = MANIFEST + ".sig"
 #: version must refuse rather than guess at a layout it does not know.
 VERSION = 1
 CHUNK = 1 << 20
+
+#: What Finder leaves on a stick that was merely BROWSED on a Mac. Refusing a
+#: whole bundle over these trains an operator to skip `verify`, and
+#: scripts/lib/pydeps_lock.py already tolerates them in a wheelhouse — two
+#: answers to the same question meant `pydeps audit` passed a directory that
+#: `bundle verify` then refused. NARROW ON PURPOSE, for the same reason that
+#: list is: never "any dotfile".
+#:   .DS_Store   by exact name
+#:   ._<name>    AppleDouble sidecars, by name AND by magic number, so a
+#:               payload merely NAMED ._x.whl is still reported
+#: Safe to ignore because no installer step can consume one: install reads the
+#: source tarball by its recorded commit, images and weights by their manifest
+#: entries, and wheels through `pydeps audit`, which applies this same rule.
+BENIGN_NAMES = frozenset({".DS_Store"})
+APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
+
+
+def is_transit_dropping(full: str) -> bool:
+    """True only for a REGULAR file that is one of the droppings above."""
+    name = os.path.basename(full)
+    if os.path.islink(full) or not os.path.isfile(full):
+        return False
+    if name in BENIGN_NAMES:
+        return True
+    if name.startswith("._"):
+        try:
+            with open(full, "rb") as fh:
+                return fh.read(4) == APPLEDOUBLE_MAGIC
+        except OSError:
+            return False
+    return False
 
 
 class BundleError(RuntimeError):
@@ -157,12 +198,17 @@ def walk_component(root: str, rel_dir: str) -> list:
     return sorted(entries, key=lambda e: e["path"])
 
 
-def verify(root: str) -> tuple[list, list]:
+def verify(root: str, ignored: list | None = None) -> tuple[list, list]:
     """(ok, problems). Re-hashes every recorded file.
 
     Also reports files present in the directory that the manifest does NOT
     record — an unrecorded file is exactly what a tampered or half-rebuilt
     bundle looks like, and `install` reads from this directory.
+
+    `ignored`, when given, is APPENDED with every unrecorded file that was
+    tolerated as a transit dropping (see is_transit_dropping), so the caller
+    can say what was skipped: an exemption nobody can see is how the old
+    every-dotfile rule in the wheelhouse audit went unnoticed.
     """
     doc = load(root)
     ok, problems = [], []
@@ -211,6 +257,13 @@ def verify(root: str) -> tuple[list, list]:
             if os.path.islink(full):
                 problems.append(f"{rel}: unrecorded symlink")
                 continue
+            # AFTER the `recorded` test above, deliberately: a manifest that
+            # RECORDS a file named .DS_Store still has it hashed like any
+            # other entry. Only an unrecorded one is a dropping.
+            if is_transit_dropping(full):
+                if ignored is not None:
+                    ignored.append(rel)
+                continue
             problems.append(f"{rel}: present but NOT in the manifest")
     return ok, problems
 
@@ -236,6 +289,8 @@ def summarise(doc: dict) -> str:
             extra = "  " + ", ".join(
                 f"{i.get('ref', '?')} -> {str(i.get('id', '?'))[:19]}…"
                 for i in comp.get("images", []))
+            if comp.get("image_store"):
+                extra += f"  [image store: {comp['image_store']}]"
         if comp.get("kind") == "weights":
             extra = "  " + ", ".join(w.get("file", "?")
                                      for w in comp.get("weights", []))
@@ -311,9 +366,14 @@ def main(argv=None) -> int:
             return 0
 
         if args.action == "verify":
-            ok, problems = verify(args.root)
+            ignored: list = []
+            ok, problems = verify(args.root, ignored)
             for p in problems:
                 print(f"  ! {p}")
+            if ignored:
+                print(f"  note: ignored {len(ignored)} Finder dropping(s) the "
+                      f"manifest does not record and no installer step "
+                      f"reads: {', '.join(sorted(ignored))}")
             print(f"{args.root}: {len(ok)} file(s) verified, "
                   f"{len(problems)} problem(s)")
             return 1 if problems else 0
