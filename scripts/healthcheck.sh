@@ -37,9 +37,12 @@ case "$BIND_HOST" in
 esac
 
 # beast-chat binds OPENBEAST_CHAT_BIND (loopback by default), NOT BIND_HOST.
-case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
-  ''|0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
-  *)                   CHAT_HEALTH_HOST="$OPENBEAST_CHAT_BIND" ;;
+# (`set -u`: the variable is normally UNSET, so every use carries a default —
+# the first version named it bare in the fall-through arm and killed this
+# whole script, for everyone, on the line below.)
+CHAT_HEALTH_HOST="${OPENBEAST_CHAT_BIND:-127.0.0.1}"
+case "$CHAT_HEALTH_HOST" in
+  0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
 esac
 
 RESTART=false
@@ -380,7 +383,11 @@ if command -v tailscale &>/dev/null; then
 import sys, json
 try: print('yes' if json.load(sys.stdin)['Self']['Online'] else 'no')
 except Exception: print('no')
-" 2>/dev/null)
+" 2>/dev/null || true)
+  # `|| true`: with tailscaled DOWN — the one case this block exists for —
+  # `tailscale status` exits non-zero, pipefail fails the substitution, and
+  # set -e killed the script right here: no "DOWN Tailscale", no restart, no
+  # summary. Found by running the script end to end (tests/test_scripts.sh).
   if [[ "$TS_ONLINE" == "yes" ]]; then
     echo "  OK   Tailscale (remote access)"
     HEALTHY=$((HEALTHY + 1))

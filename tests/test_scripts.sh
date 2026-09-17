@@ -2290,6 +2290,55 @@ else
 fi
 rm -rf "$_RV"
 
+# ---------------------------------------------------------------------------
+# RUN IT, top to bottom. Every check above lifts FUNCTIONS out of
+# healthcheck.sh; none executed the script — so `$OPENBEAST_CHAT_BIND`, bare,
+# in the fall-through arm of a `case` whose selector carried the default,
+# shipped to main: `set -u` killed healthcheck.sh on that line for EVERY user,
+# and the same line in start.sh tore the whole stack down after the model had
+# loaded whenever BEAST_CHAT=true. A real ./start.sh caught it, minutes later.
+# ---------------------------------------------------------------------------
+echo ""
+echo "End-to-end under set -u (nothing exported):"
+_E2E="$(mktemp -d)"
+mkdir -p "$_E2E/repo/scripts/lib" "$_E2E/bin" "$_E2E/home"
+cp "$REPO_DIR/scripts/healthcheck.sh" "$REPO_DIR/scripts/gpu-lease.sh" "$_E2E/repo/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$_E2E/repo/scripts/lib/"
+for _c in curl docker tailscale nvidia-smi sudo systemctl; do
+  printf '#!/bin/bash\nexit 1\n' > "$_E2E/bin/$_c"; chmod +x "$_E2E/bin/$_c"
+done
+for _mode in "default" "BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true"; do
+  : > "$_E2E/repo/openbeast.conf"
+  for _kv in $_mode; do [[ "$_kv" == *=* ]] && echo "$_kv" >> "$_E2E/repo/openbeast.conf"; done
+  _E2E_OUT="$(env -i HOME="$_E2E/home" PATH="$_E2E/bin:/usr/bin:/bin" \
+                bash "$_E2E/repo/scripts/healthcheck.sh" 2>&1 || true)"
+  if [[ "$_E2E_OUT" != *"unbound variable"* && "$_E2E_OUT" == *"Stack health check"* \
+        && "$_E2E_OUT" == *"DOWN llama.cpp server"* && "$_E2E_OUT" =~ (unhealthy|healthy) ]]; then
+    pass "healthcheck.sh runs to its summary with nothing exported ($_mode)"
+  else
+    fail "healthcheck.sh died before its summary ($_mode): $(tail -n 3 <<< "$_E2E_OUT" | tr '\n' ' ')"
+  fi
+  if [[ "$_mode" != default && "$_E2E_OUT" != *"beast-chat console"* ]]; then
+    fail "control: the chat branch did not run, so this test proved nothing"
+  fi
+done
+rm -rf "$_E2E"
+# ...and the static half, for start.sh, whose optional-service branches cannot
+# be executed here: a variable that is NORMALLY UNSET is never named bare.
+_BARE_U=0
+for _f in start.sh stop.sh scripts/healthcheck.sh; do
+  while IFS= read -r _ln; do
+    _t="${_ln#"${_ln%%[![:space:]]*}"}"
+    [[ "$_t" == \#* ]] && continue
+    _BARE_U=1; echo "    $_f: $_t"
+  done < <(grep -nE '\$(OPENBEAST_CHAT_BIND|OPENBEAST_ARTIFACT_BASE_URL|OPENBEAST_LLAMA_LOAD_GRACE)\b|\$\{(OPENBEAST_CHAT_BIND|OPENBEAST_ARTIFACT_BASE_URL|OPENBEAST_LLAMA_LOAD_GRACE)\}' "$REPO_DIR/$_f" || true)
+done
+if [[ $_BARE_U -eq 0 ]]; then
+  pass "no normally-unset variable is expanded without a default in start/stop/healthcheck"
+else
+  fail "a normally-unset OPENBEAST_* variable is expanded bare — set -u kills the script there"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
