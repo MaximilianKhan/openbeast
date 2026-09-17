@@ -11,6 +11,15 @@ skill(name) pulls one body on demand.
 Reads skills/*/SKILL.md frontmatter (name, description), rewrites the text
 between the SKILL_INDEX markers in system-prompt-tools.md.
 
+A skill whose frontmatter says `prompt_index: false` is left OUT of that menu
+(it stays fully available through skill() / skill(name), which scan the disk).
+Two reasons a skill wants that. The menu is paid for by the local model on
+every turn, and this repo measured that skills fire ~0% on local models
+(docs/BEAST_LANG_PLAN.md §2.1) — so a skill written for CLOUD models working
+in this repo is pure cost there. And system-prompt-tools.md is hashed into the
+eval cache era (evals/cache.py): adding a menu line rolls the era, which a
+skill nobody is measuring should not be able to do by existing.
+
 Usage:
   python3 scripts/generate-skill-index.py            # rewrite in place
   python3 scripts/generate-skill-index.py --check    # exit 1 if stale
@@ -43,6 +52,8 @@ def build_index() -> str:
     rows = []
     for skill_md in sorted(SKILLS.glob("*/SKILL.md")):
         fm = frontmatter(skill_md)
+        if fm.get("prompt_index", "").lower() == "false":
+            continue                    # opted out of the always-on menu
         name = fm.get("name", skill_md.parent.name)
         desc = fm.get("description", "(no description)")
         rows.append(f"- **`{name}`** — {desc}")

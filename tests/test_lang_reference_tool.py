@@ -336,3 +336,48 @@ def test_the_trim_never_leaves_a_label_with_no_fact_under_it(tmp_path, monkeypat
     for i, ln in enumerate(body):
         if ln.endswith(":"):                        # a tier label
             assert body[i + 1].startswith("- "), out
+
+
+# --- the skill (P5's other half: cloud models working in this repo) ----------
+
+def _generator():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "generate_skill_index", os.path.join(ROOT, "scripts", "generate-skill-index.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_skill_loads_and_names_the_hard_rules():
+    mcp_server._discover_skills(force=True)
+    out = mcp_server.skill("beast-lang")
+    for needle in ("No driver executes a snippet", "-pedantic-errors",
+                   "Never hardcode an artifact URL", "summary", "language_reference",
+                   "escalate.py --rebuild", "verify.py"):
+        assert needle in out, needle
+    rec = mcp_server._resolve_skill("beast-lang")
+    assert rec["frontmatter"]["name"] == "beast-lang"
+    assert rec["frontmatter"]["prompt_index"] is False
+
+
+def test_prompt_index_false_keeps_a_skill_out_of_the_menu(tmp_path, monkeypatch):
+    """The menu lives in system-prompt-tools.md, which is hashed into the eval
+    cache era. A cloud-model skill must be able to exist without rolling it."""
+    gen = _generator()
+    for name, extra in (("shown", ""), ("hidden", "prompt_index: false\n")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: the {name} one\n{extra}---\n\n# {name}\n")
+    monkeypatch.setattr(gen, "SKILLS", tmp_path)
+    index = gen.build_index()
+    assert "`shown`" in index and "hidden" not in index
+
+
+def test_the_committed_menu_is_fresh_and_does_not_list_the_skill(monkeypatch):
+    gen = _generator()
+    monkeypatch.setattr(sys, "argv", ["generate-skill-index.py", "--check"])
+    assert gen.main() == 0                      # --check: reads, never writes
+    assert "`beast-lang`" not in gen.build_index()
+    assert "`code-review`" in gen.build_index()  # control: the menu is not empty

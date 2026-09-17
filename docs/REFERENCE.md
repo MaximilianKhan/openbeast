@@ -561,12 +561,14 @@ tools:
 **Discovery order:** repo `skills/` first, then `~/.local/share/local-llm-skills/`.
 Repo wins on name collision. The index re-scans on every `skill()` call.
 
-**Currently shipped (14 skills):** see `skills/README.md` for the full table.
+**Currently shipped (15 skills):** see `skills/README.md` for the full table.
 Tier 1 (universal): codebase-onboarding, spec-extraction, git-discipline,
 long-context-synthesis. Tier 2 (situational): test-driven-development,
 architecture-proposal, performance-optimization, api-design. Plus
 code-review, security-audit, debugging-methodology, deep-counsel,
-eval-task-author, eval-variant-porter.
+eval-task-author, eval-variant-porter, beast-lang (for cloud models working
+in this repo — `prompt_index: false` keeps it out of the local model's
+always-on menu).
 
 **Adding a skill:** create `skills/<name>/SKILL.md` with required frontmatter
 (`name`, `description`); the next `skill()` call picks it up (the index
