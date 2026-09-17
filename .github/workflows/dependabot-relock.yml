@@ -10,16 +10,19 @@ name: Dependabot relock
 # THREE THINGS HERE ARE NOT OBVIOUS, and each is load-bearing:
 #
 #  1. A push made with GITHUB_TOKEN does not RUN workflows (GitHub's guard
-#     against recursion) — at best it queues pull_request runs that wait for
-#     a human to click "Approve workflows to run". Left at that, the PR's new
-#     head commit would carry no completed checks and could never satisfy
-#     branch protection. (If someone does click Approve you get a duplicate
-#     run; it cannot loop, because the actor on that event is
-#     github-actions[bot] and the job below is Dependabot-only.)
-#     workflow_dispatch is the documented exception to that rule, so after
-#     pushing this DISPATCHES ci.yml and pr-quality.yml on the branch — which
-#     is the only reason those two workflows declare `workflow_dispatch:`.
-#     No PAT and no extra secret: a Dependabot run cannot read normal secrets.
+#     against recursion): the pull_request runs for the new head commit are
+#     created in the "action_required" state and wait for a maintainer.
+#     MEASURED on the first live runs (#85, #86, 2026-09-17): dispatching
+#     ci.yml / pr-quality.yml with workflow_dispatch does produce green check
+#     runs on the head SHA, but the PR's required-checks rollup IGNORES them
+#     (mergeStateStatus stayed BLOCKED with all four green) — so that step was
+#     removed; it only doubled the CI bill. What unblocks the PR is approving
+#     the held runs, which the last step below spells out:
+#         gh run list --branch <branch> --status action_required
+#         gh api -X POST repos/<owner>/<repo>/actions/runs/<id>/approve
+#     (or the "Approve workflows to run" button). It cannot loop: the actor on
+#     the re-triggered event is github-actions[bot], and this job is
+#     Dependabot-only.
 #
 #  2. `[dependabot skip]` in the commit message. Without it Dependabot treats
 #     the branch as edited by someone else and stops rebasing it. With it,
@@ -64,7 +67,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write   # push the regenerated lock to the PR branch
-      actions: write    # dispatch CI on the new commit (see 1. above)
     env:
       # Never interpolated into a script: a branch name is attacker-shaped text.
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -129,10 +131,17 @@ jobs:
             push origin "HEAD:refs/heads/${HEAD_REF}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Run CI on the pushed commit
+      - name: What a maintainer does next
         if: steps.push.outputs.pushed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run ci.yml         --ref "$HEAD_REF"
-          gh workflow run pr-quality.yml --ref "$HEAD_REF"
+          {
+            echo "### The lock was regenerated and pushed to \`${HEAD_REF}\`"
+            echo ""
+            echo "GitHub holds the CI runs for that commit until a maintainer approves them:"
+            echo ""
+            echo '```'
+            echo "for id in \$(gh run list --branch ${HEAD_REF} --status action_required --json databaseId,workflowName -q '.[] | select(.workflowName!=\"Dependabot relock\") | .databaseId'); do"
+            echo "  gh api -X POST repos/${GITHUB_REPOSITORY}/actions/runs/\$id/approve"
+            echo "done"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
