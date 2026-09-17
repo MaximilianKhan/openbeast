@@ -2105,7 +2105,7 @@ chmod +x "$_RV/bin/curl"
   echo 'set -uo pipefail'
   echo "source '$REPO_DIR/scripts/lib/proc.sh'"
   echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
-  sed -n '/^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
+  sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
   echo '"$@"'
 } > "$_RV/hc.sh"
 _rv_hc() { # _rv_hc <curl body> <function> — status is the function's
@@ -2139,6 +2139,25 @@ if _rv_hc '' _llama_loading; then
 else
   fail "a just-launched llama-server is treated as down"
 fi
+# "Loading model" is BOUNDED too: a server wedged mid-load says it forever.
+if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '{"error":{"message":"Loading model"}}' _llama_loading; then
+  fail "a recorded server still 'Loading model' past the grace is left alone forever"
+else
+  pass "past the grace, a recorded server that is STILL loading is down"
+fi
+# argv[0], not a mention: `tail -f llama-server.log` is not the server.
+printf '#!/bin/bash\nsleep 300\n' > "$_RV/tailer"; chmod +x "$_RV/tailer"
+bash "$_RV/tailer" llama-server.log & _RV_TAIL=$!
+sleep 0.3
+echo "$_RV_TAIL" > "$_RV/repo/.run/llama.pid"
+_rv_hc '' _kill_own_llama || true; sleep 0.2
+if kill -0 "$_RV_TAIL" 2>/dev/null && ! _rv_hc '' _llama_loading; then
+  pass "a recycled pid that merely MENTIONS llama-server is neither 'loading' nor killed"
+else
+  fail "a process mentioning llama-server in its arguments was taken for the server"
+fi
+pkill -P "$_RV_TAIL" 2>/dev/null || true; kill "$_RV_TAIL" 2>/dev/null || true
+echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
 if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
   fail "the load grace never expires — a wedged server would be left forever"
 else
@@ -2209,6 +2228,17 @@ for _v in '"maybe"' '#true' '"" # true' "'false'"; do
   fi
 done
 
+# The unlock must not take stderr with it (a bare `exec 9>&- 2>/dev/null` is
+# permanent): a campaign's tracebacks went to /dev/null.
+mkdir -p "$_RV/lease0"
+_RV_ERR="$(OPENBEAST_RUN_DIR="$_RV/lease0" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
+  "$REPO_DIR/scripts/gpu-lease.sh" run rv0 -- bash -c 'echo to-stderr >&2' 2>&1 >/dev/null || true)"
+if [[ "$_RV_ERR" == *to-stderr* ]]; then
+  pass "gpu-lease run passes the command's stderr through"
+else
+  fail "gpu-lease run swallowed the command's stderr: '$_RV_ERR'"
+fi
+
 # gpu-lease run: an operator's SIGTERM reaches the command, and the lease
 # lasts exactly as long as the command does.
 _RV_GL() { OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 "$REPO_DIR/scripts/gpu-lease.sh" "$@"; }
@@ -2216,7 +2246,7 @@ mkdir -p "$_RV/lease"
 # The wrapper records ITS OWN pid (exec keeps it): finding it with pgrep -f
 # would match any process whose command line merely mentions the pattern.
 ( OPENBEAST_RUN_DIR="$_RV/lease" OPENBEAST_LEASE_VRAM_FLOOR=99999999 \
-    bash -c 'echo $$ > "$1/wrapper.pid"; exec "$2" run rv -- bash -c "trap \"echo got-TERM; sleep 1; exit 7\" TERM; sleep 300 & wait"' \
+    bash -c 'echo $$ > "$1/wrapper.pid"; exec "$2" run rv -- bash -c "trap \"echo got-TERM; exit 7\" TERM; sleep 3 & wait"' \
     _ "$_RV" "$REPO_DIR/scripts/gpu-lease.sh" > "$_RV/lease.out" 2>&1 \
     && echo "rc=0" >> "$_RV/lease.out" || echo "rc=$?" >> "$_RV/lease.out" ) &   # set -e: never a bare `; echo $?`
 sleep 1
@@ -2227,9 +2257,9 @@ sleep 0.4
 # the writer and a HELD lease reads as not-held.
 _RV_ST="$(_RV_GL status 2>/dev/null || true)"
 if [[ "$_RV_ST" == HELD* ]]; then
-  pass "the lease is still HELD while the signalled command unwinds"
+  pass "the lease stays HELD while a cell the dead master started is still in its group"
 else
-  fail "the lease was released while its command was still running"
+  fail "the lease went FREE with the command's group still on the card: $(tr '\n' ' ' < "$_RV/lease.out")"
 fi
 # Poll, don't sleep-and-hope: this suite runs under load.
 for _i in $(seq 1 50); do grep -q '^rc=' "$_RV/lease.out" 2>/dev/null && break; sleep 0.2; done

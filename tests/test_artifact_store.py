@@ -1165,3 +1165,24 @@ def test_the_lock_table_drains(store):
     with store._artifact_lock("held"):
         assert "held" in store._ID_LOCKS       # negative control: it IS used
     assert store._ID_LOCKS == {}
+
+
+@pytest.mark.parametrize("status", [
+    # a lower-port mount whose proxy TARGET mentions :8446
+    "https://beast.tail1.ts.net (tailnet only)\n|-- / proxy https://evil.example.com:8446\n",
+    # ...or whose mount PATH does
+    "https://beast.tail1.ts.net (tailnet only)\n|-- /https://evil.example.com:8446 proxy http://127.0.0.1:3000\n",
+])
+def test_only_a_mount_HEADER_can_name_the_base_url(store, monkeypatch, status):
+    a = store.publish(PAGE)
+    _fresh_base_url(store, monkeypatch, status)
+    assert "evil" not in store.artifact_url(a["id"])
+    # control: the real header after the decoy still wins
+    _fresh_base_url(store, monkeypatch, status + "\n" + SERVE_STATUS)
+    assert store.artifact_url(a["id"]).startswith("https://beast.tail4109f9.ts.net:8446/")
+
+
+def test_a_link_no_browser_can_open_says_so(store):
+    assert "publish-artifact" in store.url_caveat("http://localhost:3004/a/x")
+    assert store.url_caveat("https://beast.tail1.ts.net:8446/a/x") == ""   # control
+    assert store.url_caveat(None) == ""

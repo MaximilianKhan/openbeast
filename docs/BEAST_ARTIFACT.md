@@ -197,7 +197,10 @@ publishes several, so `setup-tailscale.sh --status` prints the mount table:
 `https://<that name>:8446/a/<id>` — the name the certificate was issued for,
 which is the tailnet machine name and **not** the OS hostname (they are chosen
 independently). Until you run `--publish-artifact` nothing listens on `:8446`,
-so the URL is the honest loopback one, `http://localhost:3004/a/<id>`. The
+so the URL is the loopback one, `http://localhost:3004/a/<id>` — which **no
+browser can open** (the viewer refuses anonymous callers, and only `tailscale
+serve` or the CLI's locality token supplies an identity), so the tools say so
+next to the link instead of handing over a dead one. The
 answer is cached for a minute, so publishing the port needs no restart. Set
 `ARTIFACT_BASE_URL` in `openbeast.conf` only if you front the viewer yourself.
 
@@ -432,7 +435,7 @@ the first.
 | A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read |
 | The page renders blank | Almost always `localStorage` or `fetch` in the page's startup path. Both throw here. Open the browser console — the error is in the frame's context, not the shell's |
 | A chart library never loads | It is not on the allowlist, or the URL is not an exact pinned version on `cdnjs`. Non-allowlisted hosts fail **silently**, with no visible error |
-| The link the model gave you does not open | Through v1.4.0 the URL was built from the OS hostname, which is neither the tailnet name nor a name the certificate covers. It now follows `tailscale serve` (see *Publishing on the tailnet*). A `http://localhost:3004/…` link means the port is not published — it opens on the rig only |
+| The link the model gave you does not open | Through v1.4.0 the URL was built from the OS hostname, which is neither the tailnet name nor a name the certificate covers. It now follows `tailscale serve` (see *Publishing on the tailnet*). A `http://localhost:3004/…` link means the port is not published: run `./scripts/setup-tailscale.sh --publish-artifact` (a browser cannot present an identity to the loopback viewer, so that link is a 404 even on the rig) |
 | `--file` assets (script, stylesheet, image) do not load | Open the page through the shell (`/a/<id>`), whose frame uses the capability path. A hand-typed `/raw/<id>/v/<n>/` still serves the page, but its supporting files stay `same-origin` and a sandboxed document cannot load those (see *Why supporting files need a token*) |
 | An external image is missing | `img-src` admits `'self'` and `data:` only. Embed it as a `data:` URI |
 | A download button does nothing | `allow-downloads` is deliberately absent. The sandbox is working |

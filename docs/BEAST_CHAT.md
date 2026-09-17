@@ -422,7 +422,7 @@ over it.
 | Phone sleeps 10 minutes | Reattach resumes at the exact byte. No duplicate events, no gap. |
 | Transcript is rotated or truncated under a live stream | The stream notices mid-poll, emits a `lost` frame, and restarts at 0 rather than skipping content or handing the reader half an event. |
 | Rig reboots | Every session from a previous boot reconciles to `lost` on the next listing. `reconcile` matches pid **and** process start time **and** the boot id (`/proc/sys/kernel/random/boot_id`, stamped at register). The boot id is what makes this row true rather than approximately true: the start time is *ticks since boot*, so across a reboot the other two compare against a different clock and can agree by coincidence — which is also why the signalling path checks it before any `killpg`. A record written before this existed, or on a kernel that will not report a boot id, falls back to the pid+start proof rather than being declared dead. |
-| A session finishes | The record stays. `sessions.prune(days=30)` is the tool for clearing old terminal records, but **nothing calls it on a schedule** — run it yourself when the ledger gets long. Agent transcripts under `agents/logs/` are never touched by it; the ledger is an index, not the archive. |
+| A session finishes | The record stays for 30 days. `chat_server` sweeps terminal records older than that once per start (`sessions.prune(30, keep_logs=True)`): the index entry, its inbox and its lock go; a `job.sh` job's `.run/sessions/<id>.log` — its only output — is **kept**, and agent transcripts under `agents/logs/` are never touched. Calling `sessions.prune()` yourself (no `keep_logs`) removes the logs too. |
 
 `list_agents` and `check_agent` in the MCP tool server read the ledger first
 and their in-memory map second, so a session that registered itself is
@@ -501,7 +501,11 @@ group, not the cgroup, so any `./stop.sh` — including the `./stop.sh &&
 those jobs shared llama-server's memory cap (an OOM in a job could take the
 model down). `chat_server` now starts each session through `systemd-run
 --user --scope` when it finds itself inside a service cgroup and systemd-run
-can reach the user manager; otherwise it spawns plainly, as before. The pid,
+can reach the user manager; otherwise it spawns plainly, as before (and says
+so once on stderr). Leaving the unit means leaving its `MemoryMax` too, so each
+scope carries a cap of its own — `OPENBEAST_CHAT_JOB_MEM_PCT` percent of RAM
+(default 50, swap off; `0` disables) — because an unbounded phone-started job
+is exactly the runaway the stack's cap exists to contain. The pid,
 the ledger record and Stop are unchanged (a scope execs the command in place).
 What does NOT survive a `chat_server` restart is the *reaper*: a console job
 that finishes while no server holds it reconciles to `lost`, and its log is

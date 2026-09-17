@@ -85,6 +85,7 @@ import hashlib
 import hmac
 import html as _html
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -347,6 +348,10 @@ def _raw_key() -> bytes:
         with open(path, "r", encoding="utf-8") as fh:
             got = fh.read().strip()
         if len(got) >= 32:
+            try:
+                os.chmod(path, 0o600)     # a key left loose by hand stays ours
+            except OSError:
+                pass
             return got.encode()
     except OSError:
         pass
@@ -657,7 +662,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
         route = getattr(request.scope.get("route"), "path", None)
         if route:
             return route, route
-        return UNMATCHED_ROUTE, request.url.path[:128]
+        # The capability token is scrubbed: a refusal before routing logs the
+        # raw path, and 128 characters is room for /raw/<uuid>/v/N/~<token>/.
+        return UNMATCHED_ROUTE, re.sub(r"/~[^/]*", "/~…", request.url.path)[:128]
 
     def _record(request: Request, status, t0: float,
                 extra: dict | None = None) -> None:
@@ -828,9 +835,20 @@ def create_app(local_token: str | None = None) -> FastAPI:
     # watchdog saw a healthy server as down and restarted it every five
     # minutes. An IP literal is not a rebinding vector: the attack presents
     # the ATTACKER'S hostname as Host, never the address it resolves to.
+    #
+    # ONLY a literal IPv4 address. The bind string is config, and config must
+    # never be able to WIDEN a security list: "*" resolves (getaddrinfo maps it
+    # to ::1 here) and Starlette reads "*" in this list as allow-any, which
+    # turned Host pinning off. IPv6 is left out deliberately — the middleware
+    # takes the host as Host.split(":")[0], so a bracketed v6 Host can never
+    # match whatever is listed; that case needs ARTIFACT_ALLOWED_HOSTS.
+    bind = _configured_host()
+    try:
+        bind = str(ipaddress.IPv4Address(bind))
+    except ValueError:
+        bind = ""
     allowed = trusted_hosts(",".join((
-        os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", ""),
-        _configured_host())))
+        os.environ.get("OPENBEAST_ARTIFACT_ALLOWED_HOSTS", ""), bind)))
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed)
     app.state.allowed_hosts = allowed
 
@@ -1477,8 +1495,9 @@ def main() -> None:
     import uvicorn
     host = _configured_host()
     port = _configured_port()
-    family, stype, proto, _, addr = socket.getaddrinfo(
-        host, port, type=socket.SOCK_STREAM)[0]
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)   # a NAME: prefer IPv4,
+    family, stype, proto, _, addr = infos[0]           # where the probes look
     sock = socket.socket(family, stype, proto)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:

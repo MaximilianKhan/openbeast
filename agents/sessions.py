@@ -552,11 +552,16 @@ def finalize(session_id: str, state: str, *, summary: str | None = None,
         prior = rec.get("state")
         if prior in TERMINAL_STATES and not (override_lost and prior == "lost"):
             return False                 # already decided; do not re-decide
-        if prior == "lost" and summary is None:
+        if (prior == "lost" and summary is None
+                and str(rec.get("summary") or "").startswith(_GUESS_SUMMARIES)):
             fields["summary"] = None     # drop the reconciler's guess with it
         _apply(rec, fields)
         rec["updated_at"] = _now()
         return _write_record(rec)
+
+
+#: What reconcile() writes as a summary — a guess, replaceable with the state.
+_GUESS_SUMMARIES = ("started before this boot", "process gone without")
 
 
 def reconcile(record: dict) -> dict:
@@ -819,7 +824,7 @@ def read_new_ops(session_id: str, cursor: int = 0) -> tuple[list[dict], int]:
 # Maintenance
 # ---------------------------------------------------------------------------
 
-def prune(days: int = 30) -> int:
+def prune(days: int = 30, *, keep_logs: bool = False) -> int:
     """Delete terminal records (and their inboxes) older than `days`.
 
     Transcripts under `agents/logs/` are deliberately left alone — the ledger
@@ -846,9 +851,15 @@ def prune(days: int = 30) -> int:
         stamp = rec.get("updated_at") or rec.get("started_at") or ""
         try:
             when = datetime.fromisoformat(str(stamp))
-        except ValueError:
+            if when.tzinfo is not None:
+                # Ours are naive; a foreign or hand-edited aware stamp made
+                # the comparison below raise TypeError, which aborted the
+                # WHOLE sweep at that record — silently, forever.
+                when = when.astimezone().replace(tzinfo=None)
+            fresh = when >= cutoff
+        except (ValueError, TypeError, OverflowError):
             continue                     # unparseable: leave it for a human
-        if when >= cutoff:
+        if fresh:
             continue
         try:
             os.unlink(path)
@@ -858,7 +869,11 @@ def prune(days: int = 30) -> int:
         sid_name = name[:-len(".json")]
         # The job wrapper's combined stdout+stderr stream, and the sidecar
         # lock — both live in this directory and belong to this record.
-        for leaf in (f"{sid_name}.log", f".{sid_name}.lock"):
+        # keep_logs (the automatic sweep at chat_server start): the log is a
+        # job's only output, so it outlives its index entry.
+        leaves = ((f".{sid_name}.lock",) if keep_logs
+                  else (f"{sid_name}.log", f".{sid_name}.lock"))
+        for leaf in leaves:
             try:
                 os.unlink(os.path.join(d, leaf))
             except OSError:

@@ -515,8 +515,11 @@ for key, env in (("title", "OB_TITLE"), ("description", "OB_DESC"),
 if files:
     body["files"] = files
 
-with open(os.environ["OB_OUT"], "w") as fh:
-    json.dump(body, fh)
+# ensure_ascii=False: the default writes every non-ASCII character as \uXXXX —
+# 2x the bytes for CJK, 3x for emoji — and the server gates the BODY size, so
+# a legal page of Japanese text was refused as oversize (a flat 404).
+with open(os.environ["OB_OUT"], "w", encoding="utf-8") as fh:
+    json.dump(body, fh, ensure_ascii=False)
 PY
     code="$(_api POST /api/artifacts "$REQ")" || exit $?
     _check "$code" "publish"

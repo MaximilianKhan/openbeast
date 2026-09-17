@@ -1510,8 +1510,13 @@ def publish_artifact(path: str, title: str = "", description: str = "",
     except Exception as e:  # ArtifactError and anything else: tool contract
         return f"Error: publish failed: {e}"
     name = meta.get("title") or os.path.basename(path)
-    return (f'Published "{name}" → {meta.get("url")} '
-            f'(v{meta.get("version")}, id {meta.get("id")})')
+    out = (f'Published "{name}" → {meta.get("url")} '
+           f'(v{meta.get("version")}, id {meta.get("id")})')
+    try:
+        caveat = _artifact.url_caveat(meta.get("url"))
+    except Exception:
+        caveat = ""
+    return f"{out}\nNOTE: {caveat}" if caveat else out
 
 
 @_tool()
@@ -1561,6 +1566,12 @@ def list_artifacts(limit: int = 25) -> str:
             f"{r.get('url', '')}  "
             f"v{versions or 1}  {r.get('visibility', '?')}  {updated}"
         )
+    try:
+        caveat = _artifact.url_caveat(rows[0].get("url"))
+    except Exception:
+        caveat = ""
+    if caveat:
+        lines += ["", f"NOTE: {caveat}"]
     lines.append("")
     lines.append('Update one in place: publish_artifact(path, '
                  'artifact_id="<id>") — the id is the last part of the URL.')

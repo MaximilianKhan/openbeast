@@ -2009,3 +2009,30 @@ def test_a_legal_binary_version_is_not_refused_as_oversize(make_client,
     r = c.post("/api/artifacts", headers=local(c),
                json={"html": "x" * 8000})
     assert r.status_code == 404 and r.json() == FLAT_404
+
+
+@pytest.mark.parametrize("bind,host,status", [
+    ("192.168.7.9", "192.168.7.9:3004", 200),    # our own LAN address: answered
+    ("192.168.7.9", "evil.example:3004", 400),   # control: rebinding still refused
+    ("*", "evil.example:3004", 400),             # config can never WIDEN the list
+    ("not an address", "evil.example:3004", 400),
+])
+def test_the_bind_address_is_a_host_but_never_a_wildcard(make_client, monkeypatch,
+                                                         bind, host, status):
+    monkeypatch.setenv("OPENBEAST_BIND", bind)
+    c = make_client()
+    r = c.get(artifact_server.HEALTH_PATH, headers={"Host": host})
+    assert r.status_code == status, (bind, host, r.status_code)
+
+
+def test_the_token_never_reaches_the_audit_log(make_client):
+    c = make_client()
+    a = publish(c, files={"app.js": "x=1"})
+    base = _shell_raw_url(c, a)
+    token = base.split("~")[1].strip("/")
+    assert c.get(base + "app.js").status_code == 404          # anonymous: refused
+    assert c.post(base + "app.js", headers=MAX).status_code == 404
+    log = open(os.path.join(os.environ["OPENBEAST_RUN_DIR"],
+                            "artifact-audit.jsonl")).read()
+    assert "/raw/" in log, "control: the refusals WERE audited"
+    assert token not in log

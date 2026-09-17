@@ -78,7 +78,7 @@ __all__ = [
     "ArtifactError", "CAPS", "store_root", "is_store_path", "publish",
     "get_meta", "list_artifacts", "read_file", "set_visibility",
     "set_description", "set_current", "remove", "artifact_url", "can_view",
-    "extract_title", "wrap_skeleton", "set_owner_override",
+    "url_caveat", "extract_title", "wrap_skeleton", "set_owner_override",
     "reset_owner_override", "default_owner", "default_owner_alias",
     "valid_email",
 ]
@@ -1213,8 +1213,12 @@ def _detect_base_url() -> str:
     with _BASE_URL_LOCK:
         if _BASE_URL_CACHE["value"] and now - _BASE_URL_CACHE["at"] < _BASE_URL_TTL:
             return _BASE_URL_CACHE["value"]
-    m = re.search(r"https://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):%d\b"
-                  % _PUBLISHED_PORT, _serve_status())
+    # ANCHORED to the start of a line: a mount HEADER, never text inside one.
+    # Unanchored, the first match won — and a lower-port mount whose proxy
+    # target or path merely mentioned "https://x:8446" became the base of
+    # every URL the model handed out.
+    m = re.search(r"^https://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):%d(?=\s|$)"
+                  % _PUBLISHED_PORT, _serve_status(), re.M)
     if m:
         value = f"https://{m.group(1).lower()}:{_PUBLISHED_PORT}"
     else:
@@ -1223,6 +1227,25 @@ def _detect_base_url() -> str:
     with _BASE_URL_LOCK:
         _BASE_URL_CACHE.update(at=now, value=value)
     return value
+
+
+def url_caveat(url) -> str:
+    """One sentence to hand over WITH a URL that a browser cannot open, or "".
+
+    The loopback fallback is the true address of the viewer, but the viewer
+    refuses anonymous callers and a browser cannot present an identity to it
+    (that arrives from `tailscale serve`, or from the locality token the CLI
+    reads). So an unpublished rig's link is a 404 in every browser — and a
+    model that hands it over without saying so has handed over a dead link.
+    """
+    if str(url or "").startswith(("http://localhost", "http://127.0.0.1")):
+        return ("This rig's artifact viewer is not published on the tailnet "
+                "yet, so that link will not open in a browser. The operator "
+                "publishes it once with: ./scripts/setup-tailscale.sh "
+                "--publish-artifact (the link then becomes "
+                "https://<rig>.<tailnet>.ts.net:8446/a/<id>; the page and "
+                "its id are already saved).")
+    return ""
 
 
 def artifact_url(artifact_id, version=None) -> str:

@@ -604,12 +604,16 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
       CHAT_OWNED=1
       CHAT_UP=0
+      case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
+        ''|0.*|localhost|::) _chat_host="127.0.0.1" ;;
+        *)                   _chat_host="$OPENBEAST_CHAT_BIND" ;;
+      esac
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
-        # 127.0.0.1, not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
+        # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
         # (loopback) whatever BIND_HOST says, so probing the LAN address
         # reported a healthy console as down.
-        _h="$(curl -fsS -m 2 "http://127.0.0.1:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null || true)"
+        _h="$(curl -fsS -m 2 "http://$_chat_host:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null || true)"
         [[ "$_h" == *'"status"'* ]] && { CHAT_UP=1; break; }
         sleep 1
       done

@@ -36,6 +36,12 @@ case "$BIND_HOST" in
   *)                   HEALTH_HOST="$BIND_HOST" ;;
 esac
 
+# beast-chat binds OPENBEAST_CHAT_BIND (loopback by default), NOT BIND_HOST.
+case "${OPENBEAST_CHAT_BIND:-127.0.0.1}" in
+  ''|0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
+  *)                   CHAT_HEALTH_HOST="$OPENBEAST_CHAT_BIND" ;;
+esac
+
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
 
@@ -77,16 +83,23 @@ LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
 # load-time-in-300 chance of being shot mid-load: launch_and_wait then fails
 # and start.sh tears the WHOLE stack down. The few seconds before the port is
 # bound are covered by the recorded pid's age instead of the body.
+_LLAMA_ARGV0='(^|/)llama-server( |$)'   # argv[0], not "mentions llama-server"
 _llama_loading() {
-  local body pid age
+  local body pid age=""
+  pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
+  ob_pid_matches "$pid" "$_LLAMA_ARGV0" && age="$(ob_pid_age "$pid")"
   body="$(curl -s --max-time 5 "${LLAMA_AUTH[@]}" "$LLAMA_URL/health" 2>/dev/null || true)"
-  [[ "$body" == *"Loading model"* ]] && return 0
+  if [[ "$body" == *"Loading model"* ]]; then
+    # BOUNDED. A server wedged mid-load (a CUDA hang, a stalled weight read)
+    # says "Loading model" forever, and nothing else in the stack bounds a
+    # load either — so past the grace a recorded server that is STILL loading
+    # is down. With no recorded pid there is no age to judge by: leave it.
+    [[ -z "$age" || "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+    return
+  fi
   # Answering at all (healthy OR some other error) is not "loading": only a
   # server that has not bound its port yet gets the benefit of its age.
   [[ -n "$body" ]] && return 1
-  pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
-  ob_pid_matches "$pid" 'llama-server' || return 1
-  age="$(ob_pid_age "$pid")"
   [[ -n "$age" && "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
 }
 
@@ -100,7 +113,7 @@ _kill_own_llama() {
   # The recorded pid is identified by NAME, not path: it is ours by virtue of
   # being recorded, and a serve script may exec a build outside the default
   # path. The pattern fallback has no such provenance, so it stays anchored.
-  if ob_pid_matches "$pid" 'llama-server'; then
+  if ob_pid_matches "$pid" "$_LLAMA_ARGV0"; then
     kill "$pid" 2>/dev/null || true
   elif pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
     pkill -f "$LLAMA_BIN_ERE" 2>/dev/null || true
@@ -122,6 +135,7 @@ _gpu_leased() {
 
 if _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
+  LOADING=1
 elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
   if $RESTART && _gpu_leased; then
     echo "       → the GPU lease is held ($("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null | head -n1 || true))"
@@ -260,7 +274,7 @@ fi
 # which is the whole point of the offset cursor).
 if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   if ! check "beast-chat console" \
-       "http://127.0.0.1:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
+       "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
     if $RESTART; then
       echo "       → restarting beast-chat console..."
       # Kill by RECORDED PID first, exactly as the artifact path does: a
@@ -285,7 +299,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_NEW_PID" > "$REPO_DIR/.run/chat.pid"
       CHAT_OK=0
       for _i in $(seq 1 15); do
-        if curl -s --max-time 2 "http://127.0.0.1:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
+        if curl -s --max-time 2 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
           CHAT_OK=1
           break
         fi
@@ -452,7 +466,9 @@ echo "  Slots: $ACTIVE_SLOTS active"
 # Summary
 echo ""
 TOTAL=$((HEALTHY + UNHEALTHY))
-if [[ $UNHEALTHY -eq 0 ]]; then
+if [[ $UNHEALTHY -eq 0 && ${LOADING:-0} -eq 1 ]]; then
+  echo "$TOTAL services healthy; llama.cpp is still LOADING its model (not counted)."
+elif [[ $UNHEALTHY -eq 0 ]]; then
   echo "All $TOTAL services healthy."
 else
   echo "$UNHEALTHY of $TOTAL services unhealthy."

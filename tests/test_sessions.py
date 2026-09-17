@@ -877,3 +877,33 @@ def test_override_lost_replaces_a_guess_and_never_a_verdict(ledger):
         assert sessions.finalize(sid, "lost", override_lost=True) is False
         assert sessions.get(sid)["state"] == verdict
     assert sessions.finalize("s1", "running", override_lost=True) is False
+
+
+def test_prune_survives_a_foreign_timestamp_and_can_keep_logs(ledger):
+    """One timezone-AWARE stamp raised TypeError out of the comparison and
+    aborted the whole sweep at that record, silently, forever. And the
+    automatic sweep must not destroy a job's only output."""
+    import json as _json
+    old = "2020-01-01T00:00:00"
+    for sid, stamp in (("a-naive", old), ("b-aware", old + "+00:00"),
+                       ("c-naive", old), ("d-fresh", sessions._now())):
+        sessions.register(sid, kind="job", pid=os.getpid(), pgid=0)
+        sessions.finalize(sid, "done")
+        path = sessions.record_path(sid)
+        rec = _json.load(open(path)); rec["updated_at"] = stamp
+        _json.dump(rec, open(path, "w"))
+        open(os.path.join(ledger, f"{sid}.log"), "w").write("the job's only output")
+    assert sessions.prune(30, keep_logs=True) == 3
+    assert sessions.get("d-fresh") is not None                 # control: fresh stays
+    for sid in ("a-naive", "b-aware", "c-naive"):
+        assert sessions.get(sid) is None
+        assert os.path.exists(os.path.join(ledger, f"{sid}.log")), sid
+    # control: the explicit call still clears logs
+    sessions.register("e-old", kind="job", pid=os.getpid(), pgid=0)
+    sessions.finalize("e-old", "done")
+    path = sessions.record_path("e-old")
+    rec = _json.load(open(path)); rec["updated_at"] = old
+    _json.dump(rec, open(path, "w"))
+    open(os.path.join(ledger, "e-old.log"), "w").write("x")
+    assert sessions.prune(30) == 1
+    assert not os.path.exists(os.path.join(ledger, "e-old.log"))

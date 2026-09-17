@@ -159,7 +159,10 @@ cmd_acquire() {                   # cmd_acquire <label> [--wait SECONDS] [--forc
   say "lease acquired by pid $HOLDER_PID — $label"
 }
 
-_unlock_acquire() { exec 9>&- 2>/dev/null || true; }
+# The braces are load-bearing: a bare `exec 9>&- 2>/dev/null` has no command,
+# so BOTH redirections become permanent — it sent this shell's stderr (and,
+# under `run`, the whole campaign's) to /dev/null for good.
+_unlock_acquire() { { exec 9>&-; } 2>/dev/null || true; }
 
 _write_lease() {                  # _write_lease <pid> <label> — atomic replace
   local start tmp="$LEASE.$$"
@@ -203,14 +206,31 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   # has actually gone: a lease that says FREE while the campaign it covered is
   # still unwinding on the card would be the lie this script exists to end.
   local child rc=0 stopping=0
-  "$@" <&0 &
+  # `set -m`: the command becomes the leader of its OWN process group. Without
+  # it a background child of a non-interactive shell starts with SIGINT and
+  # SIGQUIT IGNORED, its whole subtree inherits that, and Ctrl-C stopped the
+  # wrapper while the campaign ran on — with the lease already released.
+  set -m
+  # Its own group is a BACKGROUND group to the terminal: a read from the tty
+  # there is SIGTTIN (the job just stops). Piped/redirected stdin passes
+  # through; an interactive one is replaced with /dev/null.
+  if [[ -t 0 ]]; then "$@" </dev/null & else "$@" <&0 & fi
   child=$!
-  trap 'stopping=1; kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
-  while :; do
+  set +m
+  # TERM goes to the COMMAND ONLY, never its group: that is this rig's cancel
+  # method (2026-09-15) — the master script dies, the cell it was running
+  # finishes and banks its row. INT is Ctrl-C and means what it always means:
+  # the whole group, now.
+  trap 'stopping=1; kill -TERM "$child" 2>/dev/null || true' TERM HUP
+  trap 'stopping=1; kill -INT -- "-$child" 2>/dev/null || true' INT
+  wait "$child"; rc=$?
+  while kill -0 "$child" 2>/dev/null; do     # wait was interrupted by a trap
     wait "$child"; rc=$?
-    # >128 with the child still alive = `wait` was interrupted by our trap.
-    kill -0 "$child" 2>/dev/null || break
   done
+  # The lease outlives the command for as long as anything it started is
+  # still in its group — a cell finishing its row is still ON THE CARD, and a
+  # lease that says FREE over it is the lie this script exists to end.
+  while kill -0 -- "-$child" 2>/dev/null; do sleep 1; done
   [[ $stopping -eq 1 && $rc -eq 0 ]] && rc=143
   exit "$rc"
 }

@@ -121,6 +121,14 @@ echo "Stopping llama.cpp server..."
 # — and while a GPU lease is held that is a campaign's server, mid-measurement,
 # on a card it claimed on purpose. A pattern kill like this one destroyed a
 # live run here on 2026-09-14. Skip it and say so.
+# ...but the RECORDED llama-server is ours whatever the lease says (it is on
+# record because this stack launched it: a supervisor that was SIGKILLed above,
+# or healthcheck's no-supervisor relaunch). Skipping it too left it holding the
+# VRAM with its pidfile deleted a few lines below.
+_llama_pid="$(cat "$RUN_DIR/llama.pid" 2>/dev/null || true)"
+if ob_pid_matches "$_llama_pid" '(^|/)llama-server( |$)'; then
+  kill "$_llama_pid" 2>/dev/null && echo "llama.cpp server stopped (pid $_llama_pid)."
+fi
 if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]] \
    && _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" status 2>/dev/null | head -n1 || true)" \
    && [[ "$_lease" == HELD* ]]; then
