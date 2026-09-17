@@ -2,7 +2,7 @@
 # anchoring: an unpinned install would pull whatever PyPI has newest,
 # including a compromised release). scripts/update.sh --python bumps these,
 # but only after agents/ imports cleanly against them.
-openai==3.9.0
+openai==3.13.0
 mcp==2.2.0
 fastapi==0.141.1
 uvicorn==0.52.4
