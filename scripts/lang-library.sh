@@ -120,8 +120,10 @@ PY
 
 fetch() {                     # fetch <url> <dest>
   local url="$1" dest="$2"
+  # No `-C -` here, so a partial download can never be resumed — it can only
+  # be mistaken for something. Remove it on failure.
   curl -fsSL --retry 3 --retry-delay 2 --max-time 900 -A "$UA" \
-       -o "$dest.part" "$url" || return 1
+       -o "$dest.part" "$url" || { rm -f "$dest.part"; return 1; }
   mv "$dest.part" "$dest"
 }
 

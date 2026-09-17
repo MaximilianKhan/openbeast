@@ -117,7 +117,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 name="$(basename "$url")"
-[ -f "$CURL_ROOT/$name" ] || exit 22          # what `curl -f` does on a 404
+if [ ! -f "$CURL_ROOT/$name" ]; then
+  # CURL_PARTIAL: a transfer that died midway — bytes on disk, then failure
+  [ -n "${CURL_PARTIAL:-}" ] && printf 'half a tarb' > "$out"
+  exit 22                                      # what `curl -f` does on a 404
+fi
 cp "$CURL_ROOT/$name" "$out"
 """
 
@@ -286,3 +290,20 @@ def test_the_offline_safe_subcommands_work_without_curl(rig, tmp_path):
     # negative control: acquire DOES still need it, and says so
     p = rig.run("acquire", "zig", path=str(nocurl))
     assert p.returncode != 0 and "curl is required" in p.stderr
+
+
+def test_a_failed_fetch_leaves_no_part_file_behind(rig):
+    """fetch() downloads to <name>.part and renames on success. On failure the
+    .part stayed — and nothing here passes `curl -C -`, so it could never be
+    resumed, only mistaken for something."""
+    _zig_index(rig, {"0.16.0": b"whole tarball"})
+    p = rig.run("acquire", "zig", env={"CURL_PARTIAL": "1"})
+    assert p.returncode != 0 and "fetch failed" in p.stderr
+    left = [str(f.relative_to(rig.lib)) for f in rig.lib.rglob("*.part")]
+    assert left == [], f"partial downloads left behind: {left}"
+    # negative control: the stub really did write one (the index fetch is the
+    # only call that succeeded, so exactly one tarball attempt was made)
+    assert any("zig-x86_64-linux-0.16.0.tar.xz.part" in c for c in rig.curl_calls())
+    # and a later successful run is unaffected
+    rig.serve("zig-x86_64-linux-0.16.0.tar.xz", b"whole tarball")
+    assert rig.run("acquire", "zig").returncode == 0

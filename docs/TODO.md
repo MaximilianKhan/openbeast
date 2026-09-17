@@ -68,6 +68,25 @@ the two worst artifact bugs were invisible to every header-level test.
   "offline" flag enabled network resolution and mutated `os.environ`;
   `acquire` exited 0 with every download failed.
 
+**The adversarial pass over the fixes (5 reviewers, default-to-refuted) earned
+its keep — it caught regressions in the fixes themselves:** my
+`gpu-lease.sh` unlock (`exec 9>&- 2>/dev/null`, no command) sent the whole
+campaign's stderr to /dev/null for good, and backgrounding the command made
+Ctrl-C stop the wrapper while the campaign ran on; `stop.sh`'s new lease guard
+stranded the stack's own recorded llama-server; "Loading model" had no time
+bound; console jobs that left the stack's unit also left its memory cap (now
+capped per scope, `OPENBEAST_CHAT_JOB_MEM_PCT`); a job stopped after a server
+restart was filed `lost`; the automatic prune deleted `job.sh` logs; the
+tailscale regex took a proxy TARGET for the mount; `BIND_HOST=*` turned Host
+pinning off; `bundle.sh` matched services by line index against a stale
+backup. In beast-lang round 2: the matcher still gave 9/9 wrong cards on real
+zig diagnostics, `import unittest.__main__` EXECUTED code in the verifier, and
+a `use … as` alias walked around the Rust include/env refusals. The capability
+path itself held up in real Chromium against both a hostile page and a
+malicious artifact. Several of my own new tests leaked `sleep 300` orphans,
+read the real GPU, or self-matched `pkill -f` — fixed, and the lessons are in
+memory.
+
 **Era:** none of the six eval-hashed files moved — still `3b7c2adb8da7968d`,
 asserted by `scratch/campaign_master3.sh` before it spends a GPU-minute.
 

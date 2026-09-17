@@ -135,8 +135,12 @@ def test_a_fast_compiler_still_gets_its_output_and_exit_code_back(tmp_path):
     assert rc == 0 and "out" in out and "err" in out
     rc, out = _proc.run([bad], timeout=10)
     assert rc == 3 and "error: nope" in out
-    with pytest.raises(FileNotFoundError):
-        _proc.run([str(tmp_path / "no-such-compiler")], timeout=10)
+    # "could not be started" is a RESULT, not an exception a direct caller can
+    # forget to catch — and the driver turns it into a transient Result.
+    rc, out = _proc.run([str(tmp_path / "no-such-compiler")], timeout=10)
+    assert rc is None and "not installed" in out
+    r = D._run([str(tmp_path / "no-such-compiler")])
+    assert not r and r.transient and "not installed" in r.detail
 
 
 def test_stdin_reaches_the_child(tmp_path):
@@ -402,6 +406,7 @@ def test_a_side_effect_module_is_refused_and_nothing_is_printed(capfd):
         sys.modules.pop(mod.split(".")[0], None)
         r = py.compile_source(f"import {mod}\n")
         assert not r and "refused, not imported" in r.detail, (mod, r.detail)
+        assert r.refused, "declining to import is not a verdict on the snippet"
         assert mod.split(".")[0] not in sys.modules, f"{mod} was imported in-process"
     out, err = capfd.readouterr()
     assert out == "" and err == "", "an import wrote to the server's stdio"
@@ -472,7 +477,7 @@ def test_c_family_snippets_that_read_a_host_file_are_refused(lang, secret, monke
     for src in _c_leaks(secret):
         r = drv.compile_source(src)
         assert not r and r.detail.startswith("refused, not compiled"), (src, r.detail)
-        assert "hunter2" not in r.detail
+        assert r.refused and "hunter2" not in r.detail
     assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
 
 
@@ -548,3 +553,342 @@ def test_no_shipped_fixture_is_refused():
             n += 1
             assert drv.refusal(drv.wrap(snip)) is None, (c.id, drv.refusal(drv.wrap(snip)))
     assert n >= 40, f"only {n} snippets checked — the claim sets did not load"
+
+
+# ==========================================================================
+# round 2 — an adversarial reviewer ran round 1 against real toolchains
+# ==========================================================================
+import threading      # noqa: E402
+
+
+# --- _proc: a grandchild that leaves the group must not hold the call -------
+
+def _escaping_compiler(tmp_path, name, hang: bool, hold_s: int = 30):
+    """A 'compiler' whose worker calls setsid() — so killpg cannot reach it —
+    and keeps the inherited stdout pipe open for `hold_s` seconds."""
+    pidfile = tmp_path / f"{name}.escaped.pid"
+    exe = _script(tmp_path / name,
+                  f"#!{sys.executable}\n"
+                  "import os, sys, time\n"
+                  "if os.fork() == 0:\n"
+                  "    os.setsid()\n"
+                  f"    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+                  f"    time.sleep({hold_s})\n"
+                  "    os._exit(0)\n"
+                  "print('stub: started', flush=True)\n"
+                  + ("time.sleep(300)\n" if hang else ""))
+    return exe, pidfile
+
+
+def _kill(pidfile):
+    try:
+        os.kill(_worker_pid(pidfile), 9)
+    except (ProcessLookupError, AssertionError):
+        pass
+
+
+def test_a_timeout_does_not_wait_for_a_grandchild_that_left_the_group(tmp_path):
+    """Measured on round 1: a 1 s timeout returned after 41 s / 20 s / 16 s —
+    each the escaped grandchild's sleep. Closing an fd does not wake a thread
+    blocked in read(), and stdout.close() then waited on that thread's lock."""
+    exe, pidfile = _escaping_compiler(tmp_path, "escapecc", hang=True)
+    try:
+        t0 = time.time()
+        with pytest.raises(subprocess.TimeoutExpired) as ei:
+            _proc.run([exe], timeout=1.0)
+        took = time.time() - t0
+        assert took < 3.0, f"a 1 s timeout took {took:.1f} s"
+        assert "stub: started" in (ei.value.output or "")
+        # the case was built: the grandchild DID escape and IS still alive
+        assert _alive(_worker_pid(pidfile)), "nothing escaped — this proved nothing"
+    finally:
+        _kill(pidfile)
+
+
+def test_a_clean_exit_does_not_wait_for_it_either(tmp_path):
+    exe, pidfile = _escaping_compiler(tmp_path, "daemoncc", hang=False)
+    try:
+        t0 = time.time()
+        rc, out = _proc.run([exe], timeout=20.0)
+        took = time.time() - t0
+        assert rc == 0 and "stub: started" in out
+        assert took < 3.0, f"the call waited {took:.1f} s on a pipe held by a stranger"
+    finally:
+        _kill(pidfile)
+
+
+def test_timeouts_never_close_somebody_elses_fd(tmp_path):
+    """The double close: round 1 closed the pipe's fd under the reader and
+    then closed the file object over it. In between, another thread's open()
+    could be handed that fd number — and lose it to the second close (its
+    write failed with EBADF). 50 timeouts through the escape path, while four
+    threads open/write/close as fast as they can."""
+    exe, pidfile = _escaping_compiler(tmp_path, "hammercc", hang=True, hold_s=20)
+    stop, errors, writes = threading.Event(), [], [0]
+
+    def hammer(k):
+        path = tmp_path / f"hammer-{k}.txt"
+        while not stop.is_set():
+            try:
+                with open(path, "w") as fh:
+                    fh.write("x" * 64)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                writes[0] += 1
+            except OSError as e:
+                errors.append(e)
+
+    threads = [threading.Thread(target=hammer, args=(k,)) for k in range(4)]
+    for t in threads:
+        t.start()
+    pids = []
+    try:
+        for _ in range(50):
+            pidfile.unlink(missing_ok=True)
+            with pytest.raises(subprocess.TimeoutExpired):
+                _proc.run([exe], timeout=0.15)
+            if pidfile.exists() and pidfile.read_text().strip():
+                pids.append(int(pidfile.read_text()))
+    finally:
+        stop.set()
+        for t in threads:
+            t.join()
+        for pid in pids:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    assert writes[0] > 100, "the hammer barely ran — this measured nothing"
+    assert errors == [], f"{len(errors)} file operations failed: {errors[:3]}"
+
+
+# --- the python driver must not run code -------------------------------------
+
+@pytest.fixture()
+def booby_trapped_cwd(tmp_path, monkeypatch):
+    """A cwd holding a test_*.py that writes a marker when EXECUTED — what
+    unittest's discovery does to every such file it finds."""
+    marker = tmp_path / "PWNED"
+    (tmp_path / "test_pwn.py").write_text(
+        f"open({str(marker)!r}, 'w').write('ran')\n"
+        "import unittest\n\nclass T(unittest.TestCase):\n"
+        "    def test_x(self):\n        pass\n")
+    monkeypatch.chdir(tmp_path)
+    return marker
+
+
+@pytest.mark.parametrize("src", [
+    "import unittest.__main__\n",
+    "from unittest import __main__\n",
+    "import unittest.__main__ as m\n",
+    "import venv.__main__\n",
+    "import tkinter.__main__\n",
+    "import json.__init__.__main__\n",
+])
+def test_a_dunder_module_is_never_imported(src, booby_trapped_cwd):
+    """`unittest.__main__` passes the stdlib gate (its ROOT is unittest) and
+    has no __name__ guard: importing it ran discovery in the cwd."""
+    r = D.driver_for("python").compile_source(src)
+    assert not r and r.refused and "dunder" in r.detail, r.detail
+    assert not booby_trapped_cwd.exists(), "the claim EXECUTED code from the cwd"
+
+
+def test_the_resolver_child_does_not_even_stand_in_our_cwd(booby_trapped_cwd, monkeypatch):
+    """The belt under the refusal, tested with the refusal REMOVED: the child
+    runs in a fresh empty directory, so discovery finds nothing of ours. The
+    control proves the trap is live — the same import from this cwd fires it."""
+    py = D.driver_for("python")
+    monkeypatch.setattr(D.PythonDriver, "_unsafe", classmethod(lambda cls, m, a=None: None))
+    py.compile_source("import unittest.__main__\n")
+    assert not booby_trapped_cwd.exists(), "the child ran discovery in OUR cwd"
+    subprocess.run([sys.executable, "-c", "import unittest.__main__"],
+                   capture_output=True, timeout=60)
+    assert booby_trapped_cwd.exists(), "the trap never fires — the test above is empty"
+
+
+def test_an_attribute_walk_cannot_be_turned_into_a_dunder_import(booby_trapped_cwd):
+    """`unittest.__main__` as an ATTRIBUTE: getattr fails, and the child's
+    submodule fallback must not answer by importing it."""
+    r = D.driver_for("python").compile_source("import unittest\nunittest.__main__\n")
+    assert not r and "does not exist" in r.detail
+    assert not booby_trapped_cwd.exists()
+
+
+def test_ordinary_python_still_resolves():
+    py = D.driver_for("python")
+    for src in ("import unittest\nunittest.TestCase.assertEqual\n",
+                "from xml import etree\n",
+                "from __future__ import annotations\nimport json\n",
+                "import os\nos.path.__name__\n"):
+        assert py.compile_source(src), src
+
+
+# --- nothing of the parent's environment reaches a diagnostic ----------------
+
+ENV_SECRET = "sk-beastlang-round2-do-not-leak"
+
+
+def test_the_scrubbed_env_keeps_locations_and_drops_everything_else(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", ENV_SECRET)
+    monkeypatch.setenv("LLAMA_API_KEY", ENV_SECRET)
+    monkeypatch.setenv("GOFLAGS", "-x")
+    monkeypatch.setenv("ZIG_GLOBAL_CACHE_DIR", "/tmp/zc")
+    env = _proc.scrubbed_env()
+    assert ENV_SECRET not in env.values()
+    assert env["PATH"] == os.environ["PATH"] and env.get("HOME") == os.environ.get("HOME")
+    assert env["ZIG_GLOBAL_CACHE_DIR"] == "/tmp/zc"
+    assert "GOFLAGS" not in env, "GO* is for the go driver only"
+    go = D.GoDriver.env(CGO_ENABLED="0")
+    assert ENV_SECRET not in go.values()
+    assert go["GOFLAGS"] == "-mod=readonly" and go["GOPROXY"] == "off"
+
+
+@pytest.mark.parametrize("lang,exe", [("c", "gcc"), ("cpp", "g++"), ("rust", "rustc"),
+                                      ("zig", "zig"), ("go", "go")])
+def test_a_compiler_that_dumps_its_environment_has_nothing_to_dump(
+        lang, exe, tmp_path, monkeypatch):
+    """Toolchain-independent: the 'compiler' is a stub whose whole diagnostic
+    IS its environment. Whatever a real one can be tricked into printing, it
+    cannot print what it was never given."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _script(bindir / exe, "#!/bin/sh\nenv\nexit 1\n")
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("BEASTLANG_TEST_SECRET", ENV_SECRET)
+    drv = D.driver_for(lang)
+    r = drv.compile_source(drv.wrap("x"))
+    assert "PATH=" in r.detail, f"the stub was not what ran: {r.detail[:200]}"
+    assert ENV_SECRET not in r.detail and "BEASTLANG_TEST_SECRET" not in r.detail
+
+
+@pytest.mark.skipif(not shutil.which("rustc"), reason="rustc absent")
+def test_rustc_cannot_print_a_parent_env_var_even_with_the_refusal_off(monkeypatch):
+    """The ROOT fix for env!(): with the scan disabled the macro runs — and
+    finds nothing, because the variable was never in rustc's environment."""
+    monkeypatch.setenv("BEASTLANG_TEST_SECRET", ENV_SECRET)
+    monkeypatch.setattr(D.RustDriver, "refusal", lambda self, s: None)
+    r = D.driver_for("rust").compile_source(
+        'fn main() { compile_error!(env!("BEASTLANG_TEST_SECRET")); }\n')
+    assert not r and ENV_SECRET not in r.detail, r.detail[:300]
+    assert "not defined" in r.detail, "rustc did not evaluate env!() — control is dead"
+
+
+def test_a_macro_cannot_be_smuggled_in_under_another_name(secret):
+    rs = D.driver_for("rust")
+    for src in (f'use std::include as inc;\nfn main() {{ inc!("{secret}"); }}\n',
+                f'use std::include_str as inc;\nfn main() {{ let _ = inc!("{secret}"); }}\n',
+                f'use core::include_bytes as b;\nfn main() {{ let _ = b!("{secret}"); }}\n',
+                'use std::env as e;\nfn main() { compile_error!(e!("HOME")); }\n',
+                'use std::{option_env as oe, fmt};\nfn main() { let _ = oe!("HOME"); }\n',
+                f'pub use std::{{include_str as s}};\nfn main() {{ let _ = s!("{secret}"); }}\n'):
+        r = rs.compile_source(src)
+        assert not r and r.refused, (src, r.detail)
+        assert "hunter2" not in r.detail
+    # negative controls: the MODULE std::env, imported the way real code does
+    for src in ('use std::env;\nfn main() { let _ = env::args(); }\n',
+                'use std::fmt as f;\nuse std::env;\nfn main() { let _ = env::var("X"); }\n',
+                'use std::collections::HashMap as Map;\nfn main() { let _: Map<u8, u8> = Map::new(); }\n'):
+        assert rs.refusal(src) is None, src
+
+
+# --- a refusal is not a verdict, and a comment is not a directive -------------
+
+def test_a_refused_old_form_does_not_make_a_claim_verified(monkeypatch):
+    """Round 1 returned refusals as plain ok=False: an OLD form of VALID C
+    carrying `/* never #include "/etc/passwd" */` was refused, "failed", and
+    the claim came back VERIFIED. Rebuilt here with a stub driver so the
+    verdict logic is what is under test, on any machine."""
+    class Stub(D.Driver):
+        lang, exe = "stublang", sys.executable
+
+        def available(self):
+            return True
+
+        def version(self):
+            return "stub 1.0.0"
+
+        def refusal(self, source):
+            return "it looks dangerous" if "DANGER" in source else None
+
+        def compile_source(self, source, variant=None):
+            return self._in_tmp(source, "claim.txt", lambda p, d: ["true"])
+
+    monkeypatch.setitem(D.DRIVERS, "stublang", Stub())
+    monkeypatch.setattr(V, "_VERDICTS", {})
+    claim = V.Claim({"id": "k", "lang": "stublang", "old": ["DANGER but valid"],
+                     "new": ["fine"]}, "inline", ".")
+    r = V.verify(claim)
+    assert r["verdict"] == V.UNVERIFIABLE and "never judged" in r["detail"], r
+    assert V._VERDICTS == {}, "a refusal was remembered as a verdict"
+    # negative control: the same claim with nothing to refuse is judged
+    # (old compiles -> NOT_A_BREAK), so UNVERIFIABLE above is the refusal
+    claim.old = ["harmless and valid"]
+    assert V.verify(claim)["verdict"] == V.NOT_A_BREAK
+
+
+@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc absent")
+def test_the_reviewers_synthetic_c_claim_is_not_a_break():
+    claim = V.Claim({"id": "synthetic", "lang": "c", "variant": "c17",
+                     "old": ['/* never #include "/etc/passwd" */\nint main(void){return 0;}\n'],
+                     "new": ["int main(void){return 0;}\n"]}, "inline", ".")
+    assert V.verify(claim)["verdict"] == V.NOT_A_BREAK
+
+
+C_NOT_DIRECTIVES = [
+    '#include <stdio.h>\nint main(void){ printf("#include \\"/etc/passwd\\"\\n"); return 0; }\n',
+    '/* never #include "/etc/passwd" */\nint main(void){return 0;}\n',
+    '// #include "/etc/passwd"\nint main(void){return 0;}\n',
+    'int main(void){ const char *s = "# include </etc/shadow>"; return !s; }\n',
+    'int main(void){ const char *s = "line one\\\n#include \\"/etc/passwd\\""; return !s; }\n',
+    '#if __has_include(<stdio.h>)\n#include <stdio.h>\n#endif\nint main(void){return 0;}\n',
+]
+
+
+@pytest.mark.parametrize("src", C_NOT_DIRECTIVES)
+def test_c_text_that_only_MENTIONS_an_include_is_not_refused(src):
+    assert D.driver_for("c").refusal(src) is None, src
+    if shutil.which("gcc"):
+        assert D.driver_for("c").compile_source(src), "and it is valid C"
+
+
+def test_c_lexing_tricks_still_refuse(secret):
+    c = D.driver_for("c")
+    for src in (
+            # an unbalanced quote on the line before makes the directive LOOK
+            # like the inside of a string. It is not; cpp reads it.
+            f'const char *s = "oops;\n#include "{secret}"\nint main(void){{return 0;}}\n',
+            f"char q = '\"';\n#include \"{secret}\"\nint main(void){{return 0;}}\n",
+            f'int c = L\'"\' + sizeof("/*");\n#include "{secret}"\nconst char *z = "*/";\n',
+            f'/* a comment that ends */ #include "{secret}"\n',
+            f'/* a comment\n   that ends here */ #include "{secret}"\n',
+            f'\f#include "{secret}"\n',
+            f'int x;\r#include "{secret}"\r',
+            f'#if __has_include("{secret}")\n#error present\n#endif\n',
+            f'#if 1 && __has_include_next(<{secret}>)\n#endif\n',
+            '#if __has_include("../../../../etc/shadow")\n#endif\n',
+            f'#define H __has_include("{secret}")\n#if H\n#endif\n',
+            f'#define P "{secret}"\n#if __has_include(P)\n#endif\n'):
+        assert c.refusal(src), f"NOT refused: {src!r}"
+
+
+def test_rust_and_zig_scans_ignore_comments_and_strings(secret):
+    rs, z = D.driver_for("rust"), D.driver_for("zig")
+    for src in ('/// like include_str!("/etc/passwd") but safe\nfn main() {}\n',
+                '/* include!("/etc/passwd") /* nested */ env!("HOME") */\nfn main() {}\n',
+                'fn main() { let s = "env!(HOME)"; let _ = s; }\n',
+                'fn main() { let s = r#"include_str!("/etc/passwd")"#; let _ = s; }\n',
+                "fn f<'a>(x: &'a str) -> &'a str { x } // option_env!(\"X\")\nfn main() {}\n"):
+        assert rs.refusal(src) is None, src
+    for src in ('// @embedFile("/etc/passwd")\nconst x = 1;\n',
+                'const s = "@import(x)";\n',
+                'const s =\n    \\\\@embedFile("/etc/passwd")\n;\n'):
+        assert z.refusal(src) is None, src
+    # …and stripping them opened no bypass: a quote char that would desync a
+    # naive lexer, a comment between the macro and its `!`, doubt -> refuse
+    for src in (f"fn main() {{ let q = '\"'; let _ = include_str!(\"{secret}\"); let r = '\"'; }}\n",
+                f'fn main() {{ let _ = include_str /* " */ ! ("{secret}"); }}\n',
+                f'fn main() {{ let _ = "unterminated; let _ = include_str!("{secret}");\n'):
+        assert rs.refusal(src), f"NOT refused: {src!r}"
+    for src in (f"const q = '\"';\nconst s = @embedFile(\"{secret}\");\nconst r = '\"';\n",
+                f'const a = "oops;\nconst s = @embedFile // x\n ("{secret}");\n'):
+        assert z.refusal(src), f"NOT refused: {src!r}"

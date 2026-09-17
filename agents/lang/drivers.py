@@ -592,6 +592,11 @@ class PythonDriver(Driver):
         #   (b) every dotted attribute chain rooted at an import must resolve.
         jobs: list = []                  # a refusal string, or [mod, [parts]]
         for mod, attr in _imports(tree):
+            why = self._unsafe(mod, attr)
+            if why:
+                # Not a verdict on the snippet (see Result.refused): nothing
+                # was resolved, so nothing was learned about the claim.
+                return Result(False, why, "refused", refused=True)
             # `from unittest import __main__` is the same import as
             # `import unittest.__main__`, so the imported NAME is gated too.
             jobs.append(self._refused(mod, attr)
@@ -629,7 +634,14 @@ class PythonDriver(Driver):
         root = parts[0]
         if root not in sys.stdlib_module_names:
             return f"{mod} is not a stdlib module (refused, not imported)"
-        if root in cls.SIDE_EFFECT_MODULES:
+        return None
+
+    @classmethod
+    def _unsafe(cls, mod: str, attr: str | None = None) -> str | None:
+        """A STDLIB module whose import is an action. Unlike `_refused` this
+        says nothing about whether the name exists, so it is never a verdict."""
+        parts = mod.split(".")
+        if parts[0] in cls.SIDE_EFFECT_MODULES:
             return f"{mod} has import side effects (refused, not imported)"
         # The stdlib gate looks at the ROOT, and `unittest.__main__` has a
         # stdlib root. It also has no `if __name__` guard: importing it runs
