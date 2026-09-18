@@ -35,26 +35,37 @@ Run what CI runs, so nothing surprises you in review:
 
 ```bash
 # Tests (the CI 'test' job)
-./tests/run_tests.sh                 # structure checks + enrollment CLI + tool unit tests
-python3 -m pytest tests/ -q          # full suite (~278 tests, CPU-only)
+./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
+                                     #   offline fixes, ssd-wear) + tool unit tests + full pytest
+python3 -m pytest tests/ -q          # full suite (~1,300 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
 ruff check agents/*.py evals/*.py tests/*.py --select E9,F   # syntax + undefined names
 shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
-pip-audit -r agents/requirements.txt --disable-pip --no-deps  # dependency CVEs
+pip-audit -r agents/requirements.txt  --disable-pip --no-deps  # dependency CVEs — the direct pins
+pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whole hash-pinned closure
+./scripts/pydeps.sh verify            # the lock is current against requirements.txt
 python3 evals/suite_stats.py --check  # docs cite the generated eval counts
 ```
 
 Two workflows gate every PR (green is required):
 
-- **`ci.yml`** — the full pytest + structure suite, the doc-count check,
-  the variant-spec audit, and a repo-wide `bash -n` sweep.
+- **`ci.yml`** — installs the hash-pinned closure (`pip --require-hashes -r
+  agents/requirements.lock`) and checks the lock is current
+  (`pydeps.sh verify`), then the full pytest + structure suite, the
+  doc-count check, the variant-spec audit, and a repo-wide `bash -n` sweep.
 - **`pr-quality.yml`** — ShellCheck (error severity), Ruff (E9,F), and
-  pip-audit against the pinned deps.
+  pip-audit against both the direct pins and the lock.
 
-Dependabot opens weekly PRs for dependency bumps; CI + pip-audit validate
-them before a human merges.
+A third, `dependabot-relock.yml`, runs only on Dependabot's PRs: it
+regenerates `agents/requirements.lock` for the bumped `requirements.txt`
+and pushes it to the PR branch, because Dependabot edits only the latter.
+Dependabot opens weekly PRs; `./scripts/land-dependabot.sh` lands them one
+at a time (rebase → relock → approve the held CI runs → merge) — see
+[`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
+without the lock**: `update.sh --python` regenerates it, and CI goes red on a
+commit that moves one without the other.
 
 House rules the suite enforces (so you don't discover them in review):
 
@@ -65,9 +76,13 @@ House rules the suite enforces (so you don't discover them in review):
   timeout=...)` — use `run_reaped` (whole-process-group kill, output
   capping, rlimits). History: an orphaned grandchild once ate 122 GB of
   RAM + all swap. See `docs/TODO.md` post-mortem.
-- **Tool changes**: `agents/tools.py` is the single source of truth;
-  `agents/mcp_server.py` only wraps it. Update `docs/TOOLS.md` in the
-  same PR if the surface changes.
+- **Tool changes**: `agents/tools.py` is the single source of truth for the
+  primitives; `agents/mcp_server.py` wraps it and adds the MCP-only tools
+  (skill, agent control, artifacts, `language_reference`). `docs/TOOLS.md`
+  pins the count (18) and `tests/test_tools.py` asserts it, so a new tool is
+  a doc change in the same PR. Note the two era-hashed files (`tools.py`,
+  `runner.py`): touching either rolls the eval cache era (`scripts/eval-era.sh`),
+  which is why the artifact and language tools live in `mcp_server.py`.
 - **New config key**: it lands in **three** places in the *same* change —
   `scripts/lib/conf.sh` (the resolver, and the only authority on defaults),
   `openbeast.conf.example` (commented, with the env override named), and the

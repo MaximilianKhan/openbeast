@@ -33,7 +33,7 @@ boundary; `LLAMA_API_KEY` stays wired but off).
 >    sandbox under the repo's first CSP. See
 >    **[BEAST_ARTIFACT.md](BEAST_ARTIFACT.md)**.
 >
-> 3. **(2026-09-14) A third published surface, and it accepts WRITES.**
+> 4. **(2026-09-14) A further published surface, and it accepts WRITES.**
 >    `--publish-chat` maps `:8445` at **beast-chat** — the operator console
 >    for the rig's own agent and job sessions (watch a campaign from a phone,
 >    steer an agent, stop one, start one). This doc's premise below is that
@@ -113,8 +113,11 @@ client/server split, and the two opt-in surfaces — is diagrammed in
   SINCE SHIPPED, not shown above:
     :8443 → beast-gate :8090 → llama-server, when EDGE_GATE=true
     :8444 → dashboard :3002, /api/slot only      (--publish-slot)
+    :8445 → beast-chat :3003 (CHAT_PORT)         (--publish-chat;     BEAST_CHAT=true)
+    :8446 → beast-artifact :3004 (ARTIFACT_PORT) (--publish-artifact; BEAST_ARTIFACT=true)
     :8889 → SearXNG :8888                        (--publish-searxng)
-  The identity tool server (:3001) and agent router (:8088) are STILL never published.
+  Each --publish-* has an --unpublish-* twin. The identity tool server (:3001)
+  and agent router (:8088) are STILL never published.
 ```
 
 - `tailscale serve` terminates TLS with automatic certs on the machine's

@@ -92,6 +92,22 @@ behavior changes what a "cached result" means). Timeouts (`agent_exit_code
 prior runs" — no server start, no live calls, cache misses are recorded
 as `skipped_cache_miss` for visibility.
 
+**The era hash, and the experiment flags that fork it.** Item (e) above is
+one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it
+(`--files` lists the six with their own hashes; `--check <hash>` exits 1 if
+the tree has moved — a campaign asserts it at start and between stages, so
+rows from different code are never compared as if they were the same).
+Two experiment modes add their own era component on top, so their rows never
+replay against, or as, a baseline: `benchmark_all.py --greedy` (greedy
+decoding, the low-churn mode; env `OPENBEAST_EVAL_GREEDY=1` for `run_eval.py`,
+which has no flag) and `--packs` on either runner (Tier-3 language awareness
+packs — `agents/packs/<lang>.md` injected for tasks in that language, zig
+only today, a task-scoped `pack1-<sha8>` era; env `BEAST_PACKS=1`). Both are
+leaderboard-ineligible experiment rows. A `--escalate` arm (beast-lang's
+confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
+wiring touches two of the six era files and is a held draft PR (#90), not in
+`main`.
+
 Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}[.mi{N}].{ctx_hash}.json`
 (the `.mi{N}` segment carries the effective max-iter when a run threads one).
 Tiny (<1 KB each), atomically written via `tmp+rename`, gitignored.

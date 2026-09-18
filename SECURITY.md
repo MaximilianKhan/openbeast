@@ -47,6 +47,39 @@ The interesting attack surfaces, in rough priority order:
    or unboundedly growing `.run/inference-audit.jsonl`. A revoked device
    still being served counts, as does a device key leaking into logs,
    metrics labels, or upstream requests.
+8. **beast-chat** (`agents/chat_server.py`, opt-in `BEAST_CHAT=true`,
+   published at `:8445`) — the one published surface that accepts **writes**,
+   and `POST /api/chat/sessions` starts an agent, which is remote code
+   execution on the rig. Qualifying: reading a session, transcript or the
+   health detail without an identity (tailnet login, chat-scoped device key,
+   or the 0600 `.run/chat-local.token`); a login not on `CHAT_OPERATORS`
+   reading anything; a write (say / stop / start) with no key, a revoked key
+   or one lacking the `chat` scope; any response that distinguishes those
+   cases (the uniform 404 exists to close a membership oracle); a forged
+   `pid_start` or `cursor` in session `meta`; steering reaching an eval unit
+   (`OPENBEAST_EVAL` / `OPENBEAST_TASK_PATHS` set, or no `--steer` on argv);
+   a `Host` value outside the trusted-host allowlist reaching a route (DNS
+   rebinding); or message text appearing in `.run/chat-audit.jsonl`.
+9. **beast-artifact** (`agents/artifact_server.py`, opt-in
+   `BEAST_ARTIFACT=true`, published at `:8446`) — the first published
+   surface whose *content* is untrusted. Qualifying: a page escaping the
+   opaque-origin `sandbox` iframe or the CSP on `/raw/` responses (storage,
+   `fetch`, downloads, reaching the shell that frames it, a script from a
+   non-pinned origin); a write (publish, rollback, visibility, remove)
+   arriving from anywhere but loopback with the locality token; a login not
+   on `ARTIFACT_OPERATORS` (or `CHAT_OPERATORS` as its fallback) reading a
+   page, or a private page reaching a login other than its publisher; the
+   supporting-file capability token (`/raw/<id>/v/<n>/~<token>/`, an HMAC
+   keyed by `.run/artifact-raw.key`) being derivable by a page, or being
+   accepted as an *identity*.
+10. **The offline bundle** (`scripts/bundle.sh`) — `install` using any file
+    whose sha256 is not what `MANIFEST.json` records; `verify --key`
+    accepting a manifest whose signature does not verify against the
+    allowed-signers file for the stated namespace (`openbeast-bundle`);
+    `install` treating an *unsigned* bundle as anything but "unsigned, said
+    out loud"; a bundled wheel or weight that the repo-side lock or
+    `weights.registry` would reject being installed anyway; or a source
+    archive with symlinks extracting outside `llama.cpp/`.
 
 Out of scope: attacks requiring the attacker to already BE the admin Unix
 user; the model "misbehaving" within the permissions it was legitimately
@@ -85,6 +118,37 @@ tokens. RBAC deliberately does not apply to that path (it is a single-user
 device). The consequence worth internalizing: file contents a client agent
 reads travel to the rig as model context, so the promise is *"nothing leaves
 your tailnet"*, not *"nothing leaves this machine"*.
+
+**Two more published surfaces, each with a third identity rule.** beast-chat
+(`:8445`) and beast-artifact (`:8446`) are opt-in, bind loopback, are
+published separately from `:8443`, and are deliberately *not* behind
+beast-gate (the gate is inference-shaped; teaching it a per-path upstream
+map for one consumer is more risk than a second port). Reads on both need a
+tailnet identity their operator list allows — an unlisted login gets 404,
+never 403. Anything that **changes state** needs more: on beast-artifact,
+writes never leave loopback (the CLI proves locality with a 0600 token no
+browser can read); on beast-chat, a write needs an enrolled device key
+carrying the `chat` scope, because a proxy-injected login header is forgeable
+by anything already on the box and starting an agent is a shell. Model-
+authored pages are treated as hostile and render in an opaque-origin sandbox
+under CSP. Details: [`docs/BEAST_CHAT.md`](docs/BEAST_CHAT.md),
+[`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md).
+
+**Supply chain, and what a hash does not prove.** Container images are
+digest-pinned, every model weight is sha256-pinned in `scripts/weights.registry`,
+and the Python closure is hash-pinned in `agents/requirements.lock`
+(installed with `--require-hashes`; bootstrap never falls back to the
+unpinned file on a hash mismatch). The offline bundle (`scripts/bundle.sh`)
+carries all of that across an air gap with every file's sha256 in
+`MANIFEST.json` — which proves **integrity** (the bundle did not change in
+transit) and nothing about **authenticity**: whoever can write to the stick
+can rebuild the manifest around their own payload and every hash then
+verifies. That is why `sign` / `verify --key` exist (ssh-keygen -Y against an
+operator-supplied allowed-signers file; no key material in the repo). Wheels
+and weights have a second, repo-side check that a rebuilt manifest cannot
+touch; the images and the llama.cpp source have only the signature, so an
+unsigned bundle is accepted but *said* to be unsigned rather than trusted
+silently.
 
 ## Supported versions
 
