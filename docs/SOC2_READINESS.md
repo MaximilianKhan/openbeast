@@ -157,7 +157,7 @@ Ranked by what a reviewer will find first. Tracked in [`TODO.md`](TODO.md).
 | 3 | **No usage accountability per principal.** beast-gate rate-limits requests but not tokens or wall-clock, so one device can consume unbounded compute and starve others. There is no quota and no usage report. | CC6.1, A1.1 | M |
 | 4 | **Enrollment is out-of-band and keys never expire.** No request-and-approve flow, no expiry, no scheduled rotation. | CC6.2, CC6.3 | M |
 | 5 | **Revocation does not terminate an in-flight stream.** | CC6.2 | S |
-| 6 | **No decommissioning path.** There is no rig-side uninstall, so secure disposal is a manual checklist. | CC6.5 | M |
+| 6 | ~~No decommissioning path.~~ **Closed 2026-09-17:** `scripts/uninstall.sh` is the rig's decommissioning path — dry run by default, `--go` stops/unpublishes/removes units and runtime state, `--purge-*` for weights, the WebUI data volume, the workspace and the secrets. What remains manual: disk-level secure erase of the media. | CC6.5 | S |
 | 7 | **No formal SBOM.** Components are pinned and inventoried, but nothing emits CycloneDX or SPDX. | CC9.2 | S |
 | 8 | **No log-integrity guarantees.** Audit logs are append-only JSONL on local disk, with no signing, no tamper evidence and no forwarding to an external SIEM. An assessor will ask whether an administrator could edit them. | CC7.2, CC7.3 | M |
 | 9 | **No encryption at rest.** Prompts, transcripts and audit logs sit in plaintext on the host. Full-disk encryption is assumed but neither enforced nor checked. | CC6.1 (Confidentiality) | S to check, customer to implement |
