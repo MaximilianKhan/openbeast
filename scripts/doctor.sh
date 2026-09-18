@@ -42,9 +42,9 @@ if command -v ob_detect_gpu >/dev/null 2>&1; then
   ob_detect_gpu 2>/dev/null || true
   if [[ "${OB_GPU_VENDOR:-none}" == "none" ]]; then
     warn "no supported GPU detected" "CPU-only works but the 27B default is impractical"
-  elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt 11000 ]]; then
-    fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 11 GB floor" \
-         "OpenBeast targets 1080 Ti / 2080 Ti class and up (docs/HARDWARE_PROFILES.md)"
+  elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt "${OB_VRAM_FLOOR_MB:-22000}" ]]; then
+    fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor" \
+         "OpenBeast targets 3090 / 4090 class and up (docs/HARDWARE_PROFILES.md)"
   else
     pass "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB:-?} MiB VRAM)"
   fi

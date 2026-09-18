@@ -653,10 +653,9 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 **To run the rig (server):**
 
-- NVIDIA GPU with CUDA and **at least 11 GB VRAM** (1080 Ti / 2080 Ti class or better — bootstrap enforces this floor). Tested on RTX 5090; works on 3090/4090 (auto-detected CUDA arch + per-tier config recommendation, see [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md)).
+- NVIDIA GPU with CUDA and **at least 24 GB VRAM** — the 3090 / 4090 class, and bootstrap enforces this floor. The shipped defaults are tuned and measured on an RTX 5090 (32 GB); on a 24 GB card `serve.sh` auto-scales context to fit, and the per-tier notes are in [`docs/HARDWARE_PROFILES.md`](docs/HARDWARE_PROFILES.md). Smaller cards are deliberately unsupported: OpenBeast ships the largest models that earn their VRAM, not survival configs.
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model; each additional model 16–24 GB
-- VRAM: 24 GB minimum for the smaller quants; 32 GB for the defaults
 
 **To run a client** — far less, because the rig does the thinking:
 

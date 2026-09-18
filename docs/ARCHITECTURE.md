@@ -115,7 +115,7 @@ flowchart TB
 
     subgraph INFPLANE["🧠 INFERENCE PLANE — the ONLY surface published to the tailnet"]
         gate["🛡️ <b>beast-gate</b> · :8090 <i>(opt-in)</i><br/><code>agents/edge.py</code><br/>per-device keys · route allowlist<br/>rate + in-flight caps · audit<br/><i>authenticates the DEVICE</i>"]
-        llama["<b>llama.cpp server</b> · :8080<br/>OpenAI-compatible · continuous batching<br/>unified KV · MTP speculative decode<br/>context auto-scaled to VRAM · 11 GB floor"]
+        llama["<b>llama.cpp server</b> · :8080<br/>OpenAI-compatible · continuous batching<br/>unified KV · MTP speculative decode<br/>context auto-scaled to VRAM · 24 GB floor"]
         gate --> llama
     end
 
@@ -245,7 +245,7 @@ flowchart TB
 - **Inference.** llama.cpp serves an OpenAI-compatible API with MTP
   speculative decoding; `serve.sh` auto-scales context to the card's VRAM
   (the shipped default serves 350K context across six unified-KV slots on the
-  32 GB reference card), and bootstrap refuses GPUs under the 11 GB floor.
+  32 GB reference card), and bootstrap refuses GPUs under the 24 GB floor.
 
 ## Project structure
 

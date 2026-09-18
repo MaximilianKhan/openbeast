@@ -19,22 +19,22 @@ Current advisory tiers (single NVIDIA GPU):
 | VRAM | Class | Recommendation | Status |
 |---|---|---|---|
 | ≥ 30 GB | 5090 / A6000 | Shipped defaults as-is | **Measured** (reference) |
-| 22–30 GB | 3090 / 4090 | Default model, `-c 131072` (128K) start, or Q4 quant; keep ~2 GB headroom | Unmeasured, conservative |
-| 15–22 GB | 16 GB-class | Q4/Q3 of a ~14B model, or partial offload (`-ngl`) | Unmeasured |
-| 11–15 GB | 1080 Ti / 2080 Ti / 3060 12GB | Smallest supported tier; expect small quants + short contexts | Floor tier, unmeasured |
-| **< 11 GB** | — | **BLOCKED at bootstrap** | **Below the floor** |
+| 24–30 GB | 3090 / 4090 | Default model, context auto-scaled by `serve.sh`; or a Q4 quant for far more context; keep ~2 GB headroom | Floor tier — unmeasured, conservative |
+| **< 24 GB** | 16 GB-class, 1080 Ti / 2080 Ti / 3060 12GB, and smaller | **BLOCKED at bootstrap** | **Below the floor** |
 | Multi-GPU | e.g. 2x 3090 Ti | `--tensor-split`; hand-tune `-c` for now | Phase 2 |
 
-**The 11 GB floor (Max, 2026-07-09 — enforced by `ob_vram_floor_check` in
-`scripts/lib/hardware.sh`, called from bootstrap):** OpenBeast is an
-opinionated distribution — "max intelligence, no compromise." Below the
-1080 Ti / 2080 Ti class (11 GB), every shipped model needs quants and
-contexts so degraded that the result is not the product we test or stand
+**The 24 GB floor (Max, 2026-09-17; it was 11 GB from 2026-07-09 — enforced
+by `ob_vram_floor_check` in `scripts/lib/hardware.sh`, called from bootstrap,
+and reported by `./start.sh doctor`):** OpenBeast is an opinionated
+distribution — "max intelligence, no compromise." The shipped default is
+~21 GB of weights; below the 3090 / 4090 class nothing we ship runs at a
+context worth the name, and every configuration that would is a quant and a
+window so degraded that the result is not the product we test or stand
 behind. Running llama.cpp on less is *possible* — it just isn't OpenBeast,
-and we won't pretend to support it. 11 GB+ cards are cheap and plentiful
-secondhand; that investment is on the user. Bootstrap hard-fails under the
-floor; `OPENBEAST_FORCE_VRAM=1` proceeds unsupported, and we test nothing
-there.
+and we won't pretend to support it. The threshold is 22 000 MiB, because a
+24 GB card reports ~24.5 GB (a 3090: 24 564 MiB) and the number has to admit
+the class it names. Bootstrap hard-fails under the floor;
+`OPENBEAST_FORCE_VRAM=1` proceeds unsupported, and we test nothing there.
 
 AMD: llama.cpp builds with `-DGGML_HIP=ON` (ROCm ≥ 6); serve scripts work
 unchanged once `llama-server` is HIP-built. Intel Arc: `-DGGML_SYCL=ON`
