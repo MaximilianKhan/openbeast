@@ -724,6 +724,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
+| v1.5.0 *(next)* | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
 | v1.3.0 | beast-artifact 🎨 | [RELEASE_NOTES_v1.3.0.md](docs/RELEASE_NOTES_v1.3.0.md) |
 | v1.2.0 | beast-assist 🔧 | — |
@@ -731,8 +732,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.0 | the rig | — |
 
 Everything marked `main` in [What ships](#what-ships) — beast-lang, the
-air-gap path, beast-campaign — plus the post-v1.4.0 hardening lands in the next
-release.
+air-gap path, beast-campaign — plus the post-v1.4.0 hardening is v1.5.0.
 
 ## Uninstall
 
