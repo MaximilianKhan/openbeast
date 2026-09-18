@@ -21,6 +21,38 @@
   can now publish their own tables with a stable id per verdict (a rerun
   becomes version 2 of the same URL instead of a new link). Not wired yet.
 
+## ⏭ NEXT — decided 2026-09-17 night, for when Max revisits
+
+**Tier-3 verdict (2026-09-17): SHIP.** The zig awareness pack on Qwen3.8-27B
+Uncensored: net +13 rescues (20/7, McNemar p = 0.019), replicated +5/+8;
+2.9 fewer iterations-to-fix (p = 0.008). Champion guard clean by the
+pre-registered rule (p = 0.17) but *negative in direction* (14 vs 21, n = 1).
+Record: `scratch/tier3-verdict.txt`, journal in the research repo.
+
+**beast-assist and beast-lang both stay — they are not redundant.** Assist is
+the reactive sensor (compiler verdict after a write; small measured effect,
+zero regressions). The pack is proactive (facts before the write) and is the
+arm that won. Escalation (#90) is the bridge and needs both. The one genuine
+overlap is assist's hand-curated `_ZIG_FIX_HINTS` table in `agents/tools.py`,
+which the generated escalation index supersedes — retire it after #90's A/B.
+
+**The winning arm reaches no production model yet.** Only the eval harness
+injects the pack (`--packs` → `runner.py --context-file`). In order, each on
+Max's go:
+
+1. **Wire the pack into production, gated per model** via the `LANG_PACKS`
+   allow list — on for Qwen3.8-unc, **off for the Qwen3.6 champion** until it
+   has its own replicate. `start.sh` / `configure-webui.sh` wiring; touches no
+   era-hashed file; live-check on `beastup`.
+2. **Resume the campaign** (`master4` = greedy floor → IQ2) for the churn floor
+   the +13 is read against. Run 1 of the floor was SIGKILLed by something at
+   21:12 on 09-17 (not by us, no OOM); 21 units are cached. The stack has to
+   come down for it.
+3. **Merge draft #90** at that boundary (the eval era rolls), run the P4 zig
+   mini-A/B (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the
+   index wins.
+4. Max's own: `scratch/prune-2026-09-17.sh --go --sudo`.
+
 ## 🧭 FABLE REVIEW 2026-09-17 — what a fresh read found after the 152-agent pass
 
 Max's order: review beast-chat, beast-artifact and everything else merged on
