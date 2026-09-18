@@ -2418,7 +2418,7 @@ else
   fail "--purge-all: $(ls -a "$_UN/rig" | tr '\n' ' ') :: log=$(tr '\n' '|' < "$_UN/log")"
 fi
 _un_build
-_UN_OUT="$(_un --bogus 2>&1)"; _UN_RC=$?
+_UN_RC=0; _UN_OUT="$(_un --bogus 2>&1)" || _UN_RC=$?   # set -e: never `; rc=$?` after a failing substitution
 if [[ $_UN_RC -eq 2 && -d "$_UN/rig/.run" && ! -s "$_UN/log" ]]; then
   pass "an unknown flag is a usage error, and nothing runs"
 else
