@@ -24,17 +24,21 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 
-LLAMA_URL="${LLAMA_URL:-http://localhost:8080}"
-MCPO_URL="${MCPO_URL:-http://localhost:3001}"
-WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
-SEARXNG_URL="${SEARXNG_URL:-http://localhost:8888}"
-
-# Where restarted services actually answer (same mapping start.sh uses):
-# loopback for loopback/wildcard binds, the address itself otherwise.
+# Where the services actually answer (same mapping start.sh uses): loopback
+# for loopback/wildcard binds, the address itself otherwise. llama-server,
+# the tool server, Open WebUI and SearXNG all bind BIND_HOST, so the core
+# probes below derive from it too — they were hard-wired to localhost, and on
+# a rig with BIND_HOST set to its LAN address the watchdog saw four healthy
+# services as DOWN and restarted them every five minutes.
 case "$BIND_HOST" in
-  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
-  *)                   HEALTH_HOST="$BIND_HOST" ;;
+  127.*|localhost|0.*|::) HEALTH_HOST="127.0.0.1" ;;
+  *)                      HEALTH_HOST="$BIND_HOST" ;;
 esac
+
+LLAMA_URL="${LLAMA_URL:-http://$HEALTH_HOST:8080}"
+MCPO_URL="${MCPO_URL:-http://$HEALTH_HOST:3001}"
+WEBUI_URL="${WEBUI_URL:-http://$HEALTH_HOST:3000}"
+SEARXNG_URL="${SEARXNG_URL:-http://$HEALTH_HOST:8888}"
 
 # beast-chat binds OPENBEAST_CHAT_BIND (loopback by default), NOT BIND_HOST.
 # (`set -u`: the variable is normally UNSET, so every use carries a default —
@@ -216,7 +220,7 @@ if ! check "Tool server" "$MCPO_URL/health" "ok"; then
     echo "$MCPO_NEW_PID" > "$REPO_DIR/.run/mcpo.pid"
     MCPO_OK=0
     for _i in $(seq 1 15); do
-      if curl -s --max-time 2 "http://$HEALTH_HOST:3001/health" 2>/dev/null | grep -qi ok; then
+      if curl -s --max-time 2 "$MCPO_URL/health" 2>/dev/null | grep -qi ok; then
         MCPO_OK=1
         break
       fi

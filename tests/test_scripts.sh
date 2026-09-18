@@ -2333,10 +2333,13 @@ cp "$REPO_DIR"/scripts/lib/*.sh "$_E2E/repo/scripts/lib/"
 for _c in curl docker tailscale nvidia-smi sudo systemctl; do
   printf '#!/bin/bash\nexit 1\n' > "$_E2E/bin/$_c"; chmod +x "$_E2E/bin/$_c"
 done
-for _mode in "default" "BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true"; do
+# The stub curl also RECORDS every URL it is asked for.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http* ]] && echo "$a" >> "${E2E_CURL_LOG:-/dev/null}"; done\nexit 1\n' > "$_E2E/bin/curl"
+for _mode in "default" "BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true" "BIND_HOST=192.0.2.9"; do
   : > "$_E2E/repo/openbeast.conf"
   for _kv in $_mode; do [[ "$_kv" == *=* ]] && echo "$_kv" >> "$_E2E/repo/openbeast.conf"; done
-  _E2E_OUT="$(env -i HOME="$_E2E/home" PATH="$_E2E/bin:/usr/bin:/bin" \
+  : > "$_E2E/curl.log"
+  _E2E_OUT="$(env -i HOME="$_E2E/home" PATH="$_E2E/bin:/usr/bin:/bin" E2E_CURL_LOG="$_E2E/curl.log" \
                 bash "$_E2E/repo/scripts/healthcheck.sh" 2>&1 || true)"
   if [[ "$_E2E_OUT" != *"unbound variable"* && "$_E2E_OUT" == *"Stack health check"* \
         && "$_E2E_OUT" == *"DOWN llama.cpp server"* && "$_E2E_OUT" =~ (unhealthy|healthy) ]]; then
@@ -2344,8 +2347,18 @@ for _mode in "default" "BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true"; do
   else
     fail "healthcheck.sh died before its summary ($_mode): $(tail -n 3 <<< "$_E2E_OUT" | tr '\n' ' ')"
   fi
-  if [[ "$_mode" != default && "$_E2E_OUT" != *"beast-chat console"* ]]; then
+  if [[ "$_mode" == BEAST_CHAT* && "$_E2E_OUT" != *"beast-chat console"* ]]; then
     fail "control: the chat branch did not run, so this test proved nothing"
+  fi
+  # The core probes follow BIND_HOST (the four services bind it); chat stays
+  # loopback (it binds OPENBEAST_CHAT_BIND, not BIND_HOST).
+  if [[ "$_mode" == BIND_HOST=* ]]; then
+    if grep -q "^http://192.0.2.9:8080/health" "$_E2E/curl.log" && grep -q "^http://192.0.2.9:3001/health" "$_E2E/curl.log" \
+       && grep -q "^http://192.0.2.9:3000/" "$_E2E/curl.log" && ! grep -q "^http://localhost:" "$_E2E/curl.log"; then
+      pass "with BIND_HOST set to a LAN address, every core probe asks that address (was: localhost → false DOWN)"
+    else
+      fail "core probes ignore BIND_HOST: $(tr '\n' ' ' < "$_E2E/curl.log")"
+    fi
   fi
 done
 rm -rf "$_E2E"
