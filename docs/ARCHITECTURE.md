@@ -257,7 +257,7 @@ bootstrap.sh                 # git clone → working stack (--preflight, --minim
 
 scripts/                     # Server, ops, and feature CLIs
   serve.sh / run.sh          # Generic launchers (pick model with -m)
-  serve-<model>.sh           # Model-specific API servers (26 pre-configured)
+  serve-<model>.sh           # Model-specific API servers (23 pre-configured)
   serve-bootstrap.sh         # Tiny 0.6B bridge for fast-boot (FAST_BOOT)
   configure-webui.sh         # Auto-configure Open WebUI (tools + system prompt)
   healthcheck.sh             # Watchdog (--restart): knows a LOADING model from a dead one
@@ -317,14 +317,14 @@ tests/                       # pytest + standalone shell suites (tests/run_tests
 
 evals/                       # Eval harness — 137 tasks / 291 units + multi-model benchmark
   README.md                  # Distribution table, schema, scoring (start here)
-  run_eval.py                # Single-model runner (--jobs, --suite, --greedy, --packs, --escalate)
+  run_eval.py                # Single-model runner (--jobs, --suite, --packs; greedy via OPENBEAST_EVAL_GREEDY)
   benchmark_all.py           # Multi-model sweep orchestration (server start/stop + recovery)
   scoring.py                 # v2 capability metric + per-category & per-language breakdown
   cache.py                   # Durable result cache, keyed on the era hash of the harness code
   suites/ · tasks/ · results/ · leaderboard.json
 
 docs/                        # 34 documents — see README.md § Documentation
-skills/                      # 16 curated expertise packages (skills/README.md)
+skills/                      # 15 curated expertise packages (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only)                    [era-hashed]
 opencode.json                # OpenCode project config (MCP wiring + model list) [era-hashed]

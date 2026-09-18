@@ -67,7 +67,7 @@ was the problem. Three features close it:
   wheelhouse and installs from one. A genuine hash mismatch is now fatal — it
   used to fall back to an unpinned install, which is the one thing the lock
   exists to prevent — and a stale lock is refused rather than installing the
-  old versions under a green check.
+  old versions under a green check (it falls back to `requirements.txt`, loudly; fatal under `OPENBEAST_PIP_STRICT=1`).
 - **The signed bundle.** `scripts/bundle.sh build --with-weights` packs the
   container images (by content ID, which survives `docker save/load`), the
   wheelhouse, the weights and the source; `sign` signs the manifest with any
@@ -136,7 +136,7 @@ Test count: 1041 → 1224 pytest, plus five standalone shell suites.
 
 - **The `beast-lang` skill** for cloud models working in this repo, and a
   `prompt_index: false` opt-out so a skill can exist without rolling the eval
-  era by entering the always-on prompt menu (14 → 16 skills).
+  era by entering the always-on prompt menu (14 → 15 skills).
 - `./start.sh doctor` notices an expiring certificate, `--preflight` no longer
   claims readiness it cannot know, eval rows record which llama.cpp produced
   them, and fast boot can no longer kill the stack.

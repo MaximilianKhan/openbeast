@@ -362,7 +362,7 @@ flowchart TB
       subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
         direction LR
         weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
-        skills["📚 <b>skills/</b> · 16"]
+        skills["📚 <b>skills/</b> · 15"]
         evals["📊 <b>evals/</b><br/>leaderboard · era hash"]
         store["🗂️ <b>artifacts/</b> · <b>sessions/</b>"]
       end
@@ -601,7 +601,7 @@ best-your-card-can-hold config on day one) and gives you a clear ladder to grow
 
 ## Models
 
-Twenty-six models ship pre-configured, every one measured for VRAM and context
+Twenty-three models ship pre-configured, every one measured for VRAM and context
 on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
 Blackwell NVFP4, community MTP builds, and a **177B Qwen3.8-Flash-Next MoE**
 that runs with its experts in system RAM. The default is **Qwen3.8 27B
