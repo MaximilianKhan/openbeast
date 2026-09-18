@@ -4,7 +4,7 @@ The single source of truth for **every tool a model can call in OpenBeast**:
 what it does, where the code lives, what external software powers it, and
 which surfaces can see it.
 
-TL;DR: **all 17 MCP tools are custom OpenBeast code** — there is no
+TL;DR: **all 18 MCP tools are custom OpenBeast code** — there is no
 third-party tool plugin in the chain. The open source projects we pull in
 (llama.cpp, Open WebUI, SearXNG, OpenCode) provide *serving, frontends,
 and search*; the transport is our own identity tool server
@@ -14,10 +14,10 @@ and search*; the transport is our own identity tool server
 
 | Surface | Transport | Where tools execute | Tools visible |
 |---|---|---|---|
-| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 17 (admin) / 2 (guest — see RBAC) |
-| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 17 from us, *plus OpenCode's own built-in tools* (see below) |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 18 (admin) / 2 (guest — see RBAC) |
+| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 18 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 10 |
-| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 17, inference over the tailnet at `:8443` |
+| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 18, inference over the tailnet at `:8443` |
 
 The client row is the one that breaks the usual assumption: tools execute
 where the *process* runs, not where the model runs. On a client, `bash`,
@@ -30,7 +30,7 @@ device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
 client ever needs one. See `docs/BEAST_SLOT.md`.
 
-## The 17 MCP tools
+## The 18 MCP tools
 
 All implemented in this repo. `agents/tools.py` holds the hardened
 implementations; `agents/mcp_server.py` registers them with MCP and adds the
@@ -103,6 +103,40 @@ neither is in the autonomous runner's registry — background agents publish
 through `scripts/artifact.sh` with `bash`. Authoring rules, the sandbox/CSP
 posture, versions and visibility: [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
 
+### Language reference (1) — `agents/mcp_server.py`
+
+`language_reference(language, topic="", error="")` — beast-lang's **pull**
+surface ([`docs/BEAST_LANG_PLAN.md`](BEAST_LANG_PLAN.md) §7 P5): a read-only
+window onto what the toolchain **installed on this rig** confirmed about a
+language. `error` given → the cards for that compiler diagnostic (the same
+matcher the escalation layer uses); `topic` given → the VERIFIED claims whose
+topic, summary or named identifiers match, most specific first, plus what the
+toolchain answers when asked about that one name (GENERATED, labelled —
+"`std.io` does NOT exist … the installed spelling is `std.Io`"); neither →
+the language's pack. Three properties are the point:
+
+- **It never improvises.** Every line is VERIFIED (old form compiled and
+  failed, new form compiled — re-checked at the moment of asking) or
+  GENERATED (the toolchain was asked). A miss says "no verified reference
+  for …"; there is no fuzzy match and no prose tier.
+- **It cannot raise and it is bounded.** It goes through the no-raise facade
+  in `agents/lang/__init__.py`, imports it lazily (a broken beast-lang costs
+  this one tool an `Error:`, not the surface), and clips at ~8 KB on a line
+  boundary, saying so. With the toolchain absent, or a language off the
+  `LANG_PACKS` allow list, the answer is the list of languages this rig *can*
+  serve.
+- **It is not how a local model learns a language.** The repo measured that
+  local models do not call optional tools (plan §2.1), so delivery for them is
+  push (the pack) and escalate (the compile-error card). This tool is for the
+  caller that does stop to look something up — a cloud model, a person at the
+  WebUI — which is why it is **not** in the runner's registry below and must
+  clear a v5-suite eval before it ever is. The companion for cloud models
+  working *in this repo* is the `beast-lang` skill.
+
+Admin profile only: it is harmless, and `GUEST_TOOLS` stays web-only anyway
+(guest → 404) — a profile that is "web-only plus whatever looked safe" is not
+one anybody can reason about.
+
 ## The autonomous runner's 10 tools
 
 `agents/runner.py` binds `TOOL_SCHEMAS` from `agents/tools.py` directly (no
@@ -130,7 +164,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server |
 | **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
-| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 17 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
+| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 18 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
 ## RBAC visibility (who sees what)
@@ -138,7 +172,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 17 tools.
+- **Admin** (WebUI admin role): all 18 tools.
 - **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
@@ -166,27 +200,29 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 > role header is absent (e.g. header forwarding disabled). Details:
 > `docs/RBAC_PLAN.md`.
 
-## Why 17 and not more
+## Why 18 and not more
 
 Deliberate, and the number has moved in both directions. The production review
 (`docs/archive/PRODUCTION_ROADMAP.md` §B) found the pain was *too much
 always-on meta-machinery for a local model's context* — which is why the
 skill-discovery trio was collapsed into the single `skill` tool, taking the
 surface from 17 down to 15 (7 of those 15 still agent-mgmt/skills plumbing).
-beast-artifact's two tools took it back to 17 in 2026-09; they are capability,
-not plumbing, so the meta-machinery share went *down*, from 7/15 to 7/17.
+beast-artifact's two tools took it back to 17 in 2026-09 and beast-lang's
+`language_reference` to 18; all three are capability, not plumbing, so the
+meta-machinery share went *down*, from 7/15 to 7/18.
 
 **The real argument is tool-selection accuracy, which degrades as a registry
-grows — so note which surface the two new tools do and do not appear on.** The
+grows — so note which surface the three new tools do and do not appear on.** The
 surface where a bad pick costs most is the autonomous runner's: it chooses a
-tool every turn, unattended, with nobody to correct it. `publish_artifact` and
-`list_artifacts` ship on the **MCP/WebUI surface only** and are deliberately
-**not** in `agents/runner.py`'s 10-tool registry, so the runner's selection
-pressure is byte-for-byte what it was before — a background agent that wants a
-URL shells out to `scripts/artifact.sh` through `bash`. (The same split is what
-keeps `agents/tools.py` unchanged, so the eval cache era doesn't roll;
-`evals/cache.py`.) On the MCP/WebUI side a human is in the loop and "publish
-this as a page" is an unambiguous ask.
+tool every turn, unattended, with nobody to correct it. `publish_artifact`,
+`list_artifacts` and `language_reference` ship on the **MCP/WebUI surface only**
+and are deliberately **not** in `agents/runner.py`'s 10-tool registry, so the
+runner's selection pressure is byte-for-byte what it was before — a background
+agent that wants a URL shells out to `scripts/artifact.sh` through `bash`, and
+one that wants language notes gets them pushed (`BEAST_PACKS`) rather than
+asking. (The same split is what keeps `agents/tools.py` unchanged, so the eval
+cache era doesn't roll; `evals/cache.py`.) On the MCP/WebUI side a human is in
+the loop and "publish this as a page" is an unambiguous ask.
 
 Further expansion is planned and researched — sandboxed execution (Sandlock),
 semantic code search (ChunkHound), and a Playwright browsing *skill* — in

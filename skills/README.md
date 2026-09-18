@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (14 skills)
+## Currently shipped (15 skills)
 
 ### Universal-applicability (Tier 1)
 
@@ -41,6 +41,7 @@ The model discovers them via MCP and loads them on demand. See
 |---|---|
 | `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
+| `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
 
 ## How the model uses them
 
@@ -88,6 +89,7 @@ recommends_subagent: false
 | `description` | yes | What and when. Keep it short. |
 | `allowed_tools` | no | Recommended tool subset (advisory, not enforced in v1) |
 | `recommends_subagent` | no | If `true`, prefer invoking via `start_skill_agent` for long-running work |
+| `prompt_index` | no | `false` keeps the skill out of the always-on menu that `scripts/generate-skill-index.py` writes into `system-prompt-tools.md` — it stays reachable through `skill()` / `skill(name)`. For skills aimed at cloud models: the menu costs a local model tokens every turn, and that file is hashed into the eval cache era |
 
 ## Repo vs global
 

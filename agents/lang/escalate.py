@@ -373,6 +373,27 @@ def build_index(langs: list[str] | None = None) -> dict:
     return index
 
 
+def write_index(fresh: dict) -> dict:
+    """Write `fresh` over the committed index WITHOUT losing what it could not
+    rebuild. build_index() skips a language whose toolchain is absent (and
+    every language but one under --lang), and the old `json.dump(fresh)`
+    wrote exactly that: `--rebuild --lang python` deleted zig and cpp from
+    the index, and a full --rebuild on a box without zig deleted zig. An
+    entry that was not rebuilt is KEPT as it was — it still carries its own
+    toolchain stamp, so cards_for() refuses it if it has gone stale.
+    Returns the merged index."""
+    merged = load_index()
+    merged["_comment"] = fresh.get("_comment", merged.get("_comment", ""))
+    merged.setdefault("langs", {}).update(fresh.get("langs") or {})
+    merged = {"_comment": merged["_comment"],
+              "langs": dict(sorted(merged["langs"].items()))}
+    tmp = f"{INDEX_PATH}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(merged, fh, indent=1)
+    os.replace(tmp, INDEX_PATH)
+    return merged
+
+
 def load_index() -> dict:
     try:
         return json.load(open(INDEX_PATH))
@@ -466,8 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
             print(f"escalate-index.json matches ({', '.join(fresh['langs']) or 'nothing rebuildable here'})")
             return 0
-        with open(INDEX_PATH, "w") as fh:
-            json.dump(fresh, fh, indent=1)
+        write_index(fresh)
         for lang, e in fresh["langs"].items():
             print(f"{lang}: {len(e['signatures'])} signatures from "
                   f"{e['fixtures_with_diagnostics']} diagnostics "

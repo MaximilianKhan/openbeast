@@ -40,7 +40,7 @@ def registered_tools(env_value=None):
 
 def test_default_registers_all_tools():
     tools = registered_tools(None)
-    assert len(tools) == 17, tools
+    assert len(tools) == 18, tools
     assert "bash" in tools and "web_search" in tools
 
 
@@ -52,7 +52,7 @@ def test_guest_allowlist_registers_only_web_tools():
 def test_empty_allowlist_means_no_filtering():
     # Empty / whitespace value = unset (never "zero tools" by accident).
     tools = registered_tools("")
-    assert len(tools) == 17, tools
+    assert len(tools) == 18, tools
 
 
 def test_allowlist_tolerates_spaces():

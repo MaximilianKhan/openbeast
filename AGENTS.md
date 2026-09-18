@@ -3,7 +3,7 @@
 You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
 serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
 a 137-task eval suite (v4 — 291 effective units with multi-language variants,
-across 12 categories), and 14 curated skills for specialized work.
+across 12 categories), and 15 curated skills for specialized work.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -42,7 +42,7 @@ arithmetic is wrong, and `/api/slot`'s `capacity.ctx_*` exists because of it.
 
 ## Use skills first
 
-You have access to **14 curated skills** via two MCP tools:
+You have access to **15 curated skills** via two MCP tools:
 
 - `skill()` — see all available skills (one line each; rescans disk every call)
 - `skill(name)` — read the full skill body inline
@@ -69,6 +69,7 @@ whether one matches. Skills encode hard-won lessons — don't reinvent them.
 | Intractable problem, exhausted obvious paths, "consult the council" | `deep-counsel` |
 | User wants to add a new eval task to the suite | `eval-task-author` |
 | User wants multi-language variants (Py/Go/C/C++/Rust/Zig) on an existing task | `eval-variant-porter` |
+| Touching `agents/lang/`, packs, claims or the escalation index — or about to write zig 0.16 / C++ / Python here and unsure an API still exists | `beast-lang` |
 
 When multiple skills could apply, pick the one most-specific to the task.
 You can also chain — e.g., `codebase-onboarding` → `spec-extraction` →

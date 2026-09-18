@@ -26,6 +26,10 @@ Artifacts (a durable URL for anything the model renders):
   - publish_artifact: publish an HTML file as a versioned page on the rig
   - list_artifacts: list published pages (title, URL, versions, visibility)
 
+Language reference (beast-lang, the PULL surface):
+  - language_reference: what the INSTALLED toolchain confirmed about a
+    language — the pack, the cards for a compile error, or one topic
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -1284,7 +1288,7 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
 # The store (agents/artifact.py) is imported INSIDE each function, never at
 # module scope: beast-artifact is opt-in (BEAST_ARTIFACT), and a missing or
 # broken module must degrade to one tool returning "Error: ..." rather than
-# taking the other 16 tools down with an ImportError at registration time.
+# taking the other 17 tools down with an ImportError at registration time.
 #
 # Both tools call the store IN PROCESS. They do not speak HTTP to
 # agents/artifact_server.py: that server exists to *serve* the pages (and is
@@ -1576,6 +1580,133 @@ def list_artifacts(limit: int = 25) -> str:
     lines.append('Update one in place: publish_artifact(path, '
                  'artifact_id="<id>") — the id is the last part of the URL.')
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# beast-lang — the pull surface (docs/BEAST_LANG_PLAN.md §7 P5)
+# ---------------------------------------------------------------------------
+# ON THIS SURFACE ONLY. The plan is explicit and so is docs/TOOLS.md: the
+# autonomous runner picks a tool every turn with nobody to correct it, and
+# tool-selection accuracy at 27B degrades with registry size — so this does
+# NOT join agents/tools.py's registry until it clears a v5-suite eval (and
+# that file is hashed into the eval cache era besides). For the local model
+# the delivery that works is push (the pack) and escalate (the compile-error
+# card); this tool is for the caller that does stop to look something up.
+#
+# `lang` is imported INSIDE the function, like `artifact` above: a broken or
+# missing beast-lang must cost one tool an "Error: …", not take the other 17
+# down at registration. And it goes through the package's no-raise facade
+# (agents/lang/__init__.py) — everything under that reads JSON a person can
+# corrupt and runs compilers that can hang or be absent.
+
+#: A few KB. The default pack budget is 2,000 tokens at 4 chars/token, so a
+#: whole pack fits; anything larger is cut on a line boundary and SAYS so.
+_LANG_REF_MAX_CHARS = 8192
+#: An error message worth matching is in its first few KB (the drivers keep
+#: 256 KB; the matcher reads lines). Bounded so a pasted build log cannot make
+#: the signature extractor chew through megabytes.
+_LANG_REF_MAX_ERROR_CHARS = 16_384
+
+#: What people call these languages -> what beast-lang calls them. Spelling
+#: only: a name that is not here and is not served gets the honest refusal
+#: with the list of what IS served, never a guess at what was meant.
+_LANG_ALIASES = {
+    "c++": "cpp", "cxx": "cpp", "cc": "cpp", "g++": "cpp", "cplusplus": "cpp",
+    "py": "python", "python3": "python", "golang": "go", "rs": "rust",
+    "ziglang": "zig",
+}
+
+
+def _lang_ref_clip(text: str) -> str:
+    if len(text) <= _LANG_REF_MAX_CHARS:
+        return text
+    kept, total = [], 0
+    lines = text.splitlines()
+    for ln in lines:
+        if total + len(ln) + 1 > _LANG_REF_MAX_CHARS - 120:   # room for the notice
+            break
+        kept.append(ln)
+        total += len(ln) + 1
+    kept.append(f"[truncated: {len(lines) - len(kept)} more line(s) — pass a "
+                f"topic to narrow this down]")
+    return "\n".join(kept) + "\n"
+
+
+@_tool()
+def language_reference(language: str, topic: str = "", error: str = "") -> str:
+    """Look up what the compiler INSTALLED ON THIS RIG confirmed about a
+    programming language (zig, C, C++, Rust, Go, Python — whichever this rig
+    has a toolchain for). Every line returned was checked against that
+    toolchain — an old form that was compiled and FAILED, a new form that
+    COMPILED, or a fact the toolchain reported when asked — so it is more
+    current than your training data and needs no web search.
+
+    CALL IT WHEN:
+      - you hit a compile error and the fix is not obvious — pass the
+        compiler's message as `error`; a removed or renamed API (zig's
+        `std.io`, Python's `imp`, a C++ feature that needs a newer -std) has a
+        known cause and a one-line fix;
+      - you are about to use a standard-library API you are not sure still
+        exists in the installed version — pass its name as `topic`
+        (e.g. "ArrayList", "std.io", "asyncio", "std::ranges");
+      - you are starting work in a language whose recent releases changed a
+        lot (zig especially) — pass only `language` for the full notes.
+
+    It never guesses: when nothing verified matches, it says so, and that is
+    your cue to read the compiler's message rather than to trust a memory.
+
+    Args:
+        language: "zig", "cpp" (or "c++"), "c", "rust", "go", "python".
+        topic: An API, module, header or feature name to look up. Optional.
+        error: The compiler / interpreter error text, verbatim. Optional.
+               When given, the cards for that exact error are returned.
+
+    Returns:
+        The verified notes, a line saying there is no verified reference for
+        what you asked, or a string starting with "Error:" (unknown language).
+    """
+    try:
+        import lang as _lang  # lazy: see the note above
+    except Exception as e:
+        return f"Error: beast-lang is unavailable on this rig ({e})."
+    try:
+        name = str(language or "").strip().lower()
+        name = _LANG_ALIASES.get(name, name)
+        topic = " ".join(str(topic or "").split())[:200]
+        error = str(error or "")[:_LANG_REF_MAX_ERROR_CHARS]
+        served = list(_lang.safe_languages())
+        if not name or name not in served:
+            can = (", ".join(served) if served else
+                   "none — no language is active (LANG_PACKS in "
+                   "openbeast.conf, and a toolchain must be installed)")
+            return (f"Error: no verified reference for language "
+                    f"{str(language)[:40]!r} on this rig. Languages it can "
+                    f"serve: {can}.")
+        parts = []
+        if error.strip():
+            cards = _lang.safe_escalation(name, error)
+            parts.append(cards or (
+                f"No verified card matches this {name} error. That means no "
+                f"claim in the verified corpus is about it — not that the "
+                f"error is unknowable: read the compiler's own message. "
+                f"(language_reference(\"{name}\") with no error returns the "
+                f"full verified notes.)\n"))
+        if topic:
+            ref = _lang.safe_reference(name, topic)
+            parts.append(ref or (
+                f"No verified reference for {topic!r} in {name} on this rig. "
+                f"Nothing in the verified corpus names it; this tool does not "
+                f"guess. (language_reference(\"{name}\") with no topic "
+                f"returns the full verified notes.)\n"))
+        if not parts:
+            pack = _lang.safe_pack(name)
+            parts.append(pack or (
+                f"No verified reference for {name} on this rig right now: "
+                f"the toolchain could not be asked, or nothing it confirmed "
+                f"fits the budget.\n"))
+        return _lang_ref_clip("\n".join(p.rstrip("\n") + "\n" for p in parts))
+    except Exception as e:  # the facade does not raise; this is the belt
+        return f"Error: language_reference failed: {e}"
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,9 @@ what a language says; the compiler says what will compile, and only the second
 one matters to an agent about to write a file.
 
 THE FACADE. `safe_pack` and `safe_escalation` are the two calls a serving path
-should make, and they carry the two promises nothing underneath them can:
+should make (`safe_reference` and `safe_languages` are the same thing for the
+PULL surface, the `language_reference` tool), and they carry the two promises
+nothing underneath them can:
 
   * THEY DO NOT RAISE. Everything below reads JSON a person can corrupt, opens
     fixture files an install can lack, and runs compilers that can hang or be
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 import os
 
-__all__ = ["safe_escalation", "safe_pack"]
+__all__ = ["safe_escalation", "safe_languages", "safe_pack", "safe_reference"]
 
 
 def _silenced() -> bool:
@@ -53,3 +55,27 @@ def safe_escalation(lang: str, diagnostic: str) -> str:
         return escalate.render_escalation(lang, diagnostic) or ""
     except Exception:                            # noqa: BLE001
         return ""
+
+
+def safe_reference(lang: str, topic: str) -> str:
+    """The VERIFIED / GENERATED lines that answer `topic` in `lang`, or ""."""
+    if _silenced():
+        return ""
+    try:
+        from . import reference                  # noqa: PLC0415
+        return reference.topic_reference(lang, topic) or ""
+    except Exception:                            # noqa: BLE001
+        return ""
+
+
+def safe_languages() -> list[str]:
+    """The languages this rig will actually answer for, or []. What a caller
+    shows when it was asked about a language it cannot serve — a list read
+    off the allow list and the installed toolchains, never a hardcoded one."""
+    if _silenced():
+        return []
+    try:
+        from . import reference                  # noqa: PLC0415
+        return list(reference.served_languages())
+    except Exception:                            # noqa: BLE001
+        return []

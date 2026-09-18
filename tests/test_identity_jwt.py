@@ -35,7 +35,7 @@ def mint(sub="alice", role="admin", exp_delta=300, secret=SECRET,
     """Mint an identity token the way Open WebUI forwards one.
 
     `email` is optional on purpose. A token without one is a valid identity
-    for the other 16 tools — only publishing a page needs a login a reader
+    for the other 17 tools — only publishing a page needs a login a reader
     can present, and that path refuses on its own with a message naming the
     setting to turn on. Requiring it at decode time would 401 the entire tool
     surface on any --with-jwt rig whose WebUI omits it, which is a far larger

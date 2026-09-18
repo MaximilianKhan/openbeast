@@ -639,10 +639,11 @@ class TestMCPServerTools(unittest.TestCase):
             # Fallback: check via the public API
             pass
 
-        # The full 17-tool surface (PRODUCTION_ROADMAP §B collapsed
+        # The full 18-tool surface (PRODUCTION_ROADMAP §B collapsed
         # list_skills/load_skill/reload_skills into the single `skill` tool;
-        # beast-artifact added publish_artifact/list_artifacts here only —
-        # NOT to the runner's registry, so agents/tools.py is untouched).
+        # beast-artifact added publish_artifact/list_artifacts, and beast-lang
+        # language_reference, here only — NOT to the runner's registry, so
+        # agents/tools.py is untouched).
         expected = {
             "bash", "read_file", "write_file", "edit_file",
             "list_files", "grep", "fetch", "web_search",
@@ -650,13 +651,14 @@ class TestMCPServerTools(unittest.TestCase):
             "list_agents", "stop_agent",
             "skill", "start_skill_agent",
             "publish_artifact", "list_artifacts",
+            "language_reference",
         }
         # Introspection failure must be a test failure, not a silent pass —
         # otherwise a FastMCP internals change would soft-pass this test
         # while registering zero tools.
         self.assertTrue(registered, "could not introspect any registered tools")
         # Exact match both ways: a missing tool is a regression, an extra one
-        # is an undocumented count bump (docs/TOOLS.md pins 17).
+        # is an undocumented count bump (docs/TOOLS.md pins 18).
         self.assertEqual(registered, expected,
                          f"MCP tool surface drifted: missing={expected - registered}, "
                          f"extra={registered - expected}")
