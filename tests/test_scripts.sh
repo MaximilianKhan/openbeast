@@ -2365,6 +2365,67 @@ else
   fail "a normally-unset OPENBEAST_* variable is expanded bare — set -u kills the script there"
 fi
 
+# ---------------------------------------------------------------------------
+# scripts/uninstall.sh — the rig's decommissioning path (README § Uninstall)
+# ---------------------------------------------------------------------------
+echo ""
+echo "uninstall.sh (rig):"
+_UN="$(mktemp -d)"
+_un_build() {   # a throwaway rig: build, venv, runtime state, weights, conf, workspace, a unit
+  rm -rf "$_UN/rig" "$_UN/home"; mkdir -p "$_UN/rig/scripts" "$_UN/rig/llama.cpp/build" "$_UN/rig/venv" "$_UN/rig/.run" \
+    "$_UN/rig/weights" "$_UN/home/openbeast-files/users/x" "$_UN/home/.config/systemd/user" "$_UN/bin"
+  cp "$REPO_DIR/scripts/uninstall.sh" "$_UN/rig/scripts/"
+  printf '#!/bin/bash\necho stop >> "$UN_LOG"\n' > "$_UN/rig/stop.sh"; chmod +x "$_UN/rig/stop.sh"
+  echo "WEIGHTS_DIR=$_UN/rig/weights # comment" > "$_UN/rig/openbeast.conf"
+  echo "FILES_DIR=$_UN/home/openbeast-files" >> "$_UN/rig/openbeast.conf"
+  echo weight > "$_UN/rig/weights/m.gguf"; echo page > "$_UN/home/openbeast-files/users/x/p.html"
+  echo unit > "$_UN/home/.config/systemd/user/openbeast-watchdog.timer"
+  : > "$_UN/log"
+  for c in tailscale docker systemctl sudo; do
+    printf '#!/bin/bash\necho "%s $*" >> "$UN_LOG"\n[[ "$1 $2" == "serve status" ]] && echo "https://x:443 (tailnet only)\n|-- / proxy http://127.0.0.1:3000"\n[[ "$1 $2" == "volume ls" ]] && echo openbeast_open-webui-data\nexit 0\n' "$c" > "$_UN/bin/$c"
+    chmod +x "$_UN/bin/$c"
+  done
+}
+_un() { HOME="$_UN/home" XDG_CONFIG_HOME="$_UN/home/.config" UN_LOG="$_UN/log" PATH="$_UN/bin:$PATH" \
+        bash "$_UN/rig/scripts/uninstall.sh" "$@"; }
+_un_build
+_UN_OUT="$(_un 2>&1)"
+# Read-only queries (`tailscale serve status`) are allowed in a dry run; any
+# mutating verb is not.
+if [[ -d "$_UN/rig/llama.cpp" && -d "$_UN/rig/.run" && -f "$_UN/rig/weights/m.gguf" ]] \
+   && ! grep -qE "reset|stop$|disable|volume rm|^stop" "$_UN/log" \
+   && grep -q "DRY RUN" <<< "$_UN_OUT" && grep -q "would  ./stop.sh" <<< "$_UN_OUT"; then
+  pass "dry run by default: lists every step, removes nothing, mutates nothing"
+else
+  fail "dry run touched something: log=$(cat "$_UN/log") :: $_UN_OUT"
+fi
+_UN_OUT="$(_un --go 2>&1)"
+if [[ ! -e "$_UN/rig/llama.cpp" && ! -e "$_UN/rig/venv" && ! -e "$_UN/rig/.run" ]] \
+   && [[ -f "$_UN/rig/weights/m.gguf" && -f "$_UN/rig/openbeast.conf" && -f "$_UN/home/openbeast-files/users/x/p.html" ]] \
+   && grep -q "^stop$" "$_UN/log" && grep -q "^sudo tailscale serve reset" "$_UN/log" \
+   && grep -q "disable --now openbeast-watchdog.timer" "$_UN/log" && [[ ! -e "$_UN/home/.config/systemd/user/openbeast-watchdog.timer" ]] \
+   && ! grep -q "volume rm" "$_UN/log"; then
+  pass "--go: stops, unpublishes, removes the unit + build/venv/.run; KEEPS weights, conf, workspace, the WebUI volume"
+else
+  fail "--go removed the wrong things: $(ls "$_UN/rig" | tr '\n' ' ') :: log=$(tr '\n' '|' < "$_UN/log")"
+fi
+_un_build
+_UN_OUT="$(_un --go --purge-all 2>&1)"
+if [[ ! -e "$_UN/rig/weights" && ! -e "$_UN/rig/openbeast.conf" && ! -e "$_UN/home/openbeast-files" ]] \
+   && grep -q "^docker volume rm openbeast_open-webui-data" "$_UN/log" && [[ -f "$_UN/rig/scripts/uninstall.sh" ]]; then
+  pass "--purge-all: weights, conf, workspace and the WebUI volume go; the checkout itself never does"
+else
+  fail "--purge-all: $(ls -a "$_UN/rig" | tr '\n' ' ') :: log=$(tr '\n' '|' < "$_UN/log")"
+fi
+_un_build
+_UN_OUT="$(_un --bogus 2>&1)"; _UN_RC=$?
+if [[ $_UN_RC -eq 2 && -d "$_UN/rig/.run" && ! -s "$_UN/log" ]]; then
+  pass "an unknown flag is a usage error, and nothing runs"
+else
+  fail "unknown flag: rc=$_UN_RC"
+fi
+rm -rf "$_UN"
+
 # --- Summary ---
 echo ""
 echo "================================"

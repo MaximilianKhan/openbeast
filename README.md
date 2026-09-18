@@ -742,27 +742,26 @@ and so do your checkout and any agent transcripts:
 openbeast-client uninstall          # or: ./scripts/setup-client.sh --uninstall
 ```
 
-**The rig** has no uninstall script yet (tracked in
-[`docs/TODO.md`](docs/TODO.md)); it is a handful of steps, in this order:
+**The rig** removes itself with one script, which is a **dry run until you
+say `--go`** and keeps the expensive and personal parts unless told otherwise:
 
 ```bash
-./stop.sh                                   # stops services AND containers
-tailscale serve reset                       # unpublish every tailnet surface
-systemctl --user stop openbeast-stack.service 2>/dev/null   # daemon scope
-systemctl --user reset-failed openbeast-stack 2>/dev/null
-
-rm -rf llama.cpp venv .run                  # build, venv, runtime state
+./scripts/uninstall.sh                  # prints every step, touches nothing
+./scripts/uninstall.sh --go             # stop, unpublish, remove units + llama.cpp/ venv/ .run/
+./scripts/uninstall.sh --go --purge-all # ...and weights, openbeast.conf, the WebUI volume, the workspace
 ```
 
-Two things are deliberately *not* in that list. **Model weights** are the
-expensive part to re-download, so delete them only if you mean it. They live in
-`WEIGHTS_DIR` from `openbeast.conf` (default `./weights`), which may be outside
-the repo if you relocated them. And **`openbeast.conf`** itself holds your
-per-install secrets, so keeping it makes a reinstall pick up where you left off
-while deleting it gives you a genuinely clean slate.
+Kept by default, each with its own `--purge-*` flag: **model weights** (the
+expensive part to re-download; `WEIGHTS_DIR` in `openbeast.conf`, which may be
+outside the repo), **`openbeast.conf`** (the per-install secrets, so a
+reinstall picks up where you left off), **Open WebUI's data volume** (your
+chats and accounts) and the **workspace** (`FILES_DIR`: what the model wrote
+for you, every published page, the session ledger). The checkout itself is
+never deleted — `rm -rf` it yourself when you're done.
 
-Nothing OpenBeast installs lives outside the repo, the Docker containers, and
-the tailscale serve config, so the steps above are the whole footprint.
+Nothing OpenBeast installs lives outside the repo, the Docker containers, the
+user systemd units and the tailscale serve config, so that script is the whole
+footprint.
 
 ## Credits: standing on the shoulders of giants
 

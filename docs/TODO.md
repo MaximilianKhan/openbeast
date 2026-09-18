@@ -1640,8 +1640,9 @@ equity diligence conversations.
 4. **Enrollment is out-of-band; keys never expire.** No request-and-approve
    flow, no expiry, no rotation schedule. (CC6.2/6.3 — medium)
 5. **Revocation does not terminate an in-flight stream.** (CC6.2 — small)
-6. **No decommissioning path.** No rig-side uninstall, so secure disposal is a
-   manual checklist. (CC6.5 — medium)
+6. ~~**No decommissioning path.**~~ **DONE 2026-09-17:** `scripts/uninstall.sh`
+   (dry run by default; `--go`; `--purge-weights/-data/-conf/-all`). Secure
+   disposal of the *disk* is still the operator's (no shred). (CC6.5)
 7. **No SBOM.** Everything is pinned and inventoried but nothing emits
    CycloneDX/SPDX. (CC9.2 — small)
 8. **No log-integrity guarantees.** Audit logs are plain append-only JSONL on

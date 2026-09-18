@@ -52,6 +52,19 @@ jobs:
       - name: Offline / bundle / fetch-weight tests
         run: bash tests/test_offline_fixes.sh
 
+      # The three standalone shell suites the runner already executes and CI
+      # did not: they need no GPU, no docker and no network (job.sh uses
+      # process groups and the ledger; clients.sh and artifact.sh talk to
+      # stubs or to nothing).
+      - name: Job session tests (scripts/job.sh)
+        run: bash tests/test_job_sh.sh
+
+      - name: Client enrollment tests (scripts/clients.sh)
+        run: bash tests/test_clients.sh
+
+      - name: Artifact CLI tests (scripts/artifact.sh)
+        run: bash tests/test_artifact_cli.sh
+
       - name: Tool unit tests
         env:
           # No outbound network assumptions in CI (httpbin flakiness);
