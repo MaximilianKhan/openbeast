@@ -48,7 +48,7 @@ line in `openbeast.conf`.
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | main |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, and an eval *era* hash so rows from different code are never compared as if they were the same | main |
 
-`main` items ship in the next release (see [Releases](#releases)). Full
+Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
 capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Install
@@ -672,6 +672,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Doc | What's in it |
 |---|---|
+| [TUTORIALS.md](docs/TUTORIALS.md) | One copy-pasteable walkthrough per beast-* feature, with what you should see |
 | [INSTALL.md](docs/INSTALL.md) | Step-by-step install, prerequisites, per-model downloads, the offline/air-gap path, troubleshooting |
 | [FEATURES.md](docs/FEATURES.md) | The complete capability breakdown |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Trust model, service map, project layout |
@@ -723,7 +724,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| v1.5.0 *(next)* | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
+| v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
 | v1.3.0 | beast-artifact 🎨 | [RELEASE_NOTES_v1.3.0.md](docs/RELEASE_NOTES_v1.3.0.md) |
 | v1.2.0 | beast-assist 🔧 | — |
@@ -731,7 +732,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.0 | the rig | — |
 
 Everything marked `main` in [What ships](#what-ships) — beast-lang, the
-air-gap path, beast-campaign — plus the post-v1.4.0 hardening is v1.5.0.
+air-gap path, beast-campaign — plus the post-v1.4.0 hardening shipped as v1.5.0.
 
 ## Uninstall
 
