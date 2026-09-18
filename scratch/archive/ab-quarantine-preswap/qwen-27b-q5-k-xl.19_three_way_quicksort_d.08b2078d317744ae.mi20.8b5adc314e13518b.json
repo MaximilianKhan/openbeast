@@ -1,0 +1,18 @@
+{
+  "id": "19_three_way_quicksort_d",
+  "name": "Three-way quicksort for arrays with duplicates [cpp]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 33.4,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 19913,
+  "tokens_completion": 1482,
+  "tokens_total": 21395,
+  "base_id": "19_three_way_quicksort",
+  "variant_id": "d",
+  "language": "cpp",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:39:50.970564"
+}

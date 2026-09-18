@@ -1,0 +1,18 @@
+{
+  "id": "20_priority_queue_b",
+  "name": "Min-heap priority queue (push / pop-min) [go]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 34.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16755,
+  "tokens_completion": 1279,
+  "tokens_total": 18034,
+  "base_id": "20_priority_queue",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:44:31.700888"
+}

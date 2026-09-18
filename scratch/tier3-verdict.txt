@@ -1,0 +1,23 @@
+========================================================================
+Tier-3 zig-0.16 awareness pack — zig-only mini-A/B verdict
+========================================================================
+treated model: Qwen3.8 27B Uncensored Q5_K_M   replicates: 2   pack: {'zig': '5cdf4b64'}
+  pair 0: units=30 P0 pass=10 P1 pass=15 rescues=9 regressions=4 (cached rows: P0 29, P1 0)
+  pair 1: units=30 P0 pass=9 P1 pass=17 rescues=11 regressions=3 (cached rows: P0 0, P1 0)
+
+R1 PRIMARY  pooled McNemar: rescues b=20 regressions c=7 net=+13 p=0.0192
+R2 CO-PRIMARY (units passed in both arms, n=12):
+    completion tokens-to-fix  mean Δ(P1-P0)=-3221  sign-test p=0.388
+    iterations-to-fix         mean Δ(P1-P0)=-2.92  sign-test p=0.008
+    all-unit completion tokens mean Δ=-1007 (n=60); prompt-token overhead mean Δ=-11118/unit
+R3 GUARD    champion Qwen 27B Q5_K_XL: C0 pass=21 C1 pass=14 rescues=6 regressions=13 net=-7 p=0.167 → CLEAN
+R4 AUDIT    P1-only passes per pair (review for pack-parroting):
+    pair 0: 100_constant_time_compare_f, 122_gemm_blocked_e, 155_tonelli_shanks_f, 52_unionfind_f, 54_astar_f, 62_crt_f, 63_det_f, 65_miller_rabin_f, 92_popcount_f
+    pair 1: 11_bst_f, 122_gemm_blocked_e, 136_gf256_f, 137_pollard_rho_f, 148_convex_hull_f, 36_black_scholes_f, 54_astar_f, 61_extgcd_f, 63_det_f, 82_sigmoid_f, 92_popcount_f
+    rescued in EVERY replicate: 122_gemm_blocked_e, 54_astar_f, 63_det_f, 92_popcount_f
+    pair 0 regressions: 127_aes_keysched_f, 20_priority_queue_f, 32_dot_product_f, 61_extgcd_f
+    pair 1 regressions: 100_constant_time_compare_f, 127_aes_keysched_f, 155_tonelli_shanks_f
+
+------------------------------------------------------------------------
+VERDICT: SHIP — Clause 1 (net>=7, p<0.05, guard clean): net=+13 p=0.0192 guard=clean
+Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).

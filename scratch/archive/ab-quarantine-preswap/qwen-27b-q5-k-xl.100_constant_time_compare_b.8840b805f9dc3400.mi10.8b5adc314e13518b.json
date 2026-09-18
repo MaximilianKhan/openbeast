@@ -1,0 +1,18 @@
+{
+  "id": "100_constant_time_compare_b",
+  "name": "Constant-time string equality [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 63.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 19536,
+  "tokens_completion": 2714,
+  "tokens_total": 22250,
+  "base_id": "100_constant_time_compare",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-08T23:58:49.083984"
+}

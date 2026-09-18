@@ -1,0 +1,18 @@
+{
+  "id": "82_sigmoid_f",
+  "name": "Numerically stable sigmoid [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 235.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 22215,
+  "tokens_completion": 8883,
+  "tokens_total": 31098,
+  "base_id": "82_sigmoid",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:31:09.047625"
+}

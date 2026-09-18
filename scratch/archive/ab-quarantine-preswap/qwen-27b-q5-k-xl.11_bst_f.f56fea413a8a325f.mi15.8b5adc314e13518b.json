@@ -1,0 +1,18 @@
+{
+  "id": "11_bst_f",
+  "name": "Binary search tree (insert + in-order traversal) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 300.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 87703,
+  "tokens_completion": 12708,
+  "tokens_total": 100411,
+  "base_id": "11_bst",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:10:15.168808"
+}

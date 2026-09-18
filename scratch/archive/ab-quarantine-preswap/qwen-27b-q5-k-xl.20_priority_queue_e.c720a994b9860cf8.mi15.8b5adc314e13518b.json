@@ -1,0 +1,18 @@
+{
+  "id": "20_priority_queue_e",
+  "name": "Min-heap priority queue (push / pop-min) [rust]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 56.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 25994,
+  "tokens_completion": 2043,
+  "tokens_total": 28037,
+  "base_id": "20_priority_queue",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:46:14.474616"
+}

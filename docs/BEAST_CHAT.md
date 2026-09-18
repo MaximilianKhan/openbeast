@@ -136,7 +136,7 @@ are plain bash: `campaign_master.sh`, an overnight sweep, a quantization run.
 Wrap one and it becomes a session:
 
 ```bash
-./scripts/job.sh run --title "T1.17 campaign" -- bash scratch/campaign_master.sh
+./scripts/job.sh run --title "T1.17 campaign" -- bash scratch/campaign_master3.sh
 ```
 
 ```

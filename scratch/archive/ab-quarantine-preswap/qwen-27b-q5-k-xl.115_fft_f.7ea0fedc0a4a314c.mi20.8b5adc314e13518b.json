@@ -1,0 +1,18 @@
+{
+  "id": "115_fft_f",
+  "name": "Cooley-Tukey radix-2 FFT (real input) [zig]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 455.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 73600,
+  "tokens_completion": 19576,
+  "tokens_total": 93176,
+  "base_id": "115_fft",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:11:20.918787"
+}

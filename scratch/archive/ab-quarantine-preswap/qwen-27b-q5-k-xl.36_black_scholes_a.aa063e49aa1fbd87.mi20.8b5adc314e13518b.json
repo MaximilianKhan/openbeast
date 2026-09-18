@@ -1,0 +1,18 @@
+{
+  "id": "36_black_scholes_a",
+  "name": "Black-Scholes European call price [python]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 40.9,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 13256,
+  "tokens_completion": 1351,
+  "tokens_total": 14607,
+  "base_id": "36_black_scholes",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:03:06.485958"
+}

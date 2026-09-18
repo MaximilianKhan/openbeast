@@ -1,0 +1,2 @@
+greedy rows: []
+FEWER THAN 2 FULL GREEDY ROWS — inspect scratch/logs/campaign/greedy-floor-*.log

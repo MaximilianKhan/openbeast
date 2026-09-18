@@ -1,0 +1,18 @@
+{
+  "id": "158_karatsuba_bytes_e",
+  "name": "Karatsuba multiplication on byte (base-256) arrays [rust]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 794.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 81264,
+  "tokens_completion": 45782,
+  "tokens_total": 127046,
+  "base_id": "158_karatsuba_bytes",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:43:14.481168"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "121_quorum_kv",
+  "name": "Dynamo-style quorum read/write",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 59.9,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 14190,
+  "tokens_completion": 3075,
+  "tokens_total": 17265,
+  "cached_at": "2026-09-08T23:59:41.830347"
+}

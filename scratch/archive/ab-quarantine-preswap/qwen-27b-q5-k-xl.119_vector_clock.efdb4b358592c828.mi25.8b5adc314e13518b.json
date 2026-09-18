@@ -1,0 +1,14 @@
+{
+  "id": "119_vector_clock",
+  "name": "Vector clock for causal ordering",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 21.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 9651,
+  "tokens_completion": 986,
+  "tokens_total": 10637,
+  "cached_at": "2026-09-08T23:58:22.361739"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "123_nbody_a",
+  "name": "2D N-body Velocity-Verlet integrator [python]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 39.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 13797,
+  "tokens_completion": 1956,
+  "tokens_total": 15753,
+  "base_id": "123_nbody",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:02:15.645114"
+}

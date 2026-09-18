@@ -1,0 +1,18 @@
+{
+  "id": "52_unionfind_d",
+  "name": "Union-Find with path compression [cpp]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 30.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 15747,
+  "tokens_completion": 959,
+  "tokens_total": 16706,
+  "base_id": "52_unionfind",
+  "variant_id": "d",
+  "language": "cpp",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:09:57.560942"
+}

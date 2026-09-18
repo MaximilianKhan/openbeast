@@ -1,0 +1,18 @@
+{
+  "id": "73_count_vowels_c",
+  "name": "Count vowels (case-insensitive) [c]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 18.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 15231,
+  "tokens_completion": 643,
+  "tokens_total": 15874,
+  "base_id": "73_count_vowels",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:21:02.293459"
+}

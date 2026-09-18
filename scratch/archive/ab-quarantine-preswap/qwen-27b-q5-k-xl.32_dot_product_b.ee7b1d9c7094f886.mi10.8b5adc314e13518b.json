@@ -1,0 +1,18 @@
+{
+  "id": "32_dot_product_b",
+  "name": "Dot product of two integer vectors [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 44.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16271,
+  "tokens_completion": 1710,
+  "tokens_total": 17981,
+  "base_id": "32_dot_product",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:57:01.781362"
+}

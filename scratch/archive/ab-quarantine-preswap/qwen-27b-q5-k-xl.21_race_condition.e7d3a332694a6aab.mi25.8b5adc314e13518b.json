@@ -1,0 +1,14 @@
+{
+  "id": "21_race_condition",
+  "name": "Find and fix a race condition in concurrent counter",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 17.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 12733,
+  "tokens_completion": 601,
+  "tokens_total": 13334,
+  "cached_at": "2026-09-09T00:46:08.198058"
+}

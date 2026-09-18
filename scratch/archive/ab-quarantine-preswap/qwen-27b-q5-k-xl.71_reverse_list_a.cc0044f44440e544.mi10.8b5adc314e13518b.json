@@ -1,0 +1,18 @@
+{
+  "id": "71_reverse_list_a",
+  "name": "Reverse a sequence (in-place, no stdlib reverse) [python]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 21.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 12083,
+  "tokens_completion": 700,
+  "tokens_total": 12783,
+  "base_id": "71_reverse_list",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:20:13.517478"
+}

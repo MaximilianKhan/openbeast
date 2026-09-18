@@ -1,0 +1,18 @@
+{
+  "id": "158_karatsuba_bytes_a",
+  "name": "Karatsuba multiplication on byte (base-256) arrays [python]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 1003.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 74403,
+  "tokens_completion": 41051,
+  "tokens_total": 115454,
+  "base_id": "158_karatsuba_bytes",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:45:48.334981"
+}

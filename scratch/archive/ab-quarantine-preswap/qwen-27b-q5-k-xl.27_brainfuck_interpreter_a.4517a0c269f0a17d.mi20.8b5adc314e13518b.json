@@ -1,0 +1,18 @@
+{
+  "id": "27_brainfuck_interpreter_a",
+  "name": "Brainfuck interpreter [python]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 126.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 44404,
+  "tokens_completion": 5326,
+  "tokens_total": 49730,
+  "base_id": "27_brainfuck_interpreter",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:48:53.933295"
+}

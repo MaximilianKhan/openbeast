@@ -1,0 +1,14 @@
+{
+  "id": "153_coroutine_scheduler",
+  "name": "Cooperative generator-based coroutine scheduler",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 287.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 75593,
+  "tokens_completion": 12910,
+  "tokens_total": 88503,
+  "cached_at": "2026-09-09T00:29:02.902518"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "122_gemm_blocked_e",
+  "name": "Cache-blocked matrix multiply (GEMM) [zig]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 461.8,
+  "agent_exit_code": 0,
+  "validation_output": "error: StreamTooLong",
+  "tokens_prompt": 233245,
+  "tokens_completion": 19650,
+  "tokens_total": 252895,
+  "base_id": "122_gemm_blocked",
+  "variant_id": "e",
+  "language": "zig",
+  "variant_count": 5,
+  "cached_at": "2026-09-09T00:11:55.446851"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "148_convex_hull_f",
+  "name": "Convex hull via Andrew's monotone chain [zig]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 906.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 213617,
+  "tokens_completion": 37395,
+  "tokens_total": 251012,
+  "base_id": "148_convex_hull",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:43:21.263729"
+}

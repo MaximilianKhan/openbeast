@@ -1,0 +1,18 @@
+{
+  "id": "52_unionfind_e",
+  "name": "Union-Find with path compression [rust]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 39.9,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 22484,
+  "tokens_completion": 1432,
+  "tokens_total": 23916,
+  "base_id": "52_unionfind",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:10:37.702284"
+}

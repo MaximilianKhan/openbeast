@@ -1,0 +1,14 @@
+{
+  "id": "01_create_file",
+  "name": "Create a Python file",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 11.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 8479,
+  "tokens_completion": 302,
+  "tokens_total": 8781,
+  "cached_at": "2026-09-08T23:57:56.371711"
+}

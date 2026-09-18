@@ -1,0 +1,14 @@
+{
+  "id": "143_uov",
+  "name": "Oil-and-Vinegar (UOV) signature scheme",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 616.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 45117,
+  "tokens_completion": 27730,
+  "tokens_total": 72847,
+  "cached_at": "2026-09-09T00:24:41.257474"
+}

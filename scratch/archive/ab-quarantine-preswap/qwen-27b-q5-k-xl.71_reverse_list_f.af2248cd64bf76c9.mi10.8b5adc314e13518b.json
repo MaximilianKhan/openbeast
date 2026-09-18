@@ -1,0 +1,18 @@
+{
+  "id": "71_reverse_list_f",
+  "name": "Reverse a sequence (in-place, no stdlib reverse) [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 274.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 33078,
+  "tokens_completion": 9804,
+  "tokens_total": 42882,
+  "base_id": "71_reverse_list",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:26:30.755517"
+}

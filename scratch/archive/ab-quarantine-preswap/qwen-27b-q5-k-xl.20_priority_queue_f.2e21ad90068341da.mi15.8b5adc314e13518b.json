@@ -1,0 +1,18 @@
+{
+  "id": "20_priority_queue_f",
+  "name": "Min-heap priority queue (push / pop-min) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 526.5,
+  "agent_exit_code": 0,
+  "validation_output": "pq.zig:22:13: error: cannot assign to constant\n            i = p;\n            ^\nreferenced by:\n    main: pq.zig:88:24\n    callMain [inlined]: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:737:30\n    callMainWithArgs [inlined]: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:638:20\n    posixCallMainAndExit: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:590:38\n    2 reference(s) hidden; use '-freference-trace=6' to see all references\npq.zig",
+  "tokens_prompt": 93825,
+  "tokens_completion": 22199,
+  "tokens_total": 116024,
+  "base_id": "20_priority_queue",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:55:01.276029"
+}

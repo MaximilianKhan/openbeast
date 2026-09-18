@@ -1,0 +1,18 @@
+{
+  "id": "31_is_power_of_two_f",
+  "name": "Detect a power of two using bitwise tricks [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 68.4,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 20996,
+  "tokens_completion": 2356,
+  "tokens_total": 23352,
+  "base_id": "31_is_power_of_two",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:56:17.148103"
+}

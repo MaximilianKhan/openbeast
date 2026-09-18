@@ -1,0 +1,18 @@
+{
+  "id": "52_unionfind_f",
+  "name": "Union-Find with path compression [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 147.6,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 124242,
+  "tokens_completion": 5057,
+  "tokens_total": 129299,
+  "base_id": "52_unionfind",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:13:12.758020"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "122_gemm_blocked_c",
+  "name": "Cache-blocked matrix multiply (GEMM) [cpp]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 56.4,
+  "agent_exit_code": 0,
+  "validation_output": "Traceback (most recent call last):\n  File \"/tmp/eval_gemm/check.py\", line 11, in <module>\n    assert diff < 1e-3, f'max abs error {diff}'\n           ^^^^^^^^^^^\nAssertionError: max abs error 0.0016540576069701274",
+  "tokens_prompt": 26469,
+  "tokens_completion": 2546,
+  "tokens_total": 29015,
+  "base_id": "122_gemm_blocked",
+  "variant_id": "c",
+  "language": "cpp",
+  "variant_count": 5,
+  "cached_at": "2026-09-09T00:01:39.459602"
+}

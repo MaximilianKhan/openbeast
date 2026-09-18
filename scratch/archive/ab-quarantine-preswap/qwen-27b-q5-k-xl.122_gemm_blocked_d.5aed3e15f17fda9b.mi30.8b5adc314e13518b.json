@@ -1,0 +1,18 @@
+{
+  "id": "122_gemm_blocked_d",
+  "name": "Cache-blocked matrix multiply (GEMM) [rust]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 138.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 59530,
+  "tokens_completion": 6332,
+  "tokens_total": 65862,
+  "base_id": "122_gemm_blocked",
+  "variant_id": "d",
+  "language": "rust",
+  "variant_count": 5,
+  "cached_at": "2026-09-09T00:04:02.990862"
+}

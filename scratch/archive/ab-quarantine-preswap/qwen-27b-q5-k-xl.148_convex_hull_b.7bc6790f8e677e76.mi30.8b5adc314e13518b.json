@@ -1,0 +1,18 @@
+{
+  "id": "148_convex_hull_b",
+  "name": "Convex hull via Andrew's monotone chain [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 99.2,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 20808,
+  "tokens_completion": 4097,
+  "tokens_total": 24905,
+  "base_id": "148_convex_hull",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:24:49.895202"
+}

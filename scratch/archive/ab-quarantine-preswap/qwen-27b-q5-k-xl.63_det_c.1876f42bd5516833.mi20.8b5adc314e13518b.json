@@ -1,0 +1,18 @@
+{
+  "id": "63_det_c",
+  "name": "Matrix determinant via Gaussian elimination [c]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 48.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16606,
+  "tokens_completion": 1633,
+  "tokens_total": 18239,
+  "base_id": "63_det",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:16:02.646022"
+}

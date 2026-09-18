@@ -1,0 +1,14 @@
+{
+  "id": "10_data_transform",
+  "name": "Transform data between formats",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 15.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 15415,
+  "tokens_completion": 505,
+  "tokens_total": 15920,
+  "cached_at": "2026-09-08T23:58:01.067381"
+}

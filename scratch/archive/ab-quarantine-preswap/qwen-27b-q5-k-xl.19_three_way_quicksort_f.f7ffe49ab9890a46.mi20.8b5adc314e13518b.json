@@ -1,0 +1,18 @@
+{
+  "id": "19_three_way_quicksort_f",
+  "name": "Three-way quicksort for arrays with duplicates [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 350.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 102822,
+  "tokens_completion": 13917,
+  "tokens_total": 116739,
+  "base_id": "19_three_way_quicksort",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:45:49.347093"
+}

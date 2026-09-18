@@ -1,0 +1,14 @@
+{
+  "id": "117_iter_refinement",
+  "name": "Linear solve with iterative refinement",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 45.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 14058,
+  "tokens_completion": 2045,
+  "tokens_total": 16103,
+  "cached_at": "2026-09-08T23:58:41.894363"
+}

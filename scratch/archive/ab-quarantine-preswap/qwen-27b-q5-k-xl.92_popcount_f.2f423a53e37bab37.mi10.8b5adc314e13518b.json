@@ -1,0 +1,18 @@
+{
+  "id": "92_popcount_f",
+  "name": "Population count (manual implementation) [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 155.2,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 25622,
+  "tokens_completion": 5407,
+  "tokens_total": 31029,
+  "base_id": "92_popcount",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:29:13.477292"
+}

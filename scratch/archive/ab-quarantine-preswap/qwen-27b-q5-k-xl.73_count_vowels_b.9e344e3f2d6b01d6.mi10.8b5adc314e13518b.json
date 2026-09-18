@@ -1,0 +1,18 @@
+{
+  "id": "73_count_vowels_b",
+  "name": "Count vowels (case-insensitive) [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 17.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 14923,
+  "tokens_completion": 590,
+  "tokens_total": 15513,
+  "base_id": "73_count_vowels",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:20:43.495945"
+}

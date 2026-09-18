@@ -1,0 +1,18 @@
+{
+  "id": "74_palindrome_b",
+  "name": "Palindrome check (alphanumeric, case-insensitive) [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 17.4,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 12184,
+  "tokens_completion": 609,
+  "tokens_total": 12793,
+  "base_id": "74_palindrome",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:22:58.178788"
+}
