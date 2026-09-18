@@ -782,15 +782,18 @@ leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
 flagged in the sweep summary.
 
 ```bash
-python3 evals/benchmark_all.py                       # all 11 configured models, full suite
+python3 evals/benchmark_all.py                       # all 20 configured models, full suite
+python3 evals/benchmark_all.py --greedy | --packs     # experiment eras (leaderboard-ineligible) — evals/README.md
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime: 10 of the 11 configured models carry a leaderboard entry
-(7 on v4, 3 still on legacy v3.5; only the non-MTP Qwopus is pending —
-`evals/leaderboard.json` is the live answer). Individual v4 runs took ~4–8 h
+Total runtime: `benchmark_all.py --list` registers 20 of the 23 serve
+scripts (the two vision configs and the 177B Flash-Next are not registered
+for sweeps), and `evals/leaderboard.json` holds 12 rows on the reference
+host — 9 on v4, 3 still on legacy v3.5, two of those for models pruned on
+2026-08-20 and kept for history; the leaderboard file is the live answer. Individual v4 runs took ~4–8 h
 each (see the Wall column in `docs/RESULTS.md`); a full sweep — budget well
 over a day. Plan to run overnight. Sweep summaries are saved to
 `evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
