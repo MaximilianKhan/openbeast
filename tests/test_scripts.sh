@@ -415,8 +415,11 @@ if _floor nvidia 24564 && _floor nvidia 32607 && ! _floor nvidia 16384 && ! _flo
 else
   fail "VRAM floor verdicts are wrong (24564 must pass; 16384 and 11264 must fail; unknown/none/FORCE must pass)"
 fi
-if ( source "$REPO_DIR/scripts/lib/hardware.sh"; OB_GPU_VENDOR=nvidia; OB_VRAM_MB=11264; OB_GPU_NAME=stub
-     ob_vram_floor_check | grep -q "24 GB floor" ); then
+# Captured, not piped: the check RETURNS 1 by design, and under pipefail that
+# non-zero writer fails the pipeline even when grep matched.
+_FLOOR_MSG="$( source "$REPO_DIR/scripts/lib/hardware.sh"; OB_GPU_VENDOR=nvidia; OB_VRAM_MB=11264; OB_GPU_NAME=stub
+               ob_vram_floor_check || true )"
+if [[ "$_FLOOR_MSG" == *"24 GB floor"* ]]; then
   pass "the refusal names the 24 GB floor"
 else
   fail "the refusal text does not name the 24 GB floor"
