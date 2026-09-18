@@ -24,6 +24,8 @@ beast-gate :8090 ◀──── tailscale :8443 ◀─────────�
 dashboard   :3002 ◀──── tailscale :8444 ◀───── client.sh status   (discovery)
 SearXNG     :8888 ◀──── tailscale :8889 ◀───── web_search          (default)
                         (or --local-search: client runs its own SearXNG)
+beast-chat  :3003 ◀──── tailscale :8445 ◀───── a phone's browser   (opt-in console)
+beast-artifact :3004 ◀─ tailscale :8446 ◀───── a phone's browser   (opt-in pages)
 
 tools execute on the CLIENT — bash/read/write/edit act on the client's files
 inference happens on the RIG — only chat/completion calls cross the tailnet
@@ -87,7 +89,27 @@ tenants.
 ./scripts/ext.sh enable dashboard                # slot API lives in the dashboard
                                                  # (must precede --publish-slot; see below)
 ./scripts/setup-tailscale.sh --publish-slot      # + :8444 discovery API
+./scripts/setup-tailscale.sh --publish-chat      # + :8445 beast-chat console   (BEAST_CHAT=true)
+./scripts/setup-tailscale.sh --publish-artifact  # + :8446 beast-artifact pages (BEAST_ARTIFACT=true)
 ```
+
+Every published port, what it maps to, and the flag that adds it (each has
+an `--unpublish-*` twin that reads no config, keyed by the published port):
+
+| Tailnet port | Maps to | Flag | Who may reach it |
+|---|---|---|---|
+| `:443` | Open WebUI `:3000` | (always, with `setup-tailscale.sh`) | any tailnet device; WebUI login on top |
+| `:8443` | llama-server `:8080`, or beast-gate `:8090` when `EDGE_GATE=true` | (always) | any tailnet device, or an enrolled device key behind the gate |
+| `:8444/api/slot` | dashboard `:3002`, that one path only | `--publish-slot` | any tailnet device (read-only JSON) |
+| `:8445` | beast-chat `:3003` (`CHAT_PORT`) | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
+| `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); writes never leave loopback |
+| `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
+
+`:8445` and `:8446` are the two surfaces that are *not* inference-shaped and
+deliberately not behind beast-gate; each enforces its own read/write rule
+in-process ([`BEAST_CHAT.md`](BEAST_CHAT.md), [`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md)).
+The identity tool server (`:3001`), the agent router (`:8088`) and
+llama-server's own port are never published.
 
 **Order matters.** The slot API is served by the dashboard *extension*, and
 `EXTENSIONS` is empty by default. Publishing before enabling it (and

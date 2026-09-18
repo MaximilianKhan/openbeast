@@ -64,6 +64,15 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
 3. Run `./scripts/install-skills.sh` to verify it's discoverable
 4. It's live immediately — `skill()` rescans the skills directory on every
    index call (no restart needed)
+5. Decide whether it belongs in the **always-on menu**. `python3
+   scripts/generate-skill-index.py` rewrites the skill list in
+   `system-prompt-tools.md`, which every local-model turn pays for and which
+   is one of the six era-hashed files — so adding a menu entry rolls the eval
+   cache era (`./scripts/eval-era.sh`) and CI fails on a stale index. A skill
+   written for cloud models working in this repo (like `beast-lang`) sets
+   `prompt_index: false` in its frontmatter: it stays reachable by name
+   through `skill("my-skill")` and `start_skill_agent`, costs the local model
+   nothing, and leaves the era alone.
 
 `tests/test_scripts.sh` validates that every `SKILL.md` parses cleanly and
 has the required frontmatter fields.

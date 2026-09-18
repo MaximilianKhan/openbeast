@@ -1,6 +1,7 @@
 # Models
 
-OpenBeast ships **25 pre-configured models**, every one VRAM/context-measured on
+OpenBeast ships **23 pre-configured models** (one `scripts/serve-*.sh` each,
+excluding the 0.6B fast-boot bridge), every one VRAM/context-measured on
 the RTX 5090 reference card. Swap any of them in with one argument to
 `start.sh` (e.g. `./start.sh serve-qwen-27b-q5.sh`) or set your `beastup`
 default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a

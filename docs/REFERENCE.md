@@ -42,6 +42,9 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEIGHT_ENFORCE` | `OPENBEAST_WEIGHT_ENFORCE` | `warn` | Check the GGUF about to be served against `scripts/weights.registry`. `warn` logs and starts; `strict` refuses an unlisted or size-mismatched weight; `off` disables. `./start.sh doctor` reports whether `strict` is safe to enable. Size-only per launch — sha256 is `verify-weights.sh --deep` |
 | `FETCH_ALLOW_TAILNET` | `OPENBEAST_FETCH_ALLOW_TAILNET` | empty (blocked) | The model's `fetch` tool blocks Tailscale CGNAT targets (100.64.0.0/10) by default — pinned across Python versions. `true` allows fetching from tailnet hosts. `web_search` is unaffected |
 | `BASH_WRAPPER` | `OPENBEAST_BASH_WRAPPER` | empty (off) | Kernel-level sandbox command wrapped around every model `bash` call (e.g. `sandlock run -p openbeast -w "$PWD" --`). Read per-call by `agents/tools.py`; forwarded only when non-empty. See `docs/SANDBOXING.md` |
+| `BEAST_ASSIST` | `BEAST_ASSIST` (same name) | empty (off) | beast-assist: `1` pushes the language's real checker verdict into every `write_file`/`edit_file` result. Read per-call by `agents/tools.py`; forwarded only when non-empty. Eval arms pin it per cell, so a rig-wide enable never leaks into an OFF baseline. See `docs/LANG_AWARENESS_PLAN.md` |
+| `LANG_PACKS` | `OPENBEAST_LANG_PACKS` | absent = `auto` | beast-lang: which languages get a verified awareness pack — `auto` (every language with an installed toolchain and verified claims or probes), `cpp,zig` (exactly these), `off`. An *explicitly empty* value also means off. Read by `agents/lang/packs.py` directly, not `conf.sh`; a pack is served only when its stamped toolchain version matches the installed one. Inspect with `./scripts/lang-library.sh pack` |
+| `OFFLINE` | `OPENBEAST_OFFLINE` | `false` | "This box has no route to the internet and never will." An installed rig serves fine offline already; what `OFFLINE=true` changes is that install/update steps which cannot succeed are refused up front instead of stalling and being misdiagnosed. Affects `bootstrap.sh`, `scripts/update.sh`, the compose pull policy and `doctor`'s reporting; scripts test it with `ob_offline`. Only an explicit `true` / `yes` / `1` / `on` (first token; quotes and a trailing `#` comment are stripped) means on. See `docs/INSTALL.md` § Offline |
 | `SEARXNG_SECRET` | `OPENBEAST_SEARXNG_SECRET` | auto-generated | SearXNG session-signing key. **You never set this** — `conf.sh` generates a random per-install value on first run and appends it to `openbeast.conf` (mode 600) so daemon mode and every restart reuse it. `docker-compose.yml` hard-requires the export, which is why compose callers must source `conf.sh` first |
 | `EDGE_GATE` | `OPENBEAST_EDGE_GATE` | `false` | Run beast-gate (`agents/edge.py`), the identity-aware inference edge, and publish `:8443` at it instead of raw llama-server. Per-device keys, path allowlist, rate limits, inference audit. Local frontends unaffected. See `docs/BEAST_SLOT.md` |
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
@@ -55,6 +58,10 @@ be sourced before any `docker compose up` so containers get the real values.
 | `BEAST_ARTIFACT` | `OPENBEAST_BEAST_ARTIFACT` | `false` | Run beast-artifact (`agents/artifact_server.py`), the publish-and-view service for model- or script-authored HTML. Adds the `publish_artifact`/`list_artifacts` tools to the MCP/WebUI surface (not the autonomous runner's registry). See `docs/BEAST_ARTIFACT.md` |
 | `ARTIFACT_PORT` | `OPENBEAST_ARTIFACT_PORT` | `3004` | Loopback port the artifact server listens on when `BEAST_ARTIFACT=true`. `setup-tailscale.sh --publish-artifact` mounts `:8446` at it |
 | `ARTIFACT_OPERATORS` | `OPENBEAST_ARTIFACT_OPERATORS` | *(empty)* | Comma-separated tailnet logins allowed to READ published pages; falls back to `CHAT_OPERATORS`. An unlisted login gets 404, never 403. **Empty means every identified tailnet login can read** — anonymous callers are refused either way. Writes are loopback-only regardless |
+| `ARTIFACT_BASE_URL` | `OPENBEAST_ARTIFACT_BASE_URL` | *(unset = detect)* | The public base of every artifact URL. Normally **unset**: `agents/artifact.py` asks `tailscale serve` for the name it publishes `:8446` under and falls back to `http://localhost:<ARTIFACT_PORT>` (the tools then say the link cannot open off the rig). Set it only behind a proxy of your own. Exported only when non-empty, so "unset" still means "detect" |
+| `BEAST_CHAT` | `OPENBEAST_BEAST_CHAT` | `false` | Run beast-chat (`agents/chat_server.py`), the tailnet operator console for the rig's own agent and job sessions — list, follow the live transcript, `say`, stop, start. Loopback-bound; `setup-tailscale.sh --publish-chat` maps `:8445` at it. See `docs/BEAST_CHAT.md` |
+| `CHAT_PORT` | `OPENBEAST_CHAT_PORT` | `3003` | Loopback port beast-chat listens on when `BEAST_CHAT=true` |
+| `CHAT_OPERATORS` | `OPENBEAST_CHAT_OPERATORS` | *(empty)* | The **read** allowlist: comma-separated tailnet logins (the `Tailscale-User-Login` that `tailscale serve` injects). An unlisted login gets 404, never 403. **Left empty the allowlist is not enforced** — every identified login on your tailnet can read every session (the single-operator default; `doctor` warns). **Writes** (say, stop, start an agent) additionally need a chat-scoped device key: `./scripts/clients.sh enroll phone --scope chat`. Also the fallback for `ARTIFACT_OPERATORS` |
 | `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
 | `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 18 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
@@ -69,6 +76,22 @@ own paths and tends to default to world-readable, reboot-wiped `/tmp`.
 anchors all relative-path reads/writes from direct chat tool calls to a
 persistent, private directory instead. It applies to the chat surface only —
 spawned background agents keep using their own `AGENT_WORKDIR`.
+
+**beast-chat's environment-only knobs.** Beyond the three conf keys above,
+`agents/chat_server.py` reads a handful of `OPENBEAST_CHAT_*` variables that
+have no `openbeast.conf` spelling (defaults in parentheses):
+`OPENBEAST_CHAT_BIND` (`127.0.0.1`), `OPENBEAST_CHAT_ALLOWED_HOSTS` (extra
+`Host` values, comma-separated, added to the built-in loopback + hostname +
+`*.ts.net` allowlist — the DNS-rebinding guard in `agents/hostpolicy.py`),
+`OPENBEAST_CHAT_RUN_DIR` (`.run`), `OPENBEAST_CHAT_RATE_PER_MIN` (60),
+`OPENBEAST_CHAT_STOP_TERM_S` / `OPENBEAST_CHAT_STOP_KILL_S` (30 / 60 — the
+polite-stop and escalation deadlines), `OPENBEAST_CHAT_POLL_MS` (250),
+`OPENBEAST_CHAT_HEARTBEAT_S` (15), `OPENBEAST_CHAT_AUTH_RECHECK_S` (the
+heartbeat, capped at 5 s — an open stream re-authorizes on this period), and
+`OPENBEAST_CHAT_JOB_MEM_PCT` (50; `0` disables) — the memory cap, as a
+percent of RAM, on the systemd scope each console-started session runs in,
+*outside* the stack's own scope so `./stop.sh` never takes a phone-started
+job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
 
 ## VRAM estimates (RTX 5090 — 32GB)
 
@@ -561,14 +584,16 @@ tools:
 **Discovery order:** repo `skills/` first, then `~/.local/share/local-llm-skills/`.
 Repo wins on name collision. The index re-scans on every `skill()` call.
 
-**Currently shipped (15 skills):** see `skills/README.md` for the full table.
+**Currently shipped (15 skills — `ls skills/*/SKILL.md`):** see
+`skills/README.md` for the full table.
 Tier 1 (universal): codebase-onboarding, spec-extraction, git-discipline,
 long-context-synthesis. Tier 2 (situational): test-driven-development,
 architecture-proposal, performance-optimization, api-design. Plus
 code-review, security-audit, debugging-methodology, deep-counsel,
 eval-task-author, eval-variant-porter, beast-lang (for cloud models working
-in this repo — `prompt_index: false` keeps it out of the local model's
-always-on menu).
+in this repo — `prompt_index: false` in its frontmatter keeps it out of the
+local model's always-on menu in `system-prompt-tools.md`, which is
+era-hashed; the `skill` tool still serves it by name).
 
 **Adding a skill:** create `skills/<name>/SKILL.md` with required frontmatter
 (`name`, `description`); the next `skill()` call picks it up (the index
@@ -715,10 +740,29 @@ when configured:
 | **beast-gate** | `EDGE_GATE=true` | `:$EDGE_PORT/gate/health` (default 8090) — the inference edge remote clients arrive through. `--restart` relaunches `agents/edge.py` and rewrites `.run/edge.pid` |
 | **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:3002/api/slot` — the discovery contract. Advisory only; never fails the run |
 | **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern |
+| **beast-chat console** | `BEAST_CHAT=true` | `:$CHAT_PORT/api/chat/health` (default 3003, on `OPENBEAST_CHAT_BIND` rather than `BIND_HOST`) expecting `"status":"ok"`. `--restart` relaunches `agents/chat_server.py` from `.run/chat.pid` — by recorded PID (identity-checked via `lib/proc.sh`), never by pattern |
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service
-that's down is restarted automatically.
+that's down is restarted automatically — with two deliberate exceptions.
+A llama-server whose `/health` answers `503 "Loading model"` is reported as
+**LOAD**, not down, and left alone (killing a loading model *is* the outage;
+past `OPENBEAST_LLAMA_LOAD_GRACE` seconds — default 900, judged by the
+recorded pid's age — a server still loading counts as wedged and down). And
+while `scripts/gpu-lease.sh status` says `HELD`, the watchdog will not
+relaunch the stack's model into a campaign's window. Every kill is by the
+recorded pid, whose command line must still match (`ob_pid_matches` in
+`scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
+stranger.
+
+`./start.sh doctor` adds the posture rows on top: for beast-chat, a pass line
+with the read policy and running-session count, a **warning** when
+`CHAT_OPERATORS` is empty (every tailnet login can read every session), and a
+**failure** — not a warning — when `:8445` is published but nothing answers,
+because the mount makes it look reachable. For the air-gap path: whether the
+hash-pinned lock is current (`pydeps.sh verify`), and under `OFFLINE=true`
+whether a *rebuild* would succeed with no network (llama.cpp source, the lock,
+and a wheelhouse that covers it).
 
 ### Eval harness
 
@@ -738,15 +782,18 @@ leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
 flagged in the sweep summary.
 
 ```bash
-python3 evals/benchmark_all.py                       # all 11 configured models, full suite
+python3 evals/benchmark_all.py                       # all 20 configured models, full suite
+python3 evals/benchmark_all.py --greedy | --packs     # experiment eras (leaderboard-ineligible) — evals/README.md
 python3 evals/benchmark_all.py --models gemma-4-31b-q5,qwen-27b-q5
 python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime: 10 of the 11 configured models carry a leaderboard entry
-(7 on v4, 3 still on legacy v3.5; only the non-MTP Qwopus is pending —
-`evals/leaderboard.json` is the live answer). Individual v4 runs took ~4–8 h
+Total runtime: `benchmark_all.py --list` registers 20 of the 23 serve
+scripts (the two vision configs and the 177B Flash-Next are not registered
+for sweeps), and `evals/leaderboard.json` holds 12 rows on the reference
+host — 9 on v4, 3 still on legacy v3.5, two of those for models pruned on
+2026-08-20 and kept for history; the leaderboard file is the live answer. Individual v4 runs took ~4–8 h
 each (see the Wall column in `docs/RESULTS.md`); a full sweep — budget well
 over a day. Plan to run overnight. Sweep summaries are saved to
 `evals/results/sweep-{ts}.json`. The 2026-05-05/06 sweep on the RTX 5090 took
