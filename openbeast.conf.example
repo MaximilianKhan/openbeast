@@ -343,7 +343,7 @@
 # ---------------------------------------------------------------------------
 
 # Below-app tool enforcement: with EITHER key set, the tool server checks a
-# Bearer key on every call — the admin key reaches all 15 tools, the guest
+# Bearer key on every call — the admin key reaches all 18 tools, the guest
 # key only web_search + fetch (anything else is 404 for it), so a guest
 # can't reach admin tools even bypassing the WebUI layer. A missing key
 # simply disables that profile (fail closed). BOTH keys absent = open

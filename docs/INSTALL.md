@@ -3,7 +3,7 @@
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
 server providing 18 tools for file I/O, shell, web search, agent management,
-and a curated skills system (14 specialized expertise packages loaded on
+and a curated skills system (15 specialized expertise packages loaded on
 demand).
 
 The inference engine, model weights, and Docker volumes are not checked in —
@@ -582,10 +582,18 @@ opt-in publish flag:
 | `https://beast.<tailnet>.ts.net:8443/v1` | OpenAI-compatible API | always |
 | `https://beast.<tailnet>.ts.net:8889` | SearXNG, for a client's `web_search` | `--publish-searxng` |
 | `https://beast.<tailnet>.ts.net:8444/api/slot` | beast-slot discovery (what the rig is actually serving) | `--publish-slot` |
+| `https://beast.<tailnet>.ts.net:8445` | beast-chat — the console for the rig's own agents and jobs | `--publish-chat` |
 | `https://beast.<tailnet>.ts.net:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
 
-The opt-in ones are for client devices (§8) and for reading published pages
-on a phone. `--publish-artifact` needs `BEAST_ARTIFACT=true` or it serves 502s;
+The opt-in ones are for client devices (§8) and for a phone: watching and
+steering the rig's sessions, and reading published pages. `--publish-chat`
+needs `BEAST_CHAT=true` or it serves 502s (`doctor` reports that as a
+failure); reads need your tailnet login on `CHAT_OPERATORS` (unlisted → 404,
+and an empty list means every login on the tailnet can read every session),
+while sending a message, stopping or starting an agent additionally needs a
+device key enrolled with the `chat` scope (`./scripts/clients.sh enroll phone
+--scope chat`) — starting an agent is a shell on the rig
+([`BEAST_CHAT.md`](BEAST_CHAT.md)). `--publish-artifact` needs `BEAST_ARTIFACT=true` or it serves 502s;
 reads are gated on your tailnet login against `ARTIFACT_OPERATORS` (unlisted →
 404), and **publishing stays loopback-only**, so a phone can view a page and
 never create or delete one. Leave `ARTIFACT_OPERATORS` empty and every
@@ -593,8 +601,11 @@ identified login on your tailnet can read every page — the script says so
 loudly when you publish. `--publish-slot` needs the
 dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
 serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
-`/api/status` stay rig-local. Undo either with `--unpublish-searxng` /
-`--unpublish-slot`.
+`/api/status` stay rig-local. Every `--publish-*` has an `--unpublish-*`
+twin (`--unpublish-searxng`, `--unpublish-slot`, `--unpublish-chat`,
+`--unpublish-artifact`), and the script ends by printing the full mount table
+(port, surface, published or not) so the whole published footprint is visible
+at a glance.
 
 > **What `:8443` actually exposes.** By default it maps straight at
 > llama-server, which publishes its *whole* route table to the tailnet — not
