@@ -367,7 +367,9 @@ exit 0
 STUB
 chmod +x "$SBU/scripts/pydeps.sh"
 run_update_python() {
-  printf 'openai==1.0\n' > "$SBU/agents/requirements.txt"
+  # A pin the old hand-kept list did not know about (httpx), with the comment
+  # that explains it: both must survive the rewrite.
+  printf 'openai==1.0\n# httpx: direct runtime dep of router.py — keep\nhttpx==0.28.1\n' > "$SBU/agents/requirements.txt"
   : > "$T/state/pydeps.log"; rm -f "$T/state/upgraded"
   _out="$(PATH="$T/binu:$PATH" "$SBU/scripts/update.sh" --python 2>&1)"; _rc=$?
 }
@@ -379,6 +381,14 @@ if [[ $_rc -eq 0 ]] && has "$(cat "$T/state/pydeps.log")" "pydeps lock :: openai
 else
   fail "update --python did not relock (rc=$_rc): $(cat "$T/state/pydeps.log") :: $_out"
 fi
+# The rewrite carries EVERY pin in the file forward, comments included — it
+# used to regenerate the file from a five-name list, dropping httpx.
+if grep -qx 'httpx==9.9.1' "$SBU/agents/requirements.txt" && grep -qx 'openai==9.9.1' "$SBU/agents/requirements.txt" \
+   && grep -q '^# httpx: direct runtime dep' "$SBU/agents/requirements.txt"; then
+  pass "a pin the old list never knew (httpx) is bumped in place, and its comment survives"
+else
+  fail "requirements.txt after --python: $(tr '\n' '|' < "$SBU/agents/requirements.txt")"
+fi
 touch "$T/state/lock_fails"; run_update_python; rm -f "$T/state/lock_fails"
 if [[ $_rc -eq 0 ]] && has "$_out" "could NOT regenerate" && has "$_out" "./scripts/pydeps.sh lock"; then
   pass "when the relock fails it says the lock is now stale and prints the exact command"
@@ -387,7 +397,8 @@ else
 fi
 # NEGATIVE CONTROL: a bump that breaks our imports rolls back and never relocks.
 touch "$T/state/import_breaks"; run_update_python; rm -f "$T/state/import_breaks"
-if [[ $_rc -ne 0 && ! -s "$T/state/pydeps.log" ]] && [[ "$(cat "$SBU/agents/requirements.txt")" == "openai==1.0" ]]; then
+if [[ $_rc -ne 0 && ! -s "$T/state/pydeps.log" ]] \
+   && [[ "$(cat "$SBU/agents/requirements.txt")" == "$(printf 'openai==1.0\n# httpx: direct runtime dep of router.py — keep\nhttpx==0.28.1')" ]]; then
   pass "negative control: a rolled-back upgrade leaves pins AND lock alone"
 else
   fail "rollback path relocked or rewrote pins (rc=$_rc): $(cat "$T/state/pydeps.log")"
