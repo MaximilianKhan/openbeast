@@ -289,7 +289,18 @@ update_python() {
   # So the bump now has to earn the pin rewrite: snapshot what works, upgrade,
   # import the modules that matter, and roll back automatically if they break.
   local req="$REPO_DIR/agents/requirements.txt"
-  local pkgs=(openai mcp fastapi uvicorn PyJWT)
+  # THE FILE IS THE LIST. A hand-kept `pkgs=(openai mcp fastapi uvicorn PyJWT)`
+  # here rewrote requirements.txt from those five alone — so the first --python
+  # after a pin was ADDED to the file (httpx, pinned explicitly once openai 3.x
+  # stopped pulling it in) would have silently dropped it, and router.py/edge.py
+  # with it at the next boot. Every `name==version` line in the file is a pin
+  # this function must carry forward.
+  local pkgs=() line
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    [[ "$line" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*)==[^=]+$ ]] && pkgs+=("${BASH_REMATCH[1]}")
+  done < "$req"
+  ((${#pkgs[@]})) || die "no pins found in $req — nothing to upgrade"
 
   # Snapshot the rollback target BEFORE anything is touched.
   local req_backup; req_backup="$(mktemp)"
@@ -351,16 +362,31 @@ PY
     die "no pins were rewritten. Migrate the code first, then re-run --python."
   fi
 
-  {
-    echo "# Pinned to the exact versions validated on the reference box (supply-chain"
-    echo "# anchoring: an unpinned install would pull whatever PyPI has newest,"
-    echo "# including a compromised release). scripts/update.sh --python bumps these,"
-    echo "# but only after agents/ imports cleanly against them."
-    for p in "${pkgs[@]}"; do
-      v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
-      [[ -n "$v" ]] && echo "${p}==${v}"
-    done
-  } > "$req"
+  # Rewrite the VERSION of each pin IN PLACE. Regenerating the whole file from
+  # a list lost every comment (the file explains WHY each pin exists) and every
+  # pin the list did not know about. A pin whose package pip cannot report
+  # stays exactly as it was.
+  local req_new; req_new="$(mktemp)"
+  local want=() name lc sn spec
+  for p in "${pkgs[@]}"; do
+    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
+    [[ -n "$v" ]] && want+=("${p}==${v}")
+  done
+  # Plain bash, line by line: a comment or blank line is copied; a pin line is
+  # matched on its NAME (case-insensitively, as pip does) and gets the new
+  # version; anything else is copied untouched.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lc="${line//[[:space:]]/}"; lc="${lc%%#*}"; lc="${lc,,}"
+    name="${lc%%==*}"
+    if [[ -n "$name" && "$lc" == *==* ]]; then
+      for spec in "${want[@]}"; do
+        sn="${spec%%==*}"
+        if [[ "${sn,,}" == "$name" ]]; then line="$spec"; break; fi
+      done
+    fi
+    printf '%s\n' "$line"
+  done < "$req" > "$req_new"
+  mv "$req_new" "$req"
   rm -f "$req_backup"
   ok "agents/ imports cleanly against the new versions"
   ok "upgraded + pins rewritten: $(grep -v '^#' "$req" | tr '\n' ' ')"
