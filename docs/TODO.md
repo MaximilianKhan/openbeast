@@ -106,7 +106,7 @@ findings had been refuted.
 **12 of the REAL ones carry a suggested fix the adjudicator REJECTED**, in
 several cases because it would have failed OPEN. Full text, with each
 adjudicator's reasoning and the corrected minimal fix:
-`scratch/REVIEW-v140-TRIAGE-2026-09-15.md`.
+`docs/reviews/REVIEW-v140-TRIAGE-2026-09-15.md`.
 
 **STATUS 2026-09-15 night: 31 of 32 CLOSED.** The only one left is [42], and
 it is left on purpose — see below. Landed as three PRs, every fix
@@ -181,7 +181,7 @@ closed network." 40-agent repo-wide review (8 subsystem scouts + 32 skeptical
 feature rankers): **114 breaks — 14 fail-to-boot, 60 feature-broken, 36
 degraded** — and 12 features kept of 32 ranked. Full text, with per-finding
 failure modes and each ranker's reasoning:
-`scratch/AIRGAP-REVIEW-2026-09-15.md`.
+`docs/reviews/AIRGAP-REVIEW-2026-09-15.md`.
 
 **The verdict in one line: an already-installed rig SERVES fine offline. What
 is broken is installing, updating, rebuilding, and telling the truth about it.**
@@ -430,7 +430,7 @@ Rules that follow, now applied to every campaign script:
 4. **Register long jobs with `./scripts/job.sh run`** so they are watchable and
    stoppable from a phone, with a process group that a stop actually reaches.
 
-## 🛠️ TOOLS SOTA REVIEW (scratch/TOOLS_SOTA_REVIEW-2026-09-10.md) — Top-10 status
+## 🛠️ TOOLS SOTA REVIEW (docs/reviews/TOOLS_SOTA_REVIEW-2026-09-10.md) — Top-10 status
 
 Shipped: #1-#5, #7 (PR #52 hardening bundle); #6 schema teaching, #8 runner
 context compaction, #9 edit_file teach-on-failure + post-edit window, #10

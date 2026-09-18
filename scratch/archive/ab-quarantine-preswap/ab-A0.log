@@ -1,0 +1,834 @@
+NOTE: --suite v5-fast implies --no-leaderboard (fast-suite scores are imputed readouts, never leaderboard rows).
+
+[1/1] Starting model
+
+############################################################
+# Benchmarking: Qwen 27B Q5_K_XL (qwen-27b-q5)
+# Serve: scripts/serve-qwen-27b-q5.sh
+############################################################
+
+Stopping any running llama-server...
+Starting scripts/serve-qwen-27b-q5.sh...
+  Server log: /home/max/Documents/openbeast/evals/results/server-qwen-27b-q5-20260908-235742.log
+Waiting for /health (up to 180s)...
+Model healthy. Running eval suite...
+
+Eval started — 112 tasks
+Model:  Qwen 27B Q5_K_XL
+Server: http://localhost:8080/v1
+Jobs:   4 parallel workers (same-base variants stay sequential; per-iteration timeout ×2.00 for contention)
+GPU:    NVIDIA GeForce RTX 5090 (32607 MiB, driver 610.57.04)
+Serve:  -np 6 -c 358400 kv q4_0 reasoning-budget -1
+Suite:  v5-fast (112 pinned units = 92 discriminating + 20 tripwires; 179 imputed; leaderboard-ineligible partial of v4)
+Results: /home/max/Documents/openbeast/evals/results/eval-qwen-27b-q5-k-xl-20260908-235745.json
+============================================================
+
+[1/112] Create a Python file (easy)
+  Task: Create a file called /tmp/eval_hello.py that contains a function called greet(na...
+  Running agent...
+  Agent finished in 11.1s
+  PASS (11.1s)
+
+[4/112] Transform data between formats (medium)
+  Task: Create /tmp/eval_transform.py that reads /tmp/eval_data.csv and writes /tmp/eval...
+  Running agent...
+  Agent finished in 15.8s
+  PASS (15.8s)
+
+[12/112] Vector clock for causal ordering (hard)
+  Task: Create /tmp/eval_vc/vc.py with class VectorClock(node_id). The clock is a dict {...
+  Running agent...
+  Agent finished in 21.3s
+  PASS (21.3s)
+
+[5/112] Cooley-Tukey radix-2 FFT (real input) [python] (hard)
+  Task: Create /tmp/eval_fft/fft.py — Reads from stdin: line 1 is T (test cases). Each c...
+  Running agent...
+  Agent finished in 49.0s
+  PASS (49.0s)
+
+[11/112] Linear solve with iterative refinement (hard)
+  Task: Create /tmp/eval_iref/iref.py with solve_with_refinement(A, b, max_iter=10, tol=...
+  Running agent...
+  Agent finished in 45.5s
+  PASS (45.5s)
+
+[2/112] Constant-time string equality [go] (easy)
+  Task: Create /tmp/eval_ct/ct.go (package main). Reads from stdin: line 1 is T. Each ca...
+  Running agent...
+  Agent finished in 63.8s
+  PASS (63.8s)
+
+[15/112] Dynamo-style quorum read/write (hard)
+  Task: Create /tmp/eval_qkv/qkv.py with class QuorumKV(n, r, w). Constructor raises Val...
+  Running agent...
+  Agent finished in 59.9s
+  PASS (59.9s)
+
+[6/112] Cooley-Tukey radix-2 FFT (real input) [go] (hard)
+  Task: Create /tmp/eval_fft/fft.go (package main). Reads from stdin: line 1 is T (test ...
+  Running agent...
+  Agent finished in 75.8s
+  PASS (75.8s)
+
+[16/112] Cache-blocked matrix multiply (GEMM) [c] (hard)
+  Task: Create /tmp/eval_gemm/gemm.c. Read from stdin: line 1 is N (matrix dimension, N=...
+  Running agent...
+  Agent finished in 49.6s
+  FAIL: Traceback (most recent call last):
+  File "/tmp/eval_gemm/check.py", line 11, in <module>
+    assert
+
+[7/112] Cooley-Tukey radix-2 FFT (real input) [c] (hard)
+  Task: Create /tmp/eval_fft/fft.c — Reads from stdin: line 1 is T (test cases). Each ca...
+  Running agent...
+  Agent finished in 72.8s
+  PASS (72.8s)
+
+[3/112] Constant-time string equality [zig] (easy)
+  Task: Create /tmp/eval_ct/ct.zig — Reads from stdin: line 1 is T. Each case is two con...
+  Running agent...
+  Agent finished in 157.8s
+  PASS (157.8s)
+
+[17/112] Cache-blocked matrix multiply (GEMM) [cpp] (hard)
+  Task: Create /tmp/eval_gemm/gemm.cpp. Read from stdin: line 1 is N (matrix dimension, ...
+  Running agent...
+  Agent finished in 56.4s
+  FAIL: Traceback (most recent call last):
+  File "/tmp/eval_gemm/check.py", line 11, in <module>
+    assert
+
+[8/112] Cooley-Tukey radix-2 FFT (real input) [cpp] (hard)
+  Task: Create /tmp/eval_fft/fft.cpp — Reads from stdin: line 1 is T (test cases). Each ...
+  Running agent...
+  Agent finished in 67.8s
+  PASS (67.8s)
+
+[20/112] 2D N-body Velocity-Verlet integrator [python] (hard)
+  Task: Create /tmp/eval_nbody/nbody.py — Reads from stdin: line 1 is T. Each case: line...
+  Running agent...
+  Agent finished in 39.7s
+  PASS (39.7s)
+
+[21/112] 2D N-body Velocity-Verlet integrator [c] (hard)
+  Task: Create /tmp/eval_nbody/nbody.c — Reads from stdin: line 1 is T. Each case: line ...
+  Running agent...
+  Agent finished in 47.8s
+  PASS (47.8s)
+
+[9/112] Cooley-Tukey radix-2 FFT (real input) [rust] (hard)
+  Task: Create /tmp/eval_fft/fft.rs — Reads from stdin: line 1 is T (test cases). Each c...
+  Running agent...
+  Agent finished in 85.7s
+  PASS (85.7s)
+
+[18/112] Cache-blocked matrix multiply (GEMM) [rust] (hard)
+  Task: Create /tmp/eval_gemm/gemm.rs. Read from stdin: line 1 is N (matrix dimension, N...
+  Running agent...
+  Agent finished in 138.0s
+  PASS (138.0s)
+
+[13/112] Binary search tree (insert + in-order traversal) [python] (medium)
+  Task: Create /tmp/eval_bst/bst.py — Reads from stdin: line 1 is T (test case count). E...
+  Running agent...
+  Agent finished in 374.7s
+  FAIL: Validation timed out
+
+[22/112] 2D N-body Velocity-Verlet integrator [zig] (hard)
+  Task: Create /tmp/eval_nbody/nbody.zig — Reads from stdin: line 1 is T. Each case: lin...
+  Running agent...
+  Agent finished in 209.7s
+  PASS (209.7s)
+
+[14/112] Binary search tree (insert + in-order traversal) [zig] (medium)
+  Task: Create /tmp/eval_bst/bst.zig — Reads from stdin: line 1 is T (test case count). ...
+  Running agent...
+  Agent finished in 300.3s
+  PASS (300.3s)
+
+[10/112] Cooley-Tukey radix-2 FFT (real input) [zig] (hard)
+  Task: Create /tmp/eval_fft/fft.zig — Reads from stdin: line 1 is T (test cases). Each ...
+  Running agent...
+  Agent finished in 455.6s
+  PASS (455.6s)
+
+[19/112] Cache-blocked matrix multiply (GEMM) [zig] (hard)
+  Task: Create /tmp/eval_gemm/gemm.zig. Read from stdin: line 1 is N (matrix dimension, ...
+  Running agent...
+  Agent finished in 461.8s
+  FAIL: error: StreamTooLong
+
+[24/112] AES-128 key schedule [python] (hard)
+  Task: Create /tmp/eval_aes/aes.py — Reads from stdin: line 1 is T. Each next line is a...
+  Running agent...
+  Agent finished in 120.8s
+  PASS (120.8s)
+
+[29/112] RSA keygen + sign/verify (hard)
+  Task: Create /tmp/eval_rsa/rsa.py with three functions: gen_rsa_keys(bits=512, seed=No...
+  Running agent...
+  Agent finished in 90.0s
+  PASS (90.0s)
+
+[30/112] Qubit time evolution under arbitrary 2x2 Hermitian H (hard)
+  Task: Create /tmp/eval_qubit/qb.py with two functions on a single qubit. evolve_qubit(...
+  Running agent...
+  Agent finished in 93.2s
+  PASS (93.2s)
+
+[25/112] AES-128 key schedule [go] (hard)
+  Task: Create /tmp/eval_aes/aes.go (package main). Reads from stdin: line 1 is T. Each ...
+  Running agent...
+  Agent finished in 93.3s
+  PASS (93.3s)
+
+[23/112] RKF45 adaptive ODE integrator (hard)
+  Task: Create /tmp/eval_rkf/rkf.py with rkf45(f, t0, y0, t_end, tol=1e-8, h_init=0.01) ...
+  Running agent...
+  Agent finished in 463.5s
+  PASS (463.5s)
+
+[31/112] GF(2^8) finite-field arithmetic (AES polynomial) [go] (medium)
+  Task: Create /tmp/eval_gf/gf.go (package main). Reads from stdin: line 1 is T. Each ne...
+  Running agent...
+  Agent finished in 161.2s
+  PASS (161.2s)
+
+[26/112] AES-128 key schedule [c] (hard)
+  Task: Create /tmp/eval_aes/aes.c — Reads from stdin: line 1 is T. Each next line is a ...
+  Running agent...
+  Agent finished in 123.8s
+  PASS (123.8s)
+
+[32/112] GF(2^8) finite-field arithmetic (AES polynomial) [c] (medium)
+  Task: Create /tmp/eval_gf/gf.c — Reads from stdin: line 1 is T. Each next line is 'op ...
+  Running agent...
+  Agent finished in 40.7s
+  PASS (40.7s)
+
+[33/112] GF(2^8) finite-field arithmetic (AES polynomial) [rust] (medium)
+  Task: Create /tmp/eval_gf/gf.rs — Reads from stdin: line 1 is T. Each next line is 'op...
+  Running agent...
+  Agent finished in 38.7s
+  PASS (38.7s)
+
+[27/112] AES-128 key schedule [rust] (hard)
+  Task: Create /tmp/eval_aes/aes.rs — Reads from stdin: line 1 is T. Each next line is a...
+  Running agent...
+  Agent finished in 92.3s
+  PASS (92.3s)
+
+[35/112] Pollard's rho factorization (Floyd cycle detection) [go] (hard)
+  Task: Create /tmp/eval_prho/prho.go (package main). Reads from stdin: line 1 is T. Eac...
+  Running agent...
+  Agent finished in 284.4s
+  PASS (284.4s)
+
+[28/112] AES-128 key schedule [zig] (hard)
+  Task: Create /tmp/eval_aes/aes.zig — Reads from stdin: line 1 is T. Each next line is ...
+  Running agent...
+  Agent finished in 159.0s
+  PASS (159.0s)
+
+[34/112] GF(2^8) finite-field arithmetic (AES polynomial) [zig] (medium)
+  Task: Create /tmp/eval_gf/gf.zig — Reads from stdin: line 1 is T. Each next line is 'o...
+  Running agent...
+  Agent finished in 208.0s
+  PASS (208.0s)
+
+[36/112] Pollard's rho factorization (Floyd cycle detection) [cpp] (hard)
+  Task: Create /tmp/eval_prho/prho.cpp — Reads from stdin: line 1 is T. Each next line i...
+  Running agent...
+  Agent finished in 217.9s
+  PASS (217.9s)
+
+[39/112] Aho-Corasick multi-pattern matcher (hard)
+  Task: Create /tmp/eval_ac/ac.py with class AhoCorasick(patterns) where patterns is a l...
+  Running agent...
+  Agent finished in 178.0s
+  PASS (178.0s)
+
+[37/112] Pollard's rho factorization (Floyd cycle detection) [zig] (hard)
+  Task: Create /tmp/eval_prho/prho.zig — Reads from stdin: line 1 is T. Each next line i...
+  Running agent...
+  Agent finished in 112.6s
+  PASS (112.6s)
+
+[40/112] Persistent (immutable) balanced BST (hard)
+  Task: Create /tmp/eval_pbst/pbst.py with three functions providing a persistent balanc...
+  Running agent...
+  Agent finished in 227.1s
+  PASS (227.1s)
+
+[38/112] Oil-and-Vinegar (UOV) signature scheme (hard)
+  Task: Create /tmp/eval_uov/uov.py implementing the (unbalanced) Oil-and-Vinegar multiv...
+  Running agent...
+  Agent finished in 616.6s
+  PASS (616.6s)
+
+[41/112] Convex hull via Andrew's monotone chain [go] (hard)
+  Task: Create /tmp/eval_hull/hull.go (package main). Reads stdin: T cases, each 'N' the...
+  Running agent...
+  Agent finished in 99.2s
+  PASS (99.2s)
+
+[47/112] Tonelli-Shanks square root mod prime p [go] (hard)
+  Task: Create /tmp/eval_tonelli/ts.go (package main). Reads stdin: T, then T lines 'n p...
+  Running agent...
+  Agent finished in 99.3s
+  PASS (99.3s)
+
+[42/112] Convex hull via Andrew's monotone chain [c] (hard)
+  Task: Create /tmp/eval_hull/hull.c — reads stdin: T cases, each 'N' then N lines of 'x...
+  Running agent...
+  Agent finished in 127.8s
+  PASS (127.8s)
+
+[43/112] Convex hull via Andrew's monotone chain [cpp] (hard)
+  Task: Create /tmp/eval_hull/hull.cpp — reads stdin: T cases, each 'N' then N lines of ...
+  Running agent...
+  Agent finished in 68.4s
+  PASS (68.4s)
+
+[46/112] Cooperative generator-based coroutine scheduler (hard)
+  Task: Create /tmp/eval_sched/sched.py with class Scheduler. Coroutines are Python gene...
+  Running agent...
+  Agent finished in 287.6s
+  PASS (287.6s)
+
+[45/112] Chase-Lev work-stealing deque (hard)
+  Task: Create /tmp/eval_clev/clev.py with class WSDeque (work-stealing deque). The OWNE...
+  Running agent...
+  Agent finished in 426.0s
+  PASS (426.0s)
+
+[53/112] Polynomial convolution via NTT (number-theoretic transform) [python] (hard)
+  Task: Create /tmp/eval_ntt/ntt.py — reads from stdin: line 1 is T (test cases). Each c...
+  Running agent...
+  Agent finished in 86.1s
+  PASS (86.1s)
+
+[54/112] Polynomial convolution via NTT (number-theoretic transform) [go] (hard)
+  Task: Create /tmp/eval_ntt/ntt.go (package main). reads from stdin: line 1 is T (test ...
+  Running agent...
+  Agent finished in 105.7s
+  PASS (105.7s)
+
+[55/112] Polynomial convolution via NTT (number-theoretic transform) [c] (hard)
+  Task: Create /tmp/eval_ntt/ntt.c — reads from stdin: line 1 is T (test cases). Each ca...
+  Running agent...
+  Agent finished in 156.1s
+  FAIL: Traceback (most recent call last):
+  File "<stdin>", line 52, in <module>
+AssertionError: case 16 mi
+
+[56/112] Polynomial convolution via NTT (number-theoretic transform) [cpp] (hard)
+  Task: Create /tmp/eval_ntt/ntt.cpp — reads from stdin: line 1 is T (test cases). Each ...
+  Running agent...
+  Agent finished in 90.2s
+  PASS (90.2s)
+
+[48/112] Tonelli-Shanks square root mod prime p [zig] (hard)
+  Task: Create /tmp/eval_tonelli/ts.zig — reads from stdin: line 1 is T, next T lines ar...
+  Running agent...
+  Agent finished in 692.2s
+  FAIL: Validation timed out
+
+[58/112] Three-way quicksort for arrays with duplicates [python] (medium)
+  Task: Create /tmp/eval_qs/qs.py — reads from stdin: line 1 is T (test case count). For...
+  Running agent...
+  Agent finished in 32.1s
+  PASS (32.1s)
+
+[59/112] Three-way quicksort for arrays with duplicates [go] (medium)
+  Task: Create /tmp/eval_qs/qs.go (package main). Reads from stdin: line 1 is T, then pe...
+  Running agent...
+  Agent finished in 22.4s
+  PASS (22.4s)
+
+[60/112] Three-way quicksort for arrays with duplicates [cpp] (medium)
+  Task: Create /tmp/eval_qs/qs.cpp — reads from stdin: line 1 is T, then per case line A...
+  Running agent...
+  Agent finished in 33.4s
+  PASS (33.4s)
+
+[44/112] Convex hull via Andrew's monotone chain [zig] (hard)
+  Task: Create /tmp/eval_hull/hull.zig — reads from stdin: line 1 is T (test cases). Eac...
+  Running agent...
+  Agent finished in 906.7s
+  PASS (906.7s)
+
+[62/112] Min-heap priority queue (push / pop-min) [python] (medium)
+  Task: Create /tmp/eval_pq/pq.py — Reads from stdin: line 1 is T. Each case: line A is ...
+  Running agent...
+  Agent finished in 35.6s
+  PASS (35.6s)
+
+[63/112] Min-heap priority queue (push / pop-min) [go] (medium)
+  Task: Create /tmp/eval_pq/pq.go (package main). Reads from stdin: line 1 is T. Each ca...
+  Running agent...
+  Agent finished in 34.7s
+  PASS (34.7s)
+
+[64/112] Min-heap priority queue (push / pop-min) [c] (medium)
+  Task: Create /tmp/eval_pq/pq.c — Reads from stdin: line 1 is T. Each case: line A is Q...
+  Running agent...
+  Agent finished in 46.4s
+  PASS (46.4s)
+
+[49/112] Karatsuba multiplication on byte (base-256) arrays [python] (hard)
+  Task: Create /tmp/eval_karat/karat.py — reads from stdin: line 1 is T (test cases). Ea...
+  Running agent...
+  Agent finished in 1003.8s
+  PASS (1003.8s)
+
+[61/112] Three-way quicksort for arrays with duplicates [zig] (medium)
+  Task: Create /tmp/eval_qs/qs.zig — Reads from stdin: line 1 is T (the test case count)...
+  Running agent...
+  Agent finished in 350.7s
+  PASS (350.7s)
+
+[67/112] Find and fix a race condition in concurrent counter (hard)
+  Task: The file /tmp/eval_race/counter.py contains a Counter class with a race conditio...
+  Running agent...
+  Agent finished in 17.8s
+  PASS (17.8s)
+
+[65/112] Min-heap priority queue (push / pop-min) [rust] (medium)
+  Task: Create /tmp/eval_pq/pq.rs — Reads from stdin: line 1 is T. Each case: line A is ...
+  Running agent...
+  Agent finished in 56.1s
+  PASS (56.1s)
+
+[68/112] Refactor O(n^2) to O(n log n) — perf-gated (medium)
+  Task: The function find_duplicates in /tmp/eval_perf/dupes.py is O(n^2) and too slow f...
+  Running agent...
+  Agent finished in 39.1s
+  PASS (39.1s)
+
+[50/112] Karatsuba multiplication on byte (base-256) arrays [go] (hard)
+  Task: Create /tmp/eval_karat/karat.go (package main). reads from stdin: line 1 is T (t...
+  Running agent...
+  Agent finished in 143.7s
+  PASS (143.7s)
+
+[69/112] Brainfuck interpreter [python] (hard)
+  Task: Create /tmp/eval_bf/bf.py — Reads from stdin: line 1 is T (test cases). Each cas...
+  Running agent...
+  Agent finished in 126.6s
+  PASS (126.6s)
+
+[66/112] Min-heap priority queue (push / pop-min) [zig] (medium)
+  Task: Create /tmp/eval_pq/pq.zig — Reads from stdin: line 1 is T. Each case: line A is...
+  Running agent...
+  Agent finished in 526.5s
+  FAIL: pq.zig:22:13: error: cannot assign to constant
+            i = p;
+            ^
+referenced by:
+    m
+
+[72/112] Detect a power of two using bitwise tricks [zig] (easy)
+  Task: Create /tmp/eval_pow2/pow2.zig — a Zig program that reads integers from stdin (o...
+  Running agent...
+  Agent finished in 68.4s
+  PASS (68.4s)
+
+[73/112] Dot product of two integer vectors [go] (easy)
+  Task: Create /tmp/eval_dot/dot.go (package main). Reads from stdin: line 1 is T (test ...
+  Running agent...
+  Agent finished in 44.6s
+  PASS (44.6s)
+
+[74/112] Dot product of two integer vectors [cpp] (easy)
+  Task: Create /tmp/eval_dot/dot.cpp — Reads from stdin: line 1 is T (test case count). ...
+  Running agent...
+  Agent finished in 35.2s
+  PASS (35.2s)
+
+[70/112] Brainfuck interpreter [go] (hard)
+  Task: Create /tmp/eval_bf/bf.go (package main). Reads from stdin: line 1 is T (test ca...
+  Running agent...
+  Agent finished in 707.7s
+  PASS (707.7s)
+
+[57/112] Polynomial convolution via NTT (number-theoretic transform) [zig] (hard)
+  Task: Create /tmp/eval_ntt/ntt.zig — reads from stdin: line 1 is T (test cases). Each ...
+  Running agent...
+  Agent finished in 1435.3s
+  FAIL: Traceback (most recent call last):
+  File "<stdin>", line 42, in <module>
+AssertionError: error: Str
+
+[75/112] Dot product of two integer vectors [zig] (easy)
+  Task: Create /tmp/eval_dot/dot.zig — Reads from stdin: line 1 is T (test case count). ...
+  Running agent...
+  Agent finished in 303.8s
+  PASS (303.8s)
+
+[76/112] Black-Scholes European call price [python] (medium)
+  Task: Create /tmp/eval_bs/bs.py — Reads from stdin: line 1 is T. Each next line is 'S ...
+  Running agent...
+  Agent finished in 40.9s
+  PASS (40.9s)
+
+[80/112] Monte Carlo π (deterministic LCG, integer-only predicate) [go] (medium)
+  Task: Create /tmp/eval_mcpi/mcpi.go (package main). Reads from stdin: line 1 is T (tes...
+  Running agent...
+  Agent finished in 45.1s
+  PASS (45.1s)
+
+[77/112] Black-Scholes European call price [c] (medium)
+  Task: Create /tmp/eval_bs/bs.c — Reads from stdin: line 1 is T. Each next line is 'S K...
+  Running agent...
+  Agent finished in 75.3s
+  PASS (75.3s)
+
+[78/112] Black-Scholes European call price [rust] (medium)
+  Task: Create /tmp/eval_bs/bs.rs — Reads from stdin: line 1 is T. Each next line is 'S ...
+  Running agent...
+  Agent finished in 64.2s
+  PASS (64.2s)
+
+[81/112] Monte Carlo π (deterministic LCG, integer-only predicate) [zig] (medium)
+  Task: Create /tmp/eval_mcpi/mcpi.zig — Reads from stdin: line 1 is T (test cases). Eac...
+  Running agent...
+  Agent finished in 135.7s
+  FAIL: mcpi.zig:32:33: error: expected optional type, found '[]const u8'
+    const n_str = parts.first() or
+
+[82/112] Scaled dot-product attention (single head) (medium)
+  Task: Create /tmp/eval_attn/attention.py with a function attention(Q, K, V) that imple...
+  Running agent...
+  Agent finished in 80.7s
+  PASS (80.7s)
+
+[83/112] Topological sort (Kahn's algorithm) [c] (medium)
+  Task: Create /tmp/eval_topo/topo.c — reads stdin: T cases, each 'N M' then M edges 'u ...
+  Running agent...
+  Agent finished in 52.8s
+  FAIL: Traceback (most recent call last):
+  File "/tmp/eval_topo/check.py", line 25, in <module>
+    nodes 
+
+[84/112] Topological sort (Kahn's algorithm) [cpp] (medium)
+  Task: Create /tmp/eval_topo/topo.cpp — reads stdin: T cases, each 'N M' then M edges '...
+  Running agent...
+  Agent finished in 25.6s
+  FAIL: Traceback (most recent call last):
+  File "/tmp/eval_topo/check.py", line 25, in <module>
+    nodes 
+
+[71/112] Brainfuck interpreter [zig] (hard)
+  Task: Create /tmp/eval_bf/bf.zig — Reads from stdin: line 1 is T (test cases). Each ca...
+  Running agent...
+  Agent finished in 525.4s
+  FAIL: bf.zig:84:25: error: expected type '*Io.Writer', found '*const Io.Writer'
+            '.' => try w.w
+
+[79/112] Black-Scholes European call price [zig] (medium)
+  Task: Create /tmp/eval_bs/bs.zig — Reads from stdin: line 1 is T. Each next line is 'S...
+  Running agent...
+  Agent finished in 244.5s
+  PASS (244.5s)
+
+[86/112] Union-Find with path compression [cpp] (medium)
+  Task: Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. P...
+  Running agent...
+  Agent finished in 30.0s
+  PASS (30.0s)
+
+[87/112] Union-Find with path compression [rust] (medium)
+  Task: Create /tmp/eval_uf/uf.rs — reads from stdin: line 1 is 'N Q' (N elements 0..N-1...
+  Running agent...
+  Agent finished in 39.9s
+  PASS (39.9s)
+
+[88/112] Union-Find with path compression [zig] (medium)
+  Task: Create /tmp/eval_uf/uf.zig — reads from stdin: line 1 is 'N Q' (N elements 0..N-...
+  Running agent...
+  Agent finished in 147.6s
+  PASS (147.6s)
+
+[89/112] Shortest path on grid (BFS / A*) [zig] (medium)
+  Task: Create /tmp/eval_astar/astar.zig — Reads from stdin: line 1 is T. Each case: lin...
+  Running agent...
+  Agent finished in 264.0s
+  PASS (264.0s)
+
+[85/112] Topological sort (Kahn's algorithm) [zig] (medium)
+  Task: Create /tmp/eval_topo/topo.zig — reads from stdin: line 1 is T (test case count)...
+  Running agent...
+  Agent finished in 351.0s
+  PASS (351.0s)
+
+[92/112] Matrix determinant via Gaussian elimination [go] (medium)
+  Task: Create /tmp/eval_det/det.go (package main). Reads from stdin: line 1 is T. Each ...
+  Running agent...
+  Agent finished in 46.4s
+  PASS (46.4s)
+
+[90/112] Extended Euclidean algorithm [zig] (medium)
+  Task: Create /tmp/eval_xgcd/xgcd.zig — reads from stdin: line 1 is T, next T lines are...
+  Running agent...
+  Agent finished in 123.3s
+  PASS (123.3s)
+
+[93/112] Matrix determinant via Gaussian elimination [c] (medium)
+  Task: Create /tmp/eval_det/det.c — Reads from stdin: line 1 is T. Each case: line A is...
+  Running agent...
+  Agent finished in 48.0s
+  PASS (48.0s)
+
+[95/112] Miller-Rabin primality (deterministic for 64-bit) [zig] (medium)
+  Task: Create /tmp/eval_mr/mr.zig — reads from stdin: line 1 is T, next T lines are int...
+  Running agent...
+  Agent finished in 232.5s
+  PASS (232.5s)
+
+[94/112] Matrix determinant via Gaussian elimination [zig] (medium)
+  Task: Create /tmp/eval_det/det.zig — Reads from stdin: line 1 is T. Each case: line A ...
+  Running agent...
+  Agent finished in 221.0s
+  PASS (221.0s)
+
+[97/112] Reverse a sequence (in-place, no stdlib reverse) [python] (easy)
+  Task: Create /tmp/eval_rev/rev.py — Reads from stdin: line 1 is T. Each case: line A i...
+  Running agent...
+  Agent finished in 21.7s
+  PASS (21.7s)
+
+[96/112] Circuit breaker state machine (medium)
+  Task: Create /tmp/eval_cb/cb.py with class CircuitBreaker(failure_threshold, recovery_...
+  Running agent...
+  Agent finished in 62.1s
+  PASS (62.1s)
+
+[101/112] Count vowels (case-insensitive) [go] (easy)
+  Task: Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and...
+  Running agent...
+  Agent finished in 17.5s
+  PASS (17.5s)
+
+[102/112] Count vowels (case-insensitive) [c] (easy)
+  Task: Create /tmp/eval_vowels/vowels.c — a C program that reads lines from stdin and f...
+  Running agent...
+  Agent finished in 18.8s
+  PASS (18.8s)
+
+[98/112] Reverse a sequence (in-place, no stdlib reverse) [go] (easy)
+  Task: Create /tmp/eval_rev/rev.go (package main). Reads from stdin: line 1 is T. Each ...
+  Running agent...
+  Agent finished in 54.7s
+  PASS (54.7s)
+
+[103/112] Count vowels (case-insensitive) [cpp] (easy)
+  Task: Create /tmp/eval_vowels/vowels.cpp — a C++ program that reads lines from stdin a...
+  Running agent...
+  Agent finished in 20.4s
+  PASS (20.4s)
+
+[104/112] Count vowels (case-insensitive) [rust] (easy)
+  Task: Create /tmp/eval_vowels/vowels.rs — reads lines from stdin and for each line wri...
+  Running agent...
+  Agent finished in 21.4s
+  PASS (21.4s)
+
+[99/112] Reverse a sequence (in-place, no stdlib reverse) [rust] (easy)
+  Task: Create /tmp/eval_rev/rev.rs — Reads from stdin: line 1 is T. Each case: line A i...
+  Running agent...
+  Agent finished in 41.0s
+  FAIL: forbidden api
+
+[105/112] Count vowels (case-insensitive) [zig] (easy)
+  Task: Create /tmp/eval_vowels/vowels.zig — reads lines from stdin and for each line wr...
+  Running agent...
+  Agent finished in 48.9s
+  PASS (48.9s)
+
+[106/112] Palindrome check (alphanumeric, case-insensitive) [go] (easy)
+  Task: Create /tmp/eval_pal/pal.go (package main) that reads lines from stdin and for e...
+  Running agent...
+  Agent finished in 17.4s
+  PASS (17.4s)
+
+[107/112] Palindrome check (alphanumeric, case-insensitive) [zig] (easy)
+  Task: Create /tmp/eval_pal/pal.zig — reads lines from stdin and for each line writes '...
+  Running agent...
+  Agent finished in 153.1s
+  FAIL: pal.zig:25:34: error: struct 'array_list.Aligned(u8,null)' has no member named 'init'
+    var alnum 
+
+[108/112] Numerically stable sigmoid [go] (easy)
+  Task: Create /tmp/eval_sig/sig.go (package main). Reads from stdin: line 1 is T. Each ...
+  Running agent...
+  Agent finished in 24.7s
+  PASS (24.7s)
+
+[109/112] Numerically stable sigmoid [c] (easy)
+  Task: Create /tmp/eval_sig/sig.c — Reads from stdin: line 1 is T. Each case: line A is...
+  Running agent...
+  Agent finished in 34.1s
+  PASS (34.1s)
+
+[100/112] Reverse a sequence (in-place, no stdlib reverse) [zig] (easy)
+  Task: Create /tmp/eval_rev/rev.zig — Reads from stdin: line 1 is T. Each case: line A ...
+  Running agent...
+  Agent finished in 274.0s
+  PASS (274.0s)
+
+[110/112] Numerically stable sigmoid [rust] (easy)
+  Task: Create /tmp/eval_sig/sig.rs — Reads from stdin: line 1 is T. Each case: line A i...
+  Running agent...
+  Agent finished in 34.8s
+  PASS (34.8s)
+
+[112/112] Population count (manual implementation) [zig] (easy)
+  Task: Create /tmp/eval_pop/pop.zig — Reads from stdin: line 1 is T. Each next line is ...
+  Running agent...
+  Agent finished in 155.2s
+  PASS (155.2s)
+
+[51/112] Karatsuba multiplication on byte (base-256) arrays [c] (hard)
+  Task: Create /tmp/eval_karat/karat.c — reads from stdin: line 1 is T (test cases). Eac...
+  Running agent...
+  Agent finished in 2493.2s
+  FAIL: Traceback (most recent call last):
+  File "<stdin>", line 34, in <module>
+AssertionError: case 1 mis
+
+[111/112] Numerically stable sigmoid [zig] (easy)
+  Task: Create /tmp/eval_sig/sig.zig — Reads from stdin: line 1 is T. Each case: line A ...
+  Running agent...
+  Agent finished in 235.7s
+  PASS (235.7s)
+
+[91/112] Chinese Remainder Theorem (general moduli) [zig] (medium)
+  Task: Create /tmp/eval_crt/crt.zig — Reads from stdin: line 1 is T. Each case: line A ...
+  Running agent...
+  Agent finished in 1271.3s
+  FAIL: crt.zig:8:13: error: remainder division with 'i64' and 'i64': signed integers and floats must use @r
+
+[52/112] Karatsuba multiplication on byte (base-256) arrays [rust] (hard)
+  Task: Create /tmp/eval_karat/karat.rs — reads from stdin: line 1 is T (test cases). Ea...
+  Running agent...
+  Agent finished in 794.5s
+  PASS (794.5s)
+
+============================================================
+Results: 96/112 passed, 16 failed
+Imputed capability (v4-leaderboard scale): 98.75 (solve 99.10 / breadth 97.70; 179 saturated units imputed)
+Saved to: /home/max/Documents/openbeast/evals/results/eval-qwen-27b-q5-k-xl-20260908-235745.json
+============================================================
+
+Stopping Qwen 27B Q5_K_XL...
+  (--no-leaderboard: score not recorded in leaderboard.json)
+
+>>> Qwen 27B Q5_K_XL: capability 90.36 (solve 98.09 / lang 67.19) | accuracy 91.67 speed 36.88
+
+============================================================
+SWEEP COMPLETE — 6332s total
+  Succeeded: 1/1
+  Sweep summary: /home/max/Documents/openbeast/evals/results/sweep-20260909-014314.json
+============================================================
+
+LEADERBOARD
+ #  MODEL                           SU    SOLVE     LANG    SCORE     SPD   TOKENS     WALL     PASS
+----------------------------------------------------------------------------------------------------
+ 1  Qwen 27B Q5_K_XL                v4    99.1%    97.5%    98.7%      60    14.0M    8h14m  271/291
+ 2  Qwen3.8 27B Q5_K_XL             v4    98.2%    96.1%    97.7%      36    28.3M   36h33m  258/291
+ 3  Qwen3.8 27B Uncensored Q5_K_    v4    98.2%    95.9%    97.6%      39    28.1M   31h09m  255/291
+ 4  Qwen 27B MTP Q5_K_XL            v4    97.3%    98.3%    97.5%     164    13.3M    3h49m  273/291
+ 5  Qwen 35B-A3B MTP MoE Q4_K_M     v4    98.2%    95.5%    97.5%     359    20.6M    4h16m  254/291
+ 6  Qwopus 27B v2 MTP Q5_K_M        v4    96.4%    96.5%    96.4%     152    15.4M    4h36m  260/291
+ 7  Qwen 35B-A3B NVFP4 MTP          v4    96.6%    95.5%    96.3%     302    17.8M    6h35m  252/291
+ 8  Qwen 27B NVFP4 MTP              v4    94.8%    98.2%    95.7%     128    16.1M    5h24m  271/291
+ 9  Qwen 35B-A3B MoE Q4_K_M         v4    94.8%    95.7%    95.0%     200    19.0M    6h07m  251/291
+
+LEGACY SUITES (task sets differ — not comparable to v4 rows above)
+----------------------------------------------------------------------------------------------------
+ 1  Qwen 27B Uncensored Q5_K_P    v3.5    98.6%    97.5%    98.3%       —    18.0M    8h24m  298/323
+ 2  Gemma 4 31B-it Q5_K_XL        v3.5    94.6%    97.6%    95.4%       —    12.5M    9h53m  288/323
+ 3  Qwen 35B-A3B Uncensored Q4_K  v3.5    95.4%    94.7%    95.2%       —    27.0M    5h44m  271/323
+
+SOLVE = % of base problems solved in >=1 language.  LANG = % of language ports passed among solved problems.
+SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.
+
+
+[1/1] Starting model
+
+############################################################
+# Benchmarking: Qwen 27B Q5_K_XL (qwen-27b-q5)
+# Serve: scripts/serve-qwen-27b-q5.sh
+############################################################
+
+Stopping any running llama-server...
+Starting scripts/serve-qwen-27b-q5.sh...
+  Server log: /home/max/Documents/openbeast/evals/results/server-qwen-27b-q5-20260909-014314.log
+Waiting for /health (up to 180s)...
+Model healthy. Running eval suite...
+
+Eval started — 2 tasks
+Model:  Qwen 27B Q5_K_XL
+Server: http://localhost:8080/v1
+Jobs:   4 parallel workers (same-base variants stay sequential; per-iteration timeout ×2.00 for contention)
+GPU:    NVIDIA GeForce RTX 5090 (32607 MiB, driver 610.57.04)
+Serve:  -np 6 -c 358400 kv q4_0 reasoning-budget -1
+Results: /home/max/Documents/openbeast/evals/results/eval-qwen-27b-q5-k-xl-20260909-014317.json
+============================================================
+
+[2/2] Patch SQL injection vulnerabilities in a Flask app (hard)
+  Task: /tmp/eval_sqli/app.py is a Flask app with THREE SQL injection vulnerabilities (i...
+  Running agent...
+  Agent finished in 33.3s
+  FAIL: Traceback (most recent call last):
+  File "<string>", line 38, in <module>
+    assert not concat, 's
+
+[1/2] Karatsuba multiplication on byte (base-256) arrays [zig] (hard)
+  Task: Create /tmp/eval_karat/karat.zig — reads from stdin: line 1 is T (test cases). E...
+  Running agent...
+  Agent finished in 1217.0s
+  FAIL: Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+AssertionError: error: Str
+
+============================================================
+Results: 0/2 passed, 2 failed
+Saved to: /home/max/Documents/openbeast/evals/results/eval-qwen-27b-q5-k-xl-20260909-014317.json
+============================================================
+
+Stopping Qwen 27B Q5_K_XL...
+  (--no-leaderboard: score not recorded in leaderboard.json)
+
+>>> Qwen 27B Q5_K_XL: capability 0.0 (solve 0.0 / lang 0.0) | accuracy 0.0 speed 0.0
+
+============================================================
+SWEEP COMPLETE — 1228s total
+  Succeeded: 1/1
+  Sweep summary: /home/max/Documents/openbeast/evals/results/sweep-20260909-020342.json
+============================================================
+
+LEADERBOARD
+ #  MODEL                           SU    SOLVE     LANG    SCORE     SPD   TOKENS     WALL     PASS
+----------------------------------------------------------------------------------------------------
+ 1  Qwen 27B Q5_K_XL                v4    99.1%    97.5%    98.7%      60    14.0M    8h14m  271/291
+ 2  Qwen3.8 27B Q5_K_XL             v4    98.2%    96.1%    97.7%      36    28.3M   36h33m  258/291
+ 3  Qwen3.8 27B Uncensored Q5_K_    v4    98.2%    95.9%    97.6%      39    28.1M   31h09m  255/291
+ 4  Qwen 27B MTP Q5_K_XL            v4    97.3%    98.3%    97.5%     164    13.3M    3h49m  273/291
+ 5  Qwen 35B-A3B MTP MoE Q4_K_M     v4    98.2%    95.5%    97.5%     359    20.6M    4h16m  254/291
+ 6  Qwopus 27B v2 MTP Q5_K_M        v4    96.4%    96.5%    96.4%     152    15.4M    4h36m  260/291
+ 7  Qwen 35B-A3B NVFP4 MTP          v4    96.6%    95.5%    96.3%     302    17.8M    6h35m  252/291
+ 8  Qwen 27B NVFP4 MTP              v4    94.8%    98.2%    95.7%     128    16.1M    5h24m  271/291
+ 9  Qwen 35B-A3B MoE Q4_K_M         v4    94.8%    95.7%    95.0%     200    19.0M    6h07m  251/291
+
+LEGACY SUITES (task sets differ — not comparable to v4 rows above)
+----------------------------------------------------------------------------------------------------
+ 1  Qwen 27B Uncensored Q5_K_P    v3.5    98.6%    97.5%    98.3%       —    18.0M    8h24m  298/323
+ 2  Gemma 4 31B-it Q5_K_XL        v3.5    94.6%    97.6%    95.4%       —    12.5M    9h53m  288/323
+ 3  Qwen 35B-A3B Uncensored Q4_K  v3.5    95.4%    94.7%    95.2%       —    27.0M    5h44m  271/323
+
+SOLVE = % of base problems solved in >=1 language.  LANG = % of language ports passed among solved problems.
+SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.
+

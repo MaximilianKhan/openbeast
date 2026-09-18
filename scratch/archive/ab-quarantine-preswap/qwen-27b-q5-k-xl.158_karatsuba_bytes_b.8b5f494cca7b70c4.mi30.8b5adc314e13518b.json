@@ -1,0 +1,18 @@
+{
+  "id": "158_karatsuba_bytes_b",
+  "name": "Karatsuba multiplication on byte (base-256) arrays [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 143.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 44705,
+  "tokens_completion": 5894,
+  "tokens_total": 50599,
+  "base_id": "158_karatsuba_bytes",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:48:17.238961"
+}

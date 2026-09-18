@@ -1,0 +1,18 @@
+{
+  "id": "11_bst_a",
+  "name": "Binary search tree (insert + in-order traversal) [python]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 374.7,
+  "agent_exit_code": 0,
+  "validation_output": "Validation timed out",
+  "tokens_prompt": 63584,
+  "tokens_completion": 3851,
+  "tokens_total": 67435,
+  "base_id": "11_bst",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:05:07.072185"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "158_karatsuba_bytes_c",
+  "name": "Karatsuba multiplication on byte (base-256) arrays [c]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 2493.2,
+  "agent_exit_code": 0,
+  "validation_output": "Traceback (most recent call last):\n  File \"<stdin>\", line 34, in <module>\nAssertionError: case 1 mismatch (len 122)",
+  "tokens_prompt": 522055,
+  "tokens_completion": 91930,
+  "tokens_total": 613985,
+  "base_id": "158_karatsuba_bytes",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:29:55.085545"
+}

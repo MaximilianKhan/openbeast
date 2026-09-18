@@ -1,0 +1,14 @@
+{
+  "id": "68_circuit_breaker",
+  "name": "Circuit breaker state machine",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 62.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 13093,
+  "tokens_completion": 2241,
+  "tokens_total": 15334,
+  "cached_at": "2026-09-09T01:20:25.909508"
+}

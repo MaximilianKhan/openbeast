@@ -1,0 +1,14 @@
+{
+  "id": "152_chase_lev_deque",
+  "name": "Chase-Lev work-stealing deque",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 426.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 38333,
+  "tokens_completion": 18788,
+  "tokens_total": 57121,
+  "cached_at": "2026-09-09T00:30:57.506601"
+}

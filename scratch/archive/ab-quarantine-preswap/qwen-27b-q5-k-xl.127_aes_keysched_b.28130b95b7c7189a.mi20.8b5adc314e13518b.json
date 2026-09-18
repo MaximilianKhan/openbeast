@@ -1,0 +1,18 @@
+{
+  "id": "127_aes_keysched_b",
+  "name": "AES-128 key schedule [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 93.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 23790,
+  "tokens_completion": 4063,
+  "tokens_total": 27853,
+  "base_id": "127_aes_keysched",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:13:49.366340"
+}

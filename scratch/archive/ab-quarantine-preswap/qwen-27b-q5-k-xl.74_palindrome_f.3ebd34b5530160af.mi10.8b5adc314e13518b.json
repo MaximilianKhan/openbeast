@@ -1,0 +1,18 @@
+{
+  "id": "74_palindrome_f",
+  "name": "Palindrome check (alphanumeric, case-insensitive) [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 153.1,
+  "agent_exit_code": 0,
+  "validation_output": "pal.zig:25:34: error: struct 'array_list.Aligned(u8,null)' has no member named 'init'\n    var alnum = std.ArrayList(u8).init(alloc);\n                ~~~~~~~~~~~~~~~~~^~~~~\n/home/max/.local/share/mise/installs/zig/0.16.0/lib/std/array_list.zig:576:12: note: struct declared here\n    return struct {\n           ^~~~~~\nreferenced by:\n    main: pal.zig:15:29\n    callMain [inlined]: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:737:30\n    callMainWithArgs [inlined]: /home/max/.local",
+  "tokens_prompt": 42046,
+  "tokens_completion": 5670,
+  "tokens_total": 47716,
+  "base_id": "74_palindrome",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:25:31.587158"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "127_aes_keysched_a",
+  "name": "AES-128 key schedule [python]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 120.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 22599,
+  "tokens_completion": 5502,
+  "tokens_total": 28101,
+  "base_id": "127_aes_keysched",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:12:15.984364"
+}

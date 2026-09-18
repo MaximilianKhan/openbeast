@@ -1,0 +1,18 @@
+{
+  "id": "155_tonelli_shanks_f",
+  "name": "Tonelli-Shanks square root mod prime p [zig]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 692.2,
+  "agent_exit_code": 0,
+  "validation_output": "Validation timed out",
+  "tokens_prompt": 210220,
+  "tokens_completion": 23396,
+  "tokens_total": 233616,
+  "base_id": "155_tonelli_shanks",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:38:22.771838"
+}

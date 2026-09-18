@@ -1,0 +1,18 @@
+{
+  "id": "82_sigmoid_e",
+  "name": "Numerically stable sigmoid [rust]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 34.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 23888,
+  "tokens_completion": 1183,
+  "tokens_total": 25071,
+  "base_id": "82_sigmoid",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:27:05.518702"
+}

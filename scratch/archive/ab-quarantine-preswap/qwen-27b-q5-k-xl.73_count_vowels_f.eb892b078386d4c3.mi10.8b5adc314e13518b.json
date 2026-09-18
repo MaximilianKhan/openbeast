@@ -1,0 +1,18 @@
+{
+  "id": "73_count_vowels_f",
+  "name": "Count vowels (case-insensitive) [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 48.9,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 24333,
+  "tokens_completion": 1499,
+  "tokens_total": 25832,
+  "base_id": "73_count_vowels",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:22:40.754651"
+}

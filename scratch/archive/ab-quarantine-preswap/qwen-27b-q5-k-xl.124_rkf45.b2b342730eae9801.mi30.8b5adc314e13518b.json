@@ -1,0 +1,14 @@
+{
+  "id": "124_rkf45",
+  "name": "RKF45 adaptive ODE integrator",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 463.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 121272,
+  "tokens_completion": 14512,
+  "tokens_total": 135784,
+  "cached_at": "2026-09-09T00:14:24.633771"
+}

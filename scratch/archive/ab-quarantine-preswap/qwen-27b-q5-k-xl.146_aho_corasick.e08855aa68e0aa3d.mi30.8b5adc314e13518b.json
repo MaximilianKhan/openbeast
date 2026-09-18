@@ -1,0 +1,14 @@
+{
+  "id": "146_aho_corasick",
+  "name": "Aho-Corasick multi-pattern matcher",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 178.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 13910,
+  "tokens_completion": 7983,
+  "tokens_total": 21893,
+  "cached_at": "2026-09-09T00:23:10.684712"
+}

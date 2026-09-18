@@ -1,0 +1,254 @@
+<title>The Spare-Memory Meta</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#fafbfc; --ink:#182430; --ink2:#46566a; --ink3:#6b7b8f;
+  --line:#dde4ec; --panel:#f1f4f8; --panel2:#e8edf4;
+  --accent:#1f5fa8; --accent-ink:#174a85; --gold:#a87b18;
+  --ours:#0f7a4d; --ours-bg:#e3f3ea; --warn:#a85d18; --warn-bg:#f7ecdd;
+  --dead:#b03a3a; --dead-bg:#f8e7e7; --info-bg:#e5eefa;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0f151d; --ink:#dde6ef; --ink2:#9fb0c2; --ink3:#7789a0;
+    --line:#26313f; --panel:#161e29; --panel2:#1c2634;
+    --accent:#6ea8e8; --accent-ink:#8dbcf2; --gold:#d3a84a;
+    --ours:#5cc494; --ours-bg:#12291e; --warn:#d99a55; --warn-bg:#2b2113;
+    --dead:#e08585; --dead-bg:#2d1717; --info-bg:#152238;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0f151d; --ink:#dde6ef; --ink2:#9fb0c2; --ink3:#7789a0;
+  --line:#26313f; --panel:#161e29; --panel2:#1c2634;
+  --accent:#6ea8e8; --accent-ink:#8dbcf2; --gold:#d3a84a;
+  --ours:#5cc494; --ours-bg:#12291e; --warn:#d99a55; --warn-bg:#2b2113;
+  --dead:#e08585; --dead-bg:#2d1717; --info-bg:#152238;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.65 "Public Sans",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1020px;margin:0 auto;padding:0 24px 96px}
+.col{max-width:70ch;margin:0 auto}
+header.hero{padding:72px 0 40px;border-bottom:1px solid var(--line);margin-bottom:48px}
+.eyebrow{font:600 12px/1 "IBM Plex Mono",monospace;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--accent);margin:0 0 18px}
+h1{font:600 clamp(36px,5.5vw,54px)/1.08 "Newsreader",Georgia,serif;
+  margin:0 0 18px;text-wrap:balance;letter-spacing:-.01em}
+.dek{font:400 19px/1.55 "Newsreader",Georgia,serif;color:var(--ink2);
+  max-width:62ch;margin:0}
+.meta-line{display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:26px;
+  font:500 12.5px/1.5 "IBM Plex Mono",monospace;color:var(--ink3)}
+h2{font:600 27px/1.2 "Newsreader",Georgia,serif;margin:60px 0 6px;text-wrap:balance}
+h2 .sec{color:var(--accent);font-feature-settings:"tnum";margin-right:10px}
+h3{font:600 19px/1.3 "Newsreader",Georgia,serif;margin:34px 0 10px;text-wrap:balance}
+p{margin:0 0 16px}
+.lede{font-size:17.5px}
+a{color:var(--accent-ink);text-decoration-color:color-mix(in srgb,var(--accent) 40%,transparent);
+  text-underline-offset:2px}
+a:hover{text-decoration-color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+code,.mono{font:500 .92em "IBM Plex Mono",monospace}
+code{background:var(--panel);padding:.1em .35em;border-radius:4px}
+.chip{display:inline-block;font:600 10.5px/1 "IBM Plex Mono",monospace;
+  letter-spacing:.08em;padding:4px 8px;border-radius:4px;vertical-align:1px;white-space:nowrap}
+.c-ours{background:var(--ours-bg);color:var(--ours)}
+.c-narrowed{background:var(--warn-bg);color:var(--warn)}
+.c-dead{background:var(--dead-bg);color:var(--dead)}
+.c-support{background:var(--info-bg);color:var(--accent-ink)}
+.c-gold{background:color-mix(in srgb,var(--gold) 14%,var(--paper));color:var(--gold)}
+.callout{background:var(--panel);border-left:3px solid var(--accent);
+  border-radius:0 8px 8px 0;padding:18px 22px;margin:24px 0}
+.callout.gold{border-left-color:var(--gold)}
+.callout p:last-child{margin:0}
+.tablewrap{overflow-x:auto;margin:26px 0;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.5}
+th{font:600 11.5px/1.4 "Public Sans",sans-serif;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink3);text-align:left;
+  padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+td{padding:11px 16px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td .mono{font-size:12.5px;color:var(--ink3)}
+.num{font-feature-settings:"tnum";font-variant-numeric:tabular-nums}
+.fronts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:14px;margin:28px 0}
+.front{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.front h4{font:600 15.5px/1.3 "Public Sans",sans-serif;margin:0 0 8px}
+.front p{font-size:13.8px;color:var(--ink2);margin:0}
+.front .tag{font:600 10.5px/1 "IBM Plex Mono",monospace;letter-spacing:.1em;
+  color:var(--accent);text-transform:uppercase;display:block;margin-bottom:10px}
+.bib{margin:20px 0 0;padding:0;list-style:none}
+.bib li{padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+.bib li:last-child{border-bottom:none}
+.bib .id{font:600 12.5px "IBM Plex Mono",monospace;color:var(--accent-ink);white-space:nowrap}
+.bib .who{color:var(--ink3);font-size:12.5px}
+.bibgroup{font:600 13px/1 "Public Sans",sans-serif;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--gold);margin:34px 0 4px}
+hr{border:none;border-top:1px solid var(--line);margin:52px 0}
+.foot{color:var(--ink3);font-size:13px;margin-top:56px;border-top:1px solid var(--line);padding-top:20px}
+@media (prefers-reduced-motion: no-preference){
+  header.hero{animation:rise .5s ease-out both}
+  @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+}
+</style>
+
+<div class="wrap">
+<header class="hero">
+  <p class="eyebrow">beast-rank · research briefing · 2026-09-08</p>
+  <h1>The Spare-Memory Meta</h1>
+  <p class="dek">The state of weight compression for VRAM-poor, compute-rich GPUs — where the field moved between August 11 and September 8, where our campaign sits inside it, and every paper we processed to know that.</p>
+  <div class="meta-line">
+    <span>WINDOW 2026-08-11 → 2026-09-08</span>
+    <span>4 RECON LANES · 40+ SOURCES</span>
+    <span>CLAIMS: 0 FALSIFIED · 2 NARROWED · 2 SUPPORTED</span>
+  </div>
+</header>
+
+<div class="col">
+
+<h2><span class="sec">1</span>Why this research exists</h2>
+<p class="lede">Consumer GPU economics produced a strange machine: the RTX&nbsp;5090 carries formidable compute strapped to a 32&nbsp;GB VRAM pool too small for frontier models. Our measurements sharpened what that means — batch-1 decode is <em>memory-bandwidth-bound</em>, so on our own card a 27B at Q6 decodes at 61&nbsp;tok/s while the same model at Q2_K runs 99.7. Smaller weights aren't a compromise that costs speed; they're <em>faster</em>. The binding trade was never compute-for-memory. It is <strong>accuracy-for-memory, with compute as the free resource that buys accuracy back</strong>.</p>
+<p>beast-rank is our campaign to exploit that: store quantized or factorized weights, and spend the idle compute reconstructing accuracy at inference — low-rank corrections fused into the serving path of llama.cpp, applied to the exact GGUF artifacts people actually download. Twenty-nine experiments in, we hold a set of measured results and a paper draft; this briefing is the map of everyone else's territory around them.</p>
+<div class="callout"><p><strong>The framing is still ours.</strong> The closest published neighbors to the "compute idles — spend it on accuracy reconstruction" inversion are CPU-side (cflow, <span class="mono">2608.23841</span>) or hardware-community diagnoses that decode is memory-bound (Ma&nbsp;&amp;&nbsp;Patterson, <span class="mono">2601.05047</span>). Nobody has published the GPU-side version. Independent corroboration keeps arriving: Blackwell's FP4 tensor cores gave llama.cpp <em>+68% prefill and ~0% decode</em> — compute got faster and the token rate didn't move, because bytes-in-VRAM is the wall.</p></div>
+
+<h2><span class="sec">2</span>The five fronts of the field</h2>
+<p>Weight-compression research in late 2026 is best read as five fronts. Every paper we processed belongs to one.</p>
+<div class="fronts">
+  <div class="front"><span class="tag">Front A</span><h4>Produce-time PTQ</h4><p>Make a better quantized artifact from the original weights: GPTQ lineage, rotation methods, grouping tricks (OCGQuant), Schur-complement optimizers (SchurQuant), E2E gradient PTQ (REAL-Q). Crowded, fast-moving, vendor-heavy.</p></div>
+  <div class="front"><span class="tag">Front B</span><h4>Shipped-artifact repair</h4><p>Improve the quantized file people already have, ideally in-format. GSQ and ReQuant opened this in April–August; our gguf-refine is the one-shot whitened instantiation. Three groups worldwide, one of them us.</p></div>
+  <div class="front"><span class="tag">Front C</span><h4>Sidecar correction</h4><p>Keep the base frozen; add a small correction structure — low-rank adapters (ours, LQER lineage), seeded random bases (AWSRC), quantized full residuals (RRQ), vector codebooks. The battle is capture-per-byte.</p></div>
+  <div class="front"><span class="tag">Front D</span><h4>Hardware formats</h4><p>NVFP4/MXFP4 native weights riding Blackwell tensor cores. NVIDIA ships production checkpoints (DeepSeek-V4-NVFP4); Moonshot trains K3 natively in MXFP4; the toolchains still ship zero low-rank correction.</p></div>
+  <div class="front"><span class="tag">Front E</span><h4>Serving systems</h4><p>Where compression meets the engine: llama.cpp's quant kernels, speculative/MTP paths, adapter fusion. SVDQuant/Nunchaku proved fused low-rank + 4-bit serving — for diffusion models only. The LLM slot is open.</p></div>
+</div>
+
+<h2><span class="sec">3</span>Our position: the claims ledger</h2>
+<p>Everything below was re-verified against the literature through September&nbsp;8. The verdict chips are the point: what is still uniquely ours, what got narrowed, and what the field just handed us for free.</p>
+<div class="tablewrap"><table>
+<tr><th>Claim / asset</th><th>Status</th><th>What the window changed</th></tr>
+<tr><td><strong>Equal-byte equivalence class</strong> — at 27B on K-quant grids, low-rank correction ≈ carve ≈ shared-basis at equal bytes; only <em>type allocation</em> escapes (E28/E29)</td><td><span class="chip c-ours">STILL OURS</span></td><td>Nobody has published a parity result. AWSRC ran the nearest byte-fair codec duel and claims a winner — but cross-family, at 3B, with an unwhitened low-rank arm, and its winner <em>flips by metric</em> (wins PPL, loses KL), which quietly corroborates near-parity. We add one scoping sentence and cite it.</td></tr>
+<tr><td><strong>gguf-refine</strong> — one-shot whitened re-rounding of shipped GGUFs</td><td><span class="chip c-narrowed">NARROWED</span></td><td>SchurQuant (<span class="mono">2608.15567</span>) published the first joint scale-refit + integer coordinate-descent alternation. Our claim tightens to: first <em>in-format</em> scale+code refinement on the shipped K-quant superblock hierarchy, whitened, one-shot. The in-format half survives cleanly.</td></tr>
+<tr><td><strong>E16</strong> — whitened low-rank residual on a frozen NVFP4 base, stock adapter serving, LLMs</td><td><span class="chip c-ours">OURS — WINDOW SHRINKING</span></td><td>Verified unclaimed through 09-08: NVIDIA ModelOpt low-rank-free through v0.47; Nunchaku still diffusion-locked. But three near-misses in four weeks, and Unsloth now exports NVFP4 GGUFs — including Qwen3.8-27B, our own default family. Priority up: run it.</td></tr>
+<tr><td><strong>E27</strong> — interpolation-control methodology (byte-fair mixed-quant control at every comparison point)</td><td><span class="chip c-support">INDEPENDENTLY SUPPORTED</span></td><td><span class="mono">2609.01587</span> reached our verdict by another road: spending the next bit on <em>global granularity</em> beats local layer repair by 21–52 points across 9 models. They ran it accuracy-only, with no low-rank arm and no byte-fair control — which is exactly our methodology's contribution. Cite and claim the stronger version.</td></tr>
+<tr><td><strong>E17 posterior dequant · capture-vs-width scaling law · register-neutral fusion law · MTP/linear-attention calibration</strong></td><td><span class="chip c-ours">STILL OURS</span></td><td>Quiet lanes re-verified empty. All MTP work in the window is training/runtime-side; Gated-DeltaNet-2 (<span class="mono">2605.22791</span>) shows the architecture family iterating — which raises the value of shipping our upstream calibration comments soon.</td></tr>
+<tr><td><strong>Surrogate-vs-outcome series</strong> — tighter reconstruction ≠ better end-model (6 instances measured)</td><td><span class="chip c-support">INDEPENDENTLY SUPPORTED</span></td><td>SchurQuant reports the same phenomenon ("tighter reconstruction alone doesn't consistently improve end metrics") and has to bolt on regularizers to fix it. Published company for our most contrarian finding.</td></tr>
+<tr><td><strong>−13.4% MTP speed figure</strong> (previously under a contamination gate)</td><td><span class="chip c-ours">GATE CLOSED — CLEAN</span></td><td>Upstream fix #26177 merged at build b10152; proven contained in both our kernel base (b10434) and serving pin (b10254). The figure was never contaminated. The GPU measurement lane is unblocked.</td></tr>
+</table></div>
+
+<h2><span class="sec">4</span>What moved in the window — the eight facts that matter</h2>
+
+<h3>4.1 · Muon may be inside our own model</h3>
+<p>Qwen's architecture paper for Qwen3.8-Next (<span class="mono">2608.30320</span>) discloses that the model was trained with the <strong>Muon optimizer on all genuine 2-D linear maps</strong> — attention, GDN, expert weights — with AdamW kept for embeddings and routers. Third-party coverage attributes the same recipe to the 2.4T flagship. The 27B dense we serve is unconfirmed, and Alibaba has confirmed no technical report is coming for it.</p>
+<p>Why this matters to us: Muon's orthogonalized updates should <em>flatten singular spectra</em> — and flatter spectra mean lower low-rank capture, i.e. our correction method works measurably worse on Muon-trained checkpoints. That was a curiosity when the only Muon model was Moonshot's Moonlight; it is a first-order question when it may describe the default model on our own rig. The literature has <strong>not touched</strong> "does Muon provenance change post-training quantizability" — four Muon papers appeared in the window (<span class="mono">2606.04058</span>, <span class="mono">2606.00371</span>, <span class="mono">2509.23106</span>, <span class="mono">2605.19282</span>) and none do PTQ. <strong>E30 ran the same day this report was written</strong> — a paired stable-rank census of Qwen3.8-27B vs Qwen3.6-27B across 256 matched 2-D tensors — and came back <em>null on both pre-registered metrics</em>: no flattening (+0.0015 ± 0.0035). Either the 27B dense was not Muon-trained, or the effect washes out at convergence. Operationally that is good news (no capture penalty on our default lineup); scientifically the "does Muon change quantizability" question stays open and unclaimed, with Moonlight as the clean test bench and our null as its published-ready control.</p>
+
+<h3>4.2 · A correctness bug in our architecture's forward pass</h3>
+<p>llama.cpp merged a fix (#28068, build b10829) for a Gated-DeltaNet normalization that diverged from Qwen's reference kernels — mean-KLD 0.00175 on Qwen3.8-27B against the unfixed graph. Every build we have ever run computes the deviant norm for the <code>qwen35</code> family, i.e. both our champion and our default. Paired same-build comparisons survive (both arms share the graph); absolute claims against reference implementations do not. Standing rule adopted: <strong>never mix pre- and post-b10829 rows in one table</strong>, and the kernel branch rebases before the next measurement campaign.</p>
+
+<h3>4.3 · The NVFP4 single-stream bet is still a bet</h3>
+<p>The merged NVFP4 performance PR (#25730) turned out to be prompt-processing only (1.03–1.07×); decode — the number that matters for single-user serving — is untouched, and the PRs that would move it (#26311 weight repack, #25153 imatrix-aware scale search) remain open. Independent confirmation of our own measurement that K-quants beat NVFP4 at batch&nbsp;1. Meanwhile an industry guide states flatly that NVFP4-vs-Q4_K_M quality "is unsettled — no independent benchmark has run it." We have that benchmark instrumented.</p>
+
+<h3>4.4 · Vendors converge on our type-allocation finding</h3>
+<p>Three independent production systems now put their lowest bits on experts only and leave everything else high-precision — Kimi&nbsp;K3 (MXFP4-QAT), GLM-5, and NVIDIA's DeepSeek-V4-NVFP4 checkpoints. And NVIDIA's production recipe <strong>carries speculative/MTP heads through unquantized</strong> — first-party validation of the calibration-blind-spot argument we've been assembling for llama.cpp upstream. New blind-spot species keep appearing: Qwen's Gated-Residual gates and host-side n-gram tables, Tencent Hunyuan's separate 3.8B MTP layer shipped in vendor GGUFs.</p>
+
+<h3>4.5 · The vendor baseline to beat changed</h3>
+<p>ModelOpt v0.47 productized <strong>Four-Over-Six</strong> block quantization (per-block dynamic-range selection) plus a 34×-faster fused Hessian scale search. Our NVFP4 codec lane now scores against that, not against naive RTN — alongside OCGQuant's outlier-companion grouping (<span class="mono">2609.00066</span>) and SOAR's scale optimization (<span class="mono">2605.12245</span>), all replayable offline in our whitened metric from cached statistics.</p>
+
+<h3>4.6 · A rival correction geometry appeared</h3>
+<p>AWSRC (<span class="mono">2608.23144</span>) repairs frozen INT4 backbones with <em>seed-generated</em> bases — sign patterns, permutations, Hadamard columns — storing near-zero basis bytes, only coefficients. It claims to beat low-rank at equal bytes (at 3B, unwhitened, PPL-metric). This is both the closest published attack on our equivalence-class claim and a gift: seeded bases are a candidate fourth member of the class — or its first escapee — testable in hours from our cached 27B Grams. That duel is now queued.</p>
+
+<h3>4.7 · The GSQ head-to-head got cheaper and sharper</h3>
+<p>GSQ — the other group refining shipped GGUFs — is frozen at v2 with zero follow-up citations picking up the thread. Its training loop requires H100-class hardware even for 8B models, so our mandatory head-to-head (T1.17) runs against their <em>released checkpoints</em>, and the asymmetry becomes a measured positioning fact: <strong>their method cannot run on the consumer cards it produces artifacts for; ours runs where it serves.</strong> Their lab's earlier produce-time GGUF toolkit joins the comparison as a baseline row.</p>
+
+<h3>4.8 · The artifacts came to us</h3>
+<p>Unsloth now exports NVFP4/FP8/imatrix GGUFs directly, and community NVFP4-GGUF builds of both Qwen3.6-27B and Qwen3.8-27B are on Hugging Face. The frozen-FP4-base experiments (E16) no longer require us to produce the base artifact — we can download the exact thing users would serve and correct it.</p>
+
+<h2><span class="sec">5</span>The re-ranked campaign queue</h2>
+<div class="tablewrap"><table>
+<tr><th></th><th>Item</th><th>Lane</th><th>Why now</th></tr>
+<tr><td class="num">1</td><td><strong>T1.17 — GSQ head-to-head</strong> vs released checkpoints</td><td>GPU</td><td>Target frozen at v2; every month risks a v3; gate that blocked speed numbers is closed</td></tr>
+<tr><td class="num">2</td><td><strong>E16 — whitened residual on frozen NVFP4</strong>, our default family</td><td>GPU</td><td>Three near-misses in four weeks; artifacts downloadable today; the claim is the paper's flagship</td></tr>
+<tr><td class="num">3</td><td><strong>E30 — Muon spectrum census</strong> <span class="chip c-ours">DONE — NULL</span></td><td>CPU</td><td>Ran same-day: no Muon spectral signature in Qwen3.8 vs 3.6 (stable rank +0.0015±0.0035, n=256; head entropy null). Good news operationally — correction budgets transfer 3.6→3.8 without a Muon discount; the "PTQ of Muon weights" question stays open with Moonlight as the test bench</td></tr>
+<tr><td class="num">4</td><td><strong>AWSRC seeded-basis capture duel</strong> at equal bytes</td><td>CPU</td><td>Pre-empts the obvious reviewer question; possible fourth member of the equivalence class</td></tr>
+<tr><td class="num">5</td><td><strong>L6 math</strong> — whitened objective subsumes ReQuant + GSQ + SchurQuant</td><td>Paper</td><td>Scope widened to three optimizer families; claim rewording lands here</td></tr>
+<tr><td class="num">6</td><td><strong>L4 — whitened replay</strong> of 4-over-6, local-Hessian, OCGQuant, SOAR</td><td>CPU</td><td>Vendor baseline moved; all scoreable from cached statistics</td></tr>
+<tr><td class="num">7</td><td><strong>Upstream calibration comments</strong> (#23575/#23476)</td><td>Community</td><td>NVIDIA's unquantized-MTP practice is fresh first-party ammo; the arch family is iterating</td></tr>
+</table></div>
+<p>Hygiene riding along: rebase the kernel branch past b10829, the one-build-per-table rule into PROTOCOL.md, claim rewordings before any paper section freezes, and the pre-window cite-check list (LoPRo, ResComp, RRQ, DAM, OBD-LLM PDF reads).</p>
+
+<hr>
+
+<h2><span class="sec">6</span>Bibliography — everything processed for this briefing</h2>
+<p>Grouped by front. Each entry: what it is, in one line, and why it touched our work.</p>
+
+<p class="bibgroup">Front B · Shipped-artifact repair — our home front</p>
+<ul class="bib">
+<li><a class="id" href="https://arxiv.org/abs/2604.18556">arXiv 2604.18556</a> — <strong>GSQ</strong> <span class="who">(IST-DASLab, v2 2026-05)</span> · In-format re-rounding of shipped GGUF K-quants via stochastic relaxation; runs unchanged on llama.cpp. The mandatory head-to-head; frozen, H100-training-bound, <a href="https://github.com/IST-DASLab/GSQ">code public</a>.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.07019">arXiv 2608.07019</a> — <strong>ReQuant</strong> <span class="who">(PKU/CUHK-SZ/ZTE, 2026-08)</span> · Frozen-grid coordinate-descent re-rounding with a first-order+diagonal-Hessian score; still v1, zero citations. Our L6 proof target.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.15567">arXiv 2608.15567</a> — <strong>SchurQuant</strong> <span class="who">(SNU, 2026-08-16)</span> · Schur-complement quadratic + alternating scale-refit/code descent. Narrowed our gguf-refine wording; supports surrogate-vs-outcome.</li>
+<li><a class="id" href="https://github.com/IST-DASLab/gptq-gguf-toolkit">gptq-gguf-toolkit</a> <span class="who">(IST-DASLab, 2025)</span> · Produce-time GPTQ with direct K-quant GGUF export; baseline row for T1.17.</li>
+<li><a class="id" href="https://github.com/ggml-org/llama.cpp/discussions/23853">llama.cpp #23853</a> · Community "advanced-gguf-quantizer": scale-only in-place GGUF repair with measured KLD — deployed-practice baseline gguf-refine should dominate.</li>
+</ul>
+
+<p class="bibgroup">Front C · Sidecar correction — the capture-per-byte war</p>
+<ul class="bib">
+<li><a class="id" href="https://arxiv.org/abs/2608.23144">arXiv 2608.23144</a> — <strong>AWSRC</strong> <span class="who">(Liu/Fang/Ren, 2026-08-24)</span> · Seeded-Hadamard residual codec on frozen INT4; byte-fair codec duel whose winner flips by metric. Must-cite; duel queued.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.04048">arXiv 2608.04048</a> — <strong>RRQ</strong> <span class="who">(Intel lineage, 2026-08-04)</span> · Stacked 2-bit full residuals → one artifact, many precisions. Related-work cite for the ladder framing.</li>
+<li><a class="id" href="https://arxiv.org/abs/2609.01587">arXiv 2609.01587</a> — <strong>Structure of Quantization Damage</strong> <span class="who">(2026-09-01)</span> · Causal layer-repair intervention: global granularity beats local repair by 21–52pts. Independent support for E27.</li>
+<li><a class="id" href="https://arxiv.org/abs/2607.20434">arXiv 2607.20434</a> — <strong>DAM</strong> · Claimed proof that low-rank and quantization are non-orthogonal; PDF read owed before theory freeze.</li>
+<li><a class="id" href="https://arxiv.org/pdf/2506.02077">arXiv 2506.02077</a> — Distinct roles for quantized vs low-rank matrices <span class="who">(pre-window, newly surfaced)</span> · Cite-check queue.</li>
+<li><a class="id" href="https://arxiv.org/html/2609.04263">arXiv 2609.04263</a> — Low-rank recovery for quantized KV caches · Out of scope (KV axis), one-line cite.</li>
+</ul>
+
+<p class="bibgroup">Front A · Produce-time PTQ</p>
+<ul class="bib">
+<li><a class="id" href="https://arxiv.org/abs/2609.00066">arXiv 2609.00066</a> — <strong>OCGQuant</strong> <span class="who">(2026-08-30)</span> · Outlier-companion channel regrouping for NVFP4 16-blocks; composable with a residual on top — joins the compose-vs-cannibalize check.</li>
+<li><a class="id" href="https://arxiv.org/abs/2604.00821">arXiv 2604.00821</a> — <strong>OBD-LLM</strong> · Two-sided whitening + 10% dampening recipe; estimator-repair test target; PDF read owed.</li>
+<li><a class="id" href="https://arxiv.org/abs/2607.07964">arXiv 2607.07964</a> — <strong>KronQ</strong> · Kronecker-structured quantization; uncited, no code movement.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.06291">arXiv 2608.06291</a> — <strong>BaKron</strong> · Kronecker refinement, v1, no code — our L1 lane is uncontested.</li>
+<li><a class="id" href="https://arxiv.org/abs/2606.01556">arXiv 2606.01556</a> — <strong>TwinQuant</strong> · Both-branches-4-bit dual quantization; unchanged.</li>
+<li><a class="id" href="https://arxiv.org/abs/2604.07955">arXiv 2604.07955</a> — <strong>ResComp</strong> <span class="who">(ICLR'26)</span> · Fixes GPTQ's compensated-weight objective; context cite.</li>
+<li><a class="id" href="https://arxiv.org/abs/2609.00049">arXiv 2609.00049</a> — <strong>REAL-Q</strong> · E2E PTQ via dynamic gradient descent; gradient lane, context only.</li>
+<li><a class="id" href="https://arxiv.org/pdf/2601.19675">arXiv 2601.19675</a> — <strong>LoPRo</strong> · Permuted block-wise rotation — the permutation lever, now in print; cite-check queue.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.08188">arXiv 2608.08188</a> — Signal-noise degradation analysis of quantization error; optional framing cite.</li>
+<li><a class="id" href="https://arxiv.org/abs/2609.02451">arXiv 2609.02451</a> — <strong>Scalable Kronecker-Fisher</strong> <span class="who">(2026-09-02)</span> · Cross-layer sensitivity estimation at billion scale; new recipe for our estimator-repair and capture-regression lanes.</li>
+</ul>
+
+<p class="bibgroup">Front D · Hardware formats &amp; vendor practice</p>
+<ul class="bib">
+<li><a class="id" href="https://arxiv.org/abs/2608.30320">arXiv 2608.30320</a> — <strong>Qwen3.8-Next design</strong> <span class="who">(Qwen team, 2026-08-31)</span> · Muon on 2-D maps, Gated Residual, multi-step MTP, FP8 residual stream. The Muon-in-family finding; two new blind-spot tensor species.</li>
+<li><a class="id" href="https://huggingface.co/nvidia/DeepSeek-V4-Pro-0813-NVFP4">DeepSeek-V4-NVFP4</a> <span class="who">(NVIDIA, 2026-08-27)</span> · Production NVFP4: experts-only low-bit, MTP heads unquantized — first-party ammo for our upstream comments.</li>
+<li><a class="id" href="https://nvidia.github.io/Model-Optimizer/reference/0_changelog.html">ModelOpt v0.46–0.47</a> · Four-Over-Six weight quantization + fused Hessian scale search; verified low-rank-free — E16's headroom, and L4's new baseline.</li>
+<li><a class="id" href="https://arxiv.org/html/2605.12245v1">arXiv 2605.12245</a> — <strong>SOAR</strong> · NVFP4 block-scale optimization; joins the L4 whitened replay.</li>
+<li><a class="id" href="https://arxiv.org/html/2606.26587v1">arXiv 2606.26587</a> — <strong>SharQ</strong> · Activation-sparsity + FP4 residual path; adjacent, not low-rank — E16 intact.</li>
+<li><a class="id" href="https://research.nvidia.com/labs/nemotron/files/NVFP4-QAD-Report.pdf">NVFP4-QAD report</a> + <a class="id" href="https://arxiv.org/abs/2509.25149">2509.25149</a> <span class="who">(NVIDIA)</span> · The vendor recovery bet is distillation/pretraining, not closed-form repair — the PTQ low-rank slot stays empty.</li>
+<li><a class="id" href="https://unsloth.ai/docs/new/changelog">Unsloth ≥2026.7.1</a> · Direct NVFP4/FP8/imatrix GGUF export; <a href="https://huggingface.co/williamliao/Qwen3.8-27B-NVFP4-GGUF">Qwen3.8-27B-NVFP4-GGUF</a> on HF — E16's base artifact, downloadable.</li>
+<li><a class="id" href="https://insiderllm.com/guides/fp4-inference-llamacpp-nvfp4-mxfp4/">InsiderLLM FP4 guide</a> · +68% prefill / ~0% decode from Blackwell FP4 tensor cores on the 5090; "NVFP4-vs-Q4_K_M is unsettled" — our benchmark's motivation line.</li>
+</ul>
+
+<p class="bibgroup">Front E · Serving, engines, upstream</p>
+<ul class="bib">
+<li><a class="id" href="https://github.com/ggml-org/llama.cpp/pull/26177">llama.cpp #26177</a> · NextN/--fit slot-count fix (b10152) — our measurement gate, now proven closed with a clean pin.</li>
+<li><a class="id" href="https://github.com/ggml-org/llama.cpp/pull/28068">llama.cpp #28068</a> · Gated-DeltaNet normalization fix (b10829) — the measurement-validity event for the qwen35 family.</li>
+<li><a class="id" href="https://github.com/ggml-org/llama.cpp/pull/27621">llama.cpp #27621</a> · MoE fusion at speculative widths 2–8: +10–13% on our 35B MTP configs; rebuild before benchmarking.</li>
+<li><a class="id" href="https://github.com/ggml-org/llama.cpp/pull/25730">llama.cpp #25730</a> · NVFP4 W4A4 — prompt-processing only; the decode bet rides open #26311/#25153.</li>
+<li><a class="id" href="https://github.com/vllm-project/vllm/issues/37908">vLLM RFC #37908</a> + <a class="id" href="https://github.com/nunchaku-ai/nunchaku">Nunchaku</a> · SVDQuant's fused low-rank+4-bit serving — still diffusion-only; the LLM slot our E16 targets remains open.</li>
+<li><a class="id" href="https://arxiv.org/abs/2608.23841">arXiv 2608.23841</a> — <strong>cflow</strong> <span class="who">(2026-08-24)</span> · Pipeline-native transformers for bandwidth-efficient CPU decode; nearest neighbor to our framing, on the wrong processor.</li>
+<li><a class="id" href="https://www.alphaxiv.org/abs/2601.05047">arXiv 2601.05047</a> — Ma &amp; Patterson · Decode is memory/interconnect-bound; the hardware-community version of the thesis.</li>
+<li><a class="id" href="https://arxiv.org/html/2508.06978v1">arXiv 2508.06978</a> · SSD expert-offload costs up to ~12× per-token energy — compression-to-fit dodges the energy wall.</li>
+<li><a class="id" href="https://github.com/kvcache-ai/ktransformers">KTransformers</a> · Heterogeneous offload lane; no compression math; watched.</li>
+</ul>
+
+<p class="bibgroup">The Muon question &amp; Chinese-lab context</p>
+<ul class="bib">
+<li><a class="id" href="https://arxiv.org/pdf/2606.04058">arXiv 2606.04058</a> · Spectral scaling laws of Muon — the flatness prediction E30 tests.</li>
+<li><a class="id" href="https://arxiv.org/abs/2605.11396">arXiv 2605.11396</a> — MuonQ · <a class="id" href="https://arxiv.org/abs/2606.00371">2606.00371</a> · <a class="id" href="https://arxiv.org/abs/2509.23106">2509.23106</a> · <a class="id" href="https://arxiv.org/abs/2605.19282">2605.19282</a> — the window's Muon literature; none do PTQ of Muon-trained weights. The question is unclaimed.</li>
+<li><a class="id" href="https://arxiv.org/abs/2605.22791">arXiv 2605.22791</a> — Gated DeltaNet-2 · The architecture family is iterating; ship the calibration comments.</li>
+<li><a class="id" href="https://huggingface.co/Qwen/Qwen3.8-27B">Qwen3.8-27B</a> + <a class="id" href="https://huggingface.co/Qwen/Qwen3.8-27B-FP8">-FP8</a> <span class="who">(Alibaba, 2026-08-14)</span> · Our default's family; vendor quantization stops at block-FP8; no tech report coming.</li>
+<li><a class="id" href="https://huggingface.co/blog/ResterChed/kimi-k3-model-overview-mxfp4-quantization-open-wei">Kimi K3</a> <span class="who">(Moonshot)</span> · Natively MXFP4-QAT-trained flagship; the shipped artifact <em>is</em> the quantized model.</li>
+<li><a class="id" href="https://www.developersdigest.tech/blog/tencent-hy3-open-source-moe-model">Tencent Hunyuan Hy3</a> · 295B MoE with separate 3.8B MTP layer and vendor-shipped GGUFs — a new capture point for in-format repair.</li>
+<li><a class="id" href="https://arxiv.org/abs/2603.23911">arXiv 2603.23911</a> · <a class="id" href="https://arxiv.org/abs/2603.17942">2603.17942</a> — window MTP work (self-distillation, embedding probing); all training-side; our calibration lane untouched.</li>
+</ul>
+
+<p class="foot">Prepared 2026-09-08 by the war council · sources: four parallel recon agents (arXiv PTQ · Chinese labs · llama.cpp upstream · serving/FP4), full verdicts archived in <span class="mono">research/lowrank/prior-art/recon-2026-09-08.md</span> on the research branch · claims ledger cross-checked against recon-2026-08-11 · E30 completed same-day: null on both pre-registered metrics.</p>
+
+</div>
+</div>

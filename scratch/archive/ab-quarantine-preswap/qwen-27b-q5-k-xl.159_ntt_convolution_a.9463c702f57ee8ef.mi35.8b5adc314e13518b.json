@@ -1,0 +1,18 @@
+{
+  "id": "159_ntt_convolution_a",
+  "name": "Polynomial convolution via NTT (number-theoretic transform) [python]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 86.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 34102,
+  "tokens_completion": 3568,
+  "tokens_total": 37670,
+  "base_id": "159_ntt_convolution",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:32:24.914832"
+}

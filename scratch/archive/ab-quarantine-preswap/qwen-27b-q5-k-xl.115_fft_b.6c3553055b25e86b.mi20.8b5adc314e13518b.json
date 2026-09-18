@@ -1,0 +1,18 @@
+{
+  "id": "115_fft_b",
+  "name": "Cooley-Tukey radix-2 FFT (real input) [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 75.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 22463,
+  "tokens_completion": 3808,
+  "tokens_total": 26271,
+  "base_id": "115_fft",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-08T23:59:50.188545"
+}

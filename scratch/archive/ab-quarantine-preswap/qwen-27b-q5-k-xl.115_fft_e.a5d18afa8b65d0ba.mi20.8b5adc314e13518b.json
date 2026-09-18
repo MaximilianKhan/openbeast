@@ -1,0 +1,18 @@
+{
+  "id": "115_fft_e",
+  "name": "Cooley-Tukey radix-2 FFT (real input) [rust]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 85.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 45342,
+  "tokens_completion": 4016,
+  "tokens_total": 49358,
+  "base_id": "115_fft",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:03:37.066790"
+}

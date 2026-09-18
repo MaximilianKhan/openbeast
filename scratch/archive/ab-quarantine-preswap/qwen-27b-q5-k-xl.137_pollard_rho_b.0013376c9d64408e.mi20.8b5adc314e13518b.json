@@ -1,0 +1,18 @@
+{
+  "id": "137_pollard_rho_b",
+  "name": "Pollard's rho factorization (Floyd cycle detection) [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 284.4,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 107998,
+  "tokens_completion": 6931,
+  "tokens_total": 114929,
+  "base_id": "137_pollard_rho",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:18:13.090501"
+}

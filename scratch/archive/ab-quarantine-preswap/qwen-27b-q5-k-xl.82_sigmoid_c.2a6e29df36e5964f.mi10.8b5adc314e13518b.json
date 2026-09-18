@@ -1,0 +1,18 @@
+{
+  "id": "82_sigmoid_c",
+  "name": "Numerically stable sigmoid [c]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 34.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16055,
+  "tokens_completion": 1164,
+  "tokens_total": 17219,
+  "base_id": "82_sigmoid",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:26:30.495772"
+}

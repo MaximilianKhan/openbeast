@@ -1,0 +1,18 @@
+{
+  "id": "127_aes_keysched_c",
+  "name": "AES-128 key schedule [c]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 123.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 29904,
+  "tokens_completion": 5627,
+  "tokens_total": 35531,
+  "base_id": "127_aes_keysched",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:15:53.214302"
+}

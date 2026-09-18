@@ -1,0 +1,18 @@
+{
+  "id": "155_tonelli_shanks_b",
+  "name": "Tonelli-Shanks square root mod prime p [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 99.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 43594,
+  "tokens_completion": 4405,
+  "tokens_total": 47999,
+  "base_id": "155_tonelli_shanks",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:26:20.575795"
+}

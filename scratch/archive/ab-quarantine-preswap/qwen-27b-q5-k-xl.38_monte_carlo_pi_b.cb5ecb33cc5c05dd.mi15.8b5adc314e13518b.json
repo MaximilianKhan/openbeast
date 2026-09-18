@@ -1,0 +1,18 @@
+{
+  "id": "38_monte_carlo_pi_b",
+  "name": "Monte Carlo \u03c0 (deterministic LCG, integer-only predicate) [go]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 45.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 19977,
+  "tokens_completion": 1548,
+  "tokens_total": 21525,
+  "base_id": "38_monte_carlo_pi",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:03:33.584592"
+}

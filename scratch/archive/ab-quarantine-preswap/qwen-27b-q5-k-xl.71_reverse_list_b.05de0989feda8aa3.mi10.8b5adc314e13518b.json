@@ -1,0 +1,18 @@
+{
+  "id": "71_reverse_list_b",
+  "name": "Reverse a sequence (in-place, no stdlib reverse) [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 54.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 27165,
+  "tokens_completion": 1934,
+  "tokens_total": 29099,
+  "base_id": "71_reverse_list",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:21:08.265919"
+}

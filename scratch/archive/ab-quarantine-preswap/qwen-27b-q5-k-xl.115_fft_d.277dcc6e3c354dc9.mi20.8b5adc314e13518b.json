@@ -1,0 +1,18 @@
+{
+  "id": "115_fft_d",
+  "name": "Cooley-Tukey radix-2 FFT (real input) [cpp]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 67.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 47095,
+  "tokens_completion": 3384,
+  "tokens_total": 50479,
+  "base_id": "115_fft",
+  "variant_id": "d",
+  "language": "cpp",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:02:11.103096"
+}

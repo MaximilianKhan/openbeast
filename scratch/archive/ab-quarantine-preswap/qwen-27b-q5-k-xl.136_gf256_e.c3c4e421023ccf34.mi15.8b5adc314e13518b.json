@@ -1,0 +1,18 @@
+{
+  "id": "136_gf256_e",
+  "name": "GF(2^8) finite-field arithmetic (AES polynomial) [rust]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 38.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16474,
+  "tokens_completion": 1928,
+  "tokens_total": 18402,
+  "base_id": "136_gf256",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:16:51.905671"
+}

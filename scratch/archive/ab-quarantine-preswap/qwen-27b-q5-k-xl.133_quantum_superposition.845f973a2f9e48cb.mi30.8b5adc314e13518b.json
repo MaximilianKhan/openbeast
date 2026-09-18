@@ -1,0 +1,14 @@
+{
+  "id": "133_quantum_superposition",
+  "name": "Qubit time evolution under arbitrary 2x2 Hermitian H",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 93.2,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 14377,
+  "tokens_completion": 4000,
+  "tokens_total": 18377,
+  "cached_at": "2026-09-09T00:13:28.636600"
+}

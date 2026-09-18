@@ -1,0 +1,18 @@
+{
+  "id": "61_extgcd_f",
+  "name": "Extended Euclidean algorithm [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 123.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 57720,
+  "tokens_completion": 3946,
+  "tokens_total": 61666,
+  "base_id": "61_extgcd",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:15:23.606645"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "123_nbody_f",
+  "name": "2D N-body Velocity-Verlet integrator [zig]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 209.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 49909,
+  "tokens_completion": 9487,
+  "tokens_total": 59396,
+  "base_id": "123_nbody",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:06:41.082056"
+}

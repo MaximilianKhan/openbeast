@@ -1,0 +1,18 @@
+{
+  "id": "159_ntt_convolution_c",
+  "name": "Polynomial convolution via NTT (number-theoretic transform) [c]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 156.1,
+  "agent_exit_code": 0,
+  "validation_output": "Traceback (most recent call last):\n  File \"<stdin>\", line 52, in <module>\nAssertionError: case 16 mismatch (na=80000 nb=80000)",
+  "tokens_prompt": 67579,
+  "tokens_completion": 6206,
+  "tokens_total": 73785,
+  "base_id": "159_ntt_convolution",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:36:50.372788"
+}

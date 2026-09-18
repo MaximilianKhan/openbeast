@@ -1,0 +1,18 @@
+{
+  "id": "27_brainfuck_interpreter_b",
+  "name": "Brainfuck interpreter [go]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 707.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 39453,
+  "tokens_completion": 3930,
+  "tokens_total": 43383,
+  "base_id": "27_brainfuck_interpreter",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:00:41.710470"
+}

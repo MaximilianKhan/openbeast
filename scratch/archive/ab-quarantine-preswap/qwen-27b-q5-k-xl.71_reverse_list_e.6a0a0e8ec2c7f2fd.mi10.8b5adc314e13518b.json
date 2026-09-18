@@ -1,0 +1,18 @@
+{
+  "id": "71_reverse_list_e",
+  "name": "Reverse a sequence (in-place, no stdlib reverse) [rust]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 41.0,
+  "agent_exit_code": 0,
+  "validation_output": "forbidden api",
+  "tokens_prompt": 25032,
+  "tokens_completion": 1430,
+  "tokens_total": 26462,
+  "base_id": "71_reverse_list",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:21:49.273606"
+}

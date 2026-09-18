@@ -1,0 +1,14 @@
+{
+  "id": "128_rsa",
+  "name": "RSA keygen + sign/verify",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 90.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 19857,
+  "tokens_completion": 3782,
+  "tokens_total": 23639,
+  "cached_at": "2026-09-09T00:12:50.925303"
+}

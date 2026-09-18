@@ -1,0 +1,18 @@
+{
+  "id": "51_toposort_c",
+  "name": "Topological sort (Kahn's algorithm) [c]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 52.8,
+  "agent_exit_code": 0,
+  "validation_output": "Traceback (most recent call last):\n  File \"/tmp/eval_topo/check.py\", line 25, in <module>\n    nodes = [int(x) for x in line.split()]\n             ~~~^^^\nValueError: invalid literal for int() with base 10: 'CYCLE'",
+  "tokens_prompt": 21024,
+  "tokens_completion": 1843,
+  "tokens_total": 22867,
+  "base_id": "51_toposort",
+  "variant_id": "c",
+  "language": "c",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:08:03.109868"
+}

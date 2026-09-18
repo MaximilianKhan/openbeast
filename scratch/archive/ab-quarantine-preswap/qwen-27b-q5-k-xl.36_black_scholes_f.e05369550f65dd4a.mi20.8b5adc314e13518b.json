@@ -1,0 +1,18 @@
+{
+  "id": "36_black_scholes_f",
+  "name": "Black-Scholes European call price [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 244.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 114029,
+  "tokens_completion": 8269,
+  "tokens_total": 122298,
+  "base_id": "36_black_scholes",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:09:38.754873"
+}

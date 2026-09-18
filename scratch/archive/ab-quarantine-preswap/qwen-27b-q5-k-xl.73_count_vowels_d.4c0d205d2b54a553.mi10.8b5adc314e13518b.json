@@ -1,0 +1,18 @@
+{
+  "id": "73_count_vowels_d",
+  "name": "Count vowels (case-insensitive) [cpp]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 20.4,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 15197,
+  "tokens_completion": 704,
+  "tokens_total": 15901,
+  "base_id": "73_count_vowels",
+  "variant_id": "d",
+  "language": "cpp",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:21:22.911862"
+}

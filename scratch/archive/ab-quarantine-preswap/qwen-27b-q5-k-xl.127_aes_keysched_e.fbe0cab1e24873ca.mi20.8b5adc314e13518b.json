@@ -1,0 +1,18 @@
+{
+  "id": "127_aes_keysched_e",
+  "name": "AES-128 key schedule [rust]",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 92.3,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 30244,
+  "tokens_completion": 4484,
+  "tokens_total": 34728,
+  "base_id": "127_aes_keysched",
+  "variant_id": "e",
+  "language": "rust",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:17:25.653781"
+}

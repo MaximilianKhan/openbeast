@@ -1,0 +1,18 @@
+{
+  "id": "54_astar_f",
+  "name": "Shortest path on grid (BFS / A*) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 264.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 33898,
+  "tokens_completion": 9191,
+  "tokens_total": 43089,
+  "base_id": "54_astar",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:14:10.279975"
+}

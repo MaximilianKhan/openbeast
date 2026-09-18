@@ -51,3 +51,11 @@ bundle/
 # scripts/bundle.sh install keeps the original compose file beside the one it
 # rewrites to local image IDs — restore from it, never commit it.
 docker-compose.yml.pre-bundle
+
+# scratch/: the campaign tooling and verdict records ARE tracked (they produced
+# the numbers in docs/RESULTS.md and resume the campaign). What is not: its
+# runtime logs, editor/backup copies, and the clean llama.cpp build tree the
+# serving/research separation audit uses (docs/RUNBOOK-2026-09-08.md).
+scratch/logs/
+scratch/**/*.pre-*
+llamacpp-clean/

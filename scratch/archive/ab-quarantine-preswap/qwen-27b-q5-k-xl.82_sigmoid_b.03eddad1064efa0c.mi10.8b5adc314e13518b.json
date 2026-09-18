@@ -1,0 +1,18 @@
+{
+  "id": "82_sigmoid_b",
+  "name": "Numerically stable sigmoid [go]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 24.7,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 19695,
+  "tokens_completion": 792,
+  "tokens_total": 20487,
+  "base_id": "82_sigmoid",
+  "variant_id": "b",
+  "language": "go",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:25:56.375759"
+}

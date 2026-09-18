@@ -1,0 +1,18 @@
+{
+  "id": "62_crt_f",
+  "name": "Chinese Remainder Theorem (general moduli) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 1271.3,
+  "agent_exit_code": 0,
+  "validation_output": "crt.zig:8:13: error: remainder division with 'i64' and 'i64': signed integers and floats must use @rem or @mod\n        b = a % b;\n            ^\nreferenced by:\n    solveCRT: crt.zig:32:22\n    main: crt.zig:87:32\n    5 reference(s) hidden; use '-freference-trace=7' to see all references\ncrt.zig:35:13: error: remainder division with 'i64' and 'i64': signed integers and floats must use @rem or @mod\n        if (diff % g != 0) return -1;\n            ^~~~",
+  "tokens_prompt": 136760,
+  "tokens_completion": 29300,
+  "tokens_total": 166060,
+  "base_id": "62_crt",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:35:21.825405"
+}

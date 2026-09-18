@@ -1,0 +1,18 @@
+{
+  "id": "38_monte_carlo_pi_f",
+  "name": "Monte Carlo \u03c0 (deterministic LCG, integer-only predicate) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": false,
+  "elapsed_seconds": 135.7,
+  "agent_exit_code": 0,
+  "validation_output": "mcpi.zig:32:33: error: expected optional type, found '[]const u8'\n    const n_str = parts.first() orelse return;\n                  ~~~~~~~~~~~~~~^~~~~~~~~~~~~\nreferenced by:\n    main: mcpi.zig:24:25\n    callMain [inlined]: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:737:30\n    callMainWithArgs [inlined]: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:638:20\n    posixCallMainAndExit: /home/max/.local/share/mise/installs/zig/0.16.0/lib/std/start.zig:590:38\n",
+  "tokens_prompt": 84634,
+  "tokens_completion": 4869,
+  "tokens_total": 89503,
+  "base_id": "38_monte_carlo_pi",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:05:49.538073"
+}

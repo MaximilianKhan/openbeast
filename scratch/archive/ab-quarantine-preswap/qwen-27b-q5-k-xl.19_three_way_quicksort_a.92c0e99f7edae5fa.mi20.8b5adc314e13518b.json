@@ -1,0 +1,18 @@
+{
+  "id": "19_three_way_quicksort_a",
+  "name": "Three-way quicksort for arrays with duplicates [python]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 32.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 16255,
+  "tokens_completion": 1378,
+  "tokens_total": 17633,
+  "base_id": "19_three_way_quicksort",
+  "variant_id": "a",
+  "language": "python",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T00:38:54.922830"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "65_miller_rabin_f",
+  "name": "Miller-Rabin primality (deterministic for 64-bit) [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 232.5,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 73066,
+  "tokens_completion": 8087,
+  "tokens_total": 81153,
+  "base_id": "65_miller_rabin",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:19:23.768556"
+}

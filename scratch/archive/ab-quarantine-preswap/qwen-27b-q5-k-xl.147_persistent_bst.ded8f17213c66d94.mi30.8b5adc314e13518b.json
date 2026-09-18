@@ -1,0 +1,14 @@
+{
+  "id": "147_persistent_bst",
+  "name": "Persistent (immutable) balanced BST",
+  "difficulty": "hard",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 227.1,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 31479,
+  "tokens_completion": 10053,
+  "tokens_total": 41532,
+  "cached_at": "2026-09-09T00:24:14.983418"
+}

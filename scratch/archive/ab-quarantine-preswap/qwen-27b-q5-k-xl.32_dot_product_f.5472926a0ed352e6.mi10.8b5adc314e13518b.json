@@ -1,0 +1,18 @@
+{
+  "id": "32_dot_product_f",
+  "name": "Dot product of two integer vectors [zig]",
+  "difficulty": "easy",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 303.8,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 44526,
+  "tokens_completion": 9363,
+  "tokens_total": 53889,
+  "base_id": "32_dot_product",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:02:48.428694"
+}

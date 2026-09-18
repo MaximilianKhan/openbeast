@@ -1,0 +1,18 @@
+{
+  "id": "63_det_f",
+  "name": "Matrix determinant via Gaussian elimination [zig]",
+  "difficulty": "medium",
+  "model": "Qwen 27B Q5_K_XL",
+  "passed": true,
+  "elapsed_seconds": 221.0,
+  "agent_exit_code": 0,
+  "validation_output": "OK",
+  "tokens_prompt": 147390,
+  "tokens_completion": 7328,
+  "tokens_total": 154718,
+  "base_id": "63_det",
+  "variant_id": "f",
+  "language": "zig",
+  "variant_count": 6,
+  "cached_at": "2026-09-09T01:19:51.825433"
+}

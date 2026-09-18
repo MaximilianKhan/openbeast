@@ -1,0 +1,7 @@
+100_constant_time_compare_f
+127_aes_keysched_f
+137_pollard_rho_f
+31_is_power_of_two_f
+54_astar_f
+65_miller_rabin_f
+92_popcount_f
