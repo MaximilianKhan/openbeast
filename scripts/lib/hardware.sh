@@ -94,13 +94,10 @@ ob_profile_advice() {
         echo "  — no OOM, no hand-tuning. The 27B Q5 (~21 GB) leaves little KV"
         echo "  room here, so a Q4 quant will give you far more context. Watch"
         echo "  'nvidia-smi'; override with OPENBEAST_CONTEXT=<n>."
-      elif [[ $OB_VRAM_MB -ge 15000 ]]; then
-        echo "  ${OB_VRAM_MB} MiB VRAM (16 GB-class) — the 27B Q5 default"
-        echo "  (~21 GB weights) does not fit. Use a Q4/Q3 quant of a ~14B"
-        echo "  model; serve.sh will auto-scale its context to fit (Phase 2)."
       else
-        echo "  ${OB_VRAM_MB} MiB VRAM — below the supported floor for the"
-        echo "  shipped models. Small quants + short contexts only."
+        echo "  ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor: the 27B Q5"
+        echo "  default (~21 GB weights) does not fit. Unsupported; bootstrap"
+        echo "  refuses it unless OPENBEAST_FORCE_VRAM=1."
       fi
       ;;
     amd)
@@ -121,16 +118,18 @@ ob_profile_advice() {
   esac
 }
 
-# The opinionated VRAM floor: 11 GB — the 1080 Ti / 2080 Ti class. OpenBeast
-# exists to run the LARGEST models your hardware holds ("max intelligence,
-# no compromise"); below 11 GB every shipped model needs quants/contexts so
-# degraded the result isn't the product we test or stand behind. Cards at or
-# above the floor are cheap and plentiful secondhand. Returns 1 (and prints
-# the verdict) when a detected GPU with KNOWN VRAM is under the floor;
-# unknown VRAM (0) and CPU-only setups pass through to their own warnings.
-# Escape hatch for people who accept an unsupported setup:
-# OPENBEAST_FORCE_VRAM=1.
-OB_VRAM_FLOOR_MB=11000
+# The opinionated VRAM floor: 24 GB — the 3090 / 4090 class (Max, 2026-09-17;
+# it was 11 GB from 2026-07-09). OpenBeast exists to run the LARGEST models
+# your hardware holds ("max intelligence, no compromise"); the shipped 27B Q5
+# default is ~21 GB of weights, and below 24 GB nothing we ship runs at a
+# context worth the name — the result isn't the product we test or stand
+# behind. Cards at the floor are plentiful secondhand. 22000 MiB, not 24000:
+# a 24 GB card reports ~24.5 GB (a 3090: 24564 MiB), and the number has to
+# admit the class it names. Returns 1 (and prints the verdict) when a
+# detected GPU with KNOWN VRAM is under the floor; unknown VRAM (0) and
+# CPU-only setups pass through to their own warnings. Escape hatch for
+# people who accept an unsupported setup: OPENBEAST_FORCE_VRAM=1.
+OB_VRAM_FLOOR_MB=22000
 
 # Scale a reference-card context down to a smaller card's KV budget.
 # Args: <ref_context> <card_vram_mib> <weights_mib>. Echoes the context to
@@ -163,11 +162,11 @@ ob_vram_floor_check() {
   [[ "${OB_VRAM_MB:-0}" -eq 0 ]] && return 0   # unknown VRAM: warn elsewhere
   if [[ "$OB_VRAM_MB" -lt "$OB_VRAM_FLOOR_MB" ]]; then
     echo "  ${OB_GPU_NAME:-GPU} has ${OB_VRAM_MB} MiB VRAM — below OpenBeast's"
-    echo "  11 GB floor (1080 Ti / 2080 Ti class). This is an opinionated"
+    echo "  24 GB floor (3090 / 4090 class). This is an opinionated"
     echo "  distribution: we ship and test the largest models that earn their"
-    echo "  VRAM, not survival configs for small cards. It IS possible to run"
-    echo "  llama.cpp on less — that path just isn't OpenBeast, and we won't"
-    echo "  pretend to support it. 11 GB+ cards are cheap and plentiful used."
+    echo "  VRAM — the default alone is ~21 GB of weights — not survival configs"
+    echo "  for smaller cards. It IS possible to run llama.cpp on less; that"
+    echo "  path just isn't OpenBeast, and we won't pretend to support it."
     echo "  To proceed anyway, unsupported: OPENBEAST_FORCE_VRAM=1 ./bootstrap.sh"
     return 1
   fi

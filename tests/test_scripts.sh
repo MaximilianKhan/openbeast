@@ -398,6 +398,32 @@ if ( source "$REPO_DIR/scripts/lib/hardware.sh"
 else
   fail "ob_scale_context scaling is wrong"
 fi
+# The VRAM floor (24 GB class, Max 2026-09-17). The GPU is BUILT here — the
+# detector's variables are set by hand — so the verdict is about the rule,
+# not about whatever card this box has. A 3090 reports 24564 MiB and must
+# pass; a 16 GB card and the old 11 GB class must not; unknown VRAM and
+# CPU-only pass through to their own warnings; the escape hatch still works.
+_floor() { # _floor <vendor> <vram_mib> [FORCE]
+  ( source "$REPO_DIR/scripts/lib/hardware.sh"
+    OB_GPU_VENDOR="$1"; OB_VRAM_MB="$2"; OB_GPU_NAME="stub"
+    [[ "${3:-}" == FORCE ]] && export OPENBEAST_FORCE_VRAM=1
+    ob_vram_floor_check >/dev/null )
+}
+if _floor nvidia 24564 && _floor nvidia 32607 && ! _floor nvidia 16384 && ! _floor nvidia 11264 \
+   && _floor nvidia 0 && _floor none 0 && _floor nvidia 11264 FORCE; then
+  pass "VRAM floor: a 24 GB card (24564 MiB) passes, 16 GB and 11 GB cards are refused, FORCE_VRAM overrides"
+else
+  fail "VRAM floor verdicts are wrong (24564 must pass; 16384 and 11264 must fail; unknown/none/FORCE must pass)"
+fi
+# Captured, not piped: the check RETURNS 1 by design, and under pipefail that
+# non-zero writer fails the pipeline even when grep matched.
+_FLOOR_MSG="$( source "$REPO_DIR/scripts/lib/hardware.sh"; OB_GPU_VENDOR=nvidia; OB_VRAM_MB=11264; OB_GPU_NAME=stub
+               ob_vram_floor_check || true )"
+if [[ "$_FLOOR_MSG" == *"24 GB floor"* ]]; then
+  pass "the refusal names the 24 GB floor"
+else
+  fail "the refusal text does not name the 24 GB floor"
+fi
 if grep -q 'ob_scale_context' "$REPO_DIR/scripts/serve.sh"; then
   pass "serve.sh applies adaptive context via ob_scale_context"
 else

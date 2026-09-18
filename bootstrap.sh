@@ -167,7 +167,7 @@ run_preflight() {
       ;;
   esac
   ob_profile_advice
-  # Opinionated floor: detected GPUs under 11 GB VRAM are not supported —
+  # Opinionated floor: detected GPUs under 24 GB VRAM are not supported —
   # see ob_vram_floor_check in scripts/lib/hardware.sh for the reasoning
   # and the OPENBEAST_FORCE_VRAM=1 escape hatch.
   if ! ob_vram_floor_check; then
