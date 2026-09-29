@@ -14,7 +14,9 @@ What has to hold, and is pinned here:
 Every case is BUILT: the beast-lang facade is a stub that records its calls,
 so nothing here depends on which compilers this box has.
 """
+import json
 import os
+import re
 import sys
 import types
 
@@ -28,6 +30,8 @@ for sub in ("agents", "evals"):
 
 import tools            # noqa: E402
 import run_eval         # noqa: E402
+
+_real_gate = run_eval._escalate_gate   # before any fixture stubs it
 
 ZIG_ERR = "/tmp/x/main.zig:3:20: error: root source file struct 'std' has no member named 'io'"
 CARD = ("=== zig: this error has a known cause (beast-lang) ===\n"
@@ -177,6 +181,12 @@ def esc_tree(monkeypatch, tmp_path):
     monkeypatch.setattr(run_eval, "ESCALATE_LANG_DIR", str(root))
     monkeypatch.setenv("BEAST_ESCALATE", "1")
     monkeypatch.delenv("OPENBEAST_LANG_MAX_CARDS", raising=False)
+    # The gate outcome is stubbed here (its own tests below use the real
+    # selector), so these cases never depend on which compilers this box has.
+    gate = {"gate": {"zig": {"toolchain": "0.16.0", "installed": "0.16.0",
+                             "served": True}}, "max_cards": 2}
+    monkeypatch.setattr(run_eval, "_escalate_gate", lambda _b: gate)
+    monkeypatch.setattr(run_eval, "_TEST_GATE", gate, raising=False)
     return root
 
 
@@ -210,8 +220,15 @@ def test_escalate_flag_stamps_the_treatment_and_needs_diagnostics(esc_tree):
     lambda r, mp: (r / "__init__.py").write_text("# facade v2\n"),
     # how many cards are shown
     lambda r, mp: mp.setenv("OPENBEAST_LANG_MAX_CARDS", "3"),
+    # review r2: the toolchain gate (drivers/packs) turned every card OFF —
+    # the esc1 key used to stay put while the model stopped seeing cards
+    lambda r, mp: run_eval._TEST_GATE["gate"]["zig"].update(served=False),
+    # the installed toolchain moved under the same index
+    lambda r, mp: run_eval._TEST_GATE["gate"]["zig"].update(installed="0.17.0"),
+    # the knob parser changed what a raw value means
+    lambda r, mp: run_eval._TEST_GATE.update(max_cards=1),
 ], ids=["index", "claim-summary", "new-claim-file", "selector", "loader",
-        "facade", "max-cards"])
+        "facade", "max-cards", "gate-off", "toolchain-moved", "parsed-cap"])
 def test_everything_that_reaches_the_model_moves_the_era(esc_tree, monkeypatch, edit):
     before = run_eval.escalate_flag(True)[1]
     edit(esc_tree, monkeypatch)
@@ -231,6 +248,81 @@ def test_an_unreadable_treatment_refuses_the_arm(esc_tree):
     with pytest.raises(SystemExit) as e:
         run_eval.escalate_flag(True)
     assert "escalate.py" in str(e.value)
+
+
+class _FakeDriver:
+    def __init__(self, version):
+        self._v = version
+
+    def available(self):
+        return self._v is not None
+
+    def version(self):
+        return self._v
+
+
+@pytest.fixture()
+def real_escalate(monkeypatch):
+    """The REAL lang.escalate, with only the toolchain probe stubbed."""
+    monkeypatch.delitem(sys.modules, "lang", raising=False)
+    monkeypatch.delitem(sys.modules, "lang.escalate", raising=False)
+    import lang.escalate as E
+    installed = {"zig": "0.16.0"}
+    monkeypatch.setattr(E.D, "driver_for", lambda lang: _FakeDriver(installed.get(lang)))
+    return E, installed
+
+
+def test_the_real_gate_moves_the_era_when_cards_stop_being_served(esc_tree, monkeypatch,
+                                                                  real_escalate):
+    """Review r2: packs._short_version / drivers.version() decide whether ANY
+    card is served, and neither file was in the component. Breaking that gate
+    silenced every card under an unchanged esc1 key."""
+    E, installed = real_escalate
+    monkeypatch.setattr(run_eval, "_escalate_gate", _real_gate)
+    (esc_tree / "escalate-index.json").write_text(
+        '{"langs": {"zig": {"toolchain": "zig 0.16.0", "generic": [], "signatures": {}}}}')
+    on, comp, meta = run_eval.escalate_flag(True)
+    assert meta["gate"]["gate"]["zig"] == {"toolchain": "0.16.0", "installed": "0.16.0",
+                                           "served": True}
+    assert run_eval.escalate_flag(True)[1] == comp          # negative control
+    # a _short_version that never matches: cards_for now serves nothing ...
+    monkeypatch.setattr(E.P, "_short_version", lambda v: f"never-{v}")
+    assert E.cards_for("zig", ZIG_ERR, index=json.loads(
+        (esc_tree / "escalate-index.json").read_text())) == []
+    # ... and the era says so
+    off = run_eval.escalate_flag(True)
+    assert off[2]["gate"]["gate"]["zig"]["served"] is False and off[1] != comp
+
+
+def test_the_real_gate_follows_the_installed_toolchain(esc_tree, monkeypatch, real_escalate):
+    E, installed = real_escalate
+    monkeypatch.setattr(run_eval, "_escalate_gate", _real_gate)
+    (esc_tree / "escalate-index.json").write_text(
+        '{"langs": {"zig": {"toolchain": "zig 0.16.0", "generic": []}}}')
+    served = run_eval.escalate_flag(True)
+    installed["zig"] = None                                  # no compiler: nothing served
+    gone = run_eval.escalate_flag(True)
+    assert gone[2]["gate"]["gate"]["zig"]["served"] is False and gone[1] != served[1]
+
+
+def test_an_undeterminable_gate_refuses_the_arm(esc_tree, monkeypatch):
+    monkeypatch.setattr(run_eval, "_escalate_gate", _real_gate)
+    (esc_tree / "escalate-index.json").write_text("{not json")
+    with pytest.raises(SystemExit) as e:
+        run_eval.escalate_flag(True)
+    assert "serves on this machine" in str(e.value)
+
+
+def test_escalate_imports_are_hashed_or_covered_by_the_gate_outcome():
+    """Every `from lang import X` in the real selector is either hashed as
+    source or listed as covered by the gate outcome — a new import cannot
+    slip into the treatment unstamped."""
+    src = open(os.path.join(run_eval.ESCALATE_LANG_DIR, "escalate.py")).read()
+    imported = set(re.findall(r"^from lang import (\w+)", src, re.M))
+    assert imported, "the guard found no imports: the regex no longer matches"
+    hashed = {f[:-3] for f in run_eval.ESCALATE_TREATMENT_FILES if f.endswith(".py")}
+    uncovered = imported - hashed - set(run_eval.ESCALATE_OUTCOME_COVERED)
+    assert not uncovered, f"escalate.py imports {sorted(uncovered)} unstamped"
 
 
 def test_the_real_tree_names_every_file_the_selector_loads():

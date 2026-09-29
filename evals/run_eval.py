@@ -771,6 +771,35 @@ ESCALATE_LANG_DIR = os.path.join(EVALS_DIR, "..", "agents", "lang")
 ESCALATE_TREATMENT_FILES = ("escalate-index.json", "escalate.py", "verify.py",
                             "__init__.py")
 ESCALATE_KNOBS = ("OPENBEAST_LANG_MAX_CARDS",)
+# escalate.py's `from lang import X` modules that are NOT hashed as source,
+# and why that is safe: what they decide reaches the component as an OUTCOME
+# (_escalate_gate) instead. drivers/packs decide whether an index entry is
+# served on this machine (the toolchain-version gate); _proc parses the
+# MAX_CARDS knob. Hashing their source would split the era on every driver
+# hardening edit; hashing the outcome splits it exactly when what the model
+# sees changes. A new import must be added here or to the hashed files — a
+# test reads escalate.py's imports and holds this list to it.
+ESCALATE_OUTCOME_COVERED = ("_proc", "drivers", "packs")
+
+
+def _escalate_gate(index_bytes: bytes) -> dict:
+    """What this machine would actually serve, from the REAL selector:
+    {"gate": escalate.gate_state(index), "max_cards": parsed knob}. The index
+    is the one being stamped (so a test tree stays self-consistent); the gate
+    and the knob parser are the real ones cards_for uses. Any failure refuses
+    the arm: a treatment whose delivery cannot be determined cannot be named."""
+    try:
+        index = json.loads(index_bytes.decode("utf-8"))
+        agents = os.path.abspath(os.path.join(EVALS_DIR, "..", "agents"))
+        if agents not in sys.path:
+            sys.path.insert(0, agents)
+        from lang import escalate as E            # noqa: PLC0415
+        return {"gate": E.gate_state(index), "max_cards": E.max_cards_knob()}
+    except SystemExit:
+        raise
+    except Exception as e:                        # noqa: BLE001
+        raise SystemExit(f"--escalate: cannot determine what the escalation index "
+                         f"serves on this machine ({type(e).__name__}: {e})")
 
 
 def _escalate_treatment() -> list[tuple[str, bytes]]:
@@ -808,10 +837,11 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
 
     Returns (enabled, cache_component, meta). The component is
     `esc1-<sha8>` over the treatment AS DELIVERED: the index, every served
-    claim file (the card sentences), the selector and facade source, and the
-    knobs that change how many cards are shown. Hashing the index alone let
-    an edited summary or a retuned selector replay rows measured under the
-    old text, silently mixing two treatments in one A/B."""
+    claim file (the card sentences), the selector and facade source, the
+    knobs that change how many cards are shown, and the per-language gate
+    outcome on this machine (is the index served, against which toolchain).
+    Hashing the index alone let an edited summary or a retuned selector
+    replay rows measured under the old text, silently mixing two treatments in one A/B."""
     enabled = (os.environ.get("BEAST_ESCALATE", "").strip() == "1"
                or os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1")
     if not enabled:
@@ -823,7 +853,8 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
     import hashlib
     h = hashlib.sha256()
     shas = {}
-    for rel, data in _escalate_treatment():
+    files = _escalate_treatment()
+    for rel, data in files:
         shas[rel] = hashlib.sha256(data).hexdigest()[:8]
         h.update(f"{rel}\0{len(data)}\0".encode())
         h.update(data)
@@ -832,10 +863,17 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
     knobs = {k: os.environ.get(k, "").strip() for k in ESCALATE_KNOBS}
     for k, v in knobs.items():
         h.update(f"{k}={v}\0".encode())
+    # The served OUTCOME of the code not hashed as source (see
+    # ESCALATE_OUTCOME_COVERED): per language, the index's toolchain stamp,
+    # the installed version as the gate compares it, and whether cards are
+    # served at all; plus the parsed card cap. Without it, a zig upgrade or a
+    # packs._short_version edit silenced every card under the same esc1 key.
+    gate = _escalate_gate(dict(files)["escalate-index.json"])
+    h.update(b"gate\0" + json.dumps(gate, sort_keys=True).encode())
     sha8 = h.hexdigest()[:8]
     return True, f"esc1-{sha8}", {"treatment_sha": sha8,
                                   "index_sha": shas["escalate-index.json"],
-                                  "files": shas, "knobs": knobs}
+                                  "files": shas, "knobs": knobs, "gate": gate}
 
 
 _ITER_LINE = re.compile(r"^\[iter (\d+)/(\d+)\]\s*$", re.MULTILINE)
