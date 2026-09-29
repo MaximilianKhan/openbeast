@@ -275,6 +275,54 @@ else
   fail "--install: $(ls "$_U" 2>/dev/null | tr '\n' ' ') :: $(tr '\n' '|' < "$T/lr-sysd")"
 fi
 
+# ---------------------------------------------------------------------------
+# scratch/prune-2026-09-17.sh (storage-05, storage-07)
+# ---------------------------------------------------------------------------
+echo ""
+echo "prune-2026-09-17.sh:"
+OB="$T/pr/openbeast"; PH="$T/prhome"; PB="$T/prbin"; PLOG="$T/prlog"
+rm -rf "$T/pr" "$PH" "$PB"; mkdir -p "$OB/scratch" "$OB/scripts" "$OB/weights" "$OB/.run" "$PH" "$PB" "$T/proc/4242"
+cp "$REPO_DIR/scratch/prune-2026-09-17.sh" "$OB/scratch/"
+for w in Qwen3.8-27B-Q6_K.gguf SocratTeachLLM-Q8_0.gguf glm-4-9b-chat-Q8_0.gguf; do echo w > "$OB/weights/$w"; done
+# a campaign script NOT in any fixed list names one weight …
+echo 'M=$W/glm-4-9b-chat-Q8_0.gguf' > "$OB/scratch/campaign_master4.sh"
+# … and a live llama-server serves another: named on its cmdline, fd dir empty
+printf '%s\0' llama-server -m "$OB/weights/Qwen3.8-27B-Q6_K.gguf" --port 8080 > "$T/proc/4242/cmdline"
+: > "$T/proc/4242/maps"
+printf 'services:\n  open-webui:\n    image: ghcr.io/open-webui/open-webui:main@sha256:aa\n  searxng:\n    image: docker.io/searxng/searxng:latest@sha256:bb\n' > "$OB/docker-compose.yml"
+printf '#!/bin/bash\necho 4242\n' > "$PB/pgrep"
+cat > "$PB/docker" <<'EOF'
+#!/bin/bash
+echo "docker $*" >> "$PLOG"
+if [[ "$1 $2" == "image ls" ]]; then
+  printf 'sha256:1111111111111111\tghcr.io/open-webui/open-webui\t2020-01-01 00:00:00 +0000 UTC\n'
+  printf 'sha256:2222222222222222\tdocker.io/searxng/searxng\t2020-01-01 00:00:00 +0000 UTC\n'
+  printf 'sha256:3333333333333333\told/junk\t2020-01-01 00:00:00 +0000 UTC\n'
+  printf 'sha256:4444444444444444\tfresh/thing\t%s +0000 UTC\n' "$(date -u '+%Y-%m-%d %H:%M:%S')"
+fi
+exit 0
+EOF
+chmod +x "$PB/pgrep" "$PB/docker"
+: > "$PLOG"
+# The script's --go deletes real weights by absolute path unless it honours
+# PRUNE_OB — never run a copy that does not (an older revision hardcodes it).
+if ! grep -q 'OB="${PRUNE_OB:-' "$OB/scratch/prune-2026-09-17.sh"; then
+  fail "prune script does not honour PRUNE_OB — NOT run (it would act on the real repo)"
+else
+OUT="$(HOME="$PH" PLOG="$PLOG" PATH="$PB:$PATH" PRUNE_OB="$OB" PRUNE_PROC="$T/proc" bash "$OB/scratch/prune-2026-09-17.sh" --go 2>&1)" || true
+if [[ -f "$OB/weights/Qwen3.8-27B-Q6_K.gguf" && -f "$OB/weights/glm-4-9b-chat-Q8_0.gguf" && ! -e "$OB/weights/SocratTeachLLM-Q8_0.gguf" ]]; then
+  pass "KEEP guard sees a live server's weight via cmdline (not fd) and any scratch/*.sh; an unguarded target still goes"
+else
+  fail "prune KEEP guard: $(ls "$OB/weights" | tr '\n' ' ') :: $OUT"
+fi
+if grep -q "^docker image rm sha256:3333333333333333$" "$PLOG" \
+   && ! grep -qE "image rm sha256:(1111|2222|4444)" "$PLOG" && ! grep -q "image prune" "$PLOG"; then
+  pass "docker: old unpinned images go; the compose-pinned open-webui/searxng and fresh images never do (no image prune -a)"
+else
+  fail "prune docker: $(tr '\n' '|' < "$PLOG")"
+fi
+fi
+
 echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
