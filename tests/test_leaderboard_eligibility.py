@@ -156,3 +156,68 @@ def test_run_eval_stamps_cache_only(tmp_path):
     assert res["tasks"][0]["from_cache"] is True       # a full hit
     assert res["cache_only"] is True
     assert scoring.ineligibility_reasons(res)
+
+
+def test_full_hit_replay_through_benchmark_all_and_rebuild_adds_no_row(
+        tmp_path, monkeypatch):
+    """End to end, the two paths the review named: `benchmark_all.py
+    --cache-only` (run_sweep -> update_leaderboard) and `scoring.py
+    --rebuild`, with the REAL run_eval replaying a full hit. The suite is
+    given no expected unit count so the partial-run guards cannot mask the
+    cache-only check; the only thing keeping the replay off the board is
+    that it is a replay."""
+    for mod in ("cache", "run_eval", "benchmark_all"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    ba = importlib.import_module("benchmark_all")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01_a.json").write_text(json.dumps({
+        "id": "01_a", "name": "a", "difficulty": "easy", "task": "a",
+        "validation": {"type": "bash", "script": "true"}, "max_iter": 3}))
+    results_dir = tmp_path / "results"
+    monkeypatch.setattr(run_eval, "TASKS_DIR", str(tasks))
+    monkeypatch.setattr(run_eval, "RESULTS_DIR", str(results_dir))
+    monkeypatch.setattr(run_eval, "capture_suite_version", lambda: "vtest")
+    task = run_eval.load_tasks(None)[0]
+    cache.cache_put(cache.cache_key(task, "m", max_iter=3),
+                    {"id": "01_a", "passed": True, "elapsed_seconds": 1.0,
+                     "tokens_completion": 5})
+
+    # The real rig's row for the model, and its live results file.
+    lb = tmp_path / "leaderboard.json"
+    live = {"timestamp": "2026-09-01T00:00:00", "model": "m", "model_slug": "m",
+            "suite_version": "vtest", "gpu": {"host_id": "rig"},
+            "inference_engine": {}, "server": {}, "cache_only": False,
+            "harness": {}, "summary": {"total": 1},
+            "tasks": [{"id": "01_a", "difficulty": "easy", "passed": False,
+                       "elapsed_seconds": 1.0}]}
+    results_dir.mkdir()
+    (results_dir / "eval-live.json").write_text(json.dumps(live))
+    real_update = scoring.update_leaderboard
+    monkeypatch.setattr(ba.scoring, "update_leaderboard",
+                        lambda e, **k: real_update(e, path=str(lb), **k))
+    real_update(scoring.score_run(live), path=str(lb))
+
+    def rows():
+        return [(scoring.entry_host_id(e), e["model_slug"], e["tasks_passed"])
+                for e in scoring.load_leaderboard(str(lb))]
+    assert rows() == [("rig", "m", 0)]
+
+    out = ba.run_sweep([{"slug": "m", "name": "m", "serve": "x"}], None, None,
+                       cache_only=True, reasoning_budget="-1")
+    assert out["models_succeeded"] == 1
+    assert out["scores"][0]["tasks_passed"] == 1           # a full hit
+    assert "cache-only" in " ".join(out["scores"][0]["ineligible_reasons"])
+    assert rows() == [("rig", "m", 0)], "the replay was seated"
+
+    # scoring.py --rebuild over the live file + the replay's results file.
+    assert len(list(results_dir.glob("eval-*.json"))) == 2
+    monkeypatch.setattr(scoring, "RESULTS_DIR", str(results_dir))
+    monkeypatch.setattr(scoring, "LEADERBOARD_PATH", str(lb))
+    monkeypatch.setattr(sys, "argv", ["scoring.py", "--rebuild"])
+    scoring.main()
+    assert rows() == [("rig", "m", 0)], "--rebuild re-seated the replay"

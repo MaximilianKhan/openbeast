@@ -3,6 +3,12 @@
 Multi-model benchmark — run the full eval suite against every model and
 produce a ranked leaderboard.
 
+Before the first model: the GPU lease (scripts/gpu-lease.sh check). Held
+by someone else (or unreadable) -> refuse, exit 4. Held by a `gpu-lease.sh
+run` that wraps us -> ours. Free -> re-exec this sweep under `gpu-lease.sh
+run`, so the whole sweep holds the card. (--cache-only never asks: it
+starts no server.) Every model (re)start asks again.
+
 For each model:
   1. Stop the llama-server this harness started (by PID; a server it did
      not start is refused, never killed)
@@ -218,6 +224,132 @@ class PortBusy(RuntimeError):
     """LLAMA_PORT is already served by a process this harness did not start."""
 
 
+class GpuLeaseHeld(RuntimeError):
+    """The GPU lease (scripts/gpu-lease.sh) is held by someone else, or
+    cannot be read. Unknown is not free."""
+
+
+# ---------------------------------------------------------------------------
+# The GPU lease (scripts/gpu-lease.sh). Advisory: it only protects work that
+# ASKS, and this harness is what campaigns run — so it asks before it loads
+# anything. `check` answers 0 = ours (a `gpu-lease.sh run` is our ancestor),
+# 3 = free, 4 = somebody else's; it walks the ancestry itself, so a campaign
+# that runs us under its lease is not refused by its own lease.
+# ---------------------------------------------------------------------------
+
+GPU_LEASE_SH = os.path.join(REPO_DIR, "scripts", "gpu-lease.sh")
+LEASE_OURS, LEASE_FREE, LEASE_HELD = 0, 3, 4
+
+
+def _lease_env(env=None) -> dict:
+    """The environment to ask the lease in. The lease file lives in the MAIN
+    tree's .run/ (gpu-lease.sh: $SCRIPT_DIR/.run), so a git worktree asking
+    its own copy of the script reads an empty directory and is told FREE
+    while a campaign in the main tree holds the card. Pin OPENBEAST_RUN_DIR
+    to the main tree's .run unless the operator already set it."""
+    env = dict(os.environ if env is None else env)
+    if env.get("OPENBEAST_RUN_DIR"):
+        return env
+    common = _git_common_dir(os.path.dirname(os.path.dirname(GPU_LEASE_SH)))
+    if common and os.path.basename(common) == ".git":
+        env["OPENBEAST_RUN_DIR"] = os.path.join(os.path.dirname(common), ".run")
+    return env
+
+
+def _git_common_dir(tree: str) -> str:
+    """Absolute path of `tree`'s git common dir, or "" if unknown.
+
+    Plain `--git-common-dir` (not `--path-format=absolute`, git >= 2.31:
+    older git echoes an unknown flag as a line of output and still exits 0)
+    and resolved against `tree` ourselves — git prints it relative to the
+    -C directory in the main tree, absolute in a worktree. Anything but one
+    line is refused rather than turned into a bogus run dir."""
+    try:
+        r = subprocess.run(["git", "-C", tree, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = r.stdout.strip().splitlines() if r.returncode == 0 else []
+    if len(lines) != 1 or not lines[0].strip() or lines[0].startswith("-"):
+        return ""
+    return os.path.normpath(os.path.join(os.path.abspath(tree), lines[0].strip()))
+
+
+def gpu_lease_check() -> tuple[int | None, str]:
+    """(rc, message) from `gpu-lease.sh check`; rc None = could not ask."""
+    try:
+        r = subprocess.run(["bash", GPU_LEASE_SH, "check"], capture_output=True,
+                           text=True, timeout=30, env=_lease_env())
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, str(e)
+    return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+
+def require_gpu_lease() -> int:
+    """Raise GpuLeaseHeld unless the card is ours or free. Returns the rc."""
+    rc, msg = gpu_lease_check()
+    if rc == LEASE_FREE and os.environ.get(_REEXEC_MARK):
+        # We are the sweep ensure_gpu_lease re-exec'd under `gpu-lease.sh
+        # run`, yet the lease reads FREE: that wrapper is no longer our
+        # ancestor (a `kill -9` of the pid the operator holds hits only the
+        # wrapper — `run` puts us in our own process group). Refuse the load
+        # rather than keep putting models on a card the lease calls free.
+        raise GpuLeaseHeld("this sweep was re-exec'd under `gpu-lease.sh run`, but the "
+                           "lease now reads FREE (the wrapper is gone) — refusing to "
+                           "run unleased.")
+    if rc in (LEASE_OURS, LEASE_FREE):
+        return rc
+    if rc == LEASE_HELD:
+        raise GpuLeaseHeld(
+            f"the GPU lease is {msg}\n  Loading a model now would put a second "
+            f"model on a card that job is measuring on. Wait for it "
+            f"(scripts/gpu-lease.sh status), then rerun.")
+    raise GpuLeaseHeld(f"could not read the GPU lease (gpu-lease.sh check: rc={rc}: "
+                       f"{msg}) — unknown is not free.")
+
+
+_REEXEC_MARK = "OPENBEAST_BENCH_UNDER_LEASE"
+
+
+def ensure_gpu_lease(argv: list[str], exec_fn=os.execvpe) -> None:
+    """Before a live sweep: refuse someone else's lease (GpuLeaseHeld); run
+    on under a lease that already wraps us; and when the card is FREE,
+    re-exec this sweep under `gpu-lease.sh run` (the measure-vram.sh
+    pattern) so the whole sweep — every model load, every restart — holds
+    the card, and a concurrent sweep or `stop.sh` sees it as taken."""
+    rc = require_gpu_lease()
+    if rc == LEASE_OURS:
+        return
+    env = _lease_env()
+    if env.get(_REEXEC_MARK):  # require_gpu_lease refuses FREE under the mark
+        raise GpuLeaseHeld("re-exec under `gpu-lease.sh run` did not take the lease "
+                           "(check still says FREE) — refusing to run unleased.")
+    env[_REEXEC_MARK] = "1"
+    label = "benchmark_all " + " ".join(argv)
+    print(f"GPU lease is free — taking it for this sweep: {label}")
+    sys.stdout.flush()
+    exec_fn("bash", ["bash", GPU_LEASE_SH, "run", label.strip(), "--",
+                     sys.executable, *_interpreter_flags(),
+                     os.path.abspath(__file__), *argv], env)
+
+
+def _interpreter_flags() -> list[str]:
+    """The interpreter options this process was started with (`-u`, `-X
+    utf8`, `-W ...`), so the re-exec keeps them: dropping `-u` turns a
+    `python3 -u benchmark_all.py > log` sweep block-buffered, and a SIGKILL
+    or OOM kill then loses the log's tail — the crash diagnostic. Taken from
+    sys.orig_argv: everything between the interpreter and the script. `-m`/
+    `-c` and what follows are not options for a script path, so stop there."""
+    orig = list(getattr(sys, "orig_argv", []) or [])
+    n = len(orig) - len(sys.argv)
+    flags = []
+    for a in (orig[1:n] if n > 1 else []):
+        if a[:2] in ("-m", "-c"):
+            break
+        flags.append(a)
+    return flags
+
+
 def _foreign_servers() -> str:
     """Read-only listing of llama-server processes, for the refusal message."""
     try:
@@ -257,6 +389,10 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     full_path = os.path.join(REPO_DIR, serve_script)
     if not os.path.isfile(full_path):
         raise FileNotFoundError(f"Serve script not found: {full_path}")
+    # Asked on every (re)start, not just at launch: a mid-sweep recovery
+    # after someone took the card with `acquire --force` must not load a
+    # second model into their window.
+    require_gpu_lease()
     # Our own previous server is stopped by now, so a bound port belongs to
     # someone else (the stack, another worktree's campaign). Refuse rather
     # than kill it or, worse, measure it: wait_for_health would accept
@@ -334,7 +470,7 @@ def restart_server(serve_script: str, slug: str,
     stop_llama_server()
     try:
         proc, _ = start_model(serve_script, slug)
-    except (FileNotFoundError, PortBusy) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
@@ -390,7 +526,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     print(f"Starting {model['serve']}...")
     try:
         proc, _ = start_model(model["serve"], model["slug"])
-    except (FileNotFoundError, PortBusy) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
         return {"slug": model["slug"], "name": model["name"], "error": str(e),
                 "gpu_work": False}
 
@@ -655,6 +791,15 @@ def main():
               "will be recorded in leaderboard.json and mix incomparably with "
               "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
               file=sys.stderr)
+    # The GPU lease, before anything touches the card. cache-only never
+    # starts a server, so it neither needs nor takes the lease.
+    if not args.cache_only:
+        try:
+            ensure_gpu_lease(sys.argv[1:])
+        except GpuLeaseHeld as e:
+            print(f"Refusing to start: {e}", file=sys.stderr)
+            sys.exit(4)
+
     summary = run_sweep(models, task_filter, args.max_iter,
                          use_cache=not args.no_cache,
                          cache_only=args.cache_only,
