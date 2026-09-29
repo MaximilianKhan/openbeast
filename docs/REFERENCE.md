@@ -449,6 +449,31 @@ OpenCode launches the MCP server automatically.
 
 Run `opencode` in any project directory while the server is running.
 
+**Where sessions live, and clearing them.** opencode stores sessions in one
+SQLite database under the XDG base directories on *every* OS: there is no
+macOS `~/Library` case, so the rig (Omarchy/Linux) and a Mac client both use
+`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (`OPENCODE_DB`
+overrides it; `opencode db path` prints it). Beside it: `snapshot/` (undo
+snapshots), `storage/session_diff/`, `tool-output/`, `log/`; prompt history
+is `${XDG_STATE_HOME:-~/.local/state}/opencode/prompt-history.jsonl`. Config
+(`~/.config/opencode/`) and providers/credentials are separate.
+
+`opencode session list` shows only the current project's top-level sessions;
+`./scripts/opencode-sessions.sh` shows them all, per directory. To clear:
+
+```bash
+./scripts/opencode-sessions.sh clear                 # dry run
+./scripts/opencode-sessions.sh clear --go            # every session on this device
+./scripts/opencode-sessions.sh clear --go --dir ~/code/app   # one project
+./scripts/opencode-sessions.sh clear --go --history  # + prompt history, diffs, snapshots
+```
+
+It refuses while any opencode is running, backs the database up first
+(`VACUUM INTO`, mode 600, next to it), deletes through `opencode session
+delete` (opencode's own cascade: sub-agent sessions, messages, parts, todos,
+events), then reclaims the space (VACUUM + a truncating WAL checkpoint). It
+works the same from the rig and from a Mac client checkout (Bash 3.2-safe).
+
 ### Open WebUI (browser chat interface)
 
 Configured via `docker-compose.yml`. Runs as a Docker container on port 3000.
