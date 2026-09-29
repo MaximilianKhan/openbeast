@@ -250,16 +250,29 @@ def _lease_env(env=None) -> dict:
     env = dict(os.environ if env is None else env)
     if env.get("OPENBEAST_RUN_DIR"):
         return env
-    try:
-        r = subprocess.run(["git", "-C", os.path.dirname(os.path.dirname(GPU_LEASE_SH)),
-                            "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                           capture_output=True, text=True, timeout=5)
-        common = r.stdout.strip() if r.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        common = ""
+    common = _git_common_dir(os.path.dirname(os.path.dirname(GPU_LEASE_SH)))
     if common and os.path.basename(common) == ".git":
         env["OPENBEAST_RUN_DIR"] = os.path.join(os.path.dirname(common), ".run")
     return env
+
+
+def _git_common_dir(tree: str) -> str:
+    """Absolute path of `tree`'s git common dir, or "" if unknown.
+
+    Plain `--git-common-dir` (not `--path-format=absolute`, git >= 2.31:
+    older git echoes an unknown flag as a line of output and still exits 0)
+    and resolved against `tree` ourselves — git prints it relative to the
+    -C directory in the main tree, absolute in a worktree. Anything but one
+    line is refused rather than turned into a bogus run dir."""
+    try:
+        r = subprocess.run(["git", "-C", tree, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = r.stdout.strip().splitlines() if r.returncode == 0 else []
+    if len(lines) != 1 or not lines[0].strip() or lines[0].startswith("-"):
+        return ""
+    return os.path.normpath(os.path.join(os.path.abspath(tree), lines[0].strip()))
 
 
 def gpu_lease_check() -> tuple[int | None, str]:

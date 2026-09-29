@@ -337,3 +337,31 @@ def test_a_reexecd_sweep_refuses_to_load_once_the_lease_reads_free(ba, tmp_path,
     proc, _ = ba.start_model(serve, "m")
     ba.stop_llama_server()
     assert proc.poll() is not None
+
+
+def _fake_git(tmp_path: Path, body: str, monkeypatch) -> None:
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    (bindir / "git").write_text("#!/bin/bash\n" + body + "\n")
+    (bindir / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+
+def test_old_git_echoing_an_unknown_flag_cannot_forge_the_run_dir(tmp_path, monkeypatch):
+    """git < 2.31 echoes an unknown flag (--path-format=absolute) as output
+    and exits 0. That must not become a relative `.run` (read against the
+    caller's cwd) or a two-line path."""
+    for mod in ("cache", "run_eval", "benchmark_all"):
+        sys.modules.pop(mod, None)
+    ba = importlib.import_module("benchmark_all")
+    tree = tmp_path / "main"
+    monkeypatch.setattr(ba, "GPU_LEASE_SH", str(tree / "scripts" / "gpu-lease.sh"))
+    monkeypatch.delenv("OPENBEAST_RUN_DIR", raising=False)
+    # Old git in the main tree: echoes unknown flags, prints the common dir
+    # relative to -C.
+    _fake_git(tmp_path, 'for a in "$@"; do [[ $a == --path-format=* ]] && echo "$a"; done\n'
+                        'echo .git', monkeypatch)
+    assert ba._lease_env()["OPENBEAST_RUN_DIR"] == str(tree / ".run")
+    # Garbage (two lines) is refused, not pinned.
+    (tmp_path / "fakebin" / "git").write_text("#!/bin/bash\necho junk\necho /x/.git\n")
+    assert "OPENBEAST_RUN_DIR" not in ba._lease_env()
