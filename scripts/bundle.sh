@@ -563,12 +563,60 @@ EOF
     DIR="$(_from_caller "$DIR")"
     [[ -d "$DIR" ]] || die "$DIR is not a directory"
     DIR="$(cd "$DIR" && pwd)"
+    # READ THE MEDIUM ONCE PER FILE, THEN USE ONLY WHAT WAS READ. Verifying
+    # $DIR and then consuming $DIR again (extracting the source, loading the images)
+    # is two reads of a medium the threat model does not trust: a writable
+    # share or a USB device with hostile firmware can answer the second read
+    # differently, and the source tarball and image tarballs had no second
+    # check. So: the manifest (and its signature) are snapshotted into a
+    # private 0700 dir and every later decision reads the SNAPSHOT; every
+    # source/image file is copied there and hashed against the snapshot
+    # before it is extracted or loaded (weights already copy-then-hash, and
+    # wheels go through pip --require-hashes against this checkout's lock).
+    _OB_PRIV="$(mktemp -d "${TMPDIR:-/tmp}/ob-bundle-XXXXXX")" \
+      || die "could not create a private staging dir under ${TMPDIR:-/tmp}"
+    chmod 700 "$_OB_PRIV"
+    _OB_PARTIAL=""
+    _ob_install_cleanup() {
+      [[ -z "${_OB_PARTIAL:-}" ]] || rm -f -- "$_OB_PARTIAL"
+      [[ -z "${_OB_PRIV:-}" ]] || rm -rf -- "$_OB_PRIV"
+    }
+    trap _ob_install_cleanup EXIT
+    trap 'exit 130' INT TERM
+    [[ -f "$DIR/MANIFEST.json" ]] || die "$DIR/MANIFEST.json is missing — this is not a bundle"
+    cp -- "$DIR/MANIFEST.json" "$_OB_PRIV/MANIFEST.json" || die "could not read $DIR/MANIFEST.json"
+    [[ ! -f "$DIR/MANIFEST.json.sig" ]] \
+      || cp -- "$DIR/MANIFEST.json.sig" "$_OB_PRIV/MANIFEST.json.sig" || die "could not read the signature"
+    MANIFEST_FILE="$_OB_PRIV/MANIFEST.json"
     step "verifying the bundle before using any of it"
-    _check_signature "$DIR" "$KEY" "$IDENT"
+    _check_signature "$_OB_PRIV" "$KEY" "$IDENT"
     "$PY" "$HELPER" verify "$DIR" \
       || die "the bundle does not match its manifest — refusing to install it.
        A directory that travelled is not trusted because it arrived."
+    cmp -s "$MANIFEST_FILE" "$DIR/MANIFEST.json" \
+      || die "MANIFEST.json on the medium changed while it was being verified.
+       Refusing: the medium is not answering consistently."
     ok "every recorded file matches its sha256"
+
+    # _stage_verified <relative path> <dest>: copy ONE bundle file into the
+    # private dir and check the COPY against the snapshot's recorded sha256.
+    # What is consumed afterwards is the copy — the bytes that were checked.
+    _stage_verified() {
+      local rel="$1" dest="$2" want got
+      want="$(_manifest_sha "$rel")"
+      [[ -n "$want" ]] || die "$rel is not recorded in the verified manifest — refusing to use it"
+      cp -- "$DIR/$rel" "$dest" \
+        || die "could not copy $rel into $_OB_PRIV (disk full? $(df -h "$_OB_PRIV" 2>/dev/null | awk 'NR==2{print $4 " free"}'))"
+      got="$(sha256sum "$dest" | awk '{print $1}')"
+      if [[ "$got" != "$want" ]]; then
+        rm -f -- "$dest"
+        die "$rel changed after it was verified (read twice, answered twice).
+       manifest $want
+       re-read  $got
+       Refusing to use it. A failing stick, or a medium someone else can
+       write to, is the usual cause."
+      fi
+    }
 
     # --- source ---------------------------------------------------------
     # BY THE RECORDED COMMIT, not `head -1`. If a directory ever holds two
@@ -576,11 +624,11 @@ EOF
     # not describe — and the manifest is what the signature covers.
     _want_commit="$("$PY" -c '
 import json, sys
-doc = json.load(open(sys.argv[1] + "/MANIFEST.json"))
+doc = json.load(open(sys.argv[1]))
 for c in doc.get("components", []):
     if c.get("kind") == "source" and c.get("commit"):
         print(c["commit"]); break
-' "$DIR" 2>/dev/null || true)"
+' "$MANIFEST_FILE" 2>/dev/null || true)"
     _tar=""
     if [[ -n "$_want_commit" ]]; then
       _tar="$(find "$DIR/source" -maxdepth 1 \
@@ -617,8 +665,12 @@ for c in doc.get("components", []):
         # later build step following one is not something to rely on tar for.
         # A real `git archive` of llama.cpp contains ZERO symlinks (checked),
         # so refusing them costs nothing and closes that.
+        # The archive extracted is the private, re-hashed COPY — never the
+        # file on the medium, which was only read to make that copy.
+        _tar_copy="$_OB_PRIV/$(basename "$_tar")"
+        _stage_verified "source/$(basename "$_tar")" "$_tar_copy"
         _stage="$(mktemp -d "${TMPDIR:-/tmp}/ob-src-XXXXXX")"
-        if ! tar -xzf "$_tar" -C "$_stage"; then
+        if ! tar -xzf "$_tar_copy" -C "$_stage"; then
           rm -rf "$_stage"
           die "the source archive did not extract cleanly (tar reported the
        error above). NOTHING was written to llama.cpp/, so re-running after
@@ -704,13 +756,13 @@ $(sed 's/^/         /' <<< "$_links")
       # validation below rejected a hostile entry the loop simply read zero
       # lines and install reported SUCCESS. A validation that cannot fail the
       # thing it validates is decoration.
-      _imglist="$(mktemp)"
+      _imglist="$_OB_PRIV/images.tsv"   # inside the private dir: removed on any exit
       if ! "$PY" -c '
 import json, os, sys
 sys.path.insert(0, os.path.join(sys.argv[2], "scripts", "lib"))
 import bundle_manifest as B
 root = sys.argv[1]
-doc = json.load(open(os.path.join(root, "MANIFEST.json")))
+doc = json.load(open(sys.argv[3]))   # the verified SNAPSHOT, not the medium
 for comp in doc.get("components", []):
     if comp.get("kind") != "images":
         continue
@@ -735,7 +787,7 @@ for comp in doc.get("components", []):
         if not ref:
             sys.exit(f"manifest records an image with no ref: {f!r}")
         print("\t".join([f, ref, iid, store]))
-' "$DIR" "$REPO_DIR" > "$_imglist"; then
+' "$DIR" "$REPO_DIR" "$MANIFEST_FILE" > "$_imglist"; then
         rm -f "$_imglist"
         die "the bundle's image records are not usable (see above). Nothing
        was loaded and docker-compose.yml was not touched."
@@ -744,10 +796,15 @@ for comp in doc.get("components", []):
       while IFS=$'\t' read -r _file _ref _id _built_store; do
         [[ -n "$_file" ]] || continue
         echo "  loading $_file..."
+        # Loaded from the private, re-hashed COPY (see _stage_verified): the
+        # file on the medium is read once, to make it.
+        _img_copy="$_OB_PRIV/image.tar.gz"
+        _stage_verified "$_file" "$_img_copy"
         # The load's OWN exit status, not `|| true`: a failed load used to be
         # discovered one step later as "image is not present", minus the reason.
         _load_rc=0
-        _loaded="$(gzip -dc "$DIR/$_file" | docker load 2>&1)" || _load_rc=$?
+        _loaded="$(gzip -dc "$_img_copy" | docker load 2>&1)" || _load_rc=$?
+        rm -f -- "$_img_copy"
         [[ $_load_rc -eq 0 ]] || die "docker load failed for $_file (rc=$_load_rc).
        docker said: $(tail -n 1 <<< "$_loaded")
        The file's sha256 matched the manifest, so the bytes are the ones that
@@ -801,8 +858,8 @@ for comp in doc.get("components", []):
       ID, so the recorded ${_id:0:19}… cannot match here by construction"
           fi
           warn "$_ref: image-ID verification SKIPPED — $_why.
-      Integrity is NOT lost: $_file matched its sha256 in the manifest before
-      it was loaded. Using what docker load reported: ${_use_id:0:19}…"
+      Integrity is NOT lost: the copy of $_file that was loaded matched its sha256 in the manifest
+      first. Using what docker load reported: ${_use_id:0:19}…"
         fi
         # THE DIGEST REWRITE. compose pins by registry manifest digest, which
         # save/load cannot carry; the image ID is a content digest that
@@ -946,13 +1003,13 @@ $(printf '          %s\n' "${_img_missing[@]}")
       # verified (and signed); `weights/*` is whatever is in the directory. It
       # also hands us each file's recorded sha256, which the copy is checked
       # against below.
-      _wlist="$(mktemp)"
+      _wlist="$_OB_PRIV/weights.tsv"
       if ! "$PY" -c '
 import json, os, sys
 sys.path.insert(0, os.path.join(sys.argv[2], "scripts", "lib"))
 import bundle_manifest as B
 root = sys.argv[1]
-doc = json.load(open(os.path.join(root, "MANIFEST.json")))
+doc = json.load(open(sys.argv[3]))   # the verified SNAPSHOT, not the medium
 for comp in doc.get("components", []):
     if comp.get("kind") != "weights":
         continue
@@ -965,16 +1022,15 @@ for comp in doc.get("components", []):
         if len(sha) != 64 or not isinstance(size, int):
             sys.exit(f"manifest records no usable sha256/size for {rel!r}")
         print("\t".join([rel, sha, str(size)]))
-' "$DIR" "$REPO_DIR" > "$_wlist"; then
+' "$DIR" "$REPO_DIR" "$MANIFEST_FILE" > "$_wlist"; then
         rm -f "$_wlist"
         die "the bundle's weight records are not usable (see above). No weight
        was copied."
       fi
       # A half-written copy must never be left under ANY name on a die or a
-      # Ctrl-C: this trap removes the one in flight.
+      # Ctrl-C: _ob_install_cleanup (the EXIT trap set at the top of install)
+      # removes the one in flight.
       _OB_PARTIAL=""
-      trap '[[ -z "${_OB_PARTIAL:-}" ]] || rm -f -- "$_OB_PARTIAL"' EXIT
-      trap 'exit 130' INT TERM
       while IFS=$'\t' read -r _rel _msha _mbytes; do
         [[ -n "$_rel" ]] || continue
         _w="$DIR/$_rel"

@@ -594,8 +594,14 @@ S="$OB_STUB_STATE"
 echo "docker $*" >> "$S/docker.log"
 lookup() { awk -F'\t' -v k="$1" '$1==k {print $2; f=1; exit} END {exit !f}' "$S/ids"; }
 case "${1:-}" in
-  info)    cat "$S/store_status" ;;
-  load)    cat >/dev/null
+  info)    cat "$S/store_status"
+           # A MEDIUM THAT ANSWERS TWICE: when armed, swap the file on the
+           # "stick" right after install's verify pass (info is the first
+           # thing install asks docker, before any load).
+           if [[ -f "$S/swap_on_info" ]]; then
+             cp "$S/swap_src" "$(cat "$S/swap_on_info")"; rm -f "$S/swap_on_info"
+           fi ;;
+  load)    cat > "$S/last_load"
            if [[ -f "$S/load_fail" ]]; then echo "write /var/lib/docker/tmp: no space left on device" >&2; exit 1; fi
            cat "$S/load_adds" >> "$S/ids"; cat "$S/load_says" ;;
   inspect) lookup "${@: -1}" ;;
@@ -646,6 +652,88 @@ if [[ $_rc -eq 0 && "$(compose_web)" == "$ID_REC" ]] && has "$_out" "ID matches 
 else
   fail "same-store install (rc=$_rc web=$(compose_web)): $_out"
 fi
+if [[ "$(gzip -dc "$B/images/img.tar.gz")" == "$(cat "$T/state/last_load")" ]]; then
+  pass "control: docker load received exactly the bundle's image bytes"
+else
+  fail "control: the stub did not record the loaded bytes: $(cat "$T/state/last_load")"
+fi
+
+# THE INSTALL-TIME HASH GATE: a payload modified after the build must stop
+# install before ANYTHING is consumed — and it must be the verify gate that
+# stops it (its words), not a later, partial check.
+mk_bundle "$B" containerd "$REF_WEB" "$ID_REC"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_REC" "$ID_REC" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_REC" > "$T/state/load_says"
+echo "TAMPERED IMAGE" | gzip -n > "$B/images/img.tar.gz"
+install_bundle "$B"
+if [[ $_rc -ne 0 && "$(compose_web)" == "$REF_WEB" ]] && has "$_out" "does not match its manifest" \
+   && [[ "$(count_lines "$T/state/docker.log" "docker load")" == "0" ]]; then
+  pass "a payload changed after the build is refused by install's verify gate; nothing loaded, compose untouched"
+else
+  fail "tampered payload (rc=$_rc loads=$(count_lines "$T/state/docker.log" "docker load")): $_out"
+fi
+
+# TOCTOU: the medium answers the verify pass with the right bytes and the
+# NEXT read with other bytes. install used to `gzip -dc` the file on the
+# medium after verifying it, so the second answer was what got loaded.
+mk_bundle "$B" containerd "$REF_WEB" "$ID_REC"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_REC" "$ID_REC" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_REC" > "$T/state/load_says"
+echo "EVIL IMAGE BYTES" | gzip -n > "$T/state/swap_src"
+echo "$B/images/img.tar.gz" > "$T/state/swap_on_info"; : > "$T/state/last_load"
+mkdir -p "$T/tmpx"          # a private TMPDIR, so the cleanup check below sees only this run
+_out="$(cd "$T" && TMPDIR="$T/tmpx" PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$B" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && ! -s "$T/state/last_load" && "$(compose_web)" == "$REF_WEB" ]] \
+   && [[ "$(count_lines "$T/state/docker.log" "docker load")" == "0" ]] && has "$_out" "changed after it was verified"; then
+  pass "an image swapped on the medium AFTER verification is caught on the private copy; nothing is loaded"
+else
+  fail "image TOCTOU (rc=$_rc, loaded: $(cat "$T/state/last_load")): $_out"
+fi
+rm -f "$T/state/swap_on_info"
+if [[ -z "$(ls -A "$T/tmpx")" ]]; then
+  pass "the private staging dir is removed on the way out, even on a refusal"
+else
+  fail "private staging dir left behind: $(ls -A "$T/tmpx")"
+fi
+
+# ...and the same for the llama.cpp SOURCE tarball, which bootstrap then
+# compiles and runs. The swap happens when install makes its extraction dir,
+# i.e. after verification and immediately before extraction.
+SRCB="$T/usb/srcbundle"; _commit="$(printf 'ab%.0s' {1..20})"
+mk_srcbundle() {
+  rm -rf "$SRCB" "$T/srcgood"; mkdir -p "$SRCB/source" "$T/srcgood/llama.cpp"
+  echo "real source" > "$T/srcgood/llama.cpp/GOOD.txt"
+  tar -czf "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" -C "$T/srcgood" llama.cpp
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c \
+      --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+  rm -rf "$T/srcevil"; mkdir -p "$T/srcevil/llama.cpp"; echo "attacker source" > "$T/srcevil/llama.cpp/EVIL.txt"
+  tar -czf "$T/state/swap_src" -C "$T/srcevil" llama.cpp
+}
+mkdir -p "$T/bin_mt"; cat > "$T/bin_mt/mktemp" <<'STUB'
+#!/bin/bash
+if [[ "$*" == *ob-src-* && -f "$OB_STUB_STATE/swap_on_mktemp" ]]; then
+  cp "$OB_STUB_STATE/swap_src" "$(cat "$OB_STUB_STATE/swap_on_mktemp")"; rm -f "$OB_STUB_STATE/swap_on_mktemp"
+fi
+exec "$REAL_MKTEMP" "$@"
+STUB
+chmod +x "$T/bin_mt/mktemp"; REAL_MKTEMP="$(command -v mktemp)"; export REAL_MKTEMP
+mk_srcbundle; rm -rf "$SB/llama.cpp"
+echo "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" > "$T/state/swap_on_mktemp"
+_out="$(cd "$T" && PATH="$T/bin_mt:$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+if [[ -f "$SB/llama.cpp/GOOD.txt" && ! -e "$SB/llama.cpp/EVIL.txt" && ! -f "$T/state/swap_on_mktemp" ]]; then
+  pass "a source tarball swapped on the medium after verification is NOT what gets extracted (the verified copy is)"
+else
+  fail "source TOCTOU (rc=$_rc, tree: $(ls "$SB/llama.cpp" 2>/dev/null), swap fired: $([[ -f "$T/state/swap_on_mktemp" ]] && echo no || echo yes)): $_out"
+fi
+# NEGATIVE CONTROL: an honest source bundle still extracts.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted llama.cpp-${_commit:0:12}.tar.gz"; then
+  pass "negative control: an untouched source bundle extracts as before"
+else
+  fail "honest source bundle (rc=$_rc): $_out"
+fi
+rm -rf "$SB/llama.cpp" "$SRCB"
 
 # CROSS-STORE: built on containerd, installed on classic. The daemon gives the
 # same image a DIFFERENT id. This used to die "is not present afterwards".
@@ -1075,6 +1163,28 @@ else
   done
   [[ ! -e "$WD/w.gguf" ]] && pass "...and install copied nothing on the way to refusing" \
     || fail "install --key '' still installed a weight"
+  # THE CHEAPEST DOWNGRADE: rebuild the manifest over your own payload and
+  # DELETE the signature. With --key, authenticity was asked for, so a
+  # missing .sig must be a failure — for verify AND install.
+  rm -f "$WB/MANIFEST.json.sig"
+  for _cmd in verify install; do
+    bsh "$_cmd" ./wbundle --key ./allowed
+    if [[ $_rc -ne 0 ]] && has "$_out" "carries no MANIFEST.json.sig" && ! has "$_out" "signature verified"; then
+      pass "$_cmd --key on a bundle whose signature was DELETED is refused"
+    else
+      fail "$_cmd --key with no .sig (rc=$_rc): $_out"
+    fi
+  done
+  [[ ! -e "$WD/w.gguf" ]] && pass "...and that install copied nothing" \
+    || fail "install --key with no .sig still installed a weight"
+  # NEGATIVE CONTROL: without --key the same unsigned bundle is integrity-only
+  # (rc=0, said out loud) — so it is --key that makes the missing .sig fatal.
+  bsh verify ./wbundle
+  if [[ $_rc -eq 0 ]] && has "$_out" "unsigned bundle"; then
+    pass "negative control: without --key an unsigned bundle verifies on integrity alone, and says so"
+  else
+    fail "unsigned verify without --key (rc=$_rc): $_out"
+  fi
   bsh verify ./wbundle --key ./allowed --identity
   if [[ $_rc -ne 0 ]] && has "$_out" "--identity needs a value"; then
     pass "a bare --identity is an error too"
