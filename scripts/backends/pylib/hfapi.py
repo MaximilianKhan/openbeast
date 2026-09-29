@@ -69,19 +69,25 @@ def token() -> str | None:
     return t or None
 
 
-class _SameHostAuth(urllib.request.HTTPRedirectHandler):
-    """Follow redirects, but never carry the token to a different host."""
+def _origin(url: str) -> tuple[str, str]:
+    u = urllib.parse.urlsplit(url)
+    return u.scheme.lower(), u.netloc.lower()
+
+
+class SameOriginAuth(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but carry Authorization only to the SAME scheme + host + port: a redirect
+    to the LFS CDN (another host) or a downgrade to http on the same host drops the token."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+        if new is not None and _origin(newurl) != _origin(req.full_url):
             for h in ("Authorization", "authorization"):
                 new.headers.pop(h, None)
                 new.unredirected_hdrs.pop(h, None)
         return new
 
 
-_OPENER = urllib.request.build_opener(_SameHostAuth)
+_OPENER = urllib.request.build_opener(SameOriginAuth)
 
 
 def _request(url: str, headers: dict | None = None, timeout: float = 60):
@@ -148,6 +154,10 @@ def tree(repo: str, rev: str) -> list[dict]:
         nxt = m.group(1) if m else ""
         if nxt and nxt.startswith("/"):
             nxt = endpoint() + nxt
+        if nxt and _origin(nxt) != _origin(endpoint()):
+            # the token would go with it: pagination never leaves the endpoint's own origin
+            raise HubError(f"tree pagination pointed at another origin ({urllib.parse.urlsplit(nxt).netloc}) "
+                           "— refusing to follow it")
         url = nxt
         seen += 1
         if seen > 1000:

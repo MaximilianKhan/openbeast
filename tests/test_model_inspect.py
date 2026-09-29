@@ -288,3 +288,36 @@ def test_draft_picks_one_spark_for_a_small_model_with_unknown_kv(tmp_path):
     assert model_inspect.main([str(d), "--write-profile", "tiny", "--models-dir", str(prof)]) == 0
     text = (prof / "tiny.env").read_text()
     assert "TENSOR_PARALLEL_SIZE=1 " in text and "KV size unknown" in text
+
+
+# --------------------------------------------------------------------------- origins
+
+def test_redirect_keeps_the_token_only_on_the_same_origin():
+    import urllib.request
+
+    h = hfapi.SameOriginAuth()
+
+    def follow(src, dst):
+        req = urllib.request.Request(src, headers={"Authorization": "Bearer hf_x"})
+        new = h.redirect_request(req, None, 302, "Found", {}, dst)
+        return new.get_header("Authorization") or new.unredirected_hdrs.get("Authorization")
+
+    assert follow("https://hub.example/a", "https://hub.example/b") == "Bearer hf_x"
+    assert follow("https://hub.example/a", "https://cdn.example/b") is None
+    assert follow("https://hub.example/a", "http://hub.example/b") is None, "a downgrade to http drops it"
+    assert follow("https://hub.example/a", "https://hub.example:8443/b") is None
+
+
+def test_tree_pagination_never_leaves_the_endpoint_origin(tmp_path, remote, monkeypatch):
+    other = Hub({"acme/Brand-New": remote.repos["acme/Brand-New"]})
+    try:
+        remote.link_origin = other.url                     # page 2 "lives" on another host
+        monkeypatch.setenv("HF_ENDPOINT", remote.url)
+        monkeypatch.setenv("HF_TOKEN", "hf_SECRET_123")
+        with pytest.raises(hfapi.HubError, match="another origin"):
+            hfapi.tree("acme/Brand-New", SHA)
+        assert other.log == [], "the other origin was never contacted (the token would have gone with it)"
+        remote.link_origin = remote.url                    # absolute but same origin: followed
+        assert len(hfapi.tree("acme/Brand-New", SHA)) == len(remote.repos["acme/Brand-New"]["files"])
+    finally:
+        other.close()

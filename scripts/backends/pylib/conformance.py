@@ -42,6 +42,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
+sys.path.insert(0, str(HERE))
+from hfapi import SameOriginAuth  # noqa: E402  (a redirect never carries the key to another origin)
+
+_OPENER = urllib.request.build_opener(SameOriginAuth)
 MARKER_TEXT = "openbeast-conformance-7f3a"
 UNKNOWN_ID = "openbeast-conformance-no-such-model"
 
@@ -123,7 +127,7 @@ class Client:
         if self.key:
             h["Authorization"] = f"Bearer {self.key}"
         req = urllib.request.Request(self.base + path, data=data, headers=h, method=method)
-        return urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310 - operator-supplied URL
+        return _OPENER.open(req, timeout=self.timeout)
 
     def call(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict | None, str]:
         try:

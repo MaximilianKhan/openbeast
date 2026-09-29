@@ -28,6 +28,7 @@ MARK = conformance.MARKER_TEXT
 class Stub:
     def __init__(self, kind: str, key: str | None = None):
         self.kind, self.key = kind, key
+        self.redirect_to = ""
         self.auth: list[str | None] = []
         self.requests: list[dict] = []
         stub = self
@@ -55,6 +56,12 @@ class Stub:
                 return True
 
             def do_GET(self):  # noqa: N802
+                if stub.redirect_to and self.path == "/v1/models":
+                    self.send_response(302)
+                    self.send_header("Location", stub.redirect_to + "/v1/models")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if not self._authed():
                     return
                 if self.path == "/v1/models":
@@ -283,3 +290,12 @@ def test_runner_overflow_regex_is_the_runners():
     assert rx is not None
     assert rx.search("This model's maximum context length is 4096 tokens")
     assert not rx.search("prompt too long")
+
+
+def test_client_does_not_carry_the_key_across_a_redirect(stub_factory):
+    target = stub_factory("vllm")
+    front = stub_factory("vllm")
+    front.redirect_to = target.url                         # another port = another origin
+    st, js, _ = conformance.Client(front.url, "sk-SECRET", 5).call("GET", "/v1/models")
+    assert st == 200 and js["data"][0]["id"] == "brand-new"
+    assert target.auth == [None], "the API key followed a redirect to another origin"

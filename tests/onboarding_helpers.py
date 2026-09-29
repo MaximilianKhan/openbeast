@@ -116,6 +116,7 @@ class Hub:
         self.extra_entries: list[dict] = []
         self.sha_override: str | None = None
         self.redirect: str | None = None
+        self.link_origin = ""            # absolute origin for tree pagination links ("" = relative)
         self.log: list[tuple[str, str | None, str | None]] = []   # (path, Authorization, Range)
         hub = self
 
@@ -158,8 +159,8 @@ class Hub:
                     chunk = entries[start:start + hub.page]
                     headers = {}
                     if start + hub.page < len(entries):
-                        headers["Link"] = (f'</api/models/{repo}/tree/{rev}?recursive=true&cursor='
-                                           f'{start + hub.page}>; rel="next"')
+                        headers["Link"] = (f'<{hub.link_origin}/api/models/{repo}/tree/{rev}?recursive=true'
+                                           f'&cursor={start + hub.page}>; rel="next"')
                     return self._send(200, json.dumps(chunk).encode(), headers=headers)
                 if len(parts) >= 5 and parts[2] == "resolve":
                     if hub.redirect and "redirected" not in u.query:
