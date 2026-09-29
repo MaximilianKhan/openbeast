@@ -4,7 +4,8 @@ Multi-model benchmark — run the full eval suite against every model and
 produce a ranked leaderboard.
 
 For each model:
-  1. Stop any running llama-server
+  1. Stop the llama-server this harness started (by PID; a server it did
+     not start is refused, never killed)
   2. Start the model's serve script in the background
   3. Wait for /health to return ok
   4. Run the full eval suite (results tagged with model name + GPU info)
@@ -172,17 +173,59 @@ COOLOFF_SECONDS = 600  # 10-min thermal break between models
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
+# The serve script THIS process started (start_new_session=True, so its pid
+# is its process group). The harness stops only this — never by name.
+# `pkill -f llama-server` (what this used to run) SIGKILLed every process
+# with that string in argv: the stack's model under its supervisor, a
+# sibling worktree's measurement server mid-cell, a ChunkHound sidecar, even
+# `tail -f ...llama-server.log` — the ops rule is "target by PID".
+_own_server: dict = {"proc": None}
+
+
 def stop_llama_server():
-    """Kill any running llama-server. Tolerant — pkill returns 1 if no match."""
-    subprocess.run(["pkill", "-TERM", "-f", "llama-server"], check=False, timeout=5)
-    # Wait briefly for graceful shutdown
+    """Stop the llama-server this harness started, by its process group:
+    SIGTERM, a short grace, then SIGKILL. A no-op when we started none —
+    a server someone else owns is not ours to kill."""
+    proc = _own_server["proc"]
+    _own_server["proc"] = None
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    # The group, not just the leader: anything the serve script left behind.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    # Let the kernel release the port before the next bind.
     for _ in range(10):
         if not _port_in_use(LLAMA_PORT):
             return
         time.sleep(0.5)
-    # Escalate
-    subprocess.run(["pkill", "-KILL", "-f", "llama-server"], check=False, timeout=5)
-    time.sleep(1)
+
+
+class PortBusy(RuntimeError):
+    """LLAMA_PORT is already served by a process this harness did not start."""
+
+
+def _foreign_servers() -> str:
+    """Read-only listing of llama-server processes, for the refusal message."""
+    try:
+        out = subprocess.run(["pgrep", "-ax", "llama-server"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        out = ""
+    return out or "(no llama-server process visible — something else holds the port)"
 
 
 def _port_in_use(port: int) -> bool:
@@ -214,6 +257,15 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     full_path = os.path.join(REPO_DIR, serve_script)
     if not os.path.isfile(full_path):
         raise FileNotFoundError(f"Serve script not found: {full_path}")
+    # Our own previous server is stopped by now, so a bound port belongs to
+    # someone else (the stack, another worktree's campaign). Refuse rather
+    # than kill it or, worse, measure it: wait_for_health would accept
+    # whatever answers the port as "our model".
+    if _port_in_use(LLAMA_PORT):
+        raise PortBusy(
+            f"port {LLAMA_PORT} is already serving and this harness did not start it. "
+            f"Stop it by PID (or ./stop.sh for the stack), then rerun.\n"
+            f"{_foreign_servers()}")
     log_path = _server_log_path(slug)
     log_fp = open(log_path, "wb", buffering=0)
     print(f"  Server log: {log_path}")
@@ -230,13 +282,22 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         # parent's copy is not needed either way and would otherwise leak
         # one fd per (re)start — including when Popen itself raises.
         log_fp.close()
+    _own_server["proc"] = proc
     return proc, log_path
 
 
-def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
-    """Poll /health until ok or timeout."""
+def wait_for_health(timeout: int = HEALTH_TIMEOUT,
+                    proc: subprocess.Popen | None = None) -> bool:
+    """Poll /health until ok or timeout. With `proc` (the serve script we
+    started), give up as soon as it exits: a script that dies in its first
+    second (weight pruned, WEIGHT_ENFORCE=strict exit 3, OOM at load) used
+    to cost the full timeout, and an unchecked poll would also accept some
+    OTHER server answering the port as ours."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            print(f"  Serve script exited (rc {proc.returncode}) before /health came up.")
+            return False
         try:
             with urllib.request.urlopen(LLAMA_HEALTH_URL, timeout=2) as resp:
                 if b"ok" in resp.read():
@@ -272,12 +333,12 @@ def restart_server(serve_script: str, slug: str,
     print("  Server unhealthy — restarting...")
     stop_llama_server()
     try:
-        start_model(serve_script, slug)
-    except FileNotFoundError as e:
+        proc, _ = start_model(serve_script, slug)
+    except (FileNotFoundError, PortBusy) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
-    if not wait_for_health(timeout=health_timeout):
+    if not wait_for_health(timeout=health_timeout, proc=proc):
         print("  Server failed to come back healthy.")
         return False
     print("  Server recovered.")
@@ -323,20 +384,22 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                     "error": "eval produced no results"}
         return {"slug": model["slug"], "name": model["name"], "results": results}
 
-    print("Stopping any running llama-server...")
+    print("Stopping this harness's llama-server (if any)...")
     stop_llama_server()
 
     print(f"Starting {model['serve']}...")
     try:
-        start_model(model["serve"], model["slug"])
-    except FileNotFoundError as e:
-        return {"slug": model["slug"], "name": model["name"], "error": str(e)}
+        proc, _ = start_model(model["serve"], model["slug"])
+    except (FileNotFoundError, PortBusy) as e:
+        return {"slug": model["slug"], "name": model["name"], "error": str(e),
+                "gpu_work": False}
 
     print(f"Waiting for /health (up to {HEALTH_TIMEOUT}s)...")
-    if not wait_for_health():
+    if not wait_for_health(proc=proc):
         stop_llama_server()
         return {"slug": model["slug"], "name": model["name"],
-                "error": "model failed to become healthy within timeout"}
+                "error": "model failed to become healthy within timeout",
+                "gpu_work": False}
 
     # Per-task recovery: if /health stops responding mid-sweep, kill+restart
     # the serve script before the next task instead of letting the agent burn
@@ -433,15 +496,29 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
                   f"(solve {entry.get('problem_solving')} / lang {entry.get('language_breadth')}) "
                   f"| accuracy {entry['accuracy']} speed {entry['speed']}")
 
-        if i < len(models) and not cache_only:
-            # No thermal load in cache-only mode — skip the cool-off.
+        if i < len(models) and not cache_only and _did_gpu_work(outcome):
+            # No thermal load in cache-only mode, for a model that never
+            # loaded, or for a run that replayed every unit from cache —
+            # skip the cool-off. (A resumed 11-model sweep paid 10 idle
+            # minutes per fully-cached model before any new work.)
             print(f"\nCool-off for {COOLOFF_SECONDS}s before next model...")
             time.sleep(COOLOFF_SECONDS)
+        elif i < len(models) and not cache_only:
+            print("\nNo live GPU work for this model — skipping the cool-off.")
 
     sweep_summary["finished_at"] = datetime.now().isoformat()
     sweep_summary["elapsed_seconds"] = round(
         (datetime.now() - sweep_start).total_seconds(), 1)
     return sweep_summary
+
+
+def _did_gpu_work(outcome: dict) -> bool:
+    """Whether a model's run put thermal load on the GPU. Unknown = yes."""
+    if "gpu_work" in outcome:
+        return bool(outcome["gpu_work"])
+    summary = (outcome.get("results") or {}).get("summary") or {}
+    live = summary.get("live_units")
+    return live is None or live > 0
 
 
 def save_sweep_summary(summary: dict) -> str:

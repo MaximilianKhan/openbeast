@@ -1421,6 +1421,11 @@ def run_eval(
         except (json.JSONDecodeError, OSError, KeyError) as e:
             print(f"Diag latency summary unavailable: {e}")
 
+    # How many units actually ran the model (benchmark_all skips its
+    # thermal cool-off when this is 0, i.e. a full cache replay).
+    results["summary"]["cache_hits"] = counters["cache_hits"]
+    results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
+                                        - counters["cache_misses_skipped"])
     _write_results(results_path, results)
 
     # Print summary

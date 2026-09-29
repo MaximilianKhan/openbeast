@@ -776,10 +776,14 @@ cross-host comparison.
 #### Multi-model benchmark
 
 `evals/benchmark_all.py` runs the full suite against every configured model in
-turn. For each: stops llama-server, starts the model's serve script, waits for
-`/health`, runs the eval, kills the server, scores the run, updates the
-leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
-flagged in the sweep summary.
+turn. For each: starts the model's serve script, waits for `/health`, runs
+the eval, stops the server it started (by its process group — never by name),
+scores the run, updates the leaderboard. It refuses to start when `:8080` is
+already served by something it didn't start, so stop the stack (`./stop.sh`)
+or the other run first; it no longer `pkill`s whatever llama-server it finds.
+If a model fails to launch or crashes mid-run, it's skipped and flagged in
+the sweep summary. The 10-minute cool-off between models is skipped when the
+model never loaded or replayed every unit from cache.
 
 ```bash
 python3 evals/benchmark_all.py                       # all 20 configured models, full suite
