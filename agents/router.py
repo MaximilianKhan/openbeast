@@ -223,6 +223,11 @@ def _identity_headers(headers, jwt_secret=None):
     JWT mode forwards the signed token (the tool server re-verifies it and
     ignores plain headers); header mode forwards the plain headers. The chat
     id rides along in both, as WebUI sends it.
+
+    Starlette decodes header bytes as latin-1 and httpx encodes str values
+    as ASCII, so a non-ASCII value (an internationalized email) would raise
+    in client.post and break the spawn. Such values go back out as the
+    exact bytes WebUI sent; one that isn't latin-1 at all is dropped.
     """
     if jwt_secret is None:
         jwt_secret = JWT_SECRET
@@ -230,8 +235,14 @@ def _identity_headers(headers, jwt_secret=None):
     out = {}
     for name in names + (_CHAT_HEADER,):
         v = _header(headers, name)
-        if v:
-            out[name] = v
+        if not v:
+            continue
+        if not v.isascii():
+            try:
+                v = v.encode("latin-1")
+            except UnicodeEncodeError:
+                continue
+        out[name] = v
     return out
 
 

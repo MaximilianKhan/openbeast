@@ -300,6 +300,23 @@ class TestSpawnCarriesIdentity(unittest.TestCase):
         self.assertEqual(rec.headers["x-openwebui-chat-id"], "c-9")
         self.assertNotIn("Content-Type", rec.headers)
 
+    def test_non_ascii_identity_is_forwarded_as_the_sent_bytes(self):
+        """httpx encodes str header values as ASCII; Starlette handed us
+        latin-1-decoded str. A non-ASCII email must not break the spawn."""
+        import httpx
+        raw = "jos\u00e9@example.com".encode("utf-8")
+        incoming = {"X-OpenWebUI-User-Id": "u-1",
+                    "X-OpenWebUI-User-Email": raw.decode("latin-1"),
+                    "X-OpenWebUI-User-Name": "\u2603"}   # not latin-1: dropped
+        ident = router._identity_headers(incoming, jwt_secret="")
+        self.assertEqual(ident["x-openwebui-user-email"], raw)
+        self.assertEqual(ident["x-openwebui-user-id"], "u-1")
+        self.assertNotIn("x-openwebui-user-name", ident)
+        req = httpx.Request("POST", "http://tools/start_agent",
+                            headers={**ident, **router.MCPO_HEADERS})
+        self.assertEqual(req.headers.raw[[k for k, _ in req.headers.raw].index(
+            b"x-openwebui-user-email")][1], raw)
+
     def test_jwt_mode_forwards_only_the_token(self):
         incoming = {"X-OpenWebUI-User-Jwt": "tok", "X-OpenWebUI-User-Id": "forged",
                     "X-OpenWebUI-Chat-Id": "c-9"}
