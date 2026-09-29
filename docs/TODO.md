@@ -1,5 +1,58 @@
 # TODO
 
+## 🔬 FULL REVIEW 2026-09-29
+
+- **What:** an adversarial review of the whole repo found **118 findings**,
+  and verification refuted none of them (many were downgraded). The report
+  (`docs/reviews/FULL-REVIEW-2026-09-29.md`) is local to the rig and **not
+  committed**: it has exploit-level detail for items still open, and this
+  repo is public (see Max call 7).
+- **Fixes landed** on `fix/review-2026-09-29` in two rounds, one branch per
+  area; code fixes carry regression tests (docs and data-only fixes do
+  not). The per-item not-fixed reasons are
+  in the round reports.
+- **Tier-3 re-audit** (`scratch/tier3-verdict-reaudit-2026-09-29.txt`): *"The
+  pre-registered SHIP (net +13, p = 0.0192) does NOT hold on clean rows.
+  Dropping the rows the model did not produce leaves net +10 (b = 17, c = 7),
+  exact McNemar p = 0.0639. That is NO-SHIP under Clause 1 (p < 0.05). The
+  verdict is UNRESOLVED, not refuted."* The call rides on one unit
+  (62_crt_f: keeping it gives +11, p = 0.043). The champion guard's
+  "negative" was mostly EAGAIN artifact: clean, it is 4 vs 1 on 14 units,
+  which is uninformative. Greedy churn is about 30%, not about 0. The
+  estimate is in-sample. **Do not wire the pack per model on the 09-17
+  verdict.**
+- **✋ Open, Max's decision:**
+  1. **Delete the 10.9 GB E13 `heretic27b-Q2K-rr2.gguf`** (storage-06). It is
+     a byte copy of `rr.gguf`, now a btrfs reflink costing 0 extra bytes, and
+     it is misnamed (rr2 at 27B is not the 0.6B exact-sweep artifact).
+  2. **Same-uid conf read** (identity-rbac-2). `/proc/$PPID/environ` is
+     closed, but admin-tier `bash` can still `cat openbeast.conf` and mint
+     any identity with the JWT secret. The fix is Sandlock default-on or a
+     separate tool-server uid. See [`RBAC_PLAN.md`](RBAC_PLAN.md).
+  3. **GPU reruns**, which run only after the NPROC and connection-error
+     fixes merge, in the new era:
+     - Tier-3 FRESH rerun: `FRESH=1 bash scratch/tier3_zig_ab.sh`, about
+       **7 GPU-h**, plus about 1.5 h for the optional held-out zig set.
+     - Single-slot greedy floor: `bash scratch/greedy_floor.sh --single-slot`, about
+       **20 GPU-h**.
+     - The 29-unit patch (about 1.5 GPU-h) is not recommended because it
+       mixes eras.
+  4. **llama.cpp staging-build swap** (extensions-client-10, partial).
+     `update.sh --llama` now refuses while the GPU lease is held. Still
+     open: build into a staging dir and swap atomically, and record
+     `llama-server --version` in provenance instead of the source HEAD.
+  5. **Aborted-stream token metering** (edge-gate-slot-4 area, partial).
+     Aborts are audited as `outcome=client_disconnect` with tokens left
+     null. Counting tokens from SSE events was declined because the counts
+     would be invented. Decide whether a lower-bound count is wanted.
+  6. **`agents/logs/` retention policy.** Transcripts are not rotated,
+     because the session ledger points into them. Choose how long to keep
+     them.
+  7. **Publish the review report or not.** Options: commit it redacted
+     (after the open items above close), route it through private
+     vulnerability reporting, or keep it local only. Until decided it
+     stays uncommitted.
+
 ## 📱 beast-chat + 🎨 beast-artifact — BOTH SHIPPED 2026-09-15
 
 - **beast-artifact** shipped in **v1.3.0** (PR #61). Docs:

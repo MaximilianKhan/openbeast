@@ -95,6 +95,28 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 | **Guest** (family) | `user` | **`web_search` + `fetch`** (scheme-filtered, private-network-blocked) | public grant on a filtered connection |
 | *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
 
+> ⚠️ **Admin accounts are NOT isolated from each other (review
+> identity-rbac-2, 2026-09-29).** The tier boundary above (guest vs admin)
+> is enforced. Separation *between* admin-tier accounts is not, and cannot
+> be while `bash` runs as the rig's own uid. The shell tool's env is scrubbed
+> and the spawning server is non-dumpable, so `env` and
+> `/proc/$PPID/environ` no longer leak secrets. But a same-uid shell can
+> still `cat openbeast.conf` (mode 0600, same owner) and read the RBAC keys
+> and the JWT secret (conf key `IDENTITY_JWT_SECRET`, env override
+> `OPENBEAST_IDENTITY_JWT_SECRET`). With that secret, any admin session,
+> or a prompt injection inside one, can mint a signed identity for another
+> account. Without signed identity (header mode, the default when
+> `setup-mcpo-keys.sh` runs without `--with-jwt`) it is easier still: the
+> admin key alone lets a session send forged `X-OpenWebUI-User-*` headers.
+> Either way it can act in another account's workspace shard or publish and
+> list artifacts as that account's email. Treat every admin account as able
+> to act as every other one. Real separation needs one of two things:
+> Sandlock default-on for tool execution, extended beyond Phase 2 item 2
+> below (which wraps only guest-profile execution) to cover admin-profile
+> execution and deny reads of `openbeast.conf`; or running the tool server
+> as a separate uid that cannot read `openbeast.conf`. Both
+> are architecture decisions for Max and are still open.
+
 **Why guest = web_search + guarded fetch (not file reads).** Max's rule:
 "search the web and anything that can't harm the OS; no local filesystem."
 - `web_search` → SearXNG, no local access. **Safe. In.**
