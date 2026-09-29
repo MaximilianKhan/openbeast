@@ -564,6 +564,100 @@ def test_proc_state_and_start_time_come_from_one_parse(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# No /proc (the macOS client) — review 2026-09-29
+# ---------------------------------------------------------------------------
+# setup-client.sh ships agents/ and scripts/job.sh to Macs. With no
+# /proc/<pid>/stat every record reconciled to `lost` on first read, the
+# session's own finalize('done') was then refused, and `job.sh stop` said
+# "already 'lost' — nothing to signal" while the job ran on. These tests take
+# /proc away (the module's one switch) and use the REAL `ps`, whose
+# stat/lstart columns procps and BSD share.
+
+needs_ps = pytest.mark.skipif(__import__("shutil").which("ps") is None,
+                              reason="no ps on this box")
+
+
+@pytest.fixture()
+def no_proc(monkeypatch):
+    monkeypatch.setattr(sessions, "_have_proc", lambda: False)
+
+
+@needs_ps
+def test_without_proc_a_live_session_stays_running(ledger, no_proc):
+    sid = sessions.new_id("job")
+    rec = sessions.register(sid, kind="job", pid=os.getpid())
+    assert rec["meta"]["pid_start"] is not None, "ps gave no start time"
+    assert sessions.get(sid)["state"] == "running"
+    assert sessions.list_sessions()[0]["state"] == "running"
+    assert sessions.is_alive(sessions.get(sid)) is True   # signalling works
+    # the session's own verdict lands instead of being refused over `lost`
+    assert sessions.finalize(sid, "done", summary="ok") is True
+    assert sessions.get(sid)["state"] == "done"
+
+
+@needs_ps
+def test_without_proc_dead_zombie_and_recycled_are_still_lost(ledger, no_proc):
+    """The negative controls: the fallback must not make EVERYTHING alive."""
+    dead = sessions.new_id("job")
+    sessions.register(dead, pid=_dead_pid())
+    assert sessions.get(dead)["state"] == "lost"
+
+    victim = subprocess.Popen([sys.executable, "-c",
+                               "import time; time.sleep(30)"])
+    try:
+        start = sessions.pid_start_time(victim.pid)
+        assert start is not None
+        recycled = {"id": "r", "state": "running", "pid": victim.pid,
+                    "meta": {"pid_start": start - 3600}}
+        assert sessions.reconcile(recycled)["state"] == "lost"
+        assert sessions.is_alive(recycled) is False
+    finally:
+        victim.kill()
+        victim.wait()
+
+    pid = _zombie()
+    try:
+        assert sessions._alive(pid, sessions.pid_start_time(pid)) is False
+    finally:
+        os.waitpid(pid, 0)
+
+
+def test_with_no_liveness_probe_at_all_nothing_is_guessed_lost(
+        ledger, no_proc, monkeypatch):
+    """No /proc and no ps: report `running` (we cannot know), and never
+    authorise a signal (we cannot prove the pid is ours)."""
+    monkeypatch.setattr(sessions.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sessions, "_ps_stat", lambda pid: None)
+    sid = sessions.new_id("job")
+    sessions.register(sid, pid=os.getpid())
+    rec = sessions.get(sid)
+    assert rec["state"] == "running"
+    assert sessions.is_alive(rec) is False
+
+
+def test_ps_stat_parses_the_bsd_and_procps_shape(monkeypatch):
+    """Built case, no real process: a padded day ("Sep  9") and a zombie."""
+    class Done:
+        returncode = 0
+        stdout = "Z+   Wed Sep  9 10:11:12 2026\n"
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["env"] = argv, kw.get("env") or {}
+        return Done()
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    state, start = sessions._ps_stat(4242)
+    assert state == "Z"
+    assert start == int(time.mktime(time.strptime(
+        "Wed Sep 9 10:11:12 2026", "%a %b %d %H:%M:%S %Y")))
+    assert seen["argv"][-2:] == ["-p", "4242"]
+    assert seen["env"].get("LC_ALL") == "C"
+    Done.stdout, Done.returncode = "", 1          # the pid is gone
+    assert sessions._ps_stat(4242) is None
+
+
+# ---------------------------------------------------------------------------
 # Inbox caps + hostile inbox paths (E12, E13)
 # ---------------------------------------------------------------------------
 
@@ -785,6 +879,24 @@ def test_a_record_from_another_boot_is_never_alive(ledger, monkeypatch):
     out = sessions.reconcile(rec)
     assert out["state"] == "lost"
     assert "boot" in out["summary"]
+
+
+def test_register_never_keeps_a_callers_boot_id(ledger, monkeypatch):
+    """Review 2026-09-29: register() assigned boot_id only when the kernel
+    reported one, so on a kernel that does not, a caller's meta boot_id
+    survived; and the value is a liveness input, like pid_start."""
+    monkeypatch.setattr(sessions, "_boot_id", lambda: None)
+    rec = sessions.register("s-forged-boot", pid=os.getpid(),
+                            meta={"boot_id": "forged", "note": "kept"})
+    assert "boot_id" not in rec["meta"]
+    assert rec["meta"]["note"] == "kept"
+    monkeypatch.setattr(sessions, "_boot_id", lambda: "boot-B")
+    rec = sessions.register("s-forged-boot2", pid=os.getpid(),
+                            meta={"boot_id": "forged", "cursor": 7})
+    assert rec["meta"]["boot_id"] == "boot-B"
+    assert rec["meta"]["cursor"] == 7        # the runner's --resume carry
+    assert set(sessions.SERVER_OWNED_META) == {"pid_start", "boot_id",
+                                               "cursor"}
 
 
 def test_a_record_with_no_boot_id_keeps_todays_behaviour(ledger):

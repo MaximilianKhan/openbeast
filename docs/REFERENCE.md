@@ -80,7 +80,10 @@ spawned background agents keep using their own `AGENT_WORKDIR`.
 **beast-chat's environment-only knobs.** Beyond the three conf keys above,
 `agents/chat_server.py` reads a handful of `OPENBEAST_CHAT_*` variables that
 have no `openbeast.conf` spelling (defaults in parentheses):
-`OPENBEAST_CHAT_BIND` (`127.0.0.1`), `OPENBEAST_CHAT_ALLOWED_HOSTS` (extra
+`OPENBEAST_CHAT_BIND` (`127.0.0.1`; set off loopback, `Tailscale-User-Login`
+is still honoured only from `127.0.0.1` — the `tailscale serve` path — so
+other peers need a chat-scoped device key, and startup warns),
+`OPENBEAST_CHAT_ALLOWED_HOSTS` (extra
 `Host` values, comma-separated, added to the built-in loopback + hostname +
 `*.ts.net` allowlist — the DNS-rebinding guard in `agents/hostpolicy.py`),
 `OPENBEAST_CHAT_RUN_DIR` (`.run`), `OPENBEAST_CHAT_RATE_PER_MIN` (60),
@@ -89,7 +92,8 @@ polite-stop and escalation deadlines), `OPENBEAST_CHAT_POLL_MS` (250),
 `OPENBEAST_CHAT_HEARTBEAT_S` (15), `OPENBEAST_CHAT_AUTH_RECHECK_S` (the
 heartbeat, capped at 5 s — an open stream re-authorizes on this period), and
 `OPENBEAST_CHAT_JOB_MEM_PCT` (50; `0` disables) — the memory cap, as a
-percent of RAM, on the systemd scope each console-started session runs in,
+percent of RAM, on the systemd scope each console-started session runs in
+and, as an aggregate, on the `openbeast-chat-jobs.slice` they all share —
 *outside* the stack's own scope so `./stop.sh` never takes a phone-started
 job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
 

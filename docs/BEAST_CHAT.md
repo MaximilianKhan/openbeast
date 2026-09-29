@@ -112,12 +112,22 @@ does (`_install_signal_reaper`) — before that fix, stopping a campaign from
 the phone killed the harness and left an eval unit running, still holding a
 server slot and still writing the task's fixtures, against a relaunch that
 necessarily re-ran it. **If you add another self-sessioning spawner, give it
-the same handler; `stop` cannot reach it for you.**
+the same handler; `stop` cannot reach it for you after its parent is gone.**
+
+What the console's `stop` does add (review 2026-09-29): immediately before it
+signals the session, it reads the process tree and signals every group a
+*descendant* leads, too — which is how an agent's bash-tool command (run
+under `start_new_session=True` by `agents/tools.py`) is stopped with it
+instead of running on as an orphan with no timeout left. Only groups a
+descendant leads are signalled, each after re-checking its start time, and
+only on this signal pass: a descendant that ignores SIGTERM is not chased
+once its parent has died (the SIGKILL escalation can no longer find it).
 
 **`meta` on session creation is caller free-form with reserved keys.**
-`pid_start` and `cursor` are the server's: the first is the process-identity
-proof that stops a recycled pid from making a dead session look alive, the
-second is the steering inbox position. They are stripped from caller input
+`pid_start`, `boot_id` and `cursor` are the server's
+(`sessions.SERVER_OWNED_META`): the first two are the process-identity proof
+that stops a recycled pid from making a dead session look alive, the third is
+the steering inbox position. They are stripped from caller input
 (and `pid_start` is assigned, never inherited) because a forged `pid_start`
 does not read as corruption — it reads as a session that already finished,
 while its command keeps running for hours. Anything else you attach is kept.
@@ -505,7 +515,12 @@ can reach the user manager; otherwise it spawns plainly, as before (and says
 so once on stderr). Leaving the unit means leaving its `MemoryMax` too, so each
 scope carries a cap of its own — `OPENBEAST_CHAT_JOB_MEM_PCT` percent of RAM
 (default 50, swap off; `0` disables) — because an unbounded phone-started job
-is exactly the runaway the stack's cap exists to contain. The pid,
+is exactly the runaway the stack's cap exists to contain. The same figure
+also bounds them *together*: every scope goes into
+`openbeast-chat-jobs.slice`, which carries that cap as an aggregate (a
+runtime drop-in, set with `systemctl --user set-property --runtime`), so two
+runaway jobs cannot add up to the box. If the slice cannot be capped, the
+scopes stay where they were and each keeps its own cap. The pid,
 the ledger record and Stop are unchanged (a scope execs the command in place).
 What does NOT survive a `chat_server` restart is the *reaper*: a console job
 that finishes while no server holds it reconciles to `lost`, and its log is

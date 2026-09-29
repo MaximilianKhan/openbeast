@@ -70,6 +70,8 @@ CONF="$SANDBOX/openbeast.conf"
 # A port nothing is listening on: every network-touching case must fail as
 # "server not running", never hang or half-succeed.
 export OPENBEAST_ARTIFACT_PORT=39199
+# The dial host follows BIND_HOST (section 8b); never the operator's own.
+unset OPENBEAST_BIND
 
 PAGE="$TMPROOT/page.html"
 cat > "$PAGE" <<'HTML'
@@ -217,6 +219,42 @@ if echo "$out" | grep -q "not a number"; then
 else
   fail "a garbage port was not caught: $out"
 fi
+
+# --- 8b. host resolution: dial where the server LISTENS ---
+# Review 2026-09-29 artifact-3: the server binds OPENBEAST_BIND, but the CLI
+# always dialled 127.0.0.1 — so with BIND_HOST set to one specific address it
+# reached nothing and told the operator to restart a healthy stack. 127.0.0.2
+# is a specific address that refuses fast (nothing listens there).
+echo ""
+echo "Host resolution:"
+printf '# fixture\nARTIFACT_PORT=39199\nBIND_HOST=127.0.0.2\n' > "$CONF"
+out="$("$CLI" list 2>&1 || true)"
+if echo "$out" | grep -q "http://127.0.0.2:39199"; then
+  pass "a specific BIND_HOST in openbeast.conf is the address dialled"
+else
+  fail "conf BIND_HOST ignored: $out"
+fi
+out="$(OPENBEAST_BIND=127.0.0.3 "$CLI" list 2>&1 || true)"
+if echo "$out" | grep -q "http://127.0.0.3:39199"; then
+  pass "\$OPENBEAST_BIND overrides the conf BIND_HOST"
+else
+  fail "env OPENBEAST_BIND ignored: $out"
+fi
+for wild in 0.0.0.0 :: localhost; do
+  out="$(OPENBEAST_BIND="$wild" "$CLI" list 2>&1 || true)"
+  if echo "$out" | grep -q "http://127.0.0.1:39199"; then
+    pass "a wildcard/loopback bind ($wild) dials 127.0.0.1"
+  else
+    fail "bind $wild did not map to loopback: $out"
+  fi
+done
+out="$(OPENBEAST_BIND=::1 "$CLI" list 2>&1 || true)"
+if echo "$out" | grep -q "http://\[::1\]:39199"; then
+  pass "an IPv6 bind is bracketed in the URL"
+else
+  fail "IPv6 bind not bracketed: $out"
+fi
+rm -f "$CONF"
 
 # --- 9. identifier validation happens LOCALLY ---
 # A typo'd id used to sail into curl, produce a malformed URL, fail with curl

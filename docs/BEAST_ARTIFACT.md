@@ -334,6 +334,21 @@ sandbox instead — stricter on storage (there is none), identical on network.
 - `Tailscale-User-Login` is forgeable by a process already on the rig. That is
   inside the existing loopback trust model, and it only ever buys *reads* —
   writes need the locality token.
+- **The header counts only from a loopback peer.** The server binds
+  `OPENBEAST_BIND`, so `BIND_HOST=0.0.0.0` or a LAN address puts `:3004`
+  off the box — and a LAN host (or a tailnet node dialling `100.x:3004`
+  directly) could send `Host: localhost` plus the owner's login and read
+  every private page, allowlist or not. `tailscale serve` dials from
+  `127.0.0.1`, so the published path is unchanged; any other peer that
+  presents the header is anonymous (404). The peer is the real socket peer:
+  uvicorn runs with `proxy_headers=False`, because `tailscale serve` always
+  adds `X-Forwarded-For: <tailnet IP>` and uvicorn's default would otherwise
+  rewrite the loopback peer to it. Review 2026-09-29.
+- **`Cross-Origin-Opener-Policy: same-origin`** on every answer except the
+  capability tree (`/raw/<id>/v/<n>/~<token>/…`), the flat 404 included.
+  The identity rides the network, not a cookie, so without it any site the
+  viewer visits could `window.open` a shell URL and count frames to learn
+  which private pages and versions exist.
 - **The `Host` header is pinned** (`TrustedHostMiddleware`, the outermost
   middleware, sharing the one allowlist in `agents/hostpolicy.py` with
   beast-chat). A browser cannot forge `Host`, and that is what closes DNS
