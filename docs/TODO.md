@@ -3,10 +3,13 @@
 ## 🔬 FULL REVIEW 2026-09-29
 
 - **What:** an adversarial review of the whole repo found **118 findings**,
-  and verification refuted none of them (many were downgraded). Report:
-  [`reviews/FULL-REVIEW-2026-09-29.md`](reviews/FULL-REVIEW-2026-09-29.md).
+  and verification refuted none of them (many were downgraded). The report
+  (`docs/reviews/FULL-REVIEW-2026-09-29.md`) is local to the rig and **not
+  committed**: it has exploit-level detail for items still open, and this
+  repo is public (see Max call 7).
 - **Fixes landed** on `fix/review-2026-09-29` in two rounds, one branch per
-  area, each fix with a regression test. The per-item not-fixed reasons are
+  area; code fixes carry regression tests (docs and data-only fixes do
+  not). The per-item not-fixed reasons are
   in the round reports.
 - **Tier-3 re-audit** (`scratch/tier3-verdict-reaudit-2026-09-29.txt`): *"The
   pre-registered SHIP (net +13, p = 0.0192) does NOT hold on clean rows.
@@ -45,6 +48,10 @@
   6. **`agents/logs/` retention policy.** Transcripts are not rotated,
      because the session ledger points into them. Choose how long to keep
      them.
+  7. **Publish the review report or not.** Options: commit it redacted
+     (after the open items above close), route it through private
+     vulnerability reporting, or keep it local only. Until decided it
+     stays uncommitted.
 
 ## 📱 beast-chat + 🎨 beast-artifact — BOTH SHIPPED 2026-09-15
 
