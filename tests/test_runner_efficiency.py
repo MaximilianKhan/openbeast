@@ -288,14 +288,106 @@ def test_giant_sweep_never_costs_an_older_result():
 
 
 def test_ordinary_result_never_takes_the_solo_branch():
-    # Negative control: 12 KB is the largest result in a small plan but is
-    # smaller than the hysteresis gap, so the walk stays oldest-first — a
+    # Negative control: 12 KB is the largest result but below half the
+    # hysteresis gap, so the walk stays oldest-first down to low water — a
     # recent result is not stubbed ahead of older ones for being the biggest.
-    msgs, idx = _history([2000, 2000, 12_000])
+    msgs, idx = _history([6000] * 10 + [12_000])
+    runner.compact_messages(msgs, 29_000, idx, must_free=1000)
+    contents = _tool_contents(msgs)
+    assert [c.startswith(runner._STUB_PREFIX) for c in contents] == [True] * 5 + [False] * 6
+
+
+def test_large_result_among_one_liners_is_not_oversized():
+    # Gap bar: 8 KB is 25x the median `ls` line but only a sliver of a big
+    # budget's gap, so it is not singled out.
+    msgs, idx = _history([300] * 200 + [8000])
+    runner.compact_messages(msgs, 30_000, idx, must_free=1000)
+    contents = _tool_contents(msgs)
+    assert contents[-1] == chr(64 + 201) * 8000
+    assert contents[0].startswith(runner._STUB_PREFIX)
+
+
+def test_large_result_among_large_results_is_not_oversized():
+    # Median bar: 30 KB clears half the gap but is only 2.5x the typical
+    # result, so ordinary oldest-first compaction still applies.
+    msgs, idx = _history([12_000] * 10 + [30_000])
+    runner.compact_messages(msgs, 40_000, idx, must_free=1000)
+    contents = _tool_contents(msgs)
+    assert contents[-1] == chr(64 + 11) * 30_000
+    assert contents[0].startswith(runner._STUB_PREFIX)
+
+
+def test_stubbed_results_still_count_toward_the_median():
+    # The bar must not sink as compaction thins the live history: 50 stubbed
+    # 12 KB results + 20 live 1 KB ones; a 20 KB result is not 4x typical of
+    # this run, though it is 20x the results still live.
+    msgs, idx = _history([12_000] * 50 + [1000] * 20 + [20_000])
+    for m in msgs[2:102]:
+        if m["role"] == "tool":
+            m["content"] = runner._stub(m["content"], 0)
     runner.compact_messages(msgs, 15_000, idx, must_free=1000)
     contents = _tool_contents(msgs)
-    assert contents[0].startswith(runner._STUB_PREFIX)
-    assert contents[1].startswith(runner._STUB_PREFIX)
+    assert contents[50].startswith(runner._STUB_PREFIX)     # oldest live first
+    assert contents[-1] == chr(64 + 71) * 20_000
+
+
+def _older_lost(msgs, before_flags):
+    now = [m["content"].startswith(runner._STUB_PREFIX)
+           for m in msgs if m["role"] == "tool"][:len(before_flags)]
+    return sum(1 for b, n in zip(before_flags, now) if n and not b)
+
+
+@pytest.mark.parametrize("size", [50_000, 100_000, 150_000, 200_000])
+def test_realistic_giant_sweep_spares_older_history(size):
+    # Round 3: round 2 only looked for the giant inside the oldest-first
+    # plan, which a 50K-200K result (the new fetch cap's band) usually never
+    # reaches — 100K cost ~17 older results per position, same as before.
+    # Here: whenever stubbing the giant alone gets back under the trigger,
+    # not one older result may go.
+    import copy
+    budget = 85_000
+    positions = covered = lost_total = 0
+    for seed in range(5):
+        rng = random.Random(seed)
+        msgs = [{"role": "system", "content": "s" * 8000}, {"role": "user", "content": "task"}]
+        idx: dict = {}
+        for k in range(1, 121):
+            _add_result(msgs, idx, k, rng.randint(1000, 12_000))
+            _proactive(msgs, idx, budget)
+            if k < 10:
+                continue
+            m2, ix2 = copy.deepcopy(msgs), dict(idx)
+            flags = [m["content"].startswith(runner._STUB_PREFIX)
+                     for m in m2 if m["role"] == "tool"]
+            _add_result(m2, ix2, k + 1, size, fill="G")
+            asks = runner.proactive_asks(runner.estimate_tokens(m2), budget)
+            _proactive(m2, ix2, budget)
+            positions += 1
+            lost = _older_lost(m2, flags)
+            lost_total += lost
+            if asks and size - 100 >= asks[0]:
+                covered += 1
+                assert lost == 0, (seed, k, asks)
+            if asks:
+                assert runner.estimate_tokens(m2) <= int(budget * runner._COMPACT_FRACTION)
+    assert positions == 555
+    assert covered > 0
+    # The reviewer measured 7.1 / 17.0 / 22.8 per position on this sweep.
+    assert lost_total <= positions // 100, lost_total
+
+
+def test_small_budget_giant_does_not_wipe_the_history():
+    # The reviewer's second case: budget 32768, 30 x 2000-char history, one
+    # 55K result — the old walk stubbed all 30 older results AND the giant.
+    msgs, idx = _history([2000] * 30)
+    msgs[0]["content"] = "s" * 1500
+    _add_result(msgs, idx, 31, 55_000, fill="G")
+    asks = runner.proactive_asks(runner.estimate_tokens(msgs), 32_768)
+    assert asks
+    n, _ = runner.compact_messages(msgs, asks[1], idx, must_free=asks[0])
+    assert n == 1
+    assert msgs[-1]["content"].startswith(runner._STUB_PREFIX)
+    assert all(len(c) == 2000 for c in _tool_contents(msgs)[:-1])
 
 
 def test_giant_that_cannot_reach_the_trigger_alone_still_walks_on():
