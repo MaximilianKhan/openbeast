@@ -317,7 +317,8 @@ PROF() {  # PROF <script> [args] — output in _out, status in _rc
   rm -f "$T/state/up" "$T/state/lease_during"
   : > "$T/state/ls.log"; : > "$T/state/stop.log"; : > "$T/state/curl.log"; : > "$T/state/kills.log"
   _rc=0
-  _out="$(OPENBEAST_WEIGHTS_DIR="$T/w" SWEEP_N=1 timeout 60 "$SB/scripts/$@" 2>&1)" || _rc=$?
+  local script="$1"; shift
+  _out="$(OPENBEAST_WEIGHTS_DIR="$T/w" SWEEP_N=1 timeout 60 "$SB/scripts/$script" "$@" 2>&1)" || _rc=$?
 }
 reqs() { grep -c 'chat/completions' "$T/state/curl.log" 2>/dev/null || true; }
 
