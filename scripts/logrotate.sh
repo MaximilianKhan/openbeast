@@ -89,6 +89,25 @@ run() {
     local IFS=$'\n'
     rotate_builtin
   fi
+  prune_transcripts
+}
+
+# Opt-in retention for agents/logs/ transcripts (AGENT_LOG_RETENTION_DAYS in
+# openbeast.conf or the env; unset/0 = keep forever). The rule — past the
+# cutoff AND not named by any session-ledger record — lives in
+# agents/sessions.py:prune_transcripts, next to the ledger it reads.
+prune_transcripts() {
+  local days="${AGENT_LOG_RETENTION_DAYS:-}" conf="$REPO_DIR/openbeast.conf"
+  if [[ -z "$days" && -f "$conf" ]]; then
+    days="$(awk -F= '$1 ~ /^[[:space:]]*AGENT_LOG_RETENTION_DAYS[[:space:]]*$/ {v=$2} END {print v}' "$conf")"
+    days="${days%%#*}"; days="${days//[\"\'[:space:]]/}"
+  fi
+  [[ "$days" =~ ^[0-9]+$ && "$days" -gt 0 ]] || return 0
+  [[ -d "$REPO_DIR/agents/logs" ]] || return 0
+  local n
+  n="$(cd "$REPO_DIR/agents" && python3 -c 'import sys, sessions; print(sessions.prune_transcripts(sys.argv[1], int(sys.argv[2])))' \
+        "$REPO_DIR/agents/logs" "$days")" || { echo "transcript retention failed (kept everything)" >&2; return 0; }
+  [[ "$n" == 0 ]] || echo "pruned $n agent transcript(s) older than ${days}d"
 }
 
 install_units() {

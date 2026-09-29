@@ -963,3 +963,52 @@ def prune(days: int = 30, *, keep_logs: bool = False) -> int:
         except OSError:
             pass
     return removed
+
+
+def prune_transcripts(log_dir: str, days: int) -> int:
+    """Delete agent transcripts in `log_dir` untouched for more than `days`.
+
+    Opt-in retention for agents/logs/ (AGENT_LOG_RETENTION_DAYS, run daily by
+    scripts/logrotate.sh; 0 or unset = keep forever, the default). A file is
+    removed only when BOTH hold: its mtime is past the cutoff, and no ledger
+    record — live or terminal — still names it as its transcript. `prune()`
+    retires terminal records after 30 days, so a transcript outlives its index
+    entry and is then collected here; a live session's file is never touched.
+    Only regular *.jsonl / *.log files directly in `log_dir` are considered.
+    """
+    if days <= 0:
+        return 0
+    referenced = set()
+    try:
+        names = os.listdir(_dir())
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".json") and not name.startswith("."):
+            rec = _read_record(os.path.join(_dir(), name))
+            if rec and rec.get("transcript"):
+                referenced.add(os.path.realpath(str(rec["transcript"])))
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        entries = list(os.scandir(log_dir))
+    except OSError:
+        return 0
+    for ent in entries:
+        if not ent.name.endswith((".jsonl", ".log")):
+            continue
+        try:
+            if not ent.is_file(follow_symlinks=False):
+                continue
+            if ent.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        if os.path.realpath(ent.path) in referenced:
+            continue
+        try:
+            os.unlink(ent.path)
+            removed += 1
+        except OSError:
+            pass
+    return removed

@@ -1019,3 +1019,44 @@ def test_prune_survives_a_foreign_timestamp_and_can_keep_logs(ledger):
     open(os.path.join(ledger, "e-old.log"), "w").write("x")
     assert sessions.prune(30) == 1
     assert not os.path.exists(os.path.join(ledger, "e-old.log"))
+
+
+# --- opt-in transcript retention (review storage-04, 2026-09-29) -----------
+
+def _aged(path, days):
+    path.write_text("{}\n")
+    old = time.time() - days * 86400
+    os.utime(path, (old, old))
+    return path
+
+
+def test_prune_transcripts_removes_only_old_unreferenced(ledger, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    old_orphan = _aged(logs / "agent-old.jsonl", 40)
+    old_job = _aged(logs / "job-old.log", 40)
+    old_kept = _aged(logs / "agent-live.jsonl", 40)       # still in the ledger
+    fresh = _aged(logs / "agent-new.jsonl", 1)
+    other = _aged(logs / "notes.txt", 40)                  # not a transcript
+    sessions.register("agent-live", transcript=str(old_kept))
+    assert sessions.prune_transcripts(str(logs), 30) == 2
+    assert not old_orphan.exists() and not old_job.exists()
+    assert old_kept.exists() and fresh.exists() and other.exists()
+
+
+def test_prune_transcripts_is_off_by_default(ledger, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    f = _aged(logs / "agent-old.jsonl", 400)
+    assert sessions.prune_transcripts(str(logs), 0) == 0
+    assert f.exists()
+
+
+def test_prune_transcripts_never_follows_a_symlink(ledger, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    target = _aged(tmp_path / "precious.jsonl", 400)
+    link = logs / "agent-link.jsonl"
+    link.symlink_to(target)
+    sessions.prune_transcripts(str(logs), 30)
+    assert target.exists()

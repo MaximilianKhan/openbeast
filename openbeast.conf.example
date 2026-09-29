@@ -81,6 +81,13 @@
 # Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
 #LOGROTATE_AUTOINSTALL=true
 
+# Agent transcript retention (agents/logs/*.jsonl, *.log). Off by default:
+# transcripts are kept forever. Set a day count and the daily logrotate timer
+# deletes transcripts untouched for that long that no session-ledger record
+# still points at (the ledger itself retires finished sessions after 30 days).
+# Env override: $AGENT_LOG_RETENTION_DAYS.
+#AGENT_LOG_RETENTION_DAYS=0
+
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
