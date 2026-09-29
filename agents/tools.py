@@ -2468,3 +2468,42 @@ TOOL_HANDLERS: dict[str, Any] = {}
 for _fn, _schema in _TOOL_REGISTRY:
     _name = _schema["function"]["name"]
     TOOL_HANDLERS[_name] = _fn  # runner calls handler(args_dict) directly
+
+
+_PARAM_TYPES: dict[str, dict[str, set[str]]] = {
+    _schema["function"]["name"]: {
+        _k: set(_v.get("type") if isinstance(_v.get("type"), list) else [_v.get("type")])
+        for _k, _v in (_schema["function"].get("parameters") or {}).get("properties", {}).items()
+    }
+    for _schema in TOOL_SCHEMAS
+}
+_INT_RE = re.compile(r"[+-]?\d+")
+
+
+def coerce_args(name: str, args: dict) -> dict:
+    """Model-provided arguments, with string values turned into the scalar type TOOL_SCHEMAS
+    declares for them: integer, number, boolean. Servers that do no schema coercion (TensorFold's
+    CUDA XML parser, some vLLM parsers) send {"timeout": "30"}; handing that to bash() failed with a
+    TypeError. A value that does not convert is left as it is, so the tool reports its own error;
+    a parameter whose schema says string is never touched. (The MCP server and the identity tool
+    server already get this from their pydantic argument models; the runner calls TOOL_HANDLERS
+    directly, so it applies this.)"""
+    types = _PARAM_TYPES.get(name)
+    if not types or not isinstance(args, dict):
+        return args
+    out = dict(args)
+    for key, value in args.items():
+        want = types.get(key) or set()
+        if not isinstance(value, str) or "string" in want:
+            continue
+        text = value.strip()
+        if "integer" in want and _INT_RE.fullmatch(text):
+            out[key] = int(text)
+        elif "number" in want:
+            try:
+                out[key] = int(text) if _INT_RE.fullmatch(text) else float(text)
+            except ValueError:
+                pass
+        elif "boolean" in want and text.lower() in ("true", "false"):
+            out[key] = text.lower() == "true"
+    return out

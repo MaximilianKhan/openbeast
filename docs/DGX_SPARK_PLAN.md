@@ -324,6 +324,26 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 - `runner.py`'s overflow patterns changed in this PR, which rotates the era
   hash for *every* backend (runner.py is one of the six era files). Llama rows
   from before and after this merge are not paired across it.
+- **Model onboarding rotates the era again** (`4360ba71a5cc88b5` → the hash
+  printed by `python3 -c "import sys; sys.path.insert(0,'evals'); import
+  cache; print(cache.context_hash())"` after merge). Two hashed files change:
+  `agents/runner.py` reads its default model id from
+  `OPENBEAST_INFERENCE_MODEL` (exported only for vllm/tensorfold, so a llama
+  run sends the same id as before) and coerces tool arguments by schema
+  before calling a tool; `agents/tools.py` gains `coerce_args`. Accepted
+  deliberately (no campaign running). Behaviour on llama is unchanged unless
+  a model sends a string where the schema says integer/number/boolean — that
+  call used to fail with a TypeError and now runs; pair nothing across this
+  merge.
+- **Tool-argument coercion.** Servers that do no schema coercion
+  (TensorFold's CUDA XML parser, vLLM parsers that keep XML parameter values
+  as text) send `{"timeout": "30"}`, and the runner's direct
+  `bash(timeout="30")` failed with *"unsupported operand type(s) for +:
+  'float' and 'str'"*. `tools.coerce_args` now converts string values to the
+  integer/number/boolean TOOL_SCHEMAS declares (never a string-typed field;
+  an unconvertible value is left for the tool to report). The MCP server and
+  the `:3001` tool server already coerced through their pydantic argument
+  models (pinned by `tests/test_tool_coercion.py`).
 
 ## 11. Open decisions for Max
 
@@ -347,13 +367,6 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 3. **Where the command center lives.** T1 (rig stays x86, this PR) vs T2
    (stack on Spark 1: frees the rig, but needs aarch64 work in §8 rows 14/20
    and puts the tool plane on the inference box).
-4. **Tool-argument coercion.** A server that does no schema coercion
-   (TensorFold's CUDA XML parser, and any vLLM parser that keeps XML
-   parameter values as text) delivers `{"timeout": "30"}`. `agents/tools.py`
-   does not coerce: `bash(command, timeout="30")` returns *"unsupported
-   operand type(s) for +: 'float' and 'str'"* (reproduced 2026-09-29).
-   `conformance.sh` flags it. Fix options: coerce by schema in the runner's
-   dispatch (era-hashed file) or in `tools.py` (client-facing). Not done here.
 
 ## 12. Verify-on-hardware list
 
@@ -521,7 +534,8 @@ Black-box, through the OpenAI API, with OpenBeast's real `bash` and
   `reasoning_content`, vLLM's `reasoning`, or inline `<think>` (= set
   `REASONING_PARSER`).
 - `tools` FAIL "as TEXT" = a wrong or missing `TOOL_CALL_PARSER`. A PASS
-  "with a caveat" on string-valued arguments is §11 item 4.
+  "with a caveat" on string-valued arguments shows the server's raw
+  behaviour; OpenBeast coerces those values itself (§10).
 - `--heavy` sends a prompt past `max_model_len` and checks the error text
   against `agents/runner.py`'s own overflow detector.
 

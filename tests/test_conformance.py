@@ -219,7 +219,8 @@ def test_tensorfold_like_server_passes_with_caveats(tmp_path, stub_factory, monk
     assert doc["facts"]["tool_arguments_string_values"] is True
     assert r["parallel"]["status"] == "warn" and r["concurrency"]["status"] == "pass"
     assert set(s.auth) == {None}, "the key must never be sent to TensorFold"
-    assert any("arrive as strings" in x for x in doc["recommendations"])
+    assert any("arrive as strings" in x and "Handled" in x for x in doc["recommendations"])
+    assert "handled on our side" in r["tools"]["detail"]
 
 
 def test_broken_server_fails_required_probes(tmp_path, stub_factory):

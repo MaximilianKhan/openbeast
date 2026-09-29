@@ -31,7 +31,7 @@ from pathlib import Path
 from openai import OpenAI
 
 import tools as _tools
-from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
+from tools import TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, plan_block, reset_plan, update_plan
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
 # predates sessions.py, or whose import fails for any reason, must still run.
@@ -1138,7 +1138,7 @@ def run_agent(
                     if not isinstance(fn_args, dict):
                         raise TypeError(
                             f"arguments must be an object, got {type(fn_args).__name__}")
-                    result = handler(**fn_args)
+                    result = handler(**coerce_args(fn_name, fn_args))
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
 

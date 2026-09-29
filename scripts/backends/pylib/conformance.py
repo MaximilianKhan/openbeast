@@ -243,7 +243,7 @@ def check_tool_calls(msg: dict, tools: list[dict]) -> tuple[str, str, dict]:
             want = (props.get(k) or {}).get("type")
             if want in ("integer", "number") and isinstance(v, str):
                 notes.append(f"{name}.{k} arrived as the STRING {v!r} (schema says {want}): the server does "
-                             "no schema coercion")
+                             "no schema coercion (handled on our side: tools.coerce_args)")
                 data["string_values"] = True
         missing = [r for r in names[name].get("required", []) if r not in parsed]
         if missing:
@@ -467,9 +467,9 @@ def run(cl: Client, model: str | None, backend: str, heavy: bool, concurrency: i
     if mml:
         rec.append(f"Context window {mml}: opencode limit.context={mml}; keep the runner's compaction default")
     if rep.facts.get("tool_arguments_string_values"):
-        rec.append("Tool argument values arrive as strings (no schema coercion). agents/tools.py does NOT coerce "
-                   "today — e.g. bash(timeout=\"30\") returns an error — so agent runs need schema coercion "
-                   "(runner or server side) before this backend is used for agents")
+        rec.append("Tool argument values arrive as strings (the server does no schema coercion). Handled: "
+                   "agents/tools.py coerce_args converts them by TOOL_SCHEMAS in the runner; the MCP server and "
+                   "the :3001 tool server coerce through their pydantic argument models. Nothing to set")
     if where == "reasoning":
         rec.append("Reasoning is in `reasoning`: confirm Open WebUI shows the thinking block")
     if where and where.startswith("inline"):
