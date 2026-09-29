@@ -195,10 +195,14 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 > `X-OpenWebUI-User-Role` (`ENABLE_FORWARD_USER_INFO_HEADERS=true` in
 > docker-compose), and the agent-spawn router only runs its spawn path for
 > `admin` turns — guest turns pass through untouched (and skip the classify
-> entirely, so guests add zero latency). For hardened multi-user installs,
-> set `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` to fail closed when the
-> role header is absent (e.g. header forwarding disabled). Details:
-> `docs/RBAC_PLAN.md`.
+> entirely, so guests add zero latency). With signed identity
+> (`IDENTITY_JWT_SECRET`), WebUI sends the role only inside
+> `X-OpenWebUI-User-Jwt`: the router verifies that token (HS256,
+> `iss=open-webui`, `exp`/`sub` required) and ignores the plain headers.
+> A turn with no identity fails closed on its own whenever `WEBUI_AUTH=true`
+> or signed identity is on; `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` forces
+> that elsewhere too. Spawns carry the caller's identity to the tool server,
+> which does the attribution and sharding. Details: `docs/RBAC_PLAN.md`.
 
 ## Why 18 and not more
 
