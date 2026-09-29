@@ -85,13 +85,20 @@ class LocalSource(Source):
             rel = p.relative_to(self.local).as_posix()
             if p.is_file() and not rel.startswith(".") and "/." not in rel:
                 self.files.append(FileInfo(rel, p.stat().st_size))
+        self.marker_warning = None
         marker = self.local / ".openbeast-model.json"
         if marker.is_file():
+            # model-fetch writes it, but it sits in a directory anyone may have copied from anywhere:
+            # only a well-formed repo id and commit SHA are believed.
             try:
                 m = json.loads(marker.read_text())
-                self.repo, self.revision = m.get("source"), m.get("revision")
             except ValueError:
-                pass
+                m = None
+            if isinstance(m, dict) and isinstance(m.get("source"), str) and isinstance(m.get("revision"), str) \
+                    and obprofile.REPO_RE.match(m["source"]) and SHA_RE.match(m["revision"]):
+                self.repo, self.revision = m["source"], m["revision"]
+            else:
+                self.marker_warning = f"{marker} is malformed (repo/revision) — ignored"
 
     def read(self, path: str) -> str | None:
         p = self.local / path
@@ -297,6 +304,8 @@ def weights(src: Source, q: dict, max_headers: int = 128) -> dict:
 def context(tc: dict) -> dict:
     native = tc.get("max_position_embeddings") or tc.get("max_sequence_length") or tc.get("seq_length") \
         or tc.get("n_positions") or tc.get("model_max_length")
+    if not isinstance(native, int) or isinstance(native, bool) or native <= 0:
+        native = None                               # a config value we cannot trust as a token count
     rope = tc.get("rope_scaling") or tc.get("rope_parameters") or None
     out = {"native": native, "rope": rope, "sliding_window": tc.get("sliding_window")}
     if isinstance(rope, dict):
@@ -696,6 +705,8 @@ def inspect(src: Source, util: float = 0.80) -> dict:
                         "by default (unpickling runs code)")
     if auto_map:
         warnings.append("the repo ships custom modeling/tokenizer code (auto_map): trust_remote_code would RUN it")
+    if getattr(src, "marker_warning", None):
+        warnings.append(src.marker_warning)
     if not w["safetensors_files"]:
         warnings.append("no .safetensors files — vLLM/TensorFold want safetensors")
     return {
@@ -769,43 +780,75 @@ def render(r: dict) -> str:
     return "\n".join(L)
 
 
-def draft_profile(r: dict, name: str, backend: str) -> str:
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _comment(text) -> str:
+    """Checkpoint-derived text for a comment: no control characters, so it can never start a line."""
+    return _UNSAFE.sub(" ", str(text))[:200]
+
+
+def draft_profile(r: dict, name: str, backend: str) -> tuple[str, list[str]]:
+    """The draft profile text and the keys it sets. Every VALUE is either a constant or checked
+    against the profile grammar (repo id, SHA, parser name, integer); anything the checkpoint said
+    that fails the check is left empty and quoted — sanitised — in a comment instead."""
     best = lambda kind: next((s for s in r["suggestions"][kind] if s["parser"]), None)  # noqa: E731
     tool, reas = best("tool_call_parser"), best("reasoning_parser")
     f = r["fit"]
     tp = 1 if f["tp1"]["verdict"] == "fits" else 2
-    mml = f[f"tp{tp}"].get("suggested_max_model_len") or r["context"].get("native") or ""
+    native = r["context"].get("native")
+    mml = f[f"tp{tp}"].get("suggested_max_model_len") or native or ""
+    mml = str(mml) if isinstance(mml, int) and not isinstance(mml, bool) and mml > 0 else ""
     src = r["repo"] or r["local"] or ""
-    rev = r["revision"] or ""
-    served = re.sub(r"[^A-Za-z0-9._-]+", "-", (r["repo"] or name).split("/")[-1]).strip("-").lower() or name
-    L = [f"# Draft profile written by model-inspect.sh from {r['source']}.",
-         "# Every line marked VERIFY is a suggestion, not a fact: check it, then delete the marker.",
-         "# Grammar and keys: models/TEMPLATE.env. Validate: scripts/backends/pylib/obprofile.py check "
-         f"{name}", "", f"BACKEND={backend}", f"SOURCE={src}"]
-    L.append(f"REVISION={rev}" if rev else "REVISION=          # VERIFY: a local SOURCE may leave this empty")
-    L.append(f"SERVED_MODEL_NAME={served}          # VERIFY: the id clients will send")
-    L.append(f"TENSOR_PARALLEL_SIZE={tp}          # VERIFY: {f['verdict']}")
-    L.append(f"MAX_MODEL_LEN={mml}          # VERIFY: estimate from the fit model (native "
-             f"{r['context'].get('native')})")
+    if not (obprofile.REPO_RE.match(src) or (src.startswith("/") and not _UNSAFE.search(src)
+                                              and " #" not in src)):
+        src = ""
+    rev = r["revision"] if isinstance(r["revision"], str) and SHA_RE.match(r["revision"] or "") else ""
+    served = re.sub(r"[^A-Za-z0-9._-]+", "-", (src if obprofile.REPO_RE.match(src) else name).split("/")[-1])
+    served = served.strip("-").lower() or name
+
+    def parser_value(sugg, listed):
+        v = (sugg or {}).get("parser") or ""
+        return v if obprofile.PARSER_RE.match(v) and v in listed else ""
+
+    names = _data("vllm")
+    rows: list[tuple[str, str, str]] = [
+        ("BACKEND", backend, ""),
+        ("SOURCE", src, "" if src else "VERIFY: the checkpoint's own id was not a valid repo id or path"),
+        ("REVISION", rev, "" if rev else "VERIFY: a local SOURCE may leave this empty"),
+        ("SERVED_MODEL_NAME", served, "VERIFY: the id clients will send"),
+        ("TENSOR_PARALLEL_SIZE", str(tp), f"VERIFY: {_comment(f['verdict'])}"),
+        ("MAX_MODEL_LEN", mml, f"VERIFY: estimate from the fit model (native {_comment(native)})"),
+    ]
     if backend == "vllm":
-        L.append("DTYPE=auto")
-        tconf = tool["confidence"] if tool else "none"
-        L.append(f"TOOL_CALL_PARSER={tool['parser'] if tool else ''}          # VERIFY [{tconf}]: "
-                 f"{(tool or {}).get('why', 'no suggestion')[:120]}")
-        rconf = reas["confidence"] if reas else "none"
-        L.append(f"REASONING_PARSER={reas['parser'] if reas else ''}          # VERIFY [{rconf}]: "
-                 f"{(reas or {}).get('why', 'no suggestion')[:120]}")
-        L.append("GPU_MEMORY_UTILIZATION=0.80          # VERIFY ON HARDWARE: the OS shares the pool")
-        L.append("MAX_NUM_SEQS=8          # VERIFY: = the rig's INFERENCE_SLOTS")
-        L.append("TRUST_REMOTE_CODE=false" + ("          # VERIFY: the repo ships code (auto_map)"
-                                              if r["auto_map"] else ""))
-        L.append("#SPECULATIVE_CONFIG={\"method\":\"mtp\",\"num_speculative_tokens\":3}   # only if the model has MTP heads")
-        L.append("EXTRA_ARGS=[\"--enable-prefix-caching\"]")
+        tv = parser_value(tool, names.get("tool_parsers", []))
+        rv = parser_value(reas, names.get("reasoning_parsers", []))
+        rows += [
+            ("DTYPE", "auto", ""),
+            ("TOOL_CALL_PARSER", tv, f"VERIFY [{_comment((tool or {}).get('confidence', 'none'))}]: "
+                                     f"{_comment((tool or {}).get('why', 'no suggestion'))[:120]}"),
+            ("REASONING_PARSER", rv, f"VERIFY [{_comment((reas or {}).get('confidence', 'none'))}]: "
+                                     f"{_comment((reas or {}).get('why', 'no suggestion'))[:120]}"),
+            ("GPU_MEMORY_UTILIZATION", "0.80", "VERIFY ON HARDWARE: the OS shares the pool"),
+            ("MAX_NUM_SEQS", "8", "VERIFY: = the rig's INFERENCE_SLOTS"),
+            ("TRUST_REMOTE_CODE", "false", "VERIFY: the repo ships code (auto_map)" if r["auto_map"] else ""),
+            ("EXTRA_ARGS", '["--enable-prefix-caching"]', ""),
+        ]
     else:
-        L.append("TENSORFOLD_PARALLEL=auto          # VERIFY: auto = one request at a time on CUDA")
+        rows.append(("TENSORFOLD_PARALLEL", "auto", "VERIFY: auto = one request at a time on CUDA"))
+    L = [f"# Draft profile written by model-inspect.sh from {_comment(r['source'])}.",
+         "# Every line marked VERIFY is a suggestion, not a fact: check it, then delete the marker.",
+         f"# Grammar and keys: models/TEMPLATE.env. Validate: scripts/backends/pylib/obprofile.py check {name}",
+         ""]
+    for key, value, note in rows:
+        assert not _UNSAFE.search(value) and " #" not in value, key
+        L.append(f"{key}={value}" + (f"          # {note}" if note else ""))
+    if backend == "vllm":
+        L.append('#SPECULATIVE_CONFIG={"method":"mtp","num_speculative_tokens":3}   # only if the model has MTP heads')
+    else:
         tf = r["engines"]["tensorfold"]
-        L.append(f"# TensorFold: {tf['status']} — {'; '.join(tf['notes'])[:300]}")
-    return "\n".join(L) + "\n"
+        L.append(f"# TensorFold: {_comment(tf['status'])} — {_comment('; '.join(tf['notes']))[:300]}")
+    return "\n".join(L) + "\n", [k for k, _, _ in rows]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -837,8 +880,19 @@ def main(argv: list[str] | None = None) -> int:
         if out.exists() and not a.force:
             print(f"Error: {out} exists (use --force to overwrite)", file=sys.stderr)
             return 1
+        text, keys = draft_profile(r, a.write_profile, backend)
+        # Belt and braces: the draft must parse to exactly the keys written, nothing smuggled in.
+        try:
+            parsed = obprofile.parse_text(text, f"{a.write_profile}.env")
+        except obprofile.ProfileError as e:
+            print(f"Error: the draft does not parse ({e}) — not written", file=sys.stderr)
+            return 1
+        if set(parsed) != set(keys):
+            print(f"Error: the draft sets {sorted(set(parsed) ^ set(keys))} unexpectedly — not written",
+                  file=sys.stderr)
+            return 1
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(draft_profile(r, a.write_profile, backend))
+        out.write_text(text)
         r["profile_written"] = str(out)
     if a.json:
         print(json.dumps(r, indent=1, default=str))

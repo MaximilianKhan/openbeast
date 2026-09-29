@@ -236,3 +236,46 @@ def test_token_not_forwarded_across_hosts(tmp_path, remote, monkeypatch):
         assert other.log and all(a is None for _, a, _ in other.log)
     finally:
         other.close()
+
+
+# --------------------------------------------------------------------------- hostile checkpoints → draft
+
+EVIL_LINE = 'SPECULATIVE_CONFIG={"model":"attacker/drafter","num_speculative_tokens":3}'
+
+
+def test_draft_profile_cannot_be_injected_by_the_checkpoint(tmp_path):
+    """The review's evil/ checkpoint: a newline in model_type (and elsewhere) used to start a new
+    KEY=VALUE line in the draft. Every checkpoint string now lands only in a sanitised comment."""
+    cfg = dense("Qwen3ForCausalLM", "qwen3\n" + EVIL_LINE,
+                max_position_embeddings="40960\nEXTRA_ARGS=[\"--trust-remote-code\"]")
+    d = make_ckpt(tmp_path / "evil", cfg, "{% if tools %}<tool_call>{% endif %}<think> " + EVIL_LINE)
+    (d / ".openbeast-model.json").write_text(json.dumps({"source": "acme/x\nTRUST_REMOTE_CODE=true",
+                                                        "revision": "main"}))
+    prof = tmp_path / "profiles"
+    assert model_inspect.main([str(d), "--write-profile", "evil", "--models-dir", str(prof)]) == 0
+    text = (prof / "evil.env").read_text()
+    keys = set(obprofile.parse_text(text))
+    assert keys == {"BACKEND", "SOURCE", "REVISION", "SERVED_MODEL_NAME", "TENSOR_PARALLEL_SIZE", "MAX_MODEL_LEN",
+                    "DTYPE", "TOOL_CALL_PARSER", "REASONING_PARSER", "GPU_MEMORY_UTILIZATION", "MAX_NUM_SEQS",
+                    "TRUST_REMOTE_CODE", "EXTRA_ARGS"}
+    assert not any(line.startswith(("SPECULATIVE_CONFIG", "EXTRA_ARGS=[\"--trust")) for line in text.splitlines())
+    p = obprofile.load(str(prof / "evil.env"), "vllm")
+    assert p.source == str(d.resolve()) and p.get("REVISION") == "" and not p.trust_remote_code
+    assert p.get("MAX_MODEL_LEN") == "" or p.get("MAX_MODEL_LEN").isdigit()
+    r = model_inspect.inspect(model_inspect.open_source(str(d)))
+    assert r["context"]["native"] is None, "a non-integer max_position_embeddings is not a context length"
+    assert r["repo"] is None and any("malformed" in w for w in r["warnings"])
+
+
+def test_write_profile_refuses_a_draft_that_parses_to_other_keys(tmp_path, monkeypatch, capsys):
+    d = make_ckpt(tmp_path / "ck", dense("Qwen3ForCausalLM", "qwen3"), QWEN_TEMPLATE)
+    real = model_inspect.draft_profile
+
+    def smuggle(*a, **k):
+        text, keys = real(*a, **k)
+        return text + "TRUST_REMOTE_CODE_ACK=" + "0" * 40 + "\n", keys
+
+    monkeypatch.setattr(model_inspect, "draft_profile", smuggle)
+    prof = tmp_path / "profiles"
+    assert model_inspect.main([str(d), "--write-profile", "x", "--models-dir", str(prof)]) == 1
+    assert "unexpectedly" in capsys.readouterr().err and not (prof / "x.env").exists()
