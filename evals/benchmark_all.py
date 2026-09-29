@@ -453,6 +453,21 @@ def save_sweep_summary(summary: dict) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def experiment_arms(env=None) -> list[str]:
+    """Experiment modes active for this sweep, read from the same env that
+    run_eval reads (so a conf-enabled BEAST_ASSIST=1 counts too). Each makes
+    the rows leaderboard-ineligible; scoring enforces that as well."""
+    env = os.environ if env is None else env
+    arms = []
+    if env.get("OPENBEAST_EVAL_GREEDY", "") == "1":
+        arms.append("--greedy")
+    if "1" in (env.get("BEAST_PACKS", "").strip(), env.get("OPENBEAST_PACKS", "").strip()):
+        arms.append("--packs")
+    if "1" in (env.get("OPENBEAST_DIAGNOSTICS", "").strip(), env.get("BEAST_ASSIST", "").strip()):
+        arms.append("beast-assist diagnostics")
+    return arms
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all local models")
     parser.add_argument("--models", help="Comma-separated model slugs to benchmark "
@@ -526,6 +541,11 @@ def main():
     if args.suite and update_lb:
         print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
               f"scores are imputed readouts, never leaderboard rows).")
+        update_lb = False
+    arms = experiment_arms()
+    if arms and update_lb:
+        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
+              f"arms are leaderboard-ineligible; the board holds serving reality).")
         update_lb = False
     if args.tasks and not args.no_leaderboard:
         print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "

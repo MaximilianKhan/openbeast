@@ -94,7 +94,8 @@ the health check right after the agent finished, is recorded with
 exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `thread constructor failed`) or a full disk (`No space left on device`,
 `NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
-next run.
+next run, and a run containing either can't enter the leaderboard until
+that rerun is done.
 
 `--cache-only` mode is the fast-path for "rebuild the leaderboard from
 prior runs" — no server start, no live calls, cache misses are recorded
@@ -111,7 +112,13 @@ decoding, the low-churn mode; env `OPENBEAST_EVAL_GREEDY=1` for `run_eval.py`,
 which has no flag) and `--packs` on either runner (Tier-3 language awareness
 packs — `agents/packs/<lang>.md` injected for tasks in that language, zig
 only today, a task-scoped `pack1-<sha8>` era; env `BEAST_PACKS=1`). Both are
-leaderboard-ineligible experiment rows. A `--escalate` arm (beast-lang's
+leaderboard-ineligible experiment rows, and that is enforced: `benchmark_all`
+turns `--greedy`, `--packs` and beast-assist diagnostics into
+`--no-leaderboard`, and `scoring.update_leaderboard` / `scoring.py --rebuild`
+refuse any results file whose `harness` records one of those arms (or an
+escalation component), a fast suite, or infrastructure rows
+(`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
+`env_error`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
 confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
 wiring touches two of the six era files and is a held draft PR (#90), not in
 `main`.
