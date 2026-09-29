@@ -234,6 +234,48 @@ def test_write_file_new_and_hardlinked(tmp_path):
     assert b.read_text() == "two\n"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file modes")
+@pytest.mark.parametrize("mode", ["edit", "write"])
+def test_readonly_file_still_refused(tmp_path, mode):
+    # rename(2) only needs write on the DIRECTORY, so the atomic replace
+    # overwrote a 0444 file the old open(path, "w") refused with EACCES.
+    p = tmp_path / "locked.txt"
+    p.write_text("orig\n")
+    p.chmod(0o444)
+    ino = p.stat().st_ino
+    if mode == "edit":
+        out = tools.edit_file(str(p), "orig", "new")
+    else:
+        out = tools.write_file(str(p), "new\n")
+    assert out.startswith("Error:") and "Permission denied" in out, out
+    assert p.read_text() == "orig\n"
+    assert p.stat().st_ino == ino
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["locked.txt"]
+    # Negative control: the same file made writable is edited normally.
+    p.chmod(0o644)
+    out = (tools.edit_file(str(p), "orig", "new") if mode == "edit"
+           else tools.write_file(str(p), "new\n"))
+    assert not out.startswith("Error:"), out
+    assert p.read_text() == "new\n"
+
+
+def test_foreign_owned_file_written_in_place(tmp_path, monkeypatch):
+    # A file owned by another uid (writable to us via group/other bits) must
+    # keep its owner: replacing it would silently hand it to our uid. Stub
+    # getuid so the on-disk file looks foreign; the inode must survive.
+    p = tmp_path / "shared.txt"
+    p.write_text("orig\n")
+    ino = p.stat().st_ino
+    real_uid = os.getuid()
+    monkeypatch.setattr(tools.os, "getuid", lambda: real_uid + 1)
+    assert not tools.write_file(str(p), "new\n").startswith("Error:")
+    assert p.read_text() == "new\n"
+    assert p.stat().st_ino == ino                       # in place, not replaced
+    monkeypatch.setattr(tools.os, "getuid", lambda: real_uid)
+    assert not tools.write_file(str(p), "newer\n").startswith("Error:")
+    assert p.stat().st_ino != ino                       # own file: atomic path
+
+
 # --- env scrub -------------------------------------------------------------
 
 def test_scrub_drops_openai_api_key(monkeypatch):

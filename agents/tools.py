@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import codecs
 import difflib
+import errno
 import functools
 import glob
 import html
@@ -1163,13 +1164,21 @@ def _atomic_write_text(path: str, content: str) -> None:
 
     In-place fallbacks: a new file (nothing to lose), a non-regular file
     (FIFO/device: replacing it would change what it is), a hard-linked file
-    (replace would silently split the link), or a directory we can't create
-    the temp in."""
+    (replace would silently split the link), a file owned by another user
+    (replace would silently make us its owner), a file whose group we can't
+    carry over, or a directory we can't create the temp in.
+
+    Permission semantics match open(path, "w"): rename only needs write on
+    the DIRECTORY, so a read-only (0444) file is refused up front with
+    EACCES rather than silently replaced."""
     try:
         st = os.stat(path)
     except FileNotFoundError:
         st = None
-    if st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+    if st is not None and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), path)
+    if (st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink > 1
+            or st.st_uid != os.getuid()):
         with open(path, "w") as f:
             f.write(content)
         return
@@ -1181,14 +1190,19 @@ def _atomic_write_text(path: str, content: str) -> None:
         with open(path, "w") as f:
             f.write(content)
         return
+    if st.st_gid != os.fstat(fd).st_gid:
+        try:
+            os.fchown(fd, -1, st.st_gid)
+        except OSError:
+            # Can't keep the file's group: don't change it silently.
+            os.close(fd)
+            os.unlink(tmp)
+            with open(path, "w") as f:
+                f.write(content)
+            return
     try:
         with os.fdopen(fd, "w") as f:
             os.fchmod(fd, stat.S_IMODE(st.st_mode))
-            if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
-                try:
-                    os.fchown(fd, st.st_uid, st.st_gid)
-                except OSError:
-                    pass
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
