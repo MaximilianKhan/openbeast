@@ -2158,3 +2158,97 @@ def test_the_token_never_reaches_the_audit_log(make_client):
                             "artifact-audit.jsonl")).read()
     assert "/raw/" in log, "control: the refusals WERE audited"
     assert token not in log
+
+
+# --- storage-04: identified callers get an audit budget too -------------------
+# Every request from a tailnet login appended an uncapped row; the D27 budget
+# covered only unidentified callers. A buggy client polling health in a tight
+# loop grew artifact-audit.jsonl without bound between rotations.
+
+def _login_rows(path, login):
+    return [r for r in _rows(path) if r.get("login") == login
+            and r.get("denied") != "audit-budget"]
+
+
+def test_an_identified_login_cannot_flood_the_audit_log(make_client, tmp_path,
+                                                        monkeypatch):
+    monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_ROWS", 3)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    peer = {"tailscale-user-login": "peer@example.com"}
+    for _ in range(40):
+        assert c.get("/api/artifacts/health", headers=peer).status_code == 200
+    assert len(_login_rows(path, "peer@example.com")) == 3
+    notes = _denied(path, "audit-budget")
+    assert len(notes) == 1 and notes[0]["reason"] == "login:peer@example.com"
+    settled = path.stat().st_size
+    for _ in range(40):
+        c.get("/api/artifacts/health", headers=peer)
+    assert path.stat().st_size == settled, "the file is still growing"
+    # Nothing is lost from the counters.
+    m = c.get("/metrics", headers=local(c)).text
+    assert _metric(m, route="/api/artifacts/health", outcome="ok") >= 80, m
+
+
+def test_one_logins_flood_does_not_silence_another(make_client, tmp_path,
+                                                   monkeypatch):
+    monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_ROWS", 2)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    for _ in range(20):
+        c.get("/api/artifacts/health",
+              headers={"tailscale-user-login": "noisy@example.com"})
+    c.get("/api/artifacts/health",
+          headers={"tailscale-user-login": "quiet@example.com"})
+    assert len(_login_rows(path, "noisy@example.com")) == 2
+    assert len(_login_rows(path, "quiet@example.com")) == 1
+
+
+def test_an_operator_login_is_budgeted_but_local_is_not(make_client, tmp_path,
+                                                        monkeypatch):
+    monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_ROWS", 2)
+    c = make_client(operators="op@example.com")
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    op = {"tailscale-user-login": "op@example.com"}
+    for _ in range(10):
+        c.get("/api/artifacts/health", headers=op)
+    assert len(_login_rows(path, "op@example.com")) == 2
+    # Negative control: the rig's own (LOCAL) calls are never budgeted, and
+    # neither is a successful write.
+    before = len(_rows(path))
+    for _ in range(10):
+        assert c.get("/api/artifacts/health", headers=local(c)).status_code == 200
+    publish(c)
+    after = _rows(path)[before:]
+    assert len(after) == 11, after
+    assert any(r.get("outcome") == 201 for r in after)
+
+
+def test_login_budget_recovers_and_buckets_are_bounded(make_client, tmp_path,
+                                                       monkeypatch):
+    monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_ROWS", 1)
+    monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_BUCKETS", 2)
+    monkeypatch.setattr(artifact_server, "DENY_AUDIT_WINDOW_S", 0.05)
+    c = make_client()
+    path = tmp_path / "run" / "artifact-audit.jsonl"
+    h = {"tailscale-user-login": "a@example.com"}
+    for _ in range(5):
+        c.get("/api/artifacts/health", headers=h)
+    assert len(_login_rows(path, "a@example.com")) == 1
+    time.sleep(0.08)
+    c.get("/api/artifacts/health", headers=h)
+    assert len(_login_rows(path, "a@example.com")) == 2, "window never turned over"
+    # Two live buckets (a, b); a third distinct login shares the overflow one.
+    c.get("/api/artifacts/health", headers={"tailscale-user-login": "b@example.com"})
+    for who in ("c@example.com", "d@example.com"):
+        c.get("/api/artifacts/health", headers={"tailscale-user-login": who})
+    assert len(_login_rows(path, "c@example.com")) == 1
+    assert len(_login_rows(path, "d@example.com")) == 0
+    notes = _denied(path, "audit-budget")
+    assert any(n["reason"] == "login:*" for n in notes), notes
+
+
+def test_login_audit_constants_are_sane():
+    assert isinstance(artifact_server.LOGIN_AUDIT_ROWS, int)
+    assert 0 < artifact_server.LOGIN_AUDIT_ROWS <= 10_000
+    assert 0 < artifact_server.LOGIN_AUDIT_BUCKETS <= 100_000

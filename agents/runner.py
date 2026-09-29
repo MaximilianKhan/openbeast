@@ -20,6 +20,7 @@ import atexit
 import json
 import os
 import re
+import signal
 import sys
 import time
 import urllib.parse
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+import tools as _tools
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
@@ -373,9 +375,49 @@ def _steer_stub(content: str) -> str:
     return f"{_STEER_STUB_PREFIX} {len(content)} chars]"
 
 
+#: One of the two bars a tool result must clear to count as oversized on
+#: the proactive path: this many times the median of the other live results.
+_OVERSIZED_VS_MEDIAN = 4
+
+
+_STUB_SIZE_RE = re.compile(re.escape(_STUB_PREFIX) + r" (\d+) chars")
+
+
+def _oversized(messages: list[dict], tool_results: list[int], gain,
+               gap: int) -> int | None:
+    """The largest live tool result if it is OVERSIZED, else None.
+
+    Oversized = it frees at least half the hysteresis gap (10% of the
+    context budget on the proactive path) AND at least _OVERSIZED_VS_MEDIAN
+    times the median size of every other tool result this run has seen —
+    stubbed ones counted at their original size, so the bar does not sink
+    as compaction thins the live history. Both bars matter: the gap share
+    alone would call an ordinary 12 KB read oversized under a tiny budget,
+    and the median alone would do the same in a history of `ls` one-liners.
+    An ordinary result never qualifies, so ordinary compaction stays
+    oldest-first down to the low-water mark (efficiency-2)."""
+    if not tool_results or gap <= 0:
+        return None
+    big = max(tool_results, key=gain)
+    g = gain(big)
+    sizes = []
+    for i, m in enumerate(messages):
+        if i <= 1 or i == big or m.get("role") != "tool":
+            continue
+        c = str(m.get("content") or "")
+        hit = _STUB_SIZE_RE.match(c)
+        sizes.append(int(hit.group(1)) if hit else len(c))
+    sizes.sort()
+    median = sizes[len(sizes) // 2] if sizes else 0
+    if 2 * g >= gap and g >= _OVERSIZED_VS_MEDIAN * median:
+        return big
+    return None
+
+
 def compact_messages(messages: list[dict], chars_to_free: int,
                      call_index: dict[int, int] | None = None,
-                     steer_eligible=None) -> tuple[int, int]:
+                     steer_eligible=None,
+                     must_free: int | None = None) -> tuple[int, int]:
     """Replace the OLDEST tool results with one-line stubs until at least
     `chars_to_free` characters are freed (or nothing evictable remains).
 
@@ -395,6 +437,17 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     considered only after every tool result has been stubbed. It is EMPTY
     whenever steering is off, which is what keeps this function byte-for-byte
     identical to its pre-beast-chat behaviour on every eval unit.
+
+    `must_free` (proactive path) is the part of the ask that is REQUIRED —
+    back under the trigger; the rest of `chars_to_free` is the hysteresis
+    gap down to the low-water mark, which is wanted but not worth history.
+    When the largest live tool result ANYWHERE in the history is oversized
+    (see _oversized: at least half the hysteresis gap chars_to_free -
+    must_free, and several times the run's median result), it is stubbed first
+    and the walk then stops at `must_free`: older results are spent only if
+    the trigger itself needs them, never for the gap (review efficiency-3,
+    rounds 2-3). None = the whole ask is required (the overflow path, and
+    every pre-existing caller).
     """
     call_index = call_index or {}
     steer_eligible = steer_eligible or ()
@@ -417,6 +470,7 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # being unevictable, which is the failure E12 describes.
     candidates = tool_results + aged_steers
     ask = max(chars_to_free, 1)
+    must = ask if must_free is None else max(min(must_free, ask), 1)
 
     def _stub_for(i: int) -> str:
         c = messages[i]["content"]
@@ -429,25 +483,37 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # The oldest-first walk, planned before anything is touched. If it would
     # reach a tool result that frees more than every older planned result
     # combined, stub THAT one first and only then continue oldest-first for
-    # whatever is left of the ask: an oversized result (fetch allows up to 2M
-    # chars) used to strip EVERY older result first, so one bad call cost the
-    # agent its whole working memory (review efficiency-3). It must be a
-    # prefix, not a replacement — the proactive ask is the giant result PLUS
-    # the hysteresis gap down to _COMPACT_LOW_WATER, which no single result
-    # covers. Only the order changes: the walk still stops once the ask is
-    # met, so it never stubs a result the plain walk would have kept.
+    # whatever is left of the ask: an oversized result (a fetch alone can be
+    # 200K chars) used to strip EVERY older result first, so one bad call
+    # cost the agent its whole working memory (review efficiency-3). On that
+    # overflow path only the order changes: the walk still stops once the
+    # ask is met, so it never stubs a result the plain walk would have kept.
+    # The proactive path first looks for an oversized result in the WHOLE
+    # history (below), since the plain walk to low water rarely reaches it.
     plan, planned = [], 0
     for i in candidates:
         if planned >= ask:
             break
         plan.append(i)
         planned += _gain(i)
-    tools_in_plan = [i for i in plan if messages[i].get("role") == "tool"]
-    if len(plan) > 1 and tools_in_plan:
-        big = max(tools_in_plan, key=_gain)
-        older = sum(_gain(i) for i in plan[:plan.index(big)])
-        if older and _gain(big) > older:
-            candidates = [big] + [c for c in plan if c != big]
+    big = _oversized(messages, tool_results, _gain, ask - must) if must < ask else None
+    if big is not None:
+        # Proactive path, one oversized result anywhere in the history (not
+        # only inside the oldest-first plan: a 50K-200K result is usually
+        # smaller than the older history, so the plan met the ask before
+        # ever reaching it and spent the history instead — review
+        # efficiency-3, round 3). Stub it first, then walk oldest-first only
+        # as far as the TRIGGER needs (usually nowhere): older history is
+        # never spent on reaching the low-water mark.
+        candidates = [big] + [c for c in candidates if c != big]
+        ask = must
+    else:
+        tools_in_plan = [i for i in plan if messages[i].get("role") == "tool"]
+        if len(plan) > 1 and tools_in_plan:
+            big = max(tools_in_plan, key=_gain)
+            older = sum(_gain(i) for i in plan[:plan.index(big)])
+            if older and _gain(big) > older:
+                candidates = [big] + [c for c in plan if c != big]
     evicted = freed = 0
     for i in candidates:
         if freed >= ask:
@@ -458,6 +524,17 @@ def compact_messages(messages: list[dict], chars_to_free: int,
         freed += len(content) - len(stub)
         evicted += 1
     return evicted, freed
+
+
+def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
+    """(must_free, chars_to_free) for the proactive --context-budget path, or
+    None below the trigger. must_free gets the estimate back under the
+    trigger; chars_to_free goes on to the low-water mark (hysteresis)."""
+    target = int(context_budget * _COMPACT_FRACTION)
+    if context_budget <= 0 or est <= target:
+        return None
+    low = int(context_budget * _COMPACT_LOW_WATER)
+    return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
@@ -700,11 +777,14 @@ def run_agent(
         ]
 
     # Set up logging
+    # Transcripts hold full tool output: dirs we create are 0700, files 0600
+    # (the stack's own agents/logs/ is tightened even if it already exists).
     if log_file:
         log_path = log_file
-        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        _tools.private_log_dir(os.path.dirname(log_path) or ".")
     else:
-        os.makedirs(log_dir, exist_ok=True)
+        _tools.private_log_dir(
+            log_dir, tighten=os.path.abspath(log_dir) == os.path.abspath(DEFAULT_LOG_DIR))
         # E18: the same shape sessions.new_id() uses. A bare 1-second
         # timestamp collided under `run_eval.py --jobs N` — two units of the
         # same measurement appended to ONE transcript, and the derived
@@ -758,7 +838,7 @@ def run_agent(
 
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
-        with open(log_path, "a") as f:
+        with _tools.open_private_append(log_path) as f:
             f.write(json.dumps(event) + "\n")
         if steering:
             # Throttled: `updated_at` is a liveness heartbeat for the console,
@@ -794,14 +874,16 @@ def run_agent(
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
 
-    def compact(reason: str, chars_to_free: int, detail: str = "") -> int:
+    def compact(reason: str, chars_to_free: int, detail: str = "",
+                must_free: int | None = None) -> int:
         nonlocal compactions
         # Empty unless steering is on, which is what keeps compaction
         # byte-identical to the pre-beast-chat behaviour under the guard.
         eligible = {i for i, turn in steer_turn.items()
                     if iteration - turn >= _STEER_STUB_AFTER_TURNS}
         n, freed = compact_messages(messages, chars_to_free, call_index,
-                                    steer_eligible=eligible)
+                                    steer_eligible=eligible,
+                                    must_free=must_free)
         if n:
             compactions += 1
             print(f"[compaction] {reason}: stubbed {n} oldest tool result(s), "
@@ -873,11 +955,13 @@ def run_agent(
             # rewritten prefix stays stable for many turns (see
             # _COMPACT_LOW_WATER).
             est = estimate_tokens(messages, len(plan))
-            target = int(context_budget * _COMPACT_FRACTION)
-            if est > target:
+            asks = proactive_asks(est, context_budget)
+            if asks:
+                target = int(context_budget * _COMPACT_FRACTION)
                 low = int(context_budget * _COMPACT_LOW_WATER)
-                compact("budget", (est - low) * _CHARS_PER_TOKEN,
-                        f" (est {est:,} > {target:,} tokens, to {low:,})")
+                compact("budget", asks[1],
+                        f" (est {est:,} > {target:,} tokens, to {low:,})",
+                        must_free=asks[0])
 
         try:
             response = client.chat.completions.create(
@@ -1073,7 +1157,50 @@ def run_agent(
 # CLI
 # ---------------------------------------------------------------------------
 
+#: Seconds a tool command gets to exit on SIGTERM before its group is
+#: SIGKILLed, when the runner itself is told to stop.
+_STOP_GRACE_S = 2.0
+
+
+def _on_stop_signal(signum, frame):
+    """Kill the in-flight tool command(s), then die the way the signal says.
+
+    Every bash-tool command runs in its OWN session (tools.run_reaped), so
+    `job.sh stop`, MCP stop_agent and the console's escalation — which all
+    signal the runner or its group — never reached it, and once the runner
+    was dead nothing enforced its timeout: the command ran on as an orphan
+    (review chat-sessions-orphaned-tool-children-on-stop). SIGTERM/SIGHUP
+    then re-raise with the default action, so the exit status (-15/-1) and
+    the skipped atexit hooks are exactly what they were; SIGINT keeps its
+    KeyboardInterrupt."""
+    try:
+        _tools.kill_live_children(_STOP_GRACE_S)
+    finally:
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def install_stop_handlers() -> None:
+    """Hook the stop signals — but never one the launcher chose to IGNORE.
+
+    `nohup ./agent.sh ... &` ignores SIGHUP and a backgrounded `cmd &` in a
+    non-interactive shell ignores SIGINT; that inherited SIG_IGN is how the
+    run survives a closed terminal. Overriding it turned a hangup into a
+    dead agent (rc 129) — Python itself keeps an inherited SIG_IGN too."""
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
+
+
 def main():
+    # This process is $PPID of every model-authored shell and holds the API
+    # key (and whatever the launcher exported) in its environ: non-dumpable
+    # before the first model call, not lazily at the first tool spawn.
+    _tools.harden_process()
+    install_stop_handlers()
     parser = argparse.ArgumentParser(
         description="Run a local AI agent against a task",
         formatter_class=argparse.RawDescriptionHelpFormatter,

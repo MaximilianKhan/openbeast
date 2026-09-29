@@ -518,5 +518,57 @@ class TestFetchThroughProxy(unittest.TestCase):
         self.assertEqual(self.dialed, [("93.184.216.34", 80)])
 
 
+class TestFetchOutputCeiling(unittest.TestCase):
+    """fetch returns at most OPENBEAST_FETCH_MAX_CHARS (default 200K) chars,
+    with a truncation marker, however large a max_length the model asks for
+    (review efficiency-3 handoff: 2M chars exceeded every shipped context)."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        self._env = os.environ.pop("OPENBEAST_FETCH_MAX_CHARS", None)
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+        tools._fetch_opener = _FakeOpener(b"x" * 1_000_000)
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+        os.environ.pop("OPENBEAST_FETCH_MAX_CHARS", None)
+        if self._env is not None:
+            os.environ["OPENBEAST_FETCH_MAX_CHARS"] = self._env
+
+    def _body(self, out):
+        return out.split("\n\n[truncated", 1)[0]
+
+    def test_huge_max_length_is_clamped_with_marker(self):
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 200_000)
+        self.assertIn("[truncated at 200000 chars", out)
+
+    def test_env_override(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "5000"
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 5000)
+        self.assertIn("[truncated at 5000 chars", out)
+
+    def test_bad_env_falls_back_to_default(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "lots"
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 200_000)
+
+    def test_env_cannot_raise_past_the_memory_bound(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "999999999"
+        self.assertEqual(self.tools._fetch_max_chars(), 2_000_000)
+
+    def test_small_requests_unchanged(self):
+        # Negative control: under the ceiling, max_length rules as before.
+        out = self.tools.fetch("http://big.example/", max_length=1234)
+        self.assertEqual(len(self._body(out)), 1234)
+        self.tools._fetch_opener = _FakeOpener(b"short page")
+        self.assertEqual(self.tools.fetch("http://big.example/"), "short page")
+
+
 if __name__ == "__main__":
     unittest.main()

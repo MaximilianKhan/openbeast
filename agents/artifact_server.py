@@ -194,6 +194,19 @@ DENY_OTHER = "other"
 DENY_AUDIT_ROWS = 1000
 DENY_AUDIT_WINDOW_S = 300.0
 
+# storage-04: the same bound for IDENTIFIED callers. Every request from a
+# tailnet login appended an uncapped ~330-byte row, so one buggy client
+# polling /api/artifacts/health in a tight loop (or a hostile peer) could
+# grow artifact-audit.jsonl without bound between rotations. Per login, per
+# window (DENY_AUDIT_WINDOW_S); past it that login's rows are counter-only
+# (/metrics still counts every request) with one row saying so. Exempt:
+# LOCAL callers (this box's own CLI) and successful writes — a publish,
+# republish or delete is the row the log exists for, and is never dropped.
+LOGIN_AUDIT_ROWS = 2000
+# Distinct login buckets kept at once; past it, logins share one overflow
+# bucket, so the budget's own memory is bounded too.
+LOGIN_AUDIT_BUCKETS = 1024
+
 # --- the policies ------------------------------------------------------------
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
 # test fails loudly, on purpose: the isolation IS these headers.
@@ -719,6 +732,57 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # raw path, and 128 characters is room for /raw/<uuid>/v/N/~<token>/.
         return UNMATCHED_ROUTE, re.sub(r"/~[^/]*", "/~…", request.url.path)[:128]
 
+    def _successful_write(request: Request, status) -> bool:
+        try:
+            return (request.method in WRITE_METHODS
+                    and status != "error" and int(status) < 400)
+        except (TypeError, ValueError):
+            return False
+
+    def _login_bucket(login: str) -> str:
+        """Budget key for one login. Buckets whose window has expired are
+        pruned before a new one is admitted; past LOGIN_AUDIT_BUCKETS live
+        buckets, new logins share one overflow bucket."""
+        key = "login:" + login
+        with metrics_lock:
+            if key in deny_audit:
+                return key
+            logins = [k for k in deny_audit if k.startswith("login:")]
+            if len(logins) >= LOGIN_AUDIT_BUCKETS:
+                now = time.monotonic()
+                for k in logins:
+                    if now - deny_audit[k]["since"] >= DENY_AUDIT_WINDOW_S:
+                        del deny_audit[k]
+                if sum(1 for k in deny_audit
+                       if k.startswith("login:")) >= LOGIN_AUDIT_BUCKETS:
+                    return "login:*"
+        return key
+
+    def _budgeted_audit(entry: dict, key: str, limit: int) -> None:
+        now = time.monotonic()
+        with metrics_lock:
+            budget = deny_audit[key]
+            if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
+                budget.update(written=0, suppressed=0, since=now)
+            allowed = budget["written"] < limit
+            if allowed:
+                budget["written"] += 1
+            else:
+                budget["suppressed"] += 1
+            first_drop = (not allowed and budget["suppressed"] == 1)
+        if allowed:
+            audit(entry)
+        elif first_drop:
+            audit({"ts": _now(), "route": entry.get("route"),
+                   "outcome": entry.get("outcome"),
+                   "denied": "audit-budget",
+                   "reason": key,
+                   "note": f"{limit} {key} rows logged "
+                           f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
+                           f"further {key} rows are counted in "
+                           f"/metrics (with their reason) until it turns "
+                           f"over"})
+
     def _record(request: Request, status, t0: float,
                 extra: dict | None = None) -> None:
         ms = int((time.monotonic() - t0) * 1000)
@@ -751,7 +815,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
         #
         # `reason` stays the METRIC label (still "" for a success, so the
         # bounded label set is unchanged); `budget_key` is the BUDGET bucket.
-        _login = getattr(getattr(request.state, "principal", None), "login", None)
+        _principal = getattr(request.state, "principal", None)
+        _login = getattr(_principal, "login", None)
         budget_key = reason or ("anon-success" if _login is None else "")
         if budget_key and not _trusted(request):
             # D27/R5: counter-only past the budget, PER BUCKET and PER
@@ -761,29 +826,12 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # out — not the fact that they happened, and not their reason.
             # One row per window per reason says so, so the operator is never
             # left wondering where the trail went.
-            now = time.monotonic()
-            with metrics_lock:
-                budget = deny_audit[budget_key]
-                if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
-                    budget.update(written=0, suppressed=0, since=now)
-                allowed = budget["written"] < DENY_AUDIT_ROWS
-                if allowed:
-                    budget["written"] += 1
-                else:
-                    budget["suppressed"] += 1
-                first_drop = (not allowed and budget["suppressed"] == 1)
-            if allowed:
-                audit(entry)
-            elif first_drop:
-                audit({"ts": _now(), "route": entry.get("route"),
-                       "outcome": entry.get("outcome"),
-                       "denied": "audit-budget",
-                       "reason": budget_key,
-                       "note": f"{DENY_AUDIT_ROWS} {budget_key} rows logged "
-                               f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
-                               f"further {budget_key} rows are counted in "
-                               f"/metrics (with their reason) until it turns "
-                               f"over"})
+            _budgeted_audit(entry, budget_key, DENY_AUDIT_ROWS)
+        elif (_login is not None and not getattr(_principal, "local", False)
+              and not _successful_write(request, status)):
+            # storage-04: an identified login gets its own budget.
+            _budgeted_audit(entry, _login_bucket(str(_login)[:128]),
+                            LOGIN_AUDIT_ROWS)
         else:
             audit(entry)
         outcome = ("error" if status == "error"

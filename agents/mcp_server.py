@@ -940,7 +940,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
-    os.makedirs(_LOG_DIR, exist_ok=True)
+    # 0700 dir, 0600 transcript (full tool output lands in it) — the
+    # runner appends to the file this pre-creates.
+    _tools.private_log_dir(_LOG_DIR, tighten=True)
 
     # A deliberately conservative context budget advertised to the spawned
     # agent so it self-manages. It is NOT a per-slot capacity: under
@@ -965,7 +967,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     # event — runner.py appends its own "start" event right after. This keeps
     # base_url visible in check_agent even across an MCP server restart.
     try:
-        with open(log_path, "a") as f:
+        with _tools.open_private_append(log_path) as f:
             f.write(json.dumps({
                 "type": "spawn",
                 "agent_id": agent_id,

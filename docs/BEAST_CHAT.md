@@ -123,6 +123,13 @@ descendant leads are signalled, each after re-checking its start time, and
 only on this signal pass: a descendant that ignores SIGTERM is not chased
 once its parent has died (the SIGKILL escalation can no longer find it).
 
+The runner itself now does the same for every stop path, `job.sh stop` and
+MCP `stop_agent` included: `agents/runner.py` handles SIGTERM/SIGHUP/SIGINT
+by SIGTERMing each in-flight tool command's group (`tools._LIVE_GROUPS`),
+SIGKILLing whatever is left after 2 s, and then dying of the original signal
+— so a SIGTERM-ignoring tool command is killed too, as long as the runner
+gets the SIGTERM before any SIGKILL.
+
 **`meta` on session creation is caller free-form with reserved keys.**
 `pid_start`, `boot_id` and `cursor` are the server's
 (`sessions.SERVER_OWNED_META`): the first two are the process-identity proof

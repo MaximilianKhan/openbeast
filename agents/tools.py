@@ -131,6 +131,52 @@ def _killpg(proc):
         pass
 
 
+#: pid (== pgid, start_new_session) -> Popen of every run_reaped command still
+#: in flight. A process that is told to stop (runner.py's SIGTERM handler)
+#: kills these groups first: each lives in its OWN session, so signalling the
+#: caller's group never reaches them, and the caller's proc.wait(timeout) was
+#: the only thing enforcing their timeout. Plain dict ops (atomic under the
+#: GIL) — no lock, because the reader is a signal handler.
+_LIVE_GROUPS: dict = {}
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_live_children(grace: float = 2.0) -> int:
+    """SIGTERM every in-flight run_reaped process group, give it `grace`
+    seconds, then SIGKILL whatever is left. Safe to call from a signal
+    handler (no locks). Returns the number of groups signalled."""
+    procs = list(_LIVE_GROUPS.values())
+    for p in procs:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + max(grace, 0)
+    while time.monotonic() < deadline:
+        # poll() reaps the leader (non-blocking even if the interrupted main
+        # thread holds the Popen's waitpid lock), so a zombie shell doesn't
+        # keep the group looking alive for the whole grace period.
+        if not any(p.poll() is None or _group_alive(p.pid) for p in procs):
+            break
+        time.sleep(0.05)
+    for p in procs:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        p.poll()
+    return len(procs)
+
+
 def run_reaped(command, timeout, as_limit=None, **popen_kw):
     """subprocess.run(shell=True)-alike that (a) kills the WHOLE process group
     on timeout and (b) bounds how much output the PARENT buffers.
@@ -177,6 +223,22 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         start_new_session=True,
         **popen_kw,
     )
+    _LIVE_GROUPS[proc.pid] = proc
+    try:
+        return _reap(proc, command, timeout, _as_limit, _nproc)
+    except BaseException:
+        # Anything escaping _reap (a failed reader-thread start, an
+        # interrupt) must not leave the command running unsupervised.
+        if proc.poll() is None:
+            _killpg(proc)
+        raise
+    finally:
+        _LIVE_GROUPS.pop(proc.pid, None)
+
+
+def _reap(proc, command, timeout, _as_limit, _nproc):
+    """run_reaped's body after the spawn (split out so the live-group
+    registry is always cleared, whatever raises)."""
     if hasattr(resource, "prlimit"):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
@@ -353,6 +415,44 @@ def harden_process() -> bool:
         return False
     _PROCESS_HARDENED = True
     return True
+
+
+def private_log_dir(path: str, tighten: bool = False) -> None:
+    """Create `path` 0700 (missing intermediate parents get os.makedirs'
+    default mode; the leaf is what holds the transcripts). With `tighten`, an existing
+    directory that is group/world-accessible is chmod'ed to 0700 too — only
+    for directories the stack owns (agents/logs/), never a caller's
+    --log-dir, whose mode is the caller's business."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if tighten:
+        try:
+            st = os.stat(path)
+            if st.st_uid == os.getuid() and st.st_mode & 0o077:
+                os.chmod(path, 0o700)
+        except OSError:
+            pass
+
+
+def open_private_append(path: str):
+    """Open `path` for text append, creating it 0600 and tightening an
+    existing file of ours to 0600. Agent transcripts carry full tool output
+    (file contents, command output, fetched pages); a plain open() took the
+    umask and left them 0644 (review secrets-crypto-6 /
+    chat-sessions-agent-transcripts-world-readable). Readers run as the same
+    uid, so nothing that tails them is affected."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC,
+                 0o600)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid == os.getuid() and st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    try:
+        return os.fdopen(fd, "a")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _scrubbed_env() -> dict:
@@ -1721,6 +1821,23 @@ def _build_fetch_opener():
 
 _fetch_opener = _build_fetch_opener()
 
+#: Ceiling on the text one fetch call returns, whatever max_length the model
+#: asks for. The old 2M-char ceiling (~500K tokens) exceeded every shipped
+#: context on its own, so one call could force the runner to compact away the
+#: agent's history (review efficiency-3). Env OPENBEAST_FETCH_MAX_CHARS
+#: overrides it (read per call).
+_FETCH_MAX_CHARS_DEFAULT = 200_000
+
+
+def _fetch_max_chars() -> int:
+    try:
+        n = int(os.environ.get("OPENBEAST_FETCH_MAX_CHARS", "") or
+                _FETCH_MAX_CHARS_DEFAULT)
+    except ValueError:
+        return _FETCH_MAX_CHARS_DEFAULT
+    # Never above the memory-safety bound the read size is derived from.
+    return max(1, min(n, 2_000_000))
+
 
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return as text.
@@ -1734,8 +1851,10 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     if reason:
         return f"Error: fetch blocked: {reason}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
-    # becomes an attempted multi-GB read into memory.
-    max_length = max(1, min(int(max_length), 2_000_000))
+    # becomes an attempted multi-GB read into memory — and a result bigger
+    # than the context is useless to the model anyway. The truncation marker
+    # in _fetch_body tells it the page was cut.
+    max_length = max(1, min(int(max_length), _fetch_max_chars()))
     # Total-deadline watchdog: at _FETCH_DEADLINE it shuts down every socket
     # this call opened, so a slow drip anywhere (TLS handshake, headers,
     # body, a redirect hop) ends instead of holding the worker.
@@ -2202,7 +2321,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "The URL to fetch (http or https)"},
-                        "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000)", "default": 50000},
+                        "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000, capped at 200000)", "default": 50000},
                     },
                     "required": ["url"],
                 },

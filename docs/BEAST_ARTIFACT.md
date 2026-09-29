@@ -227,6 +227,13 @@ Every request **that reaches the server** writes one line to
 ms`, plus `sha256` and `bytes` on a publish. Never page content. That covers
 `scripts/artifact.sh` and every tailnet viewer.
 
+The file is bounded per caller, per 5-minute window: unidentified callers
+get 1000 rows per refusal reason (`DENY_AUDIT_ROWS`), and each tailnet login
+gets 2000 rows (`LOGIN_AUDIT_ROWS`), so one client polling health in a loop
+cannot fill the disk. Past a budget, that caller's rows are counted in
+`/metrics` only, and one `denied: "audit-budget"` row says so. The rig's own
+LOCAL calls and every successful write are always logged.
+
 It does **not** cover the model's tools. `publish_artifact` and
 `list_artifacts` call the store in process — no HTTP hop, so no audit row. A
 publish through them still appends the store's own ledger,
