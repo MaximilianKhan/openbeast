@@ -430,6 +430,34 @@ def _log(msg: str) -> None:
     print(f"[beast-gate] {_now()} {msg}", flush=True)
 
 
+# Unauthenticated denials are kept out of the audit FILE so a keyless peer
+# cannot grow it — and the same logic applies to stack.log, which every
+# denial line lands in. Per reason (a small fixed set, so bounded memory; a
+# per-key budget would not be, since the caller picks the key), log the first
+# few lines of each window and summarize the rest. /gate/metrics keeps the
+# exact count.
+_DENY_LOG_BURST = 10
+_DENY_LOG_WINDOW_S = 60.0
+_deny_log: dict[str, list] = {}      # reason -> [window_start, logged, suppressed]
+_clock = time.monotonic              # indirection so tests can drive the window
+
+
+def _log_denial(reason: str, msg: str) -> None:
+    now = _clock()
+    w = _deny_log.get(reason)
+    if w is None or now - w[0] >= _DENY_LOG_WINDOW_S:
+        if w is not None and w[2]:
+            _log(f"suppressed {w[2]} more 'denied {reason}' lines in the "
+                 f"last {int(now - w[0])}s (exact count in /gate/metrics)")
+        w = [now, 0, 0]
+        _deny_log[reason] = w
+    if w[1] < _DENY_LOG_BURST:
+        w[1] += 1
+        _log(msg)
+    else:
+        w[2] += 1
+
+
 def _key_fp(key: str) -> str:
     """Short, non-reversible fingerprint of a presented key, for logs only —
     enough to tell 'revoked laptop still retrying' from 'someone guessing'."""
@@ -730,8 +758,8 @@ async def gate(request: Request):
         # "someone is guessing". NOT written to the audit FILE: unauthenticated
         # callers must not be able to grow it without bound.
         _bump("denied_total", reason)
-        _log(f"denied {reason} path={path} key_fp={_key_fp(_bearer(request))} "
-             f"peer={_peer(request)}")
+        _log_denial(reason, f"denied {reason} path={path} "
+                    f"key_fp={_key_fp(_bearer(request))} peer={_peer(request)}")
         hint = ("this rig has no enrolled devices yet — run "
                 "./scripts/clients.sh enroll <id> on the rig"
                 if reason == "no_registry" else

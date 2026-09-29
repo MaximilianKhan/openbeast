@@ -673,6 +673,35 @@ class TestAuditAndMetrics:
         assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' in body
         assert DEVICE_KEY not in body
 
+    def test_unauth_denials_do_not_flood_the_stack_log(self, edge, tmp_path,
+                                                       capsys, monkeypatch):
+        # stdout IS .run/stack.log in daemon mode. A keyless loop used to
+        # append one line per request, forever — the unbounded growth the
+        # audit file was deliberately protected from.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        clock = [1000.0]
+        monkeypatch.setattr(edge, "_clock", lambda: clock[0])
+        with TestClient(edge.app) as c:
+            for i in range(200):
+                # A fresh random-looking key each time: the budget must not
+                # be per key, or rotating keys would defeat it.
+                c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer k{i}"})
+            burst = capsys.readouterr().out
+            clock[0] += edge._DENY_LOG_WINDOW_S + 1
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": "Bearer late"})
+            later = capsys.readouterr().out
+            body = c.get("/gate/metrics", headers=_local_headers(edge)).text
+        denied = [ln for ln in burst.splitlines() if "denied bad_key" in ln]
+        # Negative control: the first denials ARE logged (diagnosability).
+        assert 1 <= len(denied) <= edge._DENY_LOG_BURST
+        assert "suppressed 190 more 'denied bad_key'" in later
+        assert "denied bad_key" in later            # new window logs again
+        # Metrics still carry the exact count.
+        assert 'openbeast_edge_denied_total{reason="bad_key"} 201' in body
+
     def test_unauth_denials_do_not_grow_the_audit_file(self, edge, tmp_path):
         # The gate is published at the tailnet root, so an unauthenticated
         # caller must not be able to append to the audit file at will.
