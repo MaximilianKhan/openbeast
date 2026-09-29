@@ -14,6 +14,7 @@
 #   3  land-dependabot   approves only THIS repo's held runs for the PR head
 #   4  workflows         every action pinned by full commit SHA; the relock
 #                        push job never runs the resolver
+#   5  client SearXNG    the client compose pins the rig's image digest
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -326,6 +327,25 @@ YML
   fi
 else
   echo "  SKIP: PyYAML not importable (it is in agents/requirements.lock; CI has it)"
+fi
+
+# ===========================================================================
+echo ""
+echo "5. client SearXNG — pins the SAME image digest as the rig:"
+# ===========================================================================
+# update.sh --images rewrites docker-compose.yml only, so the client file
+# drifted (252cfb5b vs the rig's 892cf809) with a comment claiming lockstep.
+_rig="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/docker-compose.yml")"
+_cli="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/scripts/client-searxng.compose.yml")"
+if [[ "$_rig" == *@sha256:* && "$(wc -l <<< "$_rig")" == "1" ]]; then
+  pass "control: the rig compose has exactly one digest-pinned searxng image (${_rig##*@sha256:})"
+else
+  fail "control: could not read one pinned searxng image from docker-compose.yml: '$_rig'"
+fi
+if [[ -n "$_cli" && "$_cli" == "$_rig" ]]; then
+  pass "scripts/client-searxng.compose.yml pins the rig's exact searxng image"
+else
+  fail "client SearXNG pin drifted: client '$_cli' vs rig '$_rig' — mirror the rig's digest (docs/UPDATING.md)"
 fi
 
 # ===========================================================================

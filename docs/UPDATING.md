@@ -106,7 +106,9 @@ grep -n 'searxng/searxng.*@sha256:' docker-compose.yml scripts/client-searxng.co
 ```
 
 Left un-mirrored, clients simply keep running the older pinned image — they
-never silently follow `:latest`, so this is drift, not a break.
+never silently follow `:latest`, so this is drift, not a break. It is no longer
+*silent* drift: `tests/test_supply_chain.sh` (run in CI) fails while the two
+digests differ, so a `--images` bump that forgets the mirror goes red.
 
 ## Dependabot bumps — the relock workflow and `land-dependabot.sh`
 
