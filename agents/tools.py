@@ -1821,6 +1821,23 @@ def _build_fetch_opener():
 
 _fetch_opener = _build_fetch_opener()
 
+#: Ceiling on the text one fetch call returns, whatever max_length the model
+#: asks for. The old 2M-char ceiling (~500K tokens) exceeded every shipped
+#: context on its own, so one call could force the runner to compact away the
+#: agent's history (review efficiency-3). Env OPENBEAST_FETCH_MAX_CHARS
+#: overrides it (read per call).
+_FETCH_MAX_CHARS_DEFAULT = 200_000
+
+
+def _fetch_max_chars() -> int:
+    try:
+        n = int(os.environ.get("OPENBEAST_FETCH_MAX_CHARS", "") or
+                _FETCH_MAX_CHARS_DEFAULT)
+    except ValueError:
+        return _FETCH_MAX_CHARS_DEFAULT
+    # Never above the memory-safety bound the read size is derived from.
+    return max(1, min(n, 2_000_000))
+
 
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return as text.
@@ -1834,8 +1851,10 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     if reason:
         return f"Error: fetch blocked: {reason}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
-    # becomes an attempted multi-GB read into memory.
-    max_length = max(1, min(int(max_length), 2_000_000))
+    # becomes an attempted multi-GB read into memory — and a result bigger
+    # than the context is useless to the model anyway. The truncation marker
+    # in _fetch_body tells it the page was cut.
+    max_length = max(1, min(int(max_length), _fetch_max_chars()))
     # Total-deadline watchdog: at _FETCH_DEADLINE it shuts down every socket
     # this call opened, so a slow drip anywhere (TLS handshake, headers,
     # body, a redirect hop) ends instead of holding the worker.
@@ -2302,7 +2321,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "The URL to fetch (http or https)"},
-                        "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000)", "default": 50000},
+                        "max_length": {"type": "integer", "description": "Maximum characters to return (default 50000, capped at 200000)", "default": 50000},
                     },
                     "required": ["url"],
                 },
