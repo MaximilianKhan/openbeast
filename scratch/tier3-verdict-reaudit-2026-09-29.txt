@@ -1,0 +1,159 @@
+========================================================================
+Tier-3 zig-0.16 awareness pack — RE-AUDIT of the 2026-09-17 verdict
+2026-09-29, after the adversarial review (eval-harness-1, tools-mcp-security-1,
+research-stats-1/-2/-3). No GPU was used; every number below is recomputed
+from the six results files in scratch/tier3_cells-20260917.txt.
+========================================================================
+
+BOTTOM LINE
+  The pre-registered SHIP (net +13, p = 0.0192) does NOT hold on clean rows.
+  Dropping the rows the model did not produce leaves net +10 (b = 17,
+  c = 7), exact McNemar p = 0.0639. That is NO-SHIP under Clause 1
+  (p < 0.05). The verdict is UNRESOLVED, not refuted. The direction holds in
+  both replicates, and the iterations-to-fix gain still holds (-3.18,
+  sign p = 0.008). The p-value hangs on one row, 62_crt_f (see SENSITIVITY).
+  The champion guard's "negative in direction" (6 vs 13) came mostly from
+  fork/thread EAGAIN. On clean rows it reads 4 vs 1 on 14 units, which is
+  uninformative, not negative. The per-model gating it motivated has no
+  measurement behind it.
+
+WHAT WAS WRONG WITH THE ROWS
+  API   llama-server died mid-unit. The agent logged "Connection error." on
+        every remaining iteration, and the runner still exited 0 with the
+        tokens it already had. So the harness banked a model FAIL, and the
+        cache replayed it.
+          P0a  7 rows (all replayed from the 09-15 cache, 12:33 server death):
+               148_convex_hull_f x12, 155_tonelli_shanks_f x12,
+               159_ntt_convolution_f x12, 19_three_way_quicksort_f x11,
+               51_toposort_f x10, 62_crt_f x2, 92_popcount_f x8
+          P1a  4 rows: 62_crt_f x7, 71_reverse_list_f x7, 74_palindrome_f x5,
+               82_sigmoid_f x7
+          C0   4 rows: 148, 155, 159, 19 (x19-20 each)
+          C1   4 rows: 115_fft_f, 123_nbody_f, 127_aes_keysched_f,
+               137_pollard_rho_f (x18-19 each)
+  EAGAIN  validation died on thread exhaustion. The uid-wide
+        RLIMIT_NPROC=2048 was hit with the desktop's threads counted against
+        it (zig "unable to spawn LLD: SystemResources", "thread constructor
+        failed").
+          C1  10 rows: 155, 159, 31, 32, 36, 51, 52, 54, 63, 73 (_f). 8 of
+              them passed in C0.
+  P0b and P1b are clean.
+  Matching: agent logs were matched to rows by (tokens_completion,
+  tokens_prompt), plus cached_at within 600 s for replays or the run window
+  for live rows. Every replay match landed within 8 s. Zero-token rows are
+  never matched on the window alone.
+
+RULE  A contaminated row drops its unit from THAT pair, in both arms.
+      tier3_verdict.py now does this by default, with the same classifier as
+      scratch/row_validity.py. --raw reproduces the as-registered read, and
+      --keep CELL:UNIT runs a sensitivity check.
+
+R1 PRIMARY (pooled replicates)         b   c   net   units    exact p   Clause 1
+  as registered (--raw)               20   7   +13   30+30    0.0192    SHIP
+  clean (both classes, all rows)      17   7   +10   20+30    0.0639    NO-SHIP
+  clean, FAILED rows only             17   7   +10              0.0639    NO-SHIP
+    (the review's variant: the passes with API errors never change a pair)
+  SENSITIVITY keep 62_crt_f           18   7   +11   21+30    0.0433    SHIP
+    (P0a 62_crt_f lost only its last 2 iterations to the dead server; it is
+     kept in both arms here. The whole ship/no-ship call rides on this one
+     unit.)
+  per replicate, clean:  pair 0  6/4  p = 0.754 (20 units)
+                         pair 1 11/3  p = 0.057 (30 units, untouched)
+
+R2 CO-PRIMARY (clean): iterations-to-fix mean d -3.18, sign p = 0.008 (n=11).
+  Completion tokens-to-fix -3440, p = 0.55 (n.s.).
+
+R3 CHAMPION GUARD (C0 vs C1, Qwen3.6-27B Q5_K_XL)
+                                       resc  regr  net   units   p
+  as registered                           6    13   -7     30    0.167
+  API rows dropped only                   4     9   -5     22    0.267
+  EAGAIN rows dropped only                6     5   +1     20    1.000
+  clean (both)                            4     1   +3     14    0.375
+  Both reads are "clean" under the rule (p > 0.05). The negative DIRECTION
+  that TODO/journal used to justify "off for the champion" was mostly EAGAIN
+  artifact. At 14 surviving units the guard can detect nothing.
+
+CHURN (same config, untreated/treated replicate pairs, zig)
+  P0a vs P0b  raw 9/30 (30%)   clean 8/23 (35%)
+  P1a vs P1b  raw 8/30 (27%)   clean 6/26 (23%)
+  Greedy at --jobs 4 against -np 6 --kv-unified is NOT a near-zero-churn
+  regime (research-stats-2). Size future arms on ~30%.
+
+IN-SAMPLE CAVEAT (research-stats-3)
+  The pack's curated section targets the zig failure surface observed on the
+  v5-fast units, and it was scored on those same 30 units. There is no
+  held-out set, so even a clean +10..+13 is an in-sample estimate. The
+  held-out design is in docs/LANG_AWARENESS_PLAN.md §5 (Tier 3, "Held-out
+  check").
+
+WHAT MUST RERUN ON THE GPU (Max-triggered; nothing was run)
+  Prerequisites. Merge both of these first, or the rerun re-contaminates:
+    (1) the RLIMIT_NPROC fix (tools-mcp-security-1, agents/tools.py)
+    (2) the connection-error-is-not-a-verdict fix (eval-harness-1,
+        agents/runner.py + evals/run_eval.py)
+  Both touch era-hashed files, so the eval era rolls. Rows from the new era
+  must not be patched into the 09-17 cells (never pair across eras).
+
+  RECOMMENDED: rerun the whole A/B, fresh, in the new era.
+    FRESH=1 bash scratch/tier3_zig_ab.sh
+    That is 6 cells x 30 zig units, all --no-cache (P0a live too, so pair 0
+    is same-day at last).
+    GPU time: ~7 h. The 09-17 run took 5 h 59 m with P0a replayed, and a live
+    P0a adds ~1 h.
+    Optional: append the held-out zig set (below) as EXTRA_UNITS, about
+    +1.5 h.
+  The quarantine already moved the contaminated cache entries out
+  (evals/cache-quarantine-2026-09-29/, MANIFEST.txt lists all 74), so no
+  poisoned row can replay.
+
+  NOT RECOMMENDED (cheaper, era-unsafe): patch only the 29 contaminated
+  unit-runs into the 09-17 cells before the fixes merge, with the desktop's
+  thread count low, then run scratch/patchup_replace.py per unit.
+    P0a (3.8-unc, packs off, greedy)  148 155 159 19 51 62 92       (_f)
+    P1a (3.8-unc, packs on)           62 71 74 82                   (_f)
+    C0  (champion, packs off)         148 155 159 19                (_f)
+    C1  (champion, packs on)          115 123 127 137 155 159 31 32 36
+                                      51 52 54 63 73                (_f)
+    ~1.5 GPU-h in total (2 model loads; ~2.5 min/unit at --jobs 4). This
+    only closes the gap if the uid thread count stays under the cap, which
+    nothing enforces yet.
+
+THE IQ3 PAIR (E32, GSQ-RCO-IQ3_S vs UD-IQ3_S) under the fixed classifier
+  Clean on both rows (0 harness deaths, 0 EAGAIN, 0 API-error fails, n=112).
+  Net +12, p = 0.012 (zig +7 p=0.065, non-zig +5 p=0.180). Unchanged.
+  The UD row's header was stale (73 / 97.42 with a phantom 115_fft_b
+  tripwire). patchup_replace.py --recompute has fixed it to 76 / 97.53.
+
+reproduce:  python3 scratch/tier3_verdict.py --manifest scratch/tier3_cells-20260917.txt
+            (+ --raw | --keep P0a:62_crt_f --keep P1a:62_crt_f | --agent-logs none)
+
+------------------------------------------------------------------------
+clean run, verbatim:
+========================================================================
+Tier-3 zig-0.16 awareness pack — zig-only mini-A/B verdict
+========================================================================
+treated model: Qwen3.8 27B Uncensored Q5_K_M   replicates: 2   pack: {'zig': '5cdf4b64'}
+VALIDITY    contaminated rows dropped from their pair
+    P0a: 148_convex_hull_f [API x12 (agent-20260915-121919-473604d3.jsonl)]; 155_tonelli_shanks_f [API x12 (agent-20260915-122048-d7514b2e.jsonl)]; 159_ntt_convolution_f [API x12 (agent-20260915-122146-6b62d2b4.jsonl)]; 19_three_way_quicksort_f [API x11 (agent-20260915-122250-f15189e6.jsonl)]; 51_toposort_f [API x10 (agent-20260915-124927-cc3451e5.jsonl)]; 62_crt_f [API x2 (agent-20260915-130237-39f8c9af.jsonl)]; 92_popcount_f [API x8 (agent-20260915-131933-7dce5420.jsonl)]
+    P1a: 62_crt_f [API x7 (agent-20260917-153653-dd29202e.jsonl)]; 71_reverse_list_f [API x7 (agent-20260917-154233-01d03112.jsonl)]; 74_palindrome_f [API x5 (agent-20260917-154435-ef08c8dc.jsonl)]; 82_sigmoid_f [API x7 (agent-20260917-154705-c25a7fa3.jsonl)]
+  pair 0: units=20 P0 pass=9 P1 pass=11 rescues=6 regressions=4 (cached rows: P0 22, P1 0)
+  pair 1: units=30 P0 pass=9 P1 pass=17 rescues=11 regressions=3 (cached rows: P0 0, P1 0)
+
+R1 PRIMARY  pooled McNemar: rescues b=17 regressions c=7 net=+10 p=0.0639
+R2 CO-PRIMARY (units passed in both arms, n=11):
+    completion tokens-to-fix  mean Δ(P1-P0)=-3440  sign-test p=0.549
+    iterations-to-fix         mean Δ(P1-P0)=-3.18  sign-test p=0.008
+    all-unit completion tokens mean Δ=-1909 (n=50); prompt-token overhead mean Δ=-15947/unit
+    C0 contaminated: 148_convex_hull_f [API x20 (agent-20260917-184938-d143a399.jsonl)]; 155_tonelli_shanks_f [API x20 (agent-20260917-185031-ad05da75.jsonl)]; 159_ntt_convolution_f [API x20 (agent-20260917-185506-7c7fd88e.jsonl)]; 19_three_way_quicksort_f [API x19 (agent-20260917-185529-bce1d4ae.jsonl)]
+    C1 contaminated: 115_fft_f [API x18 (agent-20260917-193735-cdd028a4.jsonl)]; 123_nbody_f [API x19 (agent-20260917-194001-54e2280c.jsonl)]; 127_aes_keysched_f [API x19 (agent-20260917-194031-209149a8.jsonl)]; 137_pollard_rho_f [API x19 (agent-20260917-194907-7ff0556d.jsonl)]; 155_tonelli_shanks_f [EAGAIN(SystemResources)]; 159_ntt_convolution_f [EAGAIN(SystemResources)]; 31_is_power_of_two_f [EAGAIN(SystemResources)]; 32_dot_product_f [EAGAIN(SystemResources)]; 36_black_scholes_f [EAGAIN(SystemResources)]; 51_toposort_f [EAGAIN(SystemResources)]; 52_unionfind_f [EAGAIN(thread constructor failed)]; 54_astar_f [EAGAIN(SystemResources)]; 63_det_f [EAGAIN(SystemResources)]; 73_count_vowels_f [EAGAIN(SystemResources)]
+R3 GUARD    champion Qwen 27B Q5_K_XL: units=14 C0 pass=9 C1 pass=12 rescues=4 regressions=1 net=+3 p=0.375 → CLEAN
+R4 AUDIT    P1-only passes per pair (review for pack-parroting):
+    pair 0: 100_constant_time_compare_f, 122_gemm_blocked_e, 52_unionfind_f, 54_astar_f, 63_det_f, 65_miller_rabin_f
+    pair 1: 11_bst_f, 122_gemm_blocked_e, 136_gf256_f, 137_pollard_rho_f, 148_convex_hull_f, 36_black_scholes_f, 54_astar_f, 61_extgcd_f, 63_det_f, 82_sigmoid_f, 92_popcount_f
+    rescued in EVERY replicate: 122_gemm_blocked_e, 54_astar_f, 63_det_f
+    pair 0 regressions: 127_aes_keysched_f, 20_priority_queue_f, 32_dot_product_f, 61_extgcd_f
+    pair 1 regressions: 100_constant_time_compare_f, 127_aes_keysched_f, 155_tonelli_shanks_f
+
+------------------------------------------------------------------------
+VERDICT: NO-SHIP — Clause 1 (net>=7, p<0.05, guard clean): net=+10 p=0.0639 guard=clean — p 0.064 >= 0.05
+Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).
