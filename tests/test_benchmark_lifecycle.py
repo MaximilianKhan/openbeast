@@ -181,7 +181,7 @@ def test_live_units_exclude_rows_that_never_ran_the_agent(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "disk_usage", lambda p: U(10**12, 10**12 - 10**9, 10**9))
     monkeypatch.setenv("OPENBEAST_EVAL_MIN_FREE_GB", "5")
     for name in ("capture_server_config", "capture_gpu_info", "capture_inference_engine_info"):
-        monkeypatch.setattr(run_eval, name, lambda: {})
+        monkeypatch.setattr(run_eval, name, lambda *a, **k: {})
     res = run_eval.run_eval(model_name="m")
     assert res["tasks"][0]["reason"] == "low_disk"
     assert res["summary"]["live_units"] == 0

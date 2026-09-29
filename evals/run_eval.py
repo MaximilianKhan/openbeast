@@ -351,7 +351,8 @@ def _parse_server_flags(cmdline: str) -> dict:
              "-ctk": "kv_cache_type",
              "-ctv": "kv_cache_type_v",
              "-m": "model_path",
-             "--model": "model_path"}
+             "--model": "model_path",
+             "--port": "port"}
     toks = cmdline.split()
     for i, tok in enumerate(toks):
         name, eq, val = tok.partition("=")
@@ -364,19 +365,118 @@ def _parse_server_flags(cmdline: str) -> dict:
     return info
 
 
-def capture_server_config() -> dict:
-    """Best-effort snapshot of the live llama-server invocation (local host
-    only — empty when the server runs elsewhere or isn't up)."""
+PROC_ROOT = "/proc"
+LLAMA_DEFAULT_PORT = 8080     # llama-server's own default for --port
+
+
+def _server_port(info: dict) -> int | None:
+    """The port a parsed llama-server command line listens on (its default
+    8080 when no --port is given), or None if the value is not a number."""
+    try:
+        return int(info.get("port", LLAMA_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        return None
+
+
+def _listening_inodes(port: int) -> set[str]:
+    """Socket inodes LISTENing on `port` (any address), from /proc/net."""
+    inodes: set[str] = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(PROC_ROOT, "net", name)) as fh:
+                next(fh, None)                       # header
+                for line in fh:
+                    f = line.split()
+                    if len(f) < 10 or f[3] != "0A":  # 0A = TCP_LISTEN
+                        continue
+                    if int(f[1].rsplit(":", 1)[1], 16) == port:
+                        inodes.add(f[9])
+        except (OSError, ValueError, IndexError):
+            continue
+    return inodes
+
+
+def _pid_holds_socket(pid: str, inodes: set[str]) -> bool:
+    fd_dir = os.path.join(PROC_ROOT, pid, "fd")
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:                                  # another uid's process
+        return False
+    want = {f"socket:[{i}]" for i in inodes}
+    for fd in fds:
+        try:
+            if os.readlink(os.path.join(fd_dir, fd)) in want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_local_host(host: str | None) -> bool:
+    """Whether `host` names this machine: an address we can bind to."""
+    if not host:
+        return True
+    if host in ("localhost", "0.0.0.0", "::"):
+        return True
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    for family, _, _, _, addr in infos:
+        s = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            s.bind((addr[0], 0))
+            return True
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return False
+
+
+def capture_server_config(base_url: str = "http://localhost:8080/v1") -> dict:
+    """Best-effort snapshot of the llama-server invocation that serves
+    `base_url` (local host only — empty when the server runs elsewhere, isn't
+    up, or can't be told apart from another one).
+
+    It must be THAT server: the reasoning budget read here becomes the cache
+    era (.rbN) and the flags feed the env fingerprint. Taking the first line
+    of `pgrep` described whichever llama-server the kernel listed first — a
+    ChunkHound sidecar on :8081, or a sibling worktree's measurement server
+    — so the run banked its verdicts under the other process's era. The
+    listener is resolved by the socket that LISTENs on the port
+    (/proc/net/tcp inode -> /proc/<pid>/fd), falling back to the --port on
+    the command line (llama-server's default 8080 when absent) for a server
+    whose fds this uid cannot read."""
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(base_url)
+        host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:
+        return {}
+    if not _is_local_host(host):
+        return {}
     try:
         out = subprocess.run(["pgrep", "-ax", "llama-server"],
                              capture_output=True, text=True, timeout=5)
-        lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
-        if not lines:
-            return {}
-        _, _, cmdline = lines[0].partition(" ")
-        return _parse_server_flags(cmdline.strip())
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
+    lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
+    procs = []
+    for line in lines:
+        pid, _, cmdline = line.strip().partition(" ")
+        if pid.isdigit():
+            procs.append((pid, _parse_server_flags(cmdline.strip())))
+    if not procs:
+        return {}
+    inodes = _listening_inodes(port)
+    if inodes:
+        owners = [info for pid, info in procs if _pid_holds_socket(pid, inodes)]
+        if len(owners) == 1:
+            return owners[0]
+    by_flag = [info for _, info in procs if _server_port(info) == port]
+    return by_flag[0] if len(by_flag) == 1 else {}
 
 
 def capture_suite_version() -> str:
@@ -1208,7 +1308,7 @@ def run_eval(
     model_slug = slugify(model_name)
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
-    server_info = capture_server_config() if not cache_only else None
+    server_info = capture_server_config(base_url) if not cache_only else None
     # Reasoning-budget cache-era component (see cache.cache_key): a finite
     # --reasoning-budget on the live server stamps its value into every
     # cache key so capped and uncapped rows can never replay across eras.

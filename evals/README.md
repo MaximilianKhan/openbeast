@@ -748,7 +748,12 @@ v3.5 and v4 scores never get confused and a result is traceable to the exact
 llama.cpp build that produced it. Results are written incrementally
 (`tmp`+`rename` after each task), so a crashed sweep keeps every completed
 task. `--cache-only` runs record `gpu`/`inference_engine`/`server` as `null`
-(no live probe) and `cache_only: true`.
+(no live probe) and `cache_only: true`. `server` (whose `--reasoning-budget`
+becomes the `.rbN` cache era) is the llama-server that LISTENs on the
+`--base-url` port — resolved from the socket's inode in `/proc/net/tcp`,
+else the `--port` on its command line — never simply the first
+`pgrep` hit, which could be a sidecar on another port. A remote
+`--base-url`, or two indistinguishable candidates, records `{}`.
 
 ## Adding a task
 

@@ -81,7 +81,7 @@ def test_fingerprint_moves_with_each_component(tmp_path, monkeypatch):
 
 def _live(run_eval, monkeypatch, server_cmd: str):
     monkeypatch.setattr(run_eval, "capture_server_config",
-                        lambda: run_eval._parse_server_flags(server_cmd))
+                        lambda *a, **k: run_eval._parse_server_flags(server_cmd))
     monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
     monkeypatch.setattr(run_eval, "capture_inference_engine_info",
                         lambda: {"build": "b1", "commit": "abc"})
