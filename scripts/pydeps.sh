@@ -262,6 +262,10 @@ EOF
       exit 3
     fi
     rm -f "$_err"
+    # 3 is OUR word for a hash mismatch, but pip has its own 3
+    # (VIRTUALENV_NOT_FOUND, e.g. PIP_REQUIRE_VIRTUALENV=1): never let a
+    # failure that compared no bytes reach callers as "tampering".
+    [[ $_rc -ne 3 ]] || _rc=1
     exit "$_rc"
     ;;
 

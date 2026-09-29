@@ -338,6 +338,11 @@ PIPERR
             echo "ERROR: In --require-hashes mode, all requirements must have their versions pinned with ==. These do not:" >&2
             echo "    extra-dep>=2 (from foo==1.0)" >&2
             exit 1 ;;
+          novenvfail)
+            # pip's OWN status 3 (status_codes.VIRTUALENV_NOT_FOUND) under
+            # PIP_REQUIRE_VIRTUALENV=1 — no bytes were compared.
+            echo "ERROR: Could not find an activated virtualenv (required)." >&2
+            exit 3 ;;
         esac
       fi
       [[ "$mode" == "noeffect" ]] || echo installed > "$S/pip_installed"
@@ -1031,6 +1036,12 @@ if [[ $_rc -ne 0 && $_rc -ne 3 ]]; then
   pass "negative control: an incomplete closure ('must have their versions pinned') is not called tampering"
 else
   fail "unpinned closure exit status (rc=$_rc): $_out"
+fi
+PIPMODE=novenvfail pyd "$PR/scripts/pydeps.sh" install --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -ne 0 && $_rc -ne 3 ]] && ! has "$_out" "HASH MISMATCH" && has "$_out" "activated virtualenv"; then
+  pass "pip's OWN exit 3 (no virtualenv, PIP_REQUIRE_VIRTUALENV) is not passed through as 'hash mismatch'"
+else
+  fail "pip exit 3 leaked through as our mismatch status (rc=$_rc): $_out"
 fi
 
 # ===========================================================================
