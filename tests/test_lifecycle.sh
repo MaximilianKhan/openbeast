@@ -343,6 +343,79 @@ fi
 kill "$_STRANGER" "$_EXT_ORPHAN" "$_EXT_REAL" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# extensions-client-4: an extension name is a directory name, nothing else.
+# ---------------------------------------------------------------------------
+echo ""
+echo "ext.sh names + start.sh's extension launch:"
+_X="$_T/ext"; _sandbox "$_X"
+for _e in dashboard other; do
+  mkdir -p "$_X/extensions/$_e"
+  printf 'NAME=%s\nKIND=process\n' "$_e" > "$_X/extensions/$_e/manifest"
+  printf 'import time\ntime.sleep(300)\n' > "$_X/extensions/$_e/server.py"
+  printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_X/extensions/$_e/run.sh"
+  chmod +x "$_X/extensions/$_e/run.sh"
+done
+_ext_conf() { grep '^EXTENSIONS=' "$_X/openbeast.conf" || true; }
+_ext() { _run "$_X" "$_X/scripts/ext.sh" "$@"; }
+echo 'EXTENSIONS="dashboard other"' > "$_X/openbeast.conf"
+for _bad in 'dashboard/' 'dash/' '.*' '../x'; do
+  _verb=disable; [[ "$_bad" == dashboard/ ]] && _verb=enable
+  _O="$(_ext "$_verb" "$_bad")"
+  if [[ "$(_ext_conf)" == 'EXTENSIONS="dashboard other"' && "$_O" == *"Invalid extension name"* ]]; then
+    pass "ext.sh $_verb '$_bad' is refused and leaves EXTENSIONS alone"
+  else
+    fail "ext.sh $_verb '$_bad' -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+    echo 'EXTENSIONS="dashboard other"' > "$_X/openbeast.conf"
+  fi
+done
+_O="$(_ext disable nope)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="dashboard other"' && "$_O" == *"not enabled"* ]]; then
+  pass "disabling an extension that is not enabled says so and changes nothing"
+else
+  fail "ext.sh disable nope -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+_O="$(_ext disable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
+  pass "disable removes exactly the named extension (control)"
+else
+  fail "ext.sh disable dashboard -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+# start.sh's launch loop, lifted verbatim, under set -euo pipefail.
+python3 - "$REPO_DIR/start.sh" "$_X/launch.sh" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+a = src.index("while IFS= read -r _ext; do")
+b = src.index("done < <(ob_ext_processes)", a) + len("done < <(ob_ext_processes)")
+open(sys.argv[2], "w").write(
+    'set -euo pipefail\nREPO_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"\n'
+    'source "$SANDBOX/scripts/lib/proc.sh"; source "$SANDBOX/scripts/lib/extensions.sh"\n'
+    + src[a:b] + '\necho LAUNCH-LOOP-DONE\n')
+PY
+_launch() { SANDBOX="$_X" EXTENSIONS="$1" timeout 30 bash "$_X/launch.sh" 2>&1 || true; }
+_O="$(_launch "dashboard/ other")"
+_OTHER_PID="$(cat "$_X/.run/ext-other.pid" 2>/dev/null || true)"
+[[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_OTHER_PID"
+if [[ "$_O" == *LAUNCH-LOOP-DONE* && "$_O" == *"skipping invalid extension name 'dashboard/'"* ]]; then
+  pass "start.sh skips EXTENSIONS=\"dashboard/\" instead of dying on .run/ext-dashboard/.pid"
+else
+  fail "start.sh's extension loop aborted on 'dashboard/': $(tr '\n' ' ' <<< "$_O")"
+fi
+sleep 0.3
+if [[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && kill -0 "$_OTHER_PID" 2>/dev/null && [[ -s "$_X/.run/ext-other.start" ]]; then
+  pass "…and still launches the valid one, recorded with its start time"
+else
+  fail "the valid extension was not launched/recorded: $(ls "$_X/.run")"
+fi
+_O="$(_launch "other")"
+if [[ "$_O" == *"already running"* && "$(cat "$_X/.run/ext-other.pid")" == "$_OTHER_PID" ]]; then
+  pass "a live extension is not spawned over (its record is kept)"
+else
+  fail "start.sh spawned over a live extension: $(tr '\n' ' ' <<< "$_O")"
+  _p="$(cat "$_X/.run/ext-other.pid" 2>/dev/null || true)"; [[ "$_p" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_p"
+fi
+[[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && kill "$_OTHER_PID" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

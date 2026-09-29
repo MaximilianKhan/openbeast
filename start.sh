@@ -774,6 +774,13 @@ fi
 # foreground; we background + pidfile it, and cleanup() reaps them on exit).
 while IFS= read -r _ext; do
   [[ -z "$_ext" ]] && continue
+  # A hand-edited EXTENSIONS="dashboard/" names a real directory, and the
+  # pidfile write below then fails under set -e — tearing the stack down
+  # after the model load. Skip the word, loudly (ext.sh validates the same).
+  if [[ ! "$_ext" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    echo "Warning: skipping invalid extension name '$_ext' in EXTENSIONS (fix it in openbeast.conf)." >&2
+    continue
+  fi
   # The [17] guard, for extensions: a live one (an orphan of a SIGKILLed
   # supervisor) keeps its port, so a replacement cannot bind — and writing
   # its pid over the record made the live one unreapable.

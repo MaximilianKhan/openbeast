@@ -15,7 +15,9 @@ core stays lean; extras are opt-in. (ODS-absorbed; see `docs/TODO.md`.)
 
 Enable/disable edits `openbeast.conf` (`EXTENSIONS="a b"`, space-separated) and
 takes effect on the next `./start.sh` — a running stack isn't touched until
-restart. Empty by default.
+restart. Empty by default. A name is the extension's directory name under
+`extensions/` — letters, digits, `-` and `_`; `ext.sh` refuses anything else
+(a trailing `/` from tab completion included).
 
 ## Writing an extension
 
