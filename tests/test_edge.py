@@ -265,6 +265,78 @@ class TestTenancyKnobs:
         assert sent and sent != "shared-guessable-id"
 
 
+def _nested(depth: int) -> bytes:
+    """A chat body carrying a client id_slot plus `depth` levels of junk."""
+    return (b'{"id_slot":3,"stream":true,"messages":[],"pad":'
+            + b"[" * depth + b"]" * depth + b"}")
+
+
+class TestBodyFailsClosed:
+    """A body the gate cannot parse used to be forwarded VERBATIM — client
+    id_slot intact, no include_usage, and (past ~50k nesting levels, where
+    Python's json gives up but llama-server's parser does not) a payload
+    whose deep copy overflows llama-server's stack. Refuse, never forward."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}",
+           "Content-Type": "application/json"}
+
+    def _post(self, edge, tmp_path, content, path="/v1/chat/completions"):
+        _registry(tmp_path, slot=0)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            r = c.post(path, content=content, headers=self.HDR)
+            inflight = _laptop_bucket(edge, c).inflight
+        return r, cap, inflight
+
+    def test_deeply_nested_body_never_reaches_upstream(self, edge, tmp_path):
+        r, cap, inflight = self._post(edge, tmp_path, _nested(100_000))
+        assert r.status_code == 400, r.text
+        assert "content" not in cap, "unparseable body was forwarded upstream"
+        assert inflight == 0, "400 path leaked the in-flight slot"
+        row = json.loads((tmp_path / ".run" / "inference-audit.jsonl")
+                         .read_text().strip().splitlines()[-1])
+        assert row["status"] == 400 and row["outcome"] == "bad_request"
+
+    def test_depth_cap_boundary(self, edge, tmp_path):
+        # Just over the cap is refused BEFORE json.loads (which would parse
+        # it fine) — the cap, not Python's recursion limit, is the guard.
+        r, cap, _ = self._post(edge, tmp_path,
+                               _nested(edge.MAX_JSON_DEPTH))  # +1 for the {}
+        assert r.status_code == 400
+        assert "content" not in cap
+        # Negative control: a body within the cap is sanitized and forwarded.
+        r, cap, _ = self._post(edge, tmp_path,
+                               _nested(edge.MAX_JSON_DEPTH - 1))
+        assert r.status_code == 200
+        sent = json.loads(cap["content"])
+        assert sent["id_slot"] == 0                  # server-side pin, not 3
+        assert sent["stream_options"]["include_usage"] is True
+
+    def test_brackets_inside_strings_do_not_count(self, edge, tmp_path):
+        body = json.dumps({"messages": [{"role": "user",
+                                         "content": "[" * 500 + '\\"{' * 50}]})
+        r, cap, _ = self._post(edge, tmp_path, body.encode())
+        assert r.status_code == 200 and "content" in cap
+
+    @pytest.mark.parametrize("content", [
+        b"{ this is not json",
+        b'[{"id_slot": 3}]',                  # valid JSON, not an object
+        b'"just a string"',
+        b"\xff\xfe{}",                        # not UTF-8
+    ])
+    def test_non_object_bodies_are_refused(self, edge, tmp_path, content):
+        r, cap, inflight = self._post(edge, tmp_path, content)
+        assert r.status_code == 400
+        assert "content" not in cap
+        assert inflight == 0
+
+    @pytest.mark.parametrize("path", ["/v1/completions", "/v1/embeddings"])
+    def test_every_json_endpoint_fails_closed(self, edge, tmp_path, path):
+        r, cap, _ = self._post(edge, tmp_path, _nested(100_000), path=path)
+        assert r.status_code == 400 and "content" not in cap
+
+
 def _laptop_bucket(edge, client):
     """Buckets are keyed by ENROLLMENT uid, not the reusable device id."""
     uid = edge.device_uid({"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})

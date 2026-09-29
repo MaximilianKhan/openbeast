@@ -50,6 +50,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -98,6 +99,19 @@ ALLOWED_PATHS = frozenset({
     "/v1/completions",
     "/v1/embeddings",
 })
+
+# The allowlisted endpoints whose body is a JSON object the gate MUST read to
+# enforce tenancy (id_slot strip + server-side slot, include_usage). A body it
+# cannot parse here is refused, never forwarded — see _sanitize_body.
+JSON_PATHS = frozenset({
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/embeddings",
+})
+# No legitimate request nests anywhere near this (a chat body with a deep tool
+# schema is ~15-20). The cap must sit far below the ~50k where Python's json
+# gives up AND llama-server's nlohmann deep copy overflows its thread stack.
+MAX_JSON_DEPTH = 64
 
 # Hop-by-hop headers must not be relayed (same list as agents/router.py).
 # Authorization is deliberately ABSENT from the strip list on the RESPONSE
@@ -485,17 +499,58 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
     return None, "no_registry"
 
 
+# A JSON string token (escapes included) or one structural bracket. Strings
+# are matched whole so a "[" inside a string never counts as nesting. The
+# unrolled string form is linear — no catastrophic backtracking.
+_JSON_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
+
+
+def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
+    """True when the body nests brackets deeper than `limit`.
+
+    Iterative and run BEFORE json.loads, which recurses: at ~50k levels it
+    raises RecursionError, and the old code then forwarded the ORIGINAL bytes
+    — client id_slot intact, no include_usage — to a llama-server whose
+    parser has no depth limit and whose deep copy of that value overflows
+    the stack and kills the model server for every tenant. Stops at the
+    first bracket past the cap, so a hostile body costs O(limit) to refuse.
+    A malformed body can only miscount here; json.loads still rejects it.
+    """
+    depth = 0
+    for m in _JSON_TOKEN.finditer(raw):
+        c = m.group()
+        if c in (b"[", b"{"):
+            depth += 1
+            if depth > limit:
+                return True
+        elif c in (b"]", b"}"):
+            depth -= 1
+    return False
+
+
+class BadBody(ValueError):
+    """A JSON-endpoint body the gate refuses to forward (-> 400)."""
+
+
 def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
-    Returns (body, model_name, streaming). Non-JSON bodies pass through.
+    Returns (body, model_name, streaming). Raises BadBody for anything that
+    is not a JSON object within MAX_JSON_DEPTH. FAIL CLOSED: every tenancy
+    and metering guarantee below depends on the gate having parsed the body,
+    so a body it cannot parse must never reach llama-server verbatim — that
+    was a parser differential that bypassed all of them.
     """
+    if _json_too_deep(raw):
+        raise BadBody(f"request body nests deeper than {MAX_JSON_DEPTH} levels")
     try:
         body = json.loads(raw)
-    except Exception:
-        return raw, None, False
+    except (ValueError, RecursionError) as e:
+        # ValueError covers JSONDecodeError, invalid UTF-8 and Python's
+        # int-digit limit; RecursionError is belt-and-braces behind the cap.
+        raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
     if not isinstance(body, dict):
-        return raw, None, False
+        raise BadBody("request body must be a JSON object")
     # id_slot is unauthenticated in llama-server: it wraps modulo the slot
     # count (landing on another tenant's slot) and a pinned task jumps the
     # deferred queue ahead of unpinned callers. Never honor the client's.
@@ -663,7 +718,22 @@ async def gate(request: Request):
                                "type": "invalid_request_error"}},
                     status_code=413)
         raw = bytes(buf)
-        body, model, streaming = _sanitize_body(raw, device) if raw else (raw, None, False)
+        body, model, streaming = raw, None, False
+        if raw and path in JSON_PATHS:
+            try:
+                body, model, streaming = _sanitize_body(raw, device)
+            except BadBody as e:
+                # Authenticated, so it is audited (an identity to attribute);
+                # nothing was forwarded, so there is no usage to meter.
+                _release()
+                _audit(device_id, user, path, 400, None,
+                       int((time.monotonic() - started) * 1000), None,
+                       "bad_request", request_id, uid)
+                _log(f"bad body device={device_id} path={path}: {e}")
+                return JSONResponse(
+                    {"error": {"message": str(e),
+                               "type": "invalid_request_error"}},
+                    status_code=400)
         headers = _upstream_headers(request, device)
         registry.touch(device_id)
 
