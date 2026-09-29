@@ -21,37 +21,36 @@
   which is uninformative. Greedy churn is about 30%, not about 0. The
   estimate is in-sample. **Do not wire the pack per model on the 09-17
   verdict.**
-- **✋ Open, Max's decision:**
-  1. **Delete the 10.9 GB E13 `heretic27b-Q2K-rr2.gguf`** (storage-06). It is
-     a byte copy of `rr.gguf`, now a btrfs reflink costing 0 extra bytes, and
-     it is misnamed (rr2 at 27B is not the 0.6B exact-sweep artifact).
-  2. **Same-uid conf read** (identity-rbac-2). `/proc/$PPID/environ` is
-     closed, but admin-tier `bash` can still `cat openbeast.conf` and mint
-     any identity with the JWT secret. The fix is Sandlock default-on or a
-     separate tool-server uid. See [`RBAC_PLAN.md`](RBAC_PLAN.md).
-  3. **GPU reruns**, which run only after the NPROC and connection-error
-     fixes merge, in the new era:
-     - Tier-3 FRESH rerun: `FRESH=1 bash scratch/tier3_zig_ab.sh`, about
-       **7 GPU-h**, plus about 1.5 h for the optional held-out zig set.
-     - Single-slot greedy floor: `bash scratch/greedy_floor.sh --single-slot`, about
-       **20 GPU-h**.
-     - The 29-unit patch (about 1.5 GPU-h) is not recommended because it
-       mixes eras.
-  4. **llama.cpp staging-build swap** (extensions-client-10, partial).
-     `update.sh --llama` now refuses while the GPU lease is held. Still
-     open: build into a staging dir and swap atomically, and record
-     `llama-server --version` in provenance instead of the source HEAD.
-  5. **Aborted-stream token metering** (edge-gate-slot-4 area, partial).
-     Aborts are audited as `outcome=client_disconnect` with tokens left
-     null. Counting tokens from SSE events was declined because the counts
-     would be invented. Decide whether a lower-bound count is wanted.
-  6. **`agents/logs/` retention policy.** Transcripts are not rotated,
-     because the session ledger points into them. Choose how long to keep
-     them.
-  7. **Publish the review report or not.** Options: commit it redacted
-     (after the open items above close), route it through private
-     vulnerability reporting, or keep it local only. Until decided it
-     stays uncommitted.
+- **Decisions (Max, 2026-09-29):**
+  1. **E13 `heretic27b-Q2K-rr2.gguf` — DELETED** (storage-06). Byte-identical
+     to the referenced `rr.gguf` (cmp) and misnamed; `rr.gguf` stays.
+  2. **Same-uid conf read (identity-rbac-2) — DEFERRED, documented.**
+     `/proc/$PPID/environ` is closed, but admin-tier `bash` can still read
+     `openbeast.conf` (and so the JWT secret). Landlock is allow-list only,
+     so it cannot carve one file out of an otherwise free shell; Sandlock
+     default-on changes eval behaviour (needs a GPU measurement first) and a
+     separate uid needs sudo/system setup. See [`RBAC_PLAN.md`](RBAC_PLAN.md).
+  3. **GPU reruns — NOT YET** (Max: "no re-run yet", "not yet"). When wanted,
+     in the new era: Tier-3 FRESH (`FRESH=1 bash scratch/tier3_zig_ab.sh`,
+     ~7 GPU-h, +1.5 h optional held-out zig set); single-slot greedy floor
+     (`bash scratch/greedy_floor.sh --single-slot`, ~20 GPU-h). Until then the
+     pack stays unwired: Tier-3 is UNRESOLVED.
+  4. **llama.cpp rebuild — DONE differently.** `update.sh --llama` refuses
+     under a foreign GPU lease, and now reflink-snapshots `build/bin` and
+     rolls it back when a rebuild fails, so a half-built lib/binary mix can
+     never be served. A second full build tree was rejected (doubles compile
+     time for the same guarantee).
+  5. **Aborted-stream token metering — KEPT AS IS.** Aborts are audited as
+     `outcome=client_disconnect` with tokens null; an invented count would be
+     worse than none.
+  6. **`agents/logs/` retention — DONE, opt-in.** `AGENT_LOG_RETENTION_DAYS`
+     (default 0 = forever): the daily logrotate timer removes transcripts past
+     the cutoff that no ledger record still names.
+  7. **The review report stays local** (`docs/reviews/FULL-REVIEW-2026-09-29.md`,
+     untracked): most items are now fixed, but it carries exploit-level detail
+     and this repo is public.
+  8. **Max's own, unchanged:** `scratch/prune-2026-09-17.sh --go --sudo` and
+     the docsync GLM-5.3 exclude — leave them.
 
 ## 📱 beast-chat + 🎨 beast-artifact — BOTH SHIPPED 2026-09-15
 
