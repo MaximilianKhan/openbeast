@@ -941,8 +941,10 @@ else
   fail "dashboard.py missing the /api/slot beast-slot contract"
 fi
 # Keyed installs: healthcheck must present the bearer to llama-server.
+# (Through ob_curl_bearer — lib/curl_auth.sh — so the key is never on argv;
+# tests/test_shell_ops.sh proves it by running the script.)
 if grep -qE 'check "llama.cpp server".*LLAMA_API_KEY' "$REPO_DIR/scripts/healthcheck.sh" \
-   && grep -q 'LLAMA_AUTH' "$REPO_DIR/scripts/healthcheck.sh"; then
+   && grep -q 'ob_curl_bearer "${LLAMA_API_KEY:-}"' "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck presents LLAMA_API_KEY to llama-server"
 else
   fail "healthcheck.sh doesn't pass the bearer to llama-server checks"
@@ -1272,7 +1274,7 @@ if grep -q 'chat-local.token' "$_DC"; then
 else
   fail "doctor probes chat health unauthenticated — the detail fields stay empty"
 fi
-if grep -q 'header = "X-OpenBeast-Local' "$_DC"; then
+if grep -q 'ob_curl_hdr "${_chat_tok:+X-OpenBeast-Local' "$_DC"; then
   pass "the chat token goes through a --config file, not argv (ps is world-readable)"
 else
   fail "the chat token may be passed in argv"
@@ -2136,6 +2138,7 @@ chmod +x "$_RV/bin/curl"
 {
   echo 'set -uo pipefail'
   echo "source '$REPO_DIR/scripts/lib/proc.sh'"
+  echo "source '$REPO_DIR/scripts/lib/curl_auth.sh'"
   echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
   sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
   echo '"$@"'

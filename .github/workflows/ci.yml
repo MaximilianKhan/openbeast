@@ -76,6 +76,21 @@ jobs:
       - name: Supply-chain tests
         run: bash tests/test_supply_chain.sh
 
+      # The 2026-09-29 review's other hermetic suites (tests/run_tests.sh
+      # runs the same files). Stub binaries only; test_conf_secrets.sh's
+      # real-curl check talks to a loopback python http.server it starts and
+      # kills itself; test_gpu_ops.sh's lease reaper needs GNU grep -z and
+      # util-linux flock, both on ubuntu-latest. test_lifecycle.sh and
+      # test_uninstall.sh already run inside "Script structure tests".
+      - name: Conf parsing + secrets-off-argv tests
+        run: bash tests/test_conf_secrets.sh
+
+      - name: GPU lease / update / ops tests
+        run: bash tests/test_gpu_ops.sh
+
+      - name: Shell ops tests (doctor, tailscale, conf, keys)
+        run: bash tests/test_shell_ops.sh
+
       - name: Tool unit tests
         env:
           # No outbound network assumptions in CI (httpbin flakiness);

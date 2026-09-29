@@ -177,10 +177,14 @@ REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGE
 AGENT_ROUTER="$(_ob_bool "${OPENBEAST_AGENT_ROUTER:-$(_ob_conf_value AGENT_ROUTER || true)}" false AGENT_ROUTER)"
 ROUTER_PORT="${OPENBEAST_ROUTER_PORT:-$(_ob_conf_value ROUTER_PORT || echo 8088)}"
 # Router spawn-gate identity policy (docs/RBAC_PLAN.md): the router only runs
-# its spawn path for X-OpenWebUI-User-Role: admin turns. When this is true and
-# the role header is ABSENT (e.g. header forwarding disabled), the router
-# fails CLOSED (no spawn) instead of open — set true on hardened multi-user
-# installs. Exported so start.sh's router process inherits it.
+# its spawn path for admin turns — the role comes from the plain
+# X-OpenWebUI-User-Role header, or, in signed-identity mode
+# (IDENTITY_JWT_SECRET set), ONLY from the verified X-OpenWebUI-User-Jwt. A
+# turn with NO identity fails CLOSED on its own whenever WEBUI_AUTH=true or
+# IDENTITY_JWT_SECRET is set (agents/router.py REQUIRE_IDENTITY); `true`
+# here forces fail-closed on every other rig too. The `false` default only
+# matters on a single-user, auth-off rig, which sends no identity at all.
+# Exported so start.sh's router process inherits it.
 ROUTER_REQUIRE_IDENTITY="$(_ob_bool "${OPENBEAST_ROUTER_REQUIRE_IDENTITY:-$(_ob_conf_value ROUTER_REQUIRE_IDENTITY || true)}" false ROUTER_REQUIRE_IDENTITY)"
 export OPENBEAST_ROUTER_REQUIRE_IDENTITY="$ROUTER_REQUIRE_IDENTITY"
 # Kernel-level sandbox wrapper for the model's bash tool (docs/SANDBOXING.md).
@@ -280,11 +284,47 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
 fi
+# Where a process ON THIS BOX dials the stack's BIND_HOST services
+# (lib/net.sh: wildcard/empty -> 127.0.0.1, :: -> [::1], a specific LAN or
+# tailnet address -> itself, since a socket bound there refuses loopback).
+# Exported for configure-webui.sh and anyone else building local URLs.
+# (net.sh always ships next to this file; a stripped copy without it — a
+# test sandbox, a hand-copied conf.sh — keeps the old loopback behaviour.)
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/net.sh" ]]; then
+  # shellcheck source=net.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/net.sh"
+  OPENBEAST_PROBE_HOST="$(ob_probe_host "$BIND_HOST")"
+else
+  OPENBEAST_PROBE_HOST=127.0.0.1
+fi
+export OPENBEAST_PROBE_HOST
+# The tool server's web_search (agents/tools.py) defaults SEARXNG_URL to
+# localhost:8888, but SearXNG binds BIND_HOST — and a socket bound to a
+# specific LAN/tailnet address refuses loopback, so the MODEL's search tool
+# was refused on exactly the rigs whose WebUI search now worked. Point it at
+# the probe host there. Loopback/wildcard binds leave it unset (the
+# historical default already works), and an operator's own SEARXNG_URL wins.
+if [[ -z "${SEARXNG_URL:-}" && "$OPENBEAST_PROBE_HOST" != "127.0.0.1" ]]; then
+  export SEARXNG_URL="http://${OPENBEAST_PROBE_HOST}:8888"
+fi
+# The router hard-binds 127.0.0.1 (agents/router.py) whatever BIND_HOST is,
+# so it is always dialled there; llama-server binds BIND_HOST, so it is
+# dialled on the probe host. It was `localhost` for both, and on a rig with a
+# specific BIND_HOST (the documented LAN/tailnet case) Open WebUI had no model
+# while every health probe, which follows BIND_HOST, read green. Open WebUI
+# runs with network_mode: host (docker-compose.yml), so the address that
+# works from the host shell is the one that works from inside the container.
+# The loopback/wildcard case keeps the historical `localhost` spelling on
+# purpose: configure-webui.sh rewrites WebUI's stored connection (and
+# restarts the container) whenever this string changes.
+_ob_model_host="$OPENBEAST_PROBE_HOST"
+[[ "$_ob_model_host" == "127.0.0.1" ]] && _ob_model_host=localhost
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else
-  MODEL_URL="http://localhost:8080/v1"
+  MODEL_URL="http://${_ob_model_host}:8080/v1"
 fi
+unset _ob_model_host
 export AGENT_ROUTER ROUTER_PORT
 # Frontends read this for the model endpoint (docker-compose interpolates it).
 export OPENBEAST_MODEL_URL="$MODEL_URL"
@@ -292,6 +332,9 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# start.sh installs + enables the daily openbeast-logrotate.timer (systemd
+# --user) when it is missing. false = leave rotation to the operator.
+LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a
@@ -299,6 +342,20 @@ MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo
 # (0700) workspace instead. Spawned agents keep using their own AGENT_WORKDIR.
 # start.sh creates the dir with the right mode; mcp_server inherits this env.
 OPENBEAST_FILES_DIR="${OPENBEAST_FILES_DIR:-$(_ob_conf_value FILES_DIR || echo "$HOME/openbeast-files")}"
+# Expand a leading ~ and anchor a relative path to the checkout — the same
+# resolution uninstall.sh applies. The example conf's own form is
+# `FILES_DIR=~/openbeast-files`, and _ob_conf_value returns it verbatim, so
+# start.sh ran `mkdir -p "~/openbeast-files"` — a literal `~` directory under
+# its cwd — while the Python side expanduser()'d the same string to $HOME.
+# shellcheck disable=SC2088  # matching a literal ~, not expanding one
+case "$OPENBEAST_FILES_DIR" in
+  "~")   OPENBEAST_FILES_DIR="$HOME" ;;
+  "~/"*) OPENBEAST_FILES_DIR="$HOME/${OPENBEAST_FILES_DIR#\~/}" ;;
+esac
+case "$OPENBEAST_FILES_DIR" in
+  /*) ;;
+  *)  OPENBEAST_FILES_DIR="$REPO_DIR/$OPENBEAST_FILES_DIR" ;;
+esac
 export OPENBEAST_FILES_DIR
 # WEBUI_AUTH default is FALSE (local-only single user — no login wall, and
 # configure-webui.sh can auto-configure via the default admin account). It
@@ -381,6 +438,12 @@ fi
 # to start keyless on a non-loopback bind without it (so start.sh stops there).
 ALLOW_OPEN_TOOLS="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_TOOLS:-$(_ob_conf_value ALLOW_OPEN_TOOLS || true)}" false ALLOW_OPEN_TOOLS)"
 export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
+# ALLOW_OPEN_WEBUI (env OPENBEAST_ALLOW_OPEN_WEBUI) default false: the
+# persisted form of setup-tailscale.sh --i-accept-open-webui — "yes, publish
+# the WebUI on :443 with WEBUI_AUTH off". setup-tailscale writes it when that
+# flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
+ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
+export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse
 # (or, with ALLOW_OPEN_TOOLS=true, shout about).

@@ -74,6 +74,13 @@
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
 
+# Log rotation: every ./start.sh makes sure the daily openbeast-logrotate
+# timer (systemd --user; scripts/logrotate.sh) is installed and enabled, so
+# stack.log and the audit trails stay bounded. No-op without a systemd user
+# manager. Set false to manage rotation yourself.
+# Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
+#LOGROTATE_AUTOINSTALL=true
+
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
@@ -230,6 +237,13 @@
 # the WebUI goes tailnet-wide — that's when a per-user login + the RBAC
 # tiers (docs/RBAC_PLAN.md) start to matter.
 #WEBUI_AUTH=false
+
+# Acknowledge publishing the WebUI on the tailnet (:443) with WEBUI_AUTH off,
+# i.e. every tailnet device is admin (with bash). Written for you by
+# `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep
+# publishing and doctor.sh WARNs instead of FAILing. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
+#ALLOW_OPEN_WEBUI=false
 
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.

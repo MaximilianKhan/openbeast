@@ -20,9 +20,15 @@ REGISTRY="$SCRIPT_DIR/weights.registry"
 # not-yet-downloaded weights dir is "nothing to verify" here, not an error
 # (that hard exit is right for serve scripts, wrong for an integrity check —
 # and letting it propagate made doctor exit nonzero on a fresh/CI checkout,
-# which the doctor test reads via pipefail as a failure). weights.sh exports
-# WEIGHTS_DIR before its existence check, so a guarded subshell captures it.
-WEIGHTS_DIR="$( (source "$SCRIPT_DIR/lib/weights.sh" >/dev/null 2>&1; printf '%s' "${WEIGHTS_DIR:-}") || true )"
+# which the doctor test reads via pipefail as a failure). weights.sh sets
+# WEIGHTS_DIR before its existence check — but its `exit 1` on a missing dir
+# also skipped a `printf` placed after the `source`, so the resolved path was
+# lost and this fell back to repo/weights, a path weights.sh never picks for
+# a fresh checkout. An EXIT trap prints it on either path (uninstall.sh's
+# idiom). Only stderr is silenced: a stdout redirect on the `source` would
+# still be in force when its `exit` fires the trap, and swallow the path.
+WEIGHTS_DIR="$( ( trap 'printf "%s" "${WEIGHTS_DIR:-}"' EXIT
+                  OPENBEAST_WEIGHTS_MKDIR=0 source "$SCRIPT_DIR/lib/weights.sh" 2>/dev/null ) || true )"
 [[ -n "$WEIGHTS_DIR" ]] || WEIGHTS_DIR="$REPO_DIR/weights"
 
 DEEP=0; ONLY=""

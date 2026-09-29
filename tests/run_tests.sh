@@ -100,10 +100,44 @@ fi
 echo ""
 echo ""
 
+# --- The 2026-09-29 review's hermetic shell suites ---
+# Each builds its own throwaway rig with stub binaries (no GPU, docker,
+# network or stack). test_lifecycle.sh and test_uninstall.sh are not listed:
+# test_scripts.sh above already runs both. CI runs these same files.
+for _suite in \
+  "test_conf_secrets.sh|Conf parsing + secrets-off-argv" \
+  "test_gpu_ops.sh|GPU lease / update / ops" \
+  "test_supply_chain.sh|Supply-chain (hash-pinned installs, pin parity)" \
+  "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)"; do
+  _file="${_suite%%|*}"; _label="${_suite#*|}"
+  echo "--- $_label tests (tests/$_file) ---"
+  echo ""
+  if bash "$REPO_DIR/tests/$_file"; then
+    echo ""
+    echo "$_label tests: ALL PASSED"
+  else
+    echo ""
+    echo "$_label tests: SOME FAILED"
+    OVERALL=1
+  fi
+  echo ""
+  echo ""
+done
+
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""
 export OPENBEAST_SKIP_NETWORK_TESTS="${OPENBEAST_SKIP_NETWORK_TESTS:-1}"  # network tests opt-in (httpbin flakiness)
+# The identity tool server appends to .run/tool-audit.jsonl by default. The
+# pytest suites point it at their own tmp dirs, but the unittest fallback
+# below imports the same modules with nothing overriding it — and fixture
+# identities (alice, bob, '../../etc') landed in the REAL rig's audit trail.
+# Aim it at a throwaway file for the whole run unless the caller chose one.
+if [[ -z "${OPENBEAST_TOOL_AUDIT_PATH:-}" ]]; then
+  _AUDIT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/ob-tests-audit-XXXXXX")"
+  trap 'rm -rf "$_AUDIT_TMP"' EXIT
+  export OPENBEAST_TOOL_AUDIT_PATH="$_AUDIT_TMP/tool-audit.jsonl"
+fi
 if python3 -c "import pytest" 2>/dev/null; then
   if python3 -m pytest "$REPO_DIR/tests/test_tools.py" -v --tb=short; then
     echo ""

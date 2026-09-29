@@ -546,13 +546,16 @@ To stop everything:
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
 - **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
-- **Log rotation (one time, recommended for an always-on rig):**
-  `./scripts/logrotate.sh --install` installs `openbeast-logrotate.timer`, a
-  daily systemd `--user` timer (no sudo) that applies
-  `scripts/logrotate-openbeast.conf` to `stack.log`, every `*-audit.jsonl` and
-  the extension logs in `.run/` — with `logrotate` if it is installed, its own
-  size rotation otherwise. Neither `bootstrap.sh` nor `start.sh` installs it,
-  so until you run this those files grow without bound.
+- **Log rotation (automatic on systemd):** `./start.sh` installs
+  `openbeast-logrotate.timer` on every start where it is missing and a
+  systemd `--user` manager is reachable — a daily user timer (no sudo) that
+  applies `scripts/logrotate-openbeast.conf` to `stack.log`, every
+  `*-audit.jsonl` and the extension logs in `.run/`, with `logrotate` if it is
+  installed and its own size rotation otherwise. A failed install only warns.
+  Opt out with `LOGROTATE_AUTOINSTALL=false` in `openbeast.conf`; without a
+  user manager (macOS, containers) run `./scripts/logrotate.sh --install`
+  yourself where it applies, or those files grow without bound.
+  `./start.sh doctor` warns when the timer is missing or disabled.
   `systemctl --user list-timers openbeast-logrotate.timer` shows it;
   `./scripts/logrotate.sh --uninstall` (or `scripts/uninstall.sh --go`)
   removes it.

@@ -24,6 +24,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 
 # Where the services actually answer (same mapping start.sh uses): loopback
 # for loopback/wildcard binds, the address itself otherwise. llama-server,
@@ -93,9 +94,10 @@ check() {
   # check <name> <url> <match> [bearer-key] — key adds an Authorization
   # header (keyed MCPO instances answer 401 without it, RBAC Phase 2).
   local name="$1" url="$2" match="$3" key="${4:-}"
-  local auth=()
-  [[ -n "$key" ]] && auth=(-H "Authorization: Bearer $key")
-  if curl -s --max-time 5 "${auth[@]}" "$url" 2>/dev/null | grep -qi "$match"; then
+  # The key rides curl's --config on fd 3 (lib/curl_auth.sh), never argv:
+  # the watchdog runs this every 5 minutes and /proc/*/cmdline is readable
+  # by every local uid.
+  if ob_curl_bearer "$key" -s --max-time 5 "$url" 2>/dev/null | grep -qi "$match"; then
     echo "  OK   $name"
     HEALTHY=$((HEALTHY + 1))
     return 0
@@ -112,8 +114,7 @@ echo ""
 # llama.cpp — bearer passed for keyed installs (LLAMA_API_KEY set); /health
 # itself is public in llama-server but /slots below is not, and sending the
 # key to a keyless server is harmless.
-LLAMA_AUTH=()
-[[ -n "${LLAMA_API_KEY:-}" ]] && LLAMA_AUTH=(-H "Authorization: Bearer $LLAMA_API_KEY")
+# (Sent through ob_curl_bearer — off argv, see check() above.)
 LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
 
 # Is llama-server still LOADING? Then it is not down, and killing it is the
@@ -129,7 +130,7 @@ _llama_loading() {
   local body pid age=""
   pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
   ob_pid_matches "$pid" "$_LLAMA_ARGV0" && age="$(ob_pid_age "$pid")"
-  body="$(curl -s --max-time 5 "${LLAMA_AUTH[@]}" "$LLAMA_URL/health" 2>/dev/null || true)"
+  body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 5 "$LLAMA_URL/health" 2>/dev/null || true)"
   if [[ "$body" == *"Loading model"* ]]; then
     # BOUNDED. A server wedged mid-load (a CUDA hang, a stalled weight read)
     # says "Loading model" forever, and nothing else in the stack bounds a
@@ -525,7 +526,7 @@ for _mount_label in "weights:$_weights_dir" "repo:$REPO_DIR"; do
 done
 
 # Slot utilization (/slots is key-protected when LLAMA_API_KEY is set)
-SLOTS_JSON=$(curl -s --max-time 3 "${LLAMA_AUTH[@]}" "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
+SLOTS_JSON=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 3 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 ACTIVE_SLOTS=$(echo "$SLOTS_JSON" | python3 -c "
 import sys, json
 try:

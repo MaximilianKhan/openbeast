@@ -20,6 +20,9 @@ QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
 
 source "$SCRIPT_DIR/lib/net.sh"   # ob_probe_host — the mapping start.sh and healthcheck.sh use
+# ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
+# --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
+source "$SCRIPT_DIR/lib/curl_auth.sh"
 # Where the core services answer (they bind BIND_HOST). It used to be a
 # private copy of the mapping with no `::` arm, so BIND_HOST=:: built
 # http://:::8080 and every service read as down on a healthy stack.
@@ -38,8 +41,7 @@ fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"; FAIL
 
 # curl a health URL; $3 optional bearer key. Returns 0 if the body matches $2.
 probe() { # probe <url> <match> [key]
-  local auth=(); [[ -n "${3:-}" ]] && auth=(-H "Authorization: Bearer $3")
-  curl -s --max-time 4 "${auth[@]}" "$1" 2>/dev/null | grep -qi "$2"
+  ob_curl_bearer "${3:-}" -s --max-time 4 "$1" 2>/dev/null | grep -qi "$2"
 }
 
 # ── Hardware ────────────────────────────────────────────────────────────────
@@ -128,9 +130,21 @@ if systemctl --user show openbeast-stack -p Environment --value 2>/dev/null \
 else
   pass "no secrets in the systemd unit environment"
 fi
-if [[ "$BIND_HOST" == "0.0.0.0" || "$BIND_HOST" == "::" ]]; then
-  warn "BIND_HOST=$BIND_HOST exposes the whole stack unauthenticated" \
+# Loopback is decided by the one helper conf.sh uses (ob_bind_is_loopback):
+# this row used to call ANY value other than 0.0.0.0/:: "loopback-scoped", so
+# BIND_HOST=192.168.1.20 — every service on the LAN — printed a green check.
+if ! ob_bind_is_loopback "$BIND_HOST"; then
+  warn "BIND_HOST=$BIND_HOST is not loopback — the stack's services are reachable from that network" \
        "prefer Tailscale (scripts/setup-tailscale.sh); set BIND_HOST=127.0.0.1"
+  if ob_tools_exposed_open; then
+    if [[ "${ALLOW_OPEN_TOOLS:-false}" == "true" ]]; then
+      warn "tool server keyless on a network bind (ALLOW_OPEN_TOOLS=true acknowledges it)" \
+           "./scripts/setup-mcpo-keys.sh"
+    else
+      fail "tool server keyless on a network bind — anyone on that network can run shell commands" \
+           "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
+    fi
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi
@@ -303,9 +317,44 @@ else
   warn "identity tool server not responding (:3001)" "./scripts/healthcheck.sh --restart"
 fi
 
-probe "http://$HEALTH_HOST:3000/api/version" "version" \
-  && pass "Open WebUI (:3000)" \
-  || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
+_WEBUI_UP=0
+if probe "http://$HEALTH_HOST:3000/api/version" "version"; then
+  _WEBUI_UP=1
+  pass "Open WebUI (:3000)"
+else
+  warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
+fi
+# What the RUNNING WebUI enforces (features.auth on the public /api/config):
+# true / false / unknown. The conf can say one thing while the container,
+# started before the conf changed, still does the other.
+_webui_live_auth() {
+  curl -s --max-time 4 "http://$HEALTH_HOST:3000/api/config" 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    a = json.load(sys.stdin).get('features', {}).get('auth')
+except Exception:
+    a = None
+print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
+    || echo unknown
+}
+# Upstream's built-in admin@localhost / "admin" (network-exposure-1): with
+# login ON, a WebUI that still accepts it hands admin — and the privileged
+# tool connection, i.e. bash — to anyone who can reach it. configure-webui.sh
+# rotates it on start; this row catches a rig where that did not happen. The
+# probe is configure-webui.sh's own (password via env + stdin, never argv).
+if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
+  WEBUI_URL="http://$HEALTH_HOST:3000" "$SCRIPT_DIR/configure-webui.sh" --check-default-admin >/dev/null 2>&1
+  case $? in
+    1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
+            "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
+    0) pass "built-in WebUI admin does not accept the upstream default password" ;;
+    # 4: login is off (or not reported) on the running WebUI, so the probe
+    # did not sign in at all — no row, never a green check it did not earn.
+    # 3/other: WebUI went away between the two probes — the row above covers it.
+    *) ;;
+  esac
+fi
 
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.
@@ -319,15 +368,9 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   # present the locality token, through a 0600 --config file and never argv
   # (`ps` is world-readable) — the same shape the beast-artifact row below
   # already uses.
-  _chat_cfg=""
   _chat_tok="$(cat "$REPO_DIR/.run/chat-local.token" 2>/dev/null || true)"
-  if [[ -n "$_chat_tok" ]]; then
-    _chat_cfg="$(mktemp)"; chmod 600 "$_chat_cfg"
-    printf 'header = "X-OpenBeast-Local: %s"\n' "$_chat_tok" > "$_chat_cfg"
-  fi
-  _chat=$(curl -s --max-time 4 ${_chat_cfg:+--config "$_chat_cfg"} \
+  _chat=$(ob_curl_hdr "${_chat_tok:+X-OpenBeast-Local: $_chat_tok}" -s --max-time 4 \
             "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
-  [[ -n "$_chat_cfg" ]] && rm -f "$_chat_cfg"
   if echo "$_chat" | grep -qi '"status":"ok"'; then
     # [a-z-]: the value is a hyphenated word ("any-identified"), and a
     # [a-z]-only class silently matched nothing.
@@ -355,7 +398,8 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # tailnet (tailscale serve proxies from loopback), so the gate keys this on
   # a 0600 token only readable on this box.
   _gate_tok=$(cat "$REPO_DIR/.run/edge-local.token" 2>/dev/null || true)
-  _gate=$(curl -s --max-time 4 -H "X-OpenBeast-Local: ${_gate_tok}" "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
+  _gate=$(ob_curl_hdr "${_gate_tok:+X-OpenBeast-Local: $_gate_tok}" -s --max-time 4 \
+            "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
   if [[ -n "$_gate" ]]; then
     _mode=$(echo "$_gate" | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
     _ndev=$(echo "$_gate" | grep -o '"devices":[0-9]*' | cut -d: -f2)
@@ -377,15 +421,9 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   # not report the store path or how many pages exist. doctor runs ON the rig,
   # so it presents the locality token to get the detailed body. Through a
   # 0600 --config file, never argv: `ps` is world-readable.
-  _art_cfg=""
   _art_tok="$(cat "$REPO_DIR/.run/artifact-local.token" 2>/dev/null || true)"
-  if [[ -n "$_art_tok" ]]; then
-    _art_cfg="$(mktemp)"; chmod 600 "$_art_cfg"
-    printf 'header = "X-OpenBeast-Local: %s"\n' "$_art_tok" > "$_art_cfg"
-  fi
-  _art=$(curl -s --max-time 4 ${_art_cfg:+--config "$_art_cfg"} \
+  _art=$(ob_curl_hdr "${_art_tok:+X-OpenBeast-Local: $_art_tok}" -s --max-time 4 \
            "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
-  [[ -n "$_art_cfg" ]] && rm -f "$_art_cfg"
   if [[ -n "$_art" ]]; then
     _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
     if [[ -n "$_nart" ]]; then
@@ -432,6 +470,29 @@ if command -v tailscale >/dev/null 2>&1; then
     elif [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       warn "BEAST_CHAT=true but :8445 is not published — the console is loopback-only" \
            "./scripts/setup-tailscale.sh --publish-chat"
+    fi
+    # :443 is the WebUI. Published with login OFF, every tailnet device is the
+    # default admin — with bash through the privileged tool connection
+    # (network-exposure-3). The default :443 entry prints with NO port token
+    # (https://<fqdn> …), an explicit one as :443. Judge both the conf and the
+    # RUNNING container: a conf flipped to true is not in force until WebUI
+    # restarts.
+    if echo "$_serve" | grep -qE '^https://[^:/[:space:]]+(:443)?([[:space:]/]|$)'; then
+      _live_auth="$(_webui_live_auth)"
+      if [[ "${WEBUI_AUTH:-false}" != "true" && "${ALLOW_OPEN_WEBUI:-false}" == "true" ]]; then
+        # Published open on purpose (setup-tailscale.sh --i-accept-open-webui
+        # records ALLOW_OPEN_WEBUI=true). Say it every run; do not fail it.
+        warn "the WebUI is published on :443 with login OFF (ALLOW_OPEN_WEBUI=true acknowledges it) — every tailnet device is admin" \
+             "set WEBUI_AUTH=true and remove ALLOW_OPEN_WEBUI from openbeast.conf, then ./stop.sh && ./start.sh -d"
+      elif [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+        fail "the WebUI is published on :443 but WEBUI_AUTH is off — every tailnet device is admin (and has bash)" \
+             "set WEBUI_AUTH=true in openbeast.conf and ./stop.sh && ./start.sh -d, or: sudo tailscale serve --https=443 off (if the open WebUI is intended: ./scripts/setup-tailscale.sh --i-accept-open-webui records ALLOW_OPEN_WEBUI=true)"
+      elif [[ "$_live_auth" == "false" ]]; then
+        fail "the WebUI is published on :443 and the RUNNING WebUI still has login off" \
+             "WEBUI_AUTH=true is set but not live yet — ./stop.sh && ./start.sh -d"
+      else
+        pass "WebUI published on :443 with login enforced (live auth=${_live_auth})"
+      fi
     fi
     if echo "$_serve" | grep -qE ':8443[^0-9]'; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
@@ -500,6 +561,21 @@ except Exception: print("")' 2>/dev/null)"
         fi
       fi
     fi
+  fi
+fi
+
+# ── Log rotation ────────────────────────────────────────────────────────────
+# stack.log and the audit trails grow without bound unless the daily
+# openbeast-logrotate timer runs (storage-04). start.sh installs it; this row
+# catches a rig where it is missing or was disabled. Skipped where there is
+# no systemd user manager to ask (macOS, containers, CI).
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  section "Housekeeping"
+  if systemctl --user is-enabled --quiet openbeast-logrotate.timer 2>/dev/null; then
+    pass "log rotation timer enabled (openbeast-logrotate.timer)"
+  else
+    warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
+         "./scripts/logrotate.sh --install"
   fi
 fi
 

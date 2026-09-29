@@ -84,6 +84,7 @@ fi
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
 source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
@@ -101,6 +102,29 @@ LLAMA_BASE="http://$HEALTH_HOST:8080"
 # watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
 LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
 [[ "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
+
+# ---- log rotation: installed on the default path, not by a manual step ----
+# stack.log and the audit trails grow without bound unless
+# openbeast-logrotate.timer runs; for a long time it existed only behind a
+# manual `./scripts/logrotate.sh --install` that nothing on the default path
+# ran (review storage-04). So every start makes sure it is there: a no-op
+# when it is already enabled, when there is no reachable systemd --user
+# manager (macOS, a container, a CI runner), or with LOGROTATE_AUTOINSTALL=
+# false in openbeast.conf. Never fatal — rotation is housekeeping, and a
+# failed install must not keep the model from starting.
+ensure_logrotate_timer() {
+  [[ "${LOGROTATE_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -x "$SCRIPT_DIR/scripts/logrotate.sh" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-logrotate.timer 2>/dev/null && return 0
+  # Reachable user manager? (`show-environment` answers only when it is.)
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing daily log rotation (openbeast-logrotate.timer; opt out: LOGROTATE_AUTOINSTALL=false)..."
+  "$SCRIPT_DIR/scripts/logrotate.sh" --install 2>&1 | sed 's/^/  /' \
+    || echo "  Warning: log rotation not installed — run ./scripts/logrotate.sh --install" >&2
+  return 0
+}
+[[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
@@ -621,7 +645,9 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # peer is useless: tailscale serve proxies from 127.0.0.1). The token file
   # is 0600 and only readable on this box.
   _EDGE_TOK=$(cat "$RUN_DIR/edge-local.token" 2>/dev/null || true)
-  _EDGE_AUTH=$(curl -s -m 2 -H "X-OpenBeast-Local: ${_EDGE_TOK}" "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
+  # The header goes through ob_curl_hdr (curl --config on fd 3), never argv:
+  # /proc/*/cmdline is world-readable, and this token unlocks /gate/*.
+  _EDGE_AUTH=$(ob_curl_hdr "${_EDGE_TOK:+X-OpenBeast-Local: $_EDGE_TOK}" -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
   echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
