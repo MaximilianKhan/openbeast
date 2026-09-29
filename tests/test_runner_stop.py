@@ -54,7 +54,7 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def _launch(tmp_path, mode, cmd):
+def _launch(tmp_path, mode, cmd, ignore=()):
     pidfile = tmp_path / "tool.pid"
     env = {k: v for k, v in os.environ.items()
            if k not in ("OPENBEAST_KEEP_DUMPABLE",)}
@@ -62,6 +62,9 @@ def _launch(tmp_path, mode, cmd):
         [sys.executable, "-c", _PROBE, str(ROOT / "agents"), mode,
          str(pidfile), cmd],
         env=env, cwd=str(tmp_path), start_new_session=True,
+        # What `nohup` / a non-interactive `cmd &` hand the runner.
+        preexec_fn=(lambda: [signal.signal(s, signal.SIG_IGN) for s in ignore])
+        if ignore else None,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -152,3 +155,25 @@ def test_registry_is_empty_after_calls(tmp_path):
         tools.run_reaped("sleep 5", 0.3)
     assert tools._LIVE_GROUPS == {}
     assert tools.kill_live_children(0) == 0
+
+
+@pytest.mark.parametrize("sig", [signal.SIGHUP, signal.SIGINT])
+def test_inherited_ignore_is_kept(tmp_path, sig):
+    # Under `nohup` SIGHUP arrives ignored: the run must survive a closed
+    # terminal, tool command included (review fixup: the handler overrode
+    # SIG_IGN and a hangup killed the agent, rc 129).
+    runner, tool_pid = _launch(tmp_path, "handler", _QUIET, ignore=(sig,))
+    try:
+        os.kill(runner.pid, sig)
+        with pytest.raises(subprocess.TimeoutExpired):
+            runner.wait(timeout=1.5)
+        assert _alive(tool_pid)
+        # The signals it does NOT ignore still stop it cleanly.
+        os.kill(runner.pid, signal.SIGTERM)
+        assert runner.wait(timeout=20) == -signal.SIGTERM
+        assert _gone_within(tool_pid, 5)
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait(timeout=10)
+        _cleanup(tool_pid)

@@ -1183,7 +1183,15 @@ def _on_stop_signal(signum, frame):
 
 
 def install_stop_handlers() -> None:
+    """Hook the stop signals — but never one the launcher chose to IGNORE.
+
+    `nohup ./agent.sh ... &` ignores SIGHUP and a backgrounded `cmd &` in a
+    non-interactive shell ignores SIGINT; that inherited SIG_IGN is how the
+    run survives a closed terminal. Overriding it turned a hangup into a
+    dead agent (rc 129) — Python itself keeps an inherited SIG_IGN too."""
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
         signal.signal(sig, _on_stop_signal)
 
 
