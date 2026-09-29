@@ -131,6 +131,52 @@ def _killpg(proc):
         pass
 
 
+#: pid (== pgid, start_new_session) -> Popen of every run_reaped command still
+#: in flight. A process that is told to stop (runner.py's SIGTERM handler)
+#: kills these groups first: each lives in its OWN session, so signalling the
+#: caller's group never reaches them, and the caller's proc.wait(timeout) was
+#: the only thing enforcing their timeout. Plain dict ops (atomic under the
+#: GIL) — no lock, because the reader is a signal handler.
+_LIVE_GROUPS: dict = {}
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_live_children(grace: float = 2.0) -> int:
+    """SIGTERM every in-flight run_reaped process group, give it `grace`
+    seconds, then SIGKILL whatever is left. Safe to call from a signal
+    handler (no locks). Returns the number of groups signalled."""
+    procs = list(_LIVE_GROUPS.values())
+    for p in procs:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + max(grace, 0)
+    while time.monotonic() < deadline:
+        # poll() reaps the leader (non-blocking even if the interrupted main
+        # thread holds the Popen's waitpid lock), so a zombie shell doesn't
+        # keep the group looking alive for the whole grace period.
+        if not any(p.poll() is None or _group_alive(p.pid) for p in procs):
+            break
+        time.sleep(0.05)
+    for p in procs:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        p.poll()
+    return len(procs)
+
+
 def run_reaped(command, timeout, as_limit=None, **popen_kw):
     """subprocess.run(shell=True)-alike that (a) kills the WHOLE process group
     on timeout and (b) bounds how much output the PARENT buffers.
@@ -177,6 +223,22 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         start_new_session=True,
         **popen_kw,
     )
+    _LIVE_GROUPS[proc.pid] = proc
+    try:
+        return _reap(proc, command, timeout, _as_limit, _nproc)
+    except BaseException:
+        # Anything escaping _reap (a failed reader-thread start, an
+        # interrupt) must not leave the command running unsupervised.
+        if proc.poll() is None:
+            _killpg(proc)
+        raise
+    finally:
+        _LIVE_GROUPS.pop(proc.pid, None)
+
+
+def _reap(proc, command, timeout, _as_limit, _nproc):
+    """run_reaped's body after the spawn (split out so the live-group
+    registry is always cleared, whatever raises)."""
     if hasattr(resource, "prlimit"):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall

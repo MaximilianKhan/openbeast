@@ -20,6 +20,7 @@ import atexit
 import json
 import os
 import re
+import signal
 import sys
 import time
 import urllib.parse
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+import tools as _tools
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
@@ -1073,7 +1075,42 @@ def run_agent(
 # CLI
 # ---------------------------------------------------------------------------
 
+#: Seconds a tool command gets to exit on SIGTERM before its group is
+#: SIGKILLed, when the runner itself is told to stop.
+_STOP_GRACE_S = 2.0
+
+
+def _on_stop_signal(signum, frame):
+    """Kill the in-flight tool command(s), then die the way the signal says.
+
+    Every bash-tool command runs in its OWN session (tools.run_reaped), so
+    `job.sh stop`, MCP stop_agent and the console's escalation — which all
+    signal the runner or its group — never reached it, and once the runner
+    was dead nothing enforced its timeout: the command ran on as an orphan
+    (review chat-sessions-orphaned-tool-children-on-stop). SIGTERM/SIGHUP
+    then re-raise with the default action, so the exit status (-15/-1) and
+    the skipped atexit hooks are exactly what they were; SIGINT keeps its
+    KeyboardInterrupt."""
+    try:
+        _tools.kill_live_children(_STOP_GRACE_S)
+    finally:
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def install_stop_handlers() -> None:
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, _on_stop_signal)
+
+
 def main():
+    # This process is $PPID of every model-authored shell and holds the API
+    # key (and whatever the launcher exported) in its environ: non-dumpable
+    # before the first model call, not lazily at the first tool spawn.
+    _tools.harden_process()
+    install_stop_handlers()
     parser = argparse.ArgumentParser(
         description="Run a local AI agent against a task",
         formatter_class=argparse.RawDescriptionHelpFormatter,
