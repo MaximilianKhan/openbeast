@@ -34,6 +34,8 @@ state (field 3 == `Z`): an unreaped child keeps both its /proc entry and its
 start time, which is why every console-started session used to read `running`
 forever. And a record with NO recorded start time is alive enough to show in
 a list but NOT alive enough to signal — see `is_alive(require_start=True)`.
+Where there is no /proc (the macOS client install), the same state + start
+time come from `ps -o stat=,lstart=`; with neither, nothing is guessed `lost`.
 
 Record writes are serialised by an exclusive flock per record: `touch` is a
 read-modify-write and `finalize` is a compare-and-set, so a slow writer can
@@ -50,7 +52,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import stat as _stat
+import subprocess
 import tempfile
 import time
 import uuid
@@ -165,6 +169,46 @@ def new_id(kind: str = "agent") -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
+def _have_proc() -> bool:
+    """Does this OS expose /proc/<pid>/stat? Linux yes; macOS (the client
+    install ships this module) no."""
+    return os.path.exists("/proc/self/stat")
+
+
+def _ps_stat(pid: int) -> tuple[str, int] | None:
+    """The /proc-less fallback: (state char, start time) from `ps`, or None.
+
+    Without it every record on a macOS client reconciled to `lost` on first
+    read — there is no /proc/<pid>/stat, so _proc_stat was always None — and
+    `job.sh stop` refused ("already 'lost'") while the job ran on. `lstart`
+    is the process's absolute start time, so it is a pid-reuse proof on its
+    own (no boot frame needed), and `stat`'s first letter carries the zombie
+    state the same way /proc does. Both flags exist in BSD and procps ps.
+    LC_ALL=C pins the lstart format. A process that is gone prints nothing.
+    """
+    try:
+        pid = int(pid)
+        out = subprocess.run(
+            ["ps", "-o", "stat=,lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return None
+    parts = (out.stdout or "").split()
+    if out.returncode != 0 or len(parts) < 6:
+        return None
+    try:
+        started = time.strptime(" ".join(parts[1:6]), "%a %b %d %H:%M:%S %Y")
+        return parts[0][:1], int(time.mktime(started))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _liveness_probe_available() -> bool:
+    """Can this box tell a live pid from a dead one at all?"""
+    return _have_proc() or shutil.which("ps") is not None
+
+
 def _proc_stat(pid: int) -> tuple[str, int] | None:
     """(state char, start time) from /proc/<pid>/stat, or None.
 
@@ -173,7 +217,14 @@ def _proc_stat(pid: int) -> tuple[str, int] | None:
     the split, field N lives at index N-3: field 3 (state) is index 0 and
     field 22 (starttime) is index 19. One read gives us both, so the zombie
     check below costs nothing extra.
+
+    Where there is no /proc (macOS) the same pair comes from `ps` instead —
+    see _ps_stat. The start-time UNITS differ (clock ticks vs epoch seconds),
+    which is fine: a value is only ever compared with one captured on the
+    same box by this same function.
     """
+    if not _have_proc():
+        return _ps_stat(pid)
     try:
         with open(f"/proc/{int(pid)}/stat", "rb") as f:
             raw = f.read().decode("utf-8", "replace")
@@ -588,6 +639,12 @@ def reconcile(record: dict) -> dict:
     if not isinstance(record, dict):
         return record
     if record.get("state") != "running":
+        return record
+    if not _liveness_probe_available():
+        # No /proc and no ps: we cannot tell, so we must not guess `lost` —
+        # finalize() refuses a terminal record, and the session's own verdict
+        # would be thrown away. Signalling still refuses (is_alive fails
+        # closed without a probe), so this only affects the reported state.
         return record
     meta = record.get("meta")
     pid_start = meta.get("pid_start") if isinstance(meta, dict) else None
