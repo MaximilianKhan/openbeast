@@ -377,7 +377,8 @@ def _steer_stub(content: str) -> str:
 
 def compact_messages(messages: list[dict], chars_to_free: int,
                      call_index: dict[int, int] | None = None,
-                     steer_eligible=None) -> tuple[int, int]:
+                     steer_eligible=None,
+                     must_free: int | None = None) -> tuple[int, int]:
     """Replace the OLDEST tool results with one-line stubs until at least
     `chars_to_free` characters are freed (or nothing evictable remains).
 
@@ -397,6 +398,17 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     considered only after every tool result has been stubbed. It is EMPTY
     whenever steering is off, which is what keeps this function byte-for-byte
     identical to its pre-beast-chat behaviour on every eval unit.
+
+    `must_free` (proactive path) is the part of the ask that is REQUIRED —
+    back under the trigger; the rest of `chars_to_free` is the hysteresis
+    gap down to the low-water mark, which is wanted but not worth history.
+    When one tool result is oversized — it frees more than every other
+    planned result combined AND more than the whole hysteresis gap
+    (chars_to_free - must_free) — it is stubbed first and the walk then
+    stops at `must_free`: older results are spent only if the trigger
+    itself needs them, never for the gap (review efficiency-3, round 2).
+    The gap is taken only from the result that is cheap to lose. None = the
+    whole ask is required (the overflow path, and every pre-existing caller).
     """
     call_index = call_index or {}
     steer_eligible = steer_eligible or ()
@@ -419,6 +431,7 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # being unevictable, which is the failure E12 describes.
     candidates = tool_results + aged_steers
     ask = max(chars_to_free, 1)
+    must = ask if must_free is None else max(min(must_free, ask), 1)
 
     def _stub_for(i: int) -> str:
         c = messages[i]["content"]
@@ -448,7 +461,18 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     if len(plan) > 1 and tools_in_plan:
         big = max(tools_in_plan, key=_gain)
         older = sum(_gain(i) for i in plan[:plan.index(big)])
-        if older and _gain(big) > older:
+        if (must < ask and _gain(big) >= ask - must
+                and _gain(big) > planned - _gain(big)):
+            # Oversized: it alone outweighs the whole hysteresis gap and the
+            # rest of the plan. Stub it first, then walk oldest-first only
+            # as far as the TRIGGER needs (usually nowhere): older history
+            # is never spent on reaching the low-water mark. An ordinary
+            # result (smaller than the gap) never takes this branch, so a
+            # recent one is not stubbed ahead of older ones merely for being
+            # the largest.
+            candidates = [big] + [c for c in candidates if c != big]
+            ask = must
+        elif older and _gain(big) > older:
             candidates = [big] + [c for c in plan if c != big]
     evicted = freed = 0
     for i in candidates:
@@ -460,6 +484,17 @@ def compact_messages(messages: list[dict], chars_to_free: int,
         freed += len(content) - len(stub)
         evicted += 1
     return evicted, freed
+
+
+def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
+    """(must_free, chars_to_free) for the proactive --context-budget path, or
+    None below the trigger. must_free gets the estimate back under the
+    trigger; chars_to_free goes on to the low-water mark (hysteresis)."""
+    target = int(context_budget * _COMPACT_FRACTION)
+    if context_budget <= 0 or est <= target:
+        return None
+    low = int(context_budget * _COMPACT_LOW_WATER)
+    return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
@@ -799,14 +834,16 @@ def run_agent(
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
 
-    def compact(reason: str, chars_to_free: int, detail: str = "") -> int:
+    def compact(reason: str, chars_to_free: int, detail: str = "",
+                must_free: int | None = None) -> int:
         nonlocal compactions
         # Empty unless steering is on, which is what keeps compaction
         # byte-identical to the pre-beast-chat behaviour under the guard.
         eligible = {i for i, turn in steer_turn.items()
                     if iteration - turn >= _STEER_STUB_AFTER_TURNS}
         n, freed = compact_messages(messages, chars_to_free, call_index,
-                                    steer_eligible=eligible)
+                                    steer_eligible=eligible,
+                                    must_free=must_free)
         if n:
             compactions += 1
             print(f"[compaction] {reason}: stubbed {n} oldest tool result(s), "
@@ -878,11 +915,13 @@ def run_agent(
             # rewritten prefix stays stable for many turns (see
             # _COMPACT_LOW_WATER).
             est = estimate_tokens(messages, len(plan))
-            target = int(context_budget * _COMPACT_FRACTION)
-            if est > target:
+            asks = proactive_asks(est, context_budget)
+            if asks:
+                target = int(context_budget * _COMPACT_FRACTION)
                 low = int(context_budget * _COMPACT_LOW_WATER)
-                compact("budget", (est - low) * _CHARS_PER_TOKEN,
-                        f" (est {est:,} > {target:,} tokens, to {low:,})")
+                compact("budget", asks[1],
+                        f" (est {est:,} > {target:,} tokens, to {low:,})",
+                        must_free=asks[0])
 
         try:
             response = client.chat.completions.create(

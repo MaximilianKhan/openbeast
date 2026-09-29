@@ -178,11 +178,12 @@ def test_giant_result_after_hysteresis_spares_the_history(tmp_path, monkeypatch,
     # first one after.
     older = len(_live_results(reqs[giant_at - 1]))
     after = _live_results(reqs[giant_at])
-    assert comp[-1]["evicted"] < older, "the giant was the one stubbed first"
+    assert comp[-1]["evicted"] == 1, "the giant alone was stubbed"
     assert not any(c.startswith("G") for c in after), "the giant itself is stubbed"
     assert older >= 10
-    # Only the 70%->50% gap's worth of older results may go, not all of them.
-    assert len(after) >= older // 2, (older, len(after))
+    # Stubbing the giant alone is back under the trigger: no older result is
+    # spent on the 70%->50% gap (round 2; round 1 still lost a quarter).
+    assert len(after) == older, (older, len(after))
 
 
 def test_small_results_still_compact_oldest_first_through_run_agent(tmp_path, monkeypatch):
@@ -194,6 +195,139 @@ def test_small_results_still_compact_oldest_first_through_run_agent(tmp_path, mo
         tools_seen = [m["content"] for m in req if m["role"] == "tool"]
         flags = [c.startswith(runner._STUB_PREFIX) for c in tools_seen]
         assert flags == sorted(flags, reverse=True), flags
+
+
+# ---------------------------------------------------------------------------
+# efficiency-3, round 2 — hysteresis must not buy low-water with history
+#
+# The round-1 prefix rule stubbed the giant first, then kept walking
+# oldest-first to reach the 50% low-water mark: 8 of 29 older results still
+# went (the reviewer's interplay.py). Stubbing the giant alone is already
+# back under the trigger; the gap is taken only from the result that is
+# cheap to lose.
+# ---------------------------------------------------------------------------
+
+def _live(msgs):
+    return sum(1 for m in msgs if m["role"] == "tool"
+               and not m["content"].startswith(runner._STUB_PREFIX))
+
+
+def _add_result(msgs, idx, k, size, fill="r"):
+    msgs.append({"role": "assistant", "content": "", "tool_calls": [{"id": str(k)}]})
+    idx[len(msgs)] = k
+    msgs.append({"role": "tool", "content": fill * size})
+
+
+def _proactive(msgs, idx, budget):
+    """Exactly what run_agent's proactive branch does before a request."""
+    asks = runner.proactive_asks(runner.estimate_tokens(msgs), budget)
+    if asks:
+        return runner.compact_messages(msgs, asks[1], idx, must_free=asks[0])
+    return None
+
+
+def _grow(budget, fill, seed):
+    rng = random.Random(seed)
+    msgs = [{"role": "system", "content": "s" * 8000}, {"role": "user", "content": "task"}]
+    idx: dict = {}
+    k = 0
+    while runner.estimate_tokens(msgs) < fill * budget:
+        k += 1
+        _add_result(msgs, idx, k, rng.randint(1000, 12_000))
+        _proactive(msgs, idx, budget)
+    return msgs, idx, k
+
+
+@pytest.mark.parametrize("size", [2_000_000, 200_000])
+def test_giant_at_60_percent_leaves_every_older_result(size):
+    budget = 85_000
+    msgs, idx, k = _grow(budget, 0.60, seed=3)
+    before = _live(msgs)
+    assert before >= 10
+    _add_result(msgs, idx, k + 1, size, fill="G")
+    asks = runner.proactive_asks(runner.estimate_tokens(msgs), budget)
+    assert asks and asks[1] > asks[0]
+    n, _ = runner.compact_messages(msgs, asks[1], idx, must_free=asks[0])
+    assert n == 1
+    assert msgs[-1]["content"].startswith(runner._STUB_PREFIX)
+    assert _live(msgs) == before, "no older result is lost to the low-water gap"
+    assert runner.estimate_tokens(msgs) <= int(budget * runner._COMPACT_FRACTION)
+
+
+def test_giant_sweep_never_costs_an_older_result():
+    # The reviewer's sweep, driven through the runner's own asks: a 2M
+    # result injected after every turn of five random histories.
+    import copy
+    budget = 85_000
+    lost = total = worst = 0
+    for seed in range(5):
+        rng = random.Random(seed)
+        msgs = [{"role": "system", "content": "s" * 8000}, {"role": "user", "content": "task"}]
+        idx: dict = {}
+        for k in range(1, 121):
+            _add_result(msgs, idx, k, rng.randint(1000, 12_000))
+            _proactive(msgs, idx, budget)
+            if k < 10:
+                continue
+            m2, ix2 = copy.deepcopy(msgs), dict(idx)
+            before = _live(m2)
+            _add_result(m2, ix2, k + 1, 2_000_000, fill="G")
+            _proactive(m2, ix2, budget)
+            total += 1
+            d = before - _live(m2)
+            lost += d
+            worst = max(worst, d)
+            # Whatever the trigger needed, the context is back under it.
+            assert runner.estimate_tokens(m2) <= int(budget * runner._COMPACT_FRACTION)
+    assert total == 555
+    # Only when the history sat within a stub's width of the trigger does
+    # the trigger itself need one more result (2 of 555 positions); round 1
+    # spent ~8 older results per position on the low-water gap.
+    assert worst <= 1, worst
+    assert lost <= total // 100, lost
+
+
+def test_ordinary_result_never_takes_the_solo_branch():
+    # Negative control: 12 KB is the largest result in a small plan but is
+    # smaller than the hysteresis gap, so the walk stays oldest-first — a
+    # recent result is not stubbed ahead of older ones for being the biggest.
+    msgs, idx = _history([2000, 2000, 12_000])
+    runner.compact_messages(msgs, 15_000, idx, must_free=1000)
+    contents = _tool_contents(msgs)
+    assert contents[0].startswith(runner._STUB_PREFIX)
+    assert contents[1].startswith(runner._STUB_PREFIX)
+
+
+def test_giant_that_cannot_reach_the_trigger_alone_still_walks_on():
+    # When the giant alone is NOT back under the trigger, older results must
+    # still go (being stuck beats keeping them) — oldest first, but only as
+    # many as the trigger needs, not the low-water gap.
+    msgs, idx = _history([8000] * 5 + [100_000])
+    n, freed = runner.compact_messages(msgs, 140_000, idx, must_free=130_000)
+    assert freed >= 130_000
+    assert n == 5
+    contents = _tool_contents(msgs)
+    assert contents[-1].startswith(runner._STUB_PREFIX)
+    assert contents[4] == "E" * 8000                   # the newest older one survives
+    assert all(c.startswith(runner._STUB_PREFIX) for c in contents[:4])
+
+
+def test_must_free_none_is_the_old_contract():
+    # Overflow path and older callers: the whole ask is required.
+    a, ia = _history([8000] * 20 + [2_000_000])
+    b, ib = _history([8000] * 20 + [2_000_000])
+    assert (runner.compact_messages(a, 2_100_000, ia)
+            == runner.compact_messages(b, 2_100_000, ib, must_free=None))
+    assert a == b
+
+
+def test_proactive_asks_shape():
+    trig = int(85_000 * 0.70)
+    assert runner.proactive_asks(trig, 85_000) is None         # at the trigger
+    assert runner.proactive_asks(10, 0) is None
+    must, ask = runner.proactive_asks(60_000, 85_000)
+    assert must == (60_000 - trig) * 4
+    assert ask == (60_000 - 42_500) * 4
 
 
 # ---------------------------------------------------------------------------
