@@ -373,6 +373,44 @@ def test_tailscale_explicit_auth_off_with_the_flag_publishes(ts_rig):
     assert "NO login" in p.stdout
 
 
+def test_tailscale_persists_the_open_webui_acknowledgement(ts_rig):
+    """review r2: --i-accept-open-webui had no persisted form, so doctor FAILed
+    a deliberately open :443 on every run, forever. The flag now records
+    ALLOW_OPEN_WEBUI=true (0600 conf, other lines kept, one assignment), and a
+    re-run without the flag honours it."""
+    ts_rig.set_state(auth=False, admin_pw="admin")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nWEBUI_AUTH=false\n"
+                           "ALLOW_OPEN_WEBUI=false\n")
+    ts_rig.conf.chmod(0o600)
+    p = ts_rig.run("setup-tailscale.sh", "--i-accept-open-webui")
+    assert p.returncode == 0, p.stderr
+    assert _mounted_443(ts_rig)
+    text = ts_rig.conf.read_text()
+    assert ts_rig.conf_values()["ALLOW_OPEN_WEBUI"] == "true"
+    assert text.count("ALLOW_OPEN_WEBUI=") == 1, text
+    assert "SEARXNG_SECRET=stub" in text and "WEBUI_AUTH=false" in text
+    assert (ts_rig.conf.stat().st_mode & 0o777) == 0o600
+    assert not list(ts_rig.conf.parent.glob(ts_rig.conf.name + ".*")), "temp file left"
+    # Re-run WITHOUT the flag: the recorded acknowledgement counts as given.
+    mounts_before = sum(1 for k, a in _events(ts_rig)
+                        if k == "ts" and "--https=443" in a and "off" not in a)
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert "NOT publishing the WebUI" not in p.stderr
+    assert sum(1 for k, a in _events(ts_rig)
+               if k == "ts" and "--https=443" in a and "off" not in a) == mounts_before + 1
+    assert ts_rig.conf.read_text().count("ALLOW_OPEN_WEBUI=") == 1
+
+
+def test_tailscale_does_not_persist_acknowledgement_when_auth_is_on(ts_rig):
+    """Control: with login enforced the flag is moot — nothing is recorded."""
+    ts_rig.set_state(auth=True, admin_pw="admin")
+    p = ts_rig.run("setup-tailscale.sh", "--i-accept-open-webui")
+    assert p.returncode == 0, p.stderr
+    assert _mounted_443(ts_rig)
+    assert "ALLOW_OPEN_WEBUI" not in ts_rig.conf.read_text()
+
+
 def _docker(rig, inspect=None, err="Error: No such object: open-webui"):
     """docker stub for `docker inspect open-webui`: prints INSPECT (container
     exists) or fails with ERR (no container / daemon trouble)."""

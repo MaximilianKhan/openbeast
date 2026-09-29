@@ -429,6 +429,12 @@ fi
 # without it — but nothing reads it yet: today it only changes the warning.
 ALLOW_OPEN_TOOLS="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_TOOLS:-$(_ob_conf_value ALLOW_OPEN_TOOLS || true)}" false ALLOW_OPEN_TOOLS)"
 export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
+# ALLOW_OPEN_WEBUI (env OPENBEAST_ALLOW_OPEN_WEBUI) default false: the
+# persisted form of setup-tailscale.sh --i-accept-open-webui — "yes, publish
+# the WebUI on :443 with WEBUI_AUTH off". setup-tailscale writes it when that
+# flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
+ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
+export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse
 # (or, with ALLOW_OPEN_TOOLS=true, shout about).

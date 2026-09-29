@@ -238,6 +238,13 @@
 # tiers (docs/RBAC_PLAN.md) start to matter.
 #WEBUI_AUTH=false
 
+# Acknowledge publishing the WebUI on the tailnet (:443) with WEBUI_AUTH off,
+# i.e. every tailnet device is admin (with bash). Written for you by
+# `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep
+# publishing and doctor.sh WARNs instead of FAILing. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
+#ALLOW_OPEN_WEBUI=false
+
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.
 # Create the account in the browser on first visit, then mirror it here.

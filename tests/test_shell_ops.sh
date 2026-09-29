@@ -6,12 +6,15 @@
 #   1  healthcheck.sh    LLAMA_API_KEY / tool-server keys never on curl argv
 #   2  doctor.sh         tokens off argv; LAN bind is not "loopback-scoped";
 #                        keyless tool server on a network bind FAILs; :443
-#                        published with login off FAILs; default admin
-#                        password FAILs; missing log-rotation timer WARNs
+#                        published with login off FAILs (WARNs with
+#                        ALLOW_OPEN_WEBUI); default admin password FAILs,
+#                        and no row when login is off; missing log-rotation
+#                        timer WARNs
 #   3  start.sh          edge token off argv; the log-rotation timer is
 #                        installed on the default path (ensure_logrotate_timer)
 #   4  setup-mcpo-keys   --rotate never puts the new key on any argv
-#   5  lib/conf.sh       FILES_DIR ~ / relative; MODEL_URL follows BIND_HOST
+#   5  lib/conf.sh       FILES_DIR ~ / relative; MODEL_URL and SEARXNG_URL
+#                        follow BIND_HOST
 #   6  lib/extensions    invalid EXTENSIONS words skipped, `*` not globbed
 #   7  client.sh update  installs from the hash-pinned lock (pydeps.sh)
 #   8  update.sh         --images mirrors the searxng pin into the client file
@@ -207,6 +210,12 @@ if has "$_O" "published on :443 with login enforced" && ! has "$_O" "every tailn
   pass "…:443 with login enforced passes (control)"
 else
   fail ":443 + auth on: $(grep -iE '443|auth' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor WEBUI_AUTH=false ALLOW_OPEN_WEBUI=true
+if has "$_O" "ALLOW_OPEN_WEBUI=true acknowledges it" && ! has "$_O" "but WEBUI_AUTH is off"; then
+  pass "…published open on purpose (ALLOW_OPEN_WEBUI=true, from --i-accept-open-webui) WARNs, not FAILs"
+else
+  fail ":443 + acknowledged open WebUI: $(grep -iE '443|auth' <<< "$_O" | tr '\n' ' ')"
 fi
 RUN_ENV=(TS_SERVE='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8080\n' LIVE_AUTH=false)
 doctor WEBUI_AUTH=false

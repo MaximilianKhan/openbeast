@@ -57,7 +57,10 @@
 # built-in admin@localhost/"admin" account password. If the running WebUI has
 # auth off, :443 is left unpublished until the stack is restarted and this
 # script re-run. An explicit WEBUI_AUTH=false in openbeast.conf also blocks
-# :443 unless --i-accept-open-webui says the open WebUI is intended.
+# :443 unless --i-accept-open-webui says the open WebUI is intended. That
+# acknowledgement is persisted as ALLOW_OPEN_WEBUI=true in openbeast.conf, so
+# re-runs keep honouring it and doctor.sh reports the open :443 as a WARN
+# (acknowledged) instead of a FAIL. Delete that line to take it back.
 #
 # --status prints which OpenBeast surface sits on which tailnet port and
 # changes nothing: no sudo, no openbeast.conf write, no serve reconfiguring.
@@ -105,7 +108,7 @@ for _arg in "$@"; do
       exit 0 ;;
     --i-accept-open-webui) ACCEPT_OPEN_WEBUI=1 ;;
     --status)            STATUS_ONLY=1 ;;
-    -h|--help) sed -n '2,71p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,74p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -310,6 +313,9 @@ _webui_container() {
 
 WEBUI_PUBLISHED=0
 _webui_block=""
+# The flag given on an earlier run, persisted (see below), counts as given.
+ACCEPT_FROM_FLAG=$ACCEPT_OPEN_WEBUI
+[[ "${ALLOW_OPEN_WEBUI:-false}" == "true" ]] && ACCEPT_OPEN_WEBUI=1
 if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
   if [[ $ACCEPT_OPEN_WEBUI -eq 1 ]]; then
     echo "      WARNING: WEBUI_AUTH=false and --i-accept-open-webui given — publishing"
@@ -383,6 +389,21 @@ if [[ -n "$_webui_block" ]]; then
 else
   sudo tailscale serve --bg --https=443  "http://$UP_HOST:3000"
   WEBUI_PUBLISHED=1
+  # Persist --i-accept-open-webui: without a recorded acknowledgement doctor
+  # FAILed this deliberate configuration on every run, forever. Replace any
+  # earlier assignment; keep the conf 0600 (it holds the stack's secrets);
+  # write a temp file in the same dir and mv, so a crash never truncates it.
+  if [[ "${WEBUI_AUTH:-false}" != "true" && $ACCEPT_FROM_FLAG -eq 1 \
+        && "${ALLOW_OPEN_WEBUI:-false}" != "true" ]]; then
+    _conf_tmp="$(umask 077; mktemp "$CONF.XXXXXX")"
+    { grep -vE '^[[:space:]]*ALLOW_OPEN_WEBUI[[:space:]]*=' "$CONF" || true
+      printf '\n# --i-accept-open-webui: the WebUI is published on :443 with NO login, on purpose.\nALLOW_OPEN_WEBUI=true\n'
+    } > "$_conf_tmp"
+    chmod 600 "$_conf_tmp" && mv -f "$_conf_tmp" "$CONF"
+    ALLOW_OPEN_WEBUI=true
+    echo "      Recorded ALLOW_OPEN_WEBUI=true in openbeast.conf (delete it to take the"
+    echo "      acknowledgement back; doctor.sh warns about the open :443 while it is set)."
+  fi
 fi
 
 # :8443 = the inference endpoint remote clients use. When beast-gate is

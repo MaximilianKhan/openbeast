@@ -479,9 +479,14 @@ if command -v tailscale >/dev/null 2>&1; then
     # restarts.
     if echo "$_serve" | grep -qE '^https://[^:/[:space:]]+(:443)?([[:space:]/]|$)'; then
       _live_auth="$(_webui_live_auth)"
-      if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+      if [[ "${WEBUI_AUTH:-false}" != "true" && "${ALLOW_OPEN_WEBUI:-false}" == "true" ]]; then
+        # Published open on purpose (setup-tailscale.sh --i-accept-open-webui
+        # records ALLOW_OPEN_WEBUI=true). Say it every run; do not fail it.
+        warn "the WebUI is published on :443 with login OFF (ALLOW_OPEN_WEBUI=true acknowledges it) — every tailnet device is admin" \
+             "set WEBUI_AUTH=true and remove ALLOW_OPEN_WEBUI from openbeast.conf, then ./stop.sh && ./start.sh -d"
+      elif [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
         fail "the WebUI is published on :443 but WEBUI_AUTH is off — every tailnet device is admin (and has bash)" \
-             "set WEBUI_AUTH=true in openbeast.conf and ./stop.sh && ./start.sh -d, or: sudo tailscale serve --https=443 off"
+             "set WEBUI_AUTH=true in openbeast.conf and ./stop.sh && ./start.sh -d, or: sudo tailscale serve --https=443 off (if the open WebUI is intended: ./scripts/setup-tailscale.sh --i-accept-open-webui records ALLOW_OPEN_WEBUI=true)"
       elif [[ "$_live_auth" == "false" ]]; then
         fail "the WebUI is published on :443 and the RUNNING WebUI still has login off" \
              "WEBUI_AUTH=true is set but not live yet — ./stop.sh && ./start.sh -d"
