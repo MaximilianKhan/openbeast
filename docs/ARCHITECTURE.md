@@ -281,6 +281,7 @@ scripts/                     # Server, ops, and feature CLIs
   eval-era.sh                # The eval era hash and the six files behind it
   land-dependabot.sh         # Rebase → relock → approve → merge, one Dependabot PR at a time
   uninstall.sh               # Rig decommissioning (dry run by default; --go; --purge-*)
+  logrotate.sh               # Log rotation for .run/ (policy: logrotate-openbeast.conf; --install = daily user timer)
   ext.sh                     # Extension manager (enable/disable/list optional services)
   ssd-wear.sh                # SMART-based drive wear report
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,

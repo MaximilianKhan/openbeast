@@ -1445,9 +1445,17 @@ the choke point where identity, quotas, audit, and metering all attach.
   latency (no user labels — cardinality/privacy; per-user detail is the
   audit log). REMAINING: llama-server metrics scrape config + Grafana
   dashboard JSON.
-- ✅ **Rotation (DONE 2026-07-09):** scripts/logrotate-openbeast.conf
+- ◐ **Rotation (policy 2026-07-09; installer 2026-09-29; NOT on by default):** scripts/logrotate-openbeast.conf
   covers stack.log / tool-audit.jsonl / sweep logs (weekly or 50M, 8 kept).
-  REMAINING: structured JSON log option for the tool server.
+  2026-09-29: it was never INSTALLED anywhere and missed chat-audit,
+  artifact-audit and ext-*.log — now covered, and `scripts/logrotate.sh
+  --install` sets up a daily systemd --user timer (no sudo; built-in size
+  rotation where logrotate is absent); README + INSTALL §6 tell the user to
+  run it. STILL OPEN (review storage-04): nothing on the default path runs
+  --install — call it idempotently from bootstrap.sh/start.sh + a doctor
+  row when the timer is missing; a per-caller bound on artifact-audit; a retention
+  decision for agents/logs/ transcripts; structured JSON log option for the
+  tool server.
 - **Backup/restore CLI (M).** scripts/backup.sh: WebUI volume + conf +
   workspaces + leaderboard → one tarball; restore path TESTED (an
   untested backup is a wish, not a backup).
