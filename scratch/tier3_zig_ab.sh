@@ -12,9 +12,17 @@
 #             at script time from evals/suites/v5-fast.json + evals/tasks/ so
 #             the list can never be hand-typed stale. EXTRA_UNITS may add the
 #             §7 pre-flight unit 158_karatsuba_bytes_f (assumed_failed).
-#   decode  : --greedy (low-churn eval mode, own cache era) — churn floor ~0 on
-#             zig for 3.8, so even the low end of the expected effect is
-#             detectable.
+#   decode  : --greedy (low-churn eval mode, own cache era). CORRECTED
+#             2026-09-29: the design assumed a zig churn floor of ~0 under
+#             greedy. It is not ~0 in this regime — greedy at --jobs 4 against
+#             the -np 6 --kv-unified server is not single-slot, batch
+#             composition moves the logits, and the 09-17 same-config
+#             replicates flipped 9/30 (P0a vs P0b) and 8/30 (P1a vs P1b):
+#             ~30%, as high as sampled mode. The exact McNemar holds whatever
+#             the churn; the POWER premise does not — one 30-unit pair carries
+#             ~9 null discordants (pair 1 alone p=0.057, pair 0 p=0.27).
+#             Size a future arm on ~30%, or run single-slot
+#             (scratch/greedy_floor.sh --single-slot measures that floor).
 #   thinking: OPENBEAST_REASONING_BUDGET=20480 (per-request cap; the serve
 #             scripts already default to it — exported so provenance and the
 #             .rb20480 cache component are explicit).
@@ -42,6 +50,10 @@
 #                 model users run does not ship (clean = p>0.05 or net>=0).
 #   R4 audit    : every P1-only pass listed for pack-parroting review.
 #   SHIP RULE (Clause 1): net rescues >= 7 AND p < 0.05 AND guard clean.
+#   VALIDITY (added 2026-09-29, after the 09-17 run): the verdict drops rows
+#   the server died under, EAGAIN validation deaths and harness deaths from
+#   their pair — scratch/tier3-verdict-reaudit-2026-09-29.txt. P0a replays
+#   the cache, so a rerun re-measures whatever the quarantine moved out.
 #   Regardless of outcome: STOP after this arm (Clause 2 — nothing further is
 #   provable on this suite).
 # =============================================================================
@@ -55,6 +67,10 @@ CHAMPION="${CHAMPION:-qwen-27b-q5}"                 # Qwen 27B Q5_K_XL (evals/be
 JOBS="${JOBS:-4}"
 EXTRA_UNITS="${EXTRA_UNITS:-}"                      # e.g. 158_karatsuba_bytes_f
 SKIP_C0="${SKIP_C0:-0}"
+# FRESH=1: every cell --no-cache (P0a included). The 09-17 P0a replayed the
+# 09-15 rows — 7 of them banked while llama-server was dead — so pair 0 was
+# neither same-day nor clean. Use FRESH=1 for the post-fix rerun.
+FRESH="${FRESH:-0}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 MANIFEST="${MANIFEST:-$REPO/scratch/tier3_cells-$STAMP.txt}"
 
@@ -83,7 +99,7 @@ N_UNITS="$(echo "$ZIG_UNITS" | tr ',' '\n' | wc -l)"
 
 {
   echo "# tier3 zig mini-A/B cells — $STAMP"
-  echo "# pack sha8=$PACK_SHA8 model=$MODEL champion=$CHAMPION jobs=$JOBS units=$N_UNITS"
+  echo "# pack sha8=$PACK_SHA8 model=$MODEL champion=$CHAMPION jobs=$JOBS units=$N_UNITS fresh=$FRESH"
   echo "# units=$ZIG_UNITS"
 } | tee "$MANIFEST"
 
@@ -118,12 +134,13 @@ EOF
 
 # Order: interleave arms so a slow drift of the box (thermal, background
 # load) cannot line up with one arm.
-run_cell P0a "$MODEL" 0
-run_cell P1a "$MODEL" 1
+if [ "$FRESH" = "1" ]; then A_ARGS=(--no-cache); else A_ARGS=(); fi
+run_cell P0a "$MODEL" 0 ${A_ARGS[@]+"${A_ARGS[@]}"}
+run_cell P1a "$MODEL" 1 ${A_ARGS[@]+"${A_ARGS[@]}"}
 run_cell P0b "$MODEL" 0 --no-cache
 run_cell P1b "$MODEL" 1 --no-cache
-if [ "$SKIP_C0" != "1" ]; then run_cell C0 "$CHAMPION" 0; fi
-run_cell C1 "$CHAMPION" 1
+if [ "$SKIP_C0" != "1" ]; then run_cell C0 "$CHAMPION" 0 ${A_ARGS[@]+"${A_ARGS[@]}"}; fi
+run_cell C1 "$CHAMPION" 1 ${A_ARGS[@]+"${A_ARGS[@]}"}
 
 echo; echo "All cells done. Manifest: $MANIFEST"; echo
 python3 scratch/tier3_verdict.py --manifest "$MANIFEST"
