@@ -21,37 +21,64 @@
   can now publish their own tables with a stable id per verdict (a rerun
   becomes version 2 of the same URL instead of a new link). Not wired yet.
 
-## ⏭ NEXT — decided 2026-09-17 night, for when Max revisits
+## ⏭ NEXT — decided 2026-09-17 night, RE-AUDITED 2026-09-29
 
-**Tier-3 verdict (2026-09-17): SHIP.** The zig awareness pack on Qwen3.8-27B
-Uncensored: net +13 rescues (20/7, McNemar p = 0.019), replicated +5/+8;
-2.9 fewer iterations-to-fix (p = 0.008). Champion guard clean by the
-pre-registered rule (p = 0.17) but *negative in direction* (14 vs 21, n = 1).
-Record: `scratch/tier3-verdict.txt`, journal in the research repo.
+**Tier-3 verdict: UNRESOLVED. The 09-17 "SHIP" does not survive clean rows.**
+As registered it read net +13 (20/7, p = 0.019). Eleven treated-model rows
+were banked while llama-server was dead ("Connection error." for the rest of
+the unit, exit 0). Seven of those are P0a rows replayed from the 09-15 cache.
+Dropping them leaves **net +10 (17/7), p = 0.064, NO-SHIP** under the
+pre-registered rule. Direction and iterations-to-fix (−3.2, p = 0.008) hold.
+The ship/no-ship line rides on one row: keeping 62_crt_f, which lost only 2
+iterations, gives +11, p = 0.043. The effect is also **in-sample**: the pack
+was written against failures on these same 30 zig units, and there is no
+held-out set yet (`LANG_AWARENESS_PLAN.md` §5 has the proposed design).
+**Champion guard: the "negative direction" was mostly an artifact.** 10 of
+the 30 C1 rows died on fork/thread EAGAIN, the uid-wide RLIMIT_NPROC cap.
+Clean, it reads 4 rescues vs 1 regression on 14 units: uninformative, not
+negative. The per-model gating below had no real measurement behind it.
+Record: `scratch/tier3-verdict-reaudit-2026-09-29.txt` (+ the journal). The
+74 contaminated cache entries (all eras) were moved to
+`evals/cache-quarantine-2026-09-29/`; `MANIFEST.txt` there lists each file
+and why.
+
+**Greedy is not near-zero churn here.** At `--jobs 4` against the `-np 6`
+server, the same-config Tier-3 replicates flipped ~30% of zig units. Size
+any future arm on that, or measure single-slot
+(`scratch/greedy_floor.sh --single-slot`, ~20 h).
 
 **beast-assist and beast-lang both stay — they are not redundant.** Assist is
 the reactive sensor (compiler verdict after a write; small measured effect,
 zero regressions). The pack is proactive (facts before the write) and is the
-arm that won. Escalation (#90) is the bridge and needs both. The one genuine
-overlap is assist's hand-curated `_ZIG_FIX_HINTS` table in `agents/tools.py`,
-which the generated escalation index supersedes — retire it after #90's A/B.
+leading arm, though not a proven one. Escalation (#90) is the bridge and
+needs both. The one genuine overlap is assist's hand-curated
+`_ZIG_FIX_HINTS` table in `agents/tools.py`, which the generated escalation
+index supersedes. Retire it after #90's A/B.
 
-**The winning arm reaches no production model yet.** Only the eval harness
-injects the pack (`--packs` → `runner.py --context-file`). In order, each on
-Max's go:
+In order, each on Max's go:
 
-1. **Wire the pack into production, gated per model** via the `LANG_PACKS`
-   allow list — on for Qwen3.8-unc, **off for the Qwen3.6 champion** until it
-   has its own replicate. `start.sh` / `configure-webui.sh` wiring; touches no
-   era-hashed file; live-check on `beastup`.
-2. **Resume the campaign** (`master4` = greedy floor → IQ2) for the churn floor
-   the +13 is read against. Run 1 of the floor was SIGKILLed by something at
-   21:12 on 09-17 (not by us, no OOM); 21 units are cached. The stack has to
-   come down for it.
-3. **Merge draft #90** at that boundary (the eval era rolls), run the P4 zig
-   mini-A/B (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the
-   index wins.
-4. Max's own: `scratch/prune-2026-09-17.sh --go --sudo`.
+1. **Land the two contamination fixes**: the RLIMIT_NPROC cap
+   (tools-mcp-security-1) and connection errors not banked as model
+   verdicts (eval-harness-1). Both roll the eval era.
+2. **Rerun Tier-3 fresh in the new era**: `FRESH=1 bash
+   scratch/tier3_zig_ab.sh`, all six cells `--no-cache`, ~7 GPU-h. Add
+   the held-out zig set as `EXTRA_UNITS` if it is authored by then
+   (+~1.5 h). Patching the 29 contaminated unit-runs into the 09-17 cells
+   would mix eras, so don't.
+3. **Only if the rerun ships**: wire the pack into production, gated per
+   model, via the `LANG_PACKS` allow list. Decide the champion from its own
+   clean cells, not from the 09-17 guard. `start.sh` / `configure-webui.sh`
+   wiring touches no era-hashed file; live-check it on `beastup`.
+4. **Greedy floor**: not needed for the default regime (the Tier-3
+   replicates measured it: ~30%). Run `greedy_floor.sh --single-slot` only
+   if single-slot low churn is worth ~20 GPU-h. Both runs are now
+   `--no-cache`. The IQ2 pair (stage F, `master4`) is still pending. The
+   row guard now flags harness deaths, EAGAIN and dead-server fails, and
+   `e32_cap_verdict.py` refuses a p-value when a row is incomplete.
+5. **Merge draft #90** at that boundary, run the P4 zig mini-A/B
+   (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the index
+   wins.
+6. Max's own: `scratch/prune-2026-09-17.sh --go --sudo`.
 
 ## 🧭 FABLE REVIEW 2026-09-17 — what a fresh read found after the 152-agent pass
 
