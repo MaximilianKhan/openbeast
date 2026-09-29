@@ -2199,6 +2199,23 @@ def _prune_ledger_soon(days: int = 30) -> None:
     threading.Thread(target=run, name="chat-prune", daemon=True).start()
 
 
+def _uvicorn_config(app, host: str, port: int):
+    """The uvicorn.Config main() serves with — separate so tests load it.
+
+    proxy_headers=False is load-bearing. uvicorn's default trusts
+    X-Forwarded-For from 127.0.0.1 and rewrites request.client to it, and
+    `tailscale serve` — which dials us from 127.0.0.1 — always sends
+    X-Forwarded-For: <tailnet IP>. The app would then see a 100.x peer,
+    _peer_is_loopback() would drop Tailscale-User-Login, and every phone on
+    the tailnet would get 404 from the console. The auth peer must be the
+    real socket peer; nothing here reads the forwarded address.
+    """
+    import uvicorn
+    return uvicorn.Config(app, host=host, port=port, log_level="warning",
+                          timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+                          proxy_headers=False, forwarded_allow_ips="")
+
+
 def main() -> None:
     """Bind the port FIRST, then build the app (which mints the token).
 
@@ -2243,9 +2260,7 @@ def main() -> None:
                      daemon=True).start()
     print(f"OpenBeast beast-chat on {host}:{port} "
           f"(sessions: {sessions.SESSIONS_DIR})")
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning",
-                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
-    uvicorn.Server(config).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

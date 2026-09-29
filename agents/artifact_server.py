@@ -1540,6 +1540,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
     return app
 
 
+def _uvicorn_config(app, host: str, port: int):
+    """The uvicorn.Config main() serves with — separate so tests load it.
+
+    proxy_headers=False is load-bearing. uvicorn's default trusts
+    X-Forwarded-For from 127.0.0.1 and rewrites request.client to it, and
+    `tailscale serve` — which dials us from 127.0.0.1 — always sends
+    X-Forwarded-For: <tailnet IP>. The app would then see a 100.x peer,
+    _peer_is_loopback() would drop Tailscale-User-Login, and every tailnet
+    viewer would be anonymous (404 everywhere). The auth peer must be the
+    real socket peer; nothing here reads the forwarded address.
+    """
+    import uvicorn
+    return uvicorn.Config(app, host=host, port=port, log_level="warning",
+                          proxy_headers=False, forwarded_allow_ips="")
+
+
 def main() -> None:
     """Bind the port FIRST, then mint the token (D18).
 
@@ -1571,8 +1587,7 @@ def main() -> None:
     app = create_app(local_token=_mint_local_token())
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    uvicorn.Server(config).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

@@ -1535,6 +1535,36 @@ def test_a_login_header_from_off_box_is_not_a_read_credential(rig):
     assert lan.get("/api/chat/sessions", headers=key).status_code == 200
 
 
+def test_tailscale_serve_login_survives_uvicorn_proxy_headers(rig):
+    """Review 2026-09-29 (fix-pass blocker). `tailscale serve` dials from
+    127.0.0.1 and always adds X-Forwarded-For: <tailnet IP>; uvicorn's
+    default proxy_headers=True rewrote request.client to that IP, so the
+    loopback gate dropped the login and every phone read 404. Wrap the app
+    the way main() serves it — a bare TestClient skips that middleware."""
+    import uvicorn
+    ts = {**HDR_OK, "X-Forwarded-For": "100.100.201.38",
+          "X-Forwarded-Host": "beast.tail4109f9.ts.net:8445",
+          "X-Forwarded-Proto": "https"}
+    rig.client  # build the app
+
+    def served(cfg, ip="127.0.0.1"):
+        cfg.load()
+        return TestClient(cfg.loaded_app, client=(ip, 50000),
+                          base_url="http://127.0.0.1:3003")
+    ok = served(chat_server._uvicorn_config(rig._app, "127.0.0.1", 3003))
+    assert ok.get("/api/chat/sessions", headers=ts).status_code == 200
+    # the mechanism, pinned: uvicorn's DEFAULT config is what broke it
+    broken = served(uvicorn.Config(rig._app, host="127.0.0.1", port=3003,
+                                   log_level="warning"))
+    assert broken.get("/api/chat/sessions", headers=ts).status_code == 404
+    # negative control: an off-box peer forwarding "127.0.0.1" is still
+    # off-box
+    lan = served(chat_server._uvicorn_config(rig._app, "127.0.0.1", 3003),
+                 ip="192.168.1.77")
+    spoof = {**HDR_OK, "X-Forwarded-For": "127.0.0.1"}
+    assert lan.get("/api/chat/sessions", headers=spoof).status_code == 404
+
+
 @pytest.mark.parametrize("host,loop", [
     ("127.0.0.1", True), ("localhost", True), ("::1", True), ("[::1]", True),
     ("0.0.0.0", False), ("192.168.1.50", False), ("100.64.0.9", False),

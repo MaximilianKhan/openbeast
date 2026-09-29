@@ -424,6 +424,47 @@ def test_a_login_header_from_off_box_is_not_an_identity(make_client,
     assert lan.get("/api/artifacts", headers=local(c)).status_code == 200
 
 
+# What `tailscale serve` actually sends (captured live, tailscaled 1.102.3):
+# it dials from 127.0.0.1 and ALWAYS adds X-Forwarded-For: <tailnet IP>.
+TS_SERVE = {**MAX, "X-Forwarded-For": "100.100.201.38",
+            "X-Forwarded-Host": "beast.tail4109f9.ts.net:8446",
+            "X-Forwarded-Proto": "https"}
+
+
+def _served(app, ip="127.0.0.1", config=None):
+    """`app` wrapped exactly as main() serves it — uvicorn's Config.load()
+    adds ProxyHeadersMiddleware, which a bare TestClient never runs."""
+    cfg = config or artifact_server._uvicorn_config(app, "127.0.0.1", 3004)
+    cfg.load()
+    return TestClient(cfg.loaded_app, client=(ip, 50000),
+                      base_url="http://127.0.0.1:3004",
+                      raise_server_exceptions=False)
+
+
+def test_tailscale_serve_login_survives_uvicorn_proxy_headers(make_client):
+    """Review 2026-09-29 (fix-pass blocker). uvicorn's default
+    proxy_headers=True trusts X-Forwarded-For from 127.0.0.1 and rewrote
+    request.client to the tailnet IP, so the loopback gate dropped the login
+    and every tailnet viewer got a 404 through the real `tailscale serve`
+    mount. main() must serve with the socket peer as the auth peer."""
+    import uvicorn
+    c = make_client()
+    a = publish(c, headers=local(c, MAX), html="<p>SECRET</p>")
+    served = _served(c.asgi_app)
+    r = served.get(f"/raw/{a['id']}/v/1/", headers=TS_SERVE)
+    assert r.status_code == 200 and "SECRET" in r.text
+    assert served.get("/api/artifacts", headers=TS_SERVE).status_code == 200
+    # the mechanism, pinned: uvicorn's DEFAULT config is what broke it
+    broken = _served(c.asgi_app, config=uvicorn.Config(
+        c.asgi_app, host="127.0.0.1", port=3004, log_level="warning"))
+    assert broken.get("/api/artifacts", headers=TS_SERVE).status_code == 404
+    # negative control: an off-box peer cannot launder itself to loopback
+    # by forwarding "127.0.0.1" — the login is still only a claim
+    lan = _served(c.asgi_app, ip="192.168.1.77")
+    spoof = {**MAX, "X-Forwarded-For": "127.0.0.1"}
+    assert lan.get(f"/raw/{a['id']}/v/1/", headers=spoof).status_code == 404
+
+
 @pytest.mark.parametrize("host,ok", [
     ("127.0.0.1", True), ("127.8.9.10", True), ("::1", True),
     ("::ffff:127.0.0.1", True), ("192.168.1.77", False),

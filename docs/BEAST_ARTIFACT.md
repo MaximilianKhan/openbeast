@@ -340,7 +340,10 @@ sandbox instead — stricter on storage (there is none), identical on network.
   directly) could send `Host: localhost` plus the owner's login and read
   every private page, allowlist or not. `tailscale serve` dials from
   `127.0.0.1`, so the published path is unchanged; any other peer that
-  presents the header is anonymous (404). Review 2026-09-29.
+  presents the header is anonymous (404). The peer is the real socket peer:
+  uvicorn runs with `proxy_headers=False`, because `tailscale serve` always
+  adds `X-Forwarded-For: <tailnet IP>` and uvicorn's default would otherwise
+  rewrite the loopback peer to it. Review 2026-09-29.
 - **`Cross-Origin-Opener-Policy: same-origin`** on every answer except the
   capability tree (`/raw/<id>/v/<n>/~<token>/…`), the flat 404 included.
   The identity rides the network, not a cookie, so without it any site the
