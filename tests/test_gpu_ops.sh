@@ -373,5 +373,115 @@ fi
 
 # ===========================================================================
 echo ""
+echo "update.sh --llama — not under somebody else's GPU lease:"
+# ===========================================================================
+SBU="$T/repo_update"
+mkdir -p "$SBU/scripts/lib" "$SBU/.run" "$SBU/llama.cpp/.git" "$SBU/llama.cpp/build/bin" "$T/binu"
+install -m 755 "$SRC/scripts/update.sh" "$SBU/scripts/update.sh"
+install -m 755 "$SRC/scripts/gpu-lease.sh" "$SBU/scripts/gpu-lease.sh"
+install -m 644 "$SRC/scripts/lib/conf.sh" "$SRC/scripts/lib/hardware.sh" "$SBU/scripts/lib/"
+printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+# git: records every call; the pull succeeds and HEAD does not move, so an
+# allowed update ends at "already up to date" without a cmake anywhere.
+cat > "$T/binu/git" <<'STUB'
+#!/bin/bash
+echo "git $*" >> "$OB_STUB_STATE/git.log"
+case " $* " in
+  *" rev-parse "*)    echo abc1234 ;;
+  *" symbolic-ref "*) exit 0 ;;
+esac
+exit 0
+STUB
+printf '#!/bin/bash\necho "cmake $*" >> "$OB_STUB_STATE/git.log"; exit 1\n' > "$T/binu/cmake"
+chmod +x "$T/binu/git" "$T/binu/cmake"
+UPD() { : > "$T/state/git.log"; _rc=0; _out="$(PATH="$T/binu:$PATH" "$SBU/scripts/update.sh" "$@" 2>&1)" || _rc=$?; }
+pulls() { grep -c ' pull ' "$T/state/git.log" 2>/dev/null || true; }
+
+GLU="$SBU/scripts/gpu-lease.sh"
+bash -c '"$1" acquire "master4" >/dev/null 2>&1; exec sleep 60' _ "$GLU" &
+_H=$!; PIDS+=("$_H")
+wait_for 'grep -q "^label=master4$" "$SBU/.run/gpu.lease" 2>/dev/null' || fail "holder never took the lease"
+UPD --llama
+if [[ $_rc -ne 0 ]] && has "$_out" "GPU lease is HELD by pid $_H" && [[ "$(pulls)" == 0 ]]; then
+  pass "a held lease stops --llama before the pull (the engine does not move under a campaign)"
+else
+  fail "--llama under a foreign lease (rc=$_rc, pulls=$(pulls)): $_out"
+fi
+UPD --llama --ignore-lease
+if [[ $_rc -eq 0 && "$(pulls)" -ge 1 ]] && has "$_out" "already up to date"; then
+  pass "--ignore-lease is the operator's override"
+else
+  fail "--ignore-lease (rc=$_rc, pulls=$(pulls)): $_out"
+fi
+kill "$_H" 2>/dev/null || true; wait "$_H" 2>/dev/null || true
+rm -f "$SBU/.run/gpu.lease"
+UPD --llama
+if [[ $_rc -eq 0 && "$(pulls)" -ge 1 ]]; then
+  pass "negative control: with the lease free, --llama updates as before"
+else
+  fail "--llama with a free lease (rc=$_rc, pulls=$(pulls)): $_out"
+fi
+
+# ===========================================================================
+echo ""
+echo "update.sh --images — a bundle-installed compose is re-pinned, never silently skipped:"
+# ===========================================================================
+D_OW="sha256:$(printf 'a%.0s' $(seq 1 64))"
+D_SX="sha256:$(printf 'b%.0s' $(seq 1 64))"
+cat > "$T/binu/docker" <<STUB
+#!/bin/bash
+echo "docker \$*" >> "\$OB_STUB_STATE/docker.log"
+case "\$1" in
+  pull) exit 0 ;;
+  inspect)
+    case "\${@: -1}" in
+      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
+    esac ;;
+  compose) exit 0 ;;      # 'ps --status running' prints nothing: stack down
+esac
+exit 0
+STUB
+chmod +x "$T/binu/docker"
+ORIG_OW="ghcr.io/open-webui/open-webui:main@sha256:$(printf '1%.0s' $(seq 1 64))"
+ORIG_SX="searxng/searxng:latest@sha256:$(printf '2%.0s' $(seq 1 64))"
+compose_with() {  # compose_with <open-webui image> <searxng image>
+  printf 'services:\n  open-webui:\n    # the chat UI\n    image: %s\n    restart: unless-stopped\n  searxng:\n    image: %s\n' "$1" "$2"
+}
+# After bundle.sh install: content IDs in compose, the original kept aside.
+compose_with "sha256:$(printf '3%.0s' $(seq 1 64))" "sha256:$(printf '4%.0s' $(seq 1 64))" > "$SBU/docker-compose.yml"
+compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml.pre-bundle"
+UPD --images
+if [[ $_rc -eq 0 ]] \
+   && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
+   && grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/docker-compose.yml" \
+   && grep -qx '    # the chat UI' "$SBU/docker-compose.yml" && has "$_out" "re-pinned 'open-webui'"; then
+  pass "a bundle content ID is re-pinned to the freshly pulled registry digest (by service, comments kept)"
+else
+  fail "bundle compose after --images (rc=$_rc): $(tr '\n' '|' < "$SBU/docker-compose.yml") :: $_out"
+fi
+# No .pre-bundle to say which service is which: must be LOUD, never "done".
+compose_with "sha256:$(printf '3%.0s' $(seq 1 64))" "sha256:$(printf '4%.0s' $(seq 1 64))" > "$SBU/docker-compose.yml"
+rm -f "$SBU/docker-compose.yml.pre-bundle"
+cp "$SBU/docker-compose.yml" "$T/state/compose.before"
+UPD --images
+if has "$_out" "NOT" && has "$_out" "updated" && ! has "$_out" "new images take effect on next" \
+   && cmp -s "$SBU/docker-compose.yml" "$T/state/compose.before"; then
+  pass "an unpinnable image line is warned about, and the run no longer claims the update took"
+else
+  fail "unpinnable compose (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: an ordinary digest-pinned compose bumps as it always did.
+compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml"
+UPD --images
+if [[ $_rc -eq 0 ]] && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
+   && has "$_out" "new images take effect on next" && ! has "$_out" "re-pinned"; then
+  pass "negative control: a registry-pinned compose is bumped exactly as before"
+else
+  fail "normal compose (rc=$_rc): $_out"
+fi
+
+# ===========================================================================
+echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

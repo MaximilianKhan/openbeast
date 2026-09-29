@@ -9,6 +9,7 @@
 #   ./scripts/update.sh --check      # show current vs available, change nothing
 #   --force    rebuild llama.cpp even if the revision has not moved
 #             (the only way to rebuild offline, where there is no pull)
+#   --ignore-lease  update llama.cpp even while another job holds the GPU lease
 #
 # Flags compose: `--llama --images` updates just those two. Full docs and
 # per-component notes: docs/UPDATING.md.
@@ -42,6 +43,7 @@ DO_LLAMA=0; DO_IMAGES=0; DO_PYTHON=0; DO_OPENCODE=0; CHECK_ONLY=0; ANY=0
 # "already up to date and built" gate can never open — there was no way to
 # ask for a rebuild at all.
 FORCE_REBUILD=0
+IGNORE_LEASE=0
 for arg in "$@"; do
   case "$arg" in
     --llama)    DO_LLAMA=1;    ANY=1 ;;
@@ -50,7 +52,8 @@ for arg in "$@"; do
     --opencode) DO_OPENCODE=1; ANY=1 ;;
     --check)    CHECK_ONLY=1 ;;
     --force)    FORCE_REBUILD=1 ;;
-    -h|--help)  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --ignore-lease) IGNORE_LEASE=1 ;;
+    -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -79,6 +82,24 @@ update_llama() {
     behind=$(git -C "$src" rev-list --count HEAD..origin/master 2>/dev/null || echo "?")
     ok "local $before, upstream $after ($behind commits behind)"
     return 0
+  fi
+
+  # NOT UNDER SOMEBODY ELSE'S LEASE. The build replaces llama.cpp/build/bin/
+  # llama-server — the binary every serve script and every campaign cell
+  # execs — and the eval era does not hash the engine. A campaign holding the
+  # card would launch its remaining cells on a different build than its first
+  # ones, paired rows straddling two engines with nothing in the era to say
+  # so. The pull alone already moves the source HEAD that provenance records.
+  # Checked before the pull, so a refusal changes nothing.
+  if [[ ${IGNORE_LEASE:-0} -eq 0 && -x "$REPO_DIR/scripts/gpu-lease.sh" ]]; then
+    local lease_rc=0 lease_msg
+    lease_msg="$("$REPO_DIR/scripts/gpu-lease.sh" check 2>&1)" || lease_rc=$?
+    if [[ $lease_rc -eq 4 ]]; then
+      die "the GPU lease is $lease_msg
+       Updating llama.cpp now would swap the engine under that job mid-run
+       (its later cells would launch a different llama-server build). Wait for
+       it (scripts/gpu-lease.sh status), or pass --ignore-lease if you are sure."
+    fi
   fi
 
   # A detached HEAD means the user pinned a known-good SHA (see
@@ -210,7 +231,7 @@ update_images() {
     return 0
   fi
   local compose="$REPO_DIR/docker-compose.yml"
-  local bumped=0
+  local bumped=0 unpinned=0
   for _spec in \
     "ghcr.io/open-webui/open-webui:main" \
     "searxng/searxng:latest"; do
@@ -231,13 +252,81 @@ update_images() {
       else
         ok "$_spec already at latest digest"
       fi
+    else
+      # No "<repo>@sha256:" line. After `bundle.sh install` this service's
+      # line reads `image: sha256:<content id>` (save/load cannot carry a
+      # registry digest), and this loop used to fall through here SILENTLY —
+      # then report the update as done while compose still ran the old image.
+      # The box has a registry again (this is not OFFLINE), so restore digest
+      # pinning for that service, at the digest just pulled. Which service is
+      # read from docker-compose.yml.pre-bundle, by NAME (bundle.sh's rule).
+      local _svc=""
+      _svc="$(OB_REPO="$_repo" OB_NEW="${_spec}@${_newdigest}" \
+                python3 - "$compose" "$compose.pre-bundle" <<'PYREPIN'
+import os, re, sys
+repo, new = os.environ["OB_REPO"], os.environ["OB_NEW"]
+def lines_of(path):
+    try:
+        return open(path, encoding="utf-8").read().splitlines(keepends=True)
+    except OSError:
+        return None
+def images_by_service(lines):
+    out, svc = {}, None
+    for line in lines or []:
+        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line.rstrip("\n"))
+        if m:
+            svc = m.group(1); continue
+        st = line.strip()
+        if svc and st.startswith("image:"):
+            out.setdefault(svc, st[len("image:"):].strip())
+    return out
+cur_lines = lines_of(sys.argv[1])
+orig = images_by_service(lines_of(sys.argv[2]))
+cur = images_by_service(cur_lines)
+target = next((svc for svc, img in orig.items()
+               if (img.startswith(repo + ":") or img.startswith(repo + "@"))
+               and cur.get(svc, "").startswith("sha256:")), None)
+if target is None:
+    sys.exit(1)
+svc, done, out = None, False, []
+for line in cur_lines:
+    m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line.rstrip("\n"))
+    if m:
+        svc = m.group(1)
+    elif svc == target and not done and line.strip().startswith("image:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        line = f"{indent}image: {new}\n"
+        done = True
+    out.append(line)
+open(sys.argv[1], "w", encoding="utf-8").writelines(out)
+print(target)
+PYREPIN
+)" || _svc=""
+      if [[ -n "$_svc" ]]; then
+        ok "re-pinned '$_svc' to $_spec -> ${_newdigest:0:19}… (it was a bundle content ID; registry digest pinning resumes)"
+        bumped=1
+      else
+        warn "docker-compose.yml has no registry-digest pin for $_repo, so it was NOT
+       updated — the pulled image will not be used. Pin it by hand
+       (image: ${_spec}@${_newdigest}), or restore docker-compose.yml.pre-bundle
+       if this box was installed from an offline bundle, then re-run --images."
+        unpinned=1
+      fi
     fi
   done
   [[ $bumped -eq 1 ]] && warn "commit the docker-compose.yml digest bump after verifying the stack"
   # Recreate only containers actually running; a stopped stack stays stopped.
-  if docker compose ps --status running --quiet 2>/dev/null | grep -q .; then
+  local _running=""
+  _running="$(docker compose ps --status running --quiet 2>/dev/null || true)"
+  if [[ -n "$_running" ]]; then
     docker compose up -d
-    ok "running containers recreated on the new images"
+    if [[ $unpinned -eq 1 ]]; then
+      warn "running containers recreated — but the image(s) warned about above are STILL the old ones"
+    else
+      ok "running containers recreated on the new images"
+    fi
+  elif [[ $unpinned -eq 1 ]]; then
+    warn "stack not running — and the image(s) warned about above will NOT change on the next ./start.sh"
   else
     ok "stack not running — new images take effect on next ./start.sh"
   fi
