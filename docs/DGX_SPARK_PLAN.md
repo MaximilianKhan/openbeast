@@ -133,7 +133,7 @@ the values shown are the shipped example `models/qwen38-27b-nvfp4-vllm.env`:
 | API key | `VLLM_API_KEY` env, value read from a 0600 file, forwarded as `-e VLLM_API_KEY` | vLLM reads the env var natively (`vllm/envs.py`; `middleware/register.py` prefers `--api-key`, which we never pass). The key never reaches any argv |
 | Memory (*profile*) | `--gpu-memory-utilization` = `GPU_MEMORY_UTILIZATION` (default 0.80) | Playbook 0.8, blog 0.85, Qwen3.6-27B TP2 recipe 0.5 — **VERIFY ON HARDWARE** |
 | MTP (*profile*) | `SPECULATIVE_CONFIG` JSON (optional) | Qwen3.8 / 3.6 recipes; batches, unlike llama.cpp MTP |
-| Extras (*profile*) | `EXTRA_ARGS` JSON array (example: `--kv-cache-dtype fp8 --enable-prefix-caching`) | Recipe. Flags with their own key, `--api-key` and `--trust-remote-code` are refused there |
+| Extras (*profile*) | `EXTRA_ARGS` JSON array (example: `--kv-cache-dtype fp8 --enable-prefix-caching`) | Recipe. Only allow-listed flags (`data/vllm.json` `extra_args_allow`: performance, scheduling, logging); others need `EXTRA_ARGS_ACK=<REVISION>`; secrets, pins, code-import hooks and launcher-owned flags never pass — in any spelling (`_`/`-`, case, prefixes) |
 | Remote code (*profile*) | `--trust-remote-code` only with `TRUST_REMOTE_CODE=true` **and** `TRUST_REMOTE_CODE_ACK=<REVISION>`; the code is the fetched, locked copy's (or `--code-revision <sha>` from the Hub) | It runs Python from the model repo in the container; binding the acknowledgement to the SHA voids it when the revision moves |
 
 Endpoints vLLM gives the rig: `/health` (200, empty; 503 only on
@@ -479,8 +479,14 @@ The draft carries the suggestions with every uncertain line marked
 documented in `models/TEMPLATE.env`. The parser is strict on purpose: an
 unknown or repeated key, a branch or tag `REVISION`, `TRUST_REMOTE_CODE=true`
 without `TRUST_REMOTE_CODE_ACK=<REVISION>`, a vLLM key in a TensorFold
-profile, or an `EXTRA_ARGS` flag that has its own key (or is `--api-key` /
-`--trust-remote-code`) is an error. Values are data — never sourced or eval'd.
+profile, a `SPECULATIVE_CONFIG` draft `model` without a commit-SHA `revision`,
+or an `EXTRA_ARGS` flag off the engine's allow list without
+`EXTRA_ARGS_ACK=<REVISION>` is an error; flags that carry a secret, re-pin
+the model or tokenizer, import code or override the launcher are refused
+even with the ACK, however they are spelled (vLLM treats `_` as `-` and
+accepts prefixes; so does the check). Values are data — never sourced or
+eval'd, and the draft `--write-profile` writes is re-parsed so checkpoint
+text can only land in comments.
 
 **3. Fetch and verify** (on each Spark that runs a rank)
 

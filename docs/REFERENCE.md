@@ -128,7 +128,8 @@ The Sparks read two other files, both parsed and never sourced
   `TOOL_CALL_PARSER`, `REASONING_PARSER`, `CHAT_TEMPLATE`,
   `TRUST_REMOTE_CODE` (+ `TRUST_REMOTE_CODE_ACK` = `REVISION`),
   `GPU_MEMORY_UTILIZATION`, `MAX_NUM_SEQS`, `SPECULATIVE_CONFIG`,
-  `TENSORFOLD_PARALLEL`, `DRAFTER_SOURCE` / `DRAFTER_REVISION`, `EXTRA_ARGS`,
+  `TENSORFOLD_PARALLEL`, `DRAFTER_SOURCE` / `DRAFTER_REVISION`, `EXTRA_ARGS`
+  (allow-listed flags; others need `EXTRA_ARGS_ACK` = `REVISION`),
   `FETCH_INCLUDE` / `FETCH_EXCLUDE`. Each is documented in
   `models/TEMPLATE.env`; an unknown key is an error.
 
