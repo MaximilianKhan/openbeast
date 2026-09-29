@@ -242,6 +242,43 @@ class TestTenancyKnobs:
                    headers={"Authorization": f"Bearer {DEVICE_KEY}"})
         assert json.loads(cap["content"])["id_slot"] == 3
 
+    def test_boolean_slot_is_not_a_slot_index(self, edge, tmp_path):
+        # JSON true is a Python int subclass: without the guard it would be
+        # forwarded as id_slot=1 — pinning the device onto slot 1.
+        _registry(tmp_path, slot=True)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "id_slot": 7},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert "id_slot" not in json.loads(cap["content"])
+
+    def test_streaming_requests_get_include_usage(self, edge, tmp_path):
+        # Streaming is the default chat path; without include_usage upstream
+        # never emits a usage chunk and every metered token reads null.
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "stream": True},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            sent = json.loads(cap["content"])
+            assert sent["stream_options"] == {"include_usage": True}
+            # A caller's own stream_options are MERGED, not replaced.
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "stream": True,
+                         "stream_options": {"include_usage": False,
+                                            "other": 1}},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            sent = json.loads(cap["content"])
+            assert sent["stream_options"] == {"include_usage": True, "other": 1}
+            # Negative control: a non-streaming body is left alone.
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            assert "stream_options" not in json.loads(cap["content"])
+
     def test_device_key_never_reaches_upstream(self, edge, tmp_path):
         _registry(tmp_path)
         cap = {}
@@ -263,6 +300,122 @@ class TestTenancyKnobs:
         # Upstream keys stream sessions on this header with no ownership
         # check — an un-namespaced id lets one device cancel another's.
         assert sent and sent != "shared-guessable-id"
+
+
+def _nested(depth: int) -> bytes:
+    """A chat body carrying a client id_slot plus `depth` levels of junk."""
+    return (b'{"id_slot":3,"stream":true,"messages":[],"pad":'
+            + b"[" * depth + b"]" * depth + b"}")
+
+
+class TestBodyFailsClosed:
+    """A body the gate cannot parse used to be forwarded VERBATIM — client
+    id_slot intact, no include_usage, and (past ~50k nesting levels, where
+    Python's json gives up but llama-server's parser does not) a payload
+    whose deep copy overflows llama-server's stack. Refuse, never forward."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}",
+           "Content-Type": "application/json"}
+
+    def _post(self, edge, tmp_path, content, path="/v1/chat/completions"):
+        _registry(tmp_path, slot=0)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            r = c.post(path, content=content, headers=self.HDR)
+            inflight = _laptop_bucket(edge, c).inflight
+        return r, cap, inflight
+
+    def test_deeply_nested_body_never_reaches_upstream(self, edge, tmp_path):
+        r, cap, inflight = self._post(edge, tmp_path, _nested(100_000))
+        assert r.status_code == 400, r.text
+        assert "content" not in cap, "unparseable body was forwarded upstream"
+        assert inflight == 0, "400 path leaked the in-flight slot"
+        row = json.loads((tmp_path / ".run" / "inference-audit.jsonl")
+                         .read_text().strip().splitlines()[-1])
+        assert row["status"] == 400 and row["outcome"] == "bad_request"
+
+    def test_depth_cap_boundary(self, edge, tmp_path):
+        # Just over the cap is refused BEFORE json.loads (which would parse
+        # it fine) — the cap, not Python's recursion limit, is the guard.
+        r, cap, _ = self._post(edge, tmp_path,
+                               _nested(edge.MAX_JSON_DEPTH))  # +1 for the {}
+        assert r.status_code == 400
+        assert "content" not in cap
+        # Negative control: a body within the cap is sanitized and forwarded.
+        r, cap, _ = self._post(edge, tmp_path,
+                               _nested(edge.MAX_JSON_DEPTH - 1))
+        assert r.status_code == 200
+        sent = json.loads(cap["content"])
+        assert sent["id_slot"] == 0                  # server-side pin, not 3
+        assert sent["stream_options"]["include_usage"] is True
+
+    def test_brackets_inside_strings_do_not_count(self, edge, tmp_path):
+        body = json.dumps({"messages": [{"role": "user",
+                                         "content": "[" * 500 + '\\"{' * 50}]})
+        r, cap, _ = self._post(edge, tmp_path, body.encode())
+        assert r.status_code == 200 and "content" in cap
+
+    def test_depth_scan_is_linear_on_unterminated_strings(self, edge):
+        # Every '"' opens a string that never closes. The old token regex
+        # failed each one and finditer rescanned the tail from the next
+        # quote: O(n^2), 128 KB = 24 s of a frozen event loop. 1 MB would
+        # have taken ~26 min; linear it is milliseconds.
+        import time
+        body = b'{"a":' + b'"\\' * (1 << 19)
+        t = time.monotonic()
+        assert edge._json_too_deep(body) is False
+        assert time.monotonic() - t < 1.0
+        # Negative control: unterminated tails still cannot hide real depth
+        # that PRECEDES them, and brackets inside strings still do not count.
+        assert edge._json_too_deep(b"[" * 10 + b'"\\', limit=5) is True
+        assert edge._json_too_deep(b'"' + b"[" * 10, limit=5) is False
+        assert edge._json_too_deep(b'"[[[[[[\\"[["' + b"[" * 3,
+                                   limit=5) is False
+
+    def test_unterminated_string_body_is_refused_fast(self, edge, tmp_path):
+        import time
+        t = time.monotonic()
+        r, cap, _ = self._post(edge, tmp_path,
+                               b'{"a":' + b'"\\' * (1 << 19))
+        assert r.status_code == 400 and "content" not in cap
+        assert time.monotonic() - t < 5.0
+
+    def test_utf16_body_cannot_smuggle_depth_past_the_cap(self, edge, tmp_path):
+        # json.loads(bytes) auto-detects UTF-16; "\u2200" encodes as 00 22 —
+        # a stray quote byte that desynced the byte-level depth scan, so
+        # the 2000-deep pad was counted as string content and forwarded.
+        deep = edge.MAX_JSON_DEPTH + 100
+        s = ('{"x":"\u2200","pad":' + "[" * deep + "]" * deep
+             + ',"z":"\u2200","id_slot":3,"messages":[]}')
+        for enc in ("utf-16-le", "utf-16", "utf-32"):
+            r, cap, _ = self._post(edge, tmp_path, s.encode(enc))
+            assert r.status_code == 400, (enc, r.text)
+            assert "content" not in cap
+        # Negative control: the same shallow body in UTF-8 (BOM or not) passes.
+        ok = '{"x":"\u2200","id_slot":3,"messages":[]}'
+        for raw in (ok.encode(), b"\xef\xbb\xbf" + ok.encode()):
+            r, cap, _ = self._post(edge, tmp_path, raw)
+            assert r.status_code == 200, r.text
+            sent = json.loads(cap["content"])
+            assert sent["x"] == "\u2200" and sent["id_slot"] == 0
+
+    @pytest.mark.parametrize("content", [
+        b"{ this is not json",
+        b'[{"id_slot": 3}]',                  # valid JSON, not an object
+        b'"just a string"',
+        b"\xff\xfe{}",                        # not UTF-8
+    ])
+    def test_non_object_bodies_are_refused(self, edge, tmp_path, content):
+        r, cap, inflight = self._post(edge, tmp_path, content)
+        assert r.status_code == 400
+        assert "content" not in cap
+        assert inflight == 0
+
+    @pytest.mark.parametrize("path", ["/v1/completions", "/v1/embeddings"])
+    def test_every_json_endpoint_fails_closed(self, edge, tmp_path, path):
+        r, cap, _ = self._post(edge, tmp_path, _nested(100_000), path=path)
+        assert r.status_code == 400 and "content" not in cap
 
 
 def _laptop_bucket(edge, client):
@@ -313,6 +466,84 @@ class TestSlotAccounting:
         # Third concurrent request must be refused, not admitted-then-counted.
         assert b.reserve() == "max_inflight"
         assert b.inflight == 2
+
+
+class TestFanOut:
+    """EDGE_MAX_INFLIGHT bounds GENERATIONS, not HTTP requests. llama-server
+    makes one task per element of a prompt/input array, plus n-1 children
+    per prompt — so one admitted request used to be able to fill every slot
+    and queue thousands of tasks ahead of every other tenant."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+
+    def _post(self, edge, tmp_path, path, body, hold=0):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            # Prime the bucket (it is created on first contact) so `hold`
+            # in-flight units can be taken before the request under test.
+            c.get("/v1/models", headers=self.HDR)
+            cap.clear()
+            b = _laptop_bucket(edge, c)
+            for _ in range(hold):
+                assert b.reserve() is None
+            r = c.post(path, json=body, headers=self.HDR)
+            inflight = b.inflight
+        return r, cap, inflight
+
+    def test_prompt_array_times_n_is_refused(self, edge, tmp_path):
+        r, cap, inflight = self._post(
+            edge, tmp_path, "/v1/completions",
+            {"prompt": ["x"] * 2000, "n": 4, "max_tokens": 4096})
+        assert r.status_code == 400 and "8000 generations" in r.text
+        assert "content" not in cap, "fan-out request reached upstream"
+        assert inflight == 0
+
+    @pytest.mark.parametrize("path,body", [
+        ("/v1/chat/completions", {"messages": [], "n": 3}),
+        ("/v1/chat/completions", {"messages": [], "n_cmpl": 3, "n": 1}),
+        ("/v1/embeddings", {"input": ["a", "b", "c"]}),
+        ("/v1/completions", {"prompt": ["a", "b"], "n": 2}),
+    ])
+    def test_over_cap_shapes_are_refused(self, edge, tmp_path, path, body):
+        r, cap, _ = self._post(edge, tmp_path, path, body)   # cap is 2
+        assert r.status_code == 400 and "content" not in cap
+
+    @pytest.mark.parametrize("path,body", [
+        # Negative controls: shapes that are ONE generation upstream.
+        ("/v1/completions", {"prompt": [1, 2, 3, 4, 5]}),     # token ids
+        ("/v1/completions", {"prompt": ["a", 7]}),            # mixed = one
+        ("/v1/completions", {"prompt": "plain", "n": True}),  # bool is not n
+        ("/v1/embeddings", {"input": "one", "n": 9}),         # no children
+        ("/v1/completions", {"prompt": ["a", "b"]}),          # 2 == cap
+    ])
+    def test_within_cap_is_forwarded(self, edge, tmp_path, path, body):
+        r, cap, inflight = self._post(edge, tmp_path, path, body)
+        assert r.status_code == 200 and "content" in cap
+        assert inflight == 0, "fan-out units not all released"
+
+    def test_fan_out_needs_free_units_not_just_one(self, edge, tmp_path):
+        # One generation already in flight: a 2-prompt request needs 2 units
+        # and only 1 is free — 429, and nothing it took stays held.
+        r, cap, inflight = self._post(edge, tmp_path, "/v1/completions",
+                                      {"prompt": ["a", "b"]}, hold=1)
+        assert r.status_code == 429 and "content" not in cap
+        assert inflight == 1
+        # Control: a single-prompt request still fits in the free unit.
+        r, cap, inflight = self._post(edge, tmp_path, "/v1/completions",
+                                      {"prompt": "a"}, hold=1)
+        assert r.status_code == 200
+
+    def test_reserve_more_is_all_or_nothing(self, edge):
+        b = edge.Bucket(1000, 3)
+        assert b.reserve() is None
+        assert b.reserve_more(3) == "max_inflight"
+        assert b.inflight == 1                    # took nothing on refusal
+        assert b.reserve_more(2) is None
+        assert b.inflight == 3
+        b.release(3)
+        assert b.inflight == 0
 
 
 class TestRegistryFreshness:
@@ -486,6 +717,35 @@ class TestAuditAndMetrics:
         assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' in body
         assert DEVICE_KEY not in body
 
+    def test_unauth_denials_do_not_flood_the_stack_log(self, edge, tmp_path,
+                                                       capsys, monkeypatch):
+        # stdout IS .run/stack.log in daemon mode. A keyless loop used to
+        # append one line per request, forever — the unbounded growth the
+        # audit file was deliberately protected from.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        clock = [1000.0]
+        monkeypatch.setattr(edge, "_clock", lambda: clock[0])
+        with TestClient(edge.app) as c:
+            for i in range(200):
+                # A fresh random-looking key each time: the budget must not
+                # be per key, or rotating keys would defeat it.
+                c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer k{i}"})
+            burst = capsys.readouterr().out
+            clock[0] += edge._DENY_LOG_WINDOW_S + 1
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": "Bearer late"})
+            later = capsys.readouterr().out
+            body = c.get("/gate/metrics", headers=_local_headers(edge)).text
+        denied = [ln for ln in burst.splitlines() if "denied bad_key" in ln]
+        # Negative control: the first denials ARE logged (diagnosability).
+        assert 1 <= len(denied) <= edge._DENY_LOG_BURST
+        assert "suppressed 190 more 'denied bad_key'" in later
+        assert "denied bad_key" in later            # new window logs again
+        # Metrics still carry the exact count.
+        assert 'openbeast_edge_denied_total{reason="bad_key"} 201' in body
+
     def test_unauth_denials_do_not_grow_the_audit_file(self, edge, tmp_path):
         # The gate is published at the tailnet root, so an unauthenticated
         # caller must not be able to append to the audit file at will.
@@ -497,6 +757,198 @@ class TestAuditAndMetrics:
                        headers={"Authorization": "Bearer nope"})
         audit = tmp_path / ".run" / "inference-audit.jsonl"
         assert not audit.exists() or audit.read_text().strip() == ""
+
+
+class _ChunkedResponse(_FakeResponse):
+    """Upstream that yields its body in 16 KB pieces, as aiter_raw() does."""
+
+    def __init__(self, body: bytes, size: int = 16384):
+        super().__init__(body=body)
+        self._size = size
+
+    async def aiter_raw(self):
+        for i in range(0, len(self._body), self._size):
+            yield self._body[i:i + self._size]
+
+
+def _last_audit(tmp_path) -> dict:
+    return json.loads((tmp_path / ".run" / "inference-audit.jsonl")
+                      .read_text().strip().splitlines()[-1])
+
+
+class TestMeteringEdges:
+    """The audit is the accountability ledger: a reply the client received
+    usage for must not be metered as null, and an aborted stream must not be
+    recorded as a clean "ok"."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+
+    def _big_reply(self) -> bytes:
+        # ~355 KB non-streaming JSON, logprobs-heavy; llama-server puts usage
+        # LAST (nlohmann sorts keys). Content quoting "usage" must not fool
+        # the tail parser.
+        lp = [{"token": "x", "logprob": -0.1, "top_logprobs": [
+            {"token": "y", "logprob": -2.0}] * 20}] * 500
+        return json.dumps({
+            "choices": [{"message": {"content": 'say "usage": {"a": 1}'},
+                         "logprobs": {"content": lp}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 300},
+        }).encode()
+
+    def test_oversize_json_reply_is_still_metered(self, edge, tmp_path):
+        body = self._big_reply()
+        assert len(body) > 262144 + 16384        # really past the buffer
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            c.app.state.client.send = (
+                lambda req, stream=False: _async(_ChunkedResponse(body)))
+            r = c.post("/v1/chat/completions", json={"messages": []},
+                       headers=self.HDR)
+        assert r.json()["usage"]["completion_tokens"] == 300
+        row = _last_audit(tmp_path)
+        assert (row["prompt_tokens"], row["completion_tokens"]) == (1000, 300)
+        assert row["outcome"] == "ok"
+
+    def test_usage_from_json_tail_skips_non_objects(self, edge):
+        tail = b'..."text":"x","usage":{"prompt_tokens":4,"completion_tokens":2}}'
+        assert edge._usage_from_json_tail(tail) == {
+            "prompt_tokens": 4, "completion_tokens": 2}
+        assert edge._usage_from_json_tail(b'{"usage": 5}') is None
+        assert edge._usage_from_json_tail(b'no usage here') is None
+
+    def test_client_abort_is_not_audited_as_ok(self, edge, tmp_path):
+        # Drive the handler directly: TestClient buffers the whole body, so
+        # it cannot abort mid-stream. Closing the body iterator after one
+        # chunk is exactly what Starlette does when the socket goes away.
+        import asyncio
+        from starlette.requests import Request
+        _registry(tmp_path)
+        sse = b"".join(b'data: {"choices":[{"delta":{"content":"t"}}]}\n\n'
+                       for _ in range(50))
+        app = edge.app
+        app.state.registry = edge.Registry()
+        app.state.limiter = edge.Limiter()
+
+        class _Client:
+            def build_request(self, *a, **kw):
+                return object()
+
+            async def send(self, req, stream=False):
+                return _ChunkedResponse(sse, size=64)
+
+        app.state.client = _Client()
+        payload = json.dumps({"messages": [], "stream": True}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": payload,
+                    "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "app": app,
+                 "path": "/v1/chat/completions", "raw_path": b"",
+                 "query_string": b"", "root_path": "", "scheme": "http",
+                 "server": ("127.0.0.1", 8090), "client": ("127.0.0.1", 1),
+                 "headers": [(b"authorization",
+                              f"Bearer {DEVICE_KEY}".encode()),
+                             (b"content-type", b"application/json")]}
+
+        async def run(abort: bool):
+            resp = await edge.gate(Request(scope, receive))
+            it = resp.body_iterator
+            if abort:
+                await it.__anext__()
+                await it.aclose()             # the client hung up
+            else:
+                async for _ in it:
+                    pass
+            await resp.background()
+
+        asyncio.run(run(abort=True))
+        row = _last_audit(tmp_path)
+        assert row["outcome"] == "client_disconnect", row
+        assert _laptop_bucket_app(edge, app).inflight == 0
+        # Negative control: the same stream read to the end is "ok".
+        asyncio.run(run(abort=False))
+        assert _last_audit(tmp_path)["outcome"] == "ok"
+        # And each request wrote exactly ONE row (the sweep did not add one).
+        rows = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert len(rows.strip().splitlines()) == 2
+
+
+    def test_midstream_upstream_fault_is_not_blamed_on_client(self, edge,
+                                                              tmp_path):
+        import asyncio
+        import httpx
+        from starlette.requests import Request
+        _registry(tmp_path)
+        app = edge.app
+        app.state.registry = edge.Registry()
+        app.state.limiter = edge.Limiter()
+
+        class _Dying(_ChunkedResponse):
+            def __init__(self, exc):
+                super().__init__(b'data: {"choices":[]}\n\n' * 4, size=16)
+                self._exc = exc
+
+            async def aiter_raw(self):
+                async for c in super().aiter_raw():
+                    yield c
+                    if self._exc is not None:
+                        raise self._exc     # llama-server died mid-body
+
+        exc_box = {}
+
+        class _Client:
+            def build_request(self, *a, **kw):
+                return object()
+
+            async def send(self, req, stream=False):
+                return _Dying(exc_box["exc"])
+
+        app.state.client = _Client()
+        payload = json.dumps({"messages": [], "stream": True}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": payload,
+                    "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "app": app,
+                 "path": "/v1/chat/completions", "raw_path": b"",
+                 "query_string": b"", "root_path": "", "scheme": "http",
+                 "server": ("127.0.0.1", 8090), "client": ("127.0.0.1", 1),
+                 "headers": [(b"authorization",
+                              f"Bearer {DEVICE_KEY}".encode()),
+                             (b"content-type", b"application/json")]}
+
+        async def run():
+            resp = await edge.gate(Request(scope, receive))
+            try:
+                async for _ in resp.body_iterator:
+                    pass
+            except httpx.HTTPError:
+                pass
+            await resp.background()
+
+        cases = [(httpx.ReadError("boom"), "upstream_error", 502),
+                 (httpx.RemoteProtocolError("peer closed"), "upstream_error",
+                  502),
+                 (httpx.ReadTimeout("slow"), "upstream_timeout", 504),
+                 (None, "ok", 200)]         # negative control
+        for exc, outcome, status in cases:
+            exc_box["exc"] = exc
+            asyncio.run(run())
+            row = _last_audit(tmp_path)
+            assert (row["outcome"], row["status"]) == (outcome, status), row
+            assert _laptop_bucket_app(edge, app).inflight == 0
+
+
+async def _async(v):
+    return v
+
+
+def _laptop_bucket_app(edge, app):
+    uid = edge.device_uid({"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})
+    return app.state.limiter._buckets[uid]
 
 
 class TestIntrospectionAuth:
@@ -583,6 +1035,76 @@ class TestIntrospectionAuth:
         p = tmp_path / ".run" / "edge-local.token"
         assert p.exists()
         assert oct(p.stat().st_mode)[-3:] == "600"
+
+    def _fake_uvicorn(self, monkeypatch):
+        """Record what main() would serve; never start a real server."""
+        import types
+        ran = {}
+
+        class Config:
+            def __init__(self, app, **kw):
+                ran["config"] = kw
+
+        class Server:
+            def __init__(self, config):
+                pass
+
+            def run(self, sockets=None):
+                ran["sockets"] = sockets
+
+        fake = types.SimpleNamespace(Config=Config, Server=Server,
+                                     run=lambda *a, **k: ran.setdefault(
+                                         "unbound_run", True))
+        monkeypatch.setitem(sys.modules, "uvicorn", fake)
+        return ran
+
+    def _edge_on(self, tmp_path, monkeypatch, port):
+        monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+        monkeypatch.setenv("OPENBEAST_BIND", "127.0.0.1")
+        monkeypatch.setenv("OPENBEAST_EDGE_PORT", str(port))
+        import edge as _edge
+        importlib.reload(_edge)
+        return _edge
+
+    def test_failed_second_start_keeps_the_live_token(self, tmp_path,
+                                                      monkeypatch):
+        # A LIVE gate owns the port and the token file holds its secret. A
+        # second start must die on the bind WITHOUT rotating that secret —
+        # otherwise doctor/start.sh present a token the live gate rejects.
+        import socket
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        try:
+            _edge = self._edge_on(tmp_path, monkeypatch, busy.getsockname()[1])
+            ran = self._fake_uvicorn(monkeypatch)
+            tok = tmp_path / ".run" / "edge-local.token"
+            tok.parent.mkdir(exist_ok=True)
+            tok.write_text("live-gate-secret")
+            with pytest.raises(SystemExit) as ei:
+                _edge.main()
+            assert ei.value.code == 1
+            assert tok.read_text() == "live-gate-secret", \
+                "failed start rotated the live gate's locality token"
+            assert not ran, "server started despite losing the bind"
+        finally:
+            busy.close()
+
+    def test_successful_start_mints_then_serves_bound_socket(self, tmp_path,
+                                                             monkeypatch):
+        # Negative control: owning the port DOES mint, and uvicorn is handed
+        # the pre-bound socket rather than binding (again) itself.
+        _edge = self._edge_on(tmp_path, monkeypatch, 0)      # any free port
+        ran = self._fake_uvicorn(monkeypatch)
+        _edge.main()
+        try:
+            tok = (tmp_path / ".run" / "edge-local.token").read_text()
+            assert tok and tok == _edge._local_token()
+            assert ran.get("sockets") and len(ran["sockets"]) == 1
+            assert "unbound_run" not in ran
+        finally:
+            for s in ran.get("sockets") or []:
+                s.close()
 
     def test_loopback_health_keeps_detail(self, edge, tmp_path):
         _registry(tmp_path)

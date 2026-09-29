@@ -50,7 +50,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
 | `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
-| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | Serve callers with no/unknown key as a single `anon` device. Default fails closed — an empty registry refuses remote callers rather than serving them |
+| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While no device is enrolled, serve every caller as a single `anon` device (ignored once one is — then a missing/unknown key is 401). Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |

@@ -40,9 +40,12 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_LLAMA_UPSTREAM     real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_API_KEY            upstream key, if llama-server runs --api-key
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
-  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2)
-  OPENBEAST_EDGE_ALLOW_ANON    "true" = serve callers with no/unknown key as
-                               the "anon" device (default false = fail closed)
+  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
+                               a prompt array or n>1 counts prompts x n
+  OPENBEAST_EDGE_ALLOW_ANON    "true" = while NO device is enrolled, serve
+                               every caller as the "anon" device (default
+                               false = fail closed). Ignored once the registry
+                               holds a device: then no/unknown key -> 401
 """
 from __future__ import annotations
 
@@ -50,6 +53,9 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import socket
+import sys
 import tempfile
 import time
 import uuid
@@ -98,6 +104,19 @@ ALLOWED_PATHS = frozenset({
     "/v1/completions",
     "/v1/embeddings",
 })
+
+# The allowlisted endpoints whose body is a JSON object the gate MUST read to
+# enforce tenancy (id_slot strip + server-side slot, include_usage). A body it
+# cannot parse here is refused, never forwarded — see _sanitize_body.
+JSON_PATHS = frozenset({
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/embeddings",
+})
+# No legitimate request nests anywhere near this (a chat body with a deep tool
+# schema is ~15-20). The cap must sit far below the ~50k where Python's json
+# gives up AND llama-server's nlohmann deep copy overflows its thread stack.
+MAX_JSON_DEPTH = 64
 
 # Hop-by-hop headers must not be relayed (same list as agents/router.py).
 # Authorization is deliberately ABSENT from the strip list on the RESPONSE
@@ -280,10 +299,31 @@ class Bucket:
         self.inflight += 1
         return None
 
-    def release(self) -> None:
+    def reserve_more(self, extra: int) -> str | None:
+        """Atomically widen an admitted request to `extra` more generations.
+
+        A request that fans out (prompt arrays, n) holds one in-flight unit
+        per generation it creates upstream, and pays one rate token each —
+        otherwise EDGE_MAX_INFLIGHT would bound HTTP requests, not work.
+        Same no-await rule as reserve(). Refuses without taking anything.
+        """
+        if extra <= 0:
+            return None
+        now = time.monotonic()
+        self.tokens = min(self.capacity,
+                          self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        if self.tokens < extra:
+            return "rate_limited"
+        if self.inflight + extra > self.max_inflight:
+            return "max_inflight"
+        self.tokens -= extra
+        self.inflight += extra
+        return None
+
+    def release(self, n: int = 1) -> None:
         # Guard against a double-release wedging the counter negative.
-        if self.inflight > 0:
-            self.inflight -= 1
+        self.inflight = max(0, self.inflight - n)
 
 
 class Limiter:
@@ -394,6 +434,34 @@ def _log(msg: str) -> None:
     print(f"[beast-gate] {_now()} {msg}", flush=True)
 
 
+# Unauthenticated denials are kept out of the audit FILE so a keyless peer
+# cannot grow it — and the same logic applies to stack.log, which every
+# denial line lands in. Per reason (a small fixed set, so bounded memory; a
+# per-key budget would not be, since the caller picks the key), log the first
+# few lines of each window and summarize the rest. /gate/metrics keeps the
+# exact count.
+_DENY_LOG_BURST = 10
+_DENY_LOG_WINDOW_S = 60.0
+_deny_log: dict[str, list] = {}      # reason -> [window_start, logged, suppressed]
+_clock = time.monotonic              # indirection so tests can drive the window
+
+
+def _log_denial(reason: str, msg: str) -> None:
+    now = _clock()
+    w = _deny_log.get(reason)
+    if w is None or now - w[0] >= _DENY_LOG_WINDOW_S:
+        if w is not None and w[2]:
+            _log(f"suppressed {w[2]} more 'denied {reason}' lines in the "
+                 f"last {int(now - w[0])}s (exact count in /gate/metrics)")
+        w = [now, 0, 0]
+        _deny_log[reason] = w
+    if w[1] < _DENY_LOG_BURST:
+        w[1] += 1
+        _log(msg)
+    else:
+        w[2] += 1
+
+
 def _key_fp(key: str) -> str:
     """Short, non-reversible fingerprint of a presented key, for logs only —
     enough to tell 'revoked laptop still retrying' from 'someone guessing'."""
@@ -485,17 +553,108 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
     return None, "no_registry"
 
 
-def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
+# A JSON string token (escapes included) or one structural bracket. Strings
+# are matched whole so a "[" inside a string never counts as nesting. The
+# unrolled string form never backtracks, and an UNTERMINATED string runs to
+# end-of-input (`\\?\Z`) instead of failing: a failed match made finditer
+# retry from the next quote and rescan the tail, so a body of repeated '"\\'
+# cost O(n^2) — 128 KB froze the gate's event loop for 24 s.
+_JSON_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*(?:"|\\?\Z)|[\[\]{}]',
+                         re.DOTALL)
+
+
+def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
+    """True when the body nests brackets deeper than `limit`.
+
+    Iterative and run BEFORE json.loads, which recurses: at ~50k levels it
+    raises RecursionError, and the old code then forwarded the ORIGINAL bytes
+    — client id_slot intact, no include_usage — to a llama-server whose
+    parser has no depth limit and whose deep copy of that value overflows
+    the stack and kills the model server for every tenant. Stops at the
+    first bracket past the cap, so a hostile body costs O(limit) to refuse.
+    A malformed body can only miscount here; json.loads still rejects it.
+    """
+    depth = 0
+    for m in _JSON_TOKEN.finditer(raw):
+        c = m.group()
+        if c in (b"[", b"{"):
+            depth += 1
+            if depth > limit:
+                return True
+        elif c in (b"]", b"}"):
+            depth -= 1
+    return False
+
+
+class BadBody(ValueError):
+    """A JSON-endpoint body the gate refuses to forward (-> 400)."""
+
+
+def _generations(body: dict, path: str) -> int:
+    """How many upstream generations this ONE request becomes.
+
+    llama-server turns a /v1/completions `prompt` (or /v1/embeddings `input`)
+    ARRAY into one task per element, with no bound, and adds n_cmpl-1 child
+    tasks per prompt (`n` is its alias). Counting the HTTP request as one
+    let a single admitted request fill every slot and queue thousands of
+    tasks ahead of every other tenant. Mirrors tokenize_input_prompts(): an
+    array containing any integer is ONE token-list prompt, not many.
+    Over-counting is the safe direction, so n_cmpl and n take the max.
+    """
+    if path == "/v1/completions":
+        prompt = body.get("prompt")
+    elif path == "/v1/embeddings":
+        prompt = body.get("input", body.get("content"))
+    else:
+        prompt = None                    # chat renders ONE prompt from messages
+    inputs = 1
+    if isinstance(prompt, list) and not any(
+            isinstance(p, int) and not isinstance(p, bool) for p in prompt):
+        inputs = max(1, len(prompt))
+    n = 1
+    if path != "/v1/embeddings":         # embeddings make no child tasks
+        for k in ("n_cmpl", "n"):
+            v = body.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int) or (isinstance(v, float) and v == v
+                                      and abs(v) != float("inf")):
+                n = max(n, int(v))
+    return inputs * n
+
+
+def _sanitize_body(raw: bytes, device: dict,
+                   path: str = "/v1/chat/completions"
+                   ) -> tuple[bytes, str | None, bool, int]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
-    Returns (body, model_name, streaming). Non-JSON bodies pass through.
+    Returns (body, model_name, streaming, generations) — see _generations
+    for the last. Raises BadBody for anything that
+    is not a JSON object within MAX_JSON_DEPTH. FAIL CLOSED: every tenancy
+    and metering guarantee below depends on the gate having parsed the body,
+    so a body it cannot parse must never reach llama-server verbatim — that
+    was a parser differential that bypassed all of them.
     """
+    # Strict UTF-8 FIRST. json.loads(bytes) would auto-detect UTF-16/32, and
+    # the byte-level depth scan below assumes an ASCII-compatible encoding:
+    # a UTF-16 "∀" (bytes 00 22) is a stray quote that desyncs it, letting a
+    # body nested far past the cap through. llama-server only takes UTF-8.
     try:
-        body = json.loads(raw)
-    except Exception:
-        return raw, None, False
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BadBody("request body is not UTF-8")
+    if text.startswith("\ufeff"):
+        text = text[1:]         # UTF-8 BOM: json.loads(bytes) took it
+    if _json_too_deep(raw):
+        raise BadBody(f"request body nests deeper than {MAX_JSON_DEPTH} levels")
+    try:
+        body = json.loads(text)
+    except (ValueError, RecursionError) as e:
+        # ValueError covers JSONDecodeError and Python's int-digit limit;
+        # RecursionError is belt-and-braces behind the cap.
+        raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
     if not isinstance(body, dict):
-        return raw, None, False
+        raise BadBody("request body must be a JSON object")
     # id_slot is unauthenticated in llama-server: it wraps modulo the slot
     # count (landing on another tenant's slot) and a pinned task jumps the
     # deferred queue ahead of unpinned callers. Never honor the client's.
@@ -514,7 +673,8 @@ def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return json.dumps(body).encode(), body.get("model"), streaming
+    return (json.dumps(body).encode(), body.get("model"), streaming,
+            _generations(body, path))
 
 
 def _upstream_headers(request: Request, device: dict) -> dict:
@@ -561,6 +721,40 @@ def _usage_from_sse(tail: bytes) -> dict | None:
     return None
 
 
+def _usage_from_json_tail(tail: bytes) -> dict | None:
+    """Usage from the END of a non-streaming JSON reply too big to buffer.
+
+    llama-server serializes `usage` as the LAST top-level key (nlohmann
+    objects are key-sorted), so it sits inside the bounded tail even when a
+    logprobs-heavy reply is megabytes long. Without this every reply over
+    the whole-body buffer was audited with null tokens while the client got
+    its usage. A quote inside a string value is escaped, so a `"usage"`
+    byte run is a real key; take the last one that decodes to an object.
+    """
+    dec = json.JSONDecoder()
+    text = tail.decode("utf-8", "replace")
+    end = len(text)
+    while True:
+        i = text.rfind('"usage"', 0, end)
+        if i < 0:
+            return None
+        end = i
+        j = i + len('"usage"')
+        while j < len(text) and text[j] in " \t\r\n":
+            j += 1
+        if j >= len(text) or text[j] != ":":
+            continue
+        j += 1
+        while j < len(text) and text[j] in " \t\r\n":
+            j += 1
+        try:
+            obj, _ = dec.raw_decode(text, j)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -582,8 +776,8 @@ async def gate(request: Request):
         # "someone is guessing". NOT written to the audit FILE: unauthenticated
         # callers must not be able to grow it without bound.
         _bump("denied_total", reason)
-        _log(f"denied {reason} path={path} key_fp={_key_fp(_bearer(request))} "
-             f"peer={_peer(request)}")
+        _log_denial(reason, f"denied {reason} path={path} "
+                    f"key_fp={_key_fp(_bearer(request))} peer={_peer(request)}")
         hint = ("this rig has no enrolled devices yet — run "
                 "./scripts/clients.sh enroll <id> on the rig"
                 if reason == "no_registry" else
@@ -634,12 +828,13 @@ async def gate(request: Request):
     # bare `except:`/BaseException handling below — asyncio.CancelledError is
     # a BaseException, so a client disconnect would otherwise skip the
     # release and wedge the device at 429 forever.
-    released = {"done": False}
+    # `held` grows past 1 only when the body fans out (see _generations).
+    released = {"done": False, "held": 1}
 
     def _release():
         if not released["done"]:
             released["done"] = True
-            bucket.release()
+            bucket.release(released["held"])
 
     try:
         if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
@@ -663,7 +858,51 @@ async def gate(request: Request):
                                "type": "invalid_request_error"}},
                     status_code=413)
         raw = bytes(buf)
-        body, model, streaming = _sanitize_body(raw, device) if raw else (raw, None, False)
+        body, model, streaming, gens = raw, None, False, 1
+        if raw and path in JSON_PATHS:
+            try:
+                body, model, streaming, gens = _sanitize_body(raw, device, path)
+            except BadBody as e:
+                # Authenticated, so it is audited (an identity to attribute);
+                # nothing was forwarded, so there is no usage to meter.
+                _release()
+                _audit(device_id, user, path, 400, None,
+                       int((time.monotonic() - started) * 1000), None,
+                       "bad_request", request_id, uid)
+                _log(f"bad body device={device_id} path={path}: {e}")
+                return JSONResponse(
+                    {"error": {"message": str(e),
+                               "type": "invalid_request_error"}},
+                    status_code=400)
+        if gens > bucket.max_inflight:
+            # Could never be admitted, so 400 rather than a 429 to retry.
+            _release()
+            _bump("denied_total", "fanout")
+            _audit(device_id, user, path, 400, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   "fanout", request_id, uid)
+            return JSONResponse(
+                {"error": {"message": (
+                    f"request fans out into {gens} generations (prompts x n); "
+                    f"this device may run at most {bucket.max_inflight} at "
+                    "once — split it into smaller requests"),
+                    "type": "invalid_request_error"}}, status_code=400)
+        refusal = bucket.reserve_more(gens - 1)
+        if refusal:
+            _release()
+            _bump("denied_total", refusal)
+            _audit(device_id, user, path, 429, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   refusal, request_id, uid)
+            return JSONResponse(
+                {"error": {"message": (
+                    f"request needs {gens} generation slots and this device "
+                    "does not have them free right now"),
+                    "type": "rate_limit_error"}},
+                status_code=429,
+                headers={"Retry-After": "5" if refusal == "rate_limited"
+                         else "2"})
+        released["held"] = gens
         headers = _upstream_headers(request, device)
         registry.touch(device_id)
 
@@ -718,10 +957,26 @@ async def gate(request: Request):
     hdrs = {k: v for k, v in resp.headers.items()
             if k.lower() not in _HOP_BY_HOP}
     hdrs["X-OpenBeast-Request-Id"] = request_id
-    state = {"tail": b"", "whole": b"", "oversize": False}
+    state = {"tail": b"", "whole": b"", "oversize": False, "audited": False}
+
+    def _audit_reply(usage, outcome_override=None):
+        if state["audited"]:
+            return
+        state["audited"] = True
+        if outcome_override:
+            _outcome, _status = outcome_override
+        elif resp.status_code < 400:
+            _outcome, _status = "ok", resp.status_code
+        else:
+            _outcome, _status = "upstream_status", resp.status_code
+        _audit(device_id, user, path, _status, usage,
+               int((time.monotonic() - started) * 1000), model,
+               _outcome, request_id, uid)
 
     async def body_iter():
         timed_out = False
+        upstream_failed = False
+        completed = False
         try:
             async for chunk in resp.aiter_raw():
                 # Bounded tail (usage rides the last SSE chunks) plus, for
@@ -732,6 +987,7 @@ async def gate(request: Request):
                 else:
                     state["oversize"] = True
                 yield chunk
+            completed = True
         except httpx.TimeoutException:
             # A read timeout AFTER headers lands HERE, not at client.send().
             # Without this the audit ledger would record the request as a
@@ -739,6 +995,14 @@ async def gate(request: Request):
             # a timeout invisible to whoever reads the audit later.
             timed_out = True
             _log(f"upstream read timeout mid-stream device={device_id} "
+                 f"path={path} request_id={request_id}")
+            raise
+        except httpx.HTTPError:
+            # Any other transport fault mid-body (ReadError, a
+            # RemoteProtocolError when llama-server dies) is the UPSTREAM's
+            # failure — auditing it as client_disconnect blamed the client.
+            upstream_failed = True
+            _log(f"upstream error mid-stream device={device_id} "
                  f"path={path} request_id={request_id}")
             raise
         finally:
@@ -760,15 +1024,20 @@ async def gate(request: Request):
                     usage = None
             if usage is None:
                 usage = _usage_from_sse(state["tail"])
+            if usage is None and state["oversize"]:
+                usage = _usage_from_json_tail(state["tail"])
             if timed_out:
-                _outcome, _status = "upstream_timeout", 504
-            elif resp.status_code < 400:
-                _outcome, _status = "ok", resp.status_code
+                _audit_reply(usage, ("upstream_timeout", 504))
+            elif upstream_failed:
+                _audit_reply(usage, ("upstream_error", 502))
+            elif not completed:
+                # The client went away mid-body (CancelledError/GeneratorExit
+                # lands here). Recorded as "ok" before, an abort — whose
+                # generated tokens never got a usage chunk — was
+                # indistinguishable from a clean, metered completion.
+                _audit_reply(usage, ("client_disconnect", resp.status_code))
             else:
-                _outcome, _status = "upstream_status", resp.status_code
-            _audit(device_id, user, path, _status, usage,
-                   int((time.monotonic() - started) * 1000), model,
-                   _outcome, request_id, uid)
+                _audit_reply(usage)
 
     # BackgroundTask is a SECOND, idempotent release path. If the client
     # vanishes after upstream headers arrive but before Starlette starts
@@ -781,6 +1050,9 @@ async def gate(request: Request):
             await resp.aclose()
         except BaseException:
             pass
+        # Same gap for the ledger: a body_iter() that never started never
+        # audited. No-op when it did (the normal path).
+        _audit_reply(None, ("client_disconnect", resp.status_code))
 
     return StreamingResponse(body_iter(), status_code=resp.status_code,
                              headers=hdrs, background=BackgroundTask(_sweep))
@@ -890,8 +1162,33 @@ app = Starlette(
 )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Bind the port FIRST, then mint the local token (D18, as artifact_server).
+
+    uvicorn.run() runs lifespan startup — which minted the token — BEFORE it
+    binds. So a second start (a double start.sh, a healthcheck --restart
+    race, an operator retry) rewrote .run/edge-local.token and only then
+    died on EADDRINUSE, leaving the LIVE gate holding a secret no file
+    matches: doctor and start.sh silently fell back to the anonymous view.
+    A start that cannot own the port now never touches the token file.
+    """
     import uvicorn
+    infos = socket.getaddrinfo(BIND, PORT, type=socket.SOCK_STREAM)
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)   # a NAME: prefer IPv4
+    family, stype, proto, _, addr = infos[0]
+    sock = socket.socket(family, stype, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(addr)
+        sock.listen(128)
+    except OSError as e:
+        sock.close()
+        print(f"ERROR: cannot bind {BIND}:{PORT} ({e}) — another beast-gate "
+              "is probably already running. Its locality token has been left "
+              "alone, so doctor/start.sh introspection keeps working.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    _local_token()          # lifespan's own call is then a no-op
     reg = Registry()
     mode = ("devices" if reg.configured
             else ("ANON (OPENBEAST_EDGE_ALLOW_ANON=true)" if ALLOW_ANON
@@ -899,4 +1196,9 @@ if __name__ == "__main__":
     print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
           flush=True)
     # Loopback by default like every other service; publish via tailscale.
-    uvicorn.run(app, host=BIND, port=PORT, log_level="warning")
+    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
+
+
+if __name__ == "__main__":
+    main()
