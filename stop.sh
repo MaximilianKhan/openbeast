@@ -16,20 +16,20 @@ source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
 
-_pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
-  # Identity-checked liveness: never TERM an unrelated process that recycled
-  # a stale pidfile's PID. Unreadable /proc cmdline → plain kill -0 result.
-  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router}" pid cmd
-  [[ -f "$1" ]] || return 1
-  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
-    [[ "$cmd" =~ $pat ]] || return 1
-  fi
-  return 0
-}
+# Record that this stop is ON PURPOSE, before anything is signalled (so a
+# watchdog tick landing mid-stop already sees it). healthcheck.sh --restart
+# relaunches nothing while .run/stopped exists; ./start.sh removes it.
+# Without it the watchdog timer brought the whole stack back within five
+# minutes of every ./stop.sh. OPENBEAST_STOP_REASON names the caller.
+mkdir -p "$RUN_DIR"
+printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "${OPENBEAST_STOP_REASON:-./stop.sh}" > "$RUN_DIR/stopped"
 
-if _pid_alive "$RUN_DIR/supervisor.pid" 'start\.sh'; then
+# Identity-checked: never TERM — and 20s later KILL — an unrelated process
+# that recycled a stale pidfile's PID. The supervisor records its start time
+# (ob_pid_record), which is exact; 'start\.sh' in a command line is not (any
+# project's ./start.sh matches it) and is only the fallback for a pidfile
+# written before the start time was recorded.
+if ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh'; then
   SUP_PID=$(cat "$RUN_DIR/supervisor.pid")
   echo "Stopping supervisor (pid $SUP_PID) gracefully..."
   kill -TERM "$SUP_PID" 2>/dev/null || true
@@ -51,10 +51,13 @@ systemctl --user stop openbeast-stack 2>/dev/null || true
 # whole point of stop.sh is to reach the fallback kills below.
 # Reap any process-kind extensions the supervisor launched (belt-and-braces —
 # the supervisor's own trap also reaps them; this covers a SIGKILLed supervisor).
+# Identity-checked (lib/proc.sh ob_ext_reap), like every other pid this
+# script signals: .run/ survives a reboot, and a bare `kill $(cat ext-*.pid)`
+# SIGTERMed whatever process had inherited the number.
 for _pf in "$RUN_DIR"/ext-*.pid; do
   [[ -e "$_pf" ]] || continue
-  kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
-  rm -f "$_pf"
+  _n="$(basename "$_pf" .pid)"
+  ob_ext_reap "$_pf" "$SCRIPT_DIR/extensions/${_n#ext-}"
 done
 
 echo "Stopping Open WebUI..."
@@ -62,7 +65,21 @@ if command -v docker >/dev/null 2>&1; then
   # Include enabled compose-extension fragments so their services come down too.
   COMPOSE_FILES=(-f "$SCRIPT_DIR/docker-compose.yml")
   while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(ob_ext_compose_args)
-  docker compose "${COMPOSE_FILES[@]}" down \
+  # ...and every OTHER compose fragment on disk. `ext.sh disable x` edits the
+  # conf first and then says "./stop.sh && ./start.sh -d", so the fragment
+  # of the extension just disabled is exactly the one an enabled-only list
+  # leaves out — and compose leaves its containers running, ports bound.
+  ALL_FILES=("${COMPOSE_FILES[@]}")
+  while IFS= read -r _e; do
+    [[ -n "$_e" ]] || continue
+    _cf="$SCRIPT_DIR/extensions/$_e/compose.yaml"
+    [[ -f "$_cf" && "$(ob_ext_meta "$_e" KIND 2>/dev/null || true)" == "compose" ]] || continue
+    [[ " ${ALL_FILES[*]} " == *" $_cf "* ]] || ALL_FILES+=(-f "$_cf")
+  done < <(ob_ext_available)
+  # A broken fragment of an extension nobody enabled must not keep the CORE
+  # up: if the full list fails, fall back to the enabled-only one.
+  docker compose "${ALL_FILES[@]}" down \
+    || { [[ ${#ALL_FILES[@]} -ne ${#COMPOSE_FILES[@]} ]] && docker compose "${COMPOSE_FILES[@]}" down; } \
     || echo "Warning: docker compose down failed (daemon not running?)"
 else
   echo "Docker not installed — skipping containers."
@@ -138,6 +155,6 @@ else
 pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
 fi
 
-rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
       "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" \
       "$RUN_DIR/edge.pid" "$RUN_DIR/artifact.pid" "$RUN_DIR/chat.pid" 2>/dev/null || true

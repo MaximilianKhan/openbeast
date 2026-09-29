@@ -31,7 +31,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `MEM_LIMIT_PCT` | `OPENBEAST_MEM_LIMIT_PCT` | `75` | Daemon-mode (`./start.sh -d`) memory cap as a percent of physical RAM, recomputed at every launch — a runaway process OOMs the stack's scope, never the box. Swap inside the scope is additionally capped at 8G |
 | `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen38-27b-uncensored-mtp-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
 | `FAST_BOOT` | `OPENBEAST_FAST_BOOT` | `false` | Serve the tiny Qwen3-0.6B bridge (`serve-bootstrap.sh`) on `:8080` for instant chat, bring the stack up, then hot-swap to `SERVE_SCRIPT` once its weights are warmed |
-| `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. `false` hard-fails |
+| `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. "Healthy" means `/health` answered 200 `{"status":"ok"}` — the 503 `Loading model` a server gives while loading does not count, and a load still unfinished after `OPENBEAST_LLAMA_LOAD_GRACE` seconds (default 900) is stopped and counts as failed. `false` hard-fails |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
 | `REASONING` | `OPENBEAST_REASONING` | empty (model default) | Global thinking override applied by `serve.sh`: `on` \| `off` \| `auto`. Overrides any per-serve-script default |
 | `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes |
@@ -769,13 +769,19 @@ when configured:
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service
-that's down is restarted automatically — with two deliberate exceptions.
+that's down is restarted automatically — with three deliberate exceptions.
 A llama-server whose `/health` answers `503 "Loading model"` is reported as
 **LOAD**, not down, and left alone (killing a loading model *is* the outage;
 past `OPENBEAST_LLAMA_LOAD_GRACE` seconds — default 900, judged by the
 recorded pid's age — a server still loading counts as wedged and down). And
 while `scripts/gpu-lease.sh status` says `HELD`, the watchdog will not
-relaunch the stack's model into a campaign's window. Every kill is by the
+relaunch the stack's model into a campaign's window. A stack stopped *on
+purpose* stays stopped: `./stop.sh` writes `.run/stopped` (the reason is
+`OPENBEAST_STOP_REASON`, default `./stop.sh`), `./start.sh` removes it, and
+while it exists `--restart` only reports. The supervisor writes it too when
+it gives up on a crash-looping model, and the watchdog's own no-supervisor
+relaunch is budgeted at 3 per hour (`.run/watchdog-relaunches`) before it
+marks the stack stopped. Every kill is by the
 recorded pid, whose command line must still match (`ob_pid_matches` in
 `scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
 stranger.
