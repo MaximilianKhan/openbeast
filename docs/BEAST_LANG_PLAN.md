@@ -424,7 +424,10 @@ must clear a v5-suite eval before joining the runner registry.
     `runner.py`: the card rides INSIDE the push-diagnostics block, in the same
     tool result as the compiler error that selected it, so there is no "next
     turn" plumbing at all. `BEAST_ESCALATE=1` opts in (needs `BEAST_ASSIST=1`
-    — the checker's verdict is the evidence); off, the file's output is
+    — the checker's verdict is the evidence), either exported in the
+    launching shell or set in `openbeast.conf`, which `scripts/lib/conf.sh`
+    forwards as exactly `1`/`0` and warns about when `BEAST_ASSIST` is off;
+    off, the file's output is
     byte-identical, pinned by `tests/test_escalation_wiring.py`. Under eval it
     is doubly locked: the facade is silent under `OPENBEAST_EVAL` unless
     `run_eval.py --escalate` opens it, and that arm stamps its own cache era

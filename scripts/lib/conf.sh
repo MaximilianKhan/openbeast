@@ -203,6 +203,24 @@ _BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || true)}"
 if [[ -n "$_BEAST_ASSIST" ]]; then
   export BEAST_ASSIST="$_BEAST_ASSIST"
 fi
+# beast-lang escalation (docs/BEAST_LANG_PLAN.md §7 P4): attach the
+# toolchain-confirmed fix to a failing check. agents/tools.py reads
+# BEAST_ESCALATE per-call and compares against exactly "1", so the conf value
+# goes through _ob_bool and is exported canonically as 1/0 — `true`, `yes` or
+# `1   # on` would otherwise be silently OFF. Forwarded only when set, like
+# BEAST_ASSIST; eval arms pin both spellings per cell. It rides inside the
+# beast-assist block, so on without BEAST_ASSIST=1 does nothing: say so.
+_BEAST_ESCALATE="${BEAST_ESCALATE:-$(_ob_conf_value BEAST_ESCALATE || true)}"
+if [[ -n "$_BEAST_ESCALATE" ]]; then
+  if [[ "$(_ob_bool "$_BEAST_ESCALATE" false BEAST_ESCALATE)" == "true" ]]; then
+    export BEAST_ESCALATE=1
+    if [[ "$(_ob_bool "${BEAST_ASSIST:-}" false BEAST_ASSIST)" != "true" ]]; then
+      echo "WARNING: BEAST_ESCALATE=1 has no effect without BEAST_ASSIST=1 (the card rides inside the checker's verdict)." >&2
+    fi
+  else
+    export BEAST_ESCALATE=0
+  fi
+fi
 # fetch() blocks Tailscale CGNAT (100.64.0.0/10) targets by default — pinned
 # explicitly in agents/tools.py because CPython's is_private classification of
 # that range changed across versions. Opt in (true) when the model should fetch
