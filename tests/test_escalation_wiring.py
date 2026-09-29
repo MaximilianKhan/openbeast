@@ -259,3 +259,15 @@ def test_the_real_facade_is_silent_in_a_measured_unit_unless_the_arm_opens_it(mo
     assert seen == [], "the work was done under eval and only the result hidden"
     monkeypatch.setenv("OPENBEAST_LANG_IN_EVAL", "1")     # what --escalate sets
     assert "known cause" in tools._escalation_for("zig", 1, ZIG_ERR)
+
+
+def test_benchmark_all_names_the_escalate_arm_as_leaderboard_ineligible():
+    """--escalate is an experiment arm like --packs/--greedy: benchmark_all
+    must name it when it drops the leaderboard, not only via BEAST_ASSIST."""
+    import importlib
+    ba = importlib.import_module("benchmark_all")
+    assert "--escalate" in ba.experiment_arms({"BEAST_ESCALATE": "1", "BEAST_ASSIST": "1"})
+    assert "--escalate" in ba.experiment_arms({"OPENBEAST_ESCALATE": "1"})
+    # negative control: off (or explicitly 0, as run_eval pins it) is no arm
+    assert "--escalate" not in ba.experiment_arms({"BEAST_ESCALATE": "0", "BEAST_ASSIST": "1"})
+    assert ba.experiment_arms({}) == []

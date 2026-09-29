@@ -701,6 +701,8 @@ def experiment_arms(env=None) -> list[str]:
         arms.append("--packs")
     if "1" in (env.get("OPENBEAST_DIAGNOSTICS", "").strip(), env.get("BEAST_ASSIST", "").strip()):
         arms.append("beast-assist diagnostics")
+    if "1" in (env.get("BEAST_ESCALATE", "").strip(), env.get("OPENBEAST_ESCALATE", "").strip()):
+        arms.append("--escalate")
     return arms
 
 
