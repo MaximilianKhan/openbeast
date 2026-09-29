@@ -427,6 +427,10 @@ fi
 echo ""
 echo "update.sh --llama — a failed rebuild rolls build/bin back:"
 # ===========================================================================
+# Hermetic: pin the CPU backend and hide the host's nvidia-smi, so the rebuild
+# path never depends on the runner's hardware (CI has no GPU or nvcc).
+printf '#!/bin/bash\nexit 127\n' > "$T/binu/nvidia-smi"; chmod +x "$T/binu/nvidia-smi"
+UPDB() { : > "$T/state/git.log"; _rc=0; _out="$(OPENBEAST_GPU_BACKEND=cpu PATH="$T/binu:$PATH" "$SBU/scripts/update.sh" "$@" 2>&1)" || _rc=$?; }
 # The cmake stub "relinks" a shared lib, then fails before llama-server: the
 # exact half-updated state an in-place build used to leave behind.
 printf 'old-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
@@ -442,7 +446,7 @@ fi
 exit 0
 STUB
 chmod +x "$T/binu/cmake"
-UPD --llama --force
+UPDB --llama --force
 if [[ $_rc -ne 0 ]] && has "$_out" "restored to the previous llama-server" \
    && [[ "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == old-lib \
          && "$(cat "$SBU/llama.cpp/build/bin/llama-server")" == old-bin \
@@ -461,7 +465,7 @@ if [[ " \$* " == *" --build "* ]]; then
 fi
 exit 0
 STUB
-UPD --llama --force
+UPDB --llama --force
 if [[ $_rc -eq 0 && "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == new-lib \
       && ! -e "$SBU/llama.cpp/build/bin.pre-update" ]]; then
   pass "negative control: a successful rebuild keeps the new engine and removes the snapshot"

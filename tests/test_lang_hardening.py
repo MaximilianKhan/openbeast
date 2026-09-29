@@ -1078,11 +1078,11 @@ def test_c_side_channels_to_a_host_file_are_refused(secret, monkeypatch):
     __has_include each reached a host path the #include scans never see."""
     ran = []
     monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv))
-    for lang in ("c", "cpp"):
-        drv = D.driver_for(lang)
+    for lang_id in ("c", "cpp"):
+        drv = D.driver_for(lang_id)
         for src in _c_side_channels(secret):
             r = drv.compile_source(src)
-            assert not r and r.refused, (lang, src, r.detail)
+            assert not r and r.refused, (lang_id, src, r.detail)
     assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
     for src in C_SIDE_CHANNEL_CONTROLS:
         assert D.driver_for("c").refusal(src) is None, src
