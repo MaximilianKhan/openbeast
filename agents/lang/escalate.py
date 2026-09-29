@@ -184,8 +184,24 @@ def _container_key(ident: str) -> str:
     return re.sub(r"\(.*\)\s*$", "", ident)
 
 
+#: `std.time.*` in a summary: the claim is about the whole namespace.
+_WILDCARD = re.compile(r"`(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)\.\*`")
+
+
+def namespace_wildcards(claims) -> dict[str, set[str]]:
+    """{namespace: claims whose summary says ALL of it is gone}. Read from the
+    claim text, not the index, so it cannot drift from what the card says:
+    only a card that itself claims `X.*` may answer for an unseen member of X."""
+    out: dict[str, set[str]] = {}
+    for c in claims:
+        for ns in _WILDCARD.findall(c.summary or ""):
+            out.setdefault(ns, set()).add(c.id)
+    return out
+
+
 def _select(table: dict, generic: set, diagnostic: str,
-            open_shapes: frozenset | set = frozenset()) -> tuple[set[str], dict]:
+            open_shapes: frozenset | set = frozenset(),
+            wildcards: dict | None = None) -> tuple[set[str], dict]:
     """(claims this diagnostic is EVIDENCE for, {claim: overlap score}).
 
     The score ranks; it never selects. A claim is selected only by a line that
@@ -200,13 +216,17 @@ def _select(table: dict, generic: set, diagnostic: str,
         'math' says otherwise) — 9 wrong cards from 9 real diagnostics.
       * at least one of those is not generic (decoy-observed) and not a
         namespace (MAX_IDENT_FANOUT).
-      * on a two-name form — "struct 'A' has no member named 'b'" — the FIRST
-        name is known and maps to the claim too. `const S = @This(); S.sort`
+      * on a two-name form — "struct 'A' has no member named 'b'" — BOTH
+        names are known and map to the claim. `const S = @This(); S.sort`
         reads "root source file struct 'claim' has no member named 'sort'":
         the member is the index's, the container is the user's own file, and
-        an unknown container is not std.mem. The exception is a form the
-        index itself declares open (python's "'T' object has no attribute
-        'x'", where the first name is the USER's class by construction).
+        an unknown container is not std.mem. Symmetrically, an unknown MEMBER
+        of a known namespace (`std.heap.page_alocator`) is a typo, not a
+        removal the index knows about. Two exceptions: a form the index
+        itself declares open (python's "'T' object has no attribute 'x'",
+        where the first name is the USER's class by construction), and a
+        namespace a claim declares gone wholesale (`wildcards`, from a
+        summary saying `std.time.*`), which may stand in for the member.
       * a line that quotes nothing has only its form, so the form must be
         non-generic and must not be a blanked template.
     """
@@ -225,8 +245,22 @@ def _select(table: dict, generic: set, diagnostic: str,
             specific = any(x not in generic and len(table[x]) <= MAX_IDENT_FANOUT
                            for x in known)
             if len(quoted) == 2 and shape not in open_shapes:
-                first = f"ident:{_container_key(quoted[0])}"
-                if first not in table and f"ident:{quoted[0]}" not in table:
+                # BOTH names must be known. The container alone used to be
+                # enough — the member was just dropped from `known` when the
+                # index had never seen it, the agreement rule then held
+                # vacuously, and a typo'd `std.heap.page_alocator` got the
+                # GeneralPurposeAllocator card, `std.os.getenv` the same one,
+                # `std.process.getEnvVarOwned` argsAlloc: a card the error is
+                # not evidence for, headed "Confirmed". The one exception is a
+                # claim that declares the WHOLE namespace gone (`std.time.*`):
+                # then any member of it missing is that claim's error.
+                unknown = [q for q in quoted
+                           if f"ident:{_container_key(q)}" not in table
+                           and f"ident:{q}" not in table]
+                if len(unknown) == 1:
+                    other = _container_key(next(q for q in quoted if q not in unknown))
+                    agreed &= set((wildcards or {}).get(other, ()))
+                elif unknown:
                     agreed = set()
             if specific:
                 eligible |= agreed
@@ -350,8 +384,10 @@ def build_index(langs: list[str] | None = None) -> dict:
         # error message at all (python's asyncio.async() is a bare "invalid
         # syntax"). That is the honest outcome, and it is recorded rather than
         # discovered later: its card still ships in the pack.
+        wild = namespace_wildcards(cs)
         silent = [(cid, n) for cid, n, diag in seen
-                  if cid not in _select(sig_map, generic, diag, open_shapes)[0]]
+                  if cid not in _select(sig_map, generic, diag, open_shapes,
+                                        wild)[0]]
         reached = {cid for cid, n, _ in seen if (cid, n) not in silent}
         index["langs"][lang] = {
             "toolchain": version,
@@ -435,13 +471,15 @@ def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
         # are boilerplate, and that is the knowledge selection depends on.
         return []
     table = entry.get("signatures") or {}
+    claims = [c for c in V.load_claims(os.path.join(_HERE, "claims"))
+              if c.lang == lang]
     eligible, score = _select(table, set(entry.get("generic") or []), diagnostic,
-                              set(entry.get("open_shapes") or []))
+                              set(entry.get("open_shapes") or []),
+                              namespace_wildcards(claims))
     score = {cid: sc for cid, sc in score.items() if cid in eligible}
     if not score:
         return []
-    summaries = {c.id: c.summary for c in V.load_claims(os.path.join(_HERE, "claims"))
-                 if c.lang == lang}
+    summaries = {c.id: c.summary for c in claims}
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
     out = []
     for cid, sc in ranked:

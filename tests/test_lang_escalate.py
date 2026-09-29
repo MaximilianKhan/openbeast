@@ -294,8 +294,9 @@ def _selected(lang, diag):
     so this runs (and can fail) on a CI box that has neither zig nor g++,
     where cards_for() would return [] for the wrong reason."""
     entry = E.load_index()["langs"][lang]
+    wild = E.namespace_wildcards([c for c in V.load_claims(CLAIMS) if c.lang == lang])
     return E._select(entry["signatures"], set(entry["generic"]), diag,
-                     set(entry["open_shapes"]))[0]
+                     set(entry["open_shapes"]), wild)[0]
 
 
 @pytest.mark.parametrize("lang,diag", FALSE_POSITIVES)
@@ -331,8 +332,16 @@ def test_an_identifier_alone_or_a_form_alone_is_not_evidence():
     assert sel("error: struct 'T' has no member named 'gone'") == {"a"}
     assert sel("error: struct 'T(u8,null)' has no member named 'gone'") == {"a"}, \
         "type arguments are not part of the container's name"
-    assert sel("error: struct 'T' has no member named 'other'") == {"a"}, \
-        "a known container with an unseen member is the held-out case"
+    assert sel("error: struct 'T' has no member named 'other'") == set(), \
+        "a known container with an UNSEEN member is a typo, not a known removal"
+    wsel = lambda d: E._select(table, generic, d, wildcards={"T": {"a"}})[0]  # noqa: E731
+    assert wsel("error: struct 'T' has no member named 'other'") == {"a"}, \
+        "a claim that says all of `T.*` is gone answers for any member of T"
+    assert E._select(table, generic, "error: struct 'T' has no member named "
+                     "'other'", wildcards={"T": {"b"}})[0] == set(), \
+        "a wildcard for ANOTHER claim is not agreement"
+    assert wsel("error: struct 'U' has no member named 'other'") == set(), \
+        "a wildcard never stands in for BOTH names"
     assert sel("error: struct 'U' has no member named 'other'") == set(), "form alone"
     table["ident:elsewhere"] = ["b"]
     assert sel("error: struct 'T' has no member named 'elsewhere'") == set(), \
@@ -411,6 +420,20 @@ WRONG_CARDS = [
     ("zig", _ROOT.format("process", "random")),      # args + time_random
     ("zig", _ROOT.format("fmt", "abs")),             # fmt + math
     ("zig", _ROOT.format("math", "split")),          # math + mem
+    # a known namespace, a member the index has never seen: a typo or an API
+    # no claim is about, and every one of these got a "Confirmed" card
+    ("zig", _ROOT.format("os", "getenv")),           # got alloc_exit
+    ("zig", _ROOT.format("process", "getEnvVarOwned")),  # got args
+    ("zig", "claim.zig:3:22: error: struct 'heap' has no member named "
+            "'page_alocator'"),                       # got alloc_exit
+    ("zig", _ROOT.format("math", "sqrtt")),          # got math
+    ("zig", _ROOT.format("mem", "eqll")),            # got mem
+    ("zig", _ROOT.format("fmt", "alloPrint")),       # got fmt
+    ("zig", _ROOT.format("ascii", "isDigitt")),      # got ascii
+    ("python", "AttributeError: module 'string' has no attribute "
+               "'ascii_lowercas'. Did you mean: 'ascii_lowercase'?"),
+    ("python", "AttributeError: type object 'TestCase' has no attribute "
+               "'assertEquall'"),
     # cpp: the very text of two fixtures' only specific line, produced by code
     # that has nothing to do with the claim (c++23 with no header declaring
     # std::ranges; a stray `int operator<=;`). Identical text cannot be
@@ -421,7 +444,8 @@ WRONG_CARDS = [
 RIGHT_CARDS = [
     ("zig", _ROOT.format("mem", "split"), "mem"),
     ("zig", _ROOT.format("math", "max"), "math"),
-    ("zig", _ROOT.format("time", "milliTimestamp"), "time_random"),    # held-out member
+    # held-out member, reachable only because the card says `std.time.*`
+    ("zig", _ROOT.format("time", "milliTimestamp"), "time_random"),
     ("zig", "claim.zig:3:9: error: struct 'array_list.Aligned(u32,null)' has no "
             "member named 'init'", "arraylist"),                       # held-out type args
     ("zig", "claim.zig:5:9: error: no field or member function named 'writer' in "
@@ -468,6 +492,25 @@ def test_the_card_still_fires_on_what_a_model_actually_sees(lang, diag, expect):
 @pytest.mark.parametrize("diag", PY_NOT_OURS)
 def test_real_python_wording_does_not_widen_the_net(diag):
     assert _selected("python", diag) == set(), diag
+
+
+# Real zig 0.16 diagnostics for code that uses a namespace the index knows
+# and a member no claim is about. The negative control is HELD_OUT above,
+# compiled the same way, which must keep its cards.
+TYPO_SNIPPETS = [
+    'const a = std.heap.page_alocator;\n    _ = a;',
+    'const h = std.os.getenv("HOME");\n    _ = h;',
+    'const v = std.math.sqrtt(@as(f64, 2));\n    _ = v;',
+    'const e = std.mem.eqll(u8, "a", "a");\n    _ = e;',
+]
+
+
+@pytest.mark.skipif(not have_zig, reason="zig absent")
+@pytest.mark.parametrize("src", TYPO_SNIPPETS)
+def test_an_unknown_member_of_a_known_namespace_gets_no_card(src):
+    diag = _diagnostic("zig", src)
+    assert E.cards_for("zig", diag, max_cards=3) == [], diag
+    assert _selected("zig", diag) == set(), diag
 
 
 def test_the_silent_fixtures_are_declared_not_discovered():
