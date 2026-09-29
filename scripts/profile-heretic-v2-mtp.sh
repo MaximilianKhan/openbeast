@@ -20,6 +20,12 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# llama-only: drives a local llama-server, so it has nothing to do on a
+# stack whose INFERENCE_BACKEND is not llama (lib/backend.sh).
+if [[ -f "$SCRIPT_DIR/lib/backend.sh" ]]; then
+  source "$SCRIPT_DIR/lib/backend.sh"
+  ob_llama_only "$(basename "$0")" || exit 0
+fi
 cd "$REPO_DIR"
 source "$SCRIPT_DIR/lib/weights.sh"
 

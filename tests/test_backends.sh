@@ -1,7 +1,7 @@
 #!/bin/bash
 # Inference-backend tests (docs/DGX_SPARK_PLAN.md): the INFERENCE_* conf keys,
 # lib/backend.sh readiness per server, the unmanaged paths of start.sh /
-# healthcheck.sh / stop.sh / doctor.sh.
+# healthcheck.sh / stop.sh / doctor.sh, and the llama-only tool guards.
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no real stack.
 # The only network is a throwaway HTTP stub on an ephemeral 127.0.0.1 port;
@@ -320,6 +320,45 @@ RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
   || fail "no TensorFold no-key warning"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "llama-only tools say 'not applicable':"
+_R="$_T/tools"; mkdir -p "$_R/scripts/lib"
+cp "$REPO_DIR/scripts/measure-vram.sh" "$REPO_DIR"/scripts/profile-*.sh "$_R/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$_R/scripts/lib/"
+printf 'INFERENCE_BACKEND=vllm\n' > "$_R/openbeast.conf"
+for _tool in measure-vram.sh profile-qwen38-uncensored-mtp.sh profile-heretic-v2-mtp.sh profile-fable-fusion-mtp.sh; do
+  _rc=0
+  _O="$(env -i HOME="$_R" PATH=/usr/bin:/bin bash "$_R/scripts/$_tool" serve-x.sh 2>&1)" || _rc=$?
+  if [[ $_rc -eq 0 && "$_O" == "$_tool: not applicable for INFERENCE_BACKEND=vllm"* ]]; then
+    pass "$_tool: one 'not applicable' line, exit 0"
+  else
+    fail "$_tool (rc=$_rc): $(head -n 2 <<< "$_O")"
+  fi
+done
+_O="$(env -i HOME="$_R" PATH=/usr/bin:/bin INFERENCE_BACKEND=llama bash "$_R/scripts/measure-vram.sh" 2>&1 || true)"
+grep -q "Usage: scripts/measure-vram.sh" <<< "$_O" && pass "INFERENCE_BACKEND=llama in the env still runs the tool (control)" \
+  || fail "env override did not reach the tool: $(head -n 2 <<< "$_O")"
+
+# gpu-lease on a unified-memory GPU (GB10): nvidia-smi answers [N/A] for
+# memory.used. The busy check used to error into /dev/null (fail-open, silent).
+mkdir -p "$_R/bin" "$_R/run"
+printf '#!/bin/bash\necho "[N/A]"\n' > "$_R/bin/nvidia-smi"; chmod +x "$_R/bin/nvidia-smi"
+cp "$REPO_DIR/scripts/gpu-lease.sh" "$_R/scripts/"
+_O="$(env -i HOME="$_R" PATH="$_R/bin:/usr/bin:/bin" OPENBEAST_RUN_DIR="$_R/run" bash "$_R/scripts/gpu-lease.sh" status 2>&1 || true)"
+if grep -q "GPU memory is not reported (unified-memory GPU" <<< "$_O" && ! grep -q "integer expression" <<< "$_O"; then
+  pass "gpu-lease status on a GB10-style [N/A] GPU says the busy check is not applicable"
+else
+  fail "gpu-lease [N/A]: $_O"
+fi
+printf '#!/bin/bash\necho "123"\n' > "$_R/bin/nvidia-smi"
+_O="$(env -i HOME="$_R" PATH="$_R/bin:/usr/bin:/bin" OPENBEAST_RUN_DIR="$_R/run" bash "$_R/scripts/gpu-lease.sh" status 2>&1 || true)"
+if grep -q "GPU: 123 MiB in use" <<< "$_O" && ! grep -q "not reported" <<< "$_O"; then
+  pass "…while a card that reports memory is unchanged (control)"
+else
+  fail "gpu-lease numeric: $_O"
+fi
 
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
