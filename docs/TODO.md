@@ -1415,7 +1415,13 @@ the choke point where identity, quotas, audit, and metering all attach.
   dashboard JSON.
 - ✅ **Rotation (DONE 2026-07-09):** scripts/logrotate-openbeast.conf
   covers stack.log / tool-audit.jsonl / sweep logs (weekly or 50M, 8 kept).
-  REMAINING: structured JSON log option for the tool server.
+  2026-09-29: it was never INSTALLED anywhere and missed chat-audit,
+  artifact-audit and ext-*.log — now covered, and `scripts/logrotate.sh
+  --install` sets up a daily systemd --user timer (no sudo; built-in size
+  rotation where logrotate is absent). REMAINING: call --install from
+  start.sh/bootstrap + a doctor row when the timer is missing; a retention
+  decision for agents/logs/ transcripts; structured JSON log option for the
+  tool server.
 - **Backup/restore CLI (M).** scripts/backup.sh: WebUI volume + conf +
   workspaces + leaderboard → one tarball; restore path TESTED (an
   untested backup is a wish, not a backup).

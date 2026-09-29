@@ -1,0 +1,12 @@
+# Service half of the OpenBeast log-rotation timer — see
+# scripts/openbeast-logrotate.timer (installed by ./scripts/logrotate.sh --install).
+
+[Unit]
+Description=OpenBeast log rotation
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/scripts/logrotate.sh
+Nice=19
+IOSchedulingClass=idle

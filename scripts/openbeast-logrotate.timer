@@ -1,0 +1,16 @@
+# OpenBeast log rotation — runs scripts/logrotate.sh once a day so the
+# audit trails and stack.log in .run/ stay bounded.
+#
+# Install (pairs with openbeast-logrotate.service; no sudo):
+#   ./scripts/logrotate.sh --install
+
+[Unit]
+Description=OpenBeast log rotation (daily)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
