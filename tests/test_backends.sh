@@ -223,6 +223,12 @@ grep -q "INFERENCE_URL is not set" "$_T/conf.err" && pass "vllm without INFERENC
   || fail "no warning for vllm without INFERENCE_URL ($_c)"
 _c="$(_conf 'INFERENCE_BACKEND=vllm' 'echo "$INFERENCE_BACKEND"' OPENBEAST_INFERENCE_BACKEND=llama)"
 [[ "$_c" == "llama" ]] && pass "env OPENBEAST_INFERENCE_BACKEND beats the conf" || fail "env precedence: $_c"
+_c="$(_conf $'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL="My Model (x)"   # set by use-model.sh' 'echo "$INFERENCE_MODEL|${OPENBEAST_INFERENCE_MODEL-unset}"')"
+[[ "$_c" == "My Model (x)|My Model (x)" ]] && pass "INFERENCE_MODEL: quotes and a trailing comment dropped, exported for vllm" \
+  || fail "INFERENCE_MODEL vllm: $_c"
+_c="$(_conf 'INFERENCE_MODEL=my-model' 'echo "$INFERENCE_MODEL|${OPENBEAST_INFERENCE_MODEL-unset}"')"
+[[ "$_c" == "my-model|unset" ]] && pass "…but NOT exported for llama (it ignores ids; the runner keeps its default)" \
+  || fail "INFERENCE_MODEL llama: $_c"
 
 # ---------------------------------------------------------------------------
 # Sandbox rigs for the lifecycle scripts. Real curl (probes go to the stub on
@@ -428,6 +434,16 @@ grep -q "vLLM at $_S/vllm (not managed here) — serving: Qwen3.8 27B NVFP4" <<<
 grep -q "the GGUF weight registry / WEIGHT_ENFORCE: not applicable for INFERENCE_BACKEND=vllm" <<< "$_O" \
   && pass "weight registry row says 'not applicable'" || fail "no weight-registry n/a row"
 grep -q "llama.cpp server" <<< "$_O" && fail "doctor still probes llama.cpp on a vLLM stack" || pass "no llama.cpp row"
+grep -q "INFERENCE_MODEL is not set" <<< "$_O" && pass "doctor warns when INFERENCE_MODEL (the id the runner sends) is unset" \
+  || fail "no INFERENCE_MODEL warning: $(grep -i inference_model <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm" "OPENBEAST_INFERENCE_MODEL=Qwen3.8 27B NVFP4 (vLLM TP2)")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qF "INFERENCE_MODEL='Qwen3.8 27B NVFP4 (vLLM TP2)' (the id the agent runner sends)" <<< "$_O" \
+  && pass "…and passes when the server lists exactly that id" || fail "doctor INFERENCE_MODEL match: $(grep -i inference_model <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm" "OPENBEAST_INFERENCE_MODEL=some-other-model")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qF "INFERENCE_MODEL='some-other-model' is not what" <<< "$_O" \
+  && pass "…and warns when the server does not list it" || fail "doctor INFERENCE_MODEL mismatch: $(grep -i inference_model <<< "$_O" || true)"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \

@@ -146,6 +146,13 @@
 # vLLM's --max-num-seqs, TensorFold's --parallel. Env: $OPENBEAST_INFERENCE_SLOTS.
 #INFERENCE_SLOTS=8
 
+# The served model id (vllm / tensorfold only; llama-server ignores ids).
+# The agent runner sends it — vLLM answers any OTHER id with 404 unless it was
+# started with VLLM_SKIP_MODEL_NAME_VALIDATION=1. Written for you by
+# scripts/backends/use-model.sh --profile <name>, after conformance.sh passes.
+# Env: $OPENBEAST_INFERENCE_MODEL.
+#INFERENCE_MODEL=my-model-nvfp4
+
 # Reasoning/thinking control (serve.sh → llama-server). OpenBeast keeps
 # reasoning ON by default with a per-request toggle; these are the GLOBAL
 # escape hatches and override any per-model default:

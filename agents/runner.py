@@ -45,7 +45,10 @@ except Exception:                                      # pragma: no cover
 # ---------------------------------------------------------------------------
 
 DEFAULT_BASE_URL = "http://localhost:8080/v1"
-DEFAULT_MODEL = "qwen-27b-q5"  # llama.cpp ignores this, but it's required by the API
+# llama.cpp ignores the id, but the API requires one. vLLM / TensorFold serve a
+# named model: conf.sh exports OPENBEAST_INFERENCE_MODEL for those backends
+# (INFERENCE_MODEL, set by scripts/backends/use-model.sh).
+DEFAULT_MODEL = os.environ.get("OPENBEAST_INFERENCE_MODEL") or "qwen-27b-q5"
 DEFAULT_MAX_ITER = 200
 DEFAULT_LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
