@@ -70,6 +70,60 @@ _live_pgids: set[int] = set()
 _live_pgid_lock = threading.Lock()
 
 
+def _descendant_pids(root: int) -> list[int]:
+    """Every live descendant of `root`, from /proc (Linux). [] where there
+    is no /proc — the kill then degrades to the runner's own group."""
+    children: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for d in entries:
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                stat = f.read()
+            # comm may contain spaces/parens: fields resume after the LAST ')'.
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(d))
+    out, stack = [], [root]
+    while stack:
+        for c in children.get(stack.pop(), ()):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def _kill_agent_tree(pgid: int) -> None:
+    """SIGKILL an agent's process group AND every group its descendants lead.
+
+    Killing only the runner's group (start_new_session) is not enough:
+    tools.run_reaped starts every bash-tool child in its OWN session, so a
+    command in flight at a wall timeout (a hung `./ts < input.txt`) outlived
+    the runner and kept running — only its own run_reaped timeout could
+    stop it, and that died with the runner. The runner group is frozen
+    first so it cannot spawn another tool child during the /proc walk."""
+    try:
+        os.killpg(pgid, signal.SIGSTOP)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    groups = {pgid}
+    for pid in _descendant_pids(pgid):
+        try:
+            groups.add(os.getpgid(pid))
+        except (ProcessLookupError, OSError):
+            pass
+    groups.discard(os.getpgrp())        # never our own group
+    for g in groups:
+        try:
+            os.killpg(g, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _reap_live_agents() -> None:
     """SIGKILL every agent group we own. Best-effort, last-resort."""
     got = _live_pgid_lock.acquire(blocking=False)
@@ -81,10 +135,7 @@ def _reap_live_agents() -> None:
         if got:
             _live_pgid_lock.release()
     for pgid in pgids:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        _kill_agent_tree(pgid)
 
 
 def _install_signal_reaper() -> None:
@@ -777,8 +828,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
 
     # start_new_session so an agent timeout SIGKILLs the runner's whole
-    # process group, not just the runner (its bash-tool children reap their
-    # own groups — see agents/tools.py run_reaped).
+    # process group, not just the runner. Its bash-tool children run in
+    # their OWN sessions (agents/tools.py run_reaped), so the timeout path
+    # walks the tree and kills those groups too (_kill_agent_tree).
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -806,10 +858,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "api_errors": _parse_api_errors(stdout),
         }
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_agent_tree(proc.pid)
         proc.kill()
         try:
             proc.communicate(timeout=5)
