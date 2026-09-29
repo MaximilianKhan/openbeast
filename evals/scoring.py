@@ -455,7 +455,7 @@ def _suite_version(results: dict) -> str:
 # server_error / env_error). A run containing any of them under-reports the
 # model; it is kept for inspection but never seated on the board.
 INFRA_REASONS = frozenset({"skipped_cache_miss", "server_unhealthy", "setup_failed",
-                           "server_error", "env_error"})
+                           "server_error", "env_error", "low_disk"})
 
 
 def ineligibility_reasons(results: dict) -> list[str]:

@@ -701,6 +701,32 @@ def env_error_signature(text: str | None) -> str | None:
     return text[start:end if end != -1 else len(text)].strip()[:200]
 
 
+def low_disk(min_free_gb: float | None = None) -> str | None:
+    """A message when a filesystem the eval writes to (the cache/results
+    tree, $HOME for compiler caches, /tmp for fixtures) is below the floor,
+    else None. Floor: OPENBEAST_EVAL_MIN_FREE_GB (default 5; 0 disables).
+    /home is shared with the weights and with research quantizes that write
+    12-55 GB each; a unit that starts on a nearly-full disk dies in its
+    build with ENOSPC, not on its merits."""
+    import shutil as _sh
+    if min_free_gb is None:
+        try:
+            min_free_gb = float(os.environ.get("OPENBEAST_EVAL_MIN_FREE_GB", "5"))
+        except ValueError:
+            min_free_gb = 5.0
+    if min_free_gb <= 0:
+        return None
+    for path in (EVALS_DIR, os.path.expanduser("~"), "/tmp"):
+        try:
+            free_gb = _sh.disk_usage(path).free / 1e9
+        except OSError:
+            continue
+        if free_gb < min_free_gb:
+            return (f"only {free_gb:.1f} GB free on the filesystem holding {path} "
+                    f"(floor {min_free_gb:g} GB, OPENBEAST_EVAL_MIN_FREE_GB)")
+    return None
+
+
 def cacheable_result(result: dict) -> bool:
     """A result row may enter the cache only if it is a genuine verdict.
     Environmental deaths must retry clean on the next run:
@@ -1369,6 +1395,20 @@ def run_eval(
                 "reason": "skipped_cache_miss",
                 "elapsed_seconds": 0,
                 "from_cache": False,
+            })
+
+        # Free-space floor before each live unit: a disk filled mid-sweep
+        # (a research quantize) turns every following unit into an ENOSPC
+        # "failure". Stop starting units instead; a relaunch resumes from
+        # the cache once space is back.
+        disk_msg = low_disk()
+        if disk_msg:
+            abort.set()
+            log(f"  ABORT: {disk_msg}; skipping all remaining tasks")
+            return record({
+                "id": task_id, "name": task_name, "difficulty": difficulty,
+                "model": model_name, "passed": False, "reason": "low_disk",
+                "elapsed_seconds": 0,
             })
 
         # Health check + recovery before each live task. If the server is

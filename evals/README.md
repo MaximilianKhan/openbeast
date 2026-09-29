@@ -95,7 +95,11 @@ exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `thread constructor failed`) or a full disk (`No space left on device`,
 `NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
 next run, and a run containing either can't enter the leaderboard until
-that rerun is done.
+that rerun is done. Before each live unit the harness also checks free space
+on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
+`/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
+that unit as `reason: low_disk` and stops starting units, so a disk filled
+mid-sweep doesn't turn the rest of the run into ENOSPC failures.
 
 `--cache-only` mode is the fast-path for "rebuild the leaderboard from
 prior runs" — no server start, no live calls, cache misses are recorded
@@ -123,7 +127,7 @@ turns `--greedy`, `--packs` and beast-assist diagnostics into
 refuse any results file whose `harness` records one of those arms (or an
 escalation component), a fast suite, or infrastructure rows
 (`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
-`env_error`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
+`env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
 confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
 wiring touches two of the six era files and is a held draft PR (#90), not in
 `main`.

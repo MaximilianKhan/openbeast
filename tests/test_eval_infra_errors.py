@@ -207,6 +207,42 @@ def test_genuine_fail_is_still_cached(tmp_path, monkeypatch):
     assert len(list(cache.CACHE_DIR.glob("*.json"))) == 1
 
 
+# --- free-space floor (storage-02) -----------------------------------------
+
+def _fake_usage(free_gb: float):
+    import collections
+    U = collections.namedtuple("U", "total used free")
+    return lambda path: U(10**12, 10**12 - int(free_gb * 1e9), int(free_gb * 1e9))
+
+
+def test_low_disk_floor(tmp_path, monkeypatch):
+    run_eval, _ = _fresh(tmp_path)
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", _fake_usage(2.0))
+    monkeypatch.delenv("OPENBEAST_EVAL_MIN_FREE_GB", raising=False)
+    assert "2.0 GB free" in run_eval.low_disk()
+    monkeypatch.setenv("OPENBEAST_EVAL_MIN_FREE_GB", "0")         # disabled
+    assert run_eval.low_disk() is None
+    monkeypatch.setenv("OPENBEAST_EVAL_MIN_FREE_GB", "1")
+    assert run_eval.low_disk() is None
+
+
+def test_low_disk_aborts_before_the_agent_runs(tmp_path, monkeypatch):
+    run_eval, cache = _fresh(tmp_path)
+    import shutil
+    monkeypatch.setenv("OPENBEAST_EVAL_MIN_FREE_GB", "30")
+    monkeypatch.setattr(shutil, "disk_usage", _fake_usage(3.0))
+    ran = []
+    monkeypatch.setattr(run_eval, "run_agent", lambda *a, **k: ran.append(1) or dict(_AGENT))
+    monkeypatch.setattr(run_eval, "run_validation", lambda t: (False, "x"))
+    monkeypatch.setattr(run_eval, "capture_server_config", lambda: {})
+    monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
+    monkeypatch.setattr(run_eval, "capture_inference_engine_info", lambda: {})
+    res = run_eval.run_eval(model_name="m")
+    assert not ran and res["tasks"][0]["reason"] == "low_disk"
+    assert not (cache.CACHE_DIR.exists() and list(cache.CACHE_DIR.glob("*.json")))
+
+
 # --- --cache-only replays the era of the model's last live run -------------
 
 def _bank_rb20480(run_eval, cache, tmp_path):
