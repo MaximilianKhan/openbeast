@@ -1594,6 +1594,37 @@ def test_a_job_log_created_by_the_api_is_0600(rig, tmp_path):
     assert mode == 0o600, oct(mode)
 
 
+def test_an_agent_transcript_created_by_the_api_is_0600(rig, tmp_path,
+                                                        monkeypatch):
+    """Review 2026-09-29: job transcripts were 0600 but agent transcripts —
+    tool output, file contents, fetched pages — took the runner's umask via
+    a plain open(path, "a") and landed 0644 in a 0755 agents/logs/. The
+    fake runner appends exactly that way; the umask is pinned so the
+    negative control below proves what the runner alone would produce."""
+    fake = tmp_path / "fake_runner.py"
+    fake.write_text(FAKE_RUNNER.format(agents=AGENTS))
+    monkeypatch.setenv("FAKE_RUNNER_ARGV", str(tmp_path / "argv.json"))
+    monkeypatch.setattr(chat_server, "RUNNER_PATH", str(fake))
+    old_umask = os.umask(0o022)
+    try:
+        assert not rig.logs.exists()
+        r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+            "kind": "agent", "task": "t", "workdir": str(tmp_path)})
+        assert r.status_code == 201, r.text
+        rec = wait_state(r.json()["session"]["id"], "done")
+        assert rec, "the fake runner never finished"
+        assert os.stat(rec["transcript"]).st_mode & 0o777 == 0o600
+        assert '"start"' in open(rec["transcript"]).read()   # it still writes
+        assert os.stat(rig.logs).st_mode & 0o777 == 0o700
+        # negative control: the runner's own append-open, on a fresh path
+        probe = rig.logs / "probe.jsonl"
+        with open(probe, "a") as fh:
+            fh.write("{}\n")
+        assert os.stat(probe).st_mode & 0o777 == 0o644
+    finally:
+        os.umask(old_umask)
+
+
 def test_the_spawn_audit_carries_the_command(rig, tmp_path):
     """The command is the one action the scope system gates, so it is the one
     thing the row must carry."""

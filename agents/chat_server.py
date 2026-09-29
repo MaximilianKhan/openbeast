@@ -1854,7 +1854,9 @@ def create_app() -> FastAPI:
                 # mcp_server.start_agent already writes agent-<id>.jsonl
                 # here, so check_agent/tail_agent and this console read the
                 # same files instead of two divergent archives.
-                os.makedirs(LOG_DIR, exist_ok=True)
+                # 0700 when we are the one creating it (an existing
+                # directory's mode is the operator's call, not ours).
+                os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
                 if kind == "agent":
                     transcript = os.path.join(LOG_DIR, f"agent-{session_id}.jsonl")
                 else:
@@ -1925,6 +1927,12 @@ def create_app() -> FastAPI:
                     # as "down". main() also warms it at start.
                     cmd = await asyncio.to_thread(scope_prefix) + cmd
                     if kind == "agent":
+                        # The runner appends with a plain open(), which takes
+                        # the umask: every console-streamed agent transcript
+                        # (tool output, file contents, fetched pages) landed
+                        # 0644 while job transcripts were 0600. Create it
+                        # 0600 FIRST; an append-open keeps an existing mode.
+                        _create_private(transcript)
                         proc = subprocess.Popen(
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
@@ -2084,6 +2092,17 @@ def _inflight(lock, gauges):
     finally:
         with lock:
             gauges["inflight"] -= 1
+
+
+def _create_private(path: str) -> None:
+    """Create `path` empty and 0600 if absent; tighten it to 0600 if not."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _body_str(body: dict, key: str, default: str = "") -> str:
