@@ -795,7 +795,13 @@ def draft_profile(r: dict, name: str, backend: str) -> tuple[str, list[str]]:
     best = lambda kind: next((s for s in r["suggestions"][kind] if s["parser"]), None)  # noqa: E731
     tool, reas = best("tool_call_parser"), best("reasoning_parser")
     f = r["fit"]
-    tp = 1 if f["tp1"]["verdict"] == "fits" else 2
+    # One Spark when it fits; also when the KV size is unknown but the weights alone take well under
+    # half of one Spark's budget (a tiny model is not worth a ConnectX hop per token).
+    one = f["tp1"]["verdict"]
+    light = r["weights"]["weight_bytes"] < 0.5 * f["assumptions"]["budget_per_spark"]
+    tp = 1 if one == "fits" or (one == "fits (KV size unknown)" and light) else 2
+    tp_note = f"VERIFY: {_comment(f['verdict'])}" + (
+        " — KV size unknown: TP chosen from the weights alone" if one == "fits (KV size unknown)" else "")
     native = r["context"].get("native")
     mml = f[f"tp{tp}"].get("suggested_max_model_len") or native or ""
     mml = str(mml) if isinstance(mml, int) and not isinstance(mml, bool) and mml > 0 else ""
@@ -817,7 +823,7 @@ def draft_profile(r: dict, name: str, backend: str) -> tuple[str, list[str]]:
         ("SOURCE", src, "" if src else "VERIFY: the checkpoint's own id was not a valid repo id or path"),
         ("REVISION", rev, "" if rev else "VERIFY: a local SOURCE may leave this empty"),
         ("SERVED_MODEL_NAME", served, "VERIFY: the id clients will send"),
-        ("TENSOR_PARALLEL_SIZE", str(tp), f"VERIFY: {_comment(f['verdict'])}"),
+        ("TENSOR_PARALLEL_SIZE", str(tp), tp_note),
         ("MAX_MODEL_LEN", mml, f"VERIFY: estimate from the fit model (native {_comment(native)})"),
     ]
     if backend == "vllm":

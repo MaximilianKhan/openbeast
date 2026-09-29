@@ -279,3 +279,12 @@ def test_write_profile_refuses_a_draft_that_parses_to_other_keys(tmp_path, monke
     prof = tmp_path / "profiles"
     assert model_inspect.main([str(d), "--write-profile", "x", "--models-dir", str(prof)]) == 1
     assert "unexpectedly" in capsys.readouterr().err and not (prof / "x.env").exists()
+
+
+def test_draft_picks_one_spark_for_a_small_model_with_unknown_kv(tmp_path):
+    cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama", "max_position_embeddings": 4096}
+    d = make_ckpt(tmp_path / "tiny", cfg, QWEN_TEMPLATE)          # no layer/head counts: KV size unknown
+    prof = tmp_path / "profiles"
+    assert model_inspect.main([str(d), "--write-profile", "tiny", "--models-dir", str(prof)]) == 0
+    text = (prof / "tiny.env").read_text()
+    assert "TENSOR_PARALLEL_SIZE=1 " in text and "KV size unknown" in text
