@@ -21,7 +21,10 @@ class of hardware.
 the graphics card, then install the **client** on any laptop (no GPU, no
 weights). It runs the same agent and the same 18 tools against *its own* files,
 with only the thinking crossing your private tailnet. Your laptop stays a
-laptop; your rig does the reasoning.
+laptop; your rig does the reasoning. **Outgrowing one card?** Point the same
+stack at a vLLM or TensorFold server spanning two NVIDIA DGX Sparks, and bring
+up checkpoints nobody has seen before with tooling that inspects, pins, verifies
+and conformance-tests them first.
 
 Think of it as **LazyVim for local AI.** The raw components (llama.cpp, Open
 WebUI, SearXNG) are powerful but fiddly to assemble and tune; OpenBeast is the
@@ -44,9 +47,10 @@ line in `openbeast.conf`.
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
 | **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP | v1.3 |
 | **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job | v1.4 |
-| **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, and (opt-in) a compile error that arrives with its confirmed fix | main |
-| **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | main |
-| **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, and an eval *era* hash so rows from different code are never compared as if they were the same | main |
+| **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, and (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix | v1.5 |
+| **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
+| **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
+| **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | main |
 
 Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
 capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
@@ -96,7 +100,8 @@ exactly what to install if anything's missing.
   (`openbeast-logrotate.timer`, no sudo) that keeps `stack.log` and the audit
   trails in `.run/` bounded, whenever a systemd `--user` manager is present.
   `LOGROTATE_AUTOINSTALL=false` in `openbeast.conf` opts out;
-  `./scripts/logrotate.sh --install` does it by hand.
+  `./scripts/logrotate.sh --install` does it by hand. Agent transcripts are
+  kept forever unless you set `AGENT_LOG_RETENTION_DAYS`.
 
 The full walkthrough — prerequisites, per-distro toolchain, GPU/driver notes,
 every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
@@ -158,6 +163,13 @@ Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
 
+opencode keeps every session in one database, in the same place on the rig and
+on a Mac (`~/.local/share/opencode/opencode.db`). `./scripts/opencode-sessions.sh`
+shows them all per project, and `… clear` (a dry run until `--go`) removes them
+safely: it refuses while opencode is running, backs up first, deletes through
+opencode's own cascade, and then reclaims the space. `--dir` limits it to one
+project.
+
 **On a client** — same agent, same tools, acting on *this* machine's files:
 
 ```bash
@@ -179,10 +191,11 @@ fairness or preemption). Fine for one person across their devices; worth
 knowing before you hand out keys.
 
 Built for the long haul: the daemon runs in a memory-capped systemd scope with
-a health-monitored watchdog that knows a *loading* model from a dead one,
-**fast boot** (chat on a 0.6B bridge while the big model loads),
-**model-load rollback**, reasoning control (per-request toggle + global
-budget), and a hot-pluggable [extension system](extensions/README.md).
+a health-monitored watchdog that knows a *loading* model from a dead one (a
+model only counts as up once it answers `ok`, so **model-load rollback**
+actually fires on a load that dies), **fast boot** (chat on a 0.6B bridge while
+the big model loads), reasoning control (per-request toggle + global budget),
+and a hot-pluggable [extension system](extensions/README.md).
 
 ## The beast family
 
@@ -202,7 +215,12 @@ replicated on both tested models with zero regressions, and the suite-level
 effect is small — a few net tasks, inside the run-to-run churn floor we measured
 three times. It ships because it is free when idle, token-saving when active,
 and provably harmless; the default stays off until the follow-on arms measure a
-decisive effect. We publish the misses alongside the hits on purpose.
+decisive effect. The follow-on arm (a zig "awareness pack" of verified facts
+injected before the write) first read as a ship at p = 0.019. A re-audit then
+found rows in both arms where the model server had died mid-task, or the
+validator had run out of threads, recorded as model failures. On clean rows it
+is +10, p = 0.064: **unresolved**, so the pack stays unwired until a clean rerun
+decides it. We publish the misses alongside the hits on purpose.
 
 ### beast-artifact 🎨 — a URL for anything the model renders
 
@@ -262,9 +280,10 @@ and the new form must compile on *this* rig, or it is not served. Six
 languages today: zig, C, C++, Python, Rust, Go.
 
 What a model gets: the `language_reference` tool (admin profile) answers from
-the verified corpus and refuses to guess; and, opt-in after its own A/B, a
-compile error reported by beast-assist arrives with the one-line fix the
-toolchain confirmed. Model-drafted claims go through the same verifier before
+the verified corpus and refuses to guess; and, opt-in (`BEAST_ESCALATE=1`
+alongside `BEAST_ASSIST=1`, with its A/B still to run), a compile error reported
+by beast-assist arrives with the one-line fix the toolchain confirmed, and only
+when the index actually knows that member. Model-drafted claims go through the same verifier before
 they can ever be served.
 → [`docs/BEAST_LANG_PLAN.md`](docs/BEAST_LANG_PLAN.md)
 
@@ -299,6 +318,51 @@ measurement's window and the watchdog will not relaunch the stack's model into
 someone else's run; `scripts/eval-era.sh` prints the **era hash** of the six
 files that define what an eval unit sees, so two rows are compared only when
 they were produced by the same code.
+
+The harness also refuses to cache what the model did not do. A unit whose
+server died mid-task (the runner now reports `API_ERRORS: n`), or whose
+validator died of thread exhaustion or a full disk, is recorded as an
+infrastructure error, not a model failure. The row-validity guard counts setup
+and server deaths against a row instead of waving them through, and a paired
+verdict is refused on an incomplete row. Each of these guards exists because the
+failure it catches once distorted a published verdict; the re-audit that found
+them is in [`docs/TODO.md`](docs/TODO.md).
+
+## Beyond one GPU: vLLM, TensorFold and DGX Spark 🟩
+
+*(main, opt-in.)* The rig's own inference is llama.cpp, and that stays the
+default byte for byte. Set `INFERENCE_BACKEND=vllm` or `tensorfold` and
+`INFERENCE_URL` in `openbeast.conf`, and the stack talks to that server instead.
+The WebUI, the tool servers, agents, beast-gate and `/api/slot` all follow it.
+The rig never launches, supervises or kills a server it doesn't own. If the
+server isn't up yet, the stack still comes up with a warning and logs the
+moment it becomes ready.
+
+The launch scripts run **on the inference nodes**; the reference setup is two
+NVIDIA DGX Sparks running tensor-parallel over their ConnectX-7 link. It is
+built for models **nobody here has seen**, so nothing is hard-wired to a
+checkpoint:
+
+```bash
+scripts/backends/model-inspect.sh <repo@sha | /models/dir> --write-profile mymodel
+                                              # what it is, fits 1 or 2 Sparks?, parsers, engine support
+scripts/backends/model-fetch.sh --profile mymodel     # sha256-lock the weights (local copy or Hub)
+scripts/backends/vllm/spark-node.sh --profile mymodel --rank 1   # then --rank 0 on the head
+scripts/backends/conformance.sh --model mymodel       # chat, stream, reasoning, a real tool-call round trip
+scripts/backends/use-model.sh --profile mymodel       # point OpenBeast at it (only behind a pass)
+```
+
+- **Per-model profiles** are parsed as data and never sourced. A Hub revision
+  must be a full commit SHA; `trust_remote_code` needs an acknowledgement tied
+  to that revision; extra engine flags are checked against an allow list
+  vendored from each engine's source.
+- **The lock is the pin.** A second Spark, or a re-copy, must reproduce it byte
+  for byte before a launcher will serve it.
+- **Conformance, not assumptions.** Tool arguments a server sends as strings
+  (TensorFold does) are coerced to the tool's schema types.
+
+Every engine detail not yet measured on real Sparks is listed as such in the
+plan. → [`docs/DGX_SPARK_PLAN.md`](docs/DGX_SPARK_PLAN.md) (the runbook is §14)
 
 ## Architecture
 
@@ -350,7 +414,9 @@ flowchart TB
         direction TB
         llama["🧠 <b>llama.cpp</b> · :8080<br/>OpenAI-compatible · MTP<br/>unified KV · batching"]
         gpu["🎮 <b>GPU</b><br/>every token HERE<br/><i>gpu-lease.sh: one owner at a time</i>"]
+        remote["🟩 <b>vLLM / TensorFold</b><br/><i>opt-in</i> · INFERENCE_URL<br/>e.g. 2× DGX Spark · TP=2"]
         llama --> gpu
+        llama -.-|"or"| remote
       end
 
       subgraph LANG["📚 BEAST-LANG — the toolchain is ground truth"]
@@ -411,7 +477,7 @@ flowchart TB
   classDef lang fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#431407;
   class coc,ccli,cmcp,ctools,phone cli;
   class webui,runner,jobs,llama,gpu rig;
-  class gate,router,chat,artifact sec;
+  class gate,router,chat,artifact,remote sec;
   class idsrv,mcp,prim,searx tool;
   class weights,skills,evals,store,bundle store;
   class corpus,intro,verify,escal lang;
@@ -453,8 +519,8 @@ the rig (a locality token no browser can read) or an enrolled device key.
 
 Dashed borders and dashed arrows are **opt-in**: beast-gate (`EDGE_GATE`), the
 agent router (`AGENT_ROUTER`), beast-chat (`BEAST_CHAT`), beast-artifact
-(`BEAST_ARTIFACT`) and the dashboard extension (`EXTENSIONS`) all default to
-off, so a plain `./start.sh` brings up the rig with none of them. Remote access
+(`BEAST_ARTIFACT`), a remote inference engine (`INFERENCE_BACKEND`) and the
+dashboard extension (`EXTENSIONS`) all default to off, so a plain `./start.sh` brings up the rig with none of them. Remote access
 is a separate deliberate step: nothing is published until you run
 `setup-tailscale.sh`.
 
@@ -490,7 +556,10 @@ Everything else is **opt-in**, one flag each:
 | `…:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
 
 Every device authenticates via its WireGuard key; the WebUI additionally
-requires an account (first signup becomes admin), and beast-chat /
+requires an account. Open WebUI's built-in `admin@localhost` has a hardcoded
+upstream password, so the moment login is enforced it is rotated to a random
+one saved in `openbeast.conf`, and the WebUI is not published if that fails.
+`doctor` fails loudly if the default still works. beast-chat /
 beast-artifact check the tailnet login against their operator lists. Phone:
 install the Tailscale app, open the chat URL, "Add to Home Screen".
 
@@ -569,8 +638,9 @@ goes the other way — one model, made as smart and fast as the hardware allows.
 
 - **Evidence, not vibes.** The only one here that *evaluates the models it
   serves*, with a reproducible capability-ranked leaderboard per host, an eval
-  cache keyed on the code that produced each row, and a GPU lease so a
-  measurement is never contaminated by whatever else is running.
+  cache keyed on the code that produced each row, a GPU lease so a
+  measurement is never contaminated by whatever else is running, and a harness
+  that will not score a crashed server as a wrong answer.
 - **Measured, not guessed.** Every model's VRAM and max-safe context is measured
   on the card and pinned; MTP speculative decoding is profiled to its optimal
   draft depth per model. No OOM roulette, no catalog approximations.
@@ -599,7 +669,8 @@ path, and Apache-2.0.
 OpenBeast is opinionated, and this is the opinion: **maximize the intelligence
 your hardware can hold, no compromise.** Fill every GPU with the largest,
 most-accurate model that fits — never a stew of smaller, weaker ones. When you
-need to scale, you add silicon; you don't downsize the mind. It meets your
+need to scale, you add silicon; you don't downsize the mind (that is what the
+vLLM / TensorFold backends are for). It meets your
 hardware where it is (detecting your GPU tier, handing you a working
 best-your-card-can-hold config on day one) and gives you a clear ladder to grow
 *up*. Built and tuned on an RTX 5090 (32 GB) running Arch Linux.
@@ -662,6 +733,14 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 - Linux with NVIDIA driver, CUDA toolkit, Docker, and Python 3.10+
 - Disk: ~25 GB for llama.cpp + one model; each additional model 16–24 GB
 
+**Optional inference nodes** (`INFERENCE_BACKEND=vllm|tensorfold`):
+
+- One or two NVIDIA DGX Sparks on **DGX OS**, NVIDIA's supported OS. Arch-based
+  distros, Omarchy included, are not supported on the Spark's ARM64 GB10 as of
+  September 2026. Two Sparks are linked over ConnectX-7 for tensor parallelism.
+- The engine runs in a container pinned by digest (vLLM, or TensorFold pinned
+  by commit); models live on each node's own storage, locked by sha256.
+
 **To run a client** — far less, because the rig does the thinking:
 
 - **macOS or Linux. No GPU, no CUDA, no model weights.** (Windows/WSL2 is
@@ -712,6 +791,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [LLAMACPP_WATCH.md](docs/LLAMACPP_WATCH.md) | Upstream llama.cpp changes we must plan for, and per-upgrade tripwires |
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
 | [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
+| [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) | vLLM / TensorFold backends on DGX Spark: topology, security, onboarding a new model (§14), the day-of runbook |
 | [SANDBOXING.md](docs/SANDBOXING.md) | The optional kernel-level sandbox for the bash tool |
 | [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |
 | [extensions/README.md](extensions/README.md) | The optional-service extension system |
@@ -729,6 +809,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
+| *main (next)* | the 2026-09-29 adversarial review: 118 findings fixed, research integrity repaired · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [TODO.md](docs/TODO.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
 | v1.3.0 | beast-artifact 🎨 | [RELEASE_NOTES_v1.3.0.md](docs/RELEASE_NOTES_v1.3.0.md) |
@@ -736,8 +817,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.1.0 | beast-slot 🎰 + beast-gate 🛡️ | [RELEASE_NOTES_v1.1.0.md](docs/RELEASE_NOTES_v1.1.0.md) |
 | v1.0 | the rig | — |
 
-Everything marked `main` in [What ships](#what-ships) — beast-lang, the
-air-gap path, beast-campaign — plus the post-v1.4.0 hardening shipped as v1.5.0.
+Everything marked `main` in [What ships](#what-ships) is on `main` and not yet
+in a tagged release.
 
 ## Uninstall
 
@@ -784,6 +865,8 @@ outstanding open source projects, and each deserves the credit:
 | Project | What it does in OpenBeast | Upstream |
 |---|---|---|
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) | The inference engine; `llama-server` serves every model, OpenAI-compatible | ggml-org |
+| [vLLM](https://github.com/vllm-project/vllm) (Apache-2.0) | Optional inference engine for `INFERENCE_BACKEND=vllm`, multi-node tensor parallel on DGX Spark | vllm-project |
+| [TensorFold](https://github.com/ashhart/TensorFold) (MIT) | Optional inference engine for `INFERENCE_BACKEND=tensorfold` (pinned by commit) | ashhart |
 | [Open WebUI](https://github.com/open-webui/open-webui) (Open WebUI License, BSD-3-based) | The browser chat frontend, user accounts, and RBAC surface | open-webui |
 | [SearXNG](https://github.com/searxng/searxng) (AGPL-3.0) | Private metasearch; powers the `web_search` tool with no tracking | searxng |
 | [FastAPI](https://github.com/fastapi/fastapi) (MIT) + [Uvicorn](https://github.com/encode/uvicorn) (BSD-3-Clause) | Serve the identity tool server, beast-chat and beast-artifact | fastapi / encode |
