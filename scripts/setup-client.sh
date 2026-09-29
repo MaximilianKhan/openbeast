@@ -329,14 +329,24 @@ fi
 # -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
 # (published port, stack down) reports as "reachable".
 # The bearer goes through lib/curl_auth.sh (a curl --config on an fd), never
-# curl's argv. A copy of this script run outside a checkout has no lib/ —
-# the probe is informational, so it just goes out unkeyed there.
+# curl's argv. A copy of this script fetched on its own (the documented
+# no-clone path) has no lib/ yet — the slim checkout comes later — so the
+# fallback inlines the same fd-3 idiom: dropping the key there would 401 a
+# keyed rig and report a live stack as "not answering".
 _curl_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib/curl_auth.sh"
 if [ -f "$_curl_lib" ]; then
   # shellcheck source=lib/curl_auth.sh
   . "$_curl_lib"
 else
-  ob_curl_bearer() { shift; curl "$@"; }
+  ob_curl_bearer() {
+    local _k="$1"; shift
+    [ -z "$_k" ] && { curl "$@"; return; }
+    case "$_k" in *[[:cntrl:]]*) echo "api key contains a control character — refusing" >&2; return 2 ;; esac
+    _k="$(printf '%s' "$_k" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    curl --config /dev/fd/3 "$@" 3<<EOF
+header = "Authorization: Bearer $_k"
+EOF
+  }
 fi
 probe_ok="$(ob_curl_bearer "$API_KEY" -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
 [ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \

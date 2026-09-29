@@ -338,6 +338,33 @@ else
   fail "unkeyed setup-client probe: argv=[$(tr '\n' ' ' < "$T/curl.argv")] cfg=[$(cat "$T/curl.cfg")]"
 fi
 
+# The documented no-clone path: the script fetched ALONE, no lib/ next to it
+# (the slim checkout comes after the probe). The inline fallback must still
+# key the probe — dropping the key 401s a keyed rig into "not answering".
+SA="$T/standalone"
+mkdir -p "$SA"
+install -m 755 "$REPO_DIR/scripts/setup-client.sh" "$SA/"
+AKEY="alone-$RANDOM\\x\"y"
+reset_curl
+printf '%s\n' "$AKEY" | env -i HOME="$SH" PATH="$BIN:$PATH" \
+  bash "$SA/setup-client.sh" --host rig.example --no-search --api-key-stdin >/dev/null 2>&1 || true
+AKEY_ESC="$(printf '%s' "$AKEY" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+if grep -qF 'https://rig.example:8443/health' "$T/curl.argv" \
+   && ! grep -qF "alone-" "$T/curl.argv" \
+   && grep -qF "header = \"Authorization: Bearer $AKEY_ESC\"" "$T/curl.cfg"; then
+  pass "standalone copy (no lib/): the probe is still keyed, off argv, config-escaped"
+else
+  fail "standalone setup-client: argv=[$(tr '\n' ' ' < "$T/curl.argv")] cfg=[$(cat "$T/curl.cfg")]"
+fi
+reset_curl
+env -i HOME="$SH" PATH="$BIN:$PATH" \
+  bash "$SA/setup-client.sh" --host rig.example --no-search </dev/null >/dev/null 2>&1 || true
+if grep -qF 'https://rig.example:8443/health' "$T/curl.argv" && [[ ! -s "$T/curl.cfg" ]]; then
+  pass "negative control: standalone, no key → an unkeyed probe, no --config"
+else
+  fail "standalone unkeyed probe: argv=[$(tr '\n' ' ' < "$T/curl.argv")] cfg=[$(cat "$T/curl.cfg")]"
+fi
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]
