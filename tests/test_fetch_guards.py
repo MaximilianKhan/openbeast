@@ -445,5 +445,78 @@ class TestFetchTotalDeadline(unittest.TestCase):
         self.assertEqual(out, "hello")
 
 
+class TestFetchThroughProxy(unittest.TestCase):
+    """With http_proxy/https_proxy set, fetch used to pin the TARGET's IP but
+    keep the PROXY's port (dialing target_ip:3128), so every proxied fetch
+    failed. It must dial the proxy and still vet the target by name."""
+
+    _NAMES = {"pub.example": "93.184.216.34", "priv.example": "10.0.0.5",
+              "proxy.test": "10.9.9.9"}  # a private proxy is normal
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._env = {k: os.environ.pop(k) for k in list(os.environ)
+                     if k.lower() in ("http_proxy", "https_proxy", "no_proxy",
+                                      "all_proxy")}
+        os.environ["http_proxy"] = "http://proxy.test:3128"
+        os.environ["https_proxy"] = "http://proxy.test:3128"
+        self._opener = tools._fetch_opener
+        tools._fetch_opener = tools._build_fetch_opener()
+        self._gai = socket.getaddrinfo
+        self._cc = socket.create_connection
+        socket.getaddrinfo = lambda h, p, *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (self._NAMES[h], p or 80))]
+        self.dialed = []
+
+        def cc(addr, *a, **k):
+            self.dialed.append(addr)
+            raise OSError("stub dial")
+        socket.create_connection = cc
+
+    def tearDown(self):
+        socket.getaddrinfo = self._gai
+        socket.create_connection = self._cc
+        self.tools._fetch_opener = self._opener
+        for k in ("http_proxy", "https_proxy"):
+            os.environ.pop(k, None)
+        os.environ.update(self._env)
+
+    def test_http_target_dials_the_proxy(self):
+        self.tools.fetch("http://pub.example/page")
+        self.assertEqual(self.dialed, [("proxy.test", 3128)])
+
+    def test_https_target_dials_the_proxy(self):
+        self.tools.fetch("https://pub.example/page")
+        self.assertEqual(self.dialed, [("proxy.test", 3128)])
+
+    def test_private_target_still_refused_through_proxy(self):
+        # Negative control: the proxy path must not skip the SSRF vet. The
+        # name passes fetch()'s up-front check, then resolves privately at
+        # open time — the proxied branch must re-vet and refuse to dial.
+        n = {"i": 0}
+
+        def flip(h, p, *a, **k):
+            if h == "flip.example":
+                n["i"] += 1
+                ip = "93.184.216.34" if n["i"] == 1 else "10.0.0.5"
+            else:
+                ip = self._NAMES[h]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, p or 80))]
+        socket.getaddrinfo = flip
+        for url in ("https://flip.example/", "http://flip.example/"):
+            n["i"] = 0
+            out = self.tools.fetch(url)
+            self.assertIn("non-public address", out)
+        self.assertEqual(self.dialed, [])
+
+    def test_unproxied_opener_still_pins_target_ip(self):
+        for k in ("http_proxy", "https_proxy"):
+            os.environ.pop(k, None)
+        self.tools._fetch_opener = self.tools._build_fetch_opener()
+        self.tools.fetch("http://pub.example/page")
+        self.assertEqual(self.dialed, [("93.184.216.34", 80)])
+
+
 if __name__ == "__main__":
     unittest.main()

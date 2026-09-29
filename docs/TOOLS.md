@@ -177,7 +177,10 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
   vetted IP is pinned for the actual connect so a DNS flip can't slip through
-  (the guard applies to all users — defense in depth).
+  (the guard applies to all users — defense in depth). With `http_proxy` /
+  `https_proxy` set (honoring `no_proxy`), fetch dials the operator's proxy
+  and the target is vetted by name on every hop; the IP pin cannot cover a
+  proxied target, because the proxy does its own resolution.
 - **Tailnet is its own blocked class.** `_vet_addr` in `agents/tools.py` pins
   Tailscale's CGNAT range `100.64.0.0/10` and the default v6 ULA range
   `fd7a:115c:a1e0::/48` explicitly, rather than relying on the stdlib: CPython's

@@ -1514,8 +1514,11 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self._pinned_ip = pinned_ip
 
     def connect(self):
+        # pinned_ip None = proxied request: dial the operator's proxy
+        # (self.host) — see _pinned_open.
         self.sock = socket.create_connection(
-            (self._pinned_ip, self.port), self.timeout, self.source_address)
+            (self._pinned_ip or self.host, self.port), self.timeout,
+            self.source_address)
         _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
@@ -1530,19 +1533,35 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self):
         sock = socket.create_connection(
-            (self._pinned_ip, self.port), self.timeout, self.source_address)
+            (self._pinned_ip or self.host, self.port), self.timeout,
+            self.source_address)
         _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
             sock = self.sock
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        # Through a CONNECT tunnel self.host is the PROXY; SNI and the
+        # certificate check must name the target (stdlib does the same).
+        self.sock = self._context.wrap_socket(
+            sock, server_hostname=self._tunnel_host or self.host)
 
 
 def _pinned_open(handler, req, conn_class, scheme):
     """Resolve + vet + pin, atomically, for THIS request (initial or any
     redirect hop — urllib re-enters the handler per hop, so every hop is
     independently vetted against the address it actually dials)."""
+    if getattr(req, "_tunnel_host", None) or req.has_proxy():
+        # An operator proxy (http_proxy/https_proxy, honoring no_proxy)
+        # applies: ProxyHandler already pointed req.host at the PROXY. The
+        # old code pinned the TARGET's IP but kept the proxy's port, dialing
+        # target_ip:3128 — every proxied fetch failed. Vet the target by
+        # name, then dial the proxy, which does its own resolution: the IP
+        # pin cannot cover a proxied target (a rebinding answer at the
+        # proxy is out of our hands), only the name-level vet can.
+        reason = _fetch_url_blocked(req.full_url)
+        if reason:
+            raise urllib.error.URLError(f"fetch blocked: {reason}")
+        return handler.do_open(conn_class, req, pinned_ip=None)
     parsed = urllib.parse.urlparse(req.full_url)
     ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
     if reason:
@@ -1573,10 +1592,16 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-# Default HTTP/HTTPS handlers replaced by the pinned variants (build_opener
-# swaps same-type handlers), so no request path re-resolves post-guard.
-_fetch_opener = urllib.request.build_opener(
-    _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _FetchRedirectHandler)
+def _build_fetch_opener():
+    """Default HTTP/HTTPS handlers replaced by the pinned variants
+    (build_opener swaps same-type handlers), so no request path re-resolves
+    post-guard. build_opener's default ProxyHandler reads the proxy env
+    here, at build time."""
+    return urllib.request.build_opener(
+        _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _FetchRedirectHandler)
+
+
+_fetch_opener = _build_fetch_opener()
 
 
 def fetch(url: str, max_length: int = 50_000) -> str:
