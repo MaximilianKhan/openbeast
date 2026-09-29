@@ -503,8 +503,11 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     echo "  Only its SHA-256 is stored (.run/clients.json). Nothing on this rig"
     echo "  can print it again — lose it and you rotate."
     echo ""
-    echo "  On the client device, run:"
-    echo "    ./scripts/setup-client.sh --host $(_rig_host) --api-key $key"
+    # --api-key-stdin, not `--api-key <key>`: a key on the command line sits
+    # in the client's shell history and in /proc/<pid>/cmdline, which every
+    # local uid can read while setup-client.sh runs.
+    echo "  On the client device, run (and paste the key above when prompted):"
+    echo "    ./scripts/setup-client.sh --host $(_rig_host) --api-key-stdin"
     echo ""
     ;;
 

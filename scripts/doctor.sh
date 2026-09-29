@@ -20,6 +20,9 @@ QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
 
 source "$SCRIPT_DIR/lib/net.sh"   # ob_probe_host — the mapping start.sh and healthcheck.sh use
+# ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
+# --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
+source "$SCRIPT_DIR/lib/curl_auth.sh"
 # Where the core services answer (they bind BIND_HOST). It used to be a
 # private copy of the mapping with no `::` arm, so BIND_HOST=:: built
 # http://:::8080 and every service read as down on a healthy stack.
@@ -38,8 +41,7 @@ fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"; FAIL
 
 # curl a health URL; $3 optional bearer key. Returns 0 if the body matches $2.
 probe() { # probe <url> <match> [key]
-  local auth=(); [[ -n "${3:-}" ]] && auth=(-H "Authorization: Bearer $3")
-  curl -s --max-time 4 "${auth[@]}" "$1" 2>/dev/null | grep -qi "$2"
+  ob_curl_bearer "${3:-}" -s --max-time 4 "$1" 2>/dev/null | grep -qi "$2"
 }
 
 # ── Hardware ────────────────────────────────────────────────────────────────
@@ -319,15 +321,9 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   # present the locality token, through a 0600 --config file and never argv
   # (`ps` is world-readable) — the same shape the beast-artifact row below
   # already uses.
-  _chat_cfg=""
   _chat_tok="$(cat "$REPO_DIR/.run/chat-local.token" 2>/dev/null || true)"
-  if [[ -n "$_chat_tok" ]]; then
-    _chat_cfg="$(mktemp)"; chmod 600 "$_chat_cfg"
-    printf 'header = "X-OpenBeast-Local: %s"\n' "$_chat_tok" > "$_chat_cfg"
-  fi
-  _chat=$(curl -s --max-time 4 ${_chat_cfg:+--config "$_chat_cfg"} \
+  _chat=$(ob_curl_hdr "${_chat_tok:+X-OpenBeast-Local: $_chat_tok}" -s --max-time 4 \
             "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
-  [[ -n "$_chat_cfg" ]] && rm -f "$_chat_cfg"
   if echo "$_chat" | grep -qi '"status":"ok"'; then
     # [a-z-]: the value is a hyphenated word ("any-identified"), and a
     # [a-z]-only class silently matched nothing.
@@ -355,7 +351,8 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # tailnet (tailscale serve proxies from loopback), so the gate keys this on
   # a 0600 token only readable on this box.
   _gate_tok=$(cat "$REPO_DIR/.run/edge-local.token" 2>/dev/null || true)
-  _gate=$(curl -s --max-time 4 -H "X-OpenBeast-Local: ${_gate_tok}" "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
+  _gate=$(ob_curl_hdr "${_gate_tok:+X-OpenBeast-Local: $_gate_tok}" -s --max-time 4 \
+            "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null)
   if [[ -n "$_gate" ]]; then
     _mode=$(echo "$_gate" | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
     _ndev=$(echo "$_gate" | grep -o '"devices":[0-9]*' | cut -d: -f2)
@@ -377,15 +374,9 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   # not report the store path or how many pages exist. doctor runs ON the rig,
   # so it presents the locality token to get the detailed body. Through a
   # 0600 --config file, never argv: `ps` is world-readable.
-  _art_cfg=""
   _art_tok="$(cat "$REPO_DIR/.run/artifact-local.token" 2>/dev/null || true)"
-  if [[ -n "$_art_tok" ]]; then
-    _art_cfg="$(mktemp)"; chmod 600 "$_art_cfg"
-    printf 'header = "X-OpenBeast-Local: %s"\n' "$_art_tok" > "$_art_cfg"
-  fi
-  _art=$(curl -s --max-time 4 ${_art_cfg:+--config "$_art_cfg"} \
+  _art=$(ob_curl_hdr "${_art_tok:+X-OpenBeast-Local: $_art_tok}" -s --max-time 4 \
            "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
-  [[ -n "$_art_cfg" ]] && rm -f "$_art_cfg"
   if [[ -n "$_art" ]]; then
     _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
     if [[ -n "$_nart" ]]; then

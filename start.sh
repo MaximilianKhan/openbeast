@@ -84,6 +84,7 @@ fi
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
 source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
@@ -621,7 +622,9 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # peer is useless: tailscale serve proxies from 127.0.0.1). The token file
   # is 0600 and only readable on this box.
   _EDGE_TOK=$(cat "$RUN_DIR/edge-local.token" 2>/dev/null || true)
-  _EDGE_AUTH=$(curl -s -m 2 -H "X-OpenBeast-Local: ${_EDGE_TOK}" "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
+  # The header goes through ob_curl_hdr (curl --config on fd 3), never argv:
+  # /proc/*/cmdline is world-readable, and this token unlocks /gate/*.
+  _EDGE_AUTH=$(ob_curl_hdr "${_EDGE_TOK:+X-OpenBeast-Local: $_EDGE_TOK}" -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
   echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
