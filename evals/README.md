@@ -99,7 +99,12 @@ that rerun is done.
 
 `--cache-only` mode is the fast-path for "rebuild the leaderboard from
 prior runs" — no server start, no live calls, cache misses are recorded
-as `skipped_cache_miss` for visibility.
+as `skipped_cache_miss` for visibility. With no server to read the
+reasoning budget from, it replays the `.rbN` era of the model's newest
+live results file (it prints which); `--reasoning-budget N` picks one
+explicitly (`-1` = the uncapped legacy era). A replay with any cache miss
+is kept as a results file but refused by the leaderboard, so a replay
+against the wrong era can't seat a 0% row.
 
 **The era hash, and the experiment flags that fork it.** Item (e) above is
 one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it

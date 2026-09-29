@@ -205,3 +205,40 @@ def test_genuine_fail_is_still_cached(tmp_path, monkeypatch):
                health=lambda: True)
     assert "reason" not in res["tasks"][0]
     assert len(list(cache.CACHE_DIR.glob("*.json"))) == 1
+
+
+# --- --cache-only replays the era of the model's last live run -------------
+
+def _bank_rb20480(run_eval, cache, tmp_path):
+    """One live-era row banked under .rb20480, plus the live results file
+    that recorded the server flags."""
+    task = run_eval.load_tasks(None)[0]
+    key = cache.cache_key(task, "m", max_iter=3, rb="20480")
+    cache.cache_put(key, {"id": task["id"], "passed": True, "elapsed_seconds": 2.0,
+                          "tokens_completion": 9})
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    (results / "eval-m-20260917-000000.json").write_text(json.dumps({
+        "model_slug": "m",
+        "server": {"cmdline": "llama-server --reasoning-budget 20480",
+                   "reasoning_budget": "20480"}}))
+    # A different model whose slug shares the prefix must not be consulted.
+    (results / "eval-m-k-xl-20260918-000000.json").write_text(json.dumps({
+        "model_slug": "m-k-xl",
+        "server": {"cmdline": "x", "reasoning_budget": "4096"}}))
+
+
+def test_cache_only_infers_rb_era_from_last_live_run(tmp_path):
+    run_eval, cache = _fresh(tmp_path)
+    _bank_rb20480(run_eval, cache, tmp_path)
+    res = run_eval.run_eval(model_name="m", cache_only=True)
+    row = res["tasks"][0]
+    assert row.get("from_cache") is True and row["passed"] is True
+    assert res["harness"]["rb_component"] == "20480"
+
+
+def test_cache_only_explicit_rb_wins(tmp_path):
+    run_eval, cache = _fresh(tmp_path)
+    _bank_rb20480(run_eval, cache, tmp_path)
+    res = run_eval.run_eval(model_name="m", cache_only=True, reasoning_budget="-1")
+    assert res["tasks"][0]["reason"] == "skipped_cache_miss"   # uncapped era: a miss

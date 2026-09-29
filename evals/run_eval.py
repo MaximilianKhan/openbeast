@@ -895,6 +895,34 @@ def run_cleanup(task: dict, log=print):
         log(f"  (cleanup error: {e})")
 
 
+def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
+    """The reasoning-budget era a --cache-only replay should look up, and
+    where it came from. An explicit value wins; otherwise the newest results
+    file for this model that came from a LIVE run (it recorded the server's
+    flags). Returns ("", reason) when nothing says — the legacy uncapped era."""
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip(), "--reasoning-budget"
+    try:
+        names = sorted((n for n in os.listdir(RESULTS_DIR)
+                        if n.startswith(f"eval-{model_slug}-") and n.endswith(".json")),
+                       reverse=True)
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(RESULTS_DIR, name)) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        server = data.get("server") or {}
+        # Slug prefixes collide (qwen-27b-q5 vs qwen-27b-q5-k-xl): match exactly.
+        if data.get("model_slug") != model_slug or not server.get("cmdline"):
+            continue
+        rb = str(server.get("reasoning_budget", "")).strip()
+        return rb, f"from the last live run, {name}"
+    return "", "no live run on record; pass --reasoning-budget to choose"
+
+
 def _write_results(results_path: str, results: dict) -> None:
     """Atomically persist the results dict (tmp + os.replace). Called after
     every task so a crash mid-sweep leaves a readable partial results file
@@ -916,8 +944,14 @@ def run_eval(
     recover_cb=None,
     jobs: int = 1,
     suite: str | None = None,
+    reasoning_budget: str | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
+
+    reasoning_budget: cache_only only — the reasoning-budget era to replay
+    (e.g. "20480"; "-1" = uncapped). A live run reads it from the server;
+    cache_only has no server, so without this it is inferred from the
+    newest LIVE results file for the model (see _cache_only_rb).
 
     cache_only: when True, never invoke the agent. Cache hits replay; cache
     misses are recorded as 'skipped_cache_miss' with passed=False. Used for
@@ -1000,17 +1034,23 @@ def run_eval(
     # --reasoning-budget on the live server stamps its value into every
     # cache key so capped and uncapped rows can never replay across eras.
     # Uncapped (absent or -1) omits the component — legacy keys unchanged.
-    # cache_only mode has no live server to ask, so it replays legacy
-    # (uncapped-era) keys only; capped rows are a miss there, disclosed.
+    # cache_only mode has no live server to ask: the era comes from
+    # reasoning_budget or the model's newest live results file. Guessing
+    # "uncapped" missed every current-era (.rb20480) key and recorded the
+    # whole suite as skipped_cache_miss.
     # Low-churn eval mode (2026-09-10): greedy decoding, own cache era,
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
     # --greedy CLI flag (benchmark_all passes it through as env).
     greedy_mode = os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1"
     rb_component = None
+    _rb = ""
     if server_info:
         _rb = str(server_info.get("reasoning_budget", "")).strip()
-        if _rb and _rb != "-1":
-            rb_component = _rb
+    elif cache_only:
+        _rb, _rb_src = _cache_only_rb(model_slug, reasoning_budget)
+        print(f"Cache-only reasoning-budget era: {_rb or 'uncapped'} ({_rb_src})")
+    if _rb and _rb != "-1":
+        rb_component = _rb
 
     jobs = max(1, int(jobs))
     if cache_only and jobs > 1:
@@ -1088,7 +1128,8 @@ def run_eval(
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
-                    **({"toolchains": diag_toolchains} if diag_on else {})},
+                    **({"toolchains": diag_toolchains} if diag_on else {}),
+                    **({"rb_component": rb_component} if rb_component else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -1391,6 +1432,9 @@ def main():
     parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
                         "(e.g. v5-fast). Mutually exclusive with --tasks; results are "
                         "leaderboard-ineligible and scored via imputation on the v4 scale.")
+    parser.add_argument("--reasoning-budget",
+                        help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
+                             "-1 = uncapped). Default: the model's last live run.")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel eval workers (default 1). Needs a server with -np >= N "
                              "(clamped to /props total_slots when readable; MTP configs are -np 1). "
@@ -1431,6 +1475,7 @@ def main():
         cache_only=args.cache_only,
         jobs=args.jobs,
         suite=args.suite,
+        reasoning_budget=args.reasoning_budget,
     )
 
     # Exit with failure if any task failed

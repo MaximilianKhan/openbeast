@@ -293,7 +293,8 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                     use_cache: bool = True,
                     cache_only: bool = False,
                     jobs: int = 1,
-                    suite: str | None = None) -> dict:
+                    suite: str | None = None,
+                    reasoning_budget: str | None = None) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
@@ -312,6 +313,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                 use_cache=True,
                 cache_only=True,
                 suite=suite,
+                reasoning_budget=reasoning_budget,
             )
         except Exception as e:
             return {"slug": model["slug"], "name": model["name"],
@@ -379,7 +381,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
               cache_only: bool = False,
               update_leaderboard: bool = True,
               jobs: int = 1,
-              suite: str | None = None) -> dict:
+              suite: str | None = None,
+              reasoning_budget: str | None = None) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -394,7 +397,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
         print(f"\n[{i}/{len(models)}] Starting model")
         outcome = benchmark_model(model, task_filter, max_iter_override,
                                    use_cache=use_cache, cache_only=cache_only,
-                                   jobs=jobs, suite=suite)
+                                   jobs=jobs, suite=suite,
+                                   reasoning_budget=reasoning_budget)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -499,6 +503,9 @@ def main():
                              "leaderboard-ineligible experiment rows). Same as BEAST_PACKS=1.")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
+    parser.add_argument("--reasoning-budget",
+                        help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
+                             "-1 = uncapped). Default: each model's last live run.")
     args = parser.parse_args()
 
     if args.list:
@@ -557,7 +564,8 @@ def main():
                          cache_only=args.cache_only,
                          update_leaderboard=update_lb,
                          jobs=args.jobs,
-                         suite=args.suite)
+                         suite=args.suite,
+                         reasoning_budget=args.reasoning_budget)
     summary_path = save_sweep_summary(summary)
 
     # Final report
