@@ -132,6 +132,24 @@ _C_COMPUTED = re.compile(
 _C_HAS = re.compile(
     _C_DIRECTIVE + r"[^\n]*?\b__has_(?:include_next|include|embed)\b" + _GAP_C
     + r"\(" + _GAP_C + r"(?:" + _C_HEADER + r")?", re.M | re.S)
+#: …and the same operator NOT followed by `(`: `#define H __has_include` then
+#: `#if H("/abs")` evaluates it with an argument no scan above ever sees.
+_C_HAS_BARE = re.compile(
+    _C_DIRECTIVE + r"[^\n]*?\b__has_(?:include_next|include|embed)(?:__)?\b"
+    + r"(?!" + _GAP_C + r"\()", re.M | re.S)
+#: Token pasting builds that name too: `CAT(__has_,include)("/abs")` inside
+#: an #if works on gcc, and its fragments can hide in any number of macros.
+#: So pasting and a conditional in the same snippet are refused together.
+_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*##", re.M | re.S)
+_C_IF = re.compile(_C_DIRECTIVE + r"(?:if|elif)\b", re.M | re.S)
+#: `#line N "/abs"` (and the GNU `# N "/abs"` linemarker) makes gcc quote
+#: lines of THAT file in the caret block of every later diagnostic. The
+#: operand must be literal: digits, then optionally a plain relative name.
+_C_LINE = re.compile(_C_DIRECTIVE + r"(?:line\b|(?=\d))([^\n]*)", re.M | re.S)
+_C_LINE_OK = re.compile(r"\d+(?:[ \t]+\"([^\"\n]*)\")?(?:[ \t]+\d+)*")
+#: `#pragma GCC dependency "/abs"` (or through _Pragma) opens that path: a
+#: fatal "No such file" when it is absent, a clean compile when it is there.
+_C_DEPENDENCY = re.compile(r"\bdependency\b")
 #: C++20 header units: `import "/abs/file";` (only live under -fmodules, but
 #: a flag is not a reason to leave a read primitive in).
 _CPP_IMPORT = re.compile(
@@ -193,6 +211,20 @@ def _refuse_c(source: str) -> str | None:
         if path is None or _escapes(path):
             return ("__has_include on a host path (or a computed one) is a "
                     "file-existence oracle")
+    if _C_HAS_BARE.search(src):
+        return ("__has_include named without its argument (aliased by a "
+                "macro) is a file-existence oracle no scan can check")
+    if _C_PASTE.search(src) and _C_IF.search(src):
+        return ("token pasting in a snippet with #if can assemble "
+                "__has_include, a file-existence oracle")
+    for m in _C_LINE.finditer(src):
+        operand = re.sub(r"/\*.*?\*/", " ", m.group(1)).split("//", 1)[0].strip()
+        ok = _C_LINE_OK.fullmatch(operand)
+        if not ok or (ok.group(1) is not None and _escapes(ok.group(1))):
+            return ("a #line naming a host file (or a computed one) makes the "
+                    "compiler quote that file in its diagnostics")
+    if "pragma" in src.lower() and _C_DEPENDENCY.search(src):
+        return "#pragma GCC dependency opens the file it names"
     return None
 
 

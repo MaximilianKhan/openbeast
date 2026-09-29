@@ -942,6 +942,64 @@ def test_c_lexing_tricks_still_refuse(secret):
         assert c.refusal(src), f"NOT refused: {src!r}"
 
 
+def _c_side_channels(path):
+    return [
+        # #line: gcc quotes THAT file's lines in the caret block
+        f'#line 1 "{path}"\nint x = ;\n',
+        f'# 1 "{path}"\nint x = ;\n',
+        f'#define F "{path}"\n#line 1 F\nint x = ;\n',
+        '#line 1 "../../../../etc/hostname"\nint x = ;\n',
+        # GCC dependency: an existence oracle, as a directive or via _Pragma
+        f'#pragma GCC dependency "{path}"\nint main(void){{return 0;}}\n',
+        f'_Pragma("GCC dependency \\"{path}\\"")\nint main(void){{return 0;}}\n',
+        f'#define P(x) _Pragma(#x)\nP(GCC dependency "{path}")\nint main(void){{return 0;}}\n',
+        # __has_include aliased by a macro, or assembled by pasting
+        f'#define H __has_include\n#if H("{path}")\n#error present\n#endif\n',
+        f'#define H __has_include_next\n#if H(<{path}>)\n#endif\n',
+        f'#define CAT(a,b) a##b\n#if CAT(__has_,include)("{path}")\n#error present\n#endif\n',
+    ]
+
+
+C_SIDE_CHANNEL_CONTROLS = [
+    '#line 10\nint main(void){return 0;}\n',
+    '#line 10 "renamed.c"\nint main(void){return 0;}\n',
+    '#pragma once\n#pragma GCC diagnostic ignored "-Wunused"\nint main(void){return 0;}\n',
+    'int dependency = 1;\nint main(void){return dependency - 1;}\n',
+    '#define CAT(a,b) a##b\nint CAT(x,y) = 0;\nint main(void){return xy;}\n',
+    '#if __has_include(<stdio.h>)\n#endif\nint main(void){return 0;}\n',
+]
+
+
+def test_c_side_channels_to_a_host_file_are_refused(secret, monkeypatch):
+    """Round 3: #line, the GCC dependency pragma and a macro-aliased
+    __has_include each reached a host path the #include scans never see."""
+    ran = []
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv))
+    for lang in ("c", "cpp"):
+        drv = D.driver_for(lang)
+        for src in _c_side_channels(secret):
+            r = drv.compile_source(src)
+            assert not r and r.refused, (lang, src, r.detail)
+    assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
+    for src in C_SIDE_CHANNEL_CONTROLS:
+        assert D.driver_for("c").refusal(src) is None, src
+
+
+def test_the_c_side_channels_were_real(secret, monkeypatch):
+    """The control that the refusal above guards something: with it off,
+    #line echoes the file and the dependency pragma answers existence."""
+    if not _c_works():
+        pytest.skip("no C toolchain here that accepts the driver's flags")
+    c = D.driver_for("c")
+    monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
+    assert "hunter2" in c.compile_source(_c_side_channels(secret)[0]).detail
+    dep = '#pragma GCC dependency "{}"\nint main(void){{return 0;}}\n'
+    assert c.compile_source(dep.format(secret))
+    assert not c.compile_source(dep.format(secret + ".absent"))
+    for src in C_SIDE_CHANNEL_CONTROLS:
+        assert c.compile_source(src), (src, c.compile_source(src).detail)
+
+
 def test_rust_and_zig_scans_ignore_comments_and_strings(secret):
     rs, z = D.driver_for("rust"), D.driver_for("zig")
     for src in ('/// like include_str!("/etc/passwd") but safe\nfn main() {}\n',
