@@ -50,8 +50,8 @@ agent-management and skills layers on top.
 
 | Tool | Powered by |
 |---|---|
-| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration |
-| `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service. SSRF-guarded at resolve time *and* re-checked at connect time against a pinned IP (see below) |
+| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration. The child env is scrubbed of stack secrets, and the spawning process (tool server, MCP server, runner) makes itself non-dumpable (`PR_SET_DUMPABLE=0`) before its first shell or agent spawn, so a model shell can't read the parent's secrets back from `/proc/$PPID/environ`; `OPENBEAST_KEEP_DUMPABLE=1` opts out (e.g. to attach py-spy/gdb) |
+| `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service. SSRF-guarded at resolve time *and* re-checked at connect time against a pinned IP (see below). A 45 s whole-request deadline (connect, TLS, headers, redirects, body) cuts slow-drip servers, returning any partial body with a note; the HTML stripper is linear-time on hostile markup |
 | `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking. The endpoint is `SEARXNG_URL`-indirected, which is how client mode points a laptop's local tool at the rig's search over the tailnet (`docs/BEAST_SLOT.md`) |
 
 **`web_search` deliberately bypasses the `fetch` guard.** It calls `SEARXNG_URL`
@@ -177,7 +177,10 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
   vetted IP is pinned for the actual connect so a DNS flip can't slip through
-  (the guard applies to all users — defense in depth).
+  (the guard applies to all users — defense in depth). With `http_proxy` /
+  `https_proxy` set (honoring `no_proxy`), fetch dials the operator's proxy
+  and the target is vetted by name on every hop; the IP pin cannot cover a
+  proxied target, because the proxy does its own resolution.
 - **Tailnet is its own blocked class.** `_vet_addr` in `agents/tools.py` pins
   Tailscale's CGNAT range `100.64.0.0/10` and the default v6 ULA range
   `fd7a:115c:a1e0::/48` explicitly, rather than relying on the stdlib: CPython's

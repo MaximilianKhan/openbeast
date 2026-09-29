@@ -76,7 +76,7 @@ self-service request-and-approve flow and no key expiry.
 | No public inbound surface whatsoever | architecture | Provided |
 | SSRF-guarded `fetch`: resolve, vet, pin the IP, re-vet every redirect hop | `agents/tools.py` | Provided |
 | CGNAT and IPv6-ULA classification pinned across interpreters | `agents/tools.py` | Provided |
-| Secrets scrubbed from the shell tool's environment | `agents/tools.py` | Provided |
+| Secrets scrubbed from the shell tool's environment; the spawning server is non-dumpable, so `/proc/$PPID/environ` is refused | `agents/tools.py` | Partial: defeats `env` and the parent's environ, not a same-uid shell reading `openbeast.conf`; a real boundary needs Sandlock or a separate uid |
 | Egress routing through a controlled exit node | [`EGRESS_PRIVACY.md`](EGRESS_PRIVACY.md) | Documented, customer-configured |
 
 ### CC7.2 / CC7.3 — Monitoring, accountability

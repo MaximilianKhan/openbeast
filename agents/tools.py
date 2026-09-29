@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import codecs
 import difflib
+import errno
 import functools
 import glob
 import html
@@ -57,6 +58,65 @@ _MAX_READ_BYTES = 64 * 1024 * 1024
 # a memory bomb can grab in the seconds before the timeout fires.
 _CHILD_AS_LIMIT = 32 * 1024**3
 
+# Fork-bomb headroom: how many MORE tasks (processes + threads) a tool child
+# may add on top of what the uid already runs. Linux checks RLIMIT_NPROC
+# against every task the REAL UID owns machine-wide — not the child's own
+# tree — so the 2026-09-10 fixed cap of 2048 sat ~500 tasks above an idle
+# desktop's ~1500 browser threads: under --jobs 4 and a threaded compiler,
+# trivial forks in the bash tool and in eval validation died with EAGAIN,
+# and those validations were banked as model FAILs. The cap is now computed
+# per call as (current uid task count + this margin), so it can never start
+# below current usage yet still stops a bomb a few thousand tasks in.
+_CHILD_NPROC_MARGIN = 4096
+
+
+def _uid_task_count(uid: int | None = None) -> int | None:
+    """Tasks (processes + threads) whose REAL uid is `uid` — the quantity the
+    kernel compares RLIMIT_NPROC against. None when it can't be measured (no
+    /proc: macOS clients), in which case the caller leaves NPROC alone."""
+    uid = os.getuid() if uid is None else uid
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    total = 0
+    for d in entries:
+        if not d.isdecimal():
+            continue
+        try:
+            with open(f"/proc/{d}/status", "rb") as f:
+                status = f.read()
+        except OSError:
+            continue  # exited mid-scan
+        ruid = threads = None
+        for line in status.split(b"\n"):
+            if line.startswith(b"Uid:"):
+                ruid = int(line.split()[1])
+            elif line.startswith(b"Threads:"):
+                threads = int(line.split()[1])
+                break
+        if ruid == uid and threads:
+            total += threads
+    return total or None
+
+
+def _child_nproc_cap() -> int | None:
+    """Per-call RLIMIT_NPROC for a run_reaped child, or None to leave the
+    inherited limit untouched (task count unmeasurable)."""
+    n = _uid_task_count()
+    if n is None:
+        return None
+    cap = n + _CHILD_NPROC_MARGIN
+    # Never ask for more than the inherited hard limit: raising it needs
+    # CAP_SYS_RESOURCE, and the EPERM would silently drop the cap entirely.
+    try:
+        hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    except (OSError, ValueError, AttributeError):
+        hard = resource.RLIM_INFINITY
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    return cap
+
 
 def _killpg(proc):
     """SIGKILL the whole process group, then reap the leader."""
@@ -94,6 +154,9 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
     # caveat is accepted only on the prlimit-less platform, and RLIMIT_AS is
     # best-effort there anyway).
     _as_limit = as_limit or _CHILD_AS_LIMIT
+    # Every caller that spawns model-influenced commands becomes $PPID of
+    # that command: make its /proc environ/mem unreadable first.
+    harden_process()
     if not hasattr(resource, "prlimit"):
         def _cap_as():
             try:
@@ -102,6 +165,10 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
             except (OSError, ValueError):
                 pass
         popen_kw = dict(popen_kw, preexec_fn=_cap_as)
+    # Measured BEFORE the spawn: the /proc scan takes a few ms, and every ms
+    # between Popen and the prlimit calls below is a window in which the
+    # child runs uncapped (a 48 GB bytearray is one lazy mmap).
+    _nproc = _child_nproc_cap() if hasattr(resource, "prlimit") else None
     proc = subprocess.Popen(
         command,
         shell=True,
@@ -114,11 +181,14 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
         # timeout. Generous ceilings — real builds fork hundreds of procs and
-        # write big artifacts; these stop bombs, not work.
-        _limits = ((resource.RLIMIT_AS, _as_limit),
-                   (resource.RLIMIT_NPROC, 2048),
+        # write big artifacts; these stop bombs, not work. NPROC is relative
+        # to the uid's live task count (see _CHILD_NPROC_MARGIN), never a
+        # fixed number the desktop alone can exhaust.
+        _limits = [(resource.RLIMIT_AS, _as_limit),
                    (resource.RLIMIT_FSIZE, 8 * 1024**3),
-                   (resource.RLIMIT_CPU, 1800))
+                   (resource.RLIMIT_CPU, 1800)]
+        if _nproc is not None:
+            _limits.append((resource.RLIMIT_NPROC, _nproc))
         for _res, _cap in _limits:
             try:
                 resource.prlimit(proc.pid, _res, (_cap, _cap))
@@ -246,6 +316,45 @@ def _resolve(path: str) -> str:
     return os.path.realpath(p)
 
 
+_PROCESS_HARDENED = False
+_PR_SET_DUMPABLE = 4
+
+
+def harden_process() -> bool:
+    """Make THIS process non-dumpable (Linux prctl PR_SET_DUMPABLE=0).
+
+    The env scrub below only cleans the CHILD's environment; the parent
+    that spawns model-authored shells (tool server, mcp_server, runner,
+    run_eval) still holds every secret in its own initial environ, and a
+    same-uid child could read it straight back with
+    `tr '\\0' '\\n' </proc/$PPID/environ`. A non-dumpable process has its
+    /proc/<pid>/{environ,mem,maps,…} owned by root and refused to same-uid
+    readers (and to same-uid ptrace), so neither the launch env nor the
+    secrets held in memory can be lifted that way. The flag resets on
+    execve, so spawned children stay normal, debuggable processes.
+
+    Idempotent; called before the first child spawn in run_reaped and at
+    server startup. No-op off Linux. OPENBEAST_KEEP_DUMPABLE=1 opts out
+    (e.g. to attach py-spy/gdb to a live server). Returns True if the
+    process is now hardened."""
+    global _PROCESS_HARDENED
+    if _PROCESS_HARDENED:
+        return True
+    if os.environ.get("OPENBEAST_KEEP_DUMPABLE", "").strip() in ("1", "true"):
+        return False
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            return False
+    except (OSError, AttributeError):
+        return False
+    _PROCESS_HARDENED = True
+    return True
+
+
 def _scrubbed_env() -> dict:
     """Copy of the process env minus the stack's secrets.
 
@@ -255,7 +364,14 @@ def _scrubbed_env() -> dict:
     WebUI admin password that the server process was launched with.
     Mirrors start.sh's systemd-setenv secret filter — stack-prefixed
     names containing KEY/SECRET/PASSWORD are dropped; the user's own
-    unrelated env vars are left alone."""
+    unrelated env vars are left alone.
+
+    Scope, honestly: together with harden_process() (the parent's
+    /proc/<pid>/environ unreadable) this defeats `env` and
+    /proc/$PPID/environ. It is NOT a boundary against a same-uid shell
+    that reads openbeast.conf (mode 600, same owner) or a still-running
+    dumpable ancestor that was launched with the secrets — that needs a
+    separate uid or the Sandlock wrapper (OPENBEAST_BASH_WRAPPER)."""
     env = dict(os.environ)
     # Exact-name denylist (2026-09-10 hardening): OPENAI_API_KEY is the very
     # credential runner.py's _key_endpoint_trusted guards against
@@ -332,7 +448,53 @@ _PROTECTED_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".docker")
 _PROTECTED_BASENAMES = {
     ".netrc", ".git-credentials", ".npmrc", ".pypirc",
     ".bashrc", ".bash_profile", ".zshrc", ".profile",
+    # Same class as the rc files above, missed until the 2026-09-29 review:
+    # every one of these runs code on the next login, shell or git command.
+    ".bash_login", ".bash_logout", ".zshenv", ".zprofile", ".zlogin",
+    ".zlogout", ".gitconfig", ".pam_environment", ".xprofile", ".xinitrc",
+    ".xsession", ".xsessionrc",
 }
+# Directories under ~ whose files execute (or set the env of) the next
+# login/shell/git/session. Checked as path prefixes relative to HOME.
+_PERSIST_PREFIXES = (
+    os.path.join(".config", "systemd", "user"),
+    os.path.join(".config", "autostart"),
+    os.path.join(".local", "bin"),
+    os.path.join(".config", "git"),             # core.fsmonitor/pager/alias
+    os.path.join(".config", "fish"),
+    os.path.join(".config", "environment.d"),
+    os.path.join(".config", "hypr"),            # exec-once (Omarchy)
+    os.path.join(".config", "uwsm"),            # session env files
+)
+# Live shell rc files whose `source X` / `. X` lines extend the protected set:
+# a file the user's ~/.bashrc sources (this box: ~/.bashrc_custom) is as
+# much a persistence target as ~/.bashrc itself.
+_RC_FILES = (".bashrc", ".bash_profile", ".bash_login", ".profile",
+             ".zshrc", ".zshenv", ".zprofile", ".zlogin")
+_SOURCE_RE = re.compile(
+    r"""(?:^|[\s;&|{(])(?:source|\.)\s+["']?((?:~|\$HOME|\$\{HOME\}|/)[^\s"';&|)]*)""",
+    re.MULTILINE)
+
+
+def _rc_sourced_files(home: str) -> set:
+    """Realpaths of files the live rc files source (one level; absolute or
+    HOME-anchored paths only — relative/variable paths can't be resolved
+    statically). Read per call: the rc files are tiny and may change."""
+    out = set()
+    for rc in _RC_FILES:
+        try:
+            with open(os.path.join(home, rc), errors="replace") as f:
+                text = f.read(256 * 1024)
+        except OSError:
+            continue
+        for m in _SOURCE_RE.finditer(text):
+            target = m.group(1)
+            for pfx in ("${HOME}", "$HOME", "~"):
+                if target.startswith(pfx):
+                    target = home + target[len(pfx):]
+                    break
+            out.add(os.path.realpath(target))
+    return out
 
 # Pseudo-filesystems that read_file refuses: regular-file-shaped but can be
 # infinite (/proc/kcore), streaming (a 0-size /proc file), or side-effecting.
@@ -361,20 +523,26 @@ def _guard_write_path(path: str):
         # Persistence/execution targets (2026-09-10 hardening): a hook fires
         # on the next git command, autostart/systemd-user on next login, and
         # ~/.local/bin shadows real binaries on PATH.
-        _persist = (os.path.join(".config", "systemd", "user"),
-                    os.path.join(".config", "autostart"),
-                    os.path.join(".local", "bin"))
-        for pfx in _persist:
+        for pfx in _PERSIST_PREFIXES:
             if rel == pfx or rel.startswith(pfx + os.sep):
                 return f"Error: refusing to write a persistence target ({rp})"
+        if rp in _rc_sourced_files(home):
+            return (f"Error: refusing to write a file your shell rc sources "
+                    f"({rp})")
     if rp == "/etc" or rp.startswith("/etc/"):
         return f"Error: refusing to write under /etc ({rp})"
-    if rp.endswith(f"{os.sep}.git{os.sep}config"):
-        return f"Error: refusing to write a git config ({rp})"
-    if f"{os.sep}.git{os.sep}hooks{os.sep}" in rp or rp.endswith(f"{os.sep}.git{os.sep}hooks"):
-        # A hook is arbitrary code execution on the next git invocation —
-        # strictly worse than .git/config, which was already blocked.
-        return f"Error: refusing to write a git hook ({rp})"
+    parts = rp.split(os.sep)
+    if ".git" in parts:
+        # Anywhere under a .git dir — including submodule and worktree
+        # gitdirs (.git/modules/<m>/config, .git/modules/<m>/hooks/*), which
+        # the old '/.git/config' + '/.git/hooks/' patterns missed.
+        below = parts[parts.index(".git") + 1:]
+        if "hooks" in below:
+            # A hook is arbitrary code execution on the next git invocation —
+            # strictly worse than .git/config, which was already blocked.
+            return f"Error: refusing to write a git hook ({rp})"
+        if below and below[-1] in ("config", "config.worktree"):
+            return f"Error: refusing to write a git config ({rp})"
     return None
 
 
@@ -983,6 +1151,70 @@ def _run_diagnostics(path: str) -> str:
                 shutil.rmtree(d, ignore_errors=True)
 
 
+def _atomic_write_text(path: str, content: str) -> None:
+    """Replace `path`'s content without ever leaving it truncated.
+
+    open(path, "w") truncates BEFORE writing, so ENOSPC/EDQUOT/EFBIG part
+    way through destroyed the user's original file (the only other copy
+    was in this process's memory). An existing file is instead written to a
+    sibling temp file, fsynced, and os.replace()d over it; on any failure
+    the temp is removed and the original is untouched. Mode (and, where
+    permitted, owner) are carried over. `path` must already be realpath'd
+    and guarded — the replace targets exactly that inode's name.
+
+    In-place fallbacks: a new file (nothing to lose), a non-regular file
+    (FIFO/device: replacing it would change what it is), a hard-linked file
+    (replace would silently split the link), a file owned by another user
+    (replace would silently make us its owner), a file whose group we can't
+    carry over, or a directory we can't create the temp in.
+
+    Permission semantics match open(path, "w"): rename only needs write on
+    the DIRECTORY, so a read-only (0444) file is refused up front with
+    EACCES rather than silently replaced."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        st = None
+    if st is not None and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), path)
+    if (st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink > 1
+            or st.st_uid != os.getuid()):
+        with open(path, "w") as f:
+            f.write(content)
+        return
+    d = os.path.dirname(path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{os.path.basename(path)}.",
+                                   suffix=".tmp")
+    except PermissionError:
+        with open(path, "w") as f:
+            f.write(content)
+        return
+    if st.st_gid != os.fstat(fd).st_gid:
+        try:
+            os.fchown(fd, -1, st.st_gid)
+        except OSError:
+            # Can't keep the file's group: don't change it silently.
+            os.close(fd)
+            os.unlink(tmp)
+            with open(path, "w") as f:
+                f.write(content)
+            return
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
@@ -994,8 +1226,7 @@ def write_file(path: str, content: str) -> str:
         if blocked:
             return blocked
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(content)
+        _atomic_write_text(path, content)
         _manifest_log("write", path, len(content))
         return (f"Wrote {len(content)} bytes to {path}"
                 + _path_guard_note(path) + _run_diagnostics(path))
@@ -1256,8 +1487,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        with open(path, "w") as f:
-            f.write(new_content)
+        _atomic_write_text(path, new_content)
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
 
@@ -1372,6 +1602,28 @@ def _fetch_url_blocked(url: str) -> str | None:
     return reason
 
 
+# Whole-request wall-clock budget for fetch (connect, headers, redirects and
+# body together). urllib's timeout= is PER SOCKET OPERATION: a server that
+# drips one byte every 29 s kept read() looping toward the 8 MB cap for days,
+# pinning a worker of the shared tool server (guest-reachable) per call.
+_FETCH_DEADLINE = 45.0
+_fetch_state = threading.local()
+
+
+def _fetch_track(sock) -> None:
+    """Register a freshly connected socket with the in-flight fetch's
+    watchdog. A dup is kept (not the object) because TLS wrapping detaches
+    the original; shutdown() on the dup still ends the shared connection,
+    which unblocks a recv stuck in another frame of this thread."""
+    socks = getattr(_fetch_state, "socks", None)
+    if socks is None:
+        return
+    try:
+        socks.append(sock.dup())
+    except OSError:
+        pass
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
     hostname — the IP the SSRF guard approved is the exact IP we connect to."""
@@ -1380,8 +1632,12 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self._pinned_ip = pinned_ip
 
     def connect(self):
+        # pinned_ip None = proxied request: dial the operator's proxy
+        # (self.host) — see _pinned_open.
         self.sock = socket.create_connection(
-            (self._pinned_ip, self.port), self.timeout, self.source_address)
+            (self._pinned_ip or self.host, self.port), self.timeout,
+            self.source_address)
+        _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
 
@@ -1395,18 +1651,35 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self):
         sock = socket.create_connection(
-            (self._pinned_ip, self.port), self.timeout, self.source_address)
+            (self._pinned_ip or self.host, self.port), self.timeout,
+            self.source_address)
+        _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
             sock = self.sock
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        # Through a CONNECT tunnel self.host is the PROXY; SNI and the
+        # certificate check must name the target (stdlib does the same).
+        self.sock = self._context.wrap_socket(
+            sock, server_hostname=self._tunnel_host or self.host)
 
 
 def _pinned_open(handler, req, conn_class, scheme):
     """Resolve + vet + pin, atomically, for THIS request (initial or any
     redirect hop — urllib re-enters the handler per hop, so every hop is
     independently vetted against the address it actually dials)."""
+    if getattr(req, "_tunnel_host", None) or req.has_proxy():
+        # An operator proxy (http_proxy/https_proxy, honoring no_proxy)
+        # applies: ProxyHandler already pointed req.host at the PROXY. The
+        # old code pinned the TARGET's IP but kept the proxy's port, dialing
+        # target_ip:3128 — every proxied fetch failed. Vet the target by
+        # name, then dial the proxy, which does its own resolution: the IP
+        # pin cannot cover a proxied target (a rebinding answer at the
+        # proxy is out of our hands), only the name-level vet can.
+        reason = _fetch_url_blocked(req.full_url)
+        if reason:
+            raise urllib.error.URLError(f"fetch blocked: {reason}")
+        return handler.do_open(conn_class, req, pinned_ip=None)
     parsed = urllib.parse.urlparse(req.full_url)
     ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
     if reason:
@@ -1437,10 +1710,16 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-# Default HTTP/HTTPS handlers replaced by the pinned variants (build_opener
-# swaps same-type handlers), so no request path re-resolves post-guard.
-_fetch_opener = urllib.request.build_opener(
-    _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _FetchRedirectHandler)
+def _build_fetch_opener():
+    """Default HTTP/HTTPS handlers replaced by the pinned variants
+    (build_opener swaps same-type handlers), so no request path re-resolves
+    post-guard. build_opener's default ProxyHandler reads the proxy env
+    here, at build time."""
+    return urllib.request.build_opener(
+        _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _FetchRedirectHandler)
+
+
+_fetch_opener = _build_fetch_opener()
 
 
 def fetch(url: str, max_length: int = 50_000) -> str:
@@ -1457,6 +1736,41 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory.
     max_length = max(1, min(int(max_length), 2_000_000))
+    # Total-deadline watchdog: at _FETCH_DEADLINE it shuts down every socket
+    # this call opened, so a slow drip anywhere (TLS handshake, headers,
+    # body, a redirect hop) ends instead of holding the worker.
+    socks: list = []
+    expired = threading.Event()
+
+    def _expire():
+        expired.set()
+        for s_ in list(socks):
+            try:
+                s_.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    deadline = time.monotonic() + _FETCH_DEADLINE
+    watchdog = threading.Timer(_FETCH_DEADLINE, _expire)
+    watchdog.daemon = True
+    _fetch_state.socks = socks
+    watchdog.start()
+    try:
+        return _fetch_body(url, max_length, deadline, expired)
+    finally:
+        watchdog.cancel()
+        _fetch_state.socks = None
+        for s_ in socks:
+            try:
+                s_.close()
+            except OSError:
+                pass
+
+
+def _fetch_body(url: str, max_length: int, deadline: float,
+                expired: threading.Event) -> str:
+    """fetch()'s request + decode, run under its total-deadline watchdog."""
+    raw_bytes = b""
     try:
         req = urllib.request.Request(
             url,
@@ -1476,14 +1790,44 @@ def fetch(url: str, max_length: int = 50_000) -> str:
                     codecs.lookup(charset)
                 except LookupError:
                     charset = "utf-8"
-            raw_bytes = resp.read(max_length * 4)
+            # Chunked read1() (one recv at most per call), not read(n) —
+            # which loops internally until n bytes — so the deadline is
+            # checked between every network read.
+            limit = max_length * 4
+            buf = bytearray()
+            read_some = getattr(resp, "read1", resp.read)
+            while len(buf) < limit and time.monotonic() < deadline:
+                try:
+                    chunk = read_some(min(65536, limit - len(buf)))
+                except (OSError, http.client.HTTPException):
+                    if expired.is_set() and buf:
+                        break  # the watchdog cut it: keep what arrived
+                    raise
+                if not chunk:
+                    break
+                buf += chunk
+            raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
+        cut_note = ""
+        if expired.is_set() or time.monotonic() >= deadline:
+            if not raw_bytes:
+                return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                        f"total deadline (server too slow)")
+            cut_note = (f"\n\n[fetch stopped at its {_FETCH_DEADLINE:.0f}s total "
+                        f"deadline — partial content, {len(raw_bytes)} bytes]")
 
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
-            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
-            text = re.sub(r"<[^>]+>", " ", text)
+            # Every pattern here must be LINEAR on hostile input: re holds
+            # the GIL, and this runs inside the shared tool server. The old
+            # `<script[^>]*>.*?</script>` / `<[^>]+>` rescanned to end-of-text
+            # from every unterminated opener ('<script>'*N or '<'*N) — minutes
+            # to hours on an 8 MB page, freezing every user's tools. [^<>]
+            # stops each attempt at the next '<', and an unclosed script/style
+            # block swallows the rest (as a browser would) in one pass.
+            text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)
+            text = re.sub(r"<[^<>]+>", " ", text)
             text = html.unescape(text)
             text = re.sub(r"[^\S\n]+", " ", text)
             text = re.sub(r"\n{3,}", "\n\n", text)
@@ -1492,7 +1836,7 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         if len(text) > max_length:
             text = text[:max_length] + f"\n\n[truncated at {max_length} chars — {len(raw_bytes)} bytes fetched]"
 
-        return text if text else "(empty response)"
+        return (text + cut_note) if text else "(empty response)" + cut_note
     except urllib.error.HTTPError as e:
         body = ""
         try:
@@ -1501,8 +1845,14 @@ def fetch(url: str, max_length: int = 50_000) -> str:
             pass
         return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
     except urllib.error.URLError as e:
+        if expired.is_set():
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (server too slow)")
         return f"URL error: {e.reason}"
     except Exception as e:
+        if expired.is_set():
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (server too slow)")
         return f"Error: {e}"
 
 
