@@ -110,6 +110,41 @@
 # opinionated core only. Env override: $OPENBEAST_EXTENSIONS.
 #EXTENSIONS="dashboard"
 
+# ---------------------------------------------------------------------------
+# Inference backend  (see docs/DGX_SPARK_PLAN.md)
+# ---------------------------------------------------------------------------
+
+# Which OpenAI-compatible server the stack talks to. Unset = today's stack:
+# a llama-server that start.sh launches, supervises and rolls back on :8080.
+#   llama       llama-server (the default; GGUF weights, scripts/serve-*.sh)
+#   vllm        a vLLM server, e.g. across two DGX Sparks (scripts/backends/vllm/)
+#   tensorfold  a TensorFold server (scripts/backends/tensorfold/) — Alpha,
+#               NO API key of its own: keep it on a private link, behind a
+#               firewall or beast-gate
+# Anything else warns and falls back to llama. Env: $OPENBEAST_INFERENCE_BACKEND.
+#INFERENCE_BACKEND=llama
+
+# Base URL of that server, WITHOUT /v1. Open WebUI's model connection, the
+# agent router's and beast-gate's upstream, and spawned agents
+# (AGENT_INFERENCE_URL, unless you set that yourself) all follow it.
+# If the server has an API key (vLLM --api-key / VLLM_API_KEY), put the same
+# key in LLAMA_API_KEY below — the whole stack presents that one.
+# Env: $OPENBEAST_INFERENCE_URL.
+#INFERENCE_URL=http://192.168.100.10:8000
+
+# Does THIS stack own the server? Default true for llama, false for vllm /
+# tensorfold (always false there — they run on other boxes). false means
+# start.sh only WAITS for it to answer (up to OPENBEAST_LLAMA_LOAD_GRACE
+# seconds, default 900) and brings everything else up; nothing — start.sh,
+# healthcheck.sh --restart, the watchdog, stop.sh — launches, restarts or
+# kills it. Set false with llama to use a llama-server on another box.
+# Env: $OPENBEAST_INFERENCE_MANAGED.
+#INFERENCE_MANAGED=true
+
+# Concurrency /api/slot advertises when the server does not report one:
+# vLLM's --max-num-seqs, TensorFold's --parallel. Env: $OPENBEAST_INFERENCE_SLOTS.
+#INFERENCE_SLOTS=8
+
 # Reasoning/thinking control (serve.sh → llama-server). OpenBeast keeps
 # reasoning ON by default with a per-request toggle; these are the GLOBAL
 # escape hatches and override any per-model default:

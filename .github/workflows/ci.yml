@@ -91,6 +91,12 @@ jobs:
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 
+      # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
+      # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
+      # recording stubs.
+      - name: Inference backend tests (vLLM / TensorFold, unmanaged)
+        run: bash tests/test_backends.sh
+
       - name: Tool unit tests
         env:
           # No outbound network assumptions in CI (httpbin flakiness);

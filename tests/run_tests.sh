@@ -123,7 +123,8 @@ for _suite in \
   "test_conf_secrets.sh|Conf parsing + secrets-off-argv" \
   "test_gpu_ops.sh|GPU lease / update / ops" \
   "test_supply_chain.sh|Supply-chain (hash-pinned installs, pin parity)" \
-  "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)"; do
+  "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
+  "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""
