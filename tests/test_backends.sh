@@ -1,7 +1,8 @@
 #!/bin/bash
 # Inference-backend tests (docs/DGX_SPARK_PLAN.md): the INFERENCE_* conf keys,
 # lib/backend.sh readiness per server, the unmanaged paths of start.sh /
-# healthcheck.sh / stop.sh / doctor.sh, and the llama-only tool guards.
+# healthcheck.sh / stop.sh / doctor.sh, the llama-only tool guards, and the
+# Spark launch scaffolds (--print and refusals; docker is a recording stub).
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no real stack.
 # The only network is a throwaway HTTP stub on an ephemeral 127.0.0.1 port;
@@ -358,6 +359,150 @@ if grep -q "GPU: 123 MiB in use" <<< "$_O" && ! grep -q "not reported" <<< "$_O"
   pass "…while a card that reports memory is unchanged (control)"
 else
   fail "gpu-lease numeric: $_O"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "Spark launch scaffolds (docker stubbed):"
+_K="$_T/spark"; mkdir -p "$_K/bin" "$_K/home"
+# docker records argv AND whether VLLM_API_KEY reached its ENVIRONMENT.
+cat > "$_K/bin/docker" <<EOF
+#!/bin/bash
+echo "ARGV \$*" >> "$_K/docker.log"
+echo "ENVKEY \${VLLM_API_KEY:-<unset>}" >> "$_K/docker.log"
+exit 0
+EOF
+chmod +x "$_K/bin/docker"
+(umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
+sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
+    -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
+    -e "s|^SPECULATIVE_CONFIG=.*|SPECULATIVE_CONFIG='{\"method\":\"mtp\",\"num_speculative_tokens\":3}'|" \
+    "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
+_DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))"
+_VN="$REPO_DIR/scripts/backends/vllm/spark-node.sh"
+_TN="$REPO_DIR/scripts/backends/tensorfold/spark-node.sh"
+_sp() { # _sp <script> [env...] -- [args...]  -> sets _O (output) and SPRC (rc)
+  local s="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift || true
+  SPRC=0
+  env -i HOME="$_K/home" PATH="$_K/bin:/usr/bin:/bin" ${envs[@]+"${envs[@]}"} \
+    bash "$s" "$@" > "$_K/out" 2>&1 || SPRC=$?
+  _O="$(cat "$_K/out")"
+}
+_has() { grep -qF -- "$2" <<< "$1"; }
+
+: > "$_K/docker.log"
+_sp "$_VN" -- --rank 0 --env "$_K/spark.env" --print
+if _has "$_O" "--nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501" \
+   && _has "$_O" "--tensor-parallel-size 2" \
+   && _has "$_O" "--reasoning-parser qwen3" \
+   && _has "$_O" "--enable-auto-tool-choice --tool-call-parser qwen3_xml" \
+   && _has "$_O" "--served-model-name Qwen3.8\\ 27B\\ NVFP4\\ \\(vLLM\\ TP2\\)" \
+   && _has "$_O" "--host 100.64.1.2 --port 8000" \
+   && _has "$_O" "--max-model-len 262144 --gpu-memory-utilization 0.80" \
+   && _has "$_O" "--max-num-seqs 8"; then
+  pass "vllm rank 0 --print: native multi-node TP=2, parsers, served name, specific bind"
+else
+  fail "vllm rank 0 --print flags: $_O"
+fi
+if _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e GLOO_SOCKET_IFNAME=enp1s0f1np1" \
+   && _has "$_O" "-e TP_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e UCX_NET_DEVICES=enp1s0f1np1" \
+   && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1" && _has "$_O" "-e VLLM_SKIP_MODEL_NAME_VALIDATION=1"; then
+  pass "…pins every NCCL/Gloo/TP/UCX interface to the ConnectX link, and skips model-name validation"
+else
+  fail "vllm env flags: $_O"
+fi
+_has "$_O" '--speculative-config \{\"method\":\"mtp\"\,\"num_speculative_tokens\":3\}' \
+  && pass "…passes SPECULATIVE_CONFIG JSON through intact" || fail "speculative config mangled: $_O"
+if _has "$_O" "-e VLLM_API_KEY " && ! _has "$_O" "sk-test-SECRET" && ! _has "$_O" "--api-key"; then
+  pass "…forwards VLLM_API_KEY by NAME only: the key is not on argv, and --api-key is never used"
+else
+  fail "API key handling in --print: $_O"
+fi
+_has "$_O" "--trust-remote-code" && fail "--trust-remote-code passed by default" || pass "…no --trust-remote-code by default"
+[[ ! -s "$_K/docker.log" ]] && pass "--print runs nothing (docker never called)" || fail "--print called docker: $(cat "$_K/docker.log")"
+
+_sp "$_VN" -- --rank 1 --head-addr 10.0.0.9 --env "$_K/spark.env" --print
+if _has "$_O" "--node-rank 1 --master-addr 10.0.0.9" && _has "$_O" "--headless" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "VLLM_API_KEY" && ! _has "$_O" "--served-model-name"; then
+  pass "vllm rank 1: --headless worker, --head-addr overrides, no HTTP flags, no key"
+else
+  fail "vllm rank 1 --print: $_O"
+fi
+_sp "$_VN" -- --rank 0 --model org/Other-FP8 --env "$_K/spark.env" --print
+_has "$_O" "serve org/Other-FP8 " && pass "--model overrides MODEL" || fail "--model: $_O"
+
+_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "SPARK_SERVE_HOST='0.0.0.0'" && pass "refuses a wildcard bind (env beats the file)" \
+  || fail "wildcard bind not refused (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 SPARK_ALLOW_WILDCARD_BIND=true -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && pass "…unless SPARK_ALLOW_WILDCARD_BIND=true acknowledges it (control)" || fail "ack not honoured: $_O"
+chmod 644 "$_K/key"
+_sp "$_VN" -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is mode 644" && pass "refuses a group/world-readable API key file" \
+  || fail "0644 key accepted (rc=$SPRC): $_O"
+chmod 600 "$_K/key"
+_sp "$_VN" VLLM_API_KEY_FILE="$_K/nope" -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "refuses a missing API key file" || fail "missing key file: $_O"
+_sp "$_VN" -- --rank 0 --env "$_K/absent.env" --print
+if [[ $SPRC -eq 1 ]] && _has "$_O" "MODEL is not set" && _has "$_O" "SPARK_IFACE is not set" && _has "$_O" "Refusing to start"; then
+  pass "refuses to start without required settings, naming each"
+else
+  fail "no settings file not refused (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && pass "--rank is required" || fail "missing --rank (rc=$SPRC)"
+
+: > "$_K/docker.log"
+_sp "$_VN" -- --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 1 ]] && _has "$_O" "image digest is not pinned" && [[ ! -s "$_K/docker.log" ]]; then
+  pass "a real run refuses the placeholder image digest (docker not called)"
+else
+  fail "unpinned image ran (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+_sp "$_VN" VLLM_IMAGE_DIGEST="$_DIGEST" -- --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 0 ]] && grep -q "^ARGV run -d --rm --name openbeast-vllm-rank0 " "$_K/docker.log" \
+   && grep -qF "nvcr.io/nvidia/vllm:26.05-py3@$_DIGEST serve nvidia/Qwen3.8-27B-NVFP4" "$_K/docker.log" \
+   && grep -q "^ENVKEY sk-test-SECRET-4242$" "$_K/docker.log" \
+   && ! grep "^ARGV" "$_K/docker.log" | grep -q "sk-test-SECRET"; then
+  pass "a pinned run hands docker the key through its ENVIRONMENT, never argv"
+else
+  fail "pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+
+: > "$_K/docker.log"
+_sp "$_TN" -- --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "serve Vontra/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.168.100.10 --master-port 29551" \
+   && _has "$_O" "--parallel auto --name local-model --host 100.64.1.2 --port 8000" \
+   && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@v0.3.7" \
+   && _has "$_O" "start rank 1 FIRST" && _has "$_O" "NO API key" \
+   && _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1"; then
+  pass "tensorfold rank 0 --print: --tp 2 rank/master/port, pinned tag, rank-1-first + no-key notes"
+else
+  fail "tensorfold rank 0 --print (rc=$SPRC): $_O"
+fi
+[[ ! -s "$_K/docker.log" ]] && pass "tensorfold --print runs nothing" || fail "tensorfold --print called docker"
+_sp "$_TN" -- --rank 1 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--rank 1 --master 192.168.100.10" && ! _has "$_O" "--host " && ! _has "$_O" "--name local-model"; then
+  pass "tensorfold rank 1: master from SPARK_HEAD_IP, no HTTP flags"
+else
+  fail "tensorfold rank 1 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --rank 1 --env "$_K/absent.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "--master is required" && pass "tensorfold refuses to start without --master" \
+  || fail "tensorfold without master (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_VERSION=main -- --rank 1 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not a pin" && pass "tensorfold refuses an unpinned TENSORFOLD_VERSION (main)" \
+  || fail "unpinned tensorfold accepted (rc=$SPRC): $_O"
+_sp "$_TN" -- --rank 0 --ckpt Vontra/Other --env "$_K/spark.env" --print
+_has "$_O" "serve Vontra/Other --tp 2" && pass "--ckpt overrides TENSORFOLD_CKPT" || fail "--ckpt: $_O"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --rank 1 --env "$_K/spark.env"
+if [[ $SPRC -eq 0 ]] && grep -qF "nvcr.io/nvidia/pytorch:26.07-py3@$_DIGEST -c" "$_K/docker.log"; then
+  pass "a pinned tensorfold run starts the digest-pinned container"
+else
+  fail "tensorfold pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
 
 echo ""
