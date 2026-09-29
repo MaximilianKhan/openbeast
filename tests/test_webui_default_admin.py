@@ -37,12 +37,22 @@ CURL_STUB = textwrap.dedent(r'''
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("-X", "-d", "-H", "-m", "-o", "-w", "--max-time"):
+        if a in ("-X", "-d", "-H", "-m", "-o", "-w", "--max-time", "--config", "-K"):
             v = args[i + 1]; i += 2
             if a == "-X": method = v
             elif a == "-d": data = sys.stdin.read() if v == "@-" else v
             elif a == "-H":
                 k, _, val = v.partition(":"); headers[k.strip().lower()] = val.strip()
+            elif a in ("--config", "-K"):
+                # lib/curl_auth.sh hands credential headers over as curl config
+                # lines on an fd (`header = "K: v"`), never on argv.
+                for ln in open(v).read().splitlines():
+                    ln = ln.strip()
+                    if ln.startswith("header") and "=" in ln:
+                        hv = ln.split("=", 1)[1].strip()
+                        if hv.startswith('"') and hv.endswith('"'):
+                            hv = hv[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+                        k, _, val = hv.partition(":"); headers[k.strip().lower()] = val.strip()
             continue
         if a.startswith("http"): url = a
         i += 1
@@ -53,7 +63,10 @@ CURL_STUB = textwrap.dedent(r'''
     body = json.loads(data) if data else None
     with open(os.environ["STUB_LOG"], "a") as f:
         f.write(json.dumps({"method": method, "path": path, "body": body,
-                            "auth": headers.get("authorization")}) + "\n")
+                            "auth": headers.get("authorization"),
+                            "url": url,
+                            # a credential on argv is world-readable in /proc
+                            "argv_bearer": any("Bearer" in a for a in args)}) + "\n")
     def out(o):
         sys.stdout.write(json.dumps(o)); sys.exit(0)
     def save():
@@ -82,7 +95,7 @@ CURL_STUB = textwrap.dedent(r'''
         out(True)
     if path == "/api/v1/configs/tool_servers":
         out({"TOOL_SERVER_CONNECTIONS": []} if method == "GET" else {})
-    if path == "/api/models": out({"data": [{"id": "m1"}]})
+    if path in ("/api/models", "/v1/models"): out({"data": [{"id": "m1"}]})
     out({})
 ''').lstrip()
 
@@ -101,7 +114,8 @@ def rig(tmp_path):
     root = tmp_path / "rig"
     (root / "scripts" / "lib").mkdir(parents=True)
     for rel in ("scripts/configure-webui.sh", "scripts/setup-tailscale.sh",
-                "scripts/lib/conf.sh"):
+                "scripts/lib/conf.sh", "scripts/lib/net.sh",
+                "scripts/lib/curl_auth.sh"):
         shutil.copy2(os.path.join(REPO, rel), root / rel)
     conf = root / "openbeast.conf"
     conf.write_text("SEARXNG_SECRET=stub\n")
@@ -432,3 +446,127 @@ def test_tailscale_refuses_443_when_running_container_never_answers(ts_rig):
     assert p.returncode == 0, p.stderr
     assert not _mounted_443(ts_rig)
     assert "never answered" in p.stderr
+
+
+# --- 2026-09-29 round 2: secrets off argv, probe host, doctor probe, --status
+
+def test_admin_jwt_never_rides_curl_argv(rig):
+    """secrets-crypto-1 / network-exposure-4: the admin JWT (bash-equivalent)
+    and the rotation call's token went to curl as `-H "Authorization: Bearer
+    …"`, readable by every local uid in /proc/<pid>/cmdline. They now travel
+    as curl --config lines on an fd — and still arrive (negative control)."""
+    rig.set_state(auth=True, admin_pw="admin")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    calls = rig.calls()
+    assert calls and not [c for c in calls if c["argv_bearer"]], \
+        [c["path"] for c in calls if c["argv_bearer"]]
+    # The header is still delivered: rotation and reconciliation both worked.
+    assert rig.get_state()["accounts"]["admin@localhost"] != "admin"
+    assert _tool_server_post(rig)["auth"] == "Bearer tok-admin@localhost-1"
+
+
+def test_llama_key_fallback_probe_stays_off_argv(rig):
+    """No admin token → model ids come from the inference endpoint, with
+    LLAMA_API_KEY. That key went on argv too."""
+    rig.set_state(auth=True, admin_pw="operator-chose-this")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_API_KEY": "llama-sekrit"})
+    assert p.returncode == 0, p.stderr
+    probes = [c for c in rig.calls() if c["path"].endswith("/v1/models")]
+    assert probes, "the no-token fallback never asked the model endpoint"
+    assert all(c["auth"] == "Bearer llama-sekrit" and not c["argv_bearer"]
+               for c in probes), probes
+
+
+@pytest.mark.parametrize("bind,host", [("192.168.1.50", "192.168.1.50"),
+                                       ("127.0.0.1", "localhost"),
+                                       ("0.0.0.0", "localhost")])
+def test_configure_webui_dials_the_bind_host(rig, bind, host):
+    """lifecycle-6: WebUI, the tool server and SearXNG bind BIND_HOST, and a
+    socket bound to a LAN address refuses localhost. Both the script's own
+    calls and the tool-server URL it stores in WebUI must use the probe host;
+    loopback/wildcard binds keep the historical `localhost` spelling."""
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh", env_extra={"OPENBEAST_BIND": bind})
+    assert p.returncode == 0, p.stderr
+    urls = {c["url"] for c in rig.calls()}
+    assert f"http://{host}:3000/api/version" in urls, urls
+    conns = _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]
+    assert {c["url"] for c in conns} == {f"http://{host}:3001"}
+
+
+@pytest.mark.parametrize("state,rc", [
+    (dict(auth=True, admin_pw="admin"), 1),                 # the finding
+    (dict(auth=True, admin_pw="operator-chose-this"), 0),   # rotated
+    (dict(auth=False, admin_pw="admin"), 0),                # auth off: n/a
+    (dict(auth=True, admin_pw="admin", down=True), 3),      # unreachable
+])
+def test_check_default_admin_is_a_read_only_probe(rig, state, rc):
+    """doctor.sh's row (network-exposure-1 follow-up) reuses this probe. It
+    must answer, and must never change the password it is testing."""
+    rig.set_state(**state)
+    before = rig.conf.read_text()
+    p = rig.run("configure-webui.sh", "--check-default-admin")
+    assert p.returncode == rc, (p.stdout, p.stderr)
+    assert rig.get_state()["accounts"]["admin@localhost"] == state["admin_pw"]
+    assert not [c for c in rig.calls() if c["path"].endswith("/update/password")]
+    assert rig.conf.read_text() == before
+
+
+SERVE_STATUS_STUB = TAILSCALE_STUB.replace(
+    'if args[:2] == ["status", "--json"]:',
+    'if args[:2] == ["serve", "status"]:\n'
+    '    print("https://beast.example.ts.net (tailnet only)\\n'
+    '|-- / proxy http://127.0.0.1:3000\\n\\n'
+    'https://beast.example.ts.net:8446 (tailnet only)\\n'
+    '|-- / proxy http://127.0.0.1:3004")\n'
+    'if args[:2] == ["status", "--json"]:')
+
+
+def test_tailscale_status_flag_is_read_only(ts_rig):
+    """docs-drift-setup-tailscale-status: BEAST_ARTIFACT.md documented
+    `--status`; the script rejected it (exit 2), and the obvious workaround —
+    a full run — reconfigures serve with sudo and writes WEBUI_AUTH."""
+    _write_exec(ts_rig.bin / "tailscale", SERVE_STATUS_STUB)
+    ts_rig.set_state(auth=False, admin_pw="admin")
+    before = ts_rig.conf.read_text()
+    p = ts_rig.run("setup-tailscale.sh", "--status")
+    assert p.returncode == 0, p.stderr
+    rows = {ln.split()[0]: ln.split()[-1] for ln in p.stdout.splitlines()
+            if ln.strip() and ln.split()[0].isdigit()}
+    assert rows["443"] == "published" and rows["8446"] == "published", p.stdout
+    assert rows["8443"] == "-" and rows["8889"] == "-"
+    # Nothing was changed: only `tailscale serve status` ran, no WebUI
+    # traffic, conf untouched.
+    ts_calls = [a for k, a in _events(ts_rig) if k == "ts"]
+    assert ts_calls and all(a[:2] == ["serve", "status"] for a in ts_calls), ts_calls
+    assert not [e for e in _events(ts_rig) if e[0] == "http"]
+    assert ts_rig.conf.read_text() == before
+
+
+@pytest.mark.parametrize("bind,host", [("192.168.1.50", "192.168.1.50"),
+                                       ("127.0.0.1", "127.0.0.1"),
+                                       ("0.0.0.0", "127.0.0.1"),
+                                       ("::", "[::1]")])
+def test_tailscale_mounts_follow_the_bind_host(ts_rig, bind, host):
+    """artifact-3: every mount hard-coded 127.0.0.1, so on a rig bound to a
+    specific address :443/:8443/:8446 were 502s. Mounts now dial where the
+    service binds; the chat mount follows OPENBEAST_CHAT_BIND (loopback)."""
+    ts_rig.set_state(auth=True, admin_pw="operator-chose-this")
+    p = ts_rig.run("setup-tailscale.sh", "--publish-artifact", "--publish-chat",
+                   env_extra={"OPENBEAST_BIND": bind})
+    assert p.returncode == 0, p.stderr
+    mounts = {}
+    for k, a in _events(ts_rig):
+        if k == "ts" and "serve" in a and "--bg" in a:
+            port = next(x for x in a if x.startswith("--https=")).split("=")[1]
+            mounts[port] = a[-1]
+    assert mounts["443"] == f"http://{host}:3000", mounts
+    assert mounts["8443"] == f"http://{host}:8080"
+    assert mounts["8446"] == f"http://{host}:3004"
+    assert mounts["8445"] == "http://127.0.0.1:3003"      # chat: its own bind
+    # The WebUI auth probe dials the same host.
+    assert f"http://{host}:3000/api/config" in {c.get("url") for c in ts_rig.calls()}
+    lan = host not in ("127.0.0.1", "[::1]")
+    assert ("logins are NOT" in p.stdout) == lan

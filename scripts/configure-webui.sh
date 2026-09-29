@@ -13,6 +13,10 @@
 #   ./scripts/configure-webui.sh --secure-default-admin   ONLY retire the
 #       upstream default admin password (see _secure_default_admin below);
 #       setup-tailscale.sh runs this the moment the WebUI goes tailnet-wide.
+#   ./scripts/configure-webui.sh --check-default-admin    read-only probe
+#       (doctor.sh): exit 1 when login is ON and admin@localhost still signs
+#       in with upstream's default password, 0 when it does not (or login is
+#       off, where the question does not arise), 3 when WebUI is unreachable.
 
 set -euo pipefail
 
@@ -20,16 +24,29 @@ MODE=full
 case "${1:-}" in
   "") ;;
   --secure-default-admin) MODE=secure ;;
-  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --check-default-admin)  MODE=check ;;
+  -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
 esac
 
-WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
-MCPO_URL="${MCPO_URL:-http://localhost:3001}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
+# Every credential header below (the admin JWT, LLAMA_API_KEY) goes through
+# ob_curl_hdr / ob_curl_bearer — curl --config on fd 3, never argv, because
+# /proc/*/cmdline is world-readable and the admin JWT is bash-equivalent.
+source "$SCRIPT_DIR/lib/curl_auth.sh"
 CONF="$REPO_DIR/openbeast.conf"
+
+# Open WebUI, the tool server and SearXNG all bind BIND_HOST, and WebUI runs
+# with network_mode: host — so both this script's own calls AND the URLs it
+# stores in WebUI's config must dial the probe host (lib/net.sh via conf.sh),
+# not a hard-coded localhost that a socket bound to a specific LAN/tailnet
+# address refuses. Loopback/wildcard binds keep the `localhost` spelling.
+_OB_LOCAL_HOST="${OPENBEAST_PROBE_HOST:-127.0.0.1}"
+[[ "$_OB_LOCAL_HOST" == "127.0.0.1" ]] && _OB_LOCAL_HOST=localhost
+WEBUI_URL="${WEBUI_URL:-http://$_OB_LOCAL_HOST:3000}"
+MCPO_URL="${MCPO_URL:-http://$_OB_LOCAL_HOST:3001}"
 
 # Open WebUI's built-in default admin (open_webui/routers/auths.py, the
 # WEBUI_AUTH == False branch of signin): with auth OFF, signing in as
@@ -65,9 +82,11 @@ fi
 # it gets a short bound instead of three minutes.
 _WAIT_S=180
 [[ "$MODE" == "secure" ]] && _WAIT_S=15
+[[ "$MODE" == "check" ]] && _WAIT_S=2
 for _i in $(seq 1 "$_WAIT_S"); do
   curl -s "$WEBUI_URL/api/version" > /dev/null 2>&1 && break
   if [[ $_i -eq $_WAIT_S ]]; then
+    [[ "$MODE" == "check" ]] && exit 3
     echo "Error: Open WebUI not reachable after ${_WAIT_S}s — giving up." >&2
     echo "       Re-run ./scripts/configure-webui.sh once it's up." >&2
     exit 1
@@ -159,8 +178,8 @@ _secure_default_admin() {
   newpw=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
   resp=$(OLD_PW="$DEFAULT_ADMIN_PASSWORD" NEW_PW="$newpw" python3 -c \
       'import json,os; print(json.dumps({"password": os.environ["OLD_PW"], "new_password": os.environ["NEW_PW"]}))' \
-    | curl -s -m 10 "$WEBUI_URL/api/v1/auths/update/password" \
-        -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d @- \
+    | ob_curl_bearer "$tok" -s -m 10 "$WEBUI_URL/api/v1/auths/update/password" \
+        -H "Content-Type: application/json" -d @- \
     2>/dev/null || true)
   if [[ "$resp" == "true" ]]; then
     # Record it where this script (and the operator) look for admin creds —
@@ -198,6 +217,14 @@ _secure_default_admin() {
   echo "  → change the password (or delete the account from Admin Panel → Users)." >&2
   return 1
 }
+
+if [[ "$MODE" == "check" ]]; then
+  # Read-only: sign in with the default, change nothing. The password still
+  # travels via env + stdin (_signin), never argv.
+  [[ "$(_live_auth)" == "true" ]] || exit 0
+  [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && exit 0
+  exit 1
+fi
 
 if [[ "$MODE" == "secure" ]]; then
   if [[ "$(_live_auth)" != "true" ]]; then
@@ -293,7 +320,7 @@ echo "  Reconciling RBAC tool-server connections..."
 # connection 1 carries the admin key (all tools), connection 2 the guest key
 # (server enforces web_search/fetch only for it). Keys absent = both
 # connections keyless, server open — Phase-1 single-user behavior.
-curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
+ob_curl_hdr "$AUTH" -s "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
   | MCPO_URL="$MCPO_URL" python3 -c "
 import sys, os, json
 MCPO = os.environ['MCPO_URL']
@@ -322,7 +349,7 @@ web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
        'info': {'id': '2', 'name': 'Web Search (all users)',
                 'description': 'web_search via SearXNG + SSRF-guarded fetch — safe for guest accounts'}}
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
-" | curl -s -H "$AUTH" -H "Content-Type: application/json" \
+" | ob_curl_hdr "$AUTH" -s -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  Tool server configured (Phase 2: admin + guest profiles keyed, one server :3001)."
@@ -345,7 +372,7 @@ fi   # TOKEN_OK
 # Written straight to the DB rather than through the API because the API needs
 # an admin token, and that sign-in fails the moment the operator changes their
 # WebUI password from the one in openbeast.conf — which is the normal case.
-SEARXNG_QUERY_URL="${SEARXNG_URL:-http://localhost:8888}/search?q=<query>"
+SEARXNG_QUERY_URL="${SEARXNG_URL:-http://$_OB_LOCAL_HOST:8888}/search?q=<query>"
 echo "  Wiring built-in Web Search → SearXNG ..."
 if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
 import sqlite3, json, os, sys, time
@@ -414,7 +441,7 @@ TOOL_REFS='["server:1","server:2"]'
 MODELS=""
 for _i in $(seq 1 30); do
   if [[ "$TOKEN_OK" == "1" ]]; then
-    MODELS=$(curl -s -m 5 -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
+    MODELS=$(ob_curl_hdr "$AUTH" -s -m 5 "$WEBUI_URL/api/models" 2>/dev/null \
       | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -427,7 +454,7 @@ for m in data.get('data', []):
         print(f'{mid}|{fc}')
 " 2>/dev/null || true)
   else
-    MODELS=$(curl -s -m 5 ${LLAMA_API_KEY:+-H "Authorization: Bearer $LLAMA_API_KEY"} \
+    MODELS=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -m 5 \
         "${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}/models" 2>/dev/null \
       | python3 -c "
 import sys, json
