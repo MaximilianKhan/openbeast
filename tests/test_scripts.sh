@@ -2439,6 +2439,19 @@ else
 fi
 rm -rf "$_UN"
 
+# --- Stack lifecycle (tests/test_lifecycle.sh) ---
+# Its own file (stub llama-server, sandboxed start/stop/healthcheck/doctor/
+# ext runs), run from here so every caller of this suite — CI included —
+# runs it too.
+echo ""
+echo "Stack lifecycle (tests/test_lifecycle.sh):"
+if _LC_OUT="$(bash "$REPO_DIR/tests/test_lifecycle.sh" 2>&1)"; then
+  pass "lifecycle suite: $(grep -o '[0-9]* passed, [0-9]* failed' <<< "$_LC_OUT" | tail -n1)"
+else
+  grep -E 'FAIL|passed, ' <<< "$_LC_OUT" | sed 's/^/    /' || true
+  fail "lifecycle suite failed (bash tests/test_lifecycle.sh for detail)"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
