@@ -107,7 +107,9 @@ grep -n 'searxng/searxng.*@sha256:' docker-compose.yml scripts/client-searxng.co
 ```
 
 Left un-mirrored, clients simply keep running the older pinned image — they
-never silently follow `:latest`, so this is drift, not a break.
+never silently follow `:latest`, so this is drift, not a break. It is no longer
+*silent* drift: `tests/test_supply_chain.sh` (run in CI) fails while the two
+digests differ, so a `--images` bump that forgets the mirror goes red.
 
 ## Dependabot bumps — the relock workflow and `land-dependabot.sh`
 
@@ -124,7 +126,11 @@ lock is stale") and stays red. Two pieces close that:
   the relock when it does). The lock is resolved on CI's python (3.12) and
   **proven on 3.14**, the reference box's python, before it is pushed — a
   closure short one package on 3.14 would break bootstrap's hash-pinned
-  install there. A push made with `GITHUB_TOKEN` does not run workflows: the
+  install there. It is **two jobs**: `resolve` (read-only token — resolving a
+  bumped sdist runs its build backend, i.e. third-party code) hands the lock
+  over as a one-file artifact, and `push` (write token) starts on a fresh
+  runner, checks the file, commits with hooks disabled, and gives the token
+  only to the push command. A push made with `GITHUB_TOKEN` does not run workflows: the
   PR's CI runs are created in `action_required` and wait for a maintainer to
   approve them (measured 2026-09-17: `workflow_dispatch` runs do *not*
   satisfy the PR's required checks; approval does).
@@ -132,7 +138,8 @@ lock is stale") and stays red. Two pieces close that:
   maintainer's shell, one PR at a time, each step waiting on GitHub:
   `@dependabot rebase` (main moved when the previous PR merged, and branch
   protection wants an up-to-date branch) → wait for the relock push → approve
-  the held runs → wait for CI (re-running a *cancelled* run once — a late
+  the held runs (only this repo's, for the PR's head commit — never a fork's run
+  on a same-named branch) → wait for CI (re-running a *cancelled* run once — a late
   force-push does that) → squash-merge. Sequential on purpose: every one of
   these PRs touches the same two files, so each merge invalidates the next
   PR's lock. It refuses to run twice at once (`flock`), needs `gh`

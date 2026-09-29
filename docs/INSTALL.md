@@ -924,7 +924,12 @@ pins them by *registry* digest, which `docker save/load` does not carry, so
 - Python deps are installed **only** from a wheelhouse — `./wheels`,
   `./wheelhouse` or `$OPENBEAST_WHEELHOUSE` — via `pydeps.sh install --from`,
   audited against the lock; no wheelhouse is fatal. The index is never
-  contacted.
+  contacted. The **lock does not travel with the wheels**: `install --from`
+  accepts only the lock committed in this git checkout, or one whose sha256
+  you vouch for (`--lock-sha256`, or `OPENBEAST_LOCK_SHA256`, with the hash
+  `pydeps.sh wheelhouse` printed on the connected box; a signed bundle
+  vouches for it when installed with `--key`). A lock copied off the same
+  stick as the wheels would let the stick vouch for itself.
 - A missing weight is fatal with the copy-and-verify instructions; any
   registry weight works, not just the default (set `SERVE_SCRIPT` to match
   what you brought).
@@ -936,8 +941,8 @@ Afterwards `./scripts/update.sh` keeps working offline: it skips pulls,
 digest bumps and index queries, reports what is on disk, and `--force`
 rebuilds llama.cpp without a pull (the only way to rebuild when there is
 nothing to fetch). To move Python pins on a closed box, regenerate the lock
-on a connected one (`pydeps.sh lock`), bring a fresh wheelhouse, and
-`pydeps.sh install --from wheels`. `doctor` distinguishes "serves offline"
+on a connected one (`pydeps.sh lock`), commit it and bring that commit
+here, bring a fresh wheelhouse, and `pydeps.sh install --from wheels`. `doctor` distinguishes "serves offline"
 (every installed rig) from "can be *maintained* offline" (source, a current
 lock, and a wheelhouse that covers it) and says which you have.
 

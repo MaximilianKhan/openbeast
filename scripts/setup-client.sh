@@ -407,9 +407,37 @@ mkdir -p "$CLIENT_DIR"
 # Build the venv with the interpreter we VETTED, not whatever "python3"
 # resolves to — otherwise a 3.9 on PATH silently creates a 3.9 venv.
 [ -x "$VENV/bin/python3" ] || "$PY" -m venv "$VENV"
-"$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+# THE HASH-PINNED LOCK, the same closure the rig and CI install. This venv
+# runs the tool arsenal (bash, file edits) on THIS machine, and it used to be
+# built from requirements.txt alone: 6 direct versions, ~37 transitive
+# packages resolved fresh from the index, no content pinned — so a
+# compromised transitive release would land here while the rig refused it.
+# pydeps.sh verifies the lock is current and installs with --require-hashes.
+# Its exit 3 is a HASH MISMATCH (the index served substituted bytes): fatal,
+# never a reason to fall back. Any other failure (a python the closure does
+# not cover — Intel macOS needs a compiler for cffi, see pydeps.sh) degrades
+# loudly to requirements.txt, unless OPENBEAST_PIP_STRICT=1.
+_pd_rc=0
+OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+if [ "$_pd_rc" -eq 0 ]; then
+  _pins="hash-pinned closure from agents/requirements.lock"
+elif [ "$_pd_rc" -eq 3 ]; then
+  echo "  ✗ HASH MISMATCH installing the client's python deps (pip's report is above)."
+  echo "    The index served bytes that are NOT the ones agents/requirements.lock pins."
+  echo "    Refusing, and NOT falling back to requirements.txt (same packages, unverified)."
+  echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
+  exit 1
+elif [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
+  echo "  ✗ the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback"
+  exit 1
+else
+  echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
+  echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content."
+  "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+  _pins="pins from agents/requirements.txt — NOT hash-verified"
+fi
 "$VENV/bin/python3" -c "import mcp, openai" || { echo "  ✗ venv deps failed to import"; exit 1; }
-echo "  ✓ venv ready ($VENV, pins from agents/requirements.txt)"
+echo "  ✓ venv ready ($VENV, $_pins)"
 
 # ---- 4. env file (sourced by scripts/client.sh) -----------------------------
 umask 077

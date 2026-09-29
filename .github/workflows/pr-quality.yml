@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Error severity only, deliberately: the codebase is clean at this
       # level today, so the gate starts green and stays meaningful.
       # Tightening to warning-level is tracked in docs/TODO.md.
@@ -32,15 +32,15 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh \
-            scripts/*.sh scripts/lib/*.sh tests/*.sh
+            scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh
 
   ruff:
     name: Ruff (syntax + undefined names)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       # E9 (syntax errors) + F (undefined names, unused imports, broken
@@ -51,10 +51,12 @@ jobs:
       # (all of beast-lang), agents/packs/, evals/scripts/ and scripts/lib/
       # were never checked, and four unused imports had accumulated there
       # unseen. ruff walks a directory recursively and respects .gitignore.
+      # extensions/ is included: extensions/dashboard/dashboard.py serves the
+      # /api/slot contract and was outside this gate.
       - name: ruff
         run: |
           python3 -m pip install -q ruff
-          ruff check agents evals tests scripts --select E9,F
+          ruff check agents evals tests scripts extensions --select E9,F
 
   pip-audit:
     name: Dependency vulnerability audit
@@ -67,8 +69,8 @@ jobs:
     # it just can't block unrelated work.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       # The pins in agents/requirements.txt are the supply chain — audit

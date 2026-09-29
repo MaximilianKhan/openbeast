@@ -24,6 +24,8 @@
 #   9  bundle.sh/pydeps  relative paths resolve against the CALLER's cwd
 #  10  bootstrap.sh      the `grep -c || echo 0` idiom
 #  11  update.sh         a low-speed stall is a NETWORK fault
+#  12  verify-weights.sh --file with a name the registry lacks is a failure
+#  13  bootstrap.sh      a weight that failed its pin is never accepted later
 # (8, Finder droppings, is python: tests/test_bundle_manifest.py and
 #  tests/test_pydeps_lock.py.)
 
@@ -177,7 +179,113 @@ if [[ $_rc -eq 0 && "$_stage1" == "$_stage2" && ! -d "$_stage2" && -f "$W/model-
 else
   fail "retry: rc=$_rc stage1=$_stage1 stage2=$_stage2: $_out"
 fi
+
+# ===========================================================================
+echo ""
+echo "12. verify-weights.sh --file NAME: a name with no registry row is a FAILURE:"
+# ===========================================================================
+# The sideload instructions tell operators to run exactly this. A wrong-case
+# name used to hash nothing and print "0 failure(s)" with rc=0.
+cp "$W/plain.gguf" "$W/PLAIN.GGUF"
+_out="$("$SB/scripts/verify-weights.sh" --file PLAIN.GGUF 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT IN REGISTRY" && has "$_out" "Did you mean: plain.gguf" \
+   && ! has "$_out" "0 failure(s)"; then
+  pass "--file with a name the registry does not know exits non-zero (and suggests the case-fixed name)"
+else
+  fail "--file unknown name (rc=$_rc): $_out"
+fi
+_out="$("$SB/scripts/verify-weights.sh" --file no-such-model.gguf 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT IN REGISTRY" && ! has "$_out" "Did you mean"; then
+  pass "--file with a name nothing resembles also exits non-zero"
+else
+  fail "--file unrelated name (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: the right name still verifies, rc=0, and really hashed.
+_out="$("$SB/scripts/verify-weights.sh" --file plain.gguf 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && has "$_out" "OK       plain.gguf (size + sha256)" && has "$_out" "Verified 1 file(s)"; then
+  pass "negative control: --file with the registry's name deep-verifies and exits 0"
+else
+  fail "--file known name (rc=$_rc): $_out"
+fi
+rm -f "$W/PLAIN.GGUF"
 unset OPENBEAST_WEIGHTS_DIR
+
+# ===========================================================================
+echo ""
+echo "13. bootstrap.sh — a weight that FAILED its pin is never accepted on a re-run:"
+# ===========================================================================
+# bootstrap.sh cannot be run whole; its weight step is lifted out between its
+# own section markers, like the python step in 2+3. The stub hf (section 1)
+# writes BYTES-FROM-<repo>, so the registry row decides pass or fail.
+_wsec="$(sed -n '/^# ---- 4\. default model weight/,/^# ---- executable bits/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
+if has "$_wsec" "WEIGHT_FILE=" && has "$_wsec" "weights.registry"; then
+  pass "extracted bootstrap's weight step ($(wc -l <<< "$_wsec") lines)"
+else
+  fail "could not extract bootstrap's weight step — its section markers moved"
+fi
+{
+  echo 'set -euo pipefail'
+  echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo "$_wsec"
+  echo 'echo HARNESS-REACHED-END'
+} > "$T/bootstrap_weight_step.sh"
+_DW="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
+_dw_body='BYTES-FROM-JonathanColetti/Qwen3.8-27B-Uncensored-GGUF'
+_dw_sha="$(printf '%s' "$_dw_body" | sha256sum | awk '{print $1}')"
+_dw_reg="$(cat "$SB/scripts/weights.registry")"
+pin_default() {          # pin_default <sha>: the registry row for the default weight
+  { printf '%s\n' "$_dw_reg"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "${#_dw_body}" "$_DW" "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF" "-"
+  } > "$SB/scripts/weights.registry"
+}
+WB13="$T/weights13"
+run_wstep() { : > "$T/state/hf.log"; _out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?; }
+n_hf() { count_lines "$T/state/hf.log" "local-dir="; }
+
+# The upstream file was swapped: same size, different sha256.
+rm -rf "$WB13"; pin_default "$(printf 'f%.0s' {1..64})"
+run_wstep
+if [[ $_rc -ne 0 && ! -e "$WB13/$_DW" && "$(n_hf)" == "1" ]] && has "$_out" "CHECKSUM MISMATCH"; then
+  pass "a download that fails its pin dies and leaves NOTHING under the weight's name"
+else
+  fail "mismatched download (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
+fi
+# The re-run: this is where the old code printed "already downloaded", rc=0.
+run_wstep
+if [[ $_rc -ne 0 && ! -e "$WB13/$_DW" ]] && ! has "$_out" "already downloaded" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and the RE-RUN refuses again instead of accepting it as 'already downloaded'"
+else
+  fail "re-run after a mismatch (rc=$_rc): $_out"
+fi
+# A same-size wrong file already under the name (a pre-fix leftover, or a
+# hand copy): hashed, refused, and NOT deleted (it may be the operator's).
+mkdir -p "$WB13"; printf '%s' "${_dw_body//B/X}" > "$WB13/$_DW"
+pin_default "$_dw_sha"
+run_wstep
+if [[ $_rc -ne 0 && -f "$WB13/$_DW" && "$(n_hf)" == "0" ]] && has "$_out" "NOT the weight OpenBeast pinned" \
+   && has "$_out" "sha256 mismatch"; then
+  pass "an existing file with the right name but the wrong bytes is REFUSED (hashed, not trusted by name)"
+else
+  fail "existing wrong weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+# NEGATIVE CONTROL: a download that matches its pin lands, and the re-run
+# verifies it without downloading again.
+rm -rf "$WB13"
+run_wstep
+if [[ $_rc -eq 0 && "$(cat "$WB13/$_DW" 2>/dev/null)" == "$_dw_body" && "$(n_hf)" == "1" ]] \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "negative control: a download that matches its pin lands under its name"
+else
+  fail "good download (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+run_wstep
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" ]] && has "$_out" "already downloaded, sha256 verified"; then
+  pass "negative control: the re-run hashes the existing weight, accepts it, and does not re-download"
+else
+  fail "re-run on a good weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
 # ===========================================================================
 echo ""
@@ -230,6 +338,11 @@ PIPERR
             echo "ERROR: In --require-hashes mode, all requirements must have their versions pinned with ==. These do not:" >&2
             echo "    extra-dep>=2 (from foo==1.0)" >&2
             exit 1 ;;
+          novenvfail)
+            # pip's OWN status 3 (status_codes.VIRTUALENV_NOT_FOUND) under
+            # PIP_REQUIRE_VIRTUALENV=1 — no bytes were compared.
+            echo "ERROR: Could not find an activated virtualenv (required)." >&2
+            exit 3 ;;
         esac
       fi
       [[ "$mode" == "noeffect" ]] || echo installed > "$S/pip_installed"
@@ -486,8 +599,14 @@ S="$OB_STUB_STATE"
 echo "docker $*" >> "$S/docker.log"
 lookup() { awk -F'\t' -v k="$1" '$1==k {print $2; f=1; exit} END {exit !f}' "$S/ids"; }
 case "${1:-}" in
-  info)    cat "$S/store_status" ;;
-  load)    cat >/dev/null
+  info)    cat "$S/store_status"
+           # A MEDIUM THAT ANSWERS TWICE: when armed, swap the file on the
+           # "stick" right after install's verify pass (info is the first
+           # thing install asks docker, before any load).
+           if [[ -f "$S/swap_on_info" ]]; then
+             cp "$S/swap_src" "$(cat "$S/swap_on_info")"; rm -f "$S/swap_on_info"
+           fi ;;
+  load)    cat > "$S/last_load"
            if [[ -f "$S/load_fail" ]]; then echo "write /var/lib/docker/tmp: no space left on device" >&2; exit 1; fi
            cat "$S/load_adds" >> "$S/ids"; cat "$S/load_says" ;;
   inspect) lookup "${@: -1}" ;;
@@ -538,6 +657,88 @@ if [[ $_rc -eq 0 && "$(compose_web)" == "$ID_REC" ]] && has "$_out" "ID matches 
 else
   fail "same-store install (rc=$_rc web=$(compose_web)): $_out"
 fi
+if [[ "$(gzip -dc "$B/images/img.tar.gz")" == "$(cat "$T/state/last_load")" ]]; then
+  pass "control: docker load received exactly the bundle's image bytes"
+else
+  fail "control: the stub did not record the loaded bytes: $(cat "$T/state/last_load")"
+fi
+
+# THE INSTALL-TIME HASH GATE: a payload modified after the build must stop
+# install before ANYTHING is consumed — and it must be the verify gate that
+# stops it (its words), not a later, partial check.
+mk_bundle "$B" containerd "$REF_WEB" "$ID_REC"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_REC" "$ID_REC" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_REC" > "$T/state/load_says"
+echo "TAMPERED IMAGE" | gzip -n > "$B/images/img.tar.gz"
+install_bundle "$B"
+if [[ $_rc -ne 0 && "$(compose_web)" == "$REF_WEB" ]] && has "$_out" "does not match its manifest" \
+   && [[ "$(count_lines "$T/state/docker.log" "docker load")" == "0" ]]; then
+  pass "a payload changed after the build is refused by install's verify gate; nothing loaded, compose untouched"
+else
+  fail "tampered payload (rc=$_rc loads=$(count_lines "$T/state/docker.log" "docker load")): $_out"
+fi
+
+# TOCTOU: the medium answers the verify pass with the right bytes and the
+# NEXT read with other bytes. install used to `gzip -dc` the file on the
+# medium after verifying it, so the second answer was what got loaded.
+mk_bundle "$B" containerd "$REF_WEB" "$ID_REC"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_REC" "$ID_REC" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_REC" > "$T/state/load_says"
+echo "EVIL IMAGE BYTES" | gzip -n > "$T/state/swap_src"
+echo "$B/images/img.tar.gz" > "$T/state/swap_on_info"; : > "$T/state/last_load"
+mkdir -p "$T/tmpx"          # a private TMPDIR, so the cleanup check below sees only this run
+_out="$(cd "$T" && TMPDIR="$T/tmpx" PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$B" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && ! -s "$T/state/last_load" && "$(compose_web)" == "$REF_WEB" ]] \
+   && [[ "$(count_lines "$T/state/docker.log" "docker load")" == "0" ]] && has "$_out" "changed after it was verified"; then
+  pass "an image swapped on the medium AFTER verification is caught on the private copy; nothing is loaded"
+else
+  fail "image TOCTOU (rc=$_rc, loaded: $(cat "$T/state/last_load")): $_out"
+fi
+rm -f "$T/state/swap_on_info"
+if [[ -z "$(ls -A "$T/tmpx")" ]]; then
+  pass "the private staging dir is removed on the way out, even on a refusal"
+else
+  fail "private staging dir left behind: $(ls -A "$T/tmpx")"
+fi
+
+# ...and the same for the llama.cpp SOURCE tarball, which bootstrap then
+# compiles and runs. The swap happens when install makes its extraction dir,
+# i.e. after verification and immediately before extraction.
+SRCB="$T/usb/srcbundle"; _commit="$(printf 'ab%.0s' {1..20})"
+mk_srcbundle() {
+  rm -rf "$SRCB" "$T/srcgood"; mkdir -p "$SRCB/source" "$T/srcgood/llama.cpp"
+  echo "real source" > "$T/srcgood/llama.cpp/GOOD.txt"
+  tar -czf "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" -C "$T/srcgood" llama.cpp
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c \
+      --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+  rm -rf "$T/srcevil"; mkdir -p "$T/srcevil/llama.cpp"; echo "attacker source" > "$T/srcevil/llama.cpp/EVIL.txt"
+  tar -czf "$T/state/swap_src" -C "$T/srcevil" llama.cpp
+}
+mkdir -p "$T/bin_mt"; cat > "$T/bin_mt/mktemp" <<'STUB'
+#!/bin/bash
+if [[ "$*" == *ob-src-* && -f "$OB_STUB_STATE/swap_on_mktemp" ]]; then
+  cp "$OB_STUB_STATE/swap_src" "$(cat "$OB_STUB_STATE/swap_on_mktemp")"; rm -f "$OB_STUB_STATE/swap_on_mktemp"
+fi
+exec "$REAL_MKTEMP" "$@"
+STUB
+chmod +x "$T/bin_mt/mktemp"; REAL_MKTEMP="$(command -v mktemp)"; export REAL_MKTEMP
+mk_srcbundle; rm -rf "$SB/llama.cpp"
+echo "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" > "$T/state/swap_on_mktemp"
+_out="$(cd "$T" && PATH="$T/bin_mt:$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+if [[ -f "$SB/llama.cpp/GOOD.txt" && ! -e "$SB/llama.cpp/EVIL.txt" && ! -f "$T/state/swap_on_mktemp" ]]; then
+  pass "a source tarball swapped on the medium after verification is NOT what gets extracted (the verified copy is)"
+else
+  fail "source TOCTOU (rc=$_rc, tree: $(ls "$SB/llama.cpp" 2>/dev/null), swap fired: $([[ -f "$T/state/swap_on_mktemp" ]] && echo no || echo yes)): $_out"
+fi
+# NEGATIVE CONTROL: an honest source bundle still extracts.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted llama.cpp-${_commit:0:12}.tar.gz"; then
+  pass "negative control: an untouched source bundle extracts as before"
+else
+  fail "honest source bundle (rc=$_rc): $_out"
+fi
+rm -rf "$SB/llama.cpp" "$SRCB"
 
 # CROSS-STORE: built on containerd, installed on classic. The daemon gives the
 # same image a DIFFERENT id. This used to die "is not present afterwards".
@@ -734,6 +935,117 @@ fi
 
 # ===========================================================================
 echo ""
+echo "14. pydeps.sh install --from — the LOCK must be vouched for, not carried:"
+# ===========================================================================
+# The attack: the stick carries a malicious wheel AND a lock naming its hash,
+# and the operator copies both over (the old printed instructions said to).
+# verify + audit + --require-hashes all passed, because every check was
+# against the lock that came with the payload.
+PR="$T/pyrepo"; rm -rf "$PR"; mkdir -p "$PR/scripts/lib" "$PR/agents" "$T/usb/wh14"
+install -m 755 "$REPO_DIR/scripts/pydeps.sh" "$PR/scripts/pydeps.sh"
+install -m 644 "$REPO_DIR/scripts/lib/pydeps_lock.py" "$PR/scripts/lib/pydeps_lock.py"
+echo 'foo==1.0' > "$PR/agents/requirements.txt"
+echo "GOOD WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+echo "HF WHEEL" > "$T/usb/wh14/huggingface_hub-1.0-py3-none-any.whl"
+mk_lock14() {            # mk_lock14 <foo wheel>: a lock that names exactly the wheelhouse
+  printf 'foo==1.0 \\\n    --hash=sha256:%s\nhuggingface_hub==1.0 \\\n    --hash=sha256:%s\n' \
+    "$(sha_of "$1")" "$(sha_of "$T/usb/wh14/huggingface_hub-1.0-py3-none-any.whl")" > "$PR/agents/requirements.lock"
+}
+mk_lock14 "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+_good_lock_sha="$(sha_of "$PR/agents/requirements.lock")"
+pyd() { echo "${PIPMODE:-ok}" > "$T/state/pip_mode"; : > "$T/state/pip.log"
+        _out="$(cd "$T/usb" && env OPENBEAST_PYTHON="$T/bin/python3" "$@" 2>&1)"; _rc=$?; }
+n_pip() { count_lines "$T/state/pip.log" "pip install"; }
+
+# Not a git checkout, nothing vouched: refused before pip runs.
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for" && has "$_out" "$_good_lock_sha"; then
+  pass "an unvouched lock (no git, no --lock-sha256) is refused before pip runs, and its hash is shown"
+else
+  fail "unvouched lock (rc=$_rc pip=$(n_pip)): $_out"
+fi
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$(printf '0%.0s' {1..64})"
+if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "not the lock you vouched for"; then
+  pass "a --lock-sha256 that does not match the lock is refused"
+else
+  fail "wrong --lock-sha256 (rc=$_rc pip=$(n_pip)): $_out"
+fi
+# NEGATIVE CONTROLS: the right hash, by flag or by env, installs offline.
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && [[ "$(count_lines "$T/state/pip.log" "--no-index")" == "1" ]]; then
+  pass "negative control: the vouched hash installs, with --no-index"
+else
+  fail "vouched install (rc=$_rc pip=$(n_pip)): $_out"
+fi
+pyd OPENBEAST_LOCK_SHA256="$_good_lock_sha" "$PR/scripts/pydeps.sh" install --from ./wh14
+if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]]; then
+  pass "negative control: OPENBEAST_LOCK_SHA256 vouches the same way (what bootstrap's offline path uses)"
+else
+  fail "env-vouched install (rc=$_rc): $_out"
+fi
+# THE GIT CASE: the committed lock vouches for itself; a lock swapped in
+# from the stick does not.
+if command -v git >/dev/null 2>&1; then
+  git -C "$PR" init -q && git -C "$PR" add -A \
+    && git -C "$PR" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm init
+  pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+  if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && has "$_out" "committed at"; then
+    pass "negative control: in a git checkout, the COMMITTED lock needs no hash"
+  else
+    fail "committed lock (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  # The finding's exact attack: evil wheel + a lock naming it, both from the stick.
+  echo "EVIL WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+  mk_lock14 "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+  pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+  if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for"; then
+    pass "a lock swapped in from the stick (naming a substituted wheel) is REFUSED — the stick is not the trust root"
+  else
+    fail "swapped lock accepted (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  # control: the same pair DOES pass every check the old code ran.
+  _out="$("$REAL_PY" "$PR/scripts/lib/pydeps_lock.py" verify --lock "$PR/agents/requirements.lock" \
+            --req "$PR/agents/requirements.txt" --extra huggingface_hub 2>&1)"; _rc=$?
+  _out2="$("$REAL_PY" "$PR/scripts/lib/pydeps_lock.py" audit --lock "$PR/agents/requirements.lock" --dir "$T/usb/wh14" 2>&1)"; _rc2=$?
+  if [[ $_rc -eq 0 && $_rc2 -eq 0 ]]; then
+    pass "control: the swapped lock + evil wheel pass verify AND audit, so only the voucher stands between"
+  else
+    fail "control: the swapped pair did not pass verify/audit (rc=$_rc/$_rc2) — the case is wrong: $_out $_out2"
+  fi
+  git -C "$PR" checkout -q -- agents/requirements.lock
+  echo "GOOD WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+else
+  echo "  SKIP: git not installed (the committed-lock cases)"
+fi
+
+# EXIT 3 = HASH MISMATCH, the status callers must never fall back from.
+PIPMODE=hashfail pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -eq 3 ]] && has "$_out" "HASH MISMATCH" && has "$_out" "THESE PACKAGES DO NOT MATCH"; then
+  pass "a pip hash mismatch exits 3 (pip's own report still shown)"
+else
+  fail "hash mismatch exit status (rc=$_rc): $_out"
+fi
+PIPMODE=compatfail pyd "$PR/scripts/pydeps.sh" install --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -ne 0 && $_rc -ne 3 ]] && ! has "$_out" "HASH MISMATCH"; then
+  pass "negative control: a compatibility failure is non-zero but NOT 3 (a caller may degrade from it)"
+else
+  fail "compat failure exit status (rc=$_rc): $_out"
+fi
+PIPMODE=unpinnedfail pyd "$PR/scripts/pydeps.sh" install
+if [[ $_rc -ne 0 && $_rc -ne 3 ]]; then
+  pass "negative control: an incomplete closure ('must have their versions pinned') is not called tampering"
+else
+  fail "unpinned closure exit status (rc=$_rc): $_out"
+fi
+PIPMODE=novenvfail pyd "$PR/scripts/pydeps.sh" install --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -ne 0 && $_rc -ne 3 ]] && ! has "$_out" "HASH MISMATCH" && has "$_out" "activated virtualenv"; then
+  pass "pip's OWN exit 3 (no virtualenv, PIP_REQUIRE_VIRTUALENV) is not passed through as 'hash mismatch'"
+else
+  fail "pip exit 3 leaked through as our mismatch status (rc=$_rc): $_out"
+fi
+
+# ===========================================================================
+echo ""
 echo "5. bundle.sh install — weights: .partial + verify; 'exists' is not 'correct':"
 # ===========================================================================
 WB="$T/usb/wbundle"; WD="$T/wdest"
@@ -862,6 +1174,28 @@ else
   done
   [[ ! -e "$WD/w.gguf" ]] && pass "...and install copied nothing on the way to refusing" \
     || fail "install --key '' still installed a weight"
+  # THE CHEAPEST DOWNGRADE: rebuild the manifest over your own payload and
+  # DELETE the signature. With --key, authenticity was asked for, so a
+  # missing .sig must be a failure — for verify AND install.
+  rm -f "$WB/MANIFEST.json.sig"
+  for _cmd in verify install; do
+    bsh "$_cmd" ./wbundle --key ./allowed
+    if [[ $_rc -ne 0 ]] && has "$_out" "carries no MANIFEST.json.sig" && ! has "$_out" "signature verified"; then
+      pass "$_cmd --key on a bundle whose signature was DELETED is refused"
+    else
+      fail "$_cmd --key with no .sig (rc=$_rc): $_out"
+    fi
+  done
+  [[ ! -e "$WD/w.gguf" ]] && pass "...and that install copied nothing" \
+    || fail "install --key with no .sig still installed a weight"
+  # NEGATIVE CONTROL: without --key the same unsigned bundle is integrity-only
+  # (rc=0, said out loud) — so it is --key that makes the missing .sig fatal.
+  bsh verify ./wbundle
+  if [[ $_rc -eq 0 ]] && has "$_out" "unsigned bundle"; then
+    pass "negative control: without --key an unsigned bundle verifies on integrity alone, and says so"
+  else
+    fail "unsigned verify without --key (rc=$_rc): $_out"
+  fi
   bsh verify ./wbundle --key ./allowed --identity
   if [[ $_rc -ne 0 ]] && has "$_out" "--identity needs a value"; then
     pass "a bare --identity is an error too"
@@ -879,6 +1213,34 @@ else
     pass "build --with-weights= (empty) is an error, not a bundle silently built without weights"
   else
     fail "build --with-weights= (rc=$_rc): $_out"
+  fi
+
+  # --- the lock voucher: only a VERIFIED signature may vouch for the lock ---
+  # SB is not a git checkout, so pydeps accepts its lock only with a hash —
+  # and bundle.sh must hand one over only when the manifest recording it was
+  # signature-checked. (Stub python3: pip is recorded, never run.)
+  WHB="$T/usb/whbundle"; rm -rf "$WHB"; mkdir -p "$WHB/wheels" "$WHB/meta"
+  cp "$T/usb/wh14/"*.whl "$WHB/wheels/"
+  cp "$PR/agents/requirements.lock" "$SB/agents/requirements.lock"
+  cp "$PR/agents/requirements.lock" "$WHB/meta/requirements.lock"
+  echo 'foo==1.0' > "$SB/agents/requirements.txt"
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$WHB" --built-at t --repo-commit c \
+      --component wheels:wheels --component meta:meta >/dev/null
+  bsh sign ./whbundle --key "$T/key"
+  bshp() { echo ok > "$T/state/pip_mode"; : > "$T/state/pip.log"
+           _out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$T/bin/python3" "$SB/scripts/bundle.sh" "$@" 2>&1)"; _rc=$?; }
+  bshp install ./whbundle --key ./allowed
+  if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && has "$_out" "signature verified" \
+     && has "$_out" "the lock matches the sha256 it was vouched for"; then
+    pass "a SIGNED bundle vouches for the lock (its manifest's hash is handed to pydeps)"
+  else
+    fail "signed wheels bundle (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  bshp install ./whbundle
+  if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for"; then
+    pass "without --key the same bundle vouches for NOTHING — the stick cannot vouch for itself"
+  else
+    fail "unsigned-trust wheels install (rc=$_rc pip=$(n_pip)): $_out"
   fi
 fi
 

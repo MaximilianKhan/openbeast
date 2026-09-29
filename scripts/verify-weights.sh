@@ -48,10 +48,11 @@ if [[ ! -d "$WEIGHTS_DIR" ]]; then
   exit 0
 fi
 
-fails=0; checked=0; absent=0; pending=0
+fails=0; checked=0; absent=0; pending=0; matched=0
 while IFS=$'\t' read -r sha bytes fname repo remote; do
   [[ -z "$sha" || "$sha" == \#* ]] && continue
   [[ -n "$ONLY" && "$fname" != "$ONLY" ]] && continue
+  matched=$((matched + 1))
   path="$WEIGHTS_DIR/$fname"
   # PENDING = a shipped serve script targets this weight, but it isn't hashed
   # yet (not downloaded on the reference box at authoring time). Not a failure;
@@ -89,6 +90,18 @@ while IFS=$'\t' read -r sha bytes fname repo remote; do
     echo "OK       $fname (size; --deep for sha256)"
   fi
 done < "$REGISTRY"
+
+# --file NAME that matched NO registry row hashed nothing, and used to fall
+# through to "Verified 0 file(s) … 0 failure(s)" with rc=0 — so a typo or a
+# case slip (…Q5_K_M.GGUF) in the command the sideload instructions print
+# reported success. Nothing was verified; say so, and fail.
+if [[ -n "$ONLY" && $matched -eq 0 ]]; then
+  echo "NOT IN REGISTRY  $ONLY — no row in scripts/weights.registry has that exact"
+  echo "                 name (it is case-sensitive), so nothing was verified."
+  _near="$(awk -F'\t' -v f="$ONLY" '$1 !~ /^#/ && tolower($3) == tolower(f) {print $3}' "$REGISTRY" | head -n 1 || true)"
+  [[ -z "$_near" ]] || echo "                 Did you mean: $_near"
+  exit 1
+fi
 
 # Surface .gguf files the registry doesn't know — not an error (users bring
 # their own models), but worth a line so a typo'd filename can't hide.

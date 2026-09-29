@@ -7,7 +7,10 @@
 #   ./scripts/pydeps.sh check                   online: re-resolve, is the lock STALE
 #   ./scripts/pydeps.sh wheelhouse <dir>        fill a dir with the exact artifacts
 #   ./scripts/pydeps.sh audit <dir>             every file in <dir> must be in the lock
-#   ./scripts/pydeps.sh install [--from <dir>]  install with --require-hashes
+#   ./scripts/pydeps.sh install [--from <dir> [--lock-sha256 <hex>]]
+#                                               install with --require-hashes
+#                                               (exit 3 = HASH MISMATCH: never
+#                                               fall back from that)
 #
 # WHY. agents/requirements.txt pins 6 direct versions with `==`. That says
 # nothing about the other 37 packages that actually get installed, and it pins
@@ -19,7 +22,10 @@
 # THE AIR-GAP CASE IS THE POINT (docs/TODO.md, closed-network review). An
 # installed rig serves fine offline; INSTALLING is what breaks. `wheelhouse`
 # on a connected box plus `install --from` on the closed one is that path, and
-# every artifact is verified against the lock at both ends.
+# every artifact is verified against the lock at both ends. The LOCK itself
+# never travels with the wheels: `install --from` accepts only the lock
+# committed in this checkout, or one whose sha256 the operator (or a signed
+# bundle manifest) vouches for with --lock-sha256.
 #
 # PLATFORM COVERAGE, measured not assumed:
 #   linux x86_64, python 3.12 and 3.14   all 43 packages  ✓
@@ -134,12 +140,22 @@ case "$CMD" in
       || die "download failed — nothing in $DIR should be trusted; see the error above"
     "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR"
     _n=$(find "$DIR" -maxdepth 1 -type f | wc -l)
+    _lock_sha="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$LOCK")"
+    _commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "not a git checkout")"
     cat <<EOF
 
 $DIR holds $_n file(s), every one of them named by $LOCK.
-Copy the directory AND $LOCK to the closed box, then:
+Copy the DIRECTORY to the closed box — NOT the lock. The lock is what every
+wheel is checked against, so it must not travel on the same stick: the
+closed box uses the lock in its own checkout of the same commit.
 
-  ./scripts/pydeps.sh install --from $DIR
+  lock sha256  $_lock_sha
+  commit       $_commit
+
+Then, on the closed box (a git checkout at that commit needs nothing more;
+any other checkout passes the hash above, read off THIS screen):
+
+  ./scripts/pydeps.sh install --from $DIR [--lock-sha256 $_lock_sha]
 
 For a DIFFERENT target than this box, add pip's platform flags, e.g.
   ./scripts/pydeps.sh wheelhouse wheels-mac \\
@@ -156,38 +172,105 @@ EOF
     ;;
 
   install)
-    FROM=""
+    # EXIT STATUS: 0 installed; 3 = pip reported a HASH MISMATCH (the one
+    # failure a caller must NEVER answer by falling back to an unpinned
+    # install — the index served bytes the lock does not pin); any other
+    # non-zero = the lock could not be used here (stale, incomplete for this
+    # python, no network…), which a caller MAY degrade from, loudly.
+    FROM=""; LOCK_SHA="${OPENBEAST_LOCK_SHA256:-}"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         # A bare or empty --from must not fall through to the INDEX install
         # below: the operator asked for "no index contacted".
         --from) [[ $# -ge 2 && -n "$2" ]] || die "--from needs a wheelhouse directory"
                 FROM="$(_from_caller "$2")"; shift 2 ;;
+        --lock-sha256)
+                [[ $# -ge 2 && -n "$2" ]] || die "--lock-sha256 needs the lock's sha256"
+                LOCK_SHA="$2"; shift 2 ;;
         *) break ;;
       esac
     done
     [[ -f "$LOCK" ]] || die "$LOCK does not exist"
+    # WHO VOUCHES FOR THE LOCK, on the wheelhouse path. Everything below
+    # checks wheels AGAINST the lock, so the lock is the trust root — and
+    # this path used to accept whatever lock was on disk, while the printed
+    # instructions said to copy it over from the same USB stick as the wheels
+    # ("the stick does not have to be trusted"). A stick carrying a malicious
+    # wheel AND a lock naming its hash passed verify, audit and
+    # --require-hashes. So the lock must be vouched for by something that did
+    # not travel with the wheels:
+    #   --lock-sha256 / OPENBEAST_LOCK_SHA256  the hash as printed by
+    #       `wheelhouse` on the connected box, or recorded in a SIGNED bundle
+    #       manifest (bundle.sh install passes it after checking the signature)
+    #   otherwise, the lock as COMMITTED in this git checkout (HEAD)
+    # The index path is unaffected: the index is not the thing carrying the lock.
+    if [[ -n "$FROM" ]]; then
+      _have_sha="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$LOCK")"
+      if [[ -n "$LOCK_SHA" ]]; then
+        [[ "$_have_sha" == "$LOCK_SHA" ]] || die "$LOCK is not the lock you vouched for.
+       expected sha256 $LOCK_SHA
+       this lock       $_have_sha
+       Refusing to install: the lock is what every wheel is checked against."
+        echo "the lock matches the sha256 it was vouched for (${LOCK_SHA:0:16}…)"
+      elif git -C "$REPO_DIR" show "HEAD:./$LOCK" 2>/dev/null | cmp -s - "$LOCK"; then
+        echo "the lock is the one committed at $(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo HEAD)"
+      else
+        die "cannot vouch for $LOCK, so a wheelhouse cannot be checked against it.
+       It is not the lock committed in this git checkout (modified, untracked,
+       or this is not a git checkout at all), and no --lock-sha256 was given.
+       A lock that travelled with the wheels would let whoever wrote the
+       wheels also write the hashes they are checked against.
+         - restore the committed lock:   git checkout -- $LOCK
+         - or pass the hash that \`./scripts/pydeps.sh wheelhouse\` printed on
+           the connected box:  ./scripts/pydeps.sh install --from <dir> --lock-sha256 <hex>
+           (or OPENBEAST_LOCK_SHA256=<hex>). This lock is sha256 $_have_sha"
+      fi
+    fi
     # Verify before installing. The whole value of a lock is that it is
     # checked, and a stale one would install a version the repo does not
     # claim to support.
     "$PY" "$HELPER" verify --lock "$LOCK" --req "$REQ" "${EXTRA[@]}" \
       || die "the lock does not match $REQ — refusing to install from it"
-    # shellcheck disable=SC2046  # flags are intentionally word-split
+    _pip_args=()
     if [[ -n "$FROM" ]]; then
       [[ -d "$FROM" ]] || die "$FROM is not a directory"
       "$PY" "$HELPER" audit --lock "$LOCK" --dir "$FROM" \
         || die "$FROM contains files the lock does not name — refusing to install"
       echo "installing from $FROM (no index will be contacted)"
-      "$PY" -m pip install $(_pip_flags) --require-hashes \
-        --no-index --find-links "$FROM" -r "$LOCK" "$@"
+      _pip_args=(--no-index --find-links "$FROM")
     else
       echo "installing from the index, hash-checked against $LOCK"
-      "$PY" -m pip install $(_pip_flags) --require-hashes -r "$LOCK" "$@"
     fi
+    # pip's stderr is KEPT and passed on, because what it says decides the
+    # exit status: pip's words for tampering (pip/_internal/exceptions.py,
+    # HashMismatch) are the banner and "Expected sha256 … Got …". NOT
+    # tampering: "all requirements must have their versions pinned" / "Hashes
+    # are required" — the closure on THIS python needs a package the lock
+    # does not name, and no bytes were compared at all.
+    _err="$(mktemp)"
+    _rc=0
+    # shellcheck disable=SC2046  # flags are intentionally word-split
+    "$PY" -m pip install $(_pip_flags) --require-hashes \
+      ${_pip_args[@]+"${_pip_args[@]}"} -r "$LOCK" "$@" 2>"$_err" || _rc=$?
+    cat "$_err" >&2
+    if [[ $_rc -ne 0 ]] && grep -qE 'DO NOT MATCH THE HASHES|^[[:space:]]*Expected sha(256|384|512) |hash mismatch' "$_err"; then
+      rm -f "$_err"
+      echo "error: HASH MISMATCH — pip was served bytes that are NOT the ones $LOCK pins.
+       Do not fall back to an unpinned install: it would fetch the same names,
+       unverified, from the same source. Suspect a mirror or proxy first
+       (pip config list, PIP_INDEX_URL)." >&2
+      exit 3
+    fi
+    rm -f "$_err"
+    # 3 is OUR word for a hash mismatch, but pip has its own 3
+    # (VIRTUALENV_NOT_FOUND, e.g. PIP_REQUIRE_VIRTUALENV=1): never let a
+    # failure that compared no bytes reach callers as "tampering".
+    [[ $_rc -ne 3 ]] || _rc=1
+    exit "$_rc"
     ;;
 
   -h|--help|help)
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
     ;;
 
   *)
