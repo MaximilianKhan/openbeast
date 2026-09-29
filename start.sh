@@ -101,6 +101,11 @@ fi
 # bracketed (lib/net.sh — the ONE mapping start/doctor/healthcheck share).
 # Used by the daemon launcher's readiness probes AND the supervisor below.
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
+LLAMA_BASE="http://$HEALTH_HOST:8080"
+# How long a model may take to LOAD before the load counts as failed (the
+# watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
+LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
+[[ "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
@@ -157,7 +162,12 @@ if [[ $DAEMON -eq 1 ]]; then
   fi
 
   echo "Waiting for the model to load (log: .run/stack.log)..."
-  for i in $(seq 1 300); do
+  # Deadline, not an iteration count: the supervisor gives a load up to
+  # LLAMA_LOAD_GRACE, and a launcher that quits first reports a failure
+  # while the model is still legitimately coming up.
+  _ready_deadline=$(( SECONDS + LLAMA_LOAD_GRACE + 300 ))
+  _launched_at=$SECONDS
+  while (( SECONDS < _ready_deadline )); do
     # Readiness = llama + MCPO (+ router when enabled; it hard-binds
     # 127.0.0.1 — see agents/router.py — so probe it there like the
     # supervisor does). Without the router term "Stack is up" would print
@@ -174,7 +184,10 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" >/dev/null 2>&1 || EDGE_READY=0
     fi
-    if curl -s -m 2 "http://$HEALTH_HOST:8080/health" >/dev/null 2>&1 \
+    # ob_llama_ready, not `curl -s`: llama-server answers 503 "Loading
+    # model" from the moment it binds, and curl -s exits 0 on a 503 — "Stack
+    # is up" printed (and openbeast.service reported started) mid-load.
+    if ob_llama_ready "$LLAMA_BASE" \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
        && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
       echo ""
@@ -191,14 +204,14 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
     fi
-    if [[ $i -gt 10 ]] && ! _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
+    if (( SECONDS - _launched_at > 20 )) && ! _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
       echo "Error: supervisor exited during startup. Last log lines:" >&2
       tail -20 "$RUN_DIR/stack.log" 2>/dev/null >&2 || true
       exit 1
     fi
     sleep 2
   done
-  echo "Timed out after 10 min — inspect ./start.sh --status and .run/stack.log" >&2
+  echo "Timed out after $(( LLAMA_LOAD_GRACE / 60 + 5 )) min — inspect ./start.sh --status and .run/stack.log" >&2
   exit 1
 fi
 
@@ -313,9 +326,34 @@ launch_llama() {
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
 }
 
-wait_llama_health() { # returns 1 if the process dies before becoming healthy
-  until curl -s "http://$HEALTH_HOST:8080/health" > /dev/null 2>&1; do
+# Returns 0 once llama-server is READY, 1 if the process dies first or the
+# load outlives LLAMA_LOAD_GRACE.
+#
+# READY means 200 {"status":"ok"} (ob_llama_ready). This used to be
+# `until curl -s .../health`, and llama-server binds its port BEFORE loading
+# the model, answering 503 "Loading model" throughout — which curl -s calls
+# success. So the model counted as healthy the moment the port bound:
+# launch_and_wait recorded a model that then OOMed mid-load as LAST-GOOD
+# (overwriting the real one, so MODEL_ROLLBACK could never fire), the KV
+# warmer fired into the 503, and fast boot announced "Full model live"
+# during the load.
+#
+# The deadline covers the other direction: a load wedged in CUDA or on a
+# stalled read says "Loading model" forever and never dies, and this loop
+# waited on it forever. Past the grace the load has FAILED: stop the process
+# (it still holds the port and VRAM) so a rollback can have them.
+wait_llama_health() {
+  local t0=$SECONDS _i
+  until ob_llama_ready "$LLAMA_BASE"; do
     kill -0 "$LLAMA_PID" 2>/dev/null || return 1
+    if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
+      echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
+      kill "$LLAMA_PID" 2>/dev/null || true
+      for _i in $(seq 1 20); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
+      kill -KILL "$LLAMA_PID" 2>/dev/null || true
+      for _i in $(seq 1 5); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
+      return 1
+    fi
     sleep 1
   done
 }
@@ -396,14 +434,14 @@ warm_kv_cache() {
     if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
       SYS="$SYS"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
     fi
-    python3 - "$SYS" <<'WARM' >/dev/null 2>&1 || true
+    python3 - "$SYS" "$LLAMA_BASE" <<'WARM' >/dev/null 2>&1 || true
 import json, sys, urllib.request
 body=json.dumps({"messages":[{"role":"system","content":sys.argv[1].strip()},
     {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
     "chat_template_kwargs":{"enable_thinking":False}}).encode()
 try:
     urllib.request.urlopen(urllib.request.Request(
-        "http://127.0.0.1:8080/v1/chat/completions", data=body,
+        sys.argv[2] + "/v1/chat/completions", data=body,
         headers={"Content-Type":"application/json"}), timeout=60).read()
 except Exception:
     pass
@@ -795,6 +833,10 @@ fi
 # STOPPING via the trap, so a shutdown is never mistaken for a crash.
 RESTARTS=0
 while true; do
+  # Stamped only once launch_and_wait has proved the model READY, so the
+  # 5-minute refill below means "served for 5 minutes", never "spent 5
+  # minutes loading and then died" (which relaunched a model that could
+  # never finish loading, forever).
   LAUNCHED_AT=$SECONDS
   rc=0
   wait $LLAMA_PID || rc=$?

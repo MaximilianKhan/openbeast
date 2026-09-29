@@ -127,6 +127,102 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# lifecycle-1: a model is healthy when /health says so — not when it binds.
+# llama-server binds before it loads and answers 503 "Loading model" for the
+# whole load; `curl -s` exits 0 on that 503. The stub below is a real HTTP
+# server on an ephemeral port that behaves the same way.
+# ---------------------------------------------------------------------------
+echo ""
+echo "start.sh model readiness + rollback (stub llama-server, real HTTP):"
+_L="$_T/load"; mkdir -p "$_L/scripts" "$_L/.run"
+cat > "$_L/scripts/stub_llama.py" <<'PY'
+import http.server, json, sys, threading, time, os
+mode, port = sys.argv[1], int(sys.argv[2])
+t0 = time.time()
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        ok = mode == "ok"
+        body = json.dumps({"status": "ok"} if ok else
+                          {"error": {"code": 503, "message": "Loading model"}}).encode()
+        self.send_response(200 if ok else 503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+srv = http.server.HTTPServer(("127.0.0.1", port), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+# loading-then-die: the OOM-mid-load shape. Everything else has a hard
+# lifetime so nothing outlives the test even if the harness is killed.
+life = {"loading-then-die": 3, "ok": 20, "loading-forever": 60}[mode]
+time.sleep(life)
+os._exit(1 if mode != "ok" else 0)
+PY
+for _m in loading-then-die ok loading-forever; do
+  _n="serve-${_m}.sh"
+  printf '#!/bin/bash\nexec python3 "$(dirname "$0")/stub_llama.py" %s "$STUB_PORT" >/dev/null 2>&1\n' "$_m" > "$_L/scripts/$_n"
+  chmod +x "$_L/scripts/$_n"
+done
+# The functions under test, lifted out of start.sh verbatim.
+{
+  echo 'set -euo pipefail'
+  echo "source '$REPO_DIR/scripts/lib/net.sh'"
+  echo 'SCRIPT_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"'
+  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"'
+  echo 'LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"'
+  echo 'reconfigure_webui_for_model() { :; }'
+  for _fn in launch_llama wait_llama_health record_last_good launch_and_wait; do
+    sed -n "/^${_fn}() {/,/^}/p" "$REPO_DIR/start.sh"
+  done
+  echo 'rc=0; launch_and_wait || rc=$?'
+  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) PID=$LLAMA_PID"'
+} > "$_L/harness.sh"
+_free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] -> result line
+  local port; port="$(_free_port)"
+  rm -f "$_L/.run/last-good-serve-script"
+  [[ -n "$2" ]] && echo "$2" > "$_L/.run/last-good-serve-script"
+  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true \
+    OPENBEAST_LLAMA_LOAD_GRACE="${3:-900}" \
+    timeout 40 bash "$_L/harness.sh" > "$_L/out" 2>&1 || true
+  local line; line="$(grep '^RC=' "$_L/out" || echo "RC=hung $(tail -n 2 "$_L/out" | tr '\n' ' ')")"
+  # Reap whatever stub is still up (by its recorded pid, never a pattern).
+  local p="${line##*PID=}"; [[ "$p" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $p"
+  echo "$line"
+}
+_R="$(_launch_case serve-loading-then-die.sh serve-ok.sh)"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
+  pass "a model that 503s 'Loading model' then dies is NOT recorded last-good; rollback serves the real last-good"
+else
+  fail "load-then-die was treated as healthy (MODEL_ROLLBACK dead, last-good overwritten): $_R"
+fi
+_T0=$SECONDS
+_R="$(_launch_case serve-loading-forever.sh "" 2)"
+_WEDGED="${_R##*PID=}"
+if [[ "$_R" == "RC=1 "* ]] && (( SECONDS - _T0 < 35 )); then
+  pass "a load wedged on 'Loading model' fails after OPENBEAST_LLAMA_LOAD_GRACE (was: waited forever)"
+else
+  fail "wedged load did not fail at the grace: $_R"
+fi
+if [[ "$_WEDGED" =~ ^[0-9]+$ ]] && ! kill -0 "$_WEDGED" 2>/dev/null; then
+  pass "…and the wedged server is stopped, freeing the port/VRAM for a rollback"
+else
+  fail "the wedged llama-server (pid $_WEDGED) was left running past the grace"
+fi
+_R="$(_launch_case serve-ok.sh "")"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
+  pass "a model answering 200 {\"status\":\"ok\"} is healthy and recorded last-good (control)"
+else
+  fail "a healthy stub was not accepted: $_R"
+fi
+for _p in $_PIDS; do kill "$_p" 2>/dev/null || true; done
+# The -d launcher's readiness probe uses the same helper, not `curl -s`.
+if grep -q 'curl -s -m 2 "http://$HEALTH_HOST:8080/health"' "$REPO_DIR/start.sh"; then
+  fail "start.sh -d still treats any /health answer (a 503 included) as ready"
+else
+  pass "start.sh -d readiness requires ob_llama_ready, not any /health answer"
+fi
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"
