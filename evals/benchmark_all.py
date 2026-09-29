@@ -309,7 +309,25 @@ def ensure_gpu_lease(argv: list[str], exec_fn=os.execvpe) -> None:
     print(f"GPU lease is free — taking it for this sweep: {label}")
     sys.stdout.flush()
     exec_fn("bash", ["bash", GPU_LEASE_SH, "run", label.strip(), "--",
-                     sys.executable, os.path.abspath(__file__), *argv], env)
+                     sys.executable, *_interpreter_flags(),
+                     os.path.abspath(__file__), *argv], env)
+
+
+def _interpreter_flags() -> list[str]:
+    """The interpreter options this process was started with (`-u`, `-X
+    utf8`, `-W ...`), so the re-exec keeps them: dropping `-u` turns a
+    `python3 -u benchmark_all.py > log` sweep block-buffered, and a SIGKILL
+    or OOM kill then loses the log's tail — the crash diagnostic. Taken from
+    sys.orig_argv: everything between the interpreter and the script. `-m`/
+    `-c` and what follows are not options for a script path, so stop there."""
+    orig = list(getattr(sys, "orig_argv", []) or [])
+    n = len(orig) - len(sys.argv)
+    flags = []
+    for a in (orig[1:n] if n > 1 else []):
+        if a[:2] in ("-m", "-c"):
+            break
+        flags.append(a)
+    return flags
 
 
 def _foreign_servers() -> str:

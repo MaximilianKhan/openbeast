@@ -240,6 +240,8 @@ def test_a_lease_held_by_our_ancestor_is_ours(ba, tmp_path):
 
 
 def test_a_free_lease_is_taken_for_the_whole_sweep(ba, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "orig_argv", ["python3", "benchmark_all.py", "--models", "m"])
+    monkeypatch.setattr(sys, "argv", ["benchmark_all.py", "--models", "m"])
     calls = []
     ba.ensure_gpu_lease(["--models", "m"],
                         exec_fn=lambda f, argv, env: calls.append((argv, env)))
@@ -282,3 +284,30 @@ def test_a_worktree_asks_the_main_trees_lease(tmp_path, monkeypatch):
     # An operator's explicit run dir wins.
     monkeypatch.setenv("OPENBEAST_RUN_DIR", "/elsewhere")
     assert ba._lease_env()["OPENBEAST_RUN_DIR"] == "/elsewhere"
+
+
+def _exec_argv(ba, orig_argv, argv, monkeypatch):
+    monkeypatch.setattr(sys, "orig_argv", orig_argv)
+    monkeypatch.setattr(sys, "argv", argv)
+    calls = []
+    ba.ensure_gpu_lease(argv[1:], exec_fn=lambda f, a, env: calls.append(a))
+    (a,) = calls
+    return a[a.index("--") + 1:]
+
+
+def test_the_reexec_keeps_interpreter_flags(ba, monkeypatch):
+    """`python3 -u benchmark_all.py > log`: the re-exec must stay unbuffered,
+    or a SIGKILL/OOM loses the log's tail (review r2 evals2, major)."""
+    me = os.path.abspath(ba.__file__)
+    got = _exec_argv(ba, ["python3", "-u", "-X", "utf8", "evals/benchmark_all.py",
+                          "--models", "m"],
+                     ["evals/benchmark_all.py", "--models", "m"], monkeypatch)
+    assert got == [sys.executable, "-u", "-X", "utf8", me, "--models", "m"]
+    # Negative control: no flags in, none out.
+    got = _exec_argv(ba, ["python3", "evals/benchmark_all.py", "--models", "m"],
+                     ["evals/benchmark_all.py", "--models", "m"], monkeypatch)
+    assert got == [sys.executable, me, "--models", "m"]
+    # `python3 -u -m benchmark_all`: -m is not an option for a script path.
+    got = _exec_argv(ba, ["python3", "-u", "-m", "benchmark_all", "--models", "m"],
+                     [me, "--models", "m"], monkeypatch)
+    assert got == [sys.executable, "-u", me, "--models", "m"]
