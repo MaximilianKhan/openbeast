@@ -40,6 +40,9 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_WORKDIR", raising=False)
     monkeypatch.delenv("OPENBEAST_MCPO_ADMIN_KEY", raising=False)
     monkeypatch.delenv("OPENBEAST_MCPO_GUEST_KEY", raising=False)
+    # Header mode unless a test opts in: a --with-jwt rig's sourced conf
+    # exports the secret, and the app would then ignore the plain headers.
+    monkeypatch.delenv("OPENBEAST_IDENTITY_JWT_SECRET", raising=False)
     monkeypatch.setenv("OPENBEAST_FILES_SHARDING", "user")
     importlib.reload(_tools)
     return ws
