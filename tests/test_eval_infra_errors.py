@@ -29,6 +29,9 @@ def _fresh(tmp_path: Path):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    # Bound at import from the REAL cache dir: repoint it too, or the strike
+    # tests write into evals/cache/env-strikes and fail their own rerun.
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     tasks = tmp_path / "tasks"
