@@ -336,7 +336,7 @@ try:
 except Exception:
     a = None
 print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
-    || echo unknown
+    || true
 }
 # Upstream's built-in admin@localhost / "admin" (network-exposure-1): with
 # login ON, a WebUI that still accepts it hands admin — and the privileged
@@ -490,8 +490,13 @@ if command -v tailscale >/dev/null 2>&1; then
       elif [[ "$_live_auth" == "false" ]]; then
         fail "the WebUI is published on :443 and the RUNNING WebUI still has login off" \
              "WEBUI_AUTH=true is set but not live yet — ./stop.sh && ./start.sh -d"
+      elif [[ "$_live_auth" == "true" ]]; then
+        pass "WebUI published on :443 with login enforced (live)"
       else
-        pass "WebUI published on :443 with login enforced (live auth=${_live_auth})"
+        # WebUI down or unreadable: the conf says login is on, but nothing
+        # confirms the running container agrees — a ✓ here would be a guess.
+        warn "the WebUI is published on :443 but is not answering, so live login enforcement cannot be confirmed" \
+             "WEBUI_AUTH=true is set; once Open WebUI is up (docker compose up -d), rerun doctor"
       fi
     fi
     if echo "$_serve" | grep -qE ':8443[^0-9]'; then

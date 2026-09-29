@@ -85,6 +85,7 @@ if ":3001/health" in url: out({"status": "ok", "auth": "open", "identity": "head
 if url.endswith("/api/version"): out({"version": "stub"})
 if url.endswith("/api/config"):
     la = os.environ.get("LIVE_AUTH", "true")
+    if la == "down": sys.exit(7)          # WebUI not answering: curl fails
     out({} if la == "unknown" else {"features": {"auth": la == "true"}})
 if url.endswith("/api/v1/auths/signin"):
     out({"token": "tok"} if os.environ.get("DEFAULT_PW_WORKS") == "1" else {"detail": "no"})
@@ -211,6 +212,18 @@ if has "$_O" "published on :443 with login enforced" && ! has "$_O" "every tailn
 else
   fail ":443 + auth on: $(grep -iE '443|auth' <<< "$_O" | tr '\n' ' ')"
 fi
+# 2026-09-29 smoke test: with the WebUI down (docker unreachable) the row read
+# "✓ … login enforced (live auth=unknown\nunknown)" — a false green, and the
+# pipefail'd fallback printed "unknown" twice.
+RUN_ENV=(TS_SERVE="$SERVE_443" LIVE_AUTH=down)
+doctor WEBUI_AUTH=true
+if has "$_O" "live login enforcement cannot be confirmed" && ! has "$_O" "login enforced (" \
+   && ! grep -q '^unknown' <<< "$_O"; then
+  pass "…:443 with the WebUI down WARNs instead of a false ✓"
+else
+  fail ":443 + WebUI down: $(grep -iE -A1 '443|auth' <<< "$_O" | tr '\n' ' ')"
+fi
+RUN_ENV=(TS_SERVE="$SERVE_443" LIVE_AUTH=true)
 doctor WEBUI_AUTH=false ALLOW_OPEN_WEBUI=true
 if has "$_O" "ALLOW_OPEN_WEBUI=true acknowledges it" && ! has "$_O" "but WEBUI_AUTH is off"; then
   pass "…published open on purpose (ALLOW_OPEN_WEBUI=true, from --i-accept-open-webui) WARNs, not FAILs"
