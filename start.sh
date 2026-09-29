@@ -103,6 +103,29 @@ LLAMA_BASE="http://$HEALTH_HOST:8080"
 LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
 [[ "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
 
+# ---- log rotation: installed on the default path, not by a manual step ----
+# stack.log and the audit trails grow without bound unless
+# openbeast-logrotate.timer runs; for a long time it existed only behind a
+# manual `./scripts/logrotate.sh --install` that nothing on the default path
+# ran (review storage-04). So every start makes sure it is there: a no-op
+# when it is already enabled, when there is no reachable systemd --user
+# manager (macOS, a container, a CI runner), or with LOGROTATE_AUTOINSTALL=
+# false in openbeast.conf. Never fatal — rotation is housekeeping, and a
+# failed install must not keep the model from starting.
+ensure_logrotate_timer() {
+  [[ "${LOGROTATE_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -x "$SCRIPT_DIR/scripts/logrotate.sh" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-logrotate.timer 2>/dev/null && return 0
+  # Reachable user manager? (`show-environment` answers only when it is.)
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing daily log rotation (openbeast-logrotate.timer; opt out: LOGROTATE_AUTOINSTALL=false)..."
+  "$SCRIPT_DIR/scripts/logrotate.sh" --install 2>&1 | sed 's/^/  /' \
+    || echo "  Warning: log rotation not installed — run ./scripts/logrotate.sh --install" >&2
+  return 0
+}
+[[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"

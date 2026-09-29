@@ -74,6 +74,13 @@
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
 
+# Log rotation: every ./start.sh makes sure the daily openbeast-logrotate
+# timer (systemd --user; scripts/logrotate.sh) is installed and enabled, so
+# stack.log and the audit trails stay bounded. No-op without a systemd user
+# manager. Set false to manage rotation yourself.
+# Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
+#LOGROTATE_AUTOINSTALL=true
+
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.

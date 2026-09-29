@@ -323,6 +323,9 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# start.sh installs + enables the daily openbeast-logrotate.timer (systemd
+# --user) when it is missing. false = leave rotation to the operator.
+LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a
