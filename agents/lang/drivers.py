@@ -174,9 +174,16 @@ _RS_MACRO_NAME = re.compile(r"\b(include|include_str|include_bytes|env|option_en
 #: Scanning invocation syntax is scanning the wrong thing; the name is the
 #: primitive. Only a macro the snippet DEFINES can turn a bare name back into
 #: an invocation (no std macro does `$m!`), so the scan applies when one is
-#: defined — `let env = 1;` in ordinary code stays valid. Even then `env` is
-#: also the std MODULE: `env::var` (followed by `::`) and a non-renaming `use`
-#: item stay allowed; any other mention is refused.
+#: defined — `let env = 1;` in ordinary code stays valid.
+#:
+#: Even then only a mention INSIDE a macro's token trees is a threat (a
+#: `macro_rules!` pattern or body, or the argument of any `name!(…)`): a bare
+#: name in ordinary code can never reach `$m!`. Inside one, nothing about the
+#: surrounding text makes it safe — a pattern matches any token shape, so
+#: `(use $m:ident;)` catches `call!(use include_str;)` and `($m:ident ::
+#: $x:ident)` catches `call!(env::foo)` (both reproduced: the host file and
+#: $HOME in diagnostic line 1). So there every mention is refused,
+#: `std::env::var` included — the conservative direction.
 _RS_BARE_NAME = re.compile(
     r"\b(include|include_str|include_bytes|option_env|env)\b(?!\s*!(?!=))")
 _RS_MACRO_DEF = re.compile(r"\bmacro_rules\b|\bmacro\b")
@@ -360,20 +367,48 @@ def _refuse_rust(source: str) -> str | None:
         if named and re.search(r"\bas\b", m.group(1)):
             return (f"a `use` that renames things and names `{named.group(1)}` "
                     f"can smuggle that macro in under another name")
-    # A non-renaming `use` item was just judged; blank it (same length, so the
-    # rest of the view keeps its offsets) and look at every other mention.
-    rest = _RS_USE.sub(lambda u: " " * len(u.group(0)), view)
-    bare = _RS_BARE_NAME.finditer(rest) if _RS_MACRO_DEF.search(view) else ()
-    for m in bare:
-        if m.group(1) == "env" and re.match(r"\s*::", rest[m.end():]):
-            continue                                 # the std::env module
-        return (f"`{m.group(1)}` named without invoking it can reach the "
-                f"builtin through a macro, which no scan of `{m.group(1)}!` sees")
+    if _RS_MACRO_DEF.search(view):
+        for m in _RS_BARE_NAME.finditer(view):
+            if _in_token_tree(view, m.start()):
+                return (f"`{m.group(1)}` named inside a macro's tokens can "
+                        f"reach the builtin through the macro, which no scan "
+                        f"of `{m.group(1)}!` sees")
     if _RS_PATH_ATTR.search(view):
         return "a #[path = …] attribute makes rustc read another file"
     if _RS_FILE_ATTR.search(view):
         return "a #[debugger_visualizer] attribute makes rustc read another file"
     return None
+
+
+#: Where a macro's token trees open: `name!(`, `name![`, `name!{` (with
+#: `macro_rules! name {` among them), and a 2.0 `macro name` item.
+_RS_TT_OPEN = re.compile(
+    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+"
+    r"|\b(?!(?:return|if|while|match|in|else|break)\b)\w+\s*!(?!=)\s*[(\[{]")
+
+
+def _in_token_tree(view: str, at: int) -> bool:
+    """Whether offset `at` of a LEXED rust view (no comments, no string
+    contents) lies inside a macro definition or a macro invocation's
+    argument. Unbalanced brackets count as inside — the safe side."""
+    for m in _RS_TT_OPEN.finditer(view, 0, at):
+        if re.match(r"macro\s", m.group(0)):
+            # decl_macro: `macro name(..) {..}` or `macro name {..}` —
+            # treat everything after it as its body (nightly-only syntax).
+            return True
+        depth, i = 0, m.end() - 1
+        while i < len(view):
+            ch = view[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if i >= len(view) or at < i:
+            return True
+    return False
 
 
 def _refuse_zig(source: str) -> str | None:

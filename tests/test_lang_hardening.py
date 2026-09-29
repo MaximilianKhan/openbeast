@@ -831,6 +831,19 @@ def _rust_indirections(secret):
         f'use std::include_str;\n{_RS_CALL}call!(include_str, "{secret}");\n'
         "fn main() {}\n",
         f'#![debugger_visualizer(natvis_file = "{secret}")]\nfn main() {{}}\n',
+        # round 4: a pattern can match ANY token shape, so what surrounds the
+        # name inside a macro's tokens never makes it safe
+        'macro_rules! call { (use $m:ident;) => { compile_error!{$m!('
+        f'"{secret}")}} }} }}\ncall!(use include_str;);\nfn main() {{}}\n',
+        'macro_rules! call { (use $m:ident;) => { compile_error!{$m!("HOME")} } }\n'
+        'call!(use env;);\nfn main() {}\n',
+        'macro_rules! call { ($m:ident :: $x:ident) => '
+        '{ compile_error!{$m!("HOME")} } }\ncall!(env::foo);\nfn main() {}\n',
+        'macro_rules! call { ($a:ident :: $m:ident :: $x:ident) => '
+        '{ compile_error!{$m!("HOME")} } }\ncall!(std::env::var);\nfn main() {}\n',
+        # the name in a macro BODY, glued to a `!` passed in as a fragment
+        'macro_rules! call { ($b:tt) => { compile_error!{env $b ("HOME")} } }\n'
+        'call!(!);\nfn main() {}\n',
     ]
 
 
@@ -843,14 +856,19 @@ def test_a_builtin_named_through_a_macro_is_refused(secret):
         r = rs.compile_source(src)
         assert not r and r.refused, (src, r.detail)
         assert "hunter2" not in r.detail
-    # negative controls: a macro that uses the std::env MODULE, `env` as a
-    # plain variable with no macro in sight, and a non-renaming `use`
-    for src in ('macro_rules! h { () => { std::env::var("X") } }\n'
-                'fn main() { let _ = h!(); }\n',
+    # negative controls: the std::env MODULE used in ordinary code next to a
+    # macro, `env` as a plain variable with no macro in sight, a non-renaming
+    # `use` item, and `!x {` (a negation, not an invocation)
+    for src in ('macro_rules! h { () => { 1 } }\n'
+                'fn main() { let _ = std::env::var("X"); let _ = h!(); }\n',
                 'fn main() { let env = 1; let include = env; let _ = include; }\n',
-                'use std::env;\nmacro_rules! a { () => { env::args() } }\n'
-                'fn main() { let _ = a!(); }\n'):
+                'use std::env;\nmacro_rules! a { () => { 1 } }\n'
+                'fn main() { let _ = env::args(); let _ = a!(); }\n',
+                'macro_rules! a { () => { true } }\n'
+                'fn main() { if !a!() { let env = 1; let _ = env; } }\n'):
         assert rs.refusal(src) is None, src
+        if shutil.which("rustc"):
+            assert rs.compile_source(src), (src, rs.compile_source(src).detail)
 
 
 @pytest.mark.skipif(not shutil.which("rustc"), reason="rustc absent")
