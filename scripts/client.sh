@@ -166,14 +166,15 @@ PYEOF
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
 
+# Bearer via lib/curl_auth.sh: the device key rides a curl --config on an fd,
+# never curl's argv (world-readable through ps on a shared box).
+# shellcheck source=lib/curl_auth.sh
+. "$REPO/scripts/lib/curl_auth.sh"
+
 _curl_auth() {
   # _curl_auth <url> [extra curl args…] — bearer added when keyed.
   _u="$1"; shift
-  if [ -n "${OPENBEAST_API_KEY:-}" ]; then
-    curl -s -m 5 -H "Authorization: Bearer $OPENBEAST_API_KEY" "$@" "$_u"
-  else
-    curl -s -m 5 "$@" "$_u"
-  fi
+  ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -m 5 "$@" "$_u"
 }
 
 _http_code() {
@@ -186,12 +187,8 @@ _http_code() {
   # a trailing `|| echo 000` yields '000000' and the 000 branch never matches.
   # Capture, ignore the exit status, and default only when the output is empty.
   _u="$1"
-  if [ -n "${OPENBEAST_API_KEY:-}" ]; then
-    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
-      -H "Authorization: Bearer $OPENBEAST_API_KEY" "$_u" 2>/dev/null) || true
-  else
-    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
-  fi
+  _c=$(ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -o /dev/null \
+    -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
   echo "${_c:-000}"
 }
 
@@ -229,7 +226,7 @@ case "$CMD" in
           echo "  ✓ rig model API reachable ($BASE)"; ok=$((ok+1))
         else
           echo "  ✗ rig reachable but /v1/models refused — wrong or missing"
-          echo "    API key? Re-run: setup-client.sh --api-key <rig LLAMA_API_KEY>"
+          echo "    API key? Re-run: setup-client.sh --api-key-stdin (paste the key)"
           bad=$((bad+1))
         fi
       else
@@ -238,7 +235,7 @@ case "$CMD" in
           401|403)
             echo "  ✗ rig rejected this device (401/403) — key wrong, or your"
             echo "    device was revoked. Ask the rig owner to re-enroll:"
-            echo "    ./scripts/clients.sh enroll <name>, then setup-client.sh --api-key <key>" ;;
+            echo "    ./scripts/clients.sh enroll <name>, then setup-client.sh --api-key-stdin" ;;
           503)
             echo "  ! rig is up but still loading the model (503) — retry shortly" ;;
           502|504)

@@ -203,8 +203,8 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Or without a clone: fetch just the script and it makes its own slim checkout.
-Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key <key>`
-(keyed rig), `--no-search`, `--local-search` (own SearXNG container via Docker
+Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key-stdin`
+(keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--no-search`, `--local-search` (own SearXNG container via Docker
 Desktop/Engine — bridge network, loopback-only port map), `--uninstall`.
 
 What lands: an isolated venv + slim checkout under `~/.openbeast-client`,
@@ -287,7 +287,7 @@ Three more things that surprise owners:
 ./scripts/setup-client.sh --host their-rig.their-tailnet.ts.net
 ```
 
-Add `--api-key <key>` if they run [keyed mode](#keyed-mode-optional-off-by-default)
+Add `--api-key-stdin` (then paste the key) if they run [keyed mode](#keyed-mode-optional-off-by-default)
 or have enrolled your device through beast-gate; skip `--publish-searxng` on
 their side and pass `--local-search` on yours if you'd rather your queries never
 touch their SearXNG.
@@ -357,7 +357,7 @@ looping unattended on someone else's rig. See
 
 | script | role | takes |
 |---|---|---|
-| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key`, `--local-search`, `--uninstall` |
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--local-search`, `--uninstall` |
 | `scripts/client.sh` | **operates** | subcommands — `status`, `agent`, `search`, `update`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a
@@ -449,7 +449,7 @@ echo "EDGE_GATE=true" >> openbeast.conf
 ./scripts/setup-tailscale.sh          # repoints :8443 at the gate
 
 # client
-./scripts/setup-client.sh --api-key <the key from enroll>
+./scripts/setup-client.sh --api-key-stdin   # paste the key from enroll; it stays out of ps
 ```
 
 What each remote request now passes through:
@@ -511,14 +511,15 @@ tailnet includes devices or users you don't fully own:
 echo "LLAMA_API_KEY=$(openssl rand -hex 32)" >> openbeast.conf && chmod 600 openbeast.conf
 ./stop.sh && ./start.sh -d
 # client: re-run setup with the key
-./scripts/setup-client.sh --api-key <the-key>
+./scripts/setup-client.sh --api-key-stdin    # paste the key; it stays out of ps
 ```
 
-When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh passes
-`--api-key`, WebUI (compose), healthcheck, the dashboard's probes, the
+When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh hands it
+to llama-server through the environment (never argv, where `ps` shows it to
+every local user), WebUI (compose), healthcheck, the dashboard's probes, the
 router's classify call, the agent runner (`OPENBEAST_API_KEY`/`OPENAI_API_KEY`
 env or `--api-key`), the eval harness, and clients installed with
-`--api-key`. Rig-side OpenCode against a keyed rig: add
+`--api-key`/`--api-key-stdin`. Rig-side OpenCode against a keyed rig: add
 `"apiKey": "<key>"` to `provider.llama-cpp.options` in your **user-level**
 opencode config (the repo file stays keyless; OpenCode 1.18.x does not
 substitute `{env:...}` in provider apiKey — upstream #27853/#19946).

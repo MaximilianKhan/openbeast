@@ -119,8 +119,8 @@ openbeast-client status                            # what the rig is actually se
 
 **Someone else hosting?** This is a first-class path — you need no GPU and no
 weights, only an invite to their tailnet. Point `--host` at their machine's
-tailnet FQDN, adding `--api-key <key>` if they've keyed the rig or enrolled
-your device. **[Full walkthrough, including the trust model you should
+tailnet FQDN, adding `--api-key-stdin` (then paste the key) if they've keyed
+the rig or enrolled your device. **[Full walkthrough, including the trust model you should
 understand first](docs/BEAST_SLOT.md#using-someone-elses-rig).**
 
 > **Read that trust model before joining a rig you don't own.** Your agent

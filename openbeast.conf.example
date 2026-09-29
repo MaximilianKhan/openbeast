@@ -3,6 +3,10 @@
 #   cp openbeast.conf.example openbeast.conf
 #
 # openbeast.conf is gitignored, so your local paths never get committed.
+#
+# true/false keys accept true|yes|1|on and false|no|0|off (any case), and an
+# inline "# comment" after the value is fine. Anything else is read as false
+# and warned about, so a typo is visible instead of silently flipping a mode.
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -122,13 +126,24 @@
 # Serve's authenticated HTTPS proxy. Set 0.0.0.0 to restore the legacy
 # LAN-open behavior (any device on your network can reach every service,
 # unauthenticated — not recommended).
+# ANY non-loopback value (0.0.0.0, a LAN or tailnet IP) is warned about at
+# every launch — and with no MCPO_*_KEY set below, the tool server on :3001
+# is then an unauthenticated remote SHELL for that network. Set keys with
+# scripts/setup-mcpo-keys.sh. (The launch only WARNS — it does not refuse.)
 #BIND_HOST=127.0.0.1
+
+# Acknowledge the case above: you mean to serve the KEYLESS tool server on a
+# non-loopback BIND_HOST. NOT YET ENFORCED — the tool server is served either
+# way; today this only changes the launch warning. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_TOOLS.
+#ALLOW_OPEN_TOOLS=false
 
 # Optional: require "Authorization: Bearer <key>" on the llama-server API.
 # Off by default — the tailnet is already the security boundary. When set,
 # the WHOLE stack presents it: WebUI, healthcheck, the agent runner and the
 # eval harness (OPENBEAST_API_KEY env), the router's classify probe, and
-# beast-slot clients (setup-client.sh --api-key). Enable if your tailnet
+# beast-slot clients (setup-client.sh --api-key-stdin). llama-server gets it
+# through its environment, never its command line. Enable if your tailnet
 # has devices/users you don't fully own. See docs/BEAST_SLOT.md.
 #LLAMA_API_KEY=
 

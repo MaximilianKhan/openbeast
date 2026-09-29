@@ -152,9 +152,18 @@ if [[ -n "$ALIAS" ]]; then
   ALIAS_ARGS=(-a "$ALIAS")
 fi
 
-API_KEY_ARGS=()
+# The API key goes to llama-server through its ENVIRONMENT, never argv.
+# `--api-key "$LLAMA_API_KEY"` sat in /proc/<pid>/cmdline for the server's
+# whole lifetime, readable by every local uid (`ps -eo args`; /proc is not
+# mounted hidepid) — and that key is the one that lets a caller bypass
+# beast-gate's identity, caps and audit. llama-server reads LLAMA_API_KEY
+# natively (common/arg.cpp: `--api-key … .set_env("LLAMA_API_KEY")`, same
+# comma-separated parsing), and /proc/<pid>/environ is owner-only.
+# Unset when empty: an exported empty string would still count as "set".
 if [[ -n "$LLAMA_API_KEY" ]]; then
-  API_KEY_ARGS=(--api-key "$LLAMA_API_KEY")
+  export LLAMA_API_KEY
+else
+  unset LLAMA_API_KEY
 fi
 
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
@@ -176,7 +185,6 @@ fi
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
   "${ALIAS_ARGS[@]}" \
-  "${API_KEY_ARGS[@]}" \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -np "$PARALLEL" \
