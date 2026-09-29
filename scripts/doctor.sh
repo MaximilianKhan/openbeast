@@ -300,6 +300,19 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   if ob_backend_ready "$INFERENCE_URL"; then
     _be_models="$(ob_backend_models "$INFERENCE_URL" 2>/dev/null | head -3 | tr '\n' ' ' || true)"
     pass "$(ob_backend_label) at $INFERENCE_URL (not managed here) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
+    # The id the agent runner sends (OPENBEAST_INFERENCE_MODEL). llama
+    # ignores ids; vLLM 404s an unlisted one unless validation is skipped.
+    if [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+      if [[ -z "${INFERENCE_MODEL:-}" ]]; then
+        warn "INFERENCE_MODEL is not set — the agent runner sends a llama-era model id" \
+             "scripts/backends/conformance.sh, then scripts/backends/use-model.sh --profile <name>"
+      elif [[ -n "$_be_models" ]] && ! ob_backend_models "$INFERENCE_URL" 2>/dev/null | grep -qxF -- "$INFERENCE_MODEL"; then
+        warn "INFERENCE_MODEL='$INFERENCE_MODEL' is not what $INFERENCE_URL lists (${_be_models% })" \
+             "scripts/backends/use-model.sh --profile <the profile the Sparks serve>"
+      else
+        pass "INFERENCE_MODEL='$INFERENCE_MODEL' (the id the agent runner sends)"
+      fi
+    fi
   else
     warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, not managed here)" \
          "start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"

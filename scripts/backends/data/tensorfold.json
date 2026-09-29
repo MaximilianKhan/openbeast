@@ -1,0 +1,337 @@
+{
+ "serve_flags": [
+  "alias",
+  "backend",
+  "check",
+  "checkpoint-slots",
+  "context",
+  "decode-share",
+  "drafter",
+  "drafter-bits",
+  "force",
+  "host",
+  "kv-dtype",
+  "lane-kernels",
+  "master",
+  "master-port",
+  "max-snapshots",
+  "max-tokens",
+  "mlx-cache-gib",
+  "mtp-confidence",
+  "mtp-drafts",
+  "name",
+  "no-drafts",
+  "no-thinking",
+  "no-update-check",
+  "parallel",
+  "ple-on-ssd",
+  "port",
+  "prompt-cache-gib",
+  "rank",
+  "reasoning-effort",
+  "snapshot-dir",
+  "spill-gib",
+  "ssd-experts",
+  "temperature",
+  "thinking",
+  "thinking-budget",
+  "top-k",
+  "top-p",
+  "tp",
+  "version",
+  "vision",
+  "vision-urls"
+ ],
+ "extra_args_allow": [
+  "checkpoint-slots",
+  "decode-share",
+  "drafter-bits",
+  "kv-dtype",
+  "lane-kernels",
+  "max-snapshots",
+  "max-tokens",
+  "mlx-cache-gib",
+  "mtp-confidence",
+  "mtp-drafts",
+  "no-drafts",
+  "no-thinking",
+  "prompt-cache-gib",
+  "reasoning-effort",
+  "spill-gib",
+  "temperature",
+  "thinking",
+  "thinking-budget",
+  "top-k",
+  "top-p"
+ ],
+ "extra_args_never": [
+  "backend",
+  "context",
+  "drafter",
+  "host",
+  "master",
+  "master-port",
+  "name",
+  "no-update-check",
+  "parallel",
+  "ple-on-ssd",
+  "port",
+  "rank",
+  "snapshot-dir",
+  "ssd-experts",
+  "tp",
+  "vision-urls"
+ ],
+ "_provenance": {
+  "engine": "TensorFold",
+  "repo": "https://github.com/ashhart/TensorFold",
+  "commit": "6b2e4c40064b1e4a05965f61b19ce87b5e0265b3",
+  "how": "scripts/backends/pylib/vendor_lists.py tensorfold (ast over src/tensorfold/families/*/__init__.py)",
+  "gate": "TensorFold serves a checkpoint only if config.json's model_type (or text_config.model_type) is claimed by a family package's MODEL_TYPES (families.detect), the family has a cuda_engine (cli._backend), and the checkpoint's quant method is in the family's QUANT_METHODS['cuda'] (default ('mlx',)) \u2014 MLX affine weights must also match CUDA_QUANTIZATION (bits, group) or the family's own check_quantization; modelopt/compressed-tensors must be NVFP4/FP8 (cuda/nvfp4/format.py require_config). Checkpoints outside MODELS run with an 'untested' note. Source: src/tensorfold/families/__init__.py, src/tensorfold/cli.py:406-445.",
+  "curated": "tp, tp2_quant_methods and notes are hand-read from the cited lines, not parsed; extra_args_allow/never are OpenBeast policy (vendor_lists.py), checked against serve_flags parsed from src/tensorfold/cli.py"
+ },
+ "families": {
+  "bonsai": {
+   "title": "Ternary Bonsai 2",
+   "model_types": [
+    "prism_hadamard_qwen35"
+   ],
+   "backends": [
+    "mlx"
+   ],
+   "cuda_quant_methods": [],
+   "cuda_mlx_quantization": null,
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+   ],
+   "drafter": "z-lab/Qwen3.8-27B-DFlash2",
+   "source": "src/tensorfold/families/bonsai/__init__.py"
+  },
+  "deepseek_v4": {
+   "title": "DeepSeek-V4-Flash",
+   "model_types": [
+    "deepseek_v4"
+   ],
+   "backends": [
+    "mlx"
+   ],
+   "cuda_quant_methods": [],
+   "cuda_mlx_quantization": null,
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "mlx-community/DeepSeek-V4-Flash-4bit"
+   ],
+   "drafter": null,
+   "source": "src/tensorfold/families/deepseek_v4/__init__.py"
+  },
+  "gemma4": {
+   "title": "Gemma 4",
+   "model_types": [
+    "gemma4",
+    "gemma4_text"
+   ],
+   "backends": [
+    "mlx"
+   ],
+   "cuda_quant_methods": [],
+   "cuda_mlx_quantization": null,
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "mlx-community/gemma-4-26b-a4b-it-4bit"
+   ],
+   "drafter": null,
+   "source": "src/tensorfold/families/gemma4/__init__.py"
+  },
+  "glm5_next": {
+   "title": "GLM-5.3-Flash",
+   "model_types": [
+    "glm5_next"
+   ],
+   "backends": [
+    "mlx",
+    "cuda"
+   ],
+   "cuda_quant_methods": [
+    "mlx",
+    "exl3"
+   ],
+   "cuda_mlx_quantization": [
+    4,
+    64
+   ],
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw"
+   ],
+   "drafter": "incoai/GLM-5.3-Flash-DFlash2",
+   "source": "src/tensorfold/families/glm5_next/__init__.py",
+   "tp": [
+    2
+   ],
+   "notes": [
+    "requires --tp 2: one GPU per machine (families/glm5_next/__init__.py:179-181)"
+   ]
+  },
+  "nemotron_h": {
+   "title": "Nemotron 3.5 Lightning",
+   "model_types": [
+    "nemotron_h"
+   ],
+   "backends": [
+    "mlx",
+    "cuda"
+   ],
+   "cuda_quant_methods": [
+    "mlx"
+   ],
+   "cuda_mlx_quantization": [
+    4,
+    64
+   ],
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit"
+   ],
+   "drafter": null,
+   "source": "src/tensorfold/families/nemotron_h/__init__.py",
+   "tp": [
+    1,
+    2
+   ],
+   "notes": [
+    "one or two ranks (families/nemotron_h/cuda/app.py:33-34); serial requests"
+   ]
+  },
+  "qwen3_5": {
+   "title": "Qwen3.8 dense",
+   "model_types": [
+    "qwen3_5"
+   ],
+   "backends": [
+    "mlx",
+    "cuda"
+   ],
+   "cuda_quant_methods": [
+    "mlx",
+    "exl3",
+    "modelopt",
+    "compressed-tensors"
+   ],
+   "cuda_mlx_quantization": null,
+   "cuda_affine_bits": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    8
+   ],
+   "cuda_affine_groups": [
+    32,
+    64,
+    128
+   ],
+   "family_checks_mlx_widths": true,
+   "tested_checkpoints": [
+    "Vontra/Qwen3.8-27B-MLX-4bit",
+    "turboderp/Qwen3.8-27B-exl3",
+    "nvidia/Qwen3.8-27B-NVFP4"
+   ],
+   "drafter": "z-lab/Qwen3.8-27B-DFlash2",
+   "source": "src/tensorfold/families/qwen3_5/__init__.py",
+   "tp": [
+    1,
+    2
+   ],
+   "tp2_quant_methods": [
+    "mlx"
+   ],
+   "notes": [
+    "NVFP4 and EXL3 checkpoints run on ONE GPU; two ranks need the MLX affine checkpoint (families/qwen3_5/cuda/engine.py:37)"
+   ]
+  },
+  "qwen3_5_moe": {
+   "title": "Qwen3.6 MoE",
+   "model_types": [
+    "qwen3_5_moe"
+   ],
+   "backends": [
+    "cuda"
+   ],
+   "cuda_quant_methods": [
+    "mlx"
+   ],
+   "cuda_mlx_quantization": [
+    4,
+    64
+   ],
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP"
+   ],
+   "drafter": null,
+   "source": "src/tensorfold/families/qwen3_5_moe/__init__.py",
+   "tp": [
+    1
+   ],
+   "notes": [
+    "one GPU only, one request at a time (families/qwen3_5_moe/__init__.py:36-38)"
+   ]
+  },
+  "qwen4_exp": {
+   "title": "Qwen3.8 Flash Next",
+   "model_types": [
+    "qwen4_exp"
+   ],
+   "backends": [
+    "mlx",
+    "cuda"
+   ],
+   "cuda_quant_methods": [
+    "mlx",
+    "exl3",
+    "modelopt"
+   ],
+   "cuda_mlx_quantization": [
+    4,
+    32
+   ],
+   "cuda_affine_bits": null,
+   "cuda_affine_groups": null,
+   "family_checks_mlx_widths": false,
+   "tested_checkpoints": [
+    "Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "turboderp/Qwen3.8-Flash-Next-exl3",
+    "local-inference-lab/Qwen3.8-Flash-Next-NVFP4",
+    "RadixArk/Qwen3.8-Flash-Next-NVFP4"
+   ],
+   "drafter": null,
+   "source": "src/tensorfold/families/qwen4_exp/__init__.py",
+   "tp": [
+    1,
+    2
+   ],
+   "tp2_quant_methods": [
+    "mlx"
+   ],
+   "notes": [
+    "NVFP4 and EXL3 run on one GPU (families/qwen4_exp/cuda/engine.py:33)",
+    "--parallel >1 is rejected with --tp 2 (families/qwen4_exp/cuda/engine.py:47)"
+   ]
+  }
+ }
+}

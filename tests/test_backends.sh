@@ -223,6 +223,12 @@ grep -q "INFERENCE_URL is not set" "$_T/conf.err" && pass "vllm without INFERENC
   || fail "no warning for vllm without INFERENCE_URL ($_c)"
 _c="$(_conf 'INFERENCE_BACKEND=vllm' 'echo "$INFERENCE_BACKEND"' OPENBEAST_INFERENCE_BACKEND=llama)"
 [[ "$_c" == "llama" ]] && pass "env OPENBEAST_INFERENCE_BACKEND beats the conf" || fail "env precedence: $_c"
+_c="$(_conf $'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL="My Model (x)"   # set by use-model.sh' 'echo "$INFERENCE_MODEL|${OPENBEAST_INFERENCE_MODEL-unset}"')"
+[[ "$_c" == "My Model (x)|My Model (x)" ]] && pass "INFERENCE_MODEL: quotes and a trailing comment dropped, exported for vllm" \
+  || fail "INFERENCE_MODEL vllm: $_c"
+_c="$(_conf 'INFERENCE_MODEL=my-model' 'echo "$INFERENCE_MODEL|${OPENBEAST_INFERENCE_MODEL-unset}"')"
+[[ "$_c" == "my-model|unset" ]] && pass "…but NOT exported for llama (it ignores ids; the runner keeps its default)" \
+  || fail "INFERENCE_MODEL llama: $_c"
 
 # ---------------------------------------------------------------------------
 # Sandbox rigs for the lifecycle scripts. Real curl (probes go to the stub on
@@ -428,6 +434,16 @@ grep -q "vLLM at $_S/vllm (not managed here) — serving: Qwen3.8 27B NVFP4" <<<
 grep -q "the GGUF weight registry / WEIGHT_ENFORCE: not applicable for INFERENCE_BACKEND=vllm" <<< "$_O" \
   && pass "weight registry row says 'not applicable'" || fail "no weight-registry n/a row"
 grep -q "llama.cpp server" <<< "$_O" && fail "doctor still probes llama.cpp on a vLLM stack" || pass "no llama.cpp row"
+grep -q "INFERENCE_MODEL is not set" <<< "$_O" && pass "doctor warns when INFERENCE_MODEL (the id the runner sends) is unset" \
+  || fail "no INFERENCE_MODEL warning: $(grep -i inference_model <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm" "OPENBEAST_INFERENCE_MODEL=Qwen3.8 27B NVFP4 (vLLM TP2)")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qF "INFERENCE_MODEL='Qwen3.8 27B NVFP4 (vLLM TP2)' (the id the agent runner sends)" <<< "$_O" \
+  && pass "…and passes when the server lists exactly that id" || fail "doctor INFERENCE_MODEL match: $(grep -i inference_model <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm" "OPENBEAST_INFERENCE_MODEL=some-other-model")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qF "INFERENCE_MODEL='some-other-model' is not what" <<< "$_O" \
+  && pass "…and warns when the server does not list it" || fail "doctor INFERENCE_MODEL mismatch: $(grep -i inference_model <<< "$_O" || true)"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
@@ -519,8 +535,8 @@ fi
 
 # ---------------------------------------------------------------------------
 echo ""
-echo "Spark launch scaffolds (docker stubbed):"
-_K="$_T/spark"; mkdir -p "$_K/bin" "$_K/home"
+echo "Spark launch scaffolds with model profiles (docker stubbed):"
+_K="$_T/spark"; mkdir -p "$_K/bin" "$_K/home" "$_K/profiles" "$_K/models"
 # docker records argv AND whether VLLM_API_KEY reached its ENVIRONMENT.
 cat > "$_K/bin/docker" <<EOF
 #!/bin/bash
@@ -532,11 +548,71 @@ chmod +x "$_K/bin/docker"
 (umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
-    -e "s|^SPECULATIVE_CONFIG=.*|SPECULATIVE_CONFIG='{\"method\":\"mtp\",\"num_speculative_tokens\":3}'|" \
+    -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
     "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
+_REV=0123456789abcdef0123456789abcdef01234567
+_DREV=89abcdef0123456789abcdef0123456789abcdef
+# Profiles: data files, by path. The names are NOT any real model.
+cat > "$_K/profiles/vtest.env" <<EOF
+BACKEND=vllm
+SOURCE=acme/Brand-New-Model-FP8
+REVISION=$_REV
+SERVED_MODEL_NAME=My Model (test)
+TENSOR_PARALLEL_SIZE=2
+MAX_MODEL_LEN=131072
+GPU_MEMORY_UTILIZATION=0.80
+MAX_NUM_SEQS=8
+REASONING_PARSER=qwen3
+TOOL_CALL_PARSER=hermes
+SPECULATIVE_CONFIG={"method":"mtp","num_speculative_tokens":3}
+EXTRA_ARGS=["--kv-cache-dtype","fp8","--enable-prefix-caching"]
+EOF
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=1/' "$_K/profiles/vtest.env" > "$_K/profiles/vtp1.env"
+sed -e 's/^SOURCE=.*/SOURCE=acme\/Unfetched-Model/' "$_K/profiles/vtest.env" > "$_K/profiles/vnofetch.env"
+{ cat "$_K/profiles/vnofetch.env"; echo "TRUST_REMOTE_CODE=true"; echo "TRUST_REMOTE_CODE_ACK=$_REV"; } > "$_K/profiles/vtrc.env"
+sed -e 's/^REVISION=.*/REVISION=main/' "$_K/profiles/vtest.env" > "$_K/profiles/vbranch.env"
+cat > "$_K/profiles/tftest.env" <<EOF
+BACKEND=tensorfold
+SOURCE=acme/Brand-New-Model-MLX-4bit
+REVISION=$_REV
+SERVED_MODEL_NAME=local-model
+TENSOR_PARALLEL_SIZE=2
+TENSORFOLD_PARALLEL=auto
+EOF
+{ cat "$_K/profiles/tftest.env"; echo "DRAFTER_SOURCE=acme/Brand-New-Drafter"; echo "DRAFTER_REVISION=$_DREV"; } > "$_K/profiles/tfd.env"
+sed -e 's/^SOURCE=.*/SOURCE=acme\/Unfetched-MLX/' "$_K/profiles/tftest.env" > "$_K/profiles/tfnofetch.env"
+# _mkfetched <profile> <artifact:dir:repo:rev>... — a directory + lock exactly
+# as model-fetch.sh leaves them (content hashed, marker written).
+_mkfetched() {
+  python3 - "$_K/models" "$@" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+mdir, prof = Path(sys.argv[1]), Path(sys.argv[2])
+arts = {}
+for spec in sys.argv[3:]:
+    key, d, repo, rev = spec.split(":")
+    root = mdir / d
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (root / "model.safetensors").write_bytes(b"\0" * 64)
+    (root / ".openbeast-model.json").write_text(json.dumps({"source": repo, "revision": rev}))
+    files = {}
+    for f in ("config.json", "model.safetensors"):
+        b = (root / f).read_bytes()
+        files[f] = {"size": len(b), "sha256": hashlib.sha256(b).hexdigest(), "hub_oid": None, "lfs": False}
+    arts[key] = {"source": repo, "revision": rev, "dir": d, "files": files}
+prof.with_suffix(".lock").write_text(json.dumps({"schema": 1, "artifacts": arts}))
+PY
+}
+_mkfetched "$_K/profiles/vtest.env" "model:vtest:acme/Brand-New-Model-FP8:$_REV"
+cp "$_K/profiles/vtest.lock" "$_K/profiles/vtp1.lock"
+mkdir -p "$_K/models/vtp1"; cp -r "$_K/models/vtest/." "$_K/models/vtp1/"
+_mkfetched "$_K/profiles/tftest.env" "model:tftest:acme/Brand-New-Model-MLX-4bit:$_REV"
+_mkfetched "$_K/profiles/tfd.env" "model:tfd:acme/Brand-New-Model-MLX-4bit:$_REV" "drafter:tfd.drafter:acme/Brand-New-Drafter:$_DREV"
 _DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))"
 _VN="$REPO_DIR/scripts/backends/vllm/spark-node.sh"
 _TN="$REPO_DIR/scripts/backends/tensorfold/spark-node.sh"
+_P="$_K/profiles"
 _sp() { # _sp <script> [env...] -- [args...]  -> sets _O (output) and SPRC (rc)
   local s="$1"; shift
   local envs=()
@@ -550,19 +626,27 @@ _sp() { # _sp <script> [env...] -- [args...]  -> sets _O (output) and SPRC (rc)
 _has() { grep -qF -- "$2" <<< "$1"; }
 
 : > "$_K/docker.log"
-_sp "$_VN" -- --rank 0 --env "$_K/spark.env" --print
-if _has "$_O" "--nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501" \
-   && _has "$_O" "--tensor-parallel-size 2" \
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501" \
+   && _has "$_O" "--tensor-parallel-size 2 --gpu-memory-utilization 0.80" \
+   && _has "$_O" "--max-model-len 131072" && _has "$_O" "--max-num-seqs 8" \
    && _has "$_O" "--reasoning-parser qwen3" \
-   && _has "$_O" "--enable-auto-tool-choice --tool-call-parser qwen3_xml" \
-   && _has "$_O" "--served-model-name Qwen3.8\\ 27B\\ NVFP4\\ \\(vLLM\\ TP2\\)" \
+   && _has "$_O" "--enable-auto-tool-choice --tool-call-parser hermes" \
+   && _has "$_O" "--served-model-name My\\ Model\\ \\(test\\)" \
    && _has "$_O" "--host 100.64.1.2 --port 8000" \
-   && _has "$_O" "--max-model-len 262144 --gpu-memory-utilization 0.80" \
-   && _has "$_O" "--max-num-seqs 8"; then
-  pass "vllm rank 0 --print: native multi-node TP=2, parsers, served name, specific bind"
+   && _has "$_O" "--kv-cache-dtype fp8 --enable-prefix-caching"; then
+  pass "vllm rank 0 --print: every model setting comes from the PROFILE (parsers, context, seqs, extra args, served name)"
 else
-  fail "vllm rank 0 --print flags: $_O"
+  fail "vllm rank 0 --print flags (rc=$SPRC): $_O"
 fi
+if _has "$_O" "-v $_K/models/vtest:/models/vtest:ro" && _has "$_O" "serve /models/vtest " \
+   && ! _has "$_O" "--revision" && ! _has "$_O" "acme/Brand-New-Model-FP8 --"; then
+  pass "…serves the fetched, lock-matching copy from MODELS_DIR, mounted READ-ONLY"
+else
+  fail "fetched model not mounted/served: $_O"
+fi
+_has "$_O" "-e HF_HUB_OFFLINE=1" && pass "…with HF_HUB_OFFLINE=1: a verified local copy fetches nothing from the Hub" \
+  || fail "no HF_HUB_OFFLINE for a local copy: $_O"
 if _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e GLOO_SOCKET_IFNAME=enp1s0f1np1" \
    && _has "$_O" "-e TP_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e UCX_NET_DEVICES=enp1s0f1np1" \
    && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1" && _has "$_O" "-e VLLM_SKIP_MODEL_NAME_VALIDATION=1"; then
@@ -580,47 +664,106 @@ fi
 _has "$_O" "--trust-remote-code" && fail "--trust-remote-code passed by default" || pass "…no --trust-remote-code by default"
 [[ ! -s "$_K/docker.log" ]] && pass "--print runs nothing (docker never called)" || fail "--print called docker: $(cat "$_K/docker.log")"
 
-_sp "$_VN" -- --rank 1 --head-addr 10.0.0.9 --env "$_K/spark.env" --print
-if _has "$_O" "--node-rank 1 --master-addr 10.0.0.9" && _has "$_O" "--headless" \
-   && ! _has "$_O" "--host " && ! _has "$_O" "VLLM_API_KEY" && ! _has "$_O" "--served-model-name"; then
-  pass "vllm rank 1: --headless worker, --head-addr overrides, no HTTP flags, no key"
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 1 --head-addr 10.0.0.9 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--node-rank 1 --master-addr 10.0.0.9" && _has "$_O" "--headless" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "VLLM_API_KEY" && ! _has "$_O" "--served-model-name" \
+   && ! _has "$_O" "--tool-call-parser" && _has "$_O" "--max-model-len 131072"; then
+  pass "vllm rank 1: --headless worker, --head-addr overrides, no HTTP/parser flags, no key, same engine settings"
 else
-  fail "vllm rank 1 --print: $_O"
+  fail "vllm rank 1 --print (rc=$SPRC): $_O"
 fi
-_sp "$_VN" -- --rank 0 --model org/Other-FP8 --env "$_K/spark.env" --print
-_has "$_O" "serve org/Other-FP8 " && pass "--model overrides MODEL" || fail "--model: $_O"
+_sp "$_VN" -- --profile "$_P/vnofetch.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "serve acme/Unfetched-Model --revision $_REV --tokenizer-revision $_REV" \
+   && _has "$_O" "UNVERIFIED" && ! _has "$_O" "--code-revision" && ! _has "$_O" "HF_HUB_OFFLINE"; then
+  pass "an unfetched Hub profile is served AT ITS PINNED REVISION, with a loud 'unverified — run model-fetch' warning"
+else
+  fail "unfetched hub profile (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vtrc.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--trust-remote-code" && _has "$_O" "--code-revision $_REV"; then
+  pass "TRUST_REMOTE_CODE with an ACK equal to REVISION passes --trust-remote-code, code pinned by --code-revision"
+else
+  fail "trust_remote_code profile (rc=$SPRC): $_O"
+fi
+sed -e '/^TRUST_REMOTE_CODE_ACK/d' "$_P/vtrc.env" > "$_P/vtrcnoack.env"
+_sp "$_VN" -- --profile "$_P/vtrcnoack.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 1 ]] && _has "$_O" "executes Python shipped in the model repo" && _has "$_O" "Refusing to start"; then
+  pass "…and without the ACK the launcher refuses, saying why"
+else
+  fail "trust_remote_code without ack (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vbranch.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not a full 40-hex commit SHA" && pass "a profile pinned to a BRANCH is refused" \
+  || fail "branch revision accepted (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/tftest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "the vllm launcher cannot serve it" && pass "the vLLM launcher refuses a tensorfold profile" \
+  || fail "cross-backend profile (rc=$SPRC): $_O"
+# A lock that no longer matches the disk: refuse, never serve it.
+printf 'x' >> "$_K/models/vtest/model.safetensors"
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 1 ]] && _has "$_O" "does not match its lock" && _has "$_O" "MISMATCH"; then
+  pass "a fetched copy that no longer matches its lock is refused (not silently served)"
+else
+  fail "lock mismatch served (rc=$SPRC): $_O"
+fi
+truncate -s 64 "$_K/models/vtest/model.safetensors"
+_sp "$_VN" -- --profile "$_P/vtp1.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--tensor-parallel-size 1" && ! _has "$_O" "--nnodes" \
+   && ! _has "$_O" "NCCL_SOCKET_IFNAME" && _has "$_O" "--host 100.64.1.2"; then
+  pass "a TP 1 profile runs on one Spark: no multi-node flags, no ConnectX env"
+else
+  fail "TP1 (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vtp1.env" --rank 1 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "runs on ONE Spark" && pass "…and refuses a rank 1 for it" || fail "TP1 rank 1 (rc=$SPRC): $_O"
+_sp "$_VN" "SPARK_PROFILE=$_P/vtest.env" -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/vtest" && pass "SPARK_PROFILE supplies the default --profile" \
+  || fail "SPARK_PROFILE (rc=$SPRC): $_O"
+_sp "$_VN" -- --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && _has "$_O" "--profile NAME is required" && pass "no profile: refused (the launcher knows no model)" \
+  || fail "no profile (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --model org/Other --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && _has "$_O" "--model is gone" && pass "--model is refused with a pointer to profiles" || fail "--model (rc=$SPRC): $_O"
+{ cat "$_K/spark.env"; echo "MODEL=org/Old-Default"; echo "TOOL_CALL_PARSER=qwen3_xml"; } > "$_K/legacy.env"
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/legacy.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "still sets MODEL TOOL_CALL_PARSER" && _has "$_O" "IGNORED" \
+   && ! _has "$_O" "org/Old-Default" && _has "$_O" "--tool-call-parser hermes"; then
+  pass "an old spark.env with model keys warns they are IGNORED; the profile wins"
+else
+  fail "legacy spark.env (rc=$SPRC): $_O"
+fi
 
-_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 -- --rank 0 --env "$_K/spark.env" --print
+_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "SPARK_SERVE_HOST='0.0.0.0'" && pass "refuses a wildcard bind (env beats the file)" \
   || fail "wildcard bind not refused (rc=$SPRC): $_O"
-_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 SPARK_ALLOW_WILDCARD_BIND=true -- --rank 0 --env "$_K/spark.env" --print
+_sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 SPARK_ALLOW_WILDCARD_BIND=true -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 0 ]] && pass "…unless SPARK_ALLOW_WILDCARD_BIND=true acknowledges it (control)" || fail "ack not honoured: $_O"
 chmod 644 "$_K/key"
-_sp "$_VN" -- --rank 0 --env "$_K/spark.env" --print
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "is mode 644" && pass "refuses a group/world-readable API key file" \
   || fail "0644 key accepted (rc=$SPRC): $_O"
 chmod 600 "$_K/key"
-_sp "$_VN" VLLM_API_KEY_FILE="$_K/nope" -- --rank 0 --env "$_K/spark.env" --print
+_sp "$_VN" VLLM_API_KEY_FILE="$_K/nope" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "refuses a missing API key file" || fail "missing key file: $_O"
-_sp "$_VN" -- --rank 0 --env "$_K/absent.env" --print
-if [[ $SPRC -eq 1 ]] && _has "$_O" "MODEL is not set" && _has "$_O" "SPARK_IFACE is not set" && _has "$_O" "Refusing to start"; then
-  pass "refuses to start without required settings, naming each"
+_sp "$_VN" -- --profile "$_P/vnofetch.env" --rank 0 --env "$_K/absent.env" --print
+if [[ $SPRC -eq 1 ]] && _has "$_O" "VLLM_IMAGE is not set" && _has "$_O" "SPARK_IFACE is not set" && _has "$_O" "Refusing to start"; then
+  pass "refuses to start without required host settings, naming each"
 else
   fail "no settings file not refused (rc=$SPRC): $_O"
 fi
-_sp "$_VN" -- --env "$_K/spark.env" --print
+_sp "$_VN" -- --profile "$_P/vtest.env" --env "$_K/spark.env" --print
 [[ $SPRC -eq 2 ]] && pass "--rank is required" || fail "missing --rank (rc=$SPRC)"
 
 : > "$_K/docker.log"
-_sp "$_VN" -- --rank 0 --env "$_K/spark.env"
+_sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
 if [[ $SPRC -eq 1 ]] && _has "$_O" "image digest is not pinned" && [[ ! -s "$_K/docker.log" ]]; then
   pass "a real run refuses the placeholder image digest (docker not called)"
 else
   fail "unpinned image ran (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
-_sp "$_VN" VLLM_IMAGE_DIGEST="$_DIGEST" -- --rank 0 --env "$_K/spark.env"
+_sp "$_VN" VLLM_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
 if [[ $SPRC -eq 0 ]] && grep -q "^ARGV run -d --rm --name openbeast-vllm-rank0 " "$_K/docker.log" \
-   && grep -qF "nvcr.io/nvidia/vllm:26.05-py3@$_DIGEST serve nvidia/Qwen3.8-27B-NVFP4" "$_K/docker.log" \
+   && grep -qF "nvcr.io/nvidia/vllm:26.05-py3@$_DIGEST serve /models/vtest " "$_K/docker.log" \
    && grep -q "^ENVKEY sk-test-SECRET-4242$" "$_K/docker.log" \
    && ! grep "^ARGV" "$_K/docker.log" | grep -q "sk-test-SECRET"; then
   pass "a pinned run hands docker the key through its ENVIRONMENT, never argv"
@@ -629,45 +772,77 @@ else
 fi
 
 : > "$_K/docker.log"
-_sp "$_TN" -- --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
-if [[ $SPRC -eq 0 ]] && _has "$_O" "serve Vontra/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.168.100.10 --master-port 29551" \
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tftest --tp 2 --rank 0 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
    && _has "$_O" "--parallel auto --name local-model --host 100.64.1.2 --port 8000" \
+   && _has "$_O" "-v $_K/models/tftest:/models/tftest:ro" && _has "$_O" "-e HF_HUB_OFFLINE=1" \
    && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@6b2e4c40064b1e4a05965f61b19ce87b5e0265b3" \
-   && _has "$_O" "--master-port 29551 --no-update-check" \
    && _has "$_O" "start rank 1 FIRST" && _has "$_O" "NO API key" \
    && _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1"; then
-  pass "tensorfold rank 0 --print: --tp 2 rank/master/port, commit-pinned, no update check, rank-1-first + no-key notes"
+  pass "tensorfold rank 0 --print: the verified local copy (ro), --drafter none, commit-pinned, offline hub, notes"
 else
   fail "tensorfold rank 0 --print (rc=$SPRC): $_O"
 fi
 [[ ! -s "$_K/docker.log" ]] && pass "tensorfold --print runs nothing" || fail "tensorfold --print called docker"
-_sp "$_TN" -- --rank 1 --env "$_K/spark.env" --print
-if [[ $SPRC -eq 0 ]] && _has "$_O" "--rank 1 --master 192.168.100.10" && ! _has "$_O" "--host " && ! _has "$_O" "--name local-model"; then
+_sp "$_TN" -- --profile "$_P/tfd.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--drafter /models/tfd.drafter" && _has "$_O" "-v $_K/models/tfd.drafter:/models/tfd.drafter:ro"; then
+  pass "a profile's pinned DRAFTER is fetched-and-mounted like the model"
+else
+  fail "drafter (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tfnofetch.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 1 ]] && _has "$_O" "is not fetched" && _has "$_O" "cannot pin a revision"; then
+  pass "tensorfold refuses an unfetched profile (it cannot pin a Hub revision itself)"
+else
+  fail "tensorfold unfetched (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--rank 1 --no-update-check --drafter none --master 192.168.100.10" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "--name local-model"; then
   pass "tensorfold rank 1: master from SPARK_HEAD_IP, no HTTP flags"
 else
   fail "tensorfold rank 1 (rc=$SPRC): $_O"
 fi
-_sp "$_TN" -- --rank 1 --env "$_K/absent.env" --print
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/absent.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "--master is required" && pass "tensorfold refuses to start without --master" \
   || fail "tensorfold without master (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/vtest.env" --rank 0 --master 1.2.3.4 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "the tensorfold launcher cannot serve it" && pass "the TensorFold launcher refuses a vllm profile" \
+  || fail "tensorfold took a vllm profile (rc=$SPRC): $_O"
 for _ref in main v0.3.7 6b2e4c4 6B2E4C40064B1E4A05965F61B19CE87B5E0265B3; do
-  _sp "$_TN" "TENSORFOLD_REF=$_ref" -- --rank 1 --env "$_K/spark.env" --print
+  _sp "$_TN" "TENSORFOLD_REF=$_ref" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env" --print
   if [[ $SPRC -eq 1 ]] && _has "$_O" "is not a commit SHA"; then
     pass "tensorfold refuses TENSORFOLD_REF=$_ref (only a full 40-hex commit SHA)"
   else
     fail "tensorfold accepted TENSORFOLD_REF=$_ref (rc=$SPRC): $_O"
   fi
 done
-_sp "$_TN" TENSORFOLD_REF= -- --rank 1 --env "$_K/absent.env" --print
+_sp "$_TN" TENSORFOLD_REF= -- --profile "$_P/tftest.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "TENSORFOLD_REF is not set" && pass "tensorfold refuses a missing TENSORFOLD_REF" \
   || fail "missing TENSORFOLD_REF accepted (rc=$SPRC): $_O"
-_sp "$_TN" -- --rank 0 --ckpt Vontra/Other --env "$_K/spark.env" --print
-_has "$_O" "serve Vontra/Other --tp 2" && pass "--ckpt overrides TENSORFOLD_CKPT" || fail "--ckpt: $_O"
-_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --rank 1 --env "$_K/spark.env"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --ckpt Vontra/Other --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && _has "$_O" "--ckpt is gone" && pass "--ckpt is refused with a pointer to profiles" || fail "--ckpt (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
 if [[ $SPRC -eq 0 ]] && grep -qF "nvcr.io/nvidia/pytorch:26.07-py3@$_DIGEST -c" "$_K/docker.log"; then
   pass "a pinned tensorfold run starts the digest-pinned container"
 else
   fail "tensorfold pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+# Injection: a profile value is data — it reaches argv as ONE element, never a shell.
+cat > "$_P/vinject.env" <<EOF
+BACKEND=vllm
+SOURCE=acme/Brand-New-Model-FP8
+REVISION=$_REV
+SERVED_MODEL_NAME=\$(touch $_K/PWNED); \`touch $_K/PWNED2\`
+TOOL_CALL_PARSER=hermes
+EOF
+cp "$_P/vtest.lock" "$_P/vinject.lock"
+mkdir -p "$_K/models/vinject"; cp -r "$_K/models/vtest/." "$_K/models/vinject/"
+_sp "$_VN" -- --profile "$_P/vinject.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && [[ ! -e "$_K/PWNED" && ! -e "$_K/PWNED2" ]] && _has "$_O" "--served-model-name \\\$\\(touch"; then
+  pass "shell syntax in a profile value is carried as data (one argv element), never executed"
+else
+  fail "profile value injection (rc=$SPRC, pwned=$(ls "$_K"/PWNED* 2>/dev/null)): $_O"
 fi
 
 echo ""

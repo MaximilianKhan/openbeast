@@ -31,7 +31,7 @@ from pathlib import Path
 from openai import OpenAI
 
 import tools as _tools
-from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
+from tools import TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, plan_block, reset_plan, update_plan
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
 # predates sessions.py, or whose import fails for any reason, must still run.
@@ -45,7 +45,10 @@ except Exception:                                      # pragma: no cover
 # ---------------------------------------------------------------------------
 
 DEFAULT_BASE_URL = "http://localhost:8080/v1"
-DEFAULT_MODEL = "qwen-27b-q5"  # llama.cpp ignores this, but it's required by the API
+# llama.cpp ignores the id, but the API requires one. vLLM / TensorFold serve a
+# named model: conf.sh exports OPENBEAST_INFERENCE_MODEL for those backends
+# (INFERENCE_MODEL, set by scripts/backends/use-model.sh).
+DEFAULT_MODEL = os.environ.get("OPENBEAST_INFERENCE_MODEL") or "qwen-27b-q5"
 DEFAULT_MAX_ITER = 200
 DEFAULT_LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
@@ -1135,7 +1138,7 @@ def run_agent(
                     if not isinstance(fn_args, dict):
                         raise TypeError(
                             f"arguments must be an object, got {type(fn_args).__name__}")
-                    result = handler(**fn_args)
+                    result = handler(**coerce_args(fn_name, fn_args))
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
 

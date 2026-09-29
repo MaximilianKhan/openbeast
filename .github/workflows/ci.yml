@@ -97,6 +97,13 @@ jobs:
       - name: Inference backend tests (vLLM / TensorFold, unmanaged)
         run: bash tests/test_backends.sh
 
+      # Model onboarding for the Sparks: profile parser refusals, model-inspect
+      # on fixture checkpoints, model-fetch against a stub Hub (corruption,
+      # resume, lock), conformance against stub vLLM / TensorFold / broken
+      # servers, use-model. Loopback stubs only; no network.
+      - name: Spark model onboarding tests (profiles, inspect, fetch, conformance)
+        run: python -m pytest tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
+
       - name: Tool unit tests
         env:
           # No outbound network assumptions in CI (httpbin flakiness);
@@ -122,7 +129,7 @@ jobs:
           rc=0
           # extensions/*/*.sh too: extension launchers (dashboard/run.sh
           # serves /api/slot) were outside every shell gate.
-          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh; do
+          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh tests/*.sh extensions/*/*.sh; do
             bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
           done
           exit $rc

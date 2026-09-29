@@ -345,6 +345,9 @@ export OPENBEAST_PROBE_HOST
 #   INFERENCE_SLOTS    integer                            default empty
 #       Concurrency /api/slot advertises when the server does not expose one
 #       (vLLM --max-num-seqs, TensorFold --parallel).
+#   INFERENCE_MODEL    served model id                    default empty
+#       vllm/tensorfold only: exported as OPENBEAST_INFERENCE_MODEL, the id
+#       agents/runner.py sends (scripts/backends/use-model.sh records it).
 # The llama defaults are resolved even when nothing is set, so every consumer
 # below reads the same values it always did.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/backend.sh" ]]; then
@@ -412,6 +415,19 @@ INFERENCE_SLOTS="${INFERENCE_SLOTS%%[[:space:]#]*}"
 if [[ -n "$INFERENCE_SLOTS" && ! "$INFERENCE_SLOTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: INFERENCE_SLOTS='$INFERENCE_SLOTS' is not a positive integer — ignoring it." >&2
   INFERENCE_SLOTS=""
+fi
+# INFERENCE_MODEL: the served model id (scripts/backends/use-model.sh writes
+# it). llama-server ignores the request's model id; vLLM with strict names
+# 404s any other id, so for vllm/tensorfold the agent runner sends this one
+# (OPENBEAST_INFERENCE_MODEL). A served name may contain spaces but never
+# " #", so a trailing comment is cut there; one layer of quotes is dropped.
+INFERENCE_MODEL="${OPENBEAST_INFERENCE_MODEL:-$(_ob_conf_value INFERENCE_MODEL || true)}"
+INFERENCE_MODEL="${INFERENCE_MODEL%%[[:space:]]#*}"
+INFERENCE_MODEL="${INFERENCE_MODEL%"${INFERENCE_MODEL##*[![:space:]]}"}"   # rtrim
+INFERENCE_MODEL="${INFERENCE_MODEL%\"}"; INFERENCE_MODEL="${INFERENCE_MODEL#\"}"
+INFERENCE_MODEL="${INFERENCE_MODEL%\'}"; INFERENCE_MODEL="${INFERENCE_MODEL#\'}"
+if [[ -n "$INFERENCE_MODEL" && "$INFERENCE_BACKEND" != "llama" ]]; then
+  export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
 fi
 export INFERENCE_BACKEND INFERENCE_URL INFERENCE_MANAGED
 export OPENBEAST_INFERENCE_BACKEND="$INFERENCE_BACKEND"
