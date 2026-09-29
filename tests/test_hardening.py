@@ -175,6 +175,65 @@ def test_guard_allows_ordinary_files(fake_home, rel):
     assert target.read_text() == "ok\n"
 
 
+# --- a failed write must not destroy the original --------------------------
+# open(path, "w") truncated first; a write that then hit EFBIG/ENOSPC left the
+# user's file truncated with the original only in the tool's memory.
+
+_FSIZE_PROBE = r'''
+import resource, signal, sys
+sys.path.insert(0, sys.argv[1])
+import tools
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (100_000, 100_000))
+path = sys.argv[2]
+if sys.argv[3] == "edit":
+    print(tools.edit_file(path, "LINE_TO_CHANGE", "LINE_CHANGED"))
+else:
+    print(tools.write_file(path, "y" * 140_000))
+'''
+
+
+@pytest.mark.skipif(not hasattr(tools.resource, "RLIMIT_FSIZE"), reason="no FSIZE")
+@pytest.mark.parametrize("mode", ["edit", "write"])
+def test_failed_write_leaves_original_intact(tmp_path, mode):
+    # Build the case: a 140 KB file, and a child whose FSIZE cap (100 KB)
+    # makes the rewrite fail part way — a stand-in for a full disk.
+    import subprocess
+    src = tmp_path / "big.py"
+    original = "LINE_TO_CHANGE\n" + "x" * 139_992 + "\n"
+    src.write_text(original)
+    r = subprocess.run([sys.executable, "-c", _FSIZE_PROBE, str(ROOT / "agents"),
+                        str(src), mode], capture_output=True, text=True, timeout=60)
+    assert "Error" in r.stdout, (r.stdout, r.stderr)
+    assert src.read_text() == original                  # not truncated
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["big.py"]  # no temp left
+
+
+def test_edit_keeps_mode_and_content(tmp_path):
+    p = tmp_path / "script.sh"
+    p.write_text("echo old\n")
+    p.chmod(0o750)
+    out = tools.edit_file(str(p), "old", "new")
+    assert not out.startswith("Error:"), out
+    assert p.read_text() == "echo new\n"
+    assert (p.stat().st_mode & 0o777) == 0o750
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["script.sh"]
+
+
+def test_write_file_new_and_hardlinked(tmp_path):
+    # Negative controls for the in-place fallbacks: a new file is created,
+    # and a hard-linked file is updated through BOTH names (not split).
+    new = tmp_path / "sub" / "new.txt"
+    assert not tools.write_file(str(new), "hi\n").startswith("Error:")
+    assert new.read_text() == "hi\n"
+    a = tmp_path / "a.txt"
+    a.write_text("one\n")
+    b = tmp_path / "b.txt"
+    os.link(a, b)
+    assert not tools.write_file(str(a), "two\n").startswith("Error:")
+    assert b.read_text() == "two\n"
+
+
 # --- env scrub -------------------------------------------------------------
 
 def test_scrub_drops_openai_api_key(monkeypatch):

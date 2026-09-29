@@ -1147,6 +1147,57 @@ def _run_diagnostics(path: str) -> str:
                 shutil.rmtree(d, ignore_errors=True)
 
 
+def _atomic_write_text(path: str, content: str) -> None:
+    """Replace `path`'s content without ever leaving it truncated.
+
+    open(path, "w") truncates BEFORE writing, so ENOSPC/EDQUOT/EFBIG part
+    way through destroyed the user's original file (the only other copy
+    was in this process's memory). An existing file is instead written to a
+    sibling temp file, fsynced, and os.replace()d over it; on any failure
+    the temp is removed and the original is untouched. Mode (and, where
+    permitted, owner) are carried over. `path` must already be realpath'd
+    and guarded — the replace targets exactly that inode's name.
+
+    In-place fallbacks: a new file (nothing to lose), a non-regular file
+    (FIFO/device: replacing it would change what it is), a hard-linked file
+    (replace would silently split the link), or a directory we can't create
+    the temp in."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        st = None
+    if st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+        with open(path, "w") as f:
+            f.write(content)
+        return
+    d = os.path.dirname(path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{os.path.basename(path)}.",
+                                   suffix=".tmp")
+    except PermissionError:
+        with open(path, "w") as f:
+            f.write(content)
+        return
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+            if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
+                try:
+                    os.fchown(fd, st.st_uid, st.st_gid)
+                except OSError:
+                    pass
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories if needed."""
     try:
@@ -1158,8 +1209,7 @@ def write_file(path: str, content: str) -> str:
         if blocked:
             return blocked
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(content)
+        _atomic_write_text(path, content)
         _manifest_log("write", path, len(content))
         return (f"Wrote {len(content)} bytes to {path}"
                 + _path_guard_note(path) + _run_diagnostics(path))
@@ -1420,8 +1470,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        with open(path, "w") as f:
-            f.write(new_content)
+        _atomic_write_text(path, new_content)
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
 
