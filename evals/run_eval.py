@@ -701,6 +701,11 @@ def env_error_signature(text: str | None) -> str | None:
     return text[start:end if end != -1 else len(text)].strip()[:200]
 
 
+# Row reasons recorded BEFORE the agent runs: the unit put no load on the
+# model server.
+NO_AGENT_REASONS = frozenset({"low_disk", "server_unhealthy", "setup_failed"})
+
+
 def low_disk(min_free_gb: float | None = None) -> str | None:
     """A message when a filesystem the eval writes to (the cache/results
     tree, $HOME for compiler caches, /tmp for fixtures) is below the floor,
@@ -1573,8 +1578,11 @@ def run_eval(
     # How many units actually ran the model (benchmark_all skips its
     # thermal cool-off when this is 0, i.e. a full cache replay).
     results["summary"]["cache_hits"] = counters["cache_hits"]
+    # Rows recorded without invoking the agent (a disk-floor abort, a
+    # failed recovery, a fixture setup failure) put no load on the GPU.
+    no_agent = sum(1 for r in indexed.values() if r.get("reason") in NO_AGENT_REASONS)
     results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
-                                        - counters["cache_misses_skipped"])
+                                        - counters["cache_misses_skipped"] - no_agent)
     _write_results(results_path, results)
 
     # Print summary

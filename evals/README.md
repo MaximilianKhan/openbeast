@@ -99,7 +99,8 @@ that rerun is done. Before each live unit the harness also checks free space
 on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
 `/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
 that unit as `reason: low_disk` and stops starting units, so a disk filled
-mid-sweep doesn't turn the rest of the run into ENOSPC failures.
+mid-sweep doesn't turn the rest of the run into ENOSPC failures;
+`benchmark_all.py` then stops the sweep instead of loading the next model.
 
 `--cache-only` mode replays banked verdicts into a results file — no
 server start, no live calls, cache misses are recorded as

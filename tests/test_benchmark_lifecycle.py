@@ -130,3 +130,54 @@ def test_cooloff_only_after_live_gpu_work(ba, monkeypatch):
     ba.run_sweep(models, None, None, update_leaderboard=False)
     # a: no load; b: full cache replay; c: live; d: crashed mid-eval; e: last.
     assert slept == [ba.COOLOFF_SECONDS, ba.COOLOFF_SECONDS]
+
+
+def test_low_disk_stops_the_sweep_without_a_cooloff(ba, monkeypatch):
+    """A disk-floor abort holds for every model: the sweep stops rather than
+    loading each remaining model to abort on its first unit after 600 s."""
+    slept, ran = [], []
+    monkeypatch.setattr(ba.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(ba.scoring, "score_run", lambda r: {
+        "capability": 0, "problem_solving": 0, "language_breadth": 0,
+        "accuracy": 0, "speed": 0})
+    tasks = [{"passed": True, "from_cache": True},
+             {"passed": False, "reason": "low_disk"}]
+    # run_eval's own count: the low_disk row never ran the agent.
+    summary = {"total": 2, "cache_hits": 1, "live_units": 0}
+
+    def fake(model, *a, **k):
+        ran.append(model["slug"])
+        return {"slug": model["slug"], "name": model["name"],
+                "results": {"tasks": list(tasks), "summary": dict(summary)}}
+
+    monkeypatch.setattr(ba, "benchmark_model", fake)
+    models = [{"slug": s, "name": s.upper(), "serve": "x"} for s in "abc"]
+    out = ba.run_sweep(models, None, None, update_leaderboard=False)
+    assert ran == ["a"] and slept == []
+    assert [s["slug"] for s in out["skipped"]] == ["b", "c"]
+
+
+def test_live_units_exclude_rows_that_never_ran_the_agent(tmp_path, monkeypatch):
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    import json as _json
+    import shutil
+    import collections
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = tmp_path / "cache"
+    run_eval = importlib.import_module("run_eval")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01_a.json").write_text(_json.dumps({
+        "id": "01_a", "name": "a", "difficulty": "easy", "task": "a",
+        "validation": {"type": "bash", "script": "true"}, "max_iter": 3}))
+    run_eval.TASKS_DIR = str(tasks)
+    run_eval.RESULTS_DIR = str(tmp_path / "results")
+    U = collections.namedtuple("U", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: U(10**12, 10**12 - 10**9, 10**9))
+    monkeypatch.setenv("OPENBEAST_EVAL_MIN_FREE_GB", "5")
+    for name in ("capture_server_config", "capture_gpu_info", "capture_inference_engine_info"):
+        monkeypatch.setattr(run_eval, name, lambda: {})
+    res = run_eval.run_eval(model_name="m")
+    assert res["tasks"][0]["reason"] == "low_disk"
+    assert res["summary"]["live_units"] == 0

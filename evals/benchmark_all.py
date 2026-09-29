@@ -496,6 +496,19 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
                   f"(solve {entry.get('problem_solving')} / lang {entry.get('language_breadth')}) "
                   f"| accuracy {entry['accuracy']} speed {entry['speed']}")
 
+        if _hit_low_disk(outcome):
+            # The disk floor holds for every model: loading the next one
+            # only to abort on its first live unit (after a cool-off) is
+            # ~11 model loads and ~100 idle minutes for zero units.
+            rest = models[i:]
+            print(f"\n>>> DISK FLOOR: stopping the sweep; {len(rest)} model(s) not started. "
+                  f"Free space, then relaunch — the cache resumes every banked unit.")
+            for m in rest:
+                sweep_summary["models_skipped"] += 1
+                sweep_summary["skipped"].append({"slug": m["slug"], "name": m["name"],
+                                                 "reason": "low_disk (sweep stopped)"})
+            break
+
         if i < len(models) and not cache_only and _did_gpu_work(outcome):
             # No thermal load in cache-only mode, for a model that never
             # loaded, or for a run that replayed every unit from cache —
@@ -510,6 +523,12 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
     sweep_summary["elapsed_seconds"] = round(
         (datetime.now() - sweep_start).total_seconds(), 1)
     return sweep_summary
+
+
+def _hit_low_disk(outcome: dict) -> bool:
+    """Whether a model's run stopped on the eval's free-space floor."""
+    tasks = (outcome.get("results") or {}).get("tasks") or []
+    return any(t.get("reason") == "low_disk" for t in tasks)
 
 
 def _did_gpu_work(outcome: dict) -> bool:
