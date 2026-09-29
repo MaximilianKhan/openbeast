@@ -132,6 +132,31 @@ _C_COMPUTED = re.compile(
 _C_HAS = re.compile(
     _C_DIRECTIVE + r"[^\n]*?\b__has_(?:include_next|include|embed)\b" + _GAP_C
     + r"\(" + _GAP_C + r"(?:" + _C_HEADER + r")?", re.M | re.S)
+#: …and the same operator NOT followed by `(`: `#define H __has_include` then
+#: `#if H("/abs")` evaluates it with an argument no scan above ever sees.
+#: Except the portable feature test, `#if defined(__has_include)` /
+#: `#ifdef __has_include`, which yields 0 or 1 and never takes a path.
+_C_HAS_BARE = re.compile(
+    r"\b__has_(?:include_next|include|embed)(?:__)?\b(?!" + _GAP_C + r"\()")
+_C_DIRECTIVE_AT = re.compile(_C_DIRECTIVE, re.M | re.S)
+_C_HAS_FEATURE_TEST = re.compile(
+    r"(?:\bdefined" + _GAP_C + r"(?:\(" + _GAP_C + r")?"
+    r"|^" + _C_DIRECTIVE + r"(?:ifdef|ifndef|elifdef|elifndef)\b" + _GAP_C + r")\Z",
+    re.M | re.S)
+#: Token pasting builds that name too: `CAT(__has_,include)("/abs")` inside
+#: an #if works on gcc, and its fragments can hide in any number of macros.
+#: So pasting and a conditional in the same snippet are refused together —
+#: and pasting next to a pragma, which assembles `GCC P(depend,ency)`.
+_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*##", re.M | re.S)
+_C_IF = re.compile(_C_DIRECTIVE + r"(?:if|elif)\b", re.M | re.S)
+#: `#line N "/abs"` (and the GNU `# N "/abs"` linemarker) makes gcc quote
+#: lines of THAT file in the caret block of every later diagnostic. The
+#: operand must be literal: digits, then optionally a plain relative name.
+_C_LINE = re.compile(_C_DIRECTIVE + r"(?:line\b|(?=\d))([^\n]*)", re.M | re.S)
+_C_LINE_OK = re.compile(r"\d+(?:[ \t]+\"([^\"\n]*)\")?(?:[ \t]+\d+)*")
+#: `#pragma GCC dependency "/abs"` (or through _Pragma) opens that path: a
+#: fatal "No such file" when it is absent, a clean compile when it is there.
+_C_DEPENDENCY = re.compile(r"\bdependency\b")
 #: C++20 header units: `import "/abs/file";` (only live under -fmodules, but
 #: a flag is not a reason to leave a read primitive in).
 _CPP_IMPORT = re.compile(
@@ -148,6 +173,30 @@ _RS_PATH_ATTR = re.compile(r"#!?\s*\[[^\]]*\bpath\s*=", re.S)
 #: real code imports all the time) is not.
 _RS_USE = re.compile(r"\buse\b([^;]*);", re.S)
 _RS_MACRO_NAME = re.compile(r"\b(include|include_str|include_bytes|env|option_env)\b")
+#: The same names as bare IDENTIFIERS, with no `!` after them. A declarative
+#: macro can take a builtin's name as a fragment and invoke it in its own body
+#: — `macro_rules! call { ($m:ident, $p:literal) => { compile_error!{$m!($p)} } }
+#: call!(include_str, "/abs");` — so no text ever reads `include_str!`, rustc
+#: still expands it, and the host file lands in the FIRST diagnostic line.
+#: Scanning invocation syntax is scanning the wrong thing; the name is the
+#: primitive. Only a macro the snippet DEFINES can turn a bare name back into
+#: an invocation (no std macro does `$m!`), so the scan applies when one is
+#: defined — `let env = 1;` in ordinary code stays valid.
+#:
+#: Even then only a mention INSIDE a macro's token trees is a threat (a
+#: `macro_rules!` pattern or body, or the argument of any `name!(…)`): a bare
+#: name in ordinary code can never reach `$m!`. Inside one, nothing about the
+#: surrounding text makes it safe — a pattern matches any token shape, so
+#: `(use $m:ident;)` catches `call!(use include_str;)` and `($m:ident ::
+#: $x:ident)` catches `call!(env::foo)` (both reproduced: the host file and
+#: $HOME in diagnostic line 1). So there every mention is refused,
+#: `std::env::var` included — the conservative direction.
+_RS_BARE_NAME = re.compile(
+    r"\b(include|include_str|include_bytes|option_env|env)\b(?!\s*!(?!=))")
+_RS_MACRO_DEF = re.compile(r"\bmacro_rules\b|\bmacro\b")
+#: `#![debugger_visualizer(natvis_file = "/abs")]` makes rustc open that path:
+#: a read, and at minimum a file-existence oracle.
+_RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
 _ZIG_FILE = re.compile(r"@(embedFile|import|cInclude)\b")
 _ZIG_FILE_ARG = re.compile(rf"\s*\(\s*{_LIT}\s*\)")
 
@@ -176,6 +225,25 @@ def _refuse_c(source: str) -> str | None:
         if path is None or _escapes(path):
             return ("__has_include on a host path (or a computed one) is a "
                     "file-existence oracle")
+    for m in _C_HAS_BARE.finditer(src):
+        start = src.rfind("\n", 0, m.start()) + 1
+        if not _C_DIRECTIVE_AT.match(src, start):
+            continue                             # not on a directive line
+        if _C_HAS_FEATURE_TEST.search(src[start:m.start()]):
+            continue                             # defined(__has_include)
+        return ("__has_include named without its argument (aliased by a "
+                "macro) is a file-existence oracle no scan can check")
+    if _C_PASTE.search(src) and (_C_IF.search(src) or "pragma" in src.lower()):
+        return ("token pasting in a snippet with #if or a pragma can assemble "
+                "__has_include or `GCC dependency`, file-existence oracles")
+    for m in _C_LINE.finditer(src):
+        operand = re.sub(r"/\*.*?\*/", " ", m.group(1)).split("//", 1)[0].strip()
+        ok = _C_LINE_OK.fullmatch(operand)
+        if not ok or (ok.group(1) is not None and _escapes(ok.group(1))):
+            return ("a #line naming a host file (or a computed one) makes the "
+                    "compiler quote that file in its diagnostics")
+    if "pragma" in src.lower() and _C_DEPENDENCY.search(src):
+        return "#pragma GCC dependency opens the file it names"
     return None
 
 
@@ -311,9 +379,48 @@ def _refuse_rust(source: str) -> str | None:
         if named and re.search(r"\bas\b", m.group(1)):
             return (f"a `use` that renames things and names `{named.group(1)}` "
                     f"can smuggle that macro in under another name")
+    if _RS_MACRO_DEF.search(view):
+        for m in _RS_BARE_NAME.finditer(view):
+            if _in_token_tree(view, m.start()):
+                return (f"`{m.group(1)}` named inside a macro's tokens can "
+                        f"reach the builtin through the macro, which no scan "
+                        f"of `{m.group(1)}!` sees")
     if _RS_PATH_ATTR.search(view):
         return "a #[path = …] attribute makes rustc read another file"
+    if _RS_FILE_ATTR.search(view):
+        return "a #[debugger_visualizer] attribute makes rustc read another file"
     return None
+
+
+#: Where a macro's token trees open: `name!(`, `name![`, `name!{` (with
+#: `macro_rules! name {` among them), and a 2.0 `macro name` item.
+_RS_TT_OPEN = re.compile(
+    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+"
+    r"|\b(?!(?:return|if|while|match|in|else|break)\b)\w+\s*!(?!=)\s*[(\[{]")
+
+
+def _in_token_tree(view: str, at: int) -> bool:
+    """Whether offset `at` of a LEXED rust view (no comments, no string
+    contents) lies inside a macro definition or a macro invocation's
+    argument. Unbalanced brackets count as inside — the safe side."""
+    for m in _RS_TT_OPEN.finditer(view, 0, at):
+        if re.match(r"macro\s", m.group(0)):
+            # decl_macro: `macro name(..) {..}` or `macro name {..}` —
+            # treat everything after it as its body (nightly-only syntax).
+            return True
+        depth, i = 0, m.end() - 1
+        while i < len(view):
+            ch = view[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if i >= len(view) or at < i:
+            return True
+    return False
 
 
 def _refuse_zig(source: str) -> str | None:
@@ -376,8 +483,16 @@ class ZigDriver(Driver):
         r = _run(["zig", "version"])
         return r.detail.strip() if r.ok else None
 
+    #: A test declaration: `test "name" {`, `test {` (unnamed) or `test
+    #: ident {` (a doctest). `test` is a keyword, so a line opening with it
+    #: is one of these.
+    _TEST_DECL = re.compile(r'^[ \t]*test\b[ \t]*(?:"|@"|\{|[A-Za-z_])', re.M)
+
+    def _is_test_root(self, source: str) -> bool:
+        return "pub fn main" not in source and bool(self._TEST_DECL.search(source))
+
     def wrap(self, snippet: str) -> str:
-        if "pub fn main" in snippet or "test \"" in snippet:
+        if "pub fn main" in snippet or self._TEST_DECL.search(snippet):
             return snippet
         head = "" if "@import(\"std\")" in snippet else 'const std = @import("std");\n'
         body = "\n".join("    " + ln for ln in snippet.splitlines())
@@ -388,8 +503,17 @@ class ZigDriver(Driver):
 
     def compile_source(self, source: str, variant: str | None = None) -> Result:
         # -fno-emit-bin: we want the front end's verdict, not an executable.
-        return self._in_tmp(source, "claim.zig",
-                            lambda p, d: ["zig", "build-exe", "-fno-emit-bin", p])
+        # A file of `test "…"` blocks has no main, and wrap() passes it
+        # through untouched — build-exe then failed EVERY such file ("has no
+        # member named 'main'"), so a test-block OLD form "proved" any claim
+        # VERIFIED and a correct test-block NEW form was NEW_FAILS. It is
+        # analysed as the test root it is; --test-no-exec plus no binary
+        # keeps the rule that nothing here is ever run.
+        if self._is_test_root(source):
+            cmd = ["zig", "test", "--test-no-exec", "-fno-emit-bin"]
+        else:
+            cmd = ["zig", "build-exe", "-fno-emit-bin"]
+        return self._in_tmp(source, "claim.zig", lambda p, d: cmd + [p])
 
 
 class CDriver(Driver):
@@ -609,14 +733,24 @@ class PythonDriver(Driver):
         except RuntimeError as e:
             return Result(False, f"static resolution could not run: {e}",
                           "static attribute resolution", transient=True)
-        missing = []
+        missing, absent = [], []
         for j in jobs:
             msg = j if isinstance(j, str) else next(answers, None)
-            if msg:
+            if isinstance(msg, list):
+                absent.extend(msg)
+            elif msg:
                 missing.append(msg)
         if missing:
             return Result(False, "; ".join(dict.fromkeys(missing[:4])),
                           "static attribute resolution")
+        if absent:
+            # `winreg` is in sys.stdlib_module_names on Linux and cannot be
+            # imported there. That is this PLATFORM's build, not the API's
+            # history — reported as a failure it made `import winreg` an OLD
+            # form that "fails", and any claim VERIFIED on the strength of it.
+            return Result(False, f"{', '.join(dict.fromkeys(absent))}: a stdlib "
+                          f"module this platform does not ship (not judged)",
+                          "static attribute resolution", transient=True)
         return Result(True, "syntax ok; every import and stdlib attribute resolves",
                       "static attribute resolution")
 
@@ -670,6 +804,17 @@ class PythonDriver(Driver):
         "    try:\n"
         "        cur = importlib.import_module(mod)\n"
         "    except BaseException as e:\n"
+        # stdlib-LISTED, not built here: winreg on linux, or a module whose
+        # C half is missing (tkinter -> _tkinter without libtk, curses,
+        # dbm.gnu, ssl…) — the failing name, not the one asked for. Unjudged
+        # only if that name really will not load: `asyncio.nope` names a
+        # non-listed module, and `imp` is not listed once it is removed.
+        "        gone = e.name if isinstance(e, ImportError) else None\n"
+        "        if gone in sys.stdlib_module_names:\n"
+        "            try:\n"
+        "                importlib.import_module(gone)\n"
+        "            except BaseException:\n"
+        "                res.append([gone]); continue\n"
         "        res.append('import %s: %s' % (mod, e.__class__.__name__))\n"
         "        continue\n"
         "    path, msg = mod, None\n"
@@ -732,6 +877,16 @@ def _imports(tree: ast.AST) -> list[tuple[str, str | None]]:
     return out
 
 
+#: Documented attributes that exist only in SOME processes: sys.ps1/ps2 in an
+#: interactive session, sys.last_* after an uncaught exception there, and
+#: sys.tracebacklimit only once someone sets it. The resolver's child is none
+#: of those, so "does not exist" would be a statement about it, not the API.
+_CONDITIONAL_ATTRS = frozenset({
+    ("sys", "ps1"), ("sys", "ps2"), ("sys", "last_type"), ("sys", "last_value"),
+    ("sys", "last_traceback"), ("sys", "last_exc"), ("sys", "tracebacklimit"),
+})
+
+
 def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
     """[(module, ['a','b']), …] for `import m` + `m.a.b` usages.
 
@@ -747,15 +902,39 @@ def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
             for a in node.names:
                 if a.asname is None and "." not in a.name:
                     imported.add(a.name)
+    # EVERY way a name gets rebound, not just `x = …`: the old walk missed
+    # parameters, so `def f(os): return os.anything` failed "os.anything does
+    # not exist" — a false failure, and an OLD form that fails falsely makes
+    # a claim VERIFIED. Scope-blind on purpose: skipping is the safe side.
     assigned: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.For, ast.withitem)):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                    assigned.add(sub.id)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            assigned.add(node.id)              # =, +=, for, with, walrus, comps
+        elif isinstance(node, ast.arg):
+            assigned.add(node.arg)             # def/lambda parameters
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            assigned.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            assigned.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            assigned.update(node.names)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            assigned.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            assigned.add(node.rest)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:               # `import x as os`, `from y import os`
+                if a.asname or isinstance(node, ast.ImportFrom):
+                    assigned.add(a.asname or a.name)
+    augmented = {id(n.target) for n in ast.walk(tree) if isinstance(n, ast.AugAssign)}
     out: list[tuple[str, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Attribute):
+            continue
+        if isinstance(node.ctx, ast.Store) and id(node) not in augmented:
+            # `logging.X = 1` CREATES X; the chain under it (a Load node of
+            # its own) is still visited and still checked. `os.X += 1` and
+            # `del os.X` READ X first, so those are checked like a load.
             continue
         parts: list[str] = []
         cur: ast.AST = node
@@ -763,7 +942,10 @@ def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
             parts.append(cur.attr)
             cur = cur.value
         if isinstance(cur, ast.Name) and cur.id in imported and cur.id not in assigned:
-            out.append((cur.id, list(reversed(parts))))
+            chain = list(reversed(parts))
+            if (cur.id, chain[0]) in _CONDITIONAL_ATTRS:
+                continue                       # exists only in some sessions
+            out.append((cur.id, chain))
     return out
 
 

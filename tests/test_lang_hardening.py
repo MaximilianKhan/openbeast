@@ -813,6 +813,73 @@ def test_a_macro_cannot_be_smuggled_in_under_another_name(secret):
         assert rs.refusal(src) is None, src
 
 
+_RS_CALL = ("macro_rules! call { ($m:ident, $p:literal) => "
+            "{ compile_error!{$m!($p)} } }\n")
+_RS_CALL_PATH = ("macro_rules! call { ($m:path, $p:literal) => "
+                 "{ compile_error!{$m!($p)} } }\n")
+
+
+def _rust_indirections(secret):
+    return [
+        f'{_RS_CALL}call!(include_str, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(include_bytes, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(r#include_str, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(include, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(env, "HOME");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(option_env, "HOME");\nfn main() {{}}\n',
+        f'{_RS_CALL_PATH}call!(std::env, "HOME");\nfn main() {{}}\n',
+        f'use std::include_str;\n{_RS_CALL}call!(include_str, "{secret}");\n'
+        "fn main() {}\n",
+        f'#![debugger_visualizer(natvis_file = "{secret}")]\nfn main() {{}}\n',
+        # round 4: a pattern can match ANY token shape, so what surrounds the
+        # name inside a macro's tokens never makes it safe
+        'macro_rules! call { (use $m:ident;) => { compile_error!{$m!('
+        f'"{secret}")}} }} }}\ncall!(use include_str;);\nfn main() {{}}\n',
+        'macro_rules! call { (use $m:ident;) => { compile_error!{$m!("HOME")} } }\n'
+        'call!(use env;);\nfn main() {}\n',
+        'macro_rules! call { ($m:ident :: $x:ident) => '
+        '{ compile_error!{$m!("HOME")} } }\ncall!(env::foo);\nfn main() {}\n',
+        'macro_rules! call { ($a:ident :: $m:ident :: $x:ident) => '
+        '{ compile_error!{$m!("HOME")} } }\ncall!(std::env::var);\nfn main() {}\n',
+        # the name in a macro BODY, glued to a `!` passed in as a fragment
+        'macro_rules! call { ($b:tt) => { compile_error!{env $b ("HOME")} } }\n'
+        'call!(!);\nfn main() {}\n',
+    ]
+
+
+def test_a_builtin_named_through_a_macro_is_refused(secret):
+    """Round 3: the scans looked for `include_str!`, and a declarative macro
+    that takes the name as a fragment never writes that — rustc still
+    expands the builtin and puts the file in the FIRST diagnostic line."""
+    rs = D.driver_for("rust")
+    for src in _rust_indirections(secret):
+        r = rs.compile_source(src)
+        assert not r and r.refused, (src, r.detail)
+        assert "hunter2" not in r.detail
+    # negative controls: the std::env MODULE used in ordinary code next to a
+    # macro, `env` as a plain variable with no macro in sight, a non-renaming
+    # `use` item, and `!x {` (a negation, not an invocation)
+    for src in ('macro_rules! h { () => { 1 } }\n'
+                'fn main() { let _ = std::env::var("X"); let _ = h!(); }\n',
+                'fn main() { let env = 1; let include = env; let _ = include; }\n',
+                'use std::env;\nmacro_rules! a { () => { 1 } }\n'
+                'fn main() { let _ = env::args(); let _ = a!(); }\n',
+                'macro_rules! a { () => { true } }\n'
+                'fn main() { if !a!() { let env = 1; let _ = env; } }\n'):
+        assert rs.refusal(src) is None, src
+        if shutil.which("rustc"):
+            assert rs.compile_source(src), (src, rs.compile_source(src).detail)
+
+
+@pytest.mark.skipif(not shutil.which("rustc"), reason="rustc absent")
+def test_the_macro_indirection_leak_was_real(secret, monkeypatch):
+    """The control: with the refusal off, rustc really does read the file
+    through the indirection (else the test above guards nothing)."""
+    monkeypatch.setattr(D.RustDriver, "refusal", lambda self, s: None)
+    r = D.driver_for("rust").compile_source(_rust_indirections(secret)[0])
+    assert not r and "hunter2" in r.detail, r.detail[:300]
+
+
 # --- a refusal is not a verdict, and a comment is not a directive -------------
 
 def test_a_refused_old_form_does_not_make_a_claim_verified(monkeypatch):
@@ -891,6 +958,74 @@ def test_c_lexing_tricks_still_refuse(secret):
             f'#define H __has_include("{secret}")\n#if H\n#endif\n',
             f'#define P "{secret}"\n#if __has_include(P)\n#endif\n'):
         assert c.refusal(src), f"NOT refused: {src!r}"
+
+
+def _c_side_channels(path):
+    return [
+        # #line: gcc quotes THAT file's lines in the caret block
+        f'#line 1 "{path}"\nint x = ;\n',
+        f'# 1 "{path}"\nint x = ;\n',
+        f'#define F "{path}"\n#line 1 F\nint x = ;\n',
+        '#line 1 "../../../../etc/hostname"\nint x = ;\n',
+        # GCC dependency: an existence oracle, as a directive or via _Pragma
+        f'#pragma GCC dependency "{path}"\nint main(void){{return 0;}}\n',
+        f'_Pragma("GCC dependency \\"{path}\\"")\nint main(void){{return 0;}}\n',
+        f'#define P(x) _Pragma(#x)\nP(GCC dependency "{path}")\nint main(void){{return 0;}}\n',
+        # __has_include aliased by a macro, or assembled by pasting
+        f'#define H __has_include\n#if H("{path}")\n#error present\n#endif\n',
+        f'#define H __has_include_next\n#if H(<{path}>)\n#endif\n',
+        f'#define CAT(a,b) a##b\n#if CAT(__has_,include)("{path}")\n#error present\n#endif\n',
+        # round 4: pasting builds the word `dependency` with no #if in sight
+        '#define S(x) #x\n#define XS(x) S(x)\n#define P(a,b) a##b\n'
+        f'_Pragma(XS(GCC P(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        # a feature test is fine; the alias NEXT to one is still an alias
+        f'#define H __has_include\n#if defined(__has_include) && H("{path}")\n#endif\n',
+    ]
+
+
+C_SIDE_CHANNEL_CONTROLS = [
+    '#line 10\nint main(void){return 0;}\n',
+    '#line 10 "renamed.c"\nint main(void){return 0;}\n',
+    '#pragma once\n#pragma GCC diagnostic ignored "-Wunused"\nint main(void){return 0;}\n',
+    'int dependency = 1;\nint main(void){return dependency - 1;}\n',
+    '#define CAT(a,b) a##b\nint CAT(x,y) = 0;\nint main(void){return xy;}\n',
+    '#if __has_include(<stdio.h>)\n#endif\nint main(void){return 0;}\n',
+    # the portable feature test takes no path, so it is no oracle
+    '#if defined(__has_include)\n#if __has_include(<stdio.h>)\n#endif\n#endif\n'
+    'int main(void){return 0;}\n',
+    '#ifdef __has_include\n#endif\nint main(void){return 0;}\n',
+    '#if defined __has_include\n#endif\nint main(void){return 0;}\n',
+]
+
+
+def test_c_side_channels_to_a_host_file_are_refused(secret, monkeypatch):
+    """Round 3: #line, the GCC dependency pragma and a macro-aliased
+    __has_include each reached a host path the #include scans never see."""
+    ran = []
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv))
+    for lang in ("c", "cpp"):
+        drv = D.driver_for(lang)
+        for src in _c_side_channels(secret):
+            r = drv.compile_source(src)
+            assert not r and r.refused, (lang, src, r.detail)
+    assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
+    for src in C_SIDE_CHANNEL_CONTROLS:
+        assert D.driver_for("c").refusal(src) is None, src
+
+
+def test_the_c_side_channels_were_real(secret, monkeypatch):
+    """The control that the refusal above guards something: with it off,
+    #line echoes the file and the dependency pragma answers existence."""
+    if not _c_works():
+        pytest.skip("no C toolchain here that accepts the driver's flags")
+    c = D.driver_for("c")
+    monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
+    assert "hunter2" in c.compile_source(_c_side_channels(secret)[0]).detail
+    dep = '#pragma GCC dependency "{}"\nint main(void){{return 0;}}\n'
+    assert c.compile_source(dep.format(secret))
+    assert not c.compile_source(dep.format(secret + ".absent"))
+    for src in C_SIDE_CHANNEL_CONTROLS:
+        assert c.compile_source(src), (src, c.compile_source(src).detail)
 
 
 def test_rust_and_zig_scans_ignore_comments_and_strings(secret):
