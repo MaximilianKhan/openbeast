@@ -107,5 +107,66 @@ fi
 
 # ===========================================================================
 echo ""
+echo "gpu-lease.sh check — ours / free / somebody else's, as an exit code:"
+# ===========================================================================
+rm -f "$SB/.run/gpu.lease"
+_rc=0; _out="$("$GL" check 2>&1)" || _rc=$?
+if [[ $_rc -eq 3 && "$_out" == FREE* ]]; then
+  pass "no lease -> 3 (FREE)"
+else
+  fail "free lease: rc=$_rc out=$_out"
+fi
+_rc=0; _out="$("$GL" run "wrapper" -- bash -c 'r=0; o="$("$1" check)" || r=$?; echo "$r|$o"' _ "$GL" 2>/dev/null | tail -n 1)" || _rc=$?
+if [[ "$_out" == "0|OURS"* ]]; then
+  pass "a command running under 'run' is told the lease is ITS (0), through a \$(...) subshell"
+else
+  fail "check under run: '$_out' (rc=$_rc)"
+fi
+# NEGATIVE CONTROL: a live holder that is NOT our ancestor.
+bash -c '"$1" acquire "someone else" >/dev/null 2>&1; exec sleep 30' _ "$GL" &
+_H=$!; PIDS+=("$_H")
+wait_for 'grep -q "^label=someone else$" "$SB/.run/gpu.lease" 2>/dev/null' || fail "holder never took the lease"
+_rc=0; _out="$("$GL" check 2>&1)" || _rc=$?
+if [[ $_rc -eq 4 && "$_out" == "HELD by pid $_H"* ]]; then
+  pass "negative control: somebody else's live lease -> 4 (HELD)"
+else
+  fail "foreign lease: rc=$_rc out=$_out"
+fi
+kill "$_H" 2>/dev/null || true; wait "$_H" 2>/dev/null || true
+rm -f "$SB/.run/gpu.lease"
+
+# ===========================================================================
+echo ""
+echo "gpu-lease.sh run — a server that left the group (setsid) keeps the lease:"
+# ===========================================================================
+# Exactly benchmark_all.start_model's shape: Popen(start_new_session=True),
+# then the launcher dies without stopping it (the SIGKILL case).
+rm -f "$T/state/orphan.pid" "$T/state/runO.out"
+( "$GL" run "cell" -- python3 -c '
+import subprocess, sys
+p = subprocess.Popen(["sleep", "30"], start_new_session=True)
+open(sys.argv[1], "w").write(str(p.pid))
+' "$T/state/orphan.pid" > "$T/state/runO.out" 2>&1; echo "rc=$?" >> "$T/state/runO.out" ) &
+PIDS+=($!)
+wait_for '[[ -s "$T/state/orphan.pid" ]]' || fail "the launcher never started its server"
+_O="$(cat "$T/state/orphan.pid" 2>/dev/null || echo 0)"; PIDS+=("$_O")
+sleep 1.5
+_st="$("$GL" status 2>/dev/null || true)"
+if [[ "$_st" == HELD* ]] && ! grep -q '^rc=' "$T/state/runO.out"; then
+  pass "the lease stays HELD while the launcher's setsid'd server is alive"
+else
+  fail "the lease went FREE over a live server outside the group: $_st / $(tr '\n' ' ' < "$T/state/runO.out")"
+fi
+kill "$_O" 2>/dev/null || true
+wait_for 'grep -q "^rc=" "$T/state/runO.out"' || fail "run never exited after the server went"
+_st="$("$GL" status 2>/dev/null || true)"
+if [[ "$_st" == FREE* ]] && grep -q '^rc=0$' "$T/state/runO.out"; then
+  pass "...and it is released, with the command's status, once that server is gone"
+else
+  fail "after the server went: $_st / $(tr '\n' ' ' < "$T/state/runO.out")"
+fi
+
+# ===========================================================================
+echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

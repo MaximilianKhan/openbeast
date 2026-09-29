@@ -3,6 +3,7 @@
 #
 #   ./scripts/gpu-lease.sh run "T1.17 pair" -- bash scratch/campaign_master2.sh
 #   ./scripts/gpu-lease.sh status
+#   ./scripts/gpu-lease.sh check     # may I use the card? 0 ours, 3 free, 4 someone else's
 #   ./scripts/gpu-lease.sh acquire "manual work" && ... && ./scripts/gpu-lease.sh release
 #
 # WHY (docs/BEAST_CAMPAIGN_PLAN.md §1). Nothing on this box has ever claimed
@@ -38,6 +39,13 @@ _pid_start() {
   local pid="$1"
   [[ -r "/proc/$pid/stat" ]] || return 1
   awk '{ n = split($0, a, ") "); split(a[n], f, " "); print f[20] }' \
+    "/proc/$pid/stat" 2>/dev/null
+}
+
+_pid_ppid() {                     # /proc/<pid>/stat field 4
+  local pid="$1"
+  [[ -r "/proc/$pid/stat" ]] || return 1
+  awk '{ n = split($0, a, ") "); split(a[n], f, " "); print f[2] }' \
     "/proc/$pid/stat" 2>/dev/null
 }
 
@@ -88,6 +96,34 @@ cmd_status() {
     warn "  GPU without claiming it. Check: nvidia-smi --query-compute-apps=pid,used_memory,name --format=csv"
   fi
   return 0
+}
+
+# `check` — the question a GPU tool has to ask before it loads a model, as an
+# exit code a script can branch on (status always returns 0 and has to be
+# parsed):
+#   0  the lease is held by the CALLER or one of its ancestors — we are
+#      running under `gpu-lease.sh run`, so the card is ours to use
+#   3  FREE (take it — `run` — before loading anything)
+#   4  held by somebody else, live — do not touch the card
+# "Ancestor" is walked from our parent upward, so a `$(gpu-lease.sh check)`
+# subshell still finds the `run` that wraps the script that asked. The same
+# rule as agents/lang/synthesize.py's check_lease.
+cmd_check() {
+  if _read_lease && _holder_alive "$LH_PID" "$LH_START"; then
+    local cur="${PPID:-}" hops=0
+    while [[ -n "$cur" && "$cur" -gt 1 && $hops -lt 64 ]] 2>/dev/null; do
+      if [[ "$cur" == "$LH_PID" ]]; then
+        say "OURS — held by pid $LH_PID (${LH_LABEL:-unlabelled}), which wraps this caller"
+        return 0
+      fi
+      cur="$(_pid_ppid "$cur")" || break
+      hops=$((hops + 1))
+    done
+    say "HELD by pid $LH_PID — ${LH_LABEL:-unlabelled}  (since ${LH_SINCE:-?})"
+    return 4
+  fi
+  say "FREE"
+  return 3
 }
 
 # WHO holds a lease depends on how it was taken, and getting this wrong made
@@ -207,6 +243,21 @@ _release_if_mine() {
   _unlock_acquire
 }
 
+# _token_holders <token> — pids of live processes whose environment carries
+# OPENBEAST_GPU_LEASE_TOKEN=<token>. /proc/<pid>/environ is readable only for
+# our own uid, which is exactly the set `run` could have started. grep's -z
+# reads NUL-separated entries; unreadable files are skipped.
+_token_holders() {
+  local f pid out=""
+  for f in $(grep -lzxF "OPENBEAST_GPU_LEASE_TOKEN=$1" /proc/[0-9]*/environ 2>/dev/null); do
+    pid="${f#/proc/}"; pid="${pid%/environ}"
+    [[ "$pid" == "$$" ]] && continue
+    # A zombie's environ is empty, so it never matches; this is a live one.
+    kill -0 "$pid" 2>/dev/null && out+="${out:+ }$pid"
+  done
+  printf '%s' "$out"
+}
+
 cmd_run() {                       # cmd_run <label> -- cmd...
   local label="${1:?usage: run <label> -- cmd...}"; shift
   [[ "${1:-}" == "--" ]] || die "expected -- before the command"
@@ -229,7 +280,11 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   # FORWARDED to the command, and the lease is released only once the command
   # has actually gone: a lease that says FREE while the campaign it covered is
   # still unwinding on the card would be the lie this script exists to end.
-  local child rc=0 stopping=0
+  local child rc=0 stopping=0 token
+  # Every process the command starts carries this token in its environment —
+  # including the ones that LEAVE the group (below), which the group wait
+  # cannot see. pid + start time, as everywhere here: unique for this run.
+  token="$$:$(_pid_start "$$" || echo '?')"
   # `set -m`: the command becomes the leader of its OWN process group. Without
   # it a background child of a non-interactive shell starts with SIGINT and
   # SIGQUIT IGNORED, its whole subtree inherits that, and Ctrl-C stopped the
@@ -238,7 +293,8 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   # Its own group is a BACKGROUND group to the terminal: a read from the tty
   # there is SIGTTIN (the job just stops). Piped/redirected stdin passes
   # through; an interactive one is replaced with /dev/null.
-  if [[ -t 0 ]]; then "$@" </dev/null & else "$@" <&0 & fi
+  if [[ -t 0 ]]; then OPENBEAST_GPU_LEASE_TOKEN="$token" "$@" </dev/null &
+  else OPENBEAST_GPU_LEASE_TOKEN="$token" "$@" <&0 & fi
   child=$!
   set +m
   # TERM goes to the COMMAND ONLY, never its group: that is this rig's cancel
@@ -255,15 +311,34 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   # still in its group — a cell finishing its row is still ON THE CARD, and a
   # lease that says FREE over it is the lie this script exists to end.
   while kill -0 -- "-$child" 2>/dev/null; do sleep 1; done
+  # ...and the group is not everything it started. evals/benchmark_all.py
+  # launches llama-server with start_new_session=True, i.e. in its OWN session
+  # and group — the one process that is actually on the card. If the master
+  # is SIGKILLed before its finally runs, the group empties while a ~20 GB
+  # server stays resident, and a FREE lease over it is the same lie. The
+  # environment survives setsid, so wait for every live process still
+  # carrying this run's token. (A job that means to leave a daemon behind
+  # after it finishes — say, bringing the stack back up — should start it
+  # with `env -u OPENBEAST_GPU_LEASE_TOKEN`, or the lease waits for it.)
+  local noted=0 holders
+  while holders="$(_token_holders "$token")" && [[ -n "$holders" ]]; do
+    if [[ $noted -eq 0 ]]; then
+      warn "the command has exited, but pid(s) $holders it started are still running"
+      warn "  outside its process group — holding the lease until they are gone"
+      noted=1
+    fi
+    sleep 1
+  done
   [[ $stopping -eq 1 && $rc -eq 0 ]] && rc=143
   exit "$rc"
 }
 
 case "${1:-}" in
   status)  cmd_status ;;
+  check)   cmd_check ;;
   acquire) shift; cmd_acquire "$@" ;;
   release) cmd_release ;;
   run)     shift; cmd_run "$@" ;;
-  -h|--help|"") sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: $1 (status | acquire | release | run)" ;;
+  -h|--help|"") sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (status | check | acquire | release | run)" ;;
 esac
