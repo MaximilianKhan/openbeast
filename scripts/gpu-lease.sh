@@ -187,6 +187,26 @@ cmd_release() {
   say "lease released"
 }
 
+# _release_if_mine <pid> — remove the lease only if <pid> (with ITS start
+# time) is still the holder, under the same lock acquire takes, so a --force
+# takeover racing this exit cannot be deleted between the read and the rm.
+_release_if_mine() {
+  local me="$1" mine
+  mine="$(_pid_start "$me")" || mine="?"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LEASE.lock"; flock -w 10 9 || true
+  fi
+  if _read_lease; then
+    if [[ "$LH_PID" == "$me" && "$LH_START" == "$mine" ]]; then
+      rm -f "$LEASE"
+    else
+      warn "the lease is now held by pid $LH_PID (${LH_LABEL:-unlabelled}) — it was"
+      warn "  taken over while this run was live; leaving it in place"
+    fi
+  fi
+  _unlock_acquire
+}
+
 cmd_run() {                       # cmd_run <label> -- cmd...
   local label="${1:?usage: run <label> -- cmd...}"; shift
   [[ "${1:-}" == "--" ]] || die "expected -- before the command"
@@ -197,7 +217,11 @@ cmd_run() {                       # cmd_run <label> -- cmd...
   # cmd_acquire recorded the CALLER; for `run` the holder is this shell.
   HOLDER_PID="$$"
   _write_lease "$$" "$label"
-  trap 'rm -f "$LEASE"' EXIT
+  # Release ONLY what is still ours. A bare `rm -f "$LEASE"` here deleted the
+  # lease of whoever took the card with `acquire --force` while this run was
+  # live: status read FREE with that holder mid-measurement, and the next
+  # acquirer (or the watchdog) walked straight into its window.
+  trap '_release_if_mine "$$"' EXIT
   # The command runs in the BACKGROUND and we `wait` on it, because bash does
   # not run a trap while a foreground child is running: the old
   # `trap … TERM; "$@"` SWALLOWED an operator's SIGTERM outright — wrapper and
