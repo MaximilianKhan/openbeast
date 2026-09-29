@@ -10,11 +10,11 @@
 #     -f scripts/client-searxng.compose.yml up -d
 services:
   searxng:
-    # Same digest-pinned image as the rig's docker-compose.yml — bump both
-    # together. scripts/update.sh --images rewrites ONLY docker-compose.yml,
-    # so mirror its new digest here by hand (docs/UPDATING.md); CI
+    # Same digest-pinned image as the rig's docker-compose.yml — the two move
+    # together: scripts/update.sh --images rewrites this pin whenever it bumps
+    # (or finds drift in) the rig's searxng digest, and CI
     # (tests/test_supply_chain.sh) fails while the two differ. They had
-    # drifted for six weeks before that test existed.
+    # drifted for six weeks before either existed.
     image: searxng/searxng:latest@sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d
     container_name: openbeast-client-searxng
     ports:

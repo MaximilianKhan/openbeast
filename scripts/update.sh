@@ -232,6 +232,23 @@ update_images() {
   fi
   local compose="$REPO_DIR/docker-compose.yml"
   local bumped=0 unpinned=0
+  # The client-mode SearXNG (setup-client.sh --local-search) runs the SAME
+  # digest-pinned image, and nothing moved its pin: it sat six weeks behind
+  # the rig's (review network-exposure-5). Mirror every searxng bump — and
+  # re-sync a pin that has already drifted — so the two move together.
+  local client_compose="$REPO_DIR/scripts/client-searxng.compose.yml"
+  _mirror_client_pin() { # _mirror_client_pin <repo> <spec@digest>
+    [[ "$1" == "searxng/searxng" && -f "$client_compose" ]] || return 0
+    local _cold
+    _cold=$(grep -oE "${1}[^[:space:]]*@sha256:[a-f0-9]+" "$client_compose" | head -1 || true)
+    if [[ -z "$_cold" ]]; then
+      warn "scripts/client-searxng.compose.yml has no searxng digest pin — mirror $2 there by hand"
+    elif [[ "$_cold" != "$2" ]]; then
+      sed -i "s|${_cold}|${2}|" "$client_compose"
+      ok "mirrored the searxng pin into scripts/client-searxng.compose.yml"
+      bumped=1
+    fi
+  }
   for _spec in \
     "ghcr.io/open-webui/open-webui:main" \
     "searxng/searxng:latest"; do
@@ -252,6 +269,7 @@ update_images() {
       else
         ok "$_spec already at latest digest"
       fi
+      _mirror_client_pin "$_repo" "$_new"
     else
       # No "<repo>@sha256:" line. After `bundle.sh install` this service's
       # line reads `image: sha256:<content id>` (save/load cannot carry a
@@ -314,7 +332,7 @@ PYREPIN
       fi
     fi
   done
-  [[ $bumped -eq 1 ]] && warn "commit the docker-compose.yml digest bump after verifying the stack"
+  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml + scripts/client-searxng.compose.yml) after verifying the stack"
   # Recreate only containers actually running; a stopped stack stays stopped.
   local _running=""
   _running="$(docker compose ps --status running --quiet 2>/dev/null || true)"
@@ -347,7 +365,8 @@ update_python() {
       grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt" | sed 's/^/        /'
       if [[ -f "$REPO_DIR/agents/requirements.lock" ]]; then
         ok "the hash-pinned closure is reinstallable offline from a wheelhouse:
-      ./scripts/pydeps.sh install --from wheels"
+      ./scripts/pydeps.sh install --from wheels   (against the lock committed
+      in this checkout — or --lock-sha256 <hash 'pydeps.sh wheelhouse' printed>)"
       fi
       return 0
     fi
@@ -411,8 +430,11 @@ update_python() {
   if ob_offline; then
     warn "OFFLINE=true → skipping the python upgrade check (it needs the index).
        To move pins on a closed box: regenerate the lock on a connected one
-       (./scripts/pydeps.sh lock), bring a fresh wheelhouse, then
-       ./scripts/pydeps.sh install --from wheels"
+       (./scripts/pydeps.sh lock), COMMIT it and bring that commit here, bring
+       a fresh wheelhouse, then ./scripts/pydeps.sh install --from wheels.
+       The lock does not travel with the wheels: install --from accepts only
+       the lock committed in this checkout, or one you vouch for with
+       --lock-sha256 <hash that 'pydeps.sh wheelhouse' printed>."
     return 0
   fi
   if ! python3 -m pip install --user $pip_flags -q -U huggingface_hub "${pkgs[@]}"; then

@@ -91,25 +91,23 @@ compares the client's understood contract version against the rig's
 | **huggingface_hub (`hf` CLI)** | same pip upgrade | Not in `requirements.txt` (the CLI moved between majors) but pinned in the lock as an explicit extra |
 | **OpenCode** | `opencode upgrade` | Falls back to telling you the reinstall one-liner if the self-upgrader fails |
 
-## The client SearXNG pin — a manual second bump
+## The client SearXNG pin — bumped together with the rig's
 
-`--images` rewrites the `@sha256:` pin in **`docker-compose.yml` and nothing
-else**. But `scripts/client-searxng.compose.yml` — the optional local SearXNG
-that `setup-client.sh --local-search` installs on a client — carries the *same*
-digest-pinned `searxng/searxng:latest` image and a comment saying to "bump both
-together". Nothing automates that second bump. After running `--images`, mirror
-the new digest by hand:
+`scripts/client-searxng.compose.yml` — the optional local SearXNG that
+`setup-client.sh --local-search` installs on a client — carries the *same*
+digest-pinned `searxng/searxng:latest` image as `docker-compose.yml`.
+`--images` rewrites **both**: whenever it pins a new searxng digest in
+`docker-compose.yml` (or finds the client file already drifted from it), it
+writes the same `image@sha256:` into the client compose file, and its closing
+reminder says to commit the two together. To check by hand:
 
 ```bash
 grep -n 'searxng/searxng.*@sha256:' docker-compose.yml scripts/client-searxng.compose.yml
-# copy the fresh digest from docker-compose.yml into the client compose file,
-# then commit both in the same change
 ```
 
-Left un-mirrored, clients simply keep running the older pinned image — they
-never silently follow `:latest`, so this is drift, not a break. It is no longer
-*silent* drift: `tests/test_supply_chain.sh` (run in CI) fails while the two
-digests differ, so a `--images` bump that forgets the mirror goes red.
+Clients never silently follow `:latest`, so a missed mirror is drift, not a
+break — and it is not *silent* drift: `tests/test_supply_chain.sh` (run in CI)
+fails while the two digests differ.
 
 ## Dependabot bumps — the relock workflow and `land-dependabot.sh`
 
