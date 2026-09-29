@@ -758,6 +758,124 @@ def packs_flag() -> tuple[bool, str | None, dict]:
     return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
 
 
+ESCALATE_LANG_DIR = os.path.join(EVALS_DIR, "..", "agents", "lang")
+# What decides the card text a measured unit sees, relative to
+# ESCALATE_LANG_DIR. The index says which errors select which claim ids; the
+# claim files carry the `summary` sentence that is actually delivered (and are
+# what escalate.namespace_wildcards reads); escalate.py is the selector
+# (_select, the tie-break, the fan-out limits, render_escalation's header);
+# verify.py turns a claim file into the summary that is served; __init__.py is
+# the facade that decides whether anything is said under eval at all.
+# Only TOP-LEVEL claims/*.json count, matching verify.load_claims: staging/ is
+# never served, so editing it must not split the era.
+ESCALATE_TREATMENT_FILES = ("escalate-index.json", "escalate.py", "verify.py",
+                            "__init__.py")
+ESCALATE_KNOBS = ("OPENBEAST_LANG_MAX_CARDS",)
+# escalate.py's `from lang import X` modules that are NOT hashed as source,
+# and why that is safe: what they decide reaches the component as an OUTCOME
+# (_escalate_gate) instead. drivers/packs decide whether an index entry is
+# served on this machine (the toolchain-version gate); _proc parses the
+# MAX_CARDS knob. Hashing their source would split the era on every driver
+# hardening edit; hashing the outcome splits it exactly when what the model
+# sees changes. A new import must be added here or to the hashed files — a
+# test reads escalate.py's imports and holds this list to it.
+ESCALATE_OUTCOME_COVERED = ("_proc", "drivers", "packs")
+
+
+def _escalate_gate(index_bytes: bytes) -> dict:
+    """What this machine would actually serve, from the REAL selector:
+    {"gate": escalate.gate_state(index), "max_cards": parsed knob}. The index
+    is the one being stamped (so a test tree stays self-consistent); the gate
+    and the knob parser are the real ones cards_for uses. Any failure refuses
+    the arm: a treatment whose delivery cannot be determined cannot be named."""
+    try:
+        index = json.loads(index_bytes.decode("utf-8"))
+        agents = os.path.abspath(os.path.join(EVALS_DIR, "..", "agents"))
+        if agents not in sys.path:
+            sys.path.insert(0, agents)
+        from lang import escalate as E            # noqa: PLC0415
+        return {"gate": E.gate_state(index), "max_cards": E.max_cards_knob()}
+    except SystemExit:
+        raise
+    except Exception as e:                        # noqa: BLE001
+        raise SystemExit(f"--escalate: cannot determine what the escalation index "
+                         f"serves on this machine ({type(e).__name__}: {e})")
+
+
+def _escalate_treatment() -> list[tuple[str, bytes]]:
+    """(relative path, bytes) for every file that shapes a delivered card,
+    in a fixed order. A missing file is a refusal: an arm whose treatment
+    cannot be read cannot be named."""
+    base = os.path.abspath(ESCALATE_LANG_DIR)
+    rels = list(ESCALATE_TREATMENT_FILES)
+    claims = os.path.join(base, "claims")
+    try:
+        rels += sorted(f"claims/{n}" for n in os.listdir(claims)
+                       if n.endswith(".json") and os.path.isfile(os.path.join(claims, n)))
+    except OSError as e:
+        raise SystemExit(f"--escalate: cannot list {claims} ({e})")
+    out = []
+    for rel in rels:
+        path = os.path.join(base, rel)
+        try:
+            with open(path, "rb") as f:
+                out.append((rel, f.read()))
+        except OSError as e:
+            raise SystemExit(f"--escalate: cannot read {path} ({e})")
+    return out
+
+
+def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
+    """Derive the beast-lang escalation state ONCE per run (the same rule as
+    diagnostics_flag / packs_flag: the cache-key component and what the agent
+    sees come from one read). Enabled by BEAST_ESCALATE=1 (user-facing),
+    OPENBEAST_ESCALATE=1, or run_eval/benchmark_all --escalate.
+
+    Escalation rides INSIDE the push-diagnostics block (agents/tools.py), so
+    it REQUIRES diagnostics: an --escalate arm with the checker off would be
+    a measured row that silently did nothing, under a name that says it did.
+
+    Returns (enabled, cache_component, meta). The component is
+    `esc1-<sha8>` over the treatment AS DELIVERED: the index, every served
+    claim file (the card sentences), the selector and facade source, the
+    knobs that change how many cards are shown, and the per-language gate
+    outcome on this machine (is the index served, against which toolchain).
+    Hashing the index alone let an edited summary or a retuned selector
+    replay rows measured under the old text, silently mixing two treatments in one A/B."""
+    enabled = (os.environ.get("BEAST_ESCALATE", "").strip() == "1"
+               or os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1")
+    if not enabled:
+        return False, None, {}
+    if not diag_on:
+        raise SystemExit("--escalate / BEAST_ESCALATE=1 needs push-diagnostics on "
+                         "(BEAST_ASSIST=1): the card is attached to the checker's "
+                         "verdict, so without the checker this arm would measure nothing.")
+    import hashlib
+    h = hashlib.sha256()
+    shas = {}
+    files = _escalate_treatment()
+    for rel, data in files:
+        shas[rel] = hashlib.sha256(data).hexdigest()[:8]
+        h.update(f"{rel}\0{len(data)}\0".encode())
+        h.update(data)
+    # The RAW knob value, not the parsed one: an unset knob and an explicit
+    # default then read as two eras, which costs a rerun, never a mixed row.
+    knobs = {k: os.environ.get(k, "").strip() for k in ESCALATE_KNOBS}
+    for k, v in knobs.items():
+        h.update(f"{k}={v}\0".encode())
+    # The served OUTCOME of the code not hashed as source (see
+    # ESCALATE_OUTCOME_COVERED): per language, the index's toolchain stamp,
+    # the installed version as the gate compares it, and whether cards are
+    # served at all; plus the parsed card cap. Without it, a zig upgrade or a
+    # packs._short_version edit silenced every card under the same esc1 key.
+    gate = _escalate_gate(dict(files)["escalate-index.json"])
+    h.update(b"gate\0" + json.dumps(gate, sort_keys=True).encode())
+    sha8 = h.hexdigest()[:8]
+    return True, f"esc1-{sha8}", {"treatment_sha": sha8,
+                                  "index_sha": shas["escalate-index.json"],
+                                  "files": shas, "knobs": knobs, "gate": gate}
+
+
 _ITER_LINE = re.compile(r"^\[iter (\d+)/(\d+)\]\s*$", re.MULTILINE)
 _DONE_LINE = re.compile(r"^Task complete \(iteration (\d+)\)\s*$", re.MULTILINE)
 
@@ -1290,6 +1408,20 @@ def run_eval(
         os.environ["OPENBEAST_DIAG_TIMING_LOG"] = diag_timing_log
     else:
         os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
+    # beast-lang escalation (Tier 1.5): derived ONCE, pinned in BOTH spellings
+    # so an ambient BEAST_ESCALATE=1 cannot leak into an escalate-OFF arm. The
+    # facade is silent under OPENBEAST_EVAL unless OPENBEAST_LANG_IN_EVAL=1, so
+    # that second lock is opened HERE and only here, for the arm that carries
+    # the cache component. It folds into the diagnostics component because it
+    # lives inside that block: diag-only rows keep their existing keys.
+    esc_on, esc_component, esc_meta = escalate_flag(diag_on)
+    os.environ["BEAST_ESCALATE"] = "1" if esc_on else "0"
+    os.environ["OPENBEAST_ESCALATE"] = "1" if esc_on else "0"
+    if esc_on:
+        os.environ["OPENBEAST_LANG_IN_EVAL"] = "1"
+        diag_component = f"{diag_component}+{esc_component}"
+    else:
+        os.environ.pop("OPENBEAST_LANG_IN_EVAL", None)
     # Tier-3 awareness packs: derived ONCE, pinned in both env spellings so
     # an ambient rig-wide BEAST_PACKS=1 cannot leak into a packs-OFF arm.
     packs_on, packs_component, packs_meta = packs_flag()
@@ -1404,6 +1536,10 @@ def run_eval(
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
+    if esc_on:
+        print(f"Escal:  beast-lang escalation ON (treatment {esc_meta['treatment_sha']}, "
+              f"index {esc_meta['index_sha']}) — "
+              f"cache era {esc_component} (leaderboard-ineligible experiment rows)")
     if packs_on:
         packed = sum(1 for t in tasks if t.get("_context_file"))
         print(f"Packs:  awareness packs ON ({', '.join(f'{k}={v}' for k, v in packs_meta['sha'].items())}) — "
@@ -1434,6 +1570,8 @@ def run_eval(
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
+                    **({"escalate": esc_meta, "escalate_component": esc_component}
+                       if esc_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {}),
                     **({"rb_component": rb_component} if rb_component else {}),
                     **({"env_component": env_component, "env": env_info,
@@ -1802,12 +1940,20 @@ def main():
                              "inject agents/packs/<lang>.md into the agent system prompt for units "
                              "whose language has a pack (zig only today). Own pack1-<sha8> cache "
                              "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
+    parser.add_argument("--escalate", action="store_true",
+                        help="beast-lang escalation (docs/BEAST_LANG_PLAN.md §7 P4): when the "
+                             "push-diagnostics checker reports an error with a toolchain-CONFIRMED "
+                             "known cause, attach the one-line fix to the same tool result. Needs "
+                             "BEAST_ASSIST=1. Own esc1-<sha8> cache era; leaderboard-ineligible. "
+                             "Same as BEAST_ESCALATE=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
     if args.packs:
         os.environ["BEAST_PACKS"] = "1"
+    if args.escalate:
+        os.environ["BEAST_ESCALATE"] = "1"
 
     if args.list:
         tasks = load_tasks()

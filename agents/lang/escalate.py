@@ -66,7 +66,13 @@ INDEX_PATH = os.path.join(_HERE, "escalate-index.json")
 #: cards has stopped being targeted delivery and become a second pack.
 # Parsed with a fallback — `OPENBEAST_LANG_MAX_CARDS=two` used to be a
 # ValueError at import, i.e. a crash in whatever server imported this.
-MAX_CARDS = _proc.env_number("OPENBEAST_LANG_MAX_CARDS", 2, int, 1)
+def max_cards_knob() -> int:
+    """OPENBEAST_LANG_MAX_CARDS as the selector parses it. A function so the
+    eval harness can stamp the PARSED value, not just the raw string."""
+    return _proc.env_number("OPENBEAST_LANG_MAX_CARDS", 2, int, 1)
+
+
+MAX_CARDS = max_cards_knob()
 #: An identifier naming more claims than this is a namespace, not a symptom.
 MAX_IDENT_FANOUT = 3
 #: gcc quotes with \u2018…\u2019, zig and python with '…'. Matching only the
@@ -458,6 +464,52 @@ def load_index() -> dict:
         return {"langs": {}}
 
 
+def index_gate(lang: str, entry: dict) -> dict:
+    """Whether the index entry for `lang` may serve cards on THIS machine:
+    {"toolchain", "installed", "served"}. The one place that decision lives,
+    so cards_for and the eval harness's esc1 stamp (evals/run_eval.py) can
+    never disagree about it. Never raises: a failure is "not served"."""
+    stamped = P._short_version(str(entry.get("toolchain", "")))
+    try:
+        installed = D.driver_for(lang)
+        installed_v = installed.version() if installed and installed.available() else None
+    except Exception:                                    # noqa: BLE001
+        installed_v = None
+    have = P._short_version(installed_v) if installed_v else None
+    out = {"toolchain": stamped, "installed": have, "served": False}
+    # The index must be CONFIRMED to describe this machine. Three ways to fail.
+    if not installed_v:
+        # No toolchain, so the match cannot be confirmed at all. This branch
+        # was a FAIL-OPEN: the version comparison was guarded on
+        # `if installed_v and ...`, so a box with no compiler served cards
+        # from ANY index, including one stamped for a different release. CI
+        # caught it — the runner has no zig, and a deliberately poisoned
+        # index handed it a card anyway. Unverifiable is never a pass here;
+        # that is the same rule keeping Swift claims out of every pack.
+        return out
+    if stamped != have:
+        # Diagnostics move between releases; a card chosen from a stale
+        # signature is the same mistake as a pack for the wrong compiler.
+        return out
+    if "generic" not in entry:
+        # Built before decoys existed: it cannot say which of its signatures
+        # are boilerplate, and that is the knowledge selection depends on.
+        return out
+    out["served"] = True
+    return out
+
+
+def gate_state(index: dict | None = None) -> dict:
+    """{lang: index_gate(...)} for every language in the index — what this
+    machine would actually serve, per language. The eval harness hashes it:
+    a toolchain upgrade or a drivers/packs edit that turns every card off
+    must not keep the era that measured them on."""
+    idx = index if index is not None else load_index()
+    langs = idx.get("langs") or {}
+    return {lang: index_gate(lang, entry if isinstance(entry, dict) else {})
+            for lang, entry in sorted(langs.items())}
+
+
 def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
               index: dict | None = None) -> list[dict]:
     """[{claim, summary, score}] for a diagnostic, best first, or [].
@@ -471,25 +523,7 @@ def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
     entry = (idx.get("langs") or {}).get(lang)
     if not entry:
         return []
-    # The index must be CONFIRMED to describe this machine. Two ways to fail.
-    installed = D.driver_for(lang)
-    installed_v = installed.version() if installed and installed.available() else None
-    if not installed_v:
-        # No toolchain, so the match cannot be confirmed at all. This branch
-        # was a FAIL-OPEN: the version comparison was guarded on
-        # `if installed_v and ...`, so a box with no compiler served cards
-        # from ANY index, including one stamped for a different release. CI
-        # caught it — the runner has no zig, and a deliberately poisoned
-        # index handed it a card anyway. Unverifiable is never a pass here;
-        # that is the same rule keeping Swift claims out of every pack.
-        return []
-    if P._short_version(entry.get("toolchain", "")) != P._short_version(installed_v):
-        # Diagnostics move between releases; a card chosen from a stale
-        # signature is the same mistake as a pack for the wrong compiler.
-        return []
-    if "generic" not in entry:
-        # Built before decoys existed: it cannot say which of its signatures
-        # are boilerplate, and that is the knowledge selection depends on.
+    if not index_gate(lang, entry)["served"]:
         return []
     table = entry.get("signatures") or {}
     claims = [c for c in V.load_claims(os.path.join(_HERE, "claims"))

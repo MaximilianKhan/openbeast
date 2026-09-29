@@ -13,7 +13,7 @@ set -uo pipefail
 OB=/home/max/Documents/openbeast; S=$OB/weights/research-staging; cd $OB
 source scripts/conf.sh 2>/dev/null || true
 # openbeast.conf carries BEAST_ASSIST=1 (Max, 2026-09-10) — this is an UNTREATED measurement: never let it leak into the harness.
-unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS
+unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS BEAST_ESCALATE OPENBEAST_ESCALATE  # escalation rides inside assist: strip both or run_eval aborts
 MIN=${MIN:-100}
 OUT=$OB/research/lowrank/experiments/32-t117-gsq-head-to-head/iq-stability-repro.md
 echo "# IQ-artifact stability repro — $(date +%F' '%T)" > $OUT

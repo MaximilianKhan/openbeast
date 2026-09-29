@@ -85,6 +85,21 @@ fi
 echo ""
 echo ""
 
+# --- BEAST_ESCALATE conf forwarding (review open-prs-5) ---
+echo "--- BEAST_ESCALATE conf forwarding (scripts/lib/conf.sh) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_escalate_conf.sh"; then
+  echo ""
+  echo "Escalate conf tests: ALL PASSED"
+else
+  echo ""
+  echo "Escalate conf tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Drive wear tracking tests ---
 echo "--- SSD/NVMe wear tests (scripts/ssd-wear.sh) ---"
 echo ""
