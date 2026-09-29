@@ -238,6 +238,18 @@ def _not_judged(r) -> bool:
     return bool(getattr(r, "transient", False) or getattr(r, "refused", False))
 
 
+def old_failures(claim: Claim) -> list[tuple[str, object]]:
+    """[(OLD snippet, the driver's Result for it)], compiled exactly as
+    verify() compiles them. For a caller that needs to know WHY an old form
+    failed, not only that it did (synthesize.py's evidence check); nothing
+    is cached, because a Result carries the whole diagnostic."""
+    d = D.driver_for(claim.lang)
+    if d is None or not d.available():
+        return []
+    snips, variant = old_snippets(claim)
+    return [(s, d.compile_source(d.wrap(s), variant)) for s in snips]
+
+
 def _judge(claim: Claim, d, old_snips, old_variant) -> tuple[str, str, bool]:
     """(verdict, detail, judged). `judged` is False when a compile never
     produced the toolchain's verdict (timeout, could not start): that is

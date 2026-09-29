@@ -9,7 +9,8 @@ nothing more. This module is the pipe between the two, and its whole job is
 the ordering:
 
     L0 corpus + L1 facts -> prompt -> model -> JSON -> strict parse
-        -> duplicate check -> verify.verify (the REAL drivers) -> STAGING
+        -> duplicate check -> verify.verify (the REAL drivers)
+        -> evidence check (each OLD failure names the claim) -> STAGING
 
 so that a model-written line can never reach a pack unverified. Four rules:
 
@@ -681,6 +682,60 @@ def _classify(result: dict) -> tuple[str, str]:
     return REJECTED, f"{verdict}: {detail}"
 
 
+def _mentions(text: str, name: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                     text, re.I) is not None
+
+
+def unrelated_failure(cand: V.Claim) -> str | None:
+    """Why the OLD forms' failures are not evidence for THIS claim, or None.
+
+    VERIFIED means "every old form fails", and a model can write an old form
+    that fails for any reason at all: a typo, a missing import, a syntax
+    error two lines off. That used to count as proof of the claimed removal.
+    So each OLD form must use a name the claim is about (the backticked
+    identifiers of its summary, reference.identifiers), and its diagnostic
+    must name one of those. Only the ERROR lines are read when there are
+    any: a caret block quotes the source line, which carries the name
+    whatever the error is.
+
+    An availability claim (no OLD code; the new code under an older
+    language level) is exempt. The code is identical on both sides, so
+    nothing but the variant can be what broke it.
+
+    A dotted name counts by every part but its root (`std.io.getStdIn` ->
+    io, getStdIn): zig reports a removed namespace as "struct 'std' has no
+    member named 'io'". The cost, measured against the 25 hand-written
+    claims this repo ships: 3 would fail this check if a model had drafted
+    them. In two, the diagnostic names no identifier at all: python's bare
+    "invalid syntax" for `asyncio.async`, and zig's "expected type 'i32',
+    found '?i32'" for `pop()`. In the third, an OLD form's diagnostic names
+    `@floatToInt`, which the summary only covers as "`@intToFloat`-style".
+    For a DRAFTED claim that is the right side to err on. A person can
+    still write such a claim by hand.
+    """
+    if not cand.old:
+        return None
+    names: set[str] = set()
+    for ident in R.identifiers(cand):
+        parts = [p for p in re.split(r"\.|::", ident.strip("<>")) if p]
+        names.update(parts[1:] if len(parts) > 1 else parts)
+    for i, (snip, res) in enumerate(V.old_failures(cand), 1):
+        own = sorted(n for n in names if _mentions(snip, n))
+        if not own:
+            return (f"old[{i}] uses none of the names the summary is about "
+                    f"({', '.join(sorted(names)) or 'none given'})")
+        if res or V._not_judged(res):
+            return f"old[{i}] did not fail on the re-check: {res.detail[:120]}"
+        lines = res.detail.splitlines()
+        errors = [ln for ln in lines if re.search(r"\berror\b", ln, re.I)] or lines
+        if not any(_mentions(ln, n) for ln in errors for n in own):
+            first = errors[0] if errors else "?"
+            return (f"old[{i}] fails for a reason that never names "
+                    f"{', '.join(own)} — not evidence of the claimed break: {first}")
+    return None
+
+
 def draft_run(lang: str, client, sections: list[dict], *,
               max_prompts: int = MAX_PROMPTS, max_candidates: int = MAX_CANDIDATES,
               max_prompt_chars: int = MAX_PROMPT_CHARS, dry_run: bool = False,
@@ -766,6 +821,10 @@ def draft_run(lang: str, client, sections: list[dict], *,
                     counts[DUPLICATE] += 1
                     continue
                 outcome, why = _classify(V.verify(cand))
+                if outcome == VERIFIED:
+                    unrelated = unrelated_failure(cand)
+                    if unrelated:
+                        outcome, why = REJECTED, unrelated
                 entry.update(outcome=outcome, reason=why)
                 counts[outcome] += 1
                 if outcome != VERIFIED:
@@ -879,6 +938,10 @@ def promote(staging_file: str, ids: list[str] | None = None) -> tuple[int, list[
                 bad += 1
                 continue
             outcome, why = _classify(V.verify(cand))
+            if outcome == VERIFIED:
+                unrelated = unrelated_failure(cand)
+                if unrelated:
+                    outcome, why = REJECTED, unrelated
             if outcome != VERIFIED:
                 msgs.append(f"REFUSED {cand.id}: no longer verifies here — {outcome}: {why}")
                 bad += 1
