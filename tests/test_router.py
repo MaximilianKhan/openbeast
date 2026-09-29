@@ -141,6 +141,16 @@ class TestSpawnGate(unittest.TestCase):
 
     ROLE = "X-OpenWebUI-User-Role"
 
+    def setUp(self):
+        # Header mode, whatever the shell exported: a --with-jwt rig's
+        # sourced conf sets OPENBEAST_IDENTITY_JWT_SECRET, which switches
+        # router.JWT_SECRET to JWT mode at import time.
+        self._old_secret = router.JWT_SECRET
+        router.JWT_SECRET = ""
+
+    def tearDown(self):
+        router.JWT_SECRET = self._old_secret
+
     def test_admin_allowed(self):
         self.assertTrue(router._spawn_allowed({self.ROLE: "admin"}, require_identity=False))
         self.assertTrue(router._spawn_allowed({self.ROLE: "admin"}, require_identity=True))
