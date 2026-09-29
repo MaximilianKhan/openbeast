@@ -702,11 +702,14 @@ def run_agent(
         ]
 
     # Set up logging
+    # Transcripts hold full tool output: dirs we create are 0700, files 0600
+    # (the stack's own agents/logs/ is tightened even if it already exists).
     if log_file:
         log_path = log_file
-        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        _tools.private_log_dir(os.path.dirname(log_path) or ".")
     else:
-        os.makedirs(log_dir, exist_ok=True)
+        _tools.private_log_dir(
+            log_dir, tighten=os.path.abspath(log_dir) == os.path.abspath(DEFAULT_LOG_DIR))
         # E18: the same shape sessions.new_id() uses. A bare 1-second
         # timestamp collided under `run_eval.py --jobs N` — two units of the
         # same measurement appended to ONE transcript, and the derived
@@ -760,7 +763,7 @@ def run_agent(
 
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
-        with open(log_path, "a") as f:
+        with _tools.open_private_append(log_path) as f:
             f.write(json.dumps(event) + "\n")
         if steering:
             # Throttled: `updated_at` is a liveness heartbeat for the console,

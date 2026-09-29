@@ -417,6 +417,44 @@ def harden_process() -> bool:
     return True
 
 
+def private_log_dir(path: str, tighten: bool = False) -> None:
+    """Create `path` 0700 (missing intermediate parents get os.makedirs'
+    default mode; the leaf is what holds the transcripts). With `tighten`, an existing
+    directory that is group/world-accessible is chmod'ed to 0700 too — only
+    for directories the stack owns (agents/logs/), never a caller's
+    --log-dir, whose mode is the caller's business."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if tighten:
+        try:
+            st = os.stat(path)
+            if st.st_uid == os.getuid() and st.st_mode & 0o077:
+                os.chmod(path, 0o700)
+        except OSError:
+            pass
+
+
+def open_private_append(path: str):
+    """Open `path` for text append, creating it 0600 and tightening an
+    existing file of ours to 0600. Agent transcripts carry full tool output
+    (file contents, command output, fetched pages); a plain open() took the
+    umask and left them 0644 (review secrets-crypto-6 /
+    chat-sessions-agent-transcripts-world-readable). Readers run as the same
+    uid, so nothing that tails them is affected."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC,
+                 0o600)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid == os.getuid() and st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    try:
+        return os.fdopen(fd, "a")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _scrubbed_env() -> dict:
     """Copy of the process env minus the stack's secrets.
 
