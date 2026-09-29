@@ -425,6 +425,52 @@ fi
 
 # ===========================================================================
 echo ""
+echo "update.sh --llama — a failed rebuild rolls build/bin back:"
+# ===========================================================================
+# The cmake stub "relinks" a shared lib, then fails before llama-server: the
+# exact half-updated state an in-place build used to leave behind.
+printf 'old-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+printf 'old-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+echo "cmake \$*" >> "\$OB_STUB_STATE/git.log"
+if [[ " \$* " == *" --build "* ]]; then
+  printf 'new-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+  rm -f "$SBU/llama.cpp/build/bin/llama-server"
+  exit 2
+fi
+exit 0
+STUB
+chmod +x "$T/binu/cmake"
+UPD --llama --force
+if [[ $_rc -ne 0 ]] && has "$_out" "restored to the previous llama-server" \
+   && [[ "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == old-lib \
+         && "$(cat "$SBU/llama.cpp/build/bin/llama-server")" == old-bin \
+         && ! -e "$SBU/llama.cpp/build/bin.pre-update" ]]; then
+  pass "a build that dies mid-link leaves the previous engine intact (no lib/binary mix)"
+else
+  fail "failed rebuild (rc=$_rc, lib=$(cat "$SBU/llama.cpp/build/bin/libggml.so" 2>&1)): $_out"
+fi
+# Negative control: a build that succeeds keeps its new output, drops the snapshot.
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+echo "cmake \$*" >> "\$OB_STUB_STATE/git.log"
+if [[ " \$* " == *" --build "* ]]; then
+  printf 'new-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+  printf '#!/bin/bash\n# new-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+fi
+exit 0
+STUB
+UPD --llama --force
+if [[ $_rc -eq 0 && "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == new-lib \
+      && ! -e "$SBU/llama.cpp/build/bin.pre-update" ]]; then
+  pass "negative control: a successful rebuild keeps the new engine and removes the snapshot"
+else
+  fail "successful rebuild (rc=$_rc): $_out"
+fi
+
+# ===========================================================================
+echo ""
 echo "update.sh --images — a bundle-installed compose is re-pinned, never silently skipped:"
 # ===========================================================================
 D_OW="sha256:$(printf 'a%.0s' $(seq 1 64))"

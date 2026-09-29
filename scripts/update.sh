@@ -199,11 +199,29 @@ update_llama() {
   cmake_flags="$(ob_cmake_flags)" \
     || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
   ok "backend $OB_BACKEND → cmake flags: ${cmake_flags:-none (CPU-only)}"
+  # A failed build must not leave the rig on a half-updated engine: the
+  # binary links ~10 shared libs from build/bin, and a build that dies after
+  # relinking libggml* but before llama-server leaves new libs next to the
+  # old binary — the next serve launches a mismatched mix. Snapshot bin/
+  # first (a reflink on btrfs/xfs: ~80 MB for free) and roll back on any
+  # failure. Cheaper than a second full build tree, same guarantee.
+  local snap="$build/bin.pre-update"
+  rm -rf -- "$snap"
+  if [[ -d "$build/bin" ]]; then
+    cp -a --reflink=auto -- "$build/bin" "$snap" \
+      || die "could not snapshot $build/bin before rebuilding (disk full?)"
+  fi
   # $cmake_flags is deliberately unquoted — it's a flag list.
-  cmake -S "$src" -B "$build" \
-        $cmake_flags -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$build" --config Release -j"$(nproc)" --target llama-server
-  [[ -x "$build/bin/llama-server" ]] || die "rebuild did not produce llama-server"
+  if ! { cmake -S "$src" -B "$build" $cmake_flags -DCMAKE_BUILD_TYPE=Release \
+         && cmake --build "$build" --config Release -j"$(nproc)" --target llama-server \
+         && [[ -x "$build/bin/llama-server" ]]; }; then
+    if [[ -d "$snap" ]]; then
+      rm -rf -- "$build/bin" && mv -- "$snap" "$build/bin"
+      die "rebuild FAILED — build/bin restored to the previous llama-server ($before); the rig is unchanged"
+    fi
+    die "rebuild did not produce llama-server"
+  fi
+  rm -rf -- "$snap"
   ok "rebuilt llama-server ($after)"
   warn "a running llama-server keeps the OLD binary until restarted"
 }
