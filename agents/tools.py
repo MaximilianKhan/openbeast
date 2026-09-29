@@ -444,7 +444,53 @@ _PROTECTED_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".docker")
 _PROTECTED_BASENAMES = {
     ".netrc", ".git-credentials", ".npmrc", ".pypirc",
     ".bashrc", ".bash_profile", ".zshrc", ".profile",
+    # Same class as the rc files above, missed until the 2026-09-29 review:
+    # every one of these runs code on the next login, shell or git command.
+    ".bash_login", ".bash_logout", ".zshenv", ".zprofile", ".zlogin",
+    ".zlogout", ".gitconfig", ".pam_environment", ".xprofile", ".xinitrc",
+    ".xsession", ".xsessionrc",
 }
+# Directories under ~ whose files execute (or set the env of) the next
+# login/shell/git/session. Checked as path prefixes relative to HOME.
+_PERSIST_PREFIXES = (
+    os.path.join(".config", "systemd", "user"),
+    os.path.join(".config", "autostart"),
+    os.path.join(".local", "bin"),
+    os.path.join(".config", "git"),             # core.fsmonitor/pager/alias
+    os.path.join(".config", "fish"),
+    os.path.join(".config", "environment.d"),
+    os.path.join(".config", "hypr"),            # exec-once (Omarchy)
+    os.path.join(".config", "uwsm"),            # session env files
+)
+# Live shell rc files whose `source X` / `. X` lines extend the protected set:
+# a file the user's ~/.bashrc sources (this box: ~/.bashrc_custom) is as
+# much a persistence target as ~/.bashrc itself.
+_RC_FILES = (".bashrc", ".bash_profile", ".bash_login", ".profile",
+             ".zshrc", ".zshenv", ".zprofile", ".zlogin")
+_SOURCE_RE = re.compile(
+    r"""(?:^|[\s;&|{(])(?:source|\.)\s+["']?((?:~|\$HOME|\$\{HOME\}|/)[^\s"';&|)]*)""",
+    re.MULTILINE)
+
+
+def _rc_sourced_files(home: str) -> set:
+    """Realpaths of files the live rc files source (one level; absolute or
+    HOME-anchored paths only — relative/variable paths can't be resolved
+    statically). Read per call: the rc files are tiny and may change."""
+    out = set()
+    for rc in _RC_FILES:
+        try:
+            with open(os.path.join(home, rc), errors="replace") as f:
+                text = f.read(256 * 1024)
+        except OSError:
+            continue
+        for m in _SOURCE_RE.finditer(text):
+            target = m.group(1)
+            for pfx in ("${HOME}", "$HOME", "~"):
+                if target.startswith(pfx):
+                    target = home + target[len(pfx):]
+                    break
+            out.add(os.path.realpath(target))
+    return out
 
 # Pseudo-filesystems that read_file refuses: regular-file-shaped but can be
 # infinite (/proc/kcore), streaming (a 0-size /proc file), or side-effecting.
@@ -473,20 +519,26 @@ def _guard_write_path(path: str):
         # Persistence/execution targets (2026-09-10 hardening): a hook fires
         # on the next git command, autostart/systemd-user on next login, and
         # ~/.local/bin shadows real binaries on PATH.
-        _persist = (os.path.join(".config", "systemd", "user"),
-                    os.path.join(".config", "autostart"),
-                    os.path.join(".local", "bin"))
-        for pfx in _persist:
+        for pfx in _PERSIST_PREFIXES:
             if rel == pfx or rel.startswith(pfx + os.sep):
                 return f"Error: refusing to write a persistence target ({rp})"
+        if rp in _rc_sourced_files(home):
+            return (f"Error: refusing to write a file your shell rc sources "
+                    f"({rp})")
     if rp == "/etc" or rp.startswith("/etc/"):
         return f"Error: refusing to write under /etc ({rp})"
-    if rp.endswith(f"{os.sep}.git{os.sep}config"):
-        return f"Error: refusing to write a git config ({rp})"
-    if f"{os.sep}.git{os.sep}hooks{os.sep}" in rp or rp.endswith(f"{os.sep}.git{os.sep}hooks"):
-        # A hook is arbitrary code execution on the next git invocation —
-        # strictly worse than .git/config, which was already blocked.
-        return f"Error: refusing to write a git hook ({rp})"
+    parts = rp.split(os.sep)
+    if ".git" in parts:
+        # Anywhere under a .git dir — including submodule and worktree
+        # gitdirs (.git/modules/<m>/config, .git/modules/<m>/hooks/*), which
+        # the old '/.git/config' + '/.git/hooks/' patterns missed.
+        below = parts[parts.index(".git") + 1:]
+        if "hooks" in below:
+            # A hook is arbitrary code execution on the next git invocation —
+            # strictly worse than .git/config, which was already blocked.
+            return f"Error: refusing to write a git hook ({rp})"
+        if below and below[-1] in ("config", "config.worktree"):
+            return f"Error: refusing to write a git config ({rp})"
     return None
 
 
