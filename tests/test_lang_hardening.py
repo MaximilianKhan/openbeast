@@ -765,6 +765,30 @@ def test_the_scrubbed_env_keeps_locations_and_drops_everything_else(monkeypatch)
     assert go["GOFLAGS"] == "-mod=readonly" and go["GOPROXY"] == "off"
 
 
+def test_the_env_allow_list_is_exact_names_not_prefixes(monkeypatch):
+    """Round 5: the allow list kept anything under LC_/XDG_/ZIG_/MISE_/ASDF_/
+    NIX_ (and GO/CGO_ for go), so a token that merely SHARED a prefix reached
+    every compiler child: GOOGLE_API_KEY starts with `GO`, NIX_CONFIG carries
+    nix `access-tokens`, sshd forwards LC_* by default."""
+    leaky = ("GOOGLE_API_KEY", "GOAUTH", "NIX_CONFIG", "MISE_GITHUB_TOKEN",
+             "ASDF_GITHUB_TOKEN", "ZIG_SECRET", "XDG_SECRET", "LC_SECRET",
+             "CGO_SECRET")
+    for k in leaky:
+        monkeypatch.setenv(k, ENV_SECRET)
+    # the locations the drivers were measured to need still get through
+    keep = {"ZIG_GLOBAL_CACHE_DIR": "/tmp/zc", "XDG_CACHE_HOME": "/tmp/xc",
+            "LC_ALL": "C.UTF-8", "MISE_DATA_DIR": "/tmp/md"}
+    for k, v in keep.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("GOCACHE", "/tmp/gc")
+    for env in (_proc.scrubbed_env(), D.GoDriver.env(CGO_ENABLED="0")):
+        assert ENV_SECRET not in env.values(), sorted(
+            k for k, v in env.items() if v == ENV_SECRET)
+        assert all(env.get(k) == v for k, v in keep.items()), env
+    assert D.GoDriver.env()["GOCACHE"] == "/tmp/gc"
+    assert "GOCACHE" not in _proc.scrubbed_env(), "go locations are the go driver's"
+
+
 @pytest.mark.parametrize("lang,exe", [("c", "gcc"), ("cpp", "g++"), ("rust", "rustc"),
                                       ("zig", "zig"), ("go", "go")])
 def test_a_compiler_that_dumps_its_environment_has_nothing_to_dump(

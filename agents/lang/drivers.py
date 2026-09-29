@@ -648,7 +648,7 @@ class GoDriver(Driver):
         set-GOFLAGS/run/restore dance interleaved under two concurrent calls
         and left -mod=mod set for every later subprocess of any kind."""
         return _proc.scrubbed_env({**cls.OFFLINE_ENV, **extra},
-                                  prefixes=_proc.GO_ENV_PREFIXES)
+                                  names=_proc.GO_ENV_NAMES)
 
     def version(self) -> str | None:
         r = _run(["go", "version"], env=self.env())
