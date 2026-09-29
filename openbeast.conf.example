@@ -129,11 +129,13 @@
 # ANY non-loopback value (0.0.0.0, a LAN or tailnet IP) is warned about at
 # every launch — and with no MCPO_*_KEY set below, the tool server on :3001
 # is then an unauthenticated remote SHELL for that network. Set keys with
-# scripts/setup-mcpo-keys.sh, or accept it explicitly with ALLOW_OPEN_TOOLS.
+# scripts/setup-mcpo-keys.sh. (The launch only WARNS — it does not refuse.)
 #BIND_HOST=127.0.0.1
 
-# Explicit override for the case above: serve the KEYLESS tool server on a
-# non-loopback BIND_HOST anyway. Default false. Env: $OPENBEAST_ALLOW_OPEN_TOOLS.
+# Acknowledge the case above: you mean to serve the KEYLESS tool server on a
+# non-loopback BIND_HOST. NOT YET ENFORCED — the tool server is served either
+# way; today this only changes the launch warning. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_TOOLS.
 #ALLOW_OPEN_TOOLS=false
 
 # Optional: require "Authorization: Bearer <key>" on the llama-server API.

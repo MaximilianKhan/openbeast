@@ -377,7 +377,8 @@ fi
 #
 # ALLOW_OPEN_TOOLS (env OPENBEAST_ALLOW_OPEN_TOOLS) default false: the
 # explicit, auditable "yes, serve the keyless tool server on this network"
-# override. Exported canonical so the tool server can refuse without it.
+# acknowledgement. Exported canonical so the tool server / start.sh CAN refuse
+# without it — but nothing reads it yet: today it only changes the warning.
 ALLOW_OPEN_TOOLS="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_TOOLS:-$(_ob_conf_value ALLOW_OPEN_TOOLS || true)}" false ALLOW_OPEN_TOOLS)"
 export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
@@ -393,9 +394,10 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
     echo "WARNING: the tool server (:3001) has NO keys (MCPO_ADMIN_KEY/MCPO_GUEST_KEY):" >&2
     echo "         anyone who can reach $BIND_HOST:3001 can run shell commands as this user." >&2
     if [[ "$ALLOW_OPEN_TOOLS" == "true" ]]; then
-      echo "         ALLOW_OPEN_TOOLS=true — serving it anyway, as configured." >&2
+      echo "         ALLOW_OPEN_TOOLS=true — acknowledged; the risk above still stands." >&2
     else
-      echo "         Run scripts/setup-mcpo-keys.sh, or set ALLOW_OPEN_TOOLS=true to accept this." >&2
+      echo "         It is served open regardless (no refusal is enforced yet). Run" >&2
+      echo "         scripts/setup-mcpo-keys.sh, or set ALLOW_OPEN_TOOLS=true to acknowledge." >&2
     fi
   fi
 fi
