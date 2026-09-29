@@ -242,6 +242,43 @@ class TestTenancyKnobs:
                    headers={"Authorization": f"Bearer {DEVICE_KEY}"})
         assert json.loads(cap["content"])["id_slot"] == 3
 
+    def test_boolean_slot_is_not_a_slot_index(self, edge, tmp_path):
+        # JSON true is a Python int subclass: without the guard it would be
+        # forwarded as id_slot=1 — pinning the device onto slot 1.
+        _registry(tmp_path, slot=True)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "id_slot": 7},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert "id_slot" not in json.loads(cap["content"])
+
+    def test_streaming_requests_get_include_usage(self, edge, tmp_path):
+        # Streaming is the default chat path; without include_usage upstream
+        # never emits a usage chunk and every metered token reads null.
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "stream": True},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            sent = json.loads(cap["content"])
+            assert sent["stream_options"] == {"include_usage": True}
+            # A caller's own stream_options are MERGED, not replaced.
+            c.post("/v1/chat/completions",
+                   json={"messages": [], "stream": True,
+                         "stream_options": {"include_usage": False,
+                                            "other": 1}},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            sent = json.loads(cap["content"])
+            assert sent["stream_options"] == {"include_usage": True, "other": 1}
+            # Negative control: a non-streaming body is left alone.
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+            assert "stream_options" not in json.loads(cap["content"])
+
     def test_device_key_never_reaches_upstream(self, edge, tmp_path):
         _registry(tmp_path)
         cap = {}
