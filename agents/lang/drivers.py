@@ -448,8 +448,17 @@ class ZigDriver(Driver):
 
     def compile_source(self, source: str, variant: str | None = None) -> Result:
         # -fno-emit-bin: we want the front end's verdict, not an executable.
-        return self._in_tmp(source, "claim.zig",
-                            lambda p, d: ["zig", "build-exe", "-fno-emit-bin", p])
+        # A file of `test "…"` blocks has no main, and wrap() passes it
+        # through untouched — build-exe then failed EVERY such file ("has no
+        # member named 'main'"), so a test-block OLD form "proved" any claim
+        # VERIFIED and a correct test-block NEW form was NEW_FAILS. It is
+        # analysed as the test root it is; --test-no-exec plus no binary
+        # keeps the rule that nothing here is ever run.
+        if "pub fn main" not in source and "test \"" in source:
+            cmd = ["zig", "test", "--test-no-exec", "-fno-emit-bin"]
+        else:
+            cmd = ["zig", "build-exe", "-fno-emit-bin"]
+        return self._in_tmp(source, "claim.zig", lambda p, d: cmd + [p])
 
 
 class CDriver(Driver):
@@ -669,14 +678,24 @@ class PythonDriver(Driver):
         except RuntimeError as e:
             return Result(False, f"static resolution could not run: {e}",
                           "static attribute resolution", transient=True)
-        missing = []
+        missing, absent = [], []
         for j in jobs:
             msg = j if isinstance(j, str) else next(answers, None)
-            if msg:
+            if isinstance(msg, list):
+                absent.extend(msg)
+            elif msg:
                 missing.append(msg)
         if missing:
             return Result(False, "; ".join(dict.fromkeys(missing[:4])),
                           "static attribute resolution")
+        if absent:
+            # `winreg` is in sys.stdlib_module_names on Linux and cannot be
+            # imported there. That is this PLATFORM's build, not the API's
+            # history — reported as a failure it made `import winreg` an OLD
+            # form that "fails", and any claim VERIFIED on the strength of it.
+            return Result(False, f"{', '.join(dict.fromkeys(absent))}: a stdlib "
+                          f"module this platform does not ship (not judged)",
+                          "static attribute resolution", transient=True)
         return Result(True, "syntax ok; every import and stdlib attribute resolves",
                       "static attribute resolution")
 
@@ -730,6 +749,10 @@ class PythonDriver(Driver):
         "    try:\n"
         "        cur = importlib.import_module(mod)\n"
         "    except BaseException as e:\n"
+        "        root = mod.split('.')[0]\n"      # stdlib-LISTED, not built
+        "        if (isinstance(e, ModuleNotFoundError) and e.name == root\n"
+        "                and root in sys.stdlib_module_names):\n"
+        "            res.append([root]); continue\n"   # here (winreg): unjudged
         "        res.append('import %s: %s' % (mod, e.__class__.__name__))\n"
         "        continue\n"
         "    path, msg = mod, None\n"
@@ -792,6 +815,16 @@ def _imports(tree: ast.AST) -> list[tuple[str, str | None]]:
     return out
 
 
+#: Documented attributes that exist only in SOME processes: sys.ps1/ps2 in an
+#: interactive session, sys.last_* after an uncaught exception there, and
+#: sys.tracebacklimit only once someone sets it. The resolver's child is none
+#: of those, so "does not exist" would be a statement about it, not the API.
+_CONDITIONAL_ATTRS = frozenset({
+    ("sys", "ps1"), ("sys", "ps2"), ("sys", "last_type"), ("sys", "last_value"),
+    ("sys", "last_traceback"), ("sys", "last_exc"), ("sys", "tracebacklimit"),
+})
+
+
 def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
     """[(module, ['a','b']), …] for `import m` + `m.a.b` usages.
 
@@ -807,15 +840,37 @@ def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
             for a in node.names:
                 if a.asname is None and "." not in a.name:
                     imported.add(a.name)
+    # EVERY way a name gets rebound, not just `x = …`: the old walk missed
+    # parameters, so `def f(os): return os.anything` failed "os.anything does
+    # not exist" — a false failure, and an OLD form that fails falsely makes
+    # a claim VERIFIED. Scope-blind on purpose: skipping is the safe side.
     assigned: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.For, ast.withitem)):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                    assigned.add(sub.id)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            assigned.add(node.id)              # =, +=, for, with, walrus, comps
+        elif isinstance(node, ast.arg):
+            assigned.add(node.arg)             # def/lambda parameters
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            assigned.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            assigned.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            assigned.update(node.names)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            assigned.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            assigned.add(node.rest)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:               # `import x as os`, `from y import os`
+                if a.asname or isinstance(node, ast.ImportFrom):
+                    assigned.add(a.asname or a.name)
     out: list[tuple[str, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Attribute):
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            # `logging.X = 1` CREATES X; the chain under it (a Load node of
+            # its own) is still visited and still checked.
             continue
         parts: list[str] = []
         cur: ast.AST = node
@@ -823,7 +878,10 @@ def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
             parts.append(cur.attr)
             cur = cur.value
         if isinstance(cur, ast.Name) and cur.id in imported and cur.id not in assigned:
-            out.append((cur.id, list(reversed(parts))))
+            chain = list(reversed(parts))
+            if (cur.id, chain[0]) in _CONDITIONAL_ATTRS:
+                continue                       # exists only in some sessions
+            out.append((cur.id, chain))
     return out
 
 
