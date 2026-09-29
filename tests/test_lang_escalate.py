@@ -430,6 +430,10 @@ WRONG_CARDS = [
     ("zig", _ROOT.format("mem", "eqll")),            # got mem
     ("zig", _ROOT.format("fmt", "alloPrint")),       # got fmt
     ("zig", _ROOT.format("ascii", "isDigitt")),      # got ascii
+    # round 5: std.time still HAS members in 0.16 (ns_per_s…), so a typo in
+    # it is not the time_random removal — the `std.time.*` wildcard said so
+    ("zig", _ROOT.format("time", "sleepp")),         # got time_random
+    ("zig", _ROOT.format("time", "ns_per_ss")),      # got time_random
     ("python", "AttributeError: module 'string' has no attribute "
                "'ascii_lowercas'. Did you mean: 'ascii_lowercase'?"),
     ("python", "AttributeError: type object 'TestCase' has no attribute "
@@ -444,8 +448,9 @@ WRONG_CARDS = [
 RIGHT_CARDS = [
     ("zig", _ROOT.format("mem", "split"), "mem"),
     ("zig", _ROOT.format("math", "max"), "math"),
-    # held-out member, reachable only because the card says `std.time.*`
+    # held-out member, reachable only because the card NAMES it
     ("zig", _ROOT.format("time", "milliTimestamp"), "time_random"),
+    ("zig", _ROOT.format("time", "Timer"), "time_random"),
     ("zig", "claim.zig:3:9: error: struct 'array_list.Aligned(u32,null)' has no "
             "member named 'init'", "arraylist"),                       # held-out type args
     ("zig", "claim.zig:5:9: error: no field or member function named 'writer' in "
@@ -503,6 +508,45 @@ TYPO_SNIPPETS = [
     'const v = std.math.sqrtt(@as(f64, 2));\n    _ = v;',
     'const e = std.mem.eqll(u8, "a", "a");\n    _ = e;',
 ]
+
+
+def test_a_summary_member_stands_in_only_for_itself():
+    """Round 5: `wildcards` also carries `ns.member` for each member a claim's
+    "what is gone" clause names — and only that clause: the replacement after
+    the dash names members that EXIST."""
+    class C:
+        def __init__(self, cid, summary):
+            self.id, self.summary = cid, summary
+    wild = E.namespace_wildcards([
+        C("a", "`x.T.gone` and `T.also` are gone — use `T.kept`"),
+        C("b", "`U.*` is gone")])
+    assert wild == {"T.gone": {"a"}, "T.also": {"a"}, "U": {"b"}}, wild
+    table = {"shape:struct 'X' has no member named 'X'": ["a", "b"],
+             "ident:T": ["a"], "ident:U": ["b"]}
+    sel = lambda m, c="T": E._select(  # noqa: E731
+        table, set(), f"error: struct '{c}' has no member named '{m}'",
+        wildcards=wild)[0]
+    assert sel("gone") == {"a"} and sel("also") == {"a"}
+    assert sel("gonee") == set(), "a typo of a named member is not it"
+    assert sel("kept") == set(), "the replacement clause names no removal"
+    assert sel("anything", "U") == {"b"}, "control: a real `U.*` still covers U"
+
+
+@pytest.mark.skipif(not have_zig, reason="zig absent")
+def test_the_time_random_summary_names_only_members_zig_removed():
+    """The card's own words are what escalation trusts, so they are checked
+    against the toolchain: every std.time member it names is gone, and the
+    namespace itself is not (the `std.time.*` overstatement)."""
+    claim = next(c for c in V.load_claims(CLAIMS) if c.id == "time_random")
+    named = [k.split(".", 1)[1] for k in E.namespace_wildcards([claim])
+             if k.startswith("time.")]
+    assert len(named) >= 5, named
+    for m in named:
+        src = f"const x = std.time.{m};\n    _ = x;"
+        assert not ZIG.compile_source(ZIG.wrap(src)), f"std.time.{m} still exists"
+    ok = ZIG.compile_source(ZIG.wrap("const x = std.time.ns_per_s;\n    _ = x;"))
+    assert ok, f"control: std.time.ns_per_s should compile: {ok.detail[:200]}"
+    assert "time" not in E.namespace_wildcards([claim]), "no `std.time.*` again"
 
 
 @pytest.mark.skipif(not have_zig, reason="zig absent")

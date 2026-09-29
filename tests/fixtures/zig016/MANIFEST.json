@@ -98,7 +98,7 @@
         "io.random(&buf)",
         "DefaultPrng.init(42)"
       ],
-      "summary": "`std.time.*`, `std.Thread.sleep` and `std.crypto.random` are gone \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`"
+      "summary": "`std.time.timestamp`, `std.time.milliTimestamp`, `std.time.microTimestamp`, `std.time.nanoTimestamp`, `std.time.sleep`, `std.time.Instant`, `std.time.Timer`, `std.Thread.sleep` and `std.crypto.random` are gone (std.time keeps only its ns_per_s-style unit constants) \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`"
     },
     {
       "entry": "arraylist",
