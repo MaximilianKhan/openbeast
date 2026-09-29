@@ -177,6 +177,35 @@ if [[ $_rc -eq 0 && "$_stage1" == "$_stage2" && ! -d "$_stage2" && -f "$W/model-
 else
   fail "retry: rc=$_rc stage1=$_stage1 stage2=$_stage2: $_out"
 fi
+
+# ===========================================================================
+echo ""
+echo "12. verify-weights.sh --file NAME: a name with no registry row is a FAILURE:"
+# ===========================================================================
+# The sideload instructions tell operators to run exactly this. A wrong-case
+# name used to hash nothing and print "0 failure(s)" with rc=0.
+cp "$W/plain.gguf" "$W/PLAIN.GGUF"
+_out="$("$SB/scripts/verify-weights.sh" --file PLAIN.GGUF 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT IN REGISTRY" && has "$_out" "Did you mean: plain.gguf" \
+   && ! has "$_out" "0 failure(s)"; then
+  pass "--file with a name the registry does not know exits non-zero (and suggests the case-fixed name)"
+else
+  fail "--file unknown name (rc=$_rc): $_out"
+fi
+_out="$("$SB/scripts/verify-weights.sh" --file no-such-model.gguf 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT IN REGISTRY" && ! has "$_out" "Did you mean"; then
+  pass "--file with a name nothing resembles also exits non-zero"
+else
+  fail "--file unrelated name (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: the right name still verifies, rc=0, and really hashed.
+_out="$("$SB/scripts/verify-weights.sh" --file plain.gguf 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && has "$_out" "OK       plain.gguf (size + sha256)" && has "$_out" "Verified 1 file(s)"; then
+  pass "negative control: --file with the registry's name deep-verifies and exits 0"
+else
+  fail "--file known name (rc=$_rc): $_out"
+fi
+rm -f "$W/PLAIN.GGUF"
 unset OPENBEAST_WEIGHTS_DIR
 
 # ===========================================================================
