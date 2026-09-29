@@ -1,5 +1,26 @@
 # TODO
 
+## 🟩 DGX SPARK INFERENCE — milestone 1 built 2026-09-29, hardware pending
+
+- **What:** the stack stays on the rig and points at vLLM or TensorFold
+  running tensor-parallel across two DGX Sparks. Plan, security, coupling
+  inventory and the day-of runbook: [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
+- **Done (branch `feat/spark-backends`):** `INFERENCE_BACKEND/URL/MANAGED/SLOTS`
+  conf keys; per-backend readiness (`scripts/lib/backend.sh`); unmanaged
+  start/supervise/healthcheck/stop/doctor paths; `/api/slot` vLLM/TensorFold
+  branch; vLLM/TensorFold overflow detection in the runner; rank launchers
+  `scripts/backends/{vllm,tensorfold}/spark-node.sh`. Default llama path
+  unchanged.
+- **Next, on hardware:** the runbook's acceptance checklist (§9 E) and the
+  verify-on-hardware list (§12).
+- **Max's calls (§11):** which model (stock NVFP4 vs an unvetted uncensored
+  NVFP4/FP8 — the benchmarked GGUF cannot be served), whether 2-box TP is
+  worth it for a 27B vs Flash Next / GLM-5.3-Flash, and where the command
+  center lives.
+- **M2:** eval provenance for a remote backend (new era), `opencode.json` /
+  raw `:8443` / `run_eval.py` still say `:8080`, HF `repo@revision` pinning,
+  GB10 detection + aarch64 lock for an on-Spark stack.
+
 ## 🔬 FULL REVIEW 2026-09-29
 
 - **What:** an adversarial review of the whole repo found **118 findings**,
@@ -1276,6 +1297,9 @@ against it before building ours); an OPEN 15-20% MTP throughput regression
 pin recorded there: b10066 (`86a9c79f8`).
 
 ## 🧪 EXPERIMENT — serve with vLLM instead of llama.cpp (Max, 2026-08-04)
+
+> 2026-09-29: the integration half of this (item d) is now built for the DGX
+> Spark plan — see the section at the top and [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
 
 Evaluate vLLM as the serving engine for our weights. Motivation: vLLM
 has shipped TurboQuant KV-cache quantization (fused Triton backend,

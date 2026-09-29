@@ -85,6 +85,13 @@ flowchart LR
   fully own. `EDGE_GATE=true` routes it through beast-gate instead, which
   allowlists the OpenAI routes and gives each device its own revocable key.
   Full detail: [`BEAST_SLOT.md`](BEAST_SLOT.md).
+- **The brain can move off the rig.** `INFERENCE_BACKEND=vllm|tensorfold`
+  plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
+  spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
+  planned: two DGX Sparks, tensor-parallel. The rig then launches, supervises
+  and kills no model server (`INFERENCE_MANAGED=false`); everything else in
+  this picture is unchanged. Plan, security and runbook:
+  [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
 
 ## 2. Inside the command center — two planes
 
@@ -288,7 +295,10 @@ scripts/                     # Server, ops, and feature CLIs
   ext.sh                     # Extension manager (enable/disable/list optional services)
   ssd-wear.sh                # SMART-based drive wear report
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
-                             #   proc.sh (identity-checked signalling), bundle_manifest.py, pydeps_lock.py
+                             #   proc.sh (identity-checked signalling), bundle_manifest.py, pydeps_lock.py,
+                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
+  backends/                  # Run ON the DGX Sparks, not the rig: {vllm,tensorfold}/spark-node.sh
+                             #   rank launchers + spark.env.example (docs/DGX_SPARK_PLAN.md)
 
 agents/                      # Agent framework + servers
   mcp_server.py              # MCP tool surface (18 tools; stdio for OpenCode)
