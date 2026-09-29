@@ -651,8 +651,26 @@ HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 # install. Other models: scripts/verify-weights.sh after download.
 WEIGHT_SHA256="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
 [[ -n "$WEIGHT_SHA256" ]] || die "scripts/weights.registry has no entry for $WEIGHT_FILE — restore it from git"
+# PRESENT IS NOT VERIFIED. This used to print "already downloaded" for any
+# file with the right name, and the download branch used to leave a weight
+# that FAILED its pin under that very name (die, no rm). So re-running
+# bootstrap after "checksum MISMATCH" — the ordinary reaction to a failed
+# installer — turned the pin's rejection into acceptance, and start.sh (a
+# size check only) then served the substituted file. The existing file is
+# hashed on every run now (~1 min for 20 GB, inside a multi-minute
+# bootstrap). A mismatch is fatal and NOT auto-deleted here: the file may be
+# one the operator put there by hand.
 if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
-  ok "already downloaded ($WEIGHTS_DIR/$WEIGHT_FILE)"
+  echo "  verifying the existing $WEIGHT_FILE against its pin (~1 min for 20 GB)..."
+  if _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$WEIGHT_FILE" 2>&1)"; then
+    ok "already downloaded, sha256 verified ($WEIGHTS_DIR/$WEIGHT_FILE)"
+  else
+    die "$WEIGHTS_DIR/$WEIGHT_FILE is NOT the weight OpenBeast pinned:
+$(sed 's/^/         /' <<< "$_vw")
+       Refusing to continue with it. Delete it and re-run this script (the
+       download is verified BEFORE it is given that name), or check the HF
+       repo ($HF_REPO) and OpenBeast issues for a vetted update."
+  fi
 else
   ob_offline && die "OFFLINE=true and $WEIGHT_FILE is not in $WEIGHTS_DIR.
        The ~20 GB weight is the third of the four fetches a closed network
@@ -664,22 +682,19 @@ else
        Any registry weight works, not just this default — set SERVE_SCRIPT in
        openbeast.conf to match what you brought."
   warn "downloading the default 27B model — this is the long step, grab coffee."
-  HF_BIN="$(command -v hf || command -v huggingface-cli || true)"
-  [[ -n "$HF_BIN" ]] || die "hf CLI not found after install; add ~/.local/bin to PATH and re-run"
-  "$HF_BIN" download "$HF_REPO" "$WEIGHT_FILE" --local-dir "$WEIGHTS_DIR"
+  # fetch-weight.sh, not a second copy of it: it downloads into a staging dir
+  # INSIDE the weights dir, verifies size + sha256 there, and DELETES a
+  # mismatch — so a file that failed its pin never exists under the name a
+  # serve script (or the check above) looks for. An interrupted download
+  # keeps its partial, and the next run resumes it.
+  "$REPO_DIR/scripts/fetch-weight.sh" "$WEIGHT_FILE" \
+    || die "the default weight was not installed (fetch-weight.sh says why,
+       above). Nothing that failed verification was left under $WEIGHT_FILE.
+       Re-run this script to retry (an interrupted download resumes). If the
+       pin failed, the upstream file changed since OpenBeast pinned it: check
+       the HF repo ($HF_REPO) and OpenBeast issues for a vetted update."
   [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] || die "download failed"
-  echo "  verifying checksum (~1 min for 20 GB)..."
-  got_sha="$(sha256sum "$WEIGHTS_DIR/$WEIGHT_FILE" | awk '{print $1}')"
-  if [[ "$got_sha" == "$WEIGHT_SHA256" ]]; then
-    ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
-  else
-    die "checksum MISMATCH for $WEIGHT_FILE
-    expected $WEIGHT_SHA256
-    got      $got_sha
-  The upstream file changed since OpenBeast pinned it. Do NOT use it blindly:
-  delete it, then check the HF repo ($HF_REPO) and OpenBeast issues for a
-  vetted update."
-  fi
+  ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
 fi
 
 # ---- executable bits -------------------------------------------------------

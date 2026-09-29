@@ -24,6 +24,8 @@
 #   9  bundle.sh/pydeps  relative paths resolve against the CALLER's cwd
 #  10  bootstrap.sh      the `grep -c || echo 0` idiom
 #  11  update.sh         a low-speed stall is a NETWORK fault
+#  12  verify-weights.sh --file with a name the registry lacks is a failure
+#  13  bootstrap.sh      a weight that failed its pin is never accepted later
 # (8, Finder droppings, is python: tests/test_bundle_manifest.py and
 #  tests/test_pydeps_lock.py.)
 
@@ -207,6 +209,83 @@ else
 fi
 rm -f "$W/PLAIN.GGUF"
 unset OPENBEAST_WEIGHTS_DIR
+
+# ===========================================================================
+echo ""
+echo "13. bootstrap.sh — a weight that FAILED its pin is never accepted on a re-run:"
+# ===========================================================================
+# bootstrap.sh cannot be run whole; its weight step is lifted out between its
+# own section markers, like the python step in 2+3. The stub hf (section 1)
+# writes BYTES-FROM-<repo>, so the registry row decides pass or fail.
+_wsec="$(sed -n '/^# ---- 4\. default model weight/,/^# ---- executable bits/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
+if has "$_wsec" "WEIGHT_FILE=" && has "$_wsec" "weights.registry"; then
+  pass "extracted bootstrap's weight step ($(wc -l <<< "$_wsec") lines)"
+else
+  fail "could not extract bootstrap's weight step — its section markers moved"
+fi
+{
+  echo 'set -euo pipefail'
+  echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo "$_wsec"
+  echo 'echo HARNESS-REACHED-END'
+} > "$T/bootstrap_weight_step.sh"
+_DW="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
+_dw_body='BYTES-FROM-JonathanColetti/Qwen3.8-27B-Uncensored-GGUF'
+_dw_sha="$(printf '%s' "$_dw_body" | sha256sum | awk '{print $1}')"
+_dw_reg="$(cat "$SB/scripts/weights.registry")"
+pin_default() {          # pin_default <sha>: the registry row for the default weight
+  { printf '%s\n' "$_dw_reg"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "${#_dw_body}" "$_DW" "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF" "-"
+  } > "$SB/scripts/weights.registry"
+}
+WB13="$T/weights13"
+run_wstep() { : > "$T/state/hf.log"; _out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?; }
+n_hf() { count_lines "$T/state/hf.log" "local-dir="; }
+
+# The upstream file was swapped: same size, different sha256.
+rm -rf "$WB13"; pin_default "$(printf 'f%.0s' {1..64})"
+run_wstep
+if [[ $_rc -ne 0 && ! -e "$WB13/$_DW" && "$(n_hf)" == "1" ]] && has "$_out" "CHECKSUM MISMATCH"; then
+  pass "a download that fails its pin dies and leaves NOTHING under the weight's name"
+else
+  fail "mismatched download (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
+fi
+# The re-run: this is where the old code printed "already downloaded", rc=0.
+run_wstep
+if [[ $_rc -ne 0 && ! -e "$WB13/$_DW" ]] && ! has "$_out" "already downloaded" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and the RE-RUN refuses again instead of accepting it as 'already downloaded'"
+else
+  fail "re-run after a mismatch (rc=$_rc): $_out"
+fi
+# A same-size wrong file already under the name (a pre-fix leftover, or a
+# hand copy): hashed, refused, and NOT deleted (it may be the operator's).
+mkdir -p "$WB13"; printf '%s' "${_dw_body//B/X}" > "$WB13/$_DW"
+pin_default "$_dw_sha"
+run_wstep
+if [[ $_rc -ne 0 && -f "$WB13/$_DW" && "$(n_hf)" == "0" ]] && has "$_out" "NOT the weight OpenBeast pinned" \
+   && has "$_out" "sha256 mismatch"; then
+  pass "an existing file with the right name but the wrong bytes is REFUSED (hashed, not trusted by name)"
+else
+  fail "existing wrong weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+# NEGATIVE CONTROL: a download that matches its pin lands, and the re-run
+# verifies it without downloading again.
+rm -rf "$WB13"
+run_wstep
+if [[ $_rc -eq 0 && "$(cat "$WB13/$_DW" 2>/dev/null)" == "$_dw_body" && "$(n_hf)" == "1" ]] \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "negative control: a download that matches its pin lands under its name"
+else
+  fail "good download (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+run_wstep
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" ]] && has "$_out" "already downloaded, sha256 verified"; then
+  pass "negative control: the re-run hashes the existing weight, accepts it, and does not re-download"
+else
+  fail "re-run on a good weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
 # ===========================================================================
 echo ""
