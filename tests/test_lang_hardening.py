@@ -1040,6 +1040,18 @@ def _c_side_channels(path):
         '#define S(x) #x\n#define XS(x) S(x)\n#define C(a,b) a %:%: b\n'
         '#define C2(a,b) C(a,b)\n#define PR(x) C2(_Pr,agma)(x)\n'
         f'PR(XS(GCC C2(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        # fixup: a universal character name spells the keyword without the
+        # word; gcc/g++ 16 reject the UCN and STILL run the pragma. Every
+        # UCN form: \uXXXX, \UXXXXXXXX, C++23 \u{…} and \N{…}
+        f'#pragma GCC depend\\u0065ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'_Pragma("GCC depend\\u0065ncy \\"{path}\\"")\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\U00000065ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\u{{65}}ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\N{{LATIN SMALL LETTER E}}ncy "{path}"\n'
+        'int main(void){return 0;}\n',
+        f'#if __has_incl\\u0075de("{path}")\n#endif\n',
+        # a UCN that names nothing cannot be decoded, so it cannot be judged
+        f'#pragma GCC depend\\N{{NO SUCH CHARACTER}}ncy "{path}"\n',
     ]
 
 
@@ -1056,6 +1068,8 @@ C_SIDE_CHANNEL_CONTROLS = [
     'int main(void){return 0;}\n',
     '#ifdef __has_include\n#endif\nint main(void){return 0;}\n',
     '#if defined __has_include\n#endif\nint main(void){return 0;}\n',
+    # an ordinary UCN in a string literal is not a keyword
+    'const char *s = "caf\\u00e9";\nint main(void){return s[0] - 99;}\n',
 ]
 
 
@@ -1087,12 +1101,30 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     assert not c.compile_source(dep.format(secret + ".absent"))
     # ...and the pasted-operator form, which spells neither word, is the same
     # oracle (round 5)
-    pasted = _c_side_channels(secret)[-2]
+    pasted = next(x for x in _c_side_channels(secret) if "_Pr,agma" in x)
     assert "_Pr,agma" in pasted, "the case list moved; point this at the paste"
     assert c.compile_source(pasted)
     assert not c.compile_source(pasted.replace(secret, secret + ".absent"))
     for src in C_SIDE_CHANNEL_CONTROLS:
         assert c.compile_source(src), (src, c.compile_source(src).detail)
+
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_the_ucn_spelled_dependency_pragma_was_an_oracle(lang, secret, monkeypatch):
+    """The control for the UCN cases: both builds FAIL (the UCN is invalid in
+    an identifier), yet gcc still ran the pragma — only the absent path adds
+    "No such file", so the diagnostic answers existence."""
+    if not _c_works():
+        pytest.skip("no C toolchain here that accepts the driver's flags")
+    drv = D.driver_for(lang)
+    monkeypatch.setattr(type(drv), "refusal", lambda self, s: None)
+    for tpl in ('#pragma GCC depend\\u0065ncy "{}"\nint main(void){{return 0;}}\n',
+                '_Pragma("GCC depend\\u0065ncy \\"{}\\"")\nint main(void){{return 0;}}\n'):
+        there = drv.compile_source(tpl.format(secret)).detail
+        absent = drv.compile_source(tpl.format(secret + ".absent")).detail
+        assert "No such file" not in there, there[:300]
+        assert "No such file" in absent, absent[:300]
 
 
 def test_rust_and_zig_scans_ignore_comments_and_strings(secret):

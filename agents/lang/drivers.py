@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 from . import _proc
 
@@ -222,12 +223,51 @@ def _escapes(path: str) -> bool:
             or ".." in re.split(r"[\\/]", path))
 
 
+#: A universal character name spells a letter without writing it:
+#: `#pragma GCC depend\u0065ncy "/abs"` (and the same inside _Pragma) never
+#: contains the word, gcc 16 rejects the UCN ("not valid in an identifier")
+#: and STILL runs the pragma — a fatal "No such file" only when the path is
+#: absent, so the existence oracle was back. Every form gcc/g++ accept:
+#: \uXXXX, \UXXXXXXXX, and C++23's delimited \u{…} and named \N{…}.
+_C_UCN = re.compile(
+    r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|u\{([^}\n]*)\}|N\{([^}\n]*)\})")
+
+
+def _decode_ucns(src: str) -> str | None:
+    """`src` with every UCN replaced by the character it names, or None when
+    one names nothing decodable (the caller refuses: in doubt, refuse)."""
+    def one(m):
+        if m.group(4) is not None:
+            return unicodedata.lookup(m.group(4))       # KeyError -> doubt
+        cp = int(m.group(1) or m.group(2) or m.group(3), 16)
+        return chr(cp)                                  # ValueError -> doubt
+    try:
+        return _C_UCN.sub(one, src)
+    except (KeyError, ValueError, OverflowError):
+        return None
+
+
 def _refuse_c(source: str) -> str | None:
     # Phases 1-2 of translation happen before any directive is recognised:
     # line endings, trigraphs (live under -std=c99/c++11), then line splicing.
     src = source.replace("\r\n", "\n").replace("\r", "\n")
     src = src.replace("??=", "#").replace("??/", "\\")
     src = re.sub(r"\\[ \t]*\n", "", src)
+    why = _refuse_c_text(src)
+    if why or not _C_UCN.search(src):
+        return why
+    # Scan the UCN-decoded text AS WELL — never instead: decoding can only
+    # reveal a keyword, and scanning both keeps the raw-text verdict intact.
+    decoded = _decode_ucns(src)
+    if decoded is None:
+        return "a universal character name that names no character"
+    why = _refuse_c_text(decoded)
+    if why:
+        return f"{why} (spelled with universal character names)"
+    return None
+
+
+def _refuse_c_text(src: str) -> str | None:
     for rx in (_C_INCLUDE, _CPP_IMPORT):
         for m in rx.finditer(src):
             path = m.group(1) if m.group(1) is not None else m.group(2)
