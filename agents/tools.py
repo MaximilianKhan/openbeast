@@ -164,6 +164,10 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
             except (OSError, ValueError):
                 pass
         popen_kw = dict(popen_kw, preexec_fn=_cap_as)
+    # Measured BEFORE the spawn: the /proc scan takes a few ms, and every ms
+    # between Popen and the prlimit calls below is a window in which the
+    # child runs uncapped (a 48 GB bytearray is one lazy mmap).
+    _nproc = _child_nproc_cap() if hasattr(resource, "prlimit") else None
     proc = subprocess.Popen(
         command,
         shell=True,
@@ -182,7 +186,6 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         _limits = [(resource.RLIMIT_AS, _as_limit),
                    (resource.RLIMIT_FSIZE, 8 * 1024**3),
                    (resource.RLIMIT_CPU, 1800)]
-        _nproc = _child_nproc_cap()
         if _nproc is not None:
             _limits.append((resource.RLIMIT_NPROC, _nproc))
         for _res, _cap in _limits:
