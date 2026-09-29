@@ -124,7 +124,8 @@ for _suite in \
   "test_gpu_ops.sh|GPU lease / update / ops" \
   "test_supply_chain.sh|Supply-chain (hash-pinned installs, pin parity)" \
   "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
-  "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)"; do
+  "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
+  "test_opencode_sessions.sh|opencode session clearing"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""
