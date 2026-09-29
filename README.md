@@ -280,7 +280,7 @@ installs the same way), and the **bundle** carries everything across:
 ./scripts/bundle.sh sign  /media/usb/openbeast --key ~/.ssh/openbeast-bundle
 # on the air-gapped rig
 ./scripts/bundle.sh verify  /media/usb/openbeast --key allowed_signers
-./scripts/bundle.sh install /media/usb/openbeast
+./scripts/bundle.sh install /media/usb/openbeast --key allowed_signers
 ```
 
 Hashes prove the bundle did not change in transit; the signature proves who
