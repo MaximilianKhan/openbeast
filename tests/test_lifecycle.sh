@@ -415,6 +415,30 @@ else
 fi
 [[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && kill "$_OTHER_PID" 2>/dev/null || true
 
+# extensions-client-9: `ext.sh disable x` then `./stop.sh` (as ext.sh says)
+# must still bring x's containers down.
+echo ""
+echo "stop.sh brings down compose extensions, enabled or just disabled:"
+_C="$_T/compose"; _sandbox "$_C"
+mkdir -p "$_C/extensions/cx"
+printf 'NAME=cx\nKIND=compose\n' > "$_C/extensions/cx/manifest"
+printf 'services: {}\n' > "$_C/extensions/cx/compose.yaml"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_C/bin/docker"; chmod +x "$_C/bin/docker"
+: > "$_C/openbeast.conf"   # cx NOT enabled: it was just disabled
+RUN_ENV=(DOCKER_LOG="$_C/docker.log")
+_run "$_C" "$_C/stop.sh" >/dev/null
+RUN_ENV=()
+if grep -q -- "down" "$_C/docker.log" && grep -q -- "-f $_C/extensions/cx/compose.yaml" "$_C/docker.log"; then
+  pass "a disabled compose extension's fragment is still passed to 'docker compose down'"
+else
+  fail "stop.sh left a just-disabled compose extension running: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+if grep -q -- "-f $_C/docker-compose.yml" "$_C/docker.log"; then
+  pass "…alongside the core compose file (control)"
+else
+  fail "stop.sh no longer passes the core compose file: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "================================"

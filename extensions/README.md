@@ -41,7 +41,8 @@ KIND=process          # 'compose' or 'process'
 
 **`KIND=compose`** — ship a `compose.yaml` fragment. `start.sh`/`stop.sh` merge
 it alongside the core `docker-compose.yml` with `-f` when the extension is
-enabled, so its services start/stop with the stack. Follow the core file's
+enabled, so its services start/stop with the stack (`stop.sh` passes every
+fragment on disk to `down`, so one you just disabled still comes down). Follow the core file's
 hardening conventions (`network_mode: host` or an explicit port, `cap_drop`,
 `no-new-privileges`, digest-pinned images).
 

@@ -57,7 +57,21 @@ if command -v docker >/dev/null 2>&1; then
   # Include enabled compose-extension fragments so their services come down too.
   COMPOSE_FILES=(-f "$SCRIPT_DIR/docker-compose.yml")
   while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(ob_ext_compose_args)
-  docker compose "${COMPOSE_FILES[@]}" down \
+  # ...and every OTHER compose fragment on disk. `ext.sh disable x` edits the
+  # conf first and then says "./stop.sh && ./start.sh -d", so the fragment
+  # of the extension just disabled is exactly the one an enabled-only list
+  # leaves out — and compose leaves its containers running, ports bound.
+  ALL_FILES=("${COMPOSE_FILES[@]}")
+  while IFS= read -r _e; do
+    [[ -n "$_e" ]] || continue
+    _cf="$SCRIPT_DIR/extensions/$_e/compose.yaml"
+    [[ -f "$_cf" && "$(ob_ext_meta "$_e" KIND 2>/dev/null || true)" == "compose" ]] || continue
+    [[ " ${ALL_FILES[*]} " == *" $_cf "* ]] || ALL_FILES+=(-f "$_cf")
+  done < <(ob_ext_available)
+  # A broken fragment of an extension nobody enabled must not keep the CORE
+  # up: if the full list fails, fall back to the enabled-only one.
+  docker compose "${ALL_FILES[@]}" down \
+    || { [[ ${#ALL_FILES[@]} -ne ${#COMPOSE_FILES[@]} ]] && docker compose "${COMPOSE_FILES[@]}" down; } \
     || echo "Warning: docker compose down failed (daemon not running?)"
 else
   echo "Docker not installed — skipping containers."
