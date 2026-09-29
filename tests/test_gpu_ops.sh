@@ -276,5 +276,102 @@ fi
 
 # ===========================================================================
 echo ""
+echo "profile-*-mtp.sh — never sweep into a campaign's server:"
+# ===========================================================================
+for f in profile-qwen38-uncensored-mtp.sh profile-heretic-v2-mtp.sh profile-fable-fusion-mtp.sh; do
+  install -m 755 "$SRC/scripts/$f" "$SB/scripts/$f"
+done
+install -m 644 "$SRC/scripts/lib/weights.sh" "$SB/scripts/lib/weights.sh"
+mkdir -p "$T/w" "$SB/llama.cpp/build/bin"
+for m in Qwen3.8-27B-Uncensored-Q5_K_M.gguf \
+         Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf \
+         Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q5_K_M.gguf; do
+  : > "$T/w/$m"
+done
+# The profilers exec llama-server themselves; the stub records the launch and
+# the lease it ran under, then becomes the "server" (exec keeps the pid the
+# profiler will signal, so nothing is orphaned).
+cat > "$SB/llama.cpp/build/bin/llama-server" <<'STUB'
+#!/bin/bash
+S="$OB_STUB_STATE"
+echo "launched $*" >> "$S/ls.log"
+cat "$(dirname "$0")/../../../.run/gpu.lease" > "$S/lease_during" 2>/dev/null || echo none > "$S/lease_during"
+if [[ "$(cat "$S/ls_mode")" == bind ]]; then
+  echo "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080"; exit 1
+fi
+echo "eval time = 1000 ms / 100 tokens ( 10.00 ms per token, 100.00 tokens per second)"
+touch "$S/up"
+exec sleep 60
+STUB
+# stop.sh: records the call. Under a HELD lease the real one leaves every
+# llama-server alone, so by default the port stays busy; `stop_frees` models
+# a stack stop that did free it.
+cat > "$SB/stop.sh" <<'STUB'
+#!/bin/bash
+echo "stop.sh $*" >> "$OB_STUB_STATE/stop.log"
+[[ -f "$OB_STUB_STATE/stop_frees" ]] && rm -f "$OB_STUB_STATE/port_busy"
+exit 0
+STUB
+chmod +x "$SB/llama.cpp/build/bin/llama-server" "$SB/stop.sh"
+PROF() {  # PROF <script> [args] — output in _out, status in _rc
+  rm -f "$T/state/up" "$T/state/lease_during"
+  : > "$T/state/ls.log"; : > "$T/state/stop.log"; : > "$T/state/curl.log"; : > "$T/state/kills.log"
+  _rc=0
+  _out="$(OPENBEAST_WEIGHTS_DIR="$T/w" SWEEP_N=1 timeout 60 "$SB/scripts/$@" 2>&1)" || _rc=$?
+}
+reqs() { grep -c 'chat/completions' "$T/state/curl.log" 2>/dev/null || true; }
+
+# --- a campaign holds the card and its server is on :8080 -------------------
+bash -c '"$1" acquire "campaign" >/dev/null 2>&1; exec sleep 60' _ "$GL" &
+_H=$!; PIDS+=("$_H")
+wait_for 'grep -q "^label=campaign$" "$SB/.run/gpu.lease" 2>/dev/null' || fail "holder never took the lease"
+echo ok > "$T/state/ls_mode"
+for _p in "profile-qwen38-uncensored-mtp.sh" "profile-heretic-v2-mtp.sh q5" "profile-fable-fusion-mtp.sh q5"; do
+  touch "$T/state/port_busy"
+  # shellcheck disable=SC2086
+  PROF $_p
+  if [[ $_rc -ne 0 ]] && has "$_out" "GPU lease is HELD by pid $_H" \
+     && [[ ! -s "$T/state/ls.log" && ! -s "$T/state/stop.log" && "$(reqs)" == 0 ]]; then
+    pass "${_p%% *}: a campaign's lease is refused — no stop, no launch, no requests into its server"
+  else
+    fail "${_p%% *} under a foreign lease (rc=$_rc, launches=$(wc -l < "$T/state/ls.log"), stop=$(cat "$T/state/stop.log"), reqs=$(reqs)): $_out"
+  fi
+done
+kill "$_H" 2>/dev/null || true; wait "$_H" 2>/dev/null || true
+rm -f "$SB/.run/gpu.lease"
+
+# --- no lease, but stop.sh could not free the port --------------------------
+touch "$T/state/port_busy"; rm -f "$T/state/stop_frees"
+PROF profile-qwen38-uncensored-mtp.sh
+if [[ $_rc -ne 0 ]] && has "$_out" "still answers on :8080" && [[ -s "$T/state/stop.log" ]] \
+   && [[ ! -s "$T/state/ls.log" && "$(reqs)" == 0 ]]; then
+  pass "a port still answering after stop.sh is a refusal, not a sweep into it"
+else
+  fail "port still busy after stop (rc=$_rc, launches=$(wc -l < "$T/state/ls.log"), reqs=$(reqs)): $_out"
+fi
+
+# --- the stack is up and stop.sh frees it: the sweep runs, under its lease --
+touch "$T/state/port_busy" "$T/state/stop_frees"
+PROF profile-qwen38-uncensored-mtp.sh
+rm -f "$T/state/stop_frees"
+if [[ $_rc -eq 0 ]] && [[ -s "$T/state/stop.log" ]] \
+   && grep -q '^label=profile-qwen38-uncensored-mtp.sh' "$T/state/lease_during" \
+   && has "$_out" "decode=100.00" && [[ ! -f "$SB/.run/gpu.lease" && ! -s "$T/state/kills.log" ]]; then
+  pass "negative control: a free card is profiled under the sweep's own lease, released after"
+else
+  fail "happy path (rc=$_rc, lease_during=$(tr '\n' ' ' < "$T/state/lease_during" 2>/dev/null)): $_out"
+fi
+
+# --- our server could not bind ----------------------------------------------
+echo bind > "$T/state/ls_mode"
+PROF profile-qwen38-uncensored-mtp.sh
+if has "$_out" "PORT_CONFLICT" && ! has "$_out" "FAILED_TO_START"; then
+  pass "a bind failure is recorded as a port conflict, not as an OOM at this context"
+else
+  fail "bind failure (rc=$_rc): $_out"
+fi
+
+# ===========================================================================
+echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
