@@ -202,3 +202,50 @@ def test_uid_task_count_measures_real_uid():
     assert n is not None and n >= 1
     # A uid that owns nothing reports "unmeasurable", not a zero cap.
     assert tools._uid_task_count(uid=2**31 - 7) is None
+
+
+# --- parent environ is not a side door around the scrub -------------------
+# The scrub cleans only the CHILD's env; the parent (tool server) still holds
+# the secrets, and a same-uid model shell read them back from
+# /proc/$PPID/environ. harden_process() makes the parent non-dumpable.
+
+_LEAK_PROBE = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+import tools
+print(tools.bash(
+    "tr '\\0' '\\n' </proc/$PPID/environ | grep s3cr3t-demo; "
+    "echo ENV_HITS=$(env | grep -c s3cr3t-demo); "
+    "echo SELF_HITS=$(cat /proc/self/environ | tr '\\0' '\\n' | grep -c CHILD_OWN_MARK)"))
+'''
+
+
+def _run_leak_probe(tmp_path, **extra_env):
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(OPENBEAST_IDENTITY_JWT_SECRET="s3cr3t-demo",
+               CHILD_OWN_MARK="1", AGENT_WORKDIR=str(tmp_path), **extra_env)
+    r = subprocess.run([sys.executable, "-c", _LEAK_PROBE, str(ROOT / "agents")],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+_linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"),
+                                 reason="procfs + prctl are Linux-only")
+
+
+@_linux_only
+def test_bash_cannot_read_parent_environ_secrets(tmp_path):
+    out = _run_leak_probe(tmp_path)
+    assert "s3cr3t-demo" not in out, out   # /proc/$PPID/environ refused
+    assert "Permission denied" in out, out
+    assert "ENV_HITS=0" in out, out         # the scrub still works
+    assert "SELF_HITS=1" in out, out        # the child stays a normal process
+
+
+@_linux_only
+def test_parent_environ_readable_without_hardening(tmp_path):
+    # Negative control: proves the probe detects the leak on this kernel.
+    out = _run_leak_probe(tmp_path, OPENBEAST_KEEP_DUMPABLE="1")
+    assert "OPENBEAST_IDENTITY_JWT_SECRET=s3cr3t-demo" in out, out

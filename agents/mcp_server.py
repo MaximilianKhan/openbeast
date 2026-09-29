@@ -1722,6 +1722,12 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=3001, help="HTTP port (default: 3001)")
     args = parser.parse_args()
 
+    # Before any agent/shell child exists: a spawned runner's model shell
+    # must not read this process's secrets (device key, stack keys) from
+    # /proc/<ancestor>/environ. run_reaped also does this lazily, but
+    # start_agent Popens runner.py without going through it.
+    _tools.harden_process()
+
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")
         if MCP_BIND not in ("127.0.0.1", "localhost", "::1"):

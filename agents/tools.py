@@ -153,6 +153,9 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
     # caveat is accepted only on the prlimit-less platform, and RLIMIT_AS is
     # best-effort there anyway).
     _as_limit = as_limit or _CHILD_AS_LIMIT
+    # Every caller that spawns model-influenced commands becomes $PPID of
+    # that command: make its /proc environ/mem unreadable first.
+    harden_process()
     if not hasattr(resource, "prlimit"):
         def _cap_as():
             try:
@@ -309,6 +312,45 @@ def _resolve(path: str) -> str:
     return os.path.realpath(p)
 
 
+_PROCESS_HARDENED = False
+_PR_SET_DUMPABLE = 4
+
+
+def harden_process() -> bool:
+    """Make THIS process non-dumpable (Linux prctl PR_SET_DUMPABLE=0).
+
+    The env scrub below only cleans the CHILD's environment; the parent
+    that spawns model-authored shells (tool server, mcp_server, runner,
+    run_eval) still holds every secret in its own initial environ, and a
+    same-uid child could read it straight back with
+    `tr '\\0' '\\n' </proc/$PPID/environ`. A non-dumpable process has its
+    /proc/<pid>/{environ,mem,maps,…} owned by root and refused to same-uid
+    readers (and to same-uid ptrace), so neither the launch env nor the
+    secrets held in memory can be lifted that way. The flag resets on
+    execve, so spawned children stay normal, debuggable processes.
+
+    Idempotent; called before the first child spawn in run_reaped and at
+    server startup. No-op off Linux. OPENBEAST_KEEP_DUMPABLE=1 opts out
+    (e.g. to attach py-spy/gdb to a live server). Returns True if the
+    process is now hardened."""
+    global _PROCESS_HARDENED
+    if _PROCESS_HARDENED:
+        return True
+    if os.environ.get("OPENBEAST_KEEP_DUMPABLE", "").strip() in ("1", "true"):
+        return False
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            return False
+    except (OSError, AttributeError):
+        return False
+    _PROCESS_HARDENED = True
+    return True
+
+
 def _scrubbed_env() -> dict:
     """Copy of the process env minus the stack's secrets.
 
@@ -318,7 +360,14 @@ def _scrubbed_env() -> dict:
     WebUI admin password that the server process was launched with.
     Mirrors start.sh's systemd-setenv secret filter — stack-prefixed
     names containing KEY/SECRET/PASSWORD are dropped; the user's own
-    unrelated env vars are left alone."""
+    unrelated env vars are left alone.
+
+    Scope, honestly: together with harden_process() (the parent's
+    /proc/<pid>/environ unreadable) this defeats `env` and
+    /proc/$PPID/environ. It is NOT a boundary against a same-uid shell
+    that reads openbeast.conf (mode 600, same owner) or a still-running
+    dumpable ancestor that was launched with the secrets — that needs a
+    separate uid or the Sandlock wrapper (OPENBEAST_BASH_WRAPPER)."""
     env = dict(os.environ)
     # Exact-name denylist (2026-09-10 hardening): OPENAI_API_KEY is the very
     # credential runner.py's _key_endpoint_trusted guards against
