@@ -320,10 +320,12 @@
 #ROUTER_PORT=8088
 
 # The router only spawns agents for admin turns (Open WebUI forwards
-# X-OpenWebUI-User-Role; guests pass through untouched). When true, an ABSENT
-# role header also blocks spawning (fail-closed) — set on hardened multi-user
-# installs where header forwarding might be disabled. Default: false
-# (single-user installs send no headers and should keep working).
+# X-OpenWebUI-User-Role, or only a signed X-OpenWebUI-User-Jwt when
+# IDENTITY_JWT_SECRET is set, which the router verifies; guests pass through
+# untouched). An ABSENT identity blocks spawning (fail-closed) on its own
+# whenever WEBUI_AUTH=true or IDENTITY_JWT_SECRET is set; true forces that on
+# any other rig too. Default: false (single-user no-auth installs send no
+# headers and should keep working).
 # Env override: $OPENBEAST_ROUTER_REQUIRE_IDENTITY. See docs/RBAC_PLAN.md.
 #ROUTER_REQUIRE_IDENTITY=false
 

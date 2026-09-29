@@ -52,7 +52,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
 | `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While no device is enrolled, serve every caller as a single `anon` device (ignored once one is — then a missing/unknown key is 401). Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
-| `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
+| `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on. Written automatically (`admin@localhost` + a random password) when it rotates the built-in admin's upstream default password — see "The built-in admin account" below |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
 | `BEAST_ARTIFACT` | `OPENBEAST_BEAST_ARTIFACT` | `false` | Run beast-artifact (`agents/artifact_server.py`), the publish-and-view service for model- or script-authored HTML. Adds the `publish_artifact`/`list_artifacts` tools to the MCP/WebUI surface (not the autonomous runner's registry). See `docs/BEAST_ARTIFACT.md` |
@@ -62,7 +62,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `BEAST_CHAT` | `OPENBEAST_BEAST_CHAT` | `false` | Run beast-chat (`agents/chat_server.py`), the tailnet operator console for the rig's own agent and job sessions — list, follow the live transcript, `say`, stop, start. Loopback-bound; `setup-tailscale.sh --publish-chat` maps `:8445` at it. See `docs/BEAST_CHAT.md` |
 | `CHAT_PORT` | `OPENBEAST_CHAT_PORT` | `3003` | Loopback port beast-chat listens on when `BEAST_CHAT=true` |
 | `CHAT_OPERATORS` | `OPENBEAST_CHAT_OPERATORS` | *(empty)* | The **read** allowlist: comma-separated tailnet logins (the `Tailscale-User-Login` that `tailscale serve` injects). An unlisted login gets 404, never 403. **Left empty the allowlist is not enforced** — every identified login on your tailnet can read every session (the single-operator default; `doctor` warns). **Writes** (say, stop, start an agent) additionally need a chat-scoped device key: `./scripts/clients.sh enroll phone --scope chat`. Also the fallback for `ARTIFACT_OPERATORS` |
-| `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
+| `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | automatic | The router only spawns for admin turns — the role comes from the plain `X-OpenWebUI-User-Role` header, or, when `IDENTITY_JWT_SECRET` is set, only from the verified `X-OpenWebUI-User-Jwt` (a plain role header is ignored there). A turn with **no** identity fails closed automatically when `WEBUI_AUTH=true` or `IDENTITY_JWT_SECRET` is set; `true` forces fail-closed on any rig. Only a single-user, auth-off rig lets an anonymous turn spawn. See `docs/RBAC_PLAN.md` |
 | `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 18 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
 | `IDENTITY_JWT_SECRET` | `OPENBEAST_IDENTITY_JWT_SECRET` | empty (header mode) | Shared HS256 secret: Open WebUI mints a signed JWT per tool call and the identity tool server verifies it, killing header forgery. Requests without a token stay anonymous; a present-but-invalid token is 401. Generate with `scripts/setup-mcpo-keys.sh --with-jwt` |
@@ -447,22 +447,43 @@ account. This is the right mode as long as the WebUI is only reachable on
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
 whole tailnet — that's when a per-user login boundary (and the RBAC tiers
-in `docs/RBAC_PLAN.md`) starts to matter. On an auth-enabled fresh install,
-**the first account to sign up becomes admin** — create yours immediately
-after enabling auth, then mirror the credentials into the gitignored
-`openbeast.conf` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so
-`configure-webui.sh` can keep re-applying tool config on restarts. You log
-in once per device/browser; a session token persists after that. If you
-change the password in the UI (Settings → Account), update
-`openbeast.conf` to match. (Example: a box upgraded from the pre-auth era
-may carry a legacy `admin@localhost` account in its database — treat it as
-that install's admin, not a universal default.)
+in `docs/RBAC_PLAN.md`) starts to matter. It persists `WEBUI_AUTH=true`
+*before* publishing the WebUI, and only publishes `:443` once the running
+WebUI actually enforces logins — if the stack was already up with auth off
+it tells you to restart and re-run instead. If the WebUI is not answering
+yet, it asks docker: a booting container is waited for, and an
+`open-webui` container created with auth off (or one docker can't be asked
+about) keeps `:443` closed until you restart and re-run.
+
+**The built-in admin account.** With auth off, Open WebUI signs every
+visitor in as `admin@localhost` and creates that account as **admin** with
+its hardcoded password `admin` — so any install that started once with the
+default already has it, and new signups land as `pending` (the "first signup
+becomes admin" rule only holds for a database with no users at all). Left
+alone, that is a known admin password on the tailnet. So whenever the
+running WebUI enforces auth, `configure-webui.sh` (every start, and
+`setup-tailscale.sh` before it publishes) signs in with the default; if that
+works it rotates the password to a random one and saves it in the 0600
+`openbeast.conf` as `WEBUI_ADMIN_EMAIL=admin@localhost` /
+`WEBUI_ADMIN_PASSWORD` — or as `WEBUI_DEFAULT_ADMIN_PASSWORD` when the conf
+already names a different admin, whose password it never touches. If the
+rotation fails it prints a `SECURITY WARNING` and `setup-tailscale.sh` does
+not publish the WebUI. Put the admin account you use in `openbeast.conf`
+(`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so `configure-webui.sh` can
+keep re-applying tool config on restarts. You log in once per
+device/browser; a session token persists after that. If you change the
+password in the UI (Settings → Account), update `openbeast.conf` to match.
 
 **Turning auth back off.** Set `WEBUI_AUTH=false` in `openbeast.conf` (or
 `OPENBEAST_WEBUI_AUTH=false` in the environment) before `./start.sh`.
 Trade-off on a tailnet-exposed install: anyone holding any device on your
 tailnet — including a lost phone — gets the full admin UI. Layered defense
-says leave it on there; the cost is one login per device.
+says leave it on there; the cost is one login per device. With it off,
+`setup-tailscale.sh` refuses to publish the WebUI unless you pass
+`--i-accept-open-webui`. Auth-off WebUI signs in with upstream's built-in
+`admin@localhost` / `admin`, so if that password was rotated, set it back
+to `admin` (Settings → Account) before turning auth off, or the auth-off
+UI cannot sign in.
 
 **Accounts and history — it's real multi-user, not one shared login:**
 - Every account has its **own separate chat history**, settings, and

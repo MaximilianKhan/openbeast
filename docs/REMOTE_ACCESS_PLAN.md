@@ -152,7 +152,11 @@ tailnet after this, not via raw LAN IPs.
   127.0.0.1`; since 2026-07-09 the identity tool server
   `agents/openapi_tools.py` fills that slot).
 - `docker-compose.yml`: `GRANIAN_HOST=127.0.0.1`; WebUI `HOST=127.0.0.1`,
-  `WEBUI_AUTH=true` (first signup becomes admin — do it immediately).
+  `WEBUI_AUTH=true`. (Superseded: WEBUI_AUTH defaults to false and
+  `setup-tailscale.sh` flips it. "First signup becomes admin" only holds for
+  an empty WebUI database — an install that ever ran auth-off already has
+  `admin@localhost` as admin with upstream's password `admin`, which
+  `configure-webui.sh` now rotates once auth is on; see docs/REFERENCE.md.)
 - Optional defense-in-depth: `LLAMA_API_KEY` in conf → serve.sh appends
   `--api-key`; document the matching WebUI/opencode settings. Default off —
   the tailnet is the boundary; enable it if the tailnet ever gains users.

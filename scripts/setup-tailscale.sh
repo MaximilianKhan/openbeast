@@ -3,6 +3,7 @@
 #
 #   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
 #                                [--publish-chat] [--publish-artifact]
+#                                [--i-accept-open-webui]
 #   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
 #                               | --unpublish-chat | --unpublish-artifact
 #
@@ -48,6 +49,15 @@
 # WRITES stay loopback-only either way, so nothing on the phone path can
 # publish or delete. Undo with --unpublish-artifact.
 #
+# The WebUI (:443) is published ONLY behind its login wall. Before mounting
+# it the script persists WEBUI_AUTH=true, checks that the RUNNING WebUI
+# actually enforces it (a container started before this run still has auth
+# off — every visitor would be admin, with bash), and retires Open WebUI's
+# built-in admin@localhost/"admin" account password. If the running WebUI has
+# auth off, :443 is left unpublished until the stack is restarted and this
+# script re-run. An explicit WEBUI_AUTH=false in openbeast.conf also blocks
+# :443 unless --i-accept-open-webui says the open WebUI is intended.
+#
 # Public internet exposure (tailscale funnel) is deliberately not offered.
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
@@ -56,6 +66,7 @@ PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
 PUBLISH_CHAT=0
 PUBLISH_ARTIFACT=0
+ACCEPT_OPEN_WEBUI=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -82,7 +93,8 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8446 off
       echo "beast-artifact unpublished from the tailnet (:8446 off)."
       exit 0 ;;
-    -h|--help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --i-accept-open-webui) ACCEPT_OPEN_WEBUI=1 ;;
+    -h|--help) sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -175,17 +187,140 @@ if [[ "$(_ts_ready)" != "yes" ]]; then
   done
   echo " done!"
 fi
-sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
+# Resolve settings via lib/conf.sh, not an ad-hoc grep: that keeps the
+# documented env-var-over-conf precedence and one parser for the whole repo.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$(dirname "$0")/lib/conf.sh"
+
+# --- 3a. The WebUI login boundary, BEFORE the WebUI goes tailnet-wide -------
+# Local-only installs run WEBUI_AUTH=false (no login wall). Going remote is
+# exactly when per-user auth + RBAC start to matter, so persist it in
+# openbeast.conf (idempotent) — and do it before :443 exists, not after.
+CONF="$REPO_DIR/openbeast.conf"
+touch "$CONF"
+if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
+  printf '\n# Remote access enabled — require a WebUI login (RBAC tiers apply).\nWEBUI_AUTH=true\n' >> "$CONF"
+  WEBUI_AUTH=true
+  echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
+else
+  echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+fi
+
+# What the RUNNING WebUI enforces (public /api/config → features.auth):
+# true / false / unknown (not running — it will start from the conf).
+# One word, always: a failed curl under pipefail must not print a second line.
+_webui_live_auth() {
+  local cfg
+  cfg=$(curl -s -m 5 "http://127.0.0.1:3000/api/config" 2>/dev/null) || cfg=""
+  printf '%s' "$cfg" | python3 -c "
+import sys, json
+try:
+    a = json.load(sys.stdin).get('features', {}).get('auth')
+except Exception:
+    a = None
+print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
+    || echo unknown
+}
+
+# When /api/config does not answer, "not running" and "an auth-off container
+# still booting" look the same — and start.sh does not wait for the WebUI.
+# Ask docker which it is: absent | unqueryable | <status>:<env auth>.
+_webui_container() {
+  command -v docker >/dev/null 2>&1 || { echo absent; return 0; }
+  local out
+  if ! out=$(docker inspect -f '{{.State.Status}}{{range .Config.Env}} {{.}}{{end}}' \
+               open-webui 2>&1); then
+    if printf '%s' "$out" | grep -qi 'no such'; then echo absent; else echo unqueryable; fi
+    return 0
+  fi
+  local status=${out%% *} auth=false
+  [[ " $out " == *" WEBUI_AUTH=true "* ]] && auth=true
+  echo "${status}:${auth}"
+}
+
+WEBUI_PUBLISHED=0
+_webui_block=""
+if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+  if [[ $ACCEPT_OPEN_WEBUI -eq 1 ]]; then
+    echo "      WARNING: WEBUI_AUTH=false and --i-accept-open-webui given — publishing"
+    echo "               the WebUI with NO login. Every tailnet device is admin, with"
+    echo "               bash through the privileged tool connection."
+  else
+    _webui_block="WEBUI_AUTH=false in openbeast.conf — publishing it would make every
+               tailnet device an admin (with bash). Remove that line (or set it to
+               true), restart the stack, and re-run; or pass --i-accept-open-webui
+               if an open WebUI on your tailnet is really what you want."
+  fi
+else
+  _live="$(_webui_live_auth)"
+  _ct=""
+  if [[ "$_live" == unknown ]]; then
+    _ct="$(_webui_container)"
+    if [[ "$_ct" == running:* ]]; then
+      # Up but not answering: booting (migrations, embedding download).
+      _wait_s="${WEBUI_WAIT_S:-90}"
+      echo "      Open WebUI is starting — waiting up to ${_wait_s}s for it to answer..."
+      _deadline=$((SECONDS + _wait_s))
+      while [[ "$_live" == unknown ]] && (( SECONDS < _deadline )); do
+        sleep 2
+        _live="$(_webui_live_auth)"
+      done
+    fi
+  fi
+  case "$_live" in
+    false)
+      _webui_block="the RUNNING WebUI was started with auth OFF (the conf change only
+               applies on restart). Publishing now would make every tailnet device
+               an admin. Restart the stack (./stop.sh && ./start.sh), then re-run
+               this script to publish the WebUI." ;;
+    true)
+      # Open WebUI's built-in admin@localhost was created with upstream's
+      # fixed password "admin" while auth was off. Retire it before the
+      # login page is reachable from the tailnet.
+      if ! "$REPO_DIR/scripts/configure-webui.sh" --secure-default-admin; then
+        _webui_block="admin@localhost still has upstream's default password and it
+               could not be rotated (see the warning above). Change it, then re-run."
+      fi ;;
+    *)
+      case "$_ct" in
+        running:true)
+          _webui_block="the WebUI container is up but never answered, so its default
+               admin password could not be checked. Re-run this script once it is up." ;;
+        absent|*:true)
+          # Not running (or a stopped container that restarts auth on): it
+          # starts from the conf, and start.sh's configure-webui.sh run
+          # retires the default password then.
+          : ;;
+        running:*|*:false)
+          # A container carrying WEBUI_AUTH=false keeps it (restart:
+          # unless-stopped) until compose recreates it.
+          _webui_block="the open-webui container was created with auth OFF and is not
+               answering yet. Publishing now would make every tailnet device an
+               admin once it boots. Restart the stack (./stop.sh && ./start.sh),
+               wait for the WebUI, then re-run this script." ;;
+        *)
+          _webui_block="the WebUI is not answering and docker could not be asked
+               whether an auth-off open-webui container exists. Start the stack
+               (./start.sh), wait for the WebUI, then re-run this script." ;;
+      esac ;;
+  esac
+fi
+if [[ -n "$_webui_block" ]]; then
+  echo "      NOT publishing the WebUI (:443): $_webui_block" >&2
+  # An earlier run may have mounted it — take it down rather than leave an
+  # open admin UI on the tailnet.
+  sudo tailscale serve --https=443 off >/dev/null 2>&1 || true
+else
+  sudo tailscale serve --bg --https=443  http://127.0.0.1:3000
+  WEBUI_PUBLISHED=1
+fi
+
 # :8443 = the inference endpoint remote clients use. When beast-gate is
 # enabled (EDGE_GATE=true) publish IT instead of raw llama-server: the gate
 # adds per-device keys, a path allowlist (no /lora-adapters, /slots,
 # /v1/stream for remote callers), rate limits, and an inference audit. Raw
 # llama-server stays on loopback for the local command center either way.
-# Resolve via lib/conf.sh, not an ad-hoc grep: that keeps the documented
-# env-var-over-conf precedence and one parser for the whole repo.
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=/dev/null
-source "$(dirname "$0")/lib/conf.sh"
 _EDGE_GATE="${EDGE_GATE:-false}"
 _EDGE_PORT="${EDGE_PORT:-8090}"
 if [[ "$_EDGE_GATE" == "true" ]]; then
@@ -307,26 +442,16 @@ for _row in \
   printf '        %-6s  %-34s  %s\n' "$_port" "$_what" "$_state"
 done
 
-# --- 3b. Turn on the WebUI login boundary now that it's tailnet-wide --------
-# Local-only installs run WEBUI_AUTH=false (no login wall). Going remote is
-# exactly when per-user auth + RBAC start to matter, so persist it in
-# openbeast.conf (idempotent). The stack restart below picks it up.
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONF="$REPO_DIR/openbeast.conf"
-touch "$CONF"
-if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
-  printf '\n# Remote access enabled — require a WebUI login (RBAC tiers apply).\nWEBUI_AUTH=true\n' >> "$CONF"
-  echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
-else
-  echo "      WEBUI_AUTH already set in openbeast.conf — leaving as-is."
-fi
-
 # --- 4. Report ---------------------------------------------------------------
 FQDN=$(tailscale status --json | python3 -c "import sys,json; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")
 echo ""
 echo "[4/4] OpenBeast is reachable from every device on your tailnet:"
 echo ""
-echo "  Chat (Open WebUI):   https://$FQDN"
+if [[ $WEBUI_PUBLISHED -eq 1 ]]; then
+  echo "  Chat (Open WebUI):   https://$FQDN"
+else
+  echo "  Chat (Open WebUI):   NOT published yet — see the message above, then re-run."
+fi
 echo "  API (OpenAI-compat): https://$FQDN:8443/v1"
 echo ""
 echo "  Phone:  install the Tailscale app, sign in, open the chat URL,"

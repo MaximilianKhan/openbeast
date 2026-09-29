@@ -17,9 +17,13 @@ keys + Sandlock (below-app enforcement).
 > `X-OpenWebUI-User-Role` on every model request, and the router gates its
 > spawn path on it: `admin` → spawn allowed; any other role → prefilter +
 > classify skipped entirely (zero added latency, no spawn path); header
-> absent → allowed by default (single-user/no-auth installs send no
-> headers), or denied when `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`
-> (recommended for hardened multi-user installs).
+> absent → allowed only on single-user/no-auth installs (which send no
+> headers). The gate fails closed on its own whenever `WEBUI_AUTH=true`
+> or signed identity is on, and `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`
+> forces it anywhere else. In signed-identity mode the role is read ONLY
+> from the verified `X-OpenWebUI-User-Jwt` (HS256, `iss=open-webui`, `exp`
+> and `sub` required), because WebUI then sends no plain role header
+> (review identity-rbac-1, 2026-09-29).
 > **Remaining caveat:** a stack started before 2026-07-08 runs the old
 > router code until its next restart, and disabling WebUI header
 > forwarding re-opens the fail-open default — set
@@ -154,9 +158,11 @@ The WebUI checks are policy, not enforcement — a bug or a second frontend
 Defense in depth:
 0. ✅ **DONE 2026-07-08 — router identity gate.** `docker-compose.yml` sets
    `ENABLE_FORWARD_USER_INFO_HEADERS=true`; `agents/router.py` reads
-   `X-OpenWebUI-User-Role` and only spawns for `admin` (non-admin turns skip
-   classification entirely; absent header is fail-open unless
-   `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`). Unit-tested in
+   `X-OpenWebUI-User-Role` (or, with signed identity, the verified
+   `X-OpenWebUI-User-Jwt`) and only spawns for `admin` (non-admin turns skip
+   classification entirely; absent identity is fail-open only on no-auth
+   single-user rigs: it fails closed when `WEBUI_AUTH=true`, when signed
+   identity is on, or when `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`). Unit-tested in
    `tests/test_router.py` (`_spawn_allowed`).
 0b. ✅ **DONE 2026-07-08 — fetch SSRF guard + guest fetch.** `fetch()` in
    `agents/tools.py` refuses non-http(s) schemes and any host whose

@@ -708,7 +708,7 @@ def test_the_audit_row_carries_both_halves_of_the_identity(surfaces,
     the row says which WebUI account published it."""
     tools, _web, _app = surfaces
     _publish_through_the_tool_server(tools, _identity())
-    path = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    path = os.environ["OPENBEAST_TOOL_AUDIT_PATH"]   # conftest isolates it
     rows = [json.loads(x) for x in open(path).read().splitlines() if x.strip()]
     pub = [r for r in rows if r.get("tool") == "publish_artifact"][-1]
     assert pub["user"] == WEBUI_ID

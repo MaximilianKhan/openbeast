@@ -621,12 +621,25 @@ at a glance.
 ### Post-setup (one time, ~3 minutes)
 
 1. Restart the stack so the loopback binds + WebUI auth take effect:
-   `./stop.sh && ./start.sh`
-2. Open the WebUI URL and **create the admin account immediately** —
-   `WEBUI_AUTH=true` now, and the *first* signup becomes admin.
-3. Mirror those credentials into `openbeast.conf` (`WEBUI_ADMIN_EMAIL` /
-   `WEBUI_ADMIN_PASSWORD`) so `scripts/configure-webui.sh` can keep applying
-   tool-server config on restarts.
+   `./stop.sh && ./start.sh`. If the stack was running when you ran
+   `setup-tailscale.sh`, the script did **not** publish the WebUI (`:443`) —
+   the running container still had auth off, which would have made every
+   tailnet device an admin. Re-run `./scripts/setup-tailscale.sh` after the
+   restart to publish it.
+2. **Your admin account.** Any install that ever started with the default
+   `WEBUI_AUTH=false` already has one: Open WebUI created `admin@localhost`
+   as admin with its built-in password `admin`. The first auth-on start (and
+   `setup-tailscale.sh`) rotates that password to a random one and saves it
+   in `openbeast.conf` as `WEBUI_ADMIN_EMAIL=admin@localhost` /
+   `WEBUI_ADMIN_PASSWORD=…` (the file is 0600); read it there to log in, then
+   change it or create your own admin in Admin Panel → Users. New signups
+   land as `pending` — the "first signup becomes admin" rule only applies to
+   a WebUI database that has never had a user.
+3. If you use a different admin account, put its credentials in
+   `openbeast.conf` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so
+   `scripts/configure-webui.sh` can keep applying tool-server config on
+   restarts. (It then saves the rotated built-in password as
+   `WEBUI_DEFAULT_ADMIN_PASSWORD` instead of touching yours.)
 
 ### Add your devices (each ~1 minute)
 
@@ -1002,9 +1015,10 @@ rename that predates the pin:
      sh -c 'rm -rf /new/* ; cp -a /old/. /new/'
    ```
 3. Rerun `./start.sh`. Note: a database from the `WEBUI_AUTH=false` era has
-   an `admin@localhost` account with no usable password — set one directly
-   before logging in (bcrypt-hash a password into the `auth` table of
-   `webui.db`) or you'll be locked out under `WEBUI_AUTH=true`.
+   an `admin@localhost` **admin** account with Open WebUI's built-in password
+   `admin`. Under `WEBUI_AUTH=true`, `configure-webui.sh` rotates it on start
+   and saves the new one in `openbeast.conf` (`WEBUI_ADMIN_PASSWORD`, or
+   `WEBUI_DEFAULT_ADMIN_PASSWORD` if the conf already names another admin).
 
 **`llama-cli not found`** — llama.cpp isn't built or the build directory structure
 changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.
