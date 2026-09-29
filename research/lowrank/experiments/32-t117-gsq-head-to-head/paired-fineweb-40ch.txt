@@ -1,0 +1,56 @@
+=== gsq-rco-iq2xs vs unsloth-ud-iq2s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-gsq-rco-iq2xs.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-iq2s.log
+  final: A KLD 0.15243 top 82.735%  |  B KLD 0.14516 top 83.667%
+  KLD (nats/tok)           paired dmean = +0.007270 ± 0.004371  (t = +1.66, n = 40, A better on 13/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.000034 ± 0.008714  (t = +0.00, n = 40, A better on 20/40 chunks)
+  same-top fraction        paired dmean = -0.009320 ± 0.003270  (t = -2.85, n = 40, A better on 14/40 chunks)
+=== gsq-rco-iq3s vs unsloth-ud-iq3s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-gsq-rco-iq3s.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-iq3s.log
+  final: A KLD 0.04018 top 91.186%  |  B KLD 0.03693 top 91.824%
+  KLD (nats/tok)           paired dmean = +0.003250 ± 0.001567  (t = +2.07, n = 40, A better on 13/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.005116 ± 0.005598  (t = -0.91, n = 40, A better on 18/40 chunks)
+  same-top fraction        paired dmean = -0.006380 ± 0.003430  (t = -1.86, n = 40, A better on 12/40 chunks)
+=== ours-iq2s-fc128 vs gsq-rco-iq2xs (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-iq2s-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-gsq-rco-iq2xs.log
+  final: A KLD 0.13489 top 84.088%  |  B KLD 0.15243 top 82.735%
+  KLD (nats/tok)           paired dmean = -0.017540 ± 0.004451  (t = -3.94, n = 40, A better on 35/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.011545 ± 0.008610  (t = -1.34, n = 40, A better on 22/40 chunks)
+  same-top fraction        paired dmean = +0.013530 ± 0.003776  (t = +3.58, n = 40, A better on 30/40 chunks)
+=== ours-iq3s-fc128 vs gsq-rco-iq3s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-iq3s-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-gsq-rco-iq3s.log
+  final: A KLD 0.03469 top 92.049%  |  B KLD 0.04018 top 91.186%
+  KLD (nats/tok)           paired dmean = -0.005490 ± 0.001618  (t = -3.39, n = 40, A better on 31/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.004142 ± 0.005482  (t = +0.76, n = 40, A better on 16/40 chunks)
+  same-top fraction        paired dmean = +0.008630 ± 0.003163  (t = +2.73, n = 40, A better on 28/40 chunks)
+=== ours-iq2s-fc128 vs unsloth-ud-iq2s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-iq2s-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-iq2s.log
+  final: A KLD 0.13489 top 84.088%  |  B KLD 0.14516 top 83.667%
+  KLD (nats/tok)           paired dmean = -0.010270 ± 0.001093  (t = -9.40, n = 40, A better on 38/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.011511 ± 0.001812  (t = -6.35, n = 40, A better on 32/40 chunks)
+  same-top fraction        paired dmean = +0.004210 ± 0.002471  (t = +1.70, n = 40, A better on 25/40 chunks)
+=== ours-q2kxl-fc128 vs unsloth-ud-q2kxl (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-q2kxl-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-q2kxl.log
+  final: A KLD 0.08262 top 86.588%  |  B KLD 0.08778 top 86.608%
+  KLD (nats/tok)           paired dmean = -0.005160 ± 0.000561  (t = -9.20, n = 40, A better on 38/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.006001 ± 0.001311  (t = -4.58, n = 40, A better on 30/40 chunks)
+  same-top fraction        paired dmean = -0.000200 ± 0.001865  (t = -0.11, n = 40, A better on 19/40 chunks)
+=== ours-iq3s-fc128 vs unsloth-ud-iq3s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-iq3s-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-iq3s.log
+  final: A KLD 0.03469 top 92.049%  |  B KLD 0.03693 top 91.824%
+  KLD (nats/tok)           paired dmean = -0.002240 ± 0.000259  (t = -8.65, n = 40, A better on 36/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.000975 ± 0.001039  (t = -0.94, n = 40, A better on 20/40 chunks)
+  same-top fraction        paired dmean = +0.002250 ± 0.001552  (t = +1.45, n = 40, A better on 24/40 chunks)
+=== ours-iq2s-fc128 vs unsloth-ud-q2kxl (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-ours-iq2s-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/32-t117-gsq-head-to-head/kldfw40-unsloth-ud-q2kxl.log
+  final: A KLD 0.13489 top 84.088%  |  B KLD 0.08778 top 86.608%
+  KLD (nats/tok)           paired dmean = +0.047110 ± 0.004395  (t = +10.72, n = 40, A better on 1/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.032988 ± 0.007298  (t = +4.52, n = 40, A better on 9/40 chunks)
+  same-top fraction        paired dmean = -0.025200 ± 0.003784  (t = -6.66, n = 40, A better on 8/40 chunks)
