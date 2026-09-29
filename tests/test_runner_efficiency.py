@@ -237,8 +237,11 @@ def _done():
 
 
 def _run(tmp_path, monkeypatch, script, env=None):
-    for k in ("OPENBEAST_EVAL", "OPENBEAST_AGENT_MAX_TOKENS"):
+    for k in ("OPENBEAST_EVAL", "OPENBEAST_AGENT_MAX_TOKENS",
+              "OPENBEAST_REASONING_BUDGET", "REASONING_BUDGET"):
         monkeypatch.delenv(k, raising=False)
+    # Never the real rig's openbeast.conf; tests that want one write it here.
+    monkeypatch.setattr(runner, "_CONF_PATH", tmp_path / "openbeast.conf", raising=False)
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)
     ctor = {}
@@ -297,6 +300,39 @@ def test_invalid_env_value_falls_back_to_default(tmp_path, monkeypatch):
     _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
                       env={"OPENBEAST_AGENT_MAX_TOKENS": "lots"})
     assert fake.kwargs[0]["max_tokens"] == runner._DEFAULT_MAX_COMPLETION_TOKENS
+
+
+def test_unlimited_reasoning_budget_means_no_cap(tmp_path, monkeypatch):
+    # REASONING_BUDGET=-1 is a documented "unlimited thinking" setting; a
+    # fixed 32K cap would cut every long thought off mid-way.
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_REASONING_BUDGET": "-1"})
+    assert "max_tokens" not in fake.kwargs[0]
+
+
+def test_larger_reasoning_budget_raises_the_cap(tmp_path, monkeypatch):
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_REASONING_BUDGET": "65536"})
+    assert fake.kwargs[0]["max_tokens"] == 65536 + 12288
+
+
+def test_reasoning_budget_is_read_from_openbeast_conf(tmp_path, monkeypatch):
+    # The runner is spawned without conf.sh sourced, so the conf file is read
+    # directly; the LAST assignment wins, as in scripts/lib/conf.sh.
+    (tmp_path / "openbeast.conf").write_text(
+        "# REASONING_BUDGET=1\nREASONING_BUDGET=4096\nREASONING_BUDGET=\"-1\"\n")
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()])
+    assert "max_tokens" not in fake.kwargs[0]
+    (tmp_path / "openbeast.conf").write_text("REASONING_BUDGET=4096\n")
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()])
+    assert fake.kwargs[0]["max_tokens"] == 4096 + 12288
+
+
+def test_explicit_agent_cap_beats_the_reasoning_budget(tmp_path, monkeypatch):
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_REASONING_BUDGET": "-1",
+                           "OPENBEAST_AGENT_MAX_TOKENS": "8000"})
+    assert fake.kwargs[0]["max_tokens"] == 8000
 
 
 @pytest.fixture(autouse=True)

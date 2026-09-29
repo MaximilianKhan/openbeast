@@ -276,15 +276,36 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # --reasoning-budget caps THINKING only; a repetition loop in the answer or a
 # tool's arguments ran until the client's 600 s read timeout, and the openai
 # client then silently retried the identical request twice — ~30 min of the
-# single -np 1 slot for one turn. Agent requests now carry max_tokens (the
-# 20480 thinking budget + a 12K content allowance), overridable with
-# OPENBEAST_AGENT_MAX_TOKENS (0 = uncapped). Eval runs stay uncapped: run_eval
-# bounds each task by wall time, and a cap would change measured behaviour
-# under unlimited-thinking configs.
+# single -np 1 slot for one turn. Agent requests now carry max_tokens: the
+# deployment's thinking budget + a 12K content allowance. The budget is the
+# operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
+# serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
+# either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
+# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
+# each task by wall time, and a cap would change measured behaviour under
+# unlimited-thinking configs.
 # ---------------------------------------------------------------------------
-_DEFAULT_MAX_COMPLETION_TOKENS = 20480 + 12288
+_DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
+_CONTENT_ALLOWANCE_TOKENS = 12288
+_DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
 _TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+_CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
+
+
+def _conf_value(key: str) -> str:
+    """Last `key=value` in openbeast.conf, read (never sourced) the way
+    scripts/lib/conf.sh reads it; "" when absent or unreadable."""
+    val = ""
+    try:
+        with open(_CONF_PATH) as fh:
+            for line in fh:
+                k, sep, v = line.strip().partition("=")
+                if sep and not k.startswith("#") and k.strip() == key:
+                    val = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return val
 
 
 def _max_completion_tokens() -> int:
@@ -292,12 +313,23 @@ def _max_completion_tokens() -> int:
     if os.environ.get(_EVAL_MARKER):
         return 0
     raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
-    if not raw:
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
+              or os.environ.get("REASONING_BUDGET", "").strip()
+              or _conf_value("REASONING_BUDGET"))
+    if not budget:
         return _DEFAULT_MAX_COMPLETION_TOKENS
     try:
-        return max(0, int(raw))
+        n = int(budget)
     except ValueError:
         return _DEFAULT_MAX_COMPLETION_TOKENS
+    if n < 0:
+        return 0   # unlimited thinking: a token cap would cut it mid-thought
+    return n + _CONTENT_ALLOWANCE_TOKENS
 
 
 def _is_context_overflow(err: str) -> bool:
