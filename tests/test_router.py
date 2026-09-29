@@ -185,6 +185,141 @@ class TestSpawnGate(unittest.TestCase):
             router.REQUIRE_IDENTITY = old
 
 
+class TestSpawnGateJwtMode(unittest.TestCase):
+    """Signed-identity mode (review identity-rbac-1). Open WebUI sends the role
+    ONLY inside X-OpenWebUI-User-Jwt when FORWARD_USER_INFO_HEADER_JWT_SECRET
+    is set, so a header-only gate read every guest turn as anonymous and let
+    it spawn an agent with the admin key."""
+
+    SECRET = "router-test-secret-at-least-32-bytes-long"
+
+    def _mint(self, role="admin", secret=None, exp_delta=300, iss="open-webui"):
+        import time
+
+        import jwt as pyjwt
+        now = int(time.time())
+        return pyjwt.encode({"sub": "u-1", "role": role, "iss": iss,
+                             "iat": now, "exp": now + exp_delta},
+                            secret or self.SECRET, algorithm="HS256")
+
+    def _allowed(self, headers, require_identity=False):
+        return router._spawn_allowed(headers, require_identity=require_identity,
+                                     jwt_secret=self.SECRET)
+
+    def test_verified_admin_token_spawns(self):
+        self.assertTrue(self._allowed({"X-OpenWebUI-User-Jwt": self._mint("admin")}))
+
+    def test_verified_user_token_cannot_spawn(self):
+        # The exact failure: a `user`-role guest turn in JWT mode.
+        self.assertFalse(self._allowed({"X-OpenWebUI-User-Jwt": self._mint("user")}))
+
+    def test_forged_expired_or_garbage_token_cannot_spawn(self):
+        for tok in (self._mint("admin", secret="wrong-secret"),
+                    self._mint("admin", exp_delta=-60),
+                    self._mint("admin", iss="someone-else"),
+                    "x.y.z"):
+            self.assertFalse(self._allowed({"X-OpenWebUI-User-Jwt": tok}), tok)
+
+    def test_plain_role_header_ignored_in_jwt_mode(self):
+        # WebUI never sends it in this mode, so one that arrives is typed.
+        self.assertFalse(self._allowed({"X-OpenWebUI-User-Role": "admin"},
+                                       require_identity=True))
+
+    def test_header_mode_still_reads_plain_role(self):
+        # Negative control: with no secret the plain header is the identity.
+        self.assertTrue(router._spawn_allowed({"X-OpenWebUI-User-Role": "admin"},
+                                              require_identity=True, jwt_secret=""))
+
+
+class TestRequireIdentityDefault(unittest.TestCase):
+    """REQUIRE_IDENTITY hardens by itself on multi-user rigs. conf.sh always
+    exports OPENBEAST_ROUTER_REQUIRE_IDENTITY=false, so an opt-in the operator
+    has to remember is not a control."""
+
+    VARS = ("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "OPENBEAST_WEBUI_AUTH",
+            "OPENBEAST_IDENTITY_JWT_SECRET")
+
+    def _reload_with(self, **env):
+        import importlib
+        saved = {k: os.environ.pop(k, None) for k in self.VARS}
+        os.environ.update(env)
+        try:
+            importlib.reload(router)
+            return router.REQUIRE_IDENTITY
+        finally:
+            for k in self.VARS:
+                os.environ.pop(k, None)
+                if saved[k] is not None:
+                    os.environ[k] = saved[k]
+            importlib.reload(router)
+
+    def test_single_user_rig_stays_fail_open(self):
+        self.assertFalse(self._reload_with(OPENBEAST_ROUTER_REQUIRE_IDENTITY="false",
+                                           OPENBEAST_WEBUI_AUTH="false"))
+
+    def test_webui_auth_hardens(self):
+        self.assertTrue(self._reload_with(OPENBEAST_ROUTER_REQUIRE_IDENTITY="false",
+                                          OPENBEAST_WEBUI_AUTH="true"))
+
+    def test_jwt_secret_hardens(self):
+        self.assertTrue(self._reload_with(OPENBEAST_ROUTER_REQUIRE_IDENTITY="false",
+                                          OPENBEAST_IDENTITY_JWT_SECRET="s3cret"))
+
+    def test_explicit_true_still_honored(self):
+        self.assertTrue(self._reload_with(OPENBEAST_ROUTER_REQUIRE_IDENTITY="true"))
+
+
+class TestSpawnCarriesIdentity(unittest.TestCase):
+    """The spawn call forwards the caller's identity (review identity-rbac-6),
+    so the tool server shards and audits it under the real account instead
+    of an anonymous admin-key call."""
+
+    class Recorder:
+        def __init__(self):
+            self.headers = None
+
+        async def post(self, url, json=None, headers=None, timeout=None):
+            self.headers = headers
+
+            class R:
+                text = '"started agent 20260929-120000-deadbeef"'
+
+                def json(self):
+                    return "started agent 20260929-120000-deadbeef"
+            return R()
+
+    def test_header_mode_forwards_plain_identity(self):
+        incoming = {"X-OpenWebUI-User-Id": "alice", "X-OpenWebUI-User-Role": "admin",
+                    "X-OpenWebUI-User-Email": "a@example.com",
+                    "X-OpenWebUI-Chat-Id": "c-9", "Content-Type": "application/json"}
+        ident = router._identity_headers(incoming, jwt_secret="")
+        rec = self.Recorder()
+        agent_id, err = asyncio.run(router._spawn(rec, "a task", ".", ident))
+        self.assertEqual(agent_id, "20260929-120000-deadbeef")
+        self.assertEqual(rec.headers["x-openwebui-user-id"], "alice")
+        self.assertEqual(rec.headers["x-openwebui-chat-id"], "c-9")
+        self.assertNotIn("Content-Type", rec.headers)
+
+    def test_jwt_mode_forwards_only_the_token(self):
+        incoming = {"X-OpenWebUI-User-Jwt": "tok", "X-OpenWebUI-User-Id": "forged",
+                    "X-OpenWebUI-Chat-Id": "c-9"}
+        ident = router._identity_headers(incoming, jwt_secret="s")
+        self.assertEqual(ident, {"x-openwebui-user-jwt": "tok",
+                                 "x-openwebui-chat-id": "c-9"})
+
+    def test_admin_key_cannot_be_overridden_by_caller(self):
+        old = dict(router.MCPO_HEADERS)
+        try:
+            router.MCPO_HEADERS.clear()
+            router.MCPO_HEADERS["Authorization"] = "Bearer admin"
+            rec = self.Recorder()
+            asyncio.run(router._spawn(rec, "a task", ".", {"Authorization": "Bearer x"}))
+            self.assertEqual(rec.headers["Authorization"], "Bearer admin")
+        finally:
+            router.MCPO_HEADERS.clear()
+            router.MCPO_HEADERS.update(old)
+
+
 class TestSchema(unittest.TestCase):
     def test_schema_requires_all_fields(self):
         self.assertEqual(set(router._SCHEMA["required"]),
