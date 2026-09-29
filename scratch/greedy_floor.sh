@@ -17,9 +17,11 @@
 #                  "Greedy = near-zero churn" does not hold here.
 #   --single-slot  the low-churn mode LANG_AWARENESS_PLAN §7 actually names:
 #                  a -np 1 server started here and run_eval --jobs 1.
-#                  REFUSES (exit 3) if anything already serves :$PORT —
-#                  stop the stack first — and aborts unless /props of our
-#                  own live pid reports total_slots == 1.
+#                  REFUSES (exit 3) if anything already answers :$PORT
+#                  (even a 503 while loading) — stop the stack first — and
+#                  aborts unless our own live pid reports exactly one slot
+#                  (/props total_slots, else the /slots list) at startup
+#                  AND again before each run; unverifiable = abort.
 #                  Budget ~9-11 h PER ROW (the 09-14 IQ3 -np 1 rows took
 #                  8.8 h and 11.0 h), ~20 h for the pair.
 # The zig half of the default regime is already measured by the Tier-3
@@ -50,7 +52,8 @@ if [ "$MODE" = default ]; then
       --greedy --jobs 4 --no-leaderboard --no-cache > "$L/greedy-floor-$n.log" 2>&1
     echo "[$(date +%F' '%T)] run $n rc=$?"
   done
-  pkill -f '[l]lama-server' 2>/dev/null || true
+  # benchmark_all stops the server it started, by its own process group, and
+  # refuses (PortBusy) one it did not — nothing to clean up by name here.
   exit 0
 fi
 
@@ -66,11 +69,25 @@ fi
 # NOT stop someone else's server — refuse and say so.
 AUTH=()
 [ -n "${LLAMA_API_KEY:-}" ] && AUTH=(-H "Authorization: Bearer $LLAMA_API_KEY")
-if curl -sf --max-time 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then
+# Any answer at all refuses — not just a 200: a server still LOADING returns
+# 503 on /health, and it would own the port by the time ours tried to bind.
+if curl -s -o /dev/null --max-time 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then
   echo "[$(date +%F' '%T)] REFUSED: something already serves :$PORT — stop the stack" \
        "(./stop.sh) first; a single-slot floor must not run against it" >&2
   exit 3
 fi
+# Slot count of the server answering :$PORT — /props total_slots, else the
+# length of /slots (older builds, or --props off). Empty = cannot verify.
+slot_count() {
+  local n
+  n=$(curl -sf --max-time 3 "${AUTH[@]}" "http://localhost:$PORT/props" 2>/dev/null \
+      | python3 -c 'import json,sys; v=json.load(sys.stdin).get("total_slots"); print(v if isinstance(v, int) else "")' 2>/dev/null)
+  if [ -z "$n" ]; then
+    n=$(curl -sf --max-time 3 "${AUTH[@]}" "http://localhost:$PORT/slots" 2>/dev/null \
+        | python3 -c 'import json,sys; v=json.load(sys.stdin); print(len(v) if isinstance(v, list) and v else "")' 2>/dev/null)
+  fi
+  echo "$n"
+}
 slog="$L/greedy-floor-single-serve.log"
 echo "[$(date +%F' '%T)] greedy floor ($MODE: -np 1, --jobs 1) starting server on :$PORT, log $slog"
 nohup scripts/serve-qwen38-27b-uncensored-q5.sh -np 1 -p "$PORT" > "$slog" 2>&1 &
@@ -83,10 +100,7 @@ for _ in $(seq 1 150); do
 done
 if [ "$up" = 1 ] && ! kill -0 "$SPID" 2>/dev/null; then up=0; fi
 slots=""
-if [ "$up" = 1 ]; then
-  slots=$(curl -sf --max-time 3 "${AUTH[@]}" "http://localhost:$PORT/props" 2>/dev/null \
-          | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots",""))' 2>/dev/null)
-fi
+[ "$up" = 1 ] && slots=$(slot_count)
 if [ "$up" != 1 ] || [ "$slots" != 1 ]; then
   echo "[$(date +%F' '%T)] SERVER FAILED (up=$up, total_slots='${slots}', want 1) — see $slog" >&2
   kill "$SPID" 2>/dev/null || true; wait "$SPID" 2>/dev/null || true; exit 1
@@ -96,6 +110,11 @@ for n in 1 2; do
   if ! kill -0 "$SPID" 2>/dev/null; then
     echo "[$(date +%F' '%T)] SERVER DIED before run $n — see $slog; check run $((n - 1)) with row_validity.py" >&2
     exit 1
+  fi
+  slots=$(slot_count)                     # still ours, still single-slot?
+  if [ "$slots" != 1 ]; then
+    echo "[$(date +%F' '%T)] ABORT before run $n: :$PORT reports total_slots='${slots}', want 1" >&2
+    kill "$SPID" 2>/dev/null || true; wait "$SPID" 2>/dev/null || true; exit 1
   fi
   echo "[$(date +%F' '%T)] greedy floor ($MODE) run $n (--no-cache)"
   python3 -u evals/run_eval.py --suite v5-fast --jobs 1 --no-cache \
