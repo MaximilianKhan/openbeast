@@ -424,6 +424,84 @@ class TestSlotAccounting:
         assert b.inflight == 2
 
 
+class TestFanOut:
+    """EDGE_MAX_INFLIGHT bounds GENERATIONS, not HTTP requests. llama-server
+    makes one task per element of a prompt/input array, plus n-1 children
+    per prompt — so one admitted request used to be able to fill every slot
+    and queue thousands of tasks ahead of every other tenant."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+
+    def _post(self, edge, tmp_path, path, body, hold=0):
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            # Prime the bucket (it is created on first contact) so `hold`
+            # in-flight units can be taken before the request under test.
+            c.get("/v1/models", headers=self.HDR)
+            cap.clear()
+            b = _laptop_bucket(edge, c)
+            for _ in range(hold):
+                assert b.reserve() is None
+            r = c.post(path, json=body, headers=self.HDR)
+            inflight = b.inflight
+        return r, cap, inflight
+
+    def test_prompt_array_times_n_is_refused(self, edge, tmp_path):
+        r, cap, inflight = self._post(
+            edge, tmp_path, "/v1/completions",
+            {"prompt": ["x"] * 2000, "n": 4, "max_tokens": 4096})
+        assert r.status_code == 400 and "8000 generations" in r.text
+        assert "content" not in cap, "fan-out request reached upstream"
+        assert inflight == 0
+
+    @pytest.mark.parametrize("path,body", [
+        ("/v1/chat/completions", {"messages": [], "n": 3}),
+        ("/v1/chat/completions", {"messages": [], "n_cmpl": 3, "n": 1}),
+        ("/v1/embeddings", {"input": ["a", "b", "c"]}),
+        ("/v1/completions", {"prompt": ["a", "b"], "n": 2}),
+    ])
+    def test_over_cap_shapes_are_refused(self, edge, tmp_path, path, body):
+        r, cap, _ = self._post(edge, tmp_path, path, body)   # cap is 2
+        assert r.status_code == 400 and "content" not in cap
+
+    @pytest.mark.parametrize("path,body", [
+        # Negative controls: shapes that are ONE generation upstream.
+        ("/v1/completions", {"prompt": [1, 2, 3, 4, 5]}),     # token ids
+        ("/v1/completions", {"prompt": ["a", 7]}),            # mixed = one
+        ("/v1/completions", {"prompt": "plain", "n": True}),  # bool is not n
+        ("/v1/embeddings", {"input": "one", "n": 9}),         # no children
+        ("/v1/completions", {"prompt": ["a", "b"]}),          # 2 == cap
+    ])
+    def test_within_cap_is_forwarded(self, edge, tmp_path, path, body):
+        r, cap, inflight = self._post(edge, tmp_path, path, body)
+        assert r.status_code == 200 and "content" in cap
+        assert inflight == 0, "fan-out units not all released"
+
+    def test_fan_out_needs_free_units_not_just_one(self, edge, tmp_path):
+        # One generation already in flight: a 2-prompt request needs 2 units
+        # and only 1 is free — 429, and nothing it took stays held.
+        r, cap, inflight = self._post(edge, tmp_path, "/v1/completions",
+                                      {"prompt": ["a", "b"]}, hold=1)
+        assert r.status_code == 429 and "content" not in cap
+        assert inflight == 1
+        # Control: a single-prompt request still fits in the free unit.
+        r, cap, inflight = self._post(edge, tmp_path, "/v1/completions",
+                                      {"prompt": "a"}, hold=1)
+        assert r.status_code == 200
+
+    def test_reserve_more_is_all_or_nothing(self, edge):
+        b = edge.Bucket(1000, 3)
+        assert b.reserve() is None
+        assert b.reserve_more(3) == "max_inflight"
+        assert b.inflight == 1                    # took nothing on refusal
+        assert b.reserve_more(2) is None
+        assert b.inflight == 3
+        b.release(3)
+        assert b.inflight == 0
+
+
 class TestRegistryFreshness:
     def test_enrolling_the_first_device_needs_no_restart(self, edge, tmp_path):
         # The gate boots with NO registry (start.sh prints "enroll a device"),

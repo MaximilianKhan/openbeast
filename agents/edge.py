@@ -40,7 +40,8 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_LLAMA_UPSTREAM     real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_API_KEY            upstream key, if llama-server runs --api-key
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
-  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2)
+  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
+                               a prompt array or n>1 counts prompts x n
   OPENBEAST_EDGE_ALLOW_ANON    "true" = serve callers with no/unknown key as
                                the "anon" device (default false = fail closed)
 """
@@ -294,10 +295,31 @@ class Bucket:
         self.inflight += 1
         return None
 
-    def release(self) -> None:
+    def reserve_more(self, extra: int) -> str | None:
+        """Atomically widen an admitted request to `extra` more generations.
+
+        A request that fans out (prompt arrays, n) holds one in-flight unit
+        per generation it creates upstream, and pays one rate token each —
+        otherwise EDGE_MAX_INFLIGHT would bound HTTP requests, not work.
+        Same no-await rule as reserve(). Refuses without taking anything.
+        """
+        if extra <= 0:
+            return None
+        now = time.monotonic()
+        self.tokens = min(self.capacity,
+                          self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        if self.tokens < extra:
+            return "rate_limited"
+        if self.inflight + extra > self.max_inflight:
+            return "max_inflight"
+        self.tokens -= extra
+        self.inflight += extra
+        return None
+
+    def release(self, n: int = 1) -> None:
         # Guard against a double-release wedging the counter negative.
-        if self.inflight > 0:
-            self.inflight -= 1
+        self.inflight = max(0, self.inflight - n)
 
 
 class Limiter:
@@ -532,10 +554,46 @@ class BadBody(ValueError):
     """A JSON-endpoint body the gate refuses to forward (-> 400)."""
 
 
-def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
+def _generations(body: dict, path: str) -> int:
+    """How many upstream generations this ONE request becomes.
+
+    llama-server turns a /v1/completions `prompt` (or /v1/embeddings `input`)
+    ARRAY into one task per element, with no bound, and adds n_cmpl-1 child
+    tasks per prompt (`n` is its alias). Counting the HTTP request as one
+    let a single admitted request fill every slot and queue thousands of
+    tasks ahead of every other tenant. Mirrors tokenize_input_prompts(): an
+    array containing any integer is ONE token-list prompt, not many.
+    Over-counting is the safe direction, so n_cmpl and n take the max.
+    """
+    if path == "/v1/completions":
+        prompt = body.get("prompt")
+    elif path == "/v1/embeddings":
+        prompt = body.get("input", body.get("content"))
+    else:
+        prompt = None                    # chat renders ONE prompt from messages
+    inputs = 1
+    if isinstance(prompt, list) and not any(
+            isinstance(p, int) and not isinstance(p, bool) for p in prompt):
+        inputs = max(1, len(prompt))
+    n = 1
+    if path != "/v1/embeddings":         # embeddings make no child tasks
+        for k in ("n_cmpl", "n"):
+            v = body.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int) or (isinstance(v, float) and v == v
+                                      and abs(v) != float("inf")):
+                n = max(n, int(v))
+    return inputs * n
+
+
+def _sanitize_body(raw: bytes, device: dict,
+                   path: str = "/v1/chat/completions"
+                   ) -> tuple[bytes, str | None, bool, int]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
-    Returns (body, model_name, streaming). Raises BadBody for anything that
+    Returns (body, model_name, streaming, generations) — see _generations
+    for the last. Raises BadBody for anything that
     is not a JSON object within MAX_JSON_DEPTH. FAIL CLOSED: every tenancy
     and metering guarantee below depends on the gate having parsed the body,
     so a body it cannot parse must never reach llama-server verbatim — that
@@ -569,7 +627,8 @@ def _sanitize_body(raw: bytes, device: dict) -> tuple[bytes, str | None, bool]:
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return json.dumps(body).encode(), body.get("model"), streaming
+    return (json.dumps(body).encode(), body.get("model"), streaming,
+            _generations(body, path))
 
 
 def _upstream_headers(request: Request, device: dict) -> dict:
@@ -689,12 +748,13 @@ async def gate(request: Request):
     # bare `except:`/BaseException handling below — asyncio.CancelledError is
     # a BaseException, so a client disconnect would otherwise skip the
     # release and wedge the device at 429 forever.
-    released = {"done": False}
+    # `held` grows past 1 only when the body fans out (see _generations).
+    released = {"done": False, "held": 1}
 
     def _release():
         if not released["done"]:
             released["done"] = True
-            bucket.release()
+            bucket.release(released["held"])
 
     try:
         if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
@@ -718,10 +778,10 @@ async def gate(request: Request):
                                "type": "invalid_request_error"}},
                     status_code=413)
         raw = bytes(buf)
-        body, model, streaming = raw, None, False
+        body, model, streaming, gens = raw, None, False, 1
         if raw and path in JSON_PATHS:
             try:
-                body, model, streaming = _sanitize_body(raw, device)
+                body, model, streaming, gens = _sanitize_body(raw, device, path)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
@@ -734,6 +794,35 @@ async def gate(request: Request):
                     {"error": {"message": str(e),
                                "type": "invalid_request_error"}},
                     status_code=400)
+        if gens > bucket.max_inflight:
+            # Could never be admitted, so 400 rather than a 429 to retry.
+            _release()
+            _bump("denied_total", "fanout")
+            _audit(device_id, user, path, 400, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   "fanout", request_id, uid)
+            return JSONResponse(
+                {"error": {"message": (
+                    f"request fans out into {gens} generations (prompts x n); "
+                    f"this device may run at most {bucket.max_inflight} at "
+                    "once — split it into smaller requests"),
+                    "type": "invalid_request_error"}}, status_code=400)
+        refusal = bucket.reserve_more(gens - 1)
+        if refusal:
+            _release()
+            _bump("denied_total", refusal)
+            _audit(device_id, user, path, 429, None,
+                   int((time.monotonic() - started) * 1000), model,
+                   refusal, request_id, uid)
+            return JSONResponse(
+                {"error": {"message": (
+                    f"request needs {gens} generation slots and this device "
+                    "does not have them free right now"),
+                    "type": "rate_limit_error"}},
+                status_code=429,
+                headers={"Retry-After": "5" if refusal == "rate_limited"
+                         else "2"})
+        released["held"] = gens
         headers = _upstream_headers(request, device)
         registry.touch(device_id)
 
