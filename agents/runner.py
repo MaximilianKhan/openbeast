@@ -233,7 +233,8 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # guaranteed failures. Now: (a) the server's overflow error is recognised
 # and the OLDEST tool results are replaced by one-line stubs before the
 # retry; (b) with --context-budget set, the same eviction runs proactively
-# past ~70% of the budget (4 chars/token estimate). The system prompt, the
+# past ~70% of the budget (4 chars/token estimate), freeing down to ~50% so
+# one compaction buys many turns of stable prefix. The system prompt, the
 # original task, assistant turns and the (transiently injected) plan block
 # are never evicted. Every event is logged to stderr + the JSONL log and
 # counted in the done/max_iterations telemetry (COMPACTIONS: n on stdout).
@@ -248,7 +249,16 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # whose str() embeds that body.
 # ---------------------------------------------------------------------------
 _CHARS_PER_TOKEN = 4
-_COMPACT_FRACTION = 0.70          # proactive target as a fraction of the budget
+_COMPACT_FRACTION = 0.70          # proactive trigger as a fraction of the budget
+#: Proactive compaction frees down to this fraction, not just back under the
+#: trigger (hysteresis). Stubbing an old result rewrites the history near its
+#: START, which invalidates llama-server's cached prefix from that point on —
+#: on the hybrid qwen35 arch everything after the nearest checkpoint is
+#: re-prefilled (~50K tokens at an 85K budget). Freeing only (est - trigger)
+#: meant the next tool result crossed the line again, so ~1 turn in 1.7
+#: re-prefilled (review efficiency-2, 2026-09-29); a 20-point gap buys many
+#: turns of stable prefix per compaction.
+_COMPACT_LOW_WATER = 0.50
 _STUB_MIN_CHARS = 200             # results shorter than this aren't worth stubbing
 _STUB_PREFIX = "[tool result elided:"
 #: An operator message becomes evictable after this many turns (E12). It is
@@ -266,6 +276,67 @@ _CTX_OVERFLOW_RE = re.compile(
 _CTX_FIELDS_RE = re.compile(r"n_prompt_tokens['\"]?\s*[:=]\s*(\d+).*?n_ctx['\"]?\s*[:=]\s*(\d+)", re.S)
 _CTX_MSG_RE = re.compile(r"\((\d+) tokens\).*?\((\d+) tokens\)", re.S)
 _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
+
+# ---------------------------------------------------------------------------
+# Per-turn generation bound (review efficiency-5, 2026-09-29).
+#
+# --reasoning-budget caps THINKING only; a repetition loop in the answer or a
+# tool's arguments ran until the client's 600 s read timeout, and the openai
+# client then silently retried the identical request twice — ~30 min of the
+# single -np 1 slot for one turn. Agent requests now carry max_tokens: the
+# deployment's thinking budget + a 12K content allowance. The budget is the
+# operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
+# serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
+# either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
+# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
+# each task by wall time, and a cap would change measured behaviour under
+# unlimited-thinking configs.
+# ---------------------------------------------------------------------------
+_DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
+_CONTENT_ALLOWANCE_TOKENS = 12288
+_DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
+_CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+_CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
+
+
+def _conf_value(key: str) -> str:
+    """Last `key=value` in openbeast.conf, read (never sourced) the way
+    scripts/lib/conf.sh reads it; "" when absent or unreadable."""
+    val = ""
+    try:
+        with open(_CONF_PATH) as fh:
+            for line in fh:
+                k, sep, v = line.strip().partition("=")
+                if sep and not k.startswith("#") and k.strip() == key:
+                    val = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return val
+
+
+def _max_completion_tokens() -> int:
+    """max_tokens for an agent request; 0 means send none (uncapped)."""
+    if os.environ.get(_EVAL_MARKER):
+        return 0
+    raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
+              or os.environ.get("REASONING_BUDGET", "").strip()
+              or _conf_value("REASONING_BUDGET"))
+    if not budget:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+    try:
+        n = int(budget)
+    except ValueError:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+    if n < 0:
+        return 0   # unlimited thinking: a token cap would cut it mid-thought
+    return n + _CONTENT_ALLOWANCE_TOKENS
 
 
 def _is_context_overflow(err: str) -> bool:
@@ -312,7 +383,10 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     task), assistant turns, user nudges, or results already stubbed. Oldest
     first and stop as soon as enough is freed, so the newest results — the
     ones the model is about to act on — survive unless the older ones can't
-    cover the ask (being stuck beats keeping them). Returns
+    cover the ask (being stuck beats keeping them). One exception: when the
+    walk would reach a tool result that frees more than every older one it
+    plans to stub, that one is stubbed first, sparing older results the ask
+    no longer needs. Returns
     (results_evicted, chars_freed). `call_index` maps message position ->
     tool-call ordinal for the stub text.
 
@@ -342,13 +416,44 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # resort: a directive outranks a transcript of `ls`, but it stops short of
     # being unevictable, which is the failure E12 describes.
     candidates = tool_results + aged_steers
+    ask = max(chars_to_free, 1)
+
+    def _stub_for(i: int) -> str:
+        c = messages[i]["content"]
+        return (_steer_stub(c) if messages[i].get("role") != "tool"
+                else _stub(c, call_index.get(i, i)))
+
+    def _gain(i: int) -> int:
+        return len(messages[i]["content"]) - len(_stub_for(i))
+
+    # The oldest-first walk, planned before anything is touched. If it would
+    # reach a tool result that frees more than every older planned result
+    # combined, stub THAT one first and only then continue oldest-first for
+    # whatever is left of the ask: an oversized result (fetch allows up to 2M
+    # chars) used to strip EVERY older result first, so one bad call cost the
+    # agent its whole working memory (review efficiency-3). It must be a
+    # prefix, not a replacement — the proactive ask is the giant result PLUS
+    # the hysteresis gap down to _COMPACT_LOW_WATER, which no single result
+    # covers. Only the order changes: the walk still stops once the ask is
+    # met, so it never stubs a result the plain walk would have kept.
+    plan, planned = [], 0
+    for i in candidates:
+        if planned >= ask:
+            break
+        plan.append(i)
+        planned += _gain(i)
+    tools_in_plan = [i for i in plan if messages[i].get("role") == "tool"]
+    if len(plan) > 1 and tools_in_plan:
+        big = max(tools_in_plan, key=_gain)
+        older = sum(_gain(i) for i in plan[:plan.index(big)])
+        if older and _gain(big) > older:
+            candidates = [big] + [c for c in plan if c != big]
     evicted = freed = 0
     for i in candidates:
-        if freed >= max(chars_to_free, 1):
+        if freed >= ask:
             break
         content = messages[i]["content"]
-        stub = (_steer_stub(content) if messages[i].get("role") != "tool"
-                else _stub(content, call_index.get(i, i)))
+        stub = _stub_for(i)
         messages[i]["content"] = stub
         freed += len(content) - len(stub)
         evicted += 1
@@ -564,7 +669,11 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url))
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=_CLIENT_MAX_RETRIES)
+    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    max_tokens = _max_completion_tokens()
+    cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -760,11 +869,15 @@ def run_agent(
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
+            # Once over the trigger, free down to the low-water mark so the
+            # rewritten prefix stays stable for many turns (see
+            # _COMPACT_LOW_WATER).
             est = estimate_tokens(messages, len(plan))
             target = int(context_budget * _COMPACT_FRACTION)
             if est > target:
-                compact("budget", (est - target) * _CHARS_PER_TOKEN,
-                        f" (est {est:,} > {target:,} tokens)")
+                low = int(context_budget * _COMPACT_LOW_WATER)
+                compact("budget", (est - low) * _CHARS_PER_TOKEN,
+                        f" (est {est:,} > {target:,} tokens, to {low:,})")
 
         try:
             response = client.chat.completions.create(
@@ -778,6 +891,7 @@ def run_agent(
                 # and stays for leaderboard rows.
                 temperature=(0.0 if os.environ.get(
                     "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
+                **cap_kwargs,
             )
         except Exception as e:
             err = str(e)
@@ -815,9 +929,17 @@ def run_agent(
 
         choice = response.choices[0]
         message = choice.message
+        # Hit our own output cap: keep only the head of the runaway text —
+        # assistant turns are never compacted, so a 30K-token repetition loop
+        # would otherwise ride along on every later request.
+        truncated = bool(cap_kwargs) and choice.finish_reason == "length"
 
         # Append assistant message to history
-        msg_dict = {"role": "assistant", "content": message.content or ""}
+        content = message.content or ""
+        if truncated and len(content) > _TRUNCATED_KEEP_CHARS:
+            content = (content[:_TRUNCATED_KEEP_CHARS]
+                       + f"\n[... truncated: {len(message.content):,} chars, output cap reached]")
+        msg_dict = {"role": "assistant", "content": content}
         if message.tool_calls:
             msg_dict["tool_calls"] = [
                 {
@@ -836,7 +958,17 @@ def run_agent(
 
         # If no tool calls, the model is just talking — check if it's done
         if not message.tool_calls:
-            if choice.finish_reason == "stop":
+            if truncated:
+                print(f"  (reply hit the {max_tokens:,}-token output cap)")
+                log_event({"type": "output_cap", "iteration": iteration,
+                           "max_tokens": max_tokens})
+                messages.append({
+                    "role": "user",
+                    "content": f"Your last reply hit the {max_tokens:,}-token output cap "
+                               "and was cut off. Do not repeat it: be concise, and make "
+                               "progress with a tool call or call task_done.",
+                })
+            elif choice.finish_reason == "stop":
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done
                 messages.append({

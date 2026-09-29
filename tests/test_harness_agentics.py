@@ -265,7 +265,7 @@ class _FakeClient:
         self.chat = self
         self.completions = self
 
-    def create(self, model, messages, tools, temperature):
+    def create(self, model, messages, tools, temperature, **kw):
         self.calls.append([dict(m) for m in messages])
         size = sum(len(m.get("content") or "") for m in messages)
         if size > self.n_ctx_chars:
