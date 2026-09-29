@@ -108,6 +108,48 @@ sp_print_cmd() {
   printf '%s\n' "${out% }"
 }
 
+# ── Model profiles (scripts/backends/models/<name>.env) ─────────────────────
+# Every per-model fact lives in a profile; the launchers know no model. The
+# profile is validated and resolved by pylib/obprofile.py (parsed, never
+# sourced) and handed back as NUL-separated KEY/VALUE pairs, so no value is
+# ever evaluated by this shell.
+SP_PYLIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pylib"
+
+# sp_profile_load <name|path> <backend> — sets PF_<KEY> for every profile key
+# and the PF_EXTRA array. Returns 1 (messages on stderr) on any refusal.
+sp_profile_load() {
+  local spec="$1" backend="$2" tmp k v
+  PF_EXTRA=()
+  tmp="$(mktemp "${TMPDIR:-/tmp}/obprofile.XXXXXX")"
+  if ! python3 "$SP_PYLIB/obprofile.py" resolve "$spec" --backend "$backend" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+    if [[ "$k" == EXTRA_ARG ]]; then
+      PF_EXTRA+=("$v")
+    elif [[ "$k" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+      printf -v "PF_$k" '%s' "$v"
+    fi
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+# sp_profile_locate <profile> <models-dir> — the fetched, size-checked dirs.
+# Sets SP_MODEL_DIR / SP_DRAFTER_DIR (empty when absent) and SP_LOCATE_RC:
+# 0 = present and matching the lock, 3 = not fetched, other = mismatch.
+sp_profile_locate() {
+  local spec="$1" mdir="$2" out k line
+  SP_MODEL_DIR="" SP_DRAFTER_DIR="" SP_LOCATE_RC=0
+  out="$(python3 "$SP_PYLIB/model_fetch.py" --profile "$spec" --locate ${mdir:+--models-dir "$mdir"})" || SP_LOCATE_RC=$?
+  while IFS=$'\t' read -r k line; do
+    case "$k" in
+      model)   SP_MODEL_DIR="$line" ;;
+      drafter) SP_DRAFTER_DIR="$line" ;;
+    esac
+  done <<< "$out"
+}
+
 # sp_backends_hub_env <backends-dir> [args...] — export the Hub / storage
 # settings the python helpers read (HF_ENDPOINT, HF_TOKEN_FILE, MODELS_DIR,
 # OFFLINE) from the environment, else spark.env (or --env FILE in args), else
@@ -128,4 +170,21 @@ sp_backends_hub_env() {
   for k in HF_ENDPOINT HF_TOKEN_FILE MODELS_DIR OFFLINE; do
     if [[ -n "${!k:-}" ]]; then export "${k?}"; fi
   done
+}
+
+# Model settings that used to live in spark.env. Say so instead of silently
+# ignoring a file written for the old layout.
+sp_warn_legacy_model_keys() {
+  local file="$1" key found=()
+  [[ -f "$file" ]] || return 0
+  for key in MODEL SERVED_MODEL_NAME MAX_MODEL_LEN GPU_MEMORY_UTILIZATION TENSOR_PARALLEL_SIZE \
+             MAX_NUM_SEQS REASONING_PARSER TOOL_CALL_PARSER SPECULATIVE_CONFIG VLLM_EXTRA_ARGS \
+             TENSORFOLD_CKPT TENSORFOLD_NAME TENSORFOLD_PARALLEL TENSORFOLD_CONTEXT; do
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$file" 2>/dev/null; then
+      found+=("$key")
+    fi
+  done
+  if [[ ${#found[@]} -gt 0 ]]; then
+    echo "Warning: $file still sets ${found[*]} — model settings now live in a profile (scripts/backends/models/<name>.env, --profile); these lines are IGNORED." >&2
+  fi
 }
