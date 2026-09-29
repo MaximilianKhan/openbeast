@@ -546,6 +546,16 @@ To stop everything:
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
 - **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
+- **Log rotation (one time, recommended for an always-on rig):**
+  `./scripts/logrotate.sh --install` installs `openbeast-logrotate.timer`, a
+  daily systemd `--user` timer (no sudo) that applies
+  `scripts/logrotate-openbeast.conf` to `stack.log`, every `*-audit.jsonl` and
+  the extension logs in `.run/` — with `logrotate` if it is installed, its own
+  size rotation otherwise. Neither `bootstrap.sh` nor `start.sh` installs it,
+  so until you run this those files grow without bound.
+  `systemctl --user list-timers openbeast-logrotate.timer` shows it;
+  `./scripts/logrotate.sh --uninstall` (or `scripts/uninstall.sh --go`)
+  removes it.
 
 ## 7. Remote access (optional, recommended)
 
