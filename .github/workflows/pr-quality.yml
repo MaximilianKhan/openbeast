@@ -32,7 +32,7 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh \
-            scripts/*.sh scripts/lib/*.sh tests/*.sh
+            scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh
 
   ruff:
     name: Ruff (syntax + undefined names)
@@ -51,10 +51,12 @@ jobs:
       # (all of beast-lang), agents/packs/, evals/scripts/ and scripts/lib/
       # were never checked, and four unused imports had accumulated there
       # unseen. ruff walks a directory recursively and respects .gitignore.
+      # extensions/ is included: extensions/dashboard/dashboard.py serves the
+      # /api/slot contract and was outside this gate.
       - name: ruff
         run: |
           python3 -m pip install -q ruff
-          ruff check agents evals tests scripts --select E9,F
+          ruff check agents evals tests scripts extensions --select E9,F
 
   pip-audit:
     name: Dependency vulnerability audit
