@@ -14,7 +14,6 @@
 #   3  land-dependabot   approves only THIS repo's held runs for the PR head
 #   4  workflows         every action pinned by full commit SHA; the relock
 #                        push job never runs the resolver
-#   5  client SearXNG    the client compose pins the rig's image digest
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -239,6 +238,94 @@ STUB
   else
     fail "land-dependabot run (rc=$_rc): $_out"
   fi
+fi
+
+# ===========================================================================
+echo ""
+echo "4. workflows — actions pinned by SHA; the relock push job never resolves:"
+# ===========================================================================
+# check_workflows <dir>: prints one line per violation, nothing when clean.
+# Run on the real workflows AND on a fixture shaped like the old relock job,
+# so the checker is shown to be able to fail.
+cat > "$T/check_workflows.py" <<'PY'
+import glob, os, re, sys
+import yaml
+bad = []
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml"))):
+    name = os.path.basename(path)
+    for n, line in enumerate(open(path, encoding="utf-8"), 1):
+        m = re.search(r"^\s*(?:-\s*)?uses:\s*(\S+)(.*)$", line)
+        if not m or m.group(1).startswith("./"):
+            continue
+        ref = m.group(1).rsplit("@", 1)
+        if len(ref) != 2 or not re.fullmatch(r"[0-9a-f]{40}", ref[1]):
+            bad.append(f"{name}:{n}: {m.group(1)} is not pinned to a full commit SHA")
+        elif not re.search(r"#\s*v\d", m.group(2)):
+            bad.append(f"{name}:{n}: {m.group(1)} has no '# vX' tag comment")
+    if name != "dependabot-relock.yml":
+        continue
+    jobs = yaml.safe_load(open(path, encoding="utf-8")).get("jobs", {})
+    for jname, job in jobs.items():
+        perms = job.get("permissions") or {}
+        writes = any(v == "write" for v in perms.values()) if isinstance(perms, dict) else perms == "write-all"
+        steps = job.get("steps", [])
+        runs = "\n".join(str(s.get("run", "")) for s in steps)
+        if writes and re.search(r"pydeps\.sh lock|pip install(?! -q --dry-run)|pip download", runs):
+            bad.append(f"relock job {jname!r} has a write token AND runs the resolver / pip")
+        if writes:
+            for s in steps:
+                env = s.get("env") or {}
+                if "GH_TOKEN" in env or "GITHUB_TOKEN" in env:
+                    r = str(s.get("run", ""))
+                    if "push origin" not in r:
+                        bad.append(f"relock job {jname!r}: a token reaches a step that does not push")
+                    if re.search(r"\bgit (-c \S+ )*commit\b", r):
+                        bad.append(f"relock job {jname!r}: the token is in the environment of `git commit`")
+            for s in steps:
+                r = str(s.get("run", ""))
+                # `git [-c …, possibly over continued lines] commit`
+                if re.search(r"\bgit\b(?:[^\n]*\\\n)*[^\n]*\bcommit\b", r) and (
+                        "core.hooksPath=/dev/null" not in r or "--no-verify" not in r):
+                    bad.append(f"relock job {jname!r}: git commit may run repository hooks")
+            if not job.get("needs"):
+                bad.append(f"relock job {jname!r} writes but does not depend on a separate resolve job")
+print("\n".join(bad))
+PY
+if "$REAL_PY" -c 'import yaml' 2>/dev/null; then
+  _v="$("$REAL_PY" "$T/check_workflows.py" "$REPO_DIR/.github/workflows" 2>&1)"
+  if [[ -z "$_v" ]]; then
+    pass "every workflow action is SHA-pinned (tag in a comment), and the relock push job never runs the resolver"
+  else
+    fail "workflow violations:
+$_v"
+  fi
+  # NEGATIVE CONTROL: the shape the review flagged — one job, write token,
+  # mutable tags, resolver and a token-carrying `git commit` together.
+  mkdir -p "$T/wf_old"
+  cat > "$T/wf_old/dependabot-relock.yml" <<'YML'
+jobs:
+  relock:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/pydeps.sh lock
+      - env:
+          GH_TOKEN: x
+        run: |
+          git commit -q -m relock
+          git push origin HEAD
+YML
+  _v="$("$REAL_PY" "$T/check_workflows.py" "$T/wf_old" 2>&1)"
+  if has "$_v" "not pinned to a full commit SHA" && has "$_v" "runs the resolver" \
+     && has "$_v" "environment of \`git commit\`" && has "$_v" "may run repository hooks"; then
+    pass "negative control: the old single-job relock shape trips every one of those checks"
+  else
+    fail "negative control: the checker passed the old relock shape: $_v"
+  fi
+else
+  echo "  SKIP: PyYAML not importable (it is in agents/requirements.lock; CI has it)"
 fi
 
 # ===========================================================================

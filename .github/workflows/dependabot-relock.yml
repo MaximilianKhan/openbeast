@@ -7,7 +7,7 @@ name: Dependabot relock
 # and would have stayed red forever (#85, #86). This regenerates the lock on
 # the PR branch so the bump arrives as one reviewable, installable change.
 #
-# THREE THINGS HERE ARE NOT OBVIOUS, and each is load-bearing:
+# FOUR THINGS HERE ARE NOT OBVIOUS, and each is load-bearing:
 #
 #  1. A push made with GITHUB_TOKEN does not RUN workflows (GitHub's guard
 #     against recursion): the pull_request runs for the new head commit are
@@ -17,12 +17,11 @@ name: Dependabot relock
 #     runs on the head SHA, but the PR's required-checks rollup IGNORES them
 #     (mergeStateStatus stayed BLOCKED with all four green) — so that step was
 #     removed; it only doubled the CI bill. What unblocks the PR is approving
-#     the held runs, which the last step below spells out:
-#         gh run list --branch <branch> --status action_required
-#         gh api -X POST repos/<owner>/<repo>/actions/runs/<id>/approve
-#     (or the "Approve workflows to run" button). It cannot loop: the actor on
-#     the re-triggered event is github-actions[bot], and this job is
-#     Dependabot-only.
+#     the held runs — THIS repo's runs for the pushed commit, never a
+#     same-named fork branch's — which the last step below spells out (and
+#     scripts/land-dependabot.sh does), or the "Approve workflows to run"
+#     button. It cannot loop: the actor on the re-triggered event is
+#     github-actions[bot], and these jobs are Dependabot-only.
 #
 #  2. `[dependabot skip]` in the commit message. Without it Dependabot treats
 #     the branch as edited by someone else and stops rebasing it. With it,
@@ -37,11 +36,27 @@ name: Dependabot relock
 #     hash-pinned install fail there. A lock that only installs where it was
 #     made is not pushed.
 #
+#  4. TWO JOBS, and the one that can push never runs the resolver. Resolving
+#     a bumped SDIST runs that package's build backend — arbitrary code. When
+#     resolve and push shared a job, `persist-credentials: false` kept the
+#     token out of .git/config, but the build code could still plant a git
+#     hook (or core.hooksPath / core.fsmonitor, or a $GITHUB_PATH entry
+#     shadowing `git`) that the later commit step ran WITH the write token in
+#     its environment. On a hosted runner that code also has passwordless
+#     sudo, so no flag inside one job can contain it. So `resolve` runs with
+#     a read-only token and hands over ONE FILE as an artifact; `push` starts
+#     on a fresh runner, checks out the same commit, copies that file in,
+#     checks it, and only its push command ever sees the write token.
+#
 # WHAT IT NEEDS FROM THE NETWORK: the index (pip's resolver) and pypi.org's
 # JSON API. Both are reachable from a hosted runner. It is NOT byte-for-byte
 # deterministic across time — it re-resolves the whole closure, so an
 # unrelated transitive dependency can move in the same commit. That is visible
 # in the diff, and it is what a lock regeneration is.
+#
+# Actions are pinned by full commit SHA (the tag in the comment): a moved tag
+# would otherwise run new code with this workflow's token. Dependabot's
+# github-actions ecosystem still proposes the bumps.
 
 on:
   pull_request:
@@ -57,32 +72,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  relock:
+  resolve:
     # ONLY Dependabot's own pushes. A human's PR that touches
     # requirements.txt regenerates the lock locally (scripts/update.sh
     # --python does it), and this guard is also what stops a fork's PR from
-    # ever reaching a job with a write token.
+    # ever reaching the job with a write token below.
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # READ-ONLY: this job runs third-party build code (see 4. above).
     permissions:
-      contents: write   # push the regenerated lock to the PR branch
-    env:
-      # Never interpolated into a script: a branch name is attacker-shaped text.
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The BRANCH, not the merge ref a pull_request run checks out by
-          # default — a commit made on refs/pull/N/merge cannot be pushed.
-          ref: ${{ github.event.pull_request.head.ref }}
-          # The write token is NOT left in .git/config: `pydeps.sh lock`
-          # resolves with pip, and resolving a bumped SDIST runs that
-          # package's build backend — arbitrary code, in a job whose token can
-          # push. The push step below authenticates for itself, and only then.
+          # The PR's HEAD COMMIT, not the merge ref a pull_request run checks
+          # out by default — the lock must be resolved for the commit the push
+          # job will build on.
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: |
             3.14
@@ -110,37 +122,110 @@ jobs:
           python3.14 -m pip install -q --dry-run --ignore-installed \
             --require-hashes -r agents/requirements.lock
 
-      - name: Commit and push the lock
-        id: push
+      - name: Did the lock change?
+        id: diff
         if: steps.state.outputs.stale == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- agents/requirements.lock; then
+            echo "the lock did not change — nothing to push"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Hand the lock to the push job (one file)
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: relocked-requirements-lock
+          path: agents/requirements.lock
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    needs: resolve
+    if: github.actor == 'dependabot[bot]' && needs.resolve.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write   # push the regenerated lock to the PR branch
+    env:
+      # Never interpolated into a script: a branch name is attacker-shaped text.
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # A FRESH runner: nothing the resolve job wrote (hooks, git config,
+      # PATH entries, a replaced binary) exists here. The artifact goes
+      # OUTSIDE the checkout, so it cannot land on top of anything.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: relocked-requirements-lock
+          path: ${{ runner.temp }}/relock
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The push below authenticates for itself, for that one command.
+          persist-credentials: false
+
+      - name: Take exactly one regular file, and check it is a sane lock
+        run: |
+          d="$RUNNER_TEMP/relock"; f="$d/requirements.lock"
+          [[ -f "$f" && ! -L "$f" ]] || { echo "::error::the artifact holds no regular requirements.lock"; exit 1; }
+          [[ "$(find "$d" -mindepth 1 | wc -l)" == "1" ]] \
+            || { echo "::error::the artifact holds more than the lock:"; find "$d"; exit 1; }
+          [[ "$(stat -c%s "$f")" -lt 2000000 ]] || { echo "::error::the lock is implausibly large"; exit 1; }
+          cp -- "$f" agents/requirements.lock
+          # Offline parse + direct pins vs requirements.txt; resolves nothing,
+          # builds nothing (the runner's own python — no setup action needed).
+          OPENBEAST_PYTHON=python3 ./scripts/pydeps.sh verify
+
+      - name: Commit (no token in this step, no hooks)
+        id: commit
         run: |
           if git diff --quiet -- agents/requirements.lock; then
             echo "the lock did not change — nothing to push"
             echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add agents/requirements.lock
-          git commit -q \
-            -m "deps: regenerate agents/requirements.lock for the bumped pin" \
-            -m "[dependabot skip]"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q --no-verify \
+              -m "deps: regenerate agents/requirements.lock for the bumped pin" \
+              -m "[dependabot skip]"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "pushed=pending" >> "$GITHUB_OUTPUT"
+
+      - name: Push the lock
+        id: push
+        if: steps.commit.outputs.pushed == 'pending'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Not a force-push: if the branch moved past HEAD_SHA meanwhile
+          # (a Dependabot rebase), this is rejected and the rebase's own run
+          # relocks.
+          git -c core.hooksPath=/dev/null \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
             push origin "HEAD:refs/heads/${HEAD_REF}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: What a maintainer does next
         if: steps.push.outputs.pushed == 'true'
+        env:
+          NEW_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           {
             echo "### The lock was regenerated and pushed to \`${HEAD_REF}\`"
             echo ""
-            echo "GitHub holds the CI runs for that commit until a maintainer approves them:"
+            echo "GitHub holds the CI runs for that commit until a maintainer approves them."
+            echo "\`./scripts/land-dependabot.sh <PR>\` does it (and the rest of the chain); by hand,"
+            echo "approve ONLY this repo's runs for the pushed commit:"
             echo ""
             echo '```'
-            echo "for id in \$(gh run list --branch ${HEAD_REF} --status action_required --json databaseId,workflowName -q '.[] | select(.workflowName!=\"Dependabot relock\") | .databaseId'); do"
+            echo "for id in \$(gh api 'repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${NEW_SHA}&status=action_required' -q '.workflow_runs[] | select(.head_repository.full_name==\"${GITHUB_REPOSITORY}\" and .name!=\"Dependabot relock\") | .id'); do"
             echo "  gh api -X POST repos/${GITHUB_REPOSITORY}/actions/runs/\$id/approve"
             echo "done"
             echo '```'

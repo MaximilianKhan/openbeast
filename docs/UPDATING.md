@@ -123,7 +123,11 @@ lock is stale") and stays red. Two pieces close that:
   the relock when it does). The lock is resolved on CI's python (3.12) and
   **proven on 3.14**, the reference box's python, before it is pushed — a
   closure short one package on 3.14 would break bootstrap's hash-pinned
-  install there. A push made with `GITHUB_TOKEN` does not run workflows: the
+  install there. It is **two jobs**: `resolve` (read-only token — resolving a
+  bumped sdist runs its build backend, i.e. third-party code) hands the lock
+  over as a one-file artifact, and `push` (write token) starts on a fresh
+  runner, checks the file, commits with hooks disabled, and gives the token
+  only to the push command. A push made with `GITHUB_TOKEN` does not run workflows: the
   PR's CI runs are created in `action_required` and wait for a maintainer to
   approve them (measured 2026-09-17: `workflow_dispatch` runs do *not*
   satisfy the PR's required checks; approval does).
