@@ -875,6 +875,73 @@ class TestMeteringEdges:
         assert len(rows.strip().splitlines()) == 2
 
 
+    def test_midstream_upstream_fault_is_not_blamed_on_client(self, edge,
+                                                              tmp_path):
+        import asyncio
+        import httpx
+        from starlette.requests import Request
+        _registry(tmp_path)
+        app = edge.app
+        app.state.registry = edge.Registry()
+        app.state.limiter = edge.Limiter()
+
+        class _Dying(_ChunkedResponse):
+            def __init__(self, exc):
+                super().__init__(b'data: {"choices":[]}\n\n' * 4, size=16)
+                self._exc = exc
+
+            async def aiter_raw(self):
+                async for c in super().aiter_raw():
+                    yield c
+                    if self._exc is not None:
+                        raise self._exc     # llama-server died mid-body
+
+        exc_box = {}
+
+        class _Client:
+            def build_request(self, *a, **kw):
+                return object()
+
+            async def send(self, req, stream=False):
+                return _Dying(exc_box["exc"])
+
+        app.state.client = _Client()
+        payload = json.dumps({"messages": [], "stream": True}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": payload,
+                    "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "app": app,
+                 "path": "/v1/chat/completions", "raw_path": b"",
+                 "query_string": b"", "root_path": "", "scheme": "http",
+                 "server": ("127.0.0.1", 8090), "client": ("127.0.0.1", 1),
+                 "headers": [(b"authorization",
+                              f"Bearer {DEVICE_KEY}".encode()),
+                             (b"content-type", b"application/json")]}
+
+        async def run():
+            resp = await edge.gate(Request(scope, receive))
+            try:
+                async for _ in resp.body_iterator:
+                    pass
+            except httpx.HTTPError:
+                pass
+            await resp.background()
+
+        cases = [(httpx.ReadError("boom"), "upstream_error", 502),
+                 (httpx.RemoteProtocolError("peer closed"), "upstream_error",
+                  502),
+                 (httpx.ReadTimeout("slow"), "upstream_timeout", 504),
+                 (None, "ok", 200)]         # negative control
+        for exc, outcome, status in cases:
+            exc_box["exc"] = exc
+            asyncio.run(run())
+            row = _last_audit(tmp_path)
+            assert (row["outcome"], row["status"]) == (outcome, status), row
+            assert _laptop_bucket_app(edge, app).inflight == 0
+
+
 async def _async(v):
     return v
 

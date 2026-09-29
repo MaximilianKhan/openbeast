@@ -975,6 +975,7 @@ async def gate(request: Request):
 
     async def body_iter():
         timed_out = False
+        upstream_failed = False
         completed = False
         try:
             async for chunk in resp.aiter_raw():
@@ -994,6 +995,14 @@ async def gate(request: Request):
             # a timeout invisible to whoever reads the audit later.
             timed_out = True
             _log(f"upstream read timeout mid-stream device={device_id} "
+                 f"path={path} request_id={request_id}")
+            raise
+        except httpx.HTTPError:
+            # Any other transport fault mid-body (ReadError, a
+            # RemoteProtocolError when llama-server dies) is the UPSTREAM's
+            # failure — auditing it as client_disconnect blamed the client.
+            upstream_failed = True
+            _log(f"upstream error mid-stream device={device_id} "
                  f"path={path} request_id={request_id}")
             raise
         finally:
@@ -1019,6 +1028,8 @@ async def gate(request: Request):
                 usage = _usage_from_json_tail(state["tail"])
             if timed_out:
                 _audit_reply(usage, ("upstream_timeout", 504))
+            elif upstream_failed:
+                _audit_reply(usage, ("upstream_error", 502))
             elif not completed:
                 # The client went away mid-body (CancelledError/GeneratorExit
                 # lands here). Recorded as "ok" before, an abort — whose
