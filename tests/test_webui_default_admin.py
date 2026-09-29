@@ -60,6 +60,8 @@ CURL_STUB = textwrap.dedent(r'''
         json.dump(st, open(os.environ["STUB_STATE"], "w"))
     if st.get("down"):
         sys.exit(7)
+    if st.get("down_calls", 0) > 0:      # booting: the first N calls fail
+        st["down_calls"] -= 1; save(); sys.exit(7)
     tok = lambda email: "tok-%s-%d" % (email, st["gen"])
     if path == "/api/version": out({"version": "stub"})
     if path == "/api/config": out({"features": {"auth": st["auth"]}})
@@ -357,11 +359,76 @@ def test_tailscale_explicit_auth_off_with_the_flag_publishes(ts_rig):
     assert "NO login" in p.stdout
 
 
+def _docker(rig, inspect=None, err="Error: No such object: open-webui"):
+    """docker stub for `docker inspect open-webui`: prints INSPECT (container
+    exists) or fails with ERR (no container / daemon trouble)."""
+    if inspect is not None:
+        body = "#!/bin/sh\ncat <<'X'\n%s\nX\n" % inspect
+    else:
+        body = "#!/bin/sh\necho '%s' >&2\nexit 1\n" % err
+    _write_exec(rig.bin / "docker", body)
+
+
 def test_tailscale_publishes_when_webui_not_running(ts_rig):
-    """WebUI down: it will start from the conf (auth on) and start.sh's
-    configure-webui.sh retires the default password then."""
+    """WebUI down and no container: it will start from the conf (auth on) and
+    start.sh's configure-webui.sh retires the default password then."""
+    _docker(ts_rig)
     ts_rig.set_state(auth=True, admin_pw="admin", down=True)
     p = ts_rig.run("setup-tailscale.sh")
     assert p.returncode == 0, p.stderr
     assert _mounted_443(ts_rig)
     assert ts_rig.conf_values()["WEBUI_AUTH"] == "true"
+
+
+@pytest.mark.parametrize("status", ["running", "created", "exited"])
+def test_tailscale_refuses_443_for_unanswering_auth_off_container(ts_rig, status):
+    """The race the review found: /api/config does not answer yet (first boot,
+    or start.sh just returned) but the container exists with WEBUI_AUTH=false.
+    It would finish booting auth-off behind a live :443 — every tailnet
+    device admin, with bash — and keep that env across daemon restarts."""
+    _docker(ts_rig, inspect=f"{status} PATH=/usr/bin WEBUI_AUTH=false PORT=8080")
+    ts_rig.set_state(auth=True, admin_pw="admin", down=True)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "0"})
+    assert p.returncode == 0, p.stderr
+    assert not _mounted_443(ts_rig)
+    assert "NOT publishing the WebUI" in p.stderr and "auth OFF" in p.stderr
+    assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
+
+
+def test_tailscale_publishes_for_stopped_auth_on_container(ts_rig):
+    """Negative control: a stopped container created auth-on restarts auth-on."""
+    _docker(ts_rig, inspect="exited PATH=/usr/bin WEBUI_AUTH=true")
+    ts_rig.set_state(auth=True, admin_pw="admin", down=True)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "0"})
+    assert p.returncode == 0, p.stderr
+    assert _mounted_443(ts_rig), p.stdout + p.stderr
+
+
+def test_tailscale_refuses_443_when_docker_cannot_be_asked(ts_rig):
+    """Can't tell 'nothing running' from 'auth-off container booting' → block."""
+    _docker(ts_rig, err="permission denied while trying to connect to the Docker daemon")
+    ts_rig.set_state(auth=True, admin_pw="admin", down=True)
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert not _mounted_443(ts_rig)
+    assert "docker could not be asked" in p.stderr
+
+
+def test_tailscale_waits_for_a_booting_container_then_rotates(ts_rig):
+    """A running auth-on container that answers after a moment is waited for,
+    and its default admin is retired before :443 goes up."""
+    _docker(ts_rig, inspect="running WEBUI_AUTH=true")
+    ts_rig.set_state(auth=True, admin_pw="admin", down_calls=1)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "20"})
+    assert p.returncode == 0, p.stderr
+    assert _mounted_443(ts_rig)
+    assert ts_rig.get_state()["accounts"]["admin@localhost"] != "admin"
+
+
+def test_tailscale_refuses_443_when_running_container_never_answers(ts_rig):
+    _docker(ts_rig, inspect="running WEBUI_AUTH=true")
+    ts_rig.set_state(auth=True, admin_pw="admin", down=True)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "0"})
+    assert p.returncode == 0, p.stderr
+    assert not _mounted_443(ts_rig)
+    assert "never answered" in p.stderr

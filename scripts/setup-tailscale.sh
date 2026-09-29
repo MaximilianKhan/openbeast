@@ -209,8 +209,11 @@ fi
 
 # What the RUNNING WebUI enforces (public /api/config → features.auth):
 # true / false / unknown (not running — it will start from the conf).
+# One word, always: a failed curl under pipefail must not print a second line.
 _webui_live_auth() {
-  curl -s -m 5 "http://127.0.0.1:3000/api/config" 2>/dev/null | python3 -c "
+  local cfg
+  cfg=$(curl -s -m 5 "http://127.0.0.1:3000/api/config" 2>/dev/null) || cfg=""
+  printf '%s' "$cfg" | python3 -c "
 import sys, json
 try:
     a = json.load(sys.stdin).get('features', {}).get('auth')
@@ -218,6 +221,22 @@ except Exception:
     a = None
 print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
     || echo unknown
+}
+
+# When /api/config does not answer, "not running" and "an auth-off container
+# still booting" look the same — and start.sh does not wait for the WebUI.
+# Ask docker which it is: absent | unqueryable | <status>:<env auth>.
+_webui_container() {
+  command -v docker >/dev/null 2>&1 || { echo absent; return 0; }
+  local out
+  if ! out=$(docker inspect -f '{{.State.Status}}{{range .Config.Env}} {{.}}{{end}}' \
+               open-webui 2>&1); then
+    if printf '%s' "$out" | grep -qi 'no such'; then echo absent; else echo unqueryable; fi
+    return 0
+  fi
+  local status=${out%% *} auth=false
+  [[ " $out " == *" WEBUI_AUTH=true "* ]] && auth=true
+  echo "${status}:${auth}"
 }
 
 WEBUI_PUBLISHED=0
@@ -234,7 +253,22 @@ if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
                if an open WebUI on your tailnet is really what you want."
   fi
 else
-  case "$(_webui_live_auth)" in
+  _live="$(_webui_live_auth)"
+  _ct=""
+  if [[ "$_live" == unknown ]]; then
+    _ct="$(_webui_container)"
+    if [[ "$_ct" == running:* ]]; then
+      # Up but not answering: booting (migrations, embedding download).
+      _wait_s="${WEBUI_WAIT_S:-90}"
+      echo "      Open WebUI is starting — waiting up to ${_wait_s}s for it to answer..."
+      _deadline=$((SECONDS + _wait_s))
+      while [[ "$_live" == unknown ]] && (( SECONDS < _deadline )); do
+        sleep 2
+        _live="$(_webui_live_auth)"
+      done
+    fi
+  fi
+  case "$_live" in
     false)
       _webui_block="the RUNNING WebUI was started with auth OFF (the conf change only
                applies on restart). Publishing now would make every tailnet device
@@ -248,8 +282,28 @@ else
         _webui_block="admin@localhost still has upstream's default password and it
                could not be rotated (see the warning above). Change it, then re-run."
       fi ;;
-    *) : ;;  # not running: it starts from the conf, auth on; start.sh's
-             # configure-webui.sh run retires the default password then.
+    *)
+      case "$_ct" in
+        running:true)
+          _webui_block="the WebUI container is up but never answered, so its default
+               admin password could not be checked. Re-run this script once it is up." ;;
+        absent|*:true)
+          # Not running (or a stopped container that restarts auth on): it
+          # starts from the conf, and start.sh's configure-webui.sh run
+          # retires the default password then.
+          : ;;
+        running:*|*:false)
+          # A container carrying WEBUI_AUTH=false keeps it (restart:
+          # unless-stopped) until compose recreates it.
+          _webui_block="the open-webui container was created with auth OFF and is not
+               answering yet. Publishing now would make every tailnet device an
+               admin once it boots. Restart the stack (./stop.sh && ./start.sh),
+               wait for the WebUI, then re-run this script." ;;
+        *)
+          _webui_block="the WebUI is not answering and docker could not be asked
+               whether an auth-off open-webui container exists. Start the stack
+               (./start.sh), wait for the WebUI, then re-run this script." ;;
+      esac ;;
   esac
 fi
 if [[ -n "$_webui_block" ]]; then

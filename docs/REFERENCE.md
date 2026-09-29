@@ -450,7 +450,10 @@ whole tailnet — that's when a per-user login boundary (and the RBAC tiers
 in `docs/RBAC_PLAN.md`) starts to matter. It persists `WEBUI_AUTH=true`
 *before* publishing the WebUI, and only publishes `:443` once the running
 WebUI actually enforces logins — if the stack was already up with auth off
-it tells you to restart and re-run instead.
+it tells you to restart and re-run instead. If the WebUI is not answering
+yet, it asks docker: a booting container is waited for, and an
+`open-webui` container created with auth off (or one docker can't be asked
+about) keeps `:443` closed until you restart and re-run.
 
 **The built-in admin account.** With auth off, Open WebUI signs every
 visitor in as `admin@localhost` and creates that account as **admin** with
