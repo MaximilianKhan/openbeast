@@ -325,6 +325,105 @@ else
   OPENBEAST_PROBE_HOST=127.0.0.1
 fi
 export OPENBEAST_PROBE_HOST
+# ── Inference backend (docs/DGX_SPARK_PLAN.md) ─────────────────────────────
+# Which OpenAI-compatible server the stack talks to, where it is, and whether
+# this stack owns it. The default is today's stack, byte for byte: a
+# llama-server that start.sh launches on :8080 of this box.
+#   INFERENCE_BACKEND  llama | vllm | tensorfold          default llama
+#       Readiness and capacity differ per server (lib/backend.sh). A value
+#       that is none of the three warns and falls back to llama.
+#   INFERENCE_URL      base URL, no /v1                   default http://<probe-host>:8080
+#       MODEL_URL (WebUI), the router's and beast-gate's upstream, and the
+#       spawned agents' AGENT_INFERENCE_URL all derive from it.
+#   INFERENCE_MANAGED  true | false                       default true for llama, false otherwise
+#       false: start.sh launches, rolls back, supervises and kills NOTHING —
+#       it waits for the server to answer, brings up everything else, and
+#       healthcheck --restart / stop.sh leave the server alone. vLLM and
+#       TensorFold are never managed (they run on other boxes, in
+#       containers this stack did not start), so `true` there warns and is
+#       ignored.
+#   INFERENCE_SLOTS    integer                            default empty
+#       Concurrency /api/slot advertises when the server does not expose one
+#       (vLLM --max-num-seqs, TensorFold --parallel).
+# The llama defaults are resolved even when nothing is set, so every consumer
+# below reads the same values it always did.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/backend.sh" ]]; then
+  # shellcheck source=backend.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/backend.sh"
+  INFERENCE_BACKEND="$(ob_backend_normalize "${OPENBEAST_INFERENCE_BACKEND:-$(_ob_conf_value INFERENCE_BACKEND || true)}")"
+else
+  INFERENCE_BACKEND=llama
+fi
+_ob_infer_url="${OPENBEAST_INFERENCE_URL:-$(_ob_conf_value INFERENCE_URL || true)}"
+_ob_infer_url="${_ob_infer_url%%[[:space:]]*}"   # a trailing `# comment` is not part of a URL
+_ob_infer_url="${_ob_infer_url%/}"
+_ob_infer_url="${_ob_infer_url%/v1}"             # a pasted .../v1 means the same server
+if [[ -n "$_ob_infer_url" && ! "$_ob_infer_url" =~ ^https?://[^/[:space:]]+ ]]; then
+  echo "WARNING: INFERENCE_URL='$_ob_infer_url' is not an http(s):// URL — using the local default." >&2
+  _ob_infer_url=""
+fi
+if [[ -z "$_ob_infer_url" && "$INFERENCE_BACKEND" != "llama" ]]; then
+  echo "WARNING: INFERENCE_BACKEND=$INFERENCE_BACKEND but INFERENCE_URL is not set — pointing at the local default; set it to the server's base URL (docs/DGX_SPARK_PLAN.md)." >&2
+fi
+# Explicitly configured? Consumers that must stay byte-identical on a default
+# rig (MODEL_URL's historical `localhost` spelling, the dashboard's probes)
+# change only when an operator set it.
+if [[ -n "$_ob_infer_url" ]]; then
+  INFERENCE_URL_SET=true
+  INFERENCE_URL="$_ob_infer_url"
+else
+  INFERENCE_URL_SET=false
+  INFERENCE_URL="http://${OPENBEAST_PROBE_HOST}:8080"
+fi
+unset _ob_infer_url
+_ob_managed_raw="${OPENBEAST_INFERENCE_MANAGED:-$(_ob_conf_value INFERENCE_MANAGED || true)}"
+if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
+  # A llama INFERENCE_URL on ANOTHER box is not ours to launch: defaulting to
+  # managed there started a LOCAL llama-server while start.sh waited on the
+  # remote one, and healthcheck --restart then killed and relaunched the
+  # local one whenever the remote was down.
+  _ob_remote=false
+  if [[ "$INFERENCE_URL_SET" == "true" ]] && declare -F ob_url_is_local >/dev/null 2>&1 \
+     && ! ob_url_is_local "$INFERENCE_URL" "$OPENBEAST_PROBE_HOST" "$BIND_HOST"; then
+    _ob_remote=true
+  fi
+  if [[ -z "$_ob_managed_raw" && "$_ob_remote" == "true" ]]; then
+    INFERENCE_MANAGED=false
+    echo "Note: INFERENCE_URL=$INFERENCE_URL is another machine — treating its llama-server as not managed here (set INFERENCE_MANAGED explicitly to silence this)." >&2
+  else
+    INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" true INFERENCE_MANAGED)"
+    if [[ "$INFERENCE_MANAGED" == "true" && "$_ob_remote" == "true" ]]; then
+      echo "WARNING: CONFLICTING CONFIG — INFERENCE_MANAGED=true, but INFERENCE_URL=$INFERENCE_URL is another machine." >&2
+      echo "         start.sh would launch a LOCAL llama-server while waiting on the remote one, and the watchdog" >&2
+      echo "         would kill/relaunch the local one whenever the remote is down. Set INFERENCE_MANAGED=false." >&2
+    fi
+  fi
+  unset _ob_remote
+else
+  INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" false INFERENCE_MANAGED)"
+  if [[ "$INFERENCE_MANAGED" == "true" ]]; then
+    echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — start.sh cannot launch it; treating it as false." >&2
+    INFERENCE_MANAGED=false
+  fi
+fi
+unset _ob_managed_raw
+INFERENCE_SLOTS="${OPENBEAST_INFERENCE_SLOTS:-$(_ob_conf_value INFERENCE_SLOTS || true)}"
+INFERENCE_SLOTS="${INFERENCE_SLOTS%%[[:space:]#]*}"
+if [[ -n "$INFERENCE_SLOTS" && ! "$INFERENCE_SLOTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: INFERENCE_SLOTS='$INFERENCE_SLOTS' is not a positive integer — ignoring it." >&2
+  INFERENCE_SLOTS=""
+fi
+export INFERENCE_BACKEND INFERENCE_URL INFERENCE_MANAGED
+export OPENBEAST_INFERENCE_BACKEND="$INFERENCE_BACKEND"
+export OPENBEAST_INFERENCE_MANAGED="$INFERENCE_MANAGED"
+# Same export discipline as AGENT_INFERENCE_URL: only when configured, so a
+# reader can tell "the operator pointed us somewhere" from "the default".
+if [[ "$INFERENCE_URL_SET" == "true" ]]; then
+  export OPENBEAST_INFERENCE_URL="$INFERENCE_URL"
+fi
+if [[ -n "$INFERENCE_SLOTS" ]]; then
+  export OPENBEAST_INFERENCE_SLOTS="$INFERENCE_SLOTS"
+fi
 # The tool server's web_search (agents/tools.py) defaults SEARXNG_URL to
 # localhost:8888, but SearXNG binds BIND_HOST — and a socket bound to a
 # specific LAN/tailnet address refuses loopback, so the MODEL's search tool
@@ -348,6 +447,8 @@ _ob_model_host="$OPENBEAST_PROBE_HOST"
 [[ "$_ob_model_host" == "127.0.0.1" ]] && _ob_model_host=localhost
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
+elif [[ "$INFERENCE_URL_SET" == "true" ]]; then
+  MODEL_URL="${INFERENCE_URL}/v1"
 else
   MODEL_URL="http://${_ob_model_host}:8080/v1"
 fi
@@ -420,6 +521,14 @@ fi
 # downstream resolvers (mcp_server.py, agent.sh) and would look like a
 # configured-but-blank endpoint instead of "use the local default".
 AGENT_INFERENCE_URL="${OPENBEAST_AGENT_INFERENCE_URL:-$(_ob_conf_value AGENT_INFERENCE_URL || true)}"
+# A configured INFERENCE_URL is where the model lives: spawned agents must go
+# there too, or every start_agent dials a local :8080 nothing serves. An
+# explicit AGENT_INFERENCE_URL (a separate worker box) still wins. Setting it
+# is also what lets agents present LLAMA_API_KEY to that host
+# (agents/runner.py _key_endpoint_trusted).
+if [[ -z "$AGENT_INFERENCE_URL" && "$INFERENCE_URL_SET" == "true" ]]; then
+  AGENT_INFERENCE_URL="${INFERENCE_URL}/v1"
+fi
 if [[ -n "$AGENT_INFERENCE_URL" ]]; then
   export OPENBEAST_AGENT_INFERENCE_URL="$AGENT_INFERENCE_URL"
 fi

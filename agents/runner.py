@@ -249,6 +249,18 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # older builds/other paths: "Context size has been exceeded.",
 # "context shift is disabled". The openai client raises BadRequestError
 # whose str() embeds that body.
+#
+# vLLM (vllm/renderers/params.py): HTTP 400 "This model's maximum context
+# length is M tokens. However, you requested K output tokens and your prompt
+# contains [at least ]N input tokens, for a total of ...". Older releases
+# said "...you requested T tokens (N in the messages, K in the completion)".
+# TensorFold CUDA (src/tensorfold/cuda/server.py check): "the rendered prompt
+# has N tokens and leaves no room for a reply in the server's M-token context
+# window" / "...requests K reply tokens, exceeding the server's M-token ...";
+# its MLX server (src/tensorfold/server/app.py) says "This server's maximum
+# context length is M tokens, but the rendered prompt has N tokens ..." or
+# "the rendered prompt has N tokens and requests K reply tokens; this
+# server's context window is M." — MLX formats M and N with thousands commas.
 # ---------------------------------------------------------------------------
 _CHARS_PER_TOKEN = 4
 _COMPACT_FRACTION = 0.70          # proactive trigger as a fraction of the budget
@@ -274,9 +286,25 @@ _STEER_STUB_PREFIX = "[operator message elided:"
 _CTX_OVERFLOW_RE = re.compile(
     r"exceed_context_size|exceeds the available context size|"
     r"larger than the max context size|context size has been exceeded|"
-    r"context shift is disabled", re.IGNORECASE)
+    r"context shift is disabled|"
+    r"maximum context length is \d|"                          # vLLM, TensorFold MLX
+    r"-token (?:context window|safe cache capacity)|"          # TensorFold CUDA
+    r"server's context window is \d",                         # TensorFold MLX, reply length
+    re.IGNORECASE)
 _CTX_FIELDS_RE = re.compile(r"n_prompt_tokens['\"]?\s*[:=]\s*(\d+).*?n_ctx['\"]?\s*[:=]\s*(\d+)", re.S)
 _CTX_MSG_RE = re.compile(r"\((\d+) tokens\).*?\((\d+) tokens\)", re.S)
+# vLLM states the window FIRST, then the prompt: (n_ctx, n_prompt).
+_CTX_VLLM_RE = re.compile(
+    r"maximum context length is (\d+) tokens.*?"
+    r"(?:contains (?:at least )?(\d+) input tokens|\((\d+) in the messages)", re.S)
+# TensorFold, prompt first: CUDA "...has N tokens ... the server's M-token
+# ..." and MLX "...has N tokens and requests K reply tokens; this server's
+# context window is M". MLX's other form states the window first.
+_CTX_TF_RE = re.compile(
+    r"rendered prompt has ([\d,]+) tokens.*?"
+    r"(?:server's ([\d,]+)-token|context window is ([\d,]+))", re.S)
+_CTX_TF_MLX_RE = re.compile(
+    r"maximum context length is ([\d,]+) tokens.*?rendered prompt has ([\d,]+) tokens", re.S)
 _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 
 # ---------------------------------------------------------------------------
@@ -348,9 +376,21 @@ def _is_context_overflow(err: str) -> bool:
 def _overflow_tokens(err: str) -> tuple[int, int] | None:
     """(n_prompt_tokens, n_ctx) parsed from the error text, or None."""
     m = _CTX_FIELDS_RE.search(err or "") or _CTX_MSG_RE.search(err or "")
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2))
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = _CTX_VLLM_RE.search(err or "")
+    if m:
+        return int(m.group(2) or m.group(3)), int(m.group(1))
+
+    def num(s: str) -> int:
+        return int(s.replace(",", ""))
+    m = _CTX_TF_RE.search(err or "")
+    if m:
+        return num(m.group(1)), num(m.group(2) or m.group(3))
+    m = _CTX_TF_MLX_RE.search(err or "")
+    if m:
+        return num(m.group(2)), num(m.group(1))
+    return None
 
 
 def _message_chars(m: dict) -> int:
