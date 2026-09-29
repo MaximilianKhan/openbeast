@@ -9,6 +9,10 @@ openbeast.conf
 .env
 .env.*
 *.env
+# …except model profiles: data files that cannot hold a secret (pylib/obprofile.py
+# refuses any key outside its allow list, and none of those is a credential).
+# Committing a profile + its .lock is the supply-chain pin for that model.
+!scripts/backends/models/*.env
 
 # Agent logs
 agents/logs/
