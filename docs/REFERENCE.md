@@ -92,7 +92,8 @@ polite-stop and escalation deadlines), `OPENBEAST_CHAT_POLL_MS` (250),
 `OPENBEAST_CHAT_HEARTBEAT_S` (15), `OPENBEAST_CHAT_AUTH_RECHECK_S` (the
 heartbeat, capped at 5 s — an open stream re-authorizes on this period), and
 `OPENBEAST_CHAT_JOB_MEM_PCT` (50; `0` disables) — the memory cap, as a
-percent of RAM, on the systemd scope each console-started session runs in,
+percent of RAM, on the systemd scope each console-started session runs in
+and, as an aggregate, on the `openbeast-chat-jobs.slice` they all share —
 *outside* the stack's own scope so `./stop.sh` never takes a phone-started
 job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
 

@@ -696,6 +696,12 @@ _CHILDREN_LOCK = threading.Lock()
 
 _SCOPE_PREFIX: list[str] | None = None
 _SCOPE_LOCK = threading.Lock()
+# The parent every console-started scope lands in. Per-scope MemoryMax bounds
+# ONE runaway session; two of them at 50% each (or one plus the stack) still
+# filled the box, because the scopes shared no parent — the "never the box"
+# promise held only for a session running alone. The slice carries the SAME
+# cap as an aggregate, so the whole set of phone-started work is bounded.
+JOB_SLICE = "openbeast-chat-jobs.slice"
 
 
 def _in_service_cgroup() -> bool:
@@ -715,6 +721,7 @@ def _job_mem_max_bytes() -> int:
     start.sh's cap exists to prevent ("a runaway process can only take down
     the stack, never the box"). So every scope gets a cap of its own:
     OPENBEAST_CHAT_JOB_MEM_PCT percent of RAM (default 50; 0 disables).
+    The same figure bounds all of them TOGETHER, via JOB_SLICE.
     """
     try:
         pct = int(os.environ.get("OPENBEAST_CHAT_JOB_MEM_PCT") or 50)
@@ -742,6 +749,12 @@ def _probe_scope() -> list[str]:
     prefix = [exe, "--user", "--scope", "--quiet", "--collect"]
     cap = _job_mem_max_bytes()
     if cap:
+        # The aggregate bound first: a runtime drop-in on the shared slice
+        # (a slice needs no unit file to be loaded, and --runtime keeps it off
+        # disk). Only if it took do the scopes go into that slice — a slice
+        # without its cap would be a promise with nothing behind it.
+        if _cap_job_slice(cap):
+            prefix.append(f"--slice={JOB_SLICE}")
         # No swap escape hatch either: a job thrashing swap takes the box's
         # responsiveness with it just as surely as one that fills RAM.
         prefix += ["-p", f"MemoryMax={cap}", "-p", "MemorySwapMax=0"]
@@ -762,6 +775,27 @@ def _probe_scope() -> list[str]:
               "started from the console will live inside this unit (they die "
               "with ./stop.sh and share its memory cap)", file=sys.stderr)
     return prefix if ok else []
+
+
+def _cap_job_slice(cap: int) -> bool:
+    """Set MemoryMax/MemorySwapMax on JOB_SLICE; True when it took."""
+    import shutil
+    exe = shutil.which("systemctl")
+    if not exe:
+        return False
+    try:
+        ok = subprocess.run(
+            [exe, "--user", "set-property", "--runtime", JOB_SLICE,
+             f"MemoryMax={cap}", "MemorySwapMax=0"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if not ok:
+        print(f"[beast-chat] could not cap {JOB_SLICE} — each console "
+              f"session keeps its own memory cap, but they are not bounded "
+              f"together", file=sys.stderr)
+    return ok
 
 
 def scope_prefix() -> list[str]:

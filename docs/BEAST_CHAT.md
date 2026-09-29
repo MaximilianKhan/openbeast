@@ -505,7 +505,12 @@ can reach the user manager; otherwise it spawns plainly, as before (and says
 so once on stderr). Leaving the unit means leaving its `MemoryMax` too, so each
 scope carries a cap of its own — `OPENBEAST_CHAT_JOB_MEM_PCT` percent of RAM
 (default 50, swap off; `0` disables) — because an unbounded phone-started job
-is exactly the runaway the stack's cap exists to contain. The pid,
+is exactly the runaway the stack's cap exists to contain. The same figure
+also bounds them *together*: every scope goes into
+`openbeast-chat-jobs.slice`, which carries that cap as an aggregate (a
+runtime drop-in, set with `systemctl --user set-property --runtime`), so two
+runaway jobs cannot add up to the box. If the slice cannot be capped, the
+scopes stay where they were and each keeps its own cap. The pid,
 the ledger record and Stop are unchanged (a scope execs the command in place).
 What does NOT survive a `chat_server` restart is the *reaper*: a console job
 that finishes while no server holds it reconciles to `lost`, and its log is

@@ -2186,6 +2186,9 @@ def _stub_systemd_run(tmp_path, rc):
         "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done; shift\n"
         "exec \"$@\"\n")
     stub.chmod(0o755)
+    # ...and a systemctl beside it, so the slice cap (_cap_job_slice) never
+    # reaches the REAL user manager from a test. Records like the other.
+    _stub_systemctl(bindir, tmp_path, 0)
     return bindir, log
 
 
@@ -2240,6 +2243,53 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     # control: 0 disables the cap, and only the cap
     monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
+
+
+def _stub_systemctl(bindir, tmp_path, rc):
+    log = tmp_path / "systemctl.calls"
+    stub = bindir / "systemctl"
+    stub.write_text("#!/bin/bash\n"
+                    f"printf '%s\\n' \"$*\" >> {log}\n"
+                    f"exit {rc}\n")
+    stub.chmod(0o755)
+    return log
+
+
+def test_scoped_jobs_share_one_capped_slice(tmp_path, monkeypatch):
+    """Review 2026-09-29: every scope got its own 50%-of-RAM cap and no shared
+    parent, so two runaway phone jobs (or one plus the stack) could still
+    OOM the box. The scopes now go into one slice carrying the same cap as an
+    AGGREGATE. Both stubs record their argv; nothing touches the real
+    user manager."""
+    bindir, log = _stub_systemd_run(tmp_path, 0)
+    ctl_log = _stub_systemctl(bindir, tmp_path, 0)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: True)
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "25")
+    cap = chat_server._job_mem_max_bytes()
+    assert cap > 0
+    prefix = chat_server._probe_scope()
+    assert f"--slice={chat_server.JOB_SLICE}" in prefix
+    assert prefix.index(f"--slice={chat_server.JOB_SLICE}") < prefix.index("--")
+    assert f"MemoryMax={cap}" in prefix          # the per-scope inner bound
+    calls = ctl_log.read_text().splitlines()
+    assert calls == [f"--user set-property --runtime {chat_server.JOB_SLICE} "
+                     f"MemoryMax={cap} MemorySwapMax=0"]
+    assert f"--slice={chat_server.JOB_SLICE}" in log.read_text(), \
+        "the PROBE must test the same flags"
+
+    # control: a manager that refuses the slice cap -> no slice, scope cap kept
+    ctl_log.unlink()
+    _stub_systemctl(bindir, tmp_path, 1)
+    prefix = chat_server._probe_scope()
+    assert not [a for a in prefix if a.startswith("--slice")]
+    assert f"MemoryMax={cap}" in prefix
+    # control: 0 disables capping entirely — no slice, no systemctl call
+    ctl_log.unlink()
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
+    prefix = chat_server._probe_scope()
+    assert not [a for a in prefix if a.startswith("--slice") or "Memory" in a]
+    assert not ctl_log.exists()
 
 
 def test_stop_of_a_job_nobody_reaps_is_stopped_not_lost(rig, tmp_path, monkeypatch):
