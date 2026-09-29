@@ -60,6 +60,35 @@ ob_backend_normalize() {
   esac
 }
 
+# ob_url_host <url> — the host part, IPv6 brackets removed:
+#   http://10.0.0.5:8000/x -> 10.0.0.5   http://[::1]:8080 -> ::1
+#   https://spark1.ts.net  -> spark1.ts.net
+ob_url_host() {
+  local h="${1#*://}"
+  h="${h%%/*}"; h="${h##*@}"
+  if [[ "$h" == \[* ]]; then
+    h="${h#[}"; h="${h%%]*}"
+  else
+    h="${h%:*}"
+  fi
+  printf '%s\n' "$h"
+}
+
+# ob_url_is_local <url> [probe-host] [bind-host] — the URL names THIS box:
+# loopback, localhost, a wildcard, or the address the stack binds / is probed
+# on. Anything else is another machine.
+ob_url_is_local() {
+  local h p="${2:-}" b="${3:-}"
+  h="$(ob_url_host "$1")"
+  p="${p#[}"; p="${p%]}"; b="${b#[}"; b="${b%]}"
+  case "$h" in
+    ""|localhost|127.*|::1|0.0.0.0|::) return 0 ;;
+  esac
+  [[ -n "$p" && "$h" == "$p" ]] && return 0
+  [[ -n "$b" && "$h" == "$b" ]] && return 0
+  return 1
+}
+
 # ob_backend_name — the resolved backend, llama when conf.sh did not run.
 ob_backend_name() { printf '%s\n' "${INFERENCE_BACKEND:-llama}"; }
 

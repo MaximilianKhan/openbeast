@@ -378,7 +378,27 @@ fi
 unset _ob_infer_url
 _ob_managed_raw="${OPENBEAST_INFERENCE_MANAGED:-$(_ob_conf_value INFERENCE_MANAGED || true)}"
 if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
-  INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" true INFERENCE_MANAGED)"
+  # A llama INFERENCE_URL on ANOTHER box is not ours to launch: defaulting to
+  # managed there started a LOCAL llama-server while start.sh waited on the
+  # remote one, and healthcheck --restart then killed and relaunched the
+  # local one whenever the remote was down.
+  _ob_remote=false
+  if [[ "$INFERENCE_URL_SET" == "true" ]] && declare -F ob_url_is_local >/dev/null 2>&1 \
+     && ! ob_url_is_local "$INFERENCE_URL" "$OPENBEAST_PROBE_HOST" "$BIND_HOST"; then
+    _ob_remote=true
+  fi
+  if [[ -z "$_ob_managed_raw" && "$_ob_remote" == "true" ]]; then
+    INFERENCE_MANAGED=false
+    echo "Note: INFERENCE_URL=$INFERENCE_URL is another machine — treating its llama-server as not managed here (set INFERENCE_MANAGED explicitly to silence this)." >&2
+  else
+    INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" true INFERENCE_MANAGED)"
+    if [[ "$INFERENCE_MANAGED" == "true" && "$_ob_remote" == "true" ]]; then
+      echo "WARNING: CONFLICTING CONFIG — INFERENCE_MANAGED=true, but INFERENCE_URL=$INFERENCE_URL is another machine." >&2
+      echo "         start.sh would launch a LOCAL llama-server while waiting on the remote one, and the watchdog" >&2
+      echo "         would kill/relaunch the local one whenever the remote is down. Set INFERENCE_MANAGED=false." >&2
+    fi
+  fi
+  unset _ob_remote
 else
   INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" false INFERENCE_MANAGED)"
   if [[ "$INFERENCE_MANAGED" == "true" ]]; then

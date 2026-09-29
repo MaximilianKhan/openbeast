@@ -169,6 +169,30 @@ fi
 _c="$(_conf $'INFERENCE_URL=http://10.9.9.9:8080\nINFERENCE_MANAGED=no' 'echo "$INFERENCE_BACKEND|$INFERENCE_MANAGED|$MODEL_URL"')"
 [[ "$_c" == "llama|false|http://10.9.9.9:8080/v1" ]] && pass "llama on another box: INFERENCE_MANAGED=no is honoured" \
   || fail "external llama: $_c"
+_c="$(_conf 'INFERENCE_URL=http://10.9.9.9:8080' 'echo "$INFERENCE_BACKEND|$INFERENCE_MANAGED"')"
+if [[ "$_c" == "llama|false" ]] && grep -q "is another machine — treating its llama-server as not managed" "$_T/conf.err"; then
+  pass "llama + a REMOTE INFERENCE_URL defaults to unmanaged, with a notice"
+else
+  fail "remote llama URL stayed managed: $_c / $(cat "$_T/conf.err")"
+fi
+_c="$(_conf 'INFERENCE_URL=http://[fd7a::9]:8080' 'echo "$INFERENCE_MANAGED"')"
+[[ "$_c" == "false" ]] && pass "…an IPv6 remote host too" || fail "IPv6 remote: $_c"
+_c="$(_conf $'INFERENCE_URL=http://10.9.9.9:8080\nINFERENCE_MANAGED=true' 'echo "$INFERENCE_MANAGED"')"
+if [[ "$_c" == "true" ]] && grep -q "CONFLICTING CONFIG — INFERENCE_MANAGED=true" "$_T/conf.err"; then
+  pass "explicit INFERENCE_MANAGED=true with a remote URL is kept but warned about loudly"
+else
+  fail "no conflict warning: $_c / $(cat "$_T/conf.err")"
+fi
+for _local in http://127.0.0.1:8080 http://localhost:9000 "http://[::1]:8080"; do
+  _c="$(_conf "INFERENCE_URL=$_local" 'echo "$INFERENCE_MANAGED"')"
+  if [[ "$_c" == "true" && ! -s "$_T/conf.err" ]]; then
+    pass "a local INFERENCE_URL ($_local) stays managed, silently (control)"
+  else
+    fail "local URL $_local: $_c / $(cat "$_T/conf.err")"
+  fi
+done
+_c="$(_conf 'INFERENCE_URL=http://192.168.1.20:8080' 'echo "$INFERENCE_MANAGED"' OPENBEAST_BIND=192.168.1.20)"
+[[ "$_c" == "true" ]] && pass "an INFERENCE_URL on this box's own BIND_HOST stays managed" || fail "BIND_HOST URL: $_c"
 _c="$(_conf 'INFERENCE_URL=10.0.0.5:8000' 'echo "$INFERENCE_URL"')"
 if [[ "$_c" == "http://127.0.0.1:8080" ]] && grep -q "is not an http(s):// URL" "$_T/conf.err"; then
   pass "a scheme-less INFERENCE_URL warns and falls back to the local default"
@@ -218,7 +242,7 @@ _run() { # _run <dir> <timeout-s> <script> [args...]   (extra env via RUN_ENV)
     OPENBEAST_SERVE_SCRIPT=serve-marker.sh \
     ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$@" 2>&1 || true
 }
-_llama_kills() { grep -E '^(pkill|pgrep|killall) .*llama' "$1/calls.log" || true; }
+_llama_kills() { grep -E '^(pkill|pgrep|killall) .*llama-server' "$1/calls.log" || true; }
 
 echo ""
 echo "start.sh with an unmanaged backend:"
@@ -261,6 +285,18 @@ grep -q serve-marker "$_R/calls.log" && fail "serve script executed on the ready
   || pass "still nothing launched on the ready path"
 [[ ! -f "$_R/.run/serve-script" ]] && pass "a stale serve-script record is cleared" || fail "stale serve-script kept"
 
+# llama on ANOTHER box (192.0.2.1 = TEST-NET-1, never routed): unmanaged by
+# default, so no local llama-server is launched while waiting on it.
+_R="$_T/start-remote-lm"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_URL=http://192.0.2.1:8080 OPENBEAST_LLAMA_LOAD_GRACE=2)
+_O="$(_run "$_R" 40 "$_R/start.sh")"
+if ! grep -q serve-marker "$_R/calls.log" && [[ -z "$(_llama_kills "$_R")" ]] \
+   && grep -q "not managed here" <<< "$_O"; then
+  pass "llama at a remote INFERENCE_URL: start.sh launches no local llama-server"
+else
+  fail "remote llama URL launched/killed locally: $(cat "$_R/calls.log") / $(tail -n 4 <<< "$_O")"
+fi
+
 _R="$_T/start-managed"; _rig "$_R"
 RUN_ENV=(OPENBEAST_LLAMA_LOAD_GRACE=3)
 _O="$(_run "$_R" 40 "$_R/start.sh")"
@@ -283,6 +319,17 @@ RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm")
 _O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
 grep -q "OK   vLLM (vllm @ $_S/vllm)" <<< "$_O" && pass "a healthy vLLM (empty 200) reads OK, not DOWN" || fail "healthy vLLM: $(head -n 8 <<< "$_O")"
 grep -q "Slots:" <<< "$_O" && fail "llama /slots line printed for vLLM" || pass "no llama /slots line for vLLM"
+
+_R="$_T/hc-remote-lm"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+RUN_ENV=(OPENBEAST_INFERENCE_URL=http://192.0.2.1:8080)
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+if grep -q "not restarting: INFERENCE_MANAGED=false" <<< "$_O" && ! grep -q serve-marker "$_R/calls.log" \
+   && [[ -z "$(_llama_kills "$_R")" ]]; then
+  pass "llama at a remote INFERENCE_URL that is down: --restart kills and relaunches nothing locally"
+else
+  fail "remote llama down → local restart: $(cat "$_R/calls.log") / $(head -n 8 <<< "$_O")"
+fi
 
 _R="$_T/hc-managed"; _rig "$_R"
 echo "serve-marker.sh" > "$_R/.run/serve-script"
