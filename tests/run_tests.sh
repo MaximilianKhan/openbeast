@@ -140,6 +140,27 @@ for _suite in \
   echo ""
 done
 
+# --- Spark model onboarding (profiles, inspect, fetch, conformance) ---
+# Hermetic: a stub Hugging Face Hub and stub OpenAI servers on ephemeral
+# loopback ports. Also part of the full pytest run below; listed on its own
+# so a failure here is named, as in CI.
+if python3 -c "import pytest" 2>/dev/null; then
+  echo "--- Model onboarding tests (tests/test_model_{profiles,inspect,fetch}.py, test_conformance.py, test_use_model.py) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests/test_model_profiles.py" "$REPO_DIR/tests/test_model_inspect.py" \
+       "$REPO_DIR/tests/test_model_fetch.py" "$REPO_DIR/tests/test_conformance.py" \
+       "$REPO_DIR/tests/test_use_model.py" -q; then
+    echo ""
+    echo "Model onboarding tests: ALL PASSED"
+  else
+    echo ""
+    echo "Model onboarding tests: SOME FAILED"
+    OVERALL=1
+  fi
+  echo ""
+  echo ""
+fi
+
 # --- Python tool tests ---
 echo "--- Python tool tests ---"
 echo ""
