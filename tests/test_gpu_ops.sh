@@ -168,5 +168,113 @@ fi
 
 # ===========================================================================
 echo ""
+echo "measure-vram.sh — lease, port, teardown, and a bind failure is not an OOM:"
+# ===========================================================================
+install -m 755 "$SRC/scripts/measure-vram.sh" "$SB/scripts/measure-vram.sh"
+# curl: 'port_busy' = somebody else's server answers; 'up' = the serve stub
+# has come up. Otherwise connection refused (rc 7), as a free port says.
+cat > "$T/bin/curl" <<'STUB'
+#!/bin/bash
+echo "curl $*" >> "$OB_STUB_STATE/curl.log"
+if [[ -f "$OB_STUB_STATE/port_busy" || -f "$OB_STUB_STATE/up" ]]; then
+  echo '{"status":"ok"}'; exit 0
+fi
+exit 7
+STUB
+# The serve script under test: records its launch (and the lease it saw),
+# then behaves as the case asks. `ok` forks a child, so teardown has to take
+# the whole group, not just the leader.
+cat > "$SB/scripts/serve-fake.sh" <<'STUB'
+#!/bin/bash
+S="$OB_STUB_STATE"
+echo "launched $*" >> "$S/serve.log"
+echo $$ > "$S/serve.pid"
+cat "$(dirname "$0")/../.run/gpu.lease" > "$S/lease_during" 2>/dev/null || echo none > "$S/lease_during"
+case "$(cat "$S/serve_mode")" in
+  bind) echo "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080"; exit 1 ;;
+  oom)  echo "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000 MiB failed: out of memory"; exit 1 ;;
+  ok)   sleep 60 & echo $! > "$S/serve_child.pid"; touch "$S/up"; wait ;;
+esac
+STUB
+chmod +x "$T/bin/curl" "$SB/scripts/serve-fake.sh"
+MV() {
+  rm -f "$T/state/up" "$T/state/serve.pid" "$T/state/serve_child.pid" "$T/state/lease_during"
+  : > "$T/state/serve.log"; : > "$T/state/kills.log"
+  _rc=0
+  _out="$(OPENBEAST_MEASURE_PORT=18080 timeout 60 "$SB/scripts/measure-vram.sh" serve-fake.sh "$@" 2>&1)" || _rc=$?
+}
+
+# --- somebody else's server already on the port ----------------------------
+# A stand-in for the stack's llama-server, named so the OLD pattern kill
+# ("llama-server.*--port 8080") would match it.
+bash -c 'exec -a "llama-server -m /w/stack.gguf --port 8080" sleep 60' &
+_STACK=$!; PIDS+=("$_STACK")
+touch "$T/state/port_busy"; echo ok > "$T/state/serve_mode"
+MV
+rm -f "$T/state/port_busy"
+if [[ $_rc -ne 0 ]] && has "$_out" "already listening" && ! has "$_out" "RESULT  " \
+   && [[ ! -s "$T/state/serve.log" ]]; then
+  pass "a busy :port is refused before anything is launched (no bogus RESULT)"
+else
+  fail "busy port (rc=$_rc, serve.log=$(cat "$T/state/serve.log")): $_out"
+fi
+if kill -0 "$_STACK" 2>/dev/null && [[ ! -s "$T/state/kills.log" ]]; then
+  pass "the server already on the port survives, and no kill-by-pattern was attempted"
+else
+  fail "kill-by-pattern: $(cat "$T/state/kills.log"); stack alive=$(kill -0 "$_STACK" 2>/dev/null && echo y || echo n)"
+fi
+
+# --- somebody else's lease --------------------------------------------------
+bash -c '"$1" acquire "campaign" >/dev/null 2>&1; exec sleep 60' _ "$GL" &
+_H=$!; PIDS+=("$_H")
+wait_for 'grep -q "^label=campaign$" "$SB/.run/gpu.lease" 2>/dev/null' || fail "holder never took the lease"
+MV
+if [[ $_rc -ne 0 ]] && has "$_out" "GPU lease is HELD by pid $_H" && [[ ! -s "$T/state/serve.log" ]]; then
+  pass "a GPU lease held by someone else is refused before anything is launched"
+else
+  fail "foreign lease (rc=$_rc, serve.log=$(cat "$T/state/serve.log")): $_out"
+fi
+kill "$_H" 2>/dev/null || true; wait "$_H" 2>/dev/null || true
+rm -f "$SB/.run/gpu.lease"
+
+# --- the happy path ---------------------------------------------------------
+MV
+_child="$(cat "$T/state/serve_child.pid" 2>/dev/null || echo 0)"; PIDS+=("$_child")
+if [[ $_rc -eq 0 ]] && has "$_out" "RESULT  serve-fake.sh" && has "$_out" "[OK]" \
+   && grep -q '^label=measure-vram serve-fake.sh$' "$T/state/lease_during" \
+   && grep -q -- '--port 18080' "$T/state/serve.log"; then
+  pass "a clean measurement runs under its own lease and reports a RESULT"
+else
+  fail "happy path (rc=$_rc, lease_during=$(tr '\n' ' ' < "$T/state/lease_during" 2>/dev/null)): $_out"
+fi
+_sp="$(cat "$T/state/serve.pid" 2>/dev/null || echo 0)"
+if ! kill -0 "$_sp" 2>/dev/null && ! kill -0 "$_child" 2>/dev/null \
+   && [[ ! -s "$T/state/kills.log" ]] && [[ ! -f "$SB/.run/gpu.lease" ]]; then
+  pass "teardown took exactly its own group (server + its child) and released the lease"
+else
+  fail "teardown: serve alive=$(kill -0 "$_sp" 2>/dev/null && echo y || echo n) child alive=$(kill -0 "$_child" 2>/dev/null && echo y || echo n) kills=$(cat "$T/state/kills.log") lease=$([[ -f "$SB/.run/gpu.lease" ]] && echo left || echo gone)"
+fi
+
+# --- a bind failure is a port conflict, an allocation failure is an OOM -----
+echo bind > "$T/state/serve_mode"; MV
+if [[ $_rc -ne 0 ]] && has "$_out" "PORT CONFLICT" && ! has "$_out" "likely OOM"; then
+  pass "a server that could not bind is reported as a port conflict, not an OOM"
+else
+  fail "bind failure (rc=$_rc): $_out"
+fi
+echo oom > "$T/state/serve_mode"; MV
+if [[ $_rc -eq 2 ]] && has "$_out" "FAILED TO LOAD" && ! has "$_out" "PORT CONFLICT"; then
+  pass "negative control: a load that dies otherwise is still FAILED TO LOAD"
+else
+  fail "oom path (rc=$_rc): $_out"
+fi
+if kill -0 "$_STACK" 2>/dev/null; then
+  pass "the stand-in stack server is still alive after every measure-vram case"
+else
+  fail "the stand-in stack server was killed"
+fi
+
+# ===========================================================================
+echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
