@@ -125,7 +125,7 @@ def make_client(env, monkeypatch):
         # review found this server had no Host validation at all), and
         # TestClient's default "testserver" is exactly the kind of foreign
         # name a rebinding attack arrives under.
-        c = TestClient(app, base_url="http://127.0.0.1:3004")
+        c = TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3004")
         c.app_token = app.state.local_token      # type: ignore[attr-defined]
         c.asgi_app = app                         # type: ignore[attr-defined]
         return c
@@ -388,6 +388,87 @@ def test_identified_caller_without_an_allowlist_is_a_viewer(make_client):
     assert c.get(f"/a/{mine['id']}", headers=STRANGER).status_code == 404
     shared = publish(c, headers=local(c, MAX), visibility="tailnet")
     assert c.get(f"/a/{shared['id']}", headers=STRANGER).status_code == 200
+
+
+def _off_box(c, ip="192.168.1.77"):
+    """The same app, reached from a LAN/tailnet peer instead of loopback —
+    what BIND_HOST=0.0.0.0 (or a LAN address) exposes it to."""
+    return TestClient(c.asgi_app, client=(ip, 5555),
+                      base_url="http://localhost:3004",
+                      raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("operators", ["", "max@example.com"])
+def test_a_login_header_from_off_box_is_not_an_identity(make_client,
+                                                       operators):
+    """Review 2026-09-29 artifact-1. The server binds OPENBEAST_BIND, so on a
+    LAN-bound rig any host could send `Host: localhost` + the owner's login
+    and read every private page — allowlist or not. The header is what
+    `tailscale serve` sets from 127.0.0.1; from anywhere else it is a claim.
+    """
+    c = make_client(operators=operators)
+    a = publish(c, headers=local(c, MAX), html="<p>SECRET</p>")
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    lan = _off_box(c)
+    for path in ("/", "/api/artifacts", f"/api/artifacts/{a['id']}",
+                 f"/a/{a['id']}", f"/raw/{a['id']}/v/1/"):
+        r = lan.get(path, headers=MAX)
+        assert r.status_code == 404, path
+        assert r.json() == FLAT_404, path
+        assert "SECRET" not in r.text
+    # negative control: the SAME header over loopback (the tailscale-serve
+    # path) is still the viewer, so the gate did not just close everything
+    assert c.get(f"/raw/{a['id']}/v/1/", headers=MAX).status_code == 200
+    assert "SECRET" in c.get(f"/raw/{a['id']}/v/1/", headers=MAX).text
+    # the locality token is a secret, not a claim: it still works off-box
+    assert lan.get("/api/artifacts", headers=local(c)).status_code == 200
+
+
+@pytest.mark.parametrize("host,ok", [
+    ("127.0.0.1", True), ("127.8.9.10", True), ("::1", True),
+    ("::ffff:127.0.0.1", True), ("192.168.1.77", False),
+    ("100.101.102.103", False), ("::ffff:10.0.0.1", False),
+    ("testclient", False), ("", False),
+])
+def test_peer_is_loopback_fails_closed(host, ok):
+    class _Client:
+        pass
+
+    class _Req:
+        pass
+    req = _Req()
+    req.client = _Client()
+    req.client.host = host
+    assert artifact_server._peer_is_loopback(req) is ok
+    req.client = None                  # a Unix socket: on this box by design
+    assert artifact_server._peer_is_loopback(req) is True
+
+
+def test_every_answer_but_the_capability_tree_severs_the_opener(make_client):
+    """Review 2026-09-29 artifact-2: without COOP a cross-site page could
+    window.open /a/<id>/v/<n> and count frames (1 = exists, 0 = the 404).
+    The 404 must carry it too, or `w.closed` becomes the same oracle."""
+    c = make_client()
+    a = publish(c, headers=local(c, MAX))
+    coop = "cross-origin-opener-policy"
+    for path in ("/", f"/a/{a['id']}", f"/a/{a['id']}/v/1",
+                 f"/a/{a['id']}/v/9", "/a/no-such-id", "/api/artifacts",
+                 f"/raw/{a['id']}/v/1/"):
+        r = c.get(path, headers=MAX)
+        assert r.headers.get(coop) == "same-origin", path
+    anon = c.get(f"/a/{a['id']}")                     # the flat 404 itself
+    assert anon.status_code == 404
+    assert anon.headers.get(coop) == "same-origin"
+    assert artifact_server.SHELL_HEADERS[
+        "Cross-Origin-Opener-Policy"] == "same-origin"
+    # the capability tree stays opener-neutral: the sandboxed page opens its
+    # own files from there, and a sandboxed popup cannot load a COOP answer
+    tag = _iframe_tag(c.get(f"/a/{a['id']}", headers=MAX).text)
+    src = _raw_src(tag, a["id"], 1)
+    assert src
+    r = c.get(src, headers=MAX)
+    assert r.status_code == 200
+    assert coop not in r.headers
 
 
 # --- read auth ----------------------------------------------------------------
@@ -741,7 +822,7 @@ def test_a_crash_does_not_announce_the_route_to_a_stranger(make_client):
     def _boom():
         raise RuntimeError("kaboom")
 
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                          base_url="http://127.0.0.1:3004")
     r = quiet.get("/_boom", headers=MAX)
     assert r.status_code == 404 and r.json() == FLAT_404
@@ -1134,7 +1215,7 @@ def test_a_corrupt_record_never_500s_any_route(make_client, corruption):
     c = make_client()
     a = publish(c, files={"app.js": "console.log(1)"})
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                          base_url="http://127.0.0.1:3004")
     h = local(c)
     for path in ("/",
@@ -1164,7 +1245,7 @@ def test_a_corrupt_record_never_500s_a_stranger_either(make_client,
     c = make_client(operators="max@example.com,kid@example.com")
     a = publish(c)                                    # owner: max
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                          base_url="http://127.0.0.1:3004")
     for path in (f"/a/{a['id']}", f"/a/{a['id']}/v/1", f"/raw/{a['id']}/v/1/",
                  f"/raw/{a['id']}/v/1/app.js", f"/api/artifacts/{a['id']}"):
@@ -1182,7 +1263,7 @@ def test_a_dangling_current_resolves_to_the_newest_version(make_client):
     publish(c, artifact_id=a["id"], html="<title>Two</title>second")
     _corrupt(a["id"], _set("current", 99))
     h = local(c)
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                          base_url="http://127.0.0.1:3004")
     assert quiet.get(f"/a/{a['id']}", headers=h).status_code == 200
     assert 'value="2" selected' in quiet.get(f"/a/{a['id']}", headers=h).text
@@ -1200,7 +1281,7 @@ def test_a_version_the_meta_lost_is_still_served_from_disk(make_client):
     publish(c, artifact_id=a["id"], html="<title>Two</title>second")
     _corrupt(a["id"], _set("versions", "gone"))
     h = local(c)
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                          base_url="http://127.0.0.1:3004")
     assert "second" in quiet.get(f"/raw/{a['id']}/v/2/", headers=h).text
     assert PAGE in quiet.get(f"/raw/{a['id']}/v/1/", headers=h).text
@@ -1514,7 +1595,7 @@ def test_a_foreign_host_is_refused_before_the_identity_gate(make_client):
     """
     c = make_client()
     a = publish(c)
-    evil = TestClient(c.asgi_app, base_url="http://evil.example:3004",
+    evil = TestClient(c.asgi_app, client=("127.0.0.1", 50000), base_url="http://evil.example:3004",
                       raise_server_exceptions=False)
     # Identify with the LOCALITY TOKEN, not with LOCAL_LOGIN as a header.
     # This test used to present `Tailscale-User-Login: local`, which worked
@@ -1578,7 +1659,7 @@ def test_a_rebound_host_never_reaches_the_audit_log(make_client, tmp_path):
     c = make_client()
     path = tmp_path / "run" / "artifact-audit.jsonl"
     before = path.stat().st_size if path.exists() else 0
-    evil = TestClient(c.asgi_app, base_url="http://evil.example:3004",
+    evil = TestClient(c.asgi_app, client=("127.0.0.1", 50000), base_url="http://evil.example:3004",
                       raise_server_exceptions=False)
     for _ in range(20):
         assert evil.get("/api/artifacts").status_code == 400
@@ -1666,7 +1747,7 @@ def test_patch_never_500s_on_a_corrupt_record(make_client, corruption):
     c = make_client()
     a = publish(c)
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     r = quiet.patch(f"/api/artifacts/{a['id']}",
                     json={"visibility": "tailnet"}, headers=local(c))
@@ -1689,7 +1770,7 @@ def test_publish_never_500s_into_a_corrupt_record(make_client, corruption):
     c = make_client()
     a = publish(c)
     _corrupt(a["id"], CORRUPTIONS[corruption])
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     r = quiet.post("/api/artifacts",
                    json={"html": PAGE, "artifact_id": a["id"]},
@@ -1711,7 +1792,7 @@ def test_a_file_path_cannot_be_both_a_file_and_a_directory(make_client):
     raises FileExistsError — which escaped as a 500 where the contract
     promises a 400."""
     c = make_client()
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     r = quiet.post("/api/artifacts",
                    json={"html": PAGE,
@@ -1733,7 +1814,7 @@ def test_a_published_path_cannot_carry_a_newline(make_client):
     newline, so "dir\\n/app.js" passed a validator whose own comment promises
     no control characters — and became a directory named "dir\\n"."""
     c = make_client()
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     # An INTERIOR segment is what survived: _check_file_path strips the whole
     # path, so only a trailing newline on the LAST segment was ever normalised
@@ -1795,7 +1876,7 @@ def test_an_unparseable_record_can_still_be_deleted(make_client):
     a = publish(c)
     with open(_meta_file(a["id"]), "w", encoding="utf-8") as fh:
         fh.write('{"id": "' + a["id"] + '", "versions": [')   # truncated
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     # it is invisible, as before
     assert quiet.get(f"/api/artifacts/{a['id']}", headers=local(c)).status_code == 404
@@ -1811,7 +1892,7 @@ def test_deleting_an_id_that_never_existed_leaves_no_lock_file(make_client):
     <root>/.locks/<id>.lock behind."""
     c = make_client()
     publish(c)                                   # a real record, so the store exists
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     locks = os.path.join(store.store_root(), ".locks")
     before = set(os.listdir(locks)) if os.path.isdir(locks) else set()
@@ -1901,7 +1982,7 @@ def test_a_bad_visibility_value_commits_nothing(make_client):
     publish(c, artifact_id=a["id"])                  # now at v2
     before = store.get_meta(a["id"])
     assert before["current"] == 2
-    quiet = TestClient(c.asgi_app, raise_server_exceptions=False,
+    quiet = TestClient(c.asgi_app, client=("127.0.0.1", 50000), raise_server_exceptions=False,
                        base_url="http://127.0.0.1:3004")
     r = quiet.patch(f"/api/artifacts/{a['id']}",
                     json={"current": 1, "visibility": "public-please"},

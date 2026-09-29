@@ -32,7 +32,10 @@ Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
   identity  a caller is the LOCAL principal if it presents the locality token
           (`X-OpenBeast-Local` == .run/artifact-local.token, 0600, minted at
           startup — agents/edge.py:412 pattern), otherwise whoever
-          `Tailscale-User-Login` says, otherwise ANONYMOUS.
+          `Tailscale-User-Login` says, otherwise ANONYMOUS. The header counts
+          only from a LOOPBACK peer (`tailscale serve` proxies from
+          127.0.0.1): with BIND_HOST off loopback, a LAN caller that forges
+          it is ANONYMOUS, not the login it named.
   reads   ANONYMOUS gets 404 on every route but health: no identity, no
           service. With OPENBEAST_ARTIFACT_OPERATORS set (falling back to
           OPENBEAST_CHAT_OPERATORS) the login must also be on that list.
@@ -242,14 +245,34 @@ RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
     "Access-Control-Allow-Origin": "*",
 })
 
+# Cross-Origin-Opener-Policy. frame-ancestors/X-Frame-Options stop FRAMING,
+# not `window.open`, and the identity rides the network (tailscale serve), not
+# a cookie — so any site the viewer visits could open /a/<id>/v/<n> in a popup
+# and count its frames (`w.length`: the shell has one iframe, the 404 has
+# none), learning which private pages and versions exist without reading a
+# byte (an XS-Leak). With COOP the opener's handle is severed on EVERY answer
+# that can differ — shell, gallery, API and the flat 404 alike, because COOP
+# on the 200 alone would make `w.closed` the same oracle. Set by the gate
+# middleware on every response except the capability tree (/raw/<id>/v/<n>/~
+# <token>/...): a hostile page cannot address it (it cannot read the token),
+# and it is where the sandboxed page opens its own files from — a popup out
+# of a sandbox is a network error against a COOP response.
+COOP_HEADER = ("Cross-Origin-Opener-Policy", "same-origin")
+
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Cross-Origin-Resource-Policy": "same-origin",
+    COOP_HEADER[0]: COOP_HEADER[1],
     "Cache-Control": "no-store",
 }
+
+
+def _coop_applies(path: str) -> bool:
+    """Everything but the capability tree gets COOP (see COOP_HEADER)."""
+    return not (path.startswith("/raw/") and "/~" in path)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -272,6 +295,35 @@ def _configured_port() -> int:
 
 def _configured_host() -> str:
     return os.environ.get("OPENBEAST_BIND", "").strip() or "127.0.0.1"
+
+
+def _peer_is_loopback(request) -> bool:
+    """May this connection's peer assert an identity by HEADER?
+
+    `Tailscale-User-Login` is trustworthy only because `tailscale serve` is
+    the one thing that can put it on a request: it strips any client-supplied
+    copy and sets its own, and it reaches us from 127.0.0.1. That premise
+    holds only while every peer is loopback — and this server binds
+    OPENBEAST_BIND, which BIND_HOST=0.0.0.0 or a LAN address takes off the
+    box. A LAN host (or a tailnet node dialling 100.x:3004 directly) then
+    sent `Host: localhost` + the owner's login and read every private page,
+    ARTIFACT_OPERATORS or not. So the header counts only from a loopback
+    peer (or a Unix socket, which has no address and is on this box by
+    construction); from anywhere else the caller is ANONYMOUS.
+
+    The converse is NOT claimed: a loopback peer proves nothing about who is
+    behind the proxy (edge.py:412), which is why writes need the locality
+    token and still do. Fail closed on anything that is not an IP literal.
+    """
+    client = getattr(request, "client", None)
+    if client is None:
+        return True
+    try:
+        addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
 
 
 def _read_local_token() -> str:
@@ -620,7 +672,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
 
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
-        return JSONResponse(NOT_FOUND_BODY, status_code=404)
+        return JSONResponse(NOT_FOUND_BODY, status_code=404,
+                            headers=dict([COOP_HEADER]))
 
     # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
     # and a hit on the one route exempt from the anonymity gate
@@ -809,6 +862,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
         finally:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
+        if _coop_applies(request.url.path):
+            response.headers[COOP_HEADER[0]] = COOP_HEADER[1]
         return response
 
     # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
@@ -892,7 +947,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # still sees ANONYMOUS, never an arbitrarily-chosen login.
             return Principal(login=None, local=False, operator=False)
         local = is_local(request)
-        raw = (request.headers.get(_HDR_LOGIN) or "").strip().lower()
+        # A login header from an off-box peer is not an identity at all (see
+        # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
+        raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
+               if _peer_is_loopback(request) else "")
         if operators:
             if raw and raw in operator_set:
                 return Principal(login=raw, local=local, operator=True)
