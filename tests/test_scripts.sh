@@ -1009,7 +1009,8 @@ python3 - "$REPO_DIR/start.sh" "$_FB_TMP/gate.sh" <<'PYGATE'
 import sys
 src = open(sys.argv[1]).read()
 a = src.index('FAST_BOOT_ACTIVE=0\nif [[ "${FAST_BOOT:-false}" == "true"')
-b = src.index('echo "Waiting for llama.cpp server to be ready..."')
+# The gate's own if...fi: its closing `fi` is the first one at column 0.
+b = src.index('\nfi\n', a) + len('\nfi\n')
 open(sys.argv[2], "w").write(src[a:b])
 PYGATE
 _fb_run() {                      # _fb_run -> prints "ACTIVE=<0|1>"

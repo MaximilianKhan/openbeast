@@ -1,6 +1,7 @@
 #!/bin/bash
-# Inference-backend tests (docs/DGX_SPARK_PLAN.md): the INFERENCE_* conf keys
-# and lib/backend.sh readiness per server.
+# Inference-backend tests (docs/DGX_SPARK_PLAN.md): the INFERENCE_* conf keys,
+# lib/backend.sh readiness per server, the unmanaged paths of start.sh /
+# healthcheck.sh / stop.sh / doctor.sh.
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no real stack.
 # The only network is a throwaway HTTP stub on an ephemeral 127.0.0.1 port;
@@ -186,6 +187,139 @@ grep -q "INFERENCE_URL is not set" "$_T/conf.err" && pass "vllm without INFERENC
   || fail "no warning for vllm without INFERENCE_URL ($_c)"
 _c="$(_conf 'INFERENCE_BACKEND=vllm' 'echo "$INFERENCE_BACKEND"' OPENBEAST_INFERENCE_BACKEND=llama)"
 [[ "$_c" == "llama" ]] && pass "env OPENBEAST_INFERENCE_BACKEND beats the conf" || fail "env precedence: $_c"
+
+# ---------------------------------------------------------------------------
+# Sandbox rigs for the lifecycle scripts. Real curl (probes go to the stub on
+# 127.0.0.1 or to 127.0.0.2, where nothing listens); every other host tool is
+# a stub. pkill/pgrep/docker RECORD their argv to calls.log and fail.
+# ---------------------------------------------------------------------------
+_rig() { # _rig <dir>
+  local d="$1" c
+  mkdir -p "$d/scripts/lib" "$d/.run" "$d/bin" "$d/home" "$d/extensions"
+  cp "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh" "$d/"
+  cp "$REPO_DIR/scripts/healthcheck.sh" "$REPO_DIR/scripts/doctor.sh" "$d/scripts/"
+  cp "$REPO_DIR"/scripts/lib/*.sh "$d/scripts/lib/"
+  : > "$d/openbeast.conf"
+  : > "$d/calls.log"
+  for c in docker tailscale nvidia-smi sudo systemctl systemd-run smartctl pkill pgrep killall; do
+    printf '#!/bin/bash\necho "%s $*" >> "%s/calls.log"\nexit 1\n' "$c" "$d" > "$d/bin/$c"
+    chmod +x "$d/bin/$c"
+  done
+  # The serve script start.sh / healthcheck would launch: it only leaves a
+  # marker. Its execution in an unmanaged run is the failure under test.
+  printf '#!/bin/bash\necho "serve-marker $0" >> "%s/calls.log"\nexit 7\n' "$d" > "$d/scripts/serve-marker.sh"
+  chmod +x "$d/scripts/serve-marker.sh"
+}
+_run() { # _run <dir> <timeout-s> <script> [args...]   (extra env via RUN_ENV)
+  local d="$1" t="$2"; shift 2
+  env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND=127.0.0.2 OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+    OPENBEAST_SERVE_SCRIPT=serve-marker.sh \
+    ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$@" 2>&1 || true
+}
+_llama_kills() { grep -E '^(pkill|pgrep|killall) .*llama' "$1/calls.log" || true; }
+
+echo ""
+echo "start.sh with an unmanaged backend:"
+_R="$_T/start-dead"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD" OPENBEAST_LLAMA_LOAD_GRACE=3 OPENBEAST_FAST_BOOT=true)
+_t0=$SECONDS
+_O="$(_run "$_R" 40 "$_R/start.sh")"
+if grep -q "INFERENCE_URL=$_DEAD was not ready after 3s" <<< "$_O"; then
+  pass "a remote backend that never answers times out, naming INFERENCE_URL"
+else
+  fail "no INFERENCE_URL timeout message: $(tail -n 5 <<< "$_O")"
+fi
+(( SECONDS - _t0 < 30 )) && pass "…within the grace (OPENBEAST_LLAMA_LOAD_GRACE), not the 900 s default" \
+  || fail "unmanaged wait ignored the grace ($((SECONDS - _t0)) s)"
+if grep -q serve-marker "$_R/calls.log"; then
+  fail "start.sh executed a serve script on an unmanaged backend"
+else
+  pass "no serve script is executed (nothing launched)"
+fi
+[[ -z "$(_llama_kills "$_R")" ]] && pass "no pkill/pgrep of llama-server" \
+  || fail "unmanaged start.sh reached for llama-server: $(_llama_kills "$_R")"
+grep -q "FAST_BOOT: not applicable for INFERENCE_BACKEND=vllm" <<< "$_O" \
+  && pass "FAST_BOOT prints 'not applicable' instead of launching the bridge" || fail "no FAST_BOOT n/a line"
+grep -q "Model rollback: not applicable" <<< "$_O" && pass "rollback prints 'not applicable'" || fail "no rollback n/a line"
+[[ ! -f "$_R/.run/serve-script" ]] && pass "no .run/serve-script record for a server this stack does not run" \
+  || fail ".run/serve-script written on an unmanaged stack"
+
+_R="$_T/start-ok"; _rig "$_R"
+echo "serve-stale.sh" > "$_R/.run/serve-script"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm" OPENBEAST_LLAMA_LOAD_GRACE=3)
+_O="$(_run "$_R" 40 "$_R/start.sh")"
+if grep -q "vLLM ready at $_S/vllm" <<< "$_O"; then
+  pass "an empty-200 vLLM passes readiness and the stack carries on (tool server next)"
+else
+  fail "vLLM readiness in start.sh: $(tail -n 5 <<< "$_O")"
+fi
+grep -q "KV-cache warming: not applicable" <<< "$_O" && pass "KV warming prints 'not applicable'" || fail "no KV warming n/a line"
+grep -q "identity tool server" <<< "$_O" && pass "…and goes on to bring up the tool server" || fail "stopped before the tool server"
+grep -q serve-marker "$_R/calls.log" && fail "serve script executed on the ready path" \
+  || pass "still nothing launched on the ready path"
+[[ ! -f "$_R/.run/serve-script" ]] && pass "a stale serve-script record is cleared" || fail "stale serve-script kept"
+
+_R="$_T/start-managed"; _rig "$_R"
+RUN_ENV=(OPENBEAST_LLAMA_LOAD_GRACE=3)
+_O="$(_run "$_R" 40 "$_R/start.sh")"
+grep -q serve-marker "$_R/calls.log" && pass "control: the default (llama, managed) still executes the serve script" \
+  || fail "control: managed llama did not launch its serve script: $(tail -n 5 <<< "$_O")"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "healthcheck.sh --restart never touches an unmanaged backend:"
+_R="$_T/hc"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD")
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+grep -q "DOWN vLLM (vllm @ $_DEAD)" <<< "$_O" && pass "a down vLLM is reported DOWN" || fail "no DOWN line: $(head -n 8 <<< "$_O")"
+grep -q "not restarting: INFERENCE_MANAGED=false" <<< "$_O" && pass "…and not restarted" || fail "no not-restarting line"
+[[ -z "$(_llama_kills "$_R")" ]] && pass "no pkill/pgrep of llama-server" || fail "healthcheck reached for llama: $(_llama_kills "$_R")"
+grep -q serve-marker "$_R/calls.log" && fail "healthcheck --restart launched a serve script for an unmanaged backend" \
+  || pass "no serve script launched"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm")
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "OK   vLLM (vllm @ $_S/vllm)" <<< "$_O" && pass "a healthy vLLM (empty 200) reads OK, not DOWN" || fail "healthy vLLM: $(head -n 8 <<< "$_O")"
+grep -q "Slots:" <<< "$_O" && fail "llama /slots line printed for vLLM" || pass "no llama /slots line for vLLM"
+
+_R="$_T/hc-managed"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+RUN_ENV=()
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+grep -q serve-marker "$_R/calls.log" && pass "control: a managed llama that is down IS relaunched (the path the unmanaged case must avoid)" \
+  || fail "control: managed relaunch did not happen: $(head -n 10 <<< "$_O")"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "stop.sh leaves an unmanaged backend alone:"
+_R="$_T/stop"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf")
+_O="$(_run "$_R" 60 "$_R/stop.sh")"
+grep -q "Leaving the inference server alone: TensorFold at $_S/tf" <<< "$_O" && pass "stop.sh says it leaves TensorFold alone" \
+  || fail "no leave-alone line: $(tail -n 5 <<< "$_O")"
+[[ -z "$(_llama_kills "$_R")" ]] && pass "no llama-server pkill" || fail "stop.sh swept llama-server: $(_llama_kills "$_R")"
+_R="$_T/stop-managed"; _rig "$_R"
+RUN_ENV=()
+_run "$_R" 60 "$_R/stop.sh" >/dev/null
+[[ -n "$(_llama_kills "$_R")" ]] && pass "control: a managed stop still sweeps this repo's llama-server" \
+  || fail "control: managed stop.sh did not sweep llama-server"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh on an unmanaged backend:"
+_R="$_T/doc"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "vLLM at $_S/vllm (not managed here) — serving: Qwen3.8 27B NVFP4" <<< "$_O" \
+  && pass "doctor reports the remote vLLM ready and what it serves" || fail "doctor vLLM row: $(grep -i vllm <<< "$_O" || true)"
+grep -q "the GGUF weight registry / WEIGHT_ENFORCE: not applicable for INFERENCE_BACKEND=vllm" <<< "$_O" \
+  && pass "weight registry row says 'not applicable'" || fail "no weight-registry n/a row"
+grep -q "llama.cpp server" <<< "$_O" && fail "doctor still probes llama.cpp on a vLLM stack" || pass "no llama.cpp row"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
+  || fail "no TensorFold no-key warning"
 
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="

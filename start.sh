@@ -84,10 +84,18 @@ fi
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
 source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
-if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
+# INFERENCE_MANAGED=false (always, for vLLM / TensorFold): the inference
+# server belongs to someone else — a cluster on other boxes. This stack
+# launches, rolls back, supervises and kills NOTHING there; it waits for the
+# server to answer at INFERENCE_URL and brings everything else up around it.
+MANAGED=1
+ob_inference_managed || MANAGED=0
+
+if [[ $MANAGED -eq 1 && ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
   exit 1
 fi
@@ -97,7 +105,8 @@ fi
 # bracketed (lib/net.sh — the ONE mapping start/doctor/healthcheck share).
 # Used by the daemon launcher's readiness probes AND the supervisor below.
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
-LLAMA_BASE="http://$HEALTH_HOST:8080"
+# INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
+LLAMA_BASE="$INFERENCE_URL"
 # How long a model may take to LOAD before the load counts as failed (the
 # watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
 LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
@@ -134,7 +143,11 @@ if [[ $DAEMON -eq 1 ]]; then
     echo "Check ./start.sh --status, or ./stop.sh first." >&2
     exit 1
   fi
-  echo "Starting OpenBeast in the background ($SERVE_SCRIPT)..."
+  if [[ $MANAGED -eq 1 ]]; then
+    echo "Starting OpenBeast in the background ($SERVE_SCRIPT)..."
+  else
+    echo "Starting OpenBeast in the background (inference: $(ob_backend_label) at $INFERENCE_URL, not managed here)..."
+  fi
   if command -v systemd-run >/dev/null 2>&1 \
      && systemd-run --user --scope --quiet true 2>/dev/null; then
     # Transient service in a memory-capped cgroup: if anything in the stack
@@ -180,7 +193,11 @@ if [[ $DAEMON -eq 1 ]]; then
     echo "  (systemd-run unavailable — plain background process, no memory cap)"
   fi
 
-  echo "Waiting for the model to load (log: .run/stack.log)..."
+  if [[ $MANAGED -eq 1 ]]; then
+    echo "Waiting for the model to load (log: .run/stack.log)..."
+  else
+    echo "Waiting for $(ob_backend_label) at $INFERENCE_URL and the stack (log: .run/stack.log)..."
+  fi
   # Deadline, not an iteration count: the supervisor gives a load up to
   # LLAMA_LOAD_GRACE, and a launcher that quits first reports a failure
   # while the model is still legitimately coming up.
@@ -206,12 +223,18 @@ if [[ $DAEMON -eq 1 ]]; then
     # ob_llama_ready, not `curl -s`: llama-server answers 503 "Loading
     # model" from the moment it binds, and curl -s exits 0 on a 503 — "Stack
     # is up" printed (and openbeast.service reported started) mid-load.
-    if ob_llama_ready "$LLAMA_BASE" \
+    # ob_backend_ready IS ob_llama_ready for llama; vLLM / TensorFold get
+    # their own rule (lib/backend.sh).
+    if ob_backend_ready "$LLAMA_BASE" \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
        && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
       echo ""
       echo "Stack is up:"
-      echo "  Model server:  http://localhost:8080"
+      if [[ $MANAGED -eq 1 ]]; then
+        echo "  Model server:  http://localhost:8080"
+      else
+        echo "  Model server:  $INFERENCE_URL ($(ob_backend_label), not managed here)"
+      fi
       echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
       # The WebUI container starts AFTER this readiness point (the
       # supervisor brings the frontend up once the model is serving), so
@@ -242,6 +265,10 @@ if [[ $DAEMON -eq 1 ]]; then
     sleep 2
   done
   echo "Timed out after $(( LLAMA_LOAD_GRACE / 60 + 5 )) min — inspect ./start.sh --status and .run/stack.log" >&2
+  if [[ $MANAGED -eq 0 ]] && ! ob_backend_ready "$LLAMA_BASE"; then
+    echo "  The $(ob_backend_label) server at INFERENCE_URL=$INFERENCE_URL never became ready —" >&2
+    echo "  it is not managed here: start it where it runs (docs/DGX_SPARK_PLAN.md)." >&2
+  fi
   exit 1
 fi
 
@@ -275,8 +302,14 @@ _mark_gave_up() {
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "supervisor gave up: $1" > "$RUN_DIR/stopped"
 }
 # Record which serve script this stack runs so healthcheck.sh --restart can
-# relaunch the SAME model instead of assuming the default.
-echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
+# relaunch the SAME model instead of assuming the default. An unmanaged stack
+# runs none, and a stale record would have the dashboard describe a local
+# launch path (capacity.ctx_shared) that is not in use.
+if [[ $MANAGED -eq 1 ]]; then
+  echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
+else
+  rm -f "$RUN_DIR/serve-script"
+fi
 
 # Fail fast on docker container-name conflicts BEFORE the multi-minute model
 # load. Containers named ours but owned by another compose project (e.g.
@@ -332,6 +365,9 @@ cleanup() {
   fi
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
+  fi
+  if [[ -n "${IDLE_PID:-}" ]]; then
+    kill "$IDLE_PID" 2>/dev/null || true
   fi
   # Reap any process-kind extensions we launched — identity-checked. This
   # trap also fires on every early exit of a FRESH start, i.e. against
@@ -492,12 +528,34 @@ WARM
     echo "  (KV cache warmed with the system prompt)" ) &
 }
 
+# Unmanaged: wait for someone else's server, bounded like a load. It is not
+# ours, so a server that never answers is reported, never killed or rolled
+# back — and the message names INFERENCE_URL, because that is the only knob
+# on this side.
+wait_backend_ready() {
+  local t0=$SECONDS
+  until ob_backend_ready "$LLAMA_BASE"; do
+    if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
+      echo "Error: the $(ob_backend_label) server at INFERENCE_URL=$LLAMA_BASE was not ready after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE)." >&2
+      echo "       It is not managed by this stack (INFERENCE_BACKEND=$INFERENCE_BACKEND, INFERENCE_MANAGED=false):" >&2
+      echo "       start it where it runs (docs/DGX_SPARK_PLAN.md), or fix INFERENCE_URL in openbeast.conf." >&2
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 # Fast boot (opt-in, OPENBEAST_FAST_BOOT / conf FAST_BOOT — resolved by
 # lib/conf.sh): serve the tiny Qwen3-0.6B bridge on :8080 first so chat is
 # live in seconds, then hot-swap to the configured model once the stack is up
 # and its weights are warmed. The tool server / WebUI point at :8080 and are
 # model-agnostic, so only llama-server swaps. Default off = load the real
 # model directly (behavior unchanged).
+# Unmanaged: there is no local llama-server to bridge or swap.
+if [[ $MANAGED -eq 0 && "${FAST_BOOT:-false}" == "true" ]]; then
+  echo "Fast boot: $(ob_backend_na "FAST_BOOT")"
+  FAST_BOOT=false
+fi
 BOOTSTRAP_SERVE="serve-bootstrap.sh"
 REAL_SERVE_SCRIPT="$SERVE_SCRIPT"
 FAST_BOOT_ACTIVE=0
@@ -530,8 +588,17 @@ if [[ "${FAST_BOOT:-false}" == "true" && "$SERVE_SCRIPT" != "$BOOTSTRAP_SERVE" \
   fi
 fi
 
-echo "Waiting for llama.cpp server to be ready..."
-if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
+if [[ $MANAGED -eq 0 ]]; then
+  echo "Waiting for the $(ob_backend_label) server at $LLAMA_BASE (not managed here — nothing is launched)..."
+  if [[ "${MODEL_ROLLBACK:-true}" == "true" ]]; then
+    echo "  $(ob_backend_na "Model rollback")"
+  fi
+  if ! wait_backend_ready; then
+    exit 1
+  fi
+  echo "$(ob_backend_label) ready at $LLAMA_BASE"
+elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
+  echo "Waiting for llama.cpp server to be ready..."
   # Phase 1 is the tiny bridge — it IS the fallback, so no rollback/record here.
   launch_llama
   if ! wait_llama_health; then
@@ -539,6 +606,7 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
     exit 1
   fi
 else
+  echo "Waiting for llama.cpp server to be ready..."
   # Real model, with load-failure rollback to the last-known-good.
   if ! launch_and_wait; then
     echo "Error: llama-server exited during startup — see its output above" >&2
@@ -546,7 +614,9 @@ else
     exit 1
   fi
 fi
-echo "llama.cpp server ready on http://localhost:8080"
+if [[ $MANAGED -eq 1 ]]; then
+  echo "llama.cpp server ready on http://localhost:8080"
+fi
 
 # Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
 # later) regenerates it too, and warming against the pre-regen text would
@@ -556,7 +626,11 @@ python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
 
 # Normal boot warms here; fast boot warms after the swap (below) so the primed
 # prefix belongs to the REAL model, not the throwaway bridge.
-[[ $FAST_BOOT_ACTIVE -eq 0 ]] && warm_kv_cache
+if [[ $MANAGED -eq 0 ]]; then
+  echo "  $(ob_backend_na "KV-cache warming")"
+elif [[ $FAST_BOOT_ACTIVE -eq 0 ]]; then
+  warm_kv_cache
+fi
 
 echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
 python3 -c 'import fastapi, uvicorn' 2>/dev/null \
@@ -845,7 +919,11 @@ CONFIG_PID=$!
 
 echo ""
 echo "Stack is running:"
-echo "  Model server:  http://localhost:8080"
+if [[ $MANAGED -eq 1 ]]; then
+  echo "  Model server:  http://localhost:8080"
+else
+  echo "  Model server:  $LLAMA_BASE ($(ob_backend_label), not managed here)"
+fi
 echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
 echo "  Open WebUI:    http://localhost:3000"
 echo "  OpenCode:      run 'opencode' in any project directory"
@@ -891,6 +969,24 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   FAST_BOOT_ACTIVE=0
 fi
 
+# Unmanaged: nothing to relaunch. Stay up (the trap still owns shutdown)
+# and log only TRANSITIONS of the remote server's readiness, so a Spark
+# rebooting shows up in stack.log without a line every 30 seconds.
+if [[ $MANAGED -eq 0 ]]; then
+  _up=1
+  while true; do
+    sleep 30 & IDLE_PID=$!
+    wait "$IDLE_PID" || true
+    IDLE_PID=""
+    if ob_backend_ready "$LLAMA_BASE"; then
+      [[ $_up -eq 0 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+      _up=1
+    else
+      [[ $_up -eq 1 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is NOT ready — not managed here, so nothing is restarted."
+      _up=0
+    fi
+  done
+fi
 # Supervise with bounded self-healing: an unexpected llama-server death
 # (VRAM OOM, crash, a healthcheck --restart kill) gets up to 3 relaunches;
 # staying healthy 5+ minutes refills the budget. ./stop.sh's TERM sets

@@ -20,6 +20,7 @@ QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
 
 source "$SCRIPT_DIR/lib/net.sh"   # ob_probe_host — the mapping start.sh and healthcheck.sh use
+source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed, ob_backend_na
 # ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
 # --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
 source "$SCRIPT_DIR/lib/curl_auth.sh"
@@ -38,6 +39,13 @@ section() { [[ $QUIET -eq 1 ]] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 pass()    { [[ $QUIET -eq 1 ]] || echo "  ✓ $1"; PASS=$((PASS+1)); }
 warn()    { echo "  ! $1"; [[ -n "${2:-}" ]] && echo "      → $2"; WARN=$((WARN+1)); }
 fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"; FAIL=$((FAIL+1)); }
+# A llama-only row on a stack that does not run llama-server here: one line,
+# counted as neither pass nor problem (lib/backend.sh ob_backend_na).
+na()      { [[ $QUIET -eq 1 ]] || echo "  - $(ob_backend_na "$1")"; }
+# The local-llama rows (weights, governance) apply only when this stack
+# launches llama-server itself.
+LOCAL_LLAMA=0
+[[ "$INFERENCE_BACKEND" == "llama" ]] && ob_inference_managed && LOCAL_LLAMA=1
 
 # curl a health URL; $3 optional bearer key. Returns 0 if the body matches $2.
 probe() { # probe <url> <match> [key]
@@ -154,7 +162,9 @@ fi
 # (a fresh/minimal/CI checkout is not a failure), and nonzero ONLY on a real
 # size mismatch — so its exit maps straight onto pass/fail here.
 section "Weight registry"
-if [[ -f "$REPO_DIR/scripts/weights.registry" ]]; then
+if [[ $LOCAL_LLAMA -eq 0 ]]; then
+  na "the GGUF weight registry / WEIGHT_ENFORCE"
+elif [[ -f "$REPO_DIR/scripts/weights.registry" ]]; then
   if _vw_out="$("$REPO_DIR/scripts/verify-weights.sh" 2>&1)"; then
     case "$_vw_out" in
       *"nothing to verify"*) pass "no weights downloaded yet (nothing to verify)" ;;
@@ -177,7 +187,9 @@ _srv="$DEFAULT_SERVE_SCRIPT"
 [[ -f "$REPO_DIR/.run/serve-script" ]] && _srv="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || echo "$_srv")"
 _gguf="$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$REPO_DIR/scripts/$_srv" 2>/dev/null | head -1)"
 _gguf="${_gguf##*/}"
-if [[ -n "$_gguf" && -f "$REPO_DIR/scripts/weights.registry" ]]; then
+if [[ $LOCAL_LLAMA -eq 0 ]]; then
+  na "served-weight pinning and the leaderboard gate"
+elif [[ -n "$_gguf" && -f "$REPO_DIR/scripts/weights.registry" ]]; then
   if awk -F'\t' -v n="$_gguf" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
        "$REPO_DIR/scripts/weights.registry"; then
     case "${WEIGHT_ENFORCE:-warn}" in
@@ -198,7 +210,7 @@ fi
 #   MODELS[].slug "qwen38-27b-uncensored-mtp-q5"       -> what --models accepts
 # The leaderboard key comes from MODELS[].name, NOT the serve alias, so
 # resolve through benchmark_all.py's registry instead of guessing.
-if [[ -f "$REPO_DIR/evals/leaderboard.json" && -f "$REPO_DIR/evals/benchmark_all.py" ]]; then
+if [[ $LOCAL_LLAMA -eq 1 && -f "$REPO_DIR/evals/leaderboard.json" && -f "$REPO_DIR/evals/benchmark_all.py" ]]; then
   _eval_out="$(OB_SRV="$_srv" python3 - "$REPO_DIR" <<'PYEOF' 2>/dev/null || true
 import ast, json, os, re, sys
 repo, srv = sys.argv[1], os.environ["OB_SRV"]
@@ -281,7 +293,30 @@ fi
 
 # ── Services ────────────────────────────────────────────────────────────────
 section "Services"
-if probe "http://$HEALTH_HOST:8080/health" "ok"; then
+# INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
+if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
+  # Someone else's server (vLLM / TensorFold across the Sparks, or a
+  # llama-server on another box): ask it the question ITS /health answers.
+  if ob_backend_ready "$INFERENCE_URL"; then
+    _be_models="$(ob_backend_models "$INFERENCE_URL" 2>/dev/null | head -3 | tr '\n' ' ' || true)"
+    pass "$(ob_backend_label) at $INFERENCE_URL (not managed here) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
+  else
+    warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, not managed here)" \
+         "start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
+  fi
+  # vLLM leaves /health and /metrics open even with --api-key, and TensorFold
+  # has no key at all: the network path to it IS the access control.
+  _be_host="${INFERENCE_URL#*://}"; _be_host="${_be_host%%/*}"; _be_host="${_be_host%:*}"
+  if ! ob_bind_is_loopback "${_be_host#[}"; then
+    if [[ "$INFERENCE_BACKEND" == "tensorfold" ]]; then
+      warn "TensorFold has no API key: anyone who can reach $INFERENCE_URL can use it" \
+           "bind it to the ConnectX / tailnet address only and firewall it (docs/DGX_SPARK_PLAN.md § Security)"
+    elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
+      warn "the inference server at $INFERENCE_URL is reached without a key (LLAMA_API_KEY empty)" \
+           "start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here"
+    fi
+  fi
+elif probe "http://$HEALTH_HOST:8080/health" "ok"; then
   pass "llama.cpp server (:8080)"
   # The model is up — but can the FRONTEND reach it? Open WebUI dials
   # OPENBEAST_MODEL_URL (localhost), and a server bound to a specific LAN or

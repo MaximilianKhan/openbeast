@@ -15,6 +15,7 @@ REPO_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
+source "$SCRIPT_DIR/scripts/lib/backend.sh" # ob_inference_managed, ob_backend_label
 
 # Record that this stop is ON PURPOSE, before anything is signalled (so a
 # watchdog tick landing mid-stop already sees it). healthcheck.sh --restart
@@ -132,6 +133,14 @@ pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo 
 # Legacy mcpo instances (pre-identity-server stacks)
 pkill -f "mcpo --port" 2>/dev/null || true
 
+if ! ob_inference_managed; then
+  # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference
+  # server runs elsewhere, in containers this stack did not start. Stopping
+  # the stack must not reach for it — and the repo-anchored llama-server
+  # sweep below has nothing of ours to find.
+  echo "Leaving the inference server alone: $(ob_backend_label) at $INFERENCE_URL is not managed by this stack."
+  echo "  (stop it where it runs — docs/DGX_SPARK_PLAN.md)"
+else
 echo "Stopping llama.cpp server..."
 # The supervisor's own llama-server is already gone by now (its trap stopped
 # it). What is left for this sweep is anything ELSE running the repo's binary
@@ -153,6 +162,7 @@ if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]] \
   echo "  leaving llama-server processes alone — stop that job first (scripts/gpu-lease.sh status)."
 else
 pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+fi
 fi
 
 rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \

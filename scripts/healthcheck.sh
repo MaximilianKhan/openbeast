@@ -24,6 +24,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 
 # Where the services actually answer (same mapping start.sh uses): loopback
@@ -35,7 +36,8 @@ source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 # the mapping, shared with start.sh and doctor.sh.)
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 
-LLAMA_URL="${LLAMA_URL:-http://$HEALTH_HOST:8080}"
+# INFERENCE_URL (lib/conf.sh) defaults to exactly http://$HEALTH_HOST:8080.
+LLAMA_URL="${LLAMA_URL:-$INFERENCE_URL}"
 MCPO_URL="${MCPO_URL:-http://$HEALTH_HOST:3001}"
 WEBUI_URL="${WEBUI_URL:-http://$HEALTH_HOST:3000}"
 SEARXNG_URL="${SEARXNG_URL:-http://$HEALTH_HOST:8888}"
@@ -175,7 +177,25 @@ _gpu_leased() {
   [[ "$out" == HELD* ]]
 }
 
-if _llama_loading; then
+if ! ob_inference_managed; then
+  # NOT OURS (INFERENCE_MANAGED=false — always for vLLM / TensorFold): a
+  # cluster on other boxes, in containers this stack did not start. Report
+  # it; never kill, relaunch or roll it back. The llama path below would
+  # pgrep/kill a local llama-server and exec a serve script into a port and
+  # a GPU that have nothing to do with the real server.
+  _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL)"
+  if ob_backend_ready "$LLAMA_URL"; then
+    echo "  OK   $_be_label"
+    HEALTHY=$((HEALTHY + 1))
+  else
+    echo "  DOWN $_be_label"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → not restarting: INFERENCE_MANAGED=false — this stack does not own it."
+      echo "         Start it where it runs (docs/DGX_SPARK_PLAN.md)."
+    fi
+  fi
+elif _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
   LOADING=1
 elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
@@ -328,7 +348,7 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       # Upstream where llama-server answers (BIND_HOST), as start.sh does:
       # a specific-address bind refuses 127.0.0.1.
       OPENBEAST_REPO_DIR="$REPO_DIR" \
-        OPENBEAST_LLAMA_UPSTREAM="http://$HEALTH_HOST:8080" \
+        OPENBEAST_LLAMA_UPSTREAM="$INFERENCE_URL" \
         python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &
       mkdir -p "$REPO_DIR/.run"
       echo "$!" > "$REPO_DIR/.run/edge.pid"
@@ -525,7 +545,10 @@ for _mount_label in "weights:$_weights_dir" "repo:$REPO_DIR"; do
   fi
 done
 
-# Slot utilization (/slots is key-protected when LLAMA_API_KEY is set)
+# Slot utilization (/slots is key-protected when LLAMA_API_KEY is set).
+# llama-server's /slots only — vLLM / TensorFold have none (their load, where
+# they report it, is on /api/slot via the dashboard).
+if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
 SLOTS_JSON=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 3 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 ACTIVE_SLOTS=$(echo "$SLOTS_JSON" | python3 -c "
 import sys, json
@@ -536,6 +559,7 @@ try:
 except: print('?/?')
 " 2>/dev/null)
 echo "  Slots: $ACTIVE_SLOTS active"
+fi
 
 # Summary
 echo ""
