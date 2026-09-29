@@ -1114,7 +1114,8 @@ def run_eval(
 
     cache_only: when True, never invoke the agent. Cache hits replay; cache
     misses are recorded as 'skipped_cache_miss' with passed=False. Used for
-    fast leaderboard rebuilds from prior runs after a scoring/spec tweak.
+    replays of prior runs; never seated (no live host — scoring.py --rebuild
+    rescores banked runs).
 
     health_check / recover_cb: optional pair injected by benchmark_all.py.
     Before each live task, `health_check()` probes /health; if it returns
@@ -1299,6 +1300,7 @@ def run_eval(
         "runtime": capture_runtime_info(),
         "jobs": jobs,
         "suite_selection": suite,
+        "cache_only": cache_only,
         "harness": {"diagnostics": diag_on,
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},

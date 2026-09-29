@@ -109,3 +109,50 @@ def test_benchmark_all_experiment_arms_imply_no_leaderboard():
     assert ba.experiment_arms({"BEAST_PACKS": "1"}) == ["--packs"]
     assert ba.experiment_arms({"BEAST_ASSIST": "1"}) == ["beast-assist diagnostics"]
     assert ba.experiment_arms({"OPENBEAST_DIAGNOSTICS": "1"}) == ["beast-assist diagnostics"]
+
+
+def test_full_hit_cache_only_replay_is_not_seated(tmp_path, monkeypatch, capsys):
+    """A --cache-only replay where EVERY unit hit has no live host: seated,
+    it became a second (unknown-host, m) row beside the real rig's row."""
+    lb = str(tmp_path / "leaderboard.json")
+    live = scoring.score_run(_results("2026-09-01T00:00:00", passed=255))
+    scoring.update_leaderboard(live, path=lb)
+    replay = _results("2026-09-02T00:00:00", passed=291, cache_only=True)
+    replay.update(gpu=None, inference_engine=None, server=None)
+    (r,) = scoring.ineligibility_reasons(replay)
+    assert "cache-only" in r
+    entries = scoring.update_leaderboard(scoring.score_run(replay), path=lb)
+    assert [(scoring.entry_host_id(e), e["tasks_passed"]) for e in entries] == [("rig", 255)]
+    # Legacy replays predate the flag: gpu/engine/server all null.
+    legacy = _results("t")
+    legacy.update(gpu=None, inference_engine=None, server=None)
+    assert scoring.ineligibility_reasons(legacy)
+    # Negative control: a LIVE run on a host without nvidia-smi records {}
+    # and stays eligible.
+    no_nv = _results("t")
+    no_nv.update(gpu={}, inference_engine={}, server={}, cache_only=False)
+    assert scoring.ineligibility_reasons(no_nv) == []
+
+
+def test_run_eval_stamps_cache_only(tmp_path):
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = tmp_path / "cache"
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01_a.json").write_text(json.dumps({
+        "id": "01_a", "name": "a", "difficulty": "easy", "task": "a",
+        "validation": {"type": "bash", "script": "true"}, "max_iter": 3}))
+    run_eval.TASKS_DIR = str(tasks)
+    run_eval.RESULTS_DIR = str(tmp_path / "results")
+    task = run_eval.load_tasks(None)[0]
+    cache.cache_put(cache.cache_key(task, "m", max_iter=3),
+                    {"id": "01_a", "passed": True, "elapsed_seconds": 1.0,
+                     "tokens_completion": 5})
+    res = run_eval.run_eval(model_name="m", cache_only=True, reasoning_budget="-1")
+    assert res["tasks"][0]["from_cache"] is True       # a full hit
+    assert res["cache_only"] is True
+    assert scoring.ineligibility_reasons(res)

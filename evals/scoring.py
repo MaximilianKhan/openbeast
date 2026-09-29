@@ -468,6 +468,16 @@ def ineligibility_reasons(results: dict) -> list[str]:
     newest full-suite experiment run replaced the model's baseline row on
     the next update or `--rebuild`."""
     reasons = []
+    # A --cache-only replay has no live host (gpu/server null): seated, it
+    # became a second "unknown-host" row for the model with a SPD read from
+    # whatever server log matched the replay's timestamp. Rescoring banked
+    # runs is `scoring.py --rebuild`. Legacy replays predate the flag but
+    # are the only files with gpu, engine AND server all null (a live run
+    # always records a dict, {} when nvidia-smi is absent).
+    if results.get("cache_only") or (
+            "gpu" in results and results.get("gpu") is None
+            and results.get("inference_engine") is None and results.get("server") is None):
+        reasons.append("cache-only replay (no live host)")
     if results.get("suite_selection"):
         reasons.append(f"fast suite {results['suite_selection']}")
     harness = results.get("harness") or {}

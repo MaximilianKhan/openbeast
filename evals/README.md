@@ -27,7 +27,7 @@ python3 evals/run_eval.py --suite v5-fast --jobs 4   # pinned fast suite (~0.85 
 python3 evals/benchmark_all.py                       # full sweep across configured models
 python3 evals/benchmark_all.py --models X --suite v5-fast --jobs 4  # fast comparison sweep (implies --no-leaderboard)
 python3 evals/make_fast_suite.py                     # verify the v5-fast pin (identity + drift); --generate to re-pin
-python3 evals/benchmark_all.py --cache-only          # rebuild leaderboard from cache without ever starting a server
+python3 evals/benchmark_all.py --cache-only          # replay every model from cache, no server (report only; never seated)
 python3 evals/scoring.py --rebuild                   # rescore all eval-*.json files into leaderboard.json
 python3 evals/scoring.py --by-category               # per-category drilldown table
 python3 evals/scoring.py --by-language               # per-language drilldown
@@ -101,14 +101,17 @@ on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
 that unit as `reason: low_disk` and stops starting units, so a disk filled
 mid-sweep doesn't turn the rest of the run into ENOSPC failures.
 
-`--cache-only` mode is the fast-path for "rebuild the leaderboard from
-prior runs" — no server start, no live calls, cache misses are recorded
-as `skipped_cache_miss` for visibility. With no server to read the
+`--cache-only` mode replays banked verdicts into a results file — no
+server start, no live calls, cache misses are recorded as
+`skipped_cache_miss` for visibility. It has no live host (`gpu`/`server`
+are null, `cache_only: true`), so the leaderboard refuses it: seated, it
+was a second `unknown-host` row for the model. To rescore banked runs
+after a scoring change, use `scoring.py --rebuild`. With no server to read the
 reasoning budget from, it replays the `.rbN` era of the model's newest
 live results file (it prints which); `--reasoning-budget N` picks one
 explicitly (`-1` = the uncapped legacy era). A replay with any cache miss
-is kept as a results file but refused by the leaderboard, so a replay
-against the wrong era can't seat a 0% row.
+is also flagged `skipped_cache_miss`, so a replay against the wrong era
+reads as one at a glance.
 
 **The era hash, and the experiment flags that fork it.** Item (e) above is
 one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it
@@ -733,8 +736,8 @@ return a `usage` block (some legacy llama.cpp builds). `suite_version`,
 v3.5 and v4 scores never get confused and a result is traceable to the exact
 llama.cpp build that produced it. Results are written incrementally
 (`tmp`+`rename` after each task), so a crashed sweep keeps every completed
-task. `--cache-only` runs record `gpu`/`inference_engine` as `{}` (no live
-probe).
+task. `--cache-only` runs record `gpu`/`inference_engine`/`server` as `null`
+(no live probe) and `cache_only: true`.
 
 ## Adding a task
 
