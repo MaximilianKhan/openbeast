@@ -842,6 +842,111 @@ fi
 
 # ===========================================================================
 echo ""
+echo "14. pydeps.sh install --from — the LOCK must be vouched for, not carried:"
+# ===========================================================================
+# The attack: the stick carries a malicious wheel AND a lock naming its hash,
+# and the operator copies both over (the old printed instructions said to).
+# verify + audit + --require-hashes all passed, because every check was
+# against the lock that came with the payload.
+PR="$T/pyrepo"; rm -rf "$PR"; mkdir -p "$PR/scripts/lib" "$PR/agents" "$T/usb/wh14"
+install -m 755 "$REPO_DIR/scripts/pydeps.sh" "$PR/scripts/pydeps.sh"
+install -m 644 "$REPO_DIR/scripts/lib/pydeps_lock.py" "$PR/scripts/lib/pydeps_lock.py"
+echo 'foo==1.0' > "$PR/agents/requirements.txt"
+echo "GOOD WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+echo "HF WHEEL" > "$T/usb/wh14/huggingface_hub-1.0-py3-none-any.whl"
+mk_lock14() {            # mk_lock14 <foo wheel>: a lock that names exactly the wheelhouse
+  printf 'foo==1.0 \\\n    --hash=sha256:%s\nhuggingface_hub==1.0 \\\n    --hash=sha256:%s\n' \
+    "$(sha_of "$1")" "$(sha_of "$T/usb/wh14/huggingface_hub-1.0-py3-none-any.whl")" > "$PR/agents/requirements.lock"
+}
+mk_lock14 "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+_good_lock_sha="$(sha_of "$PR/agents/requirements.lock")"
+pyd() { echo "${PIPMODE:-ok}" > "$T/state/pip_mode"; : > "$T/state/pip.log"
+        _out="$(cd "$T/usb" && env OPENBEAST_PYTHON="$T/bin/python3" "$@" 2>&1)"; _rc=$?; }
+n_pip() { count_lines "$T/state/pip.log" "pip install"; }
+
+# Not a git checkout, nothing vouched: refused before pip runs.
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for" && has "$_out" "$_good_lock_sha"; then
+  pass "an unvouched lock (no git, no --lock-sha256) is refused before pip runs, and its hash is shown"
+else
+  fail "unvouched lock (rc=$_rc pip=$(n_pip)): $_out"
+fi
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$(printf '0%.0s' {1..64})"
+if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "not the lock you vouched for"; then
+  pass "a --lock-sha256 that does not match the lock is refused"
+else
+  fail "wrong --lock-sha256 (rc=$_rc pip=$(n_pip)): $_out"
+fi
+# NEGATIVE CONTROLS: the right hash, by flag or by env, installs offline.
+pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && [[ "$(count_lines "$T/state/pip.log" "--no-index")" == "1" ]]; then
+  pass "negative control: the vouched hash installs, with --no-index"
+else
+  fail "vouched install (rc=$_rc pip=$(n_pip)): $_out"
+fi
+pyd OPENBEAST_LOCK_SHA256="$_good_lock_sha" "$PR/scripts/pydeps.sh" install --from ./wh14
+if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]]; then
+  pass "negative control: OPENBEAST_LOCK_SHA256 vouches the same way (what bootstrap's offline path uses)"
+else
+  fail "env-vouched install (rc=$_rc): $_out"
+fi
+# THE GIT CASE: the committed lock vouches for itself; a lock swapped in
+# from the stick does not.
+if command -v git >/dev/null 2>&1; then
+  git -C "$PR" init -q && git -C "$PR" add -A \
+    && git -C "$PR" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm init
+  pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+  if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && has "$_out" "committed at"; then
+    pass "negative control: in a git checkout, the COMMITTED lock needs no hash"
+  else
+    fail "committed lock (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  # The finding's exact attack: evil wheel + a lock naming it, both from the stick.
+  echo "EVIL WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+  mk_lock14 "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+  pyd "$PR/scripts/pydeps.sh" install --from ./wh14
+  if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for"; then
+    pass "a lock swapped in from the stick (naming a substituted wheel) is REFUSED — the stick is not the trust root"
+  else
+    fail "swapped lock accepted (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  # control: the same pair DOES pass every check the old code ran.
+  _out="$("$REAL_PY" "$PR/scripts/lib/pydeps_lock.py" verify --lock "$PR/agents/requirements.lock" \
+            --req "$PR/agents/requirements.txt" --extra huggingface_hub 2>&1)"; _rc=$?
+  _out2="$("$REAL_PY" "$PR/scripts/lib/pydeps_lock.py" audit --lock "$PR/agents/requirements.lock" --dir "$T/usb/wh14" 2>&1)"; _rc2=$?
+  if [[ $_rc -eq 0 && $_rc2 -eq 0 ]]; then
+    pass "control: the swapped lock + evil wheel pass verify AND audit, so only the voucher stands between"
+  else
+    fail "control: the swapped pair did not pass verify/audit (rc=$_rc/$_rc2) — the case is wrong: $_out $_out2"
+  fi
+  git -C "$PR" checkout -q -- agents/requirements.lock
+  echo "GOOD WHEEL" > "$T/usb/wh14/foo-1.0-py3-none-any.whl"
+else
+  echo "  SKIP: git not installed (the committed-lock cases)"
+fi
+
+# EXIT 3 = HASH MISMATCH, the status callers must never fall back from.
+PIPMODE=hashfail pyd "$PR/scripts/pydeps.sh" install --from ./wh14 --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -eq 3 ]] && has "$_out" "HASH MISMATCH" && has "$_out" "THESE PACKAGES DO NOT MATCH"; then
+  pass "a pip hash mismatch exits 3 (pip's own report still shown)"
+else
+  fail "hash mismatch exit status (rc=$_rc): $_out"
+fi
+PIPMODE=compatfail pyd "$PR/scripts/pydeps.sh" install --lock-sha256 "$_good_lock_sha"
+if [[ $_rc -ne 0 && $_rc -ne 3 ]] && ! has "$_out" "HASH MISMATCH"; then
+  pass "negative control: a compatibility failure is non-zero but NOT 3 (a caller may degrade from it)"
+else
+  fail "compat failure exit status (rc=$_rc): $_out"
+fi
+PIPMODE=unpinnedfail pyd "$PR/scripts/pydeps.sh" install
+if [[ $_rc -ne 0 && $_rc -ne 3 ]]; then
+  pass "negative control: an incomplete closure ('must have their versions pinned') is not called tampering"
+else
+  fail "unpinned closure exit status (rc=$_rc): $_out"
+fi
+
+# ===========================================================================
+echo ""
 echo "5. bundle.sh install — weights: .partial + verify; 'exists' is not 'correct':"
 # ===========================================================================
 WB="$T/usb/wbundle"; WD="$T/wdest"
@@ -987,6 +1092,34 @@ else
     pass "build --with-weights= (empty) is an error, not a bundle silently built without weights"
   else
     fail "build --with-weights= (rc=$_rc): $_out"
+  fi
+
+  # --- the lock voucher: only a VERIFIED signature may vouch for the lock ---
+  # SB is not a git checkout, so pydeps accepts its lock only with a hash —
+  # and bundle.sh must hand one over only when the manifest recording it was
+  # signature-checked. (Stub python3: pip is recorded, never run.)
+  WHB="$T/usb/whbundle"; rm -rf "$WHB"; mkdir -p "$WHB/wheels" "$WHB/meta"
+  cp "$T/usb/wh14/"*.whl "$WHB/wheels/"
+  cp "$PR/agents/requirements.lock" "$SB/agents/requirements.lock"
+  cp "$PR/agents/requirements.lock" "$WHB/meta/requirements.lock"
+  echo 'foo==1.0' > "$SB/agents/requirements.txt"
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$WHB" --built-at t --repo-commit c \
+      --component wheels:wheels --component meta:meta >/dev/null
+  bsh sign ./whbundle --key "$T/key"
+  bshp() { echo ok > "$T/state/pip_mode"; : > "$T/state/pip.log"
+           _out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$T/bin/python3" "$SB/scripts/bundle.sh" "$@" 2>&1)"; _rc=$?; }
+  bshp install ./whbundle --key ./allowed
+  if [[ $_rc -eq 0 && "$(n_pip)" == "1" ]] && has "$_out" "signature verified" \
+     && has "$_out" "the lock matches the sha256 it was vouched for"; then
+    pass "a SIGNED bundle vouches for the lock (its manifest's hash is handed to pydeps)"
+  else
+    fail "signed wheels bundle (rc=$_rc pip=$(n_pip)): $_out"
+  fi
+  bshp install ./whbundle
+  if [[ $_rc -ne 0 && "$(n_pip)" == "0" ]] && has "$_out" "cannot vouch for"; then
+    pass "without --key the same bundle vouches for NOTHING — the stick cannot vouch for itself"
+  else
+    fail "unsigned-trust wheels install (rc=$_rc pip=$(n_pip)): $_out"
   fi
 fi
 

@@ -237,7 +237,29 @@ _check_signature() {
        is not in that file, or the manifest was modified after signing."
   fi
   ok "signature verified: $(head -1 <<< "$out")"
+  _SIG_VERIFIED=1
   return 0
+}
+# 1 only after `ssh-keygen -Y verify` accepted the manifest against an
+# operator-supplied allowed-signers file — i.e. only when what the manifest
+# records can vouch for something the stick did not also write.
+_SIG_VERIFIED=0
+
+# _manifest_sha <relative path>: the sha256 the manifest records for one
+# file, or nothing. Read from $MANIFEST_FILE (see install) — never re-derived
+# from the file on the medium.
+_manifest_sha() {
+  "$PY" - "${MANIFEST_FILE:-$DIR/MANIFEST.json}" "$1" <<'PYSHA' 2>/dev/null || true
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+for comp in doc.get("components", []):
+    for rec in comp.get("files", []):
+        if rec.get("path") == sys.argv[2]:
+            sha = str(rec.get("sha256", ""))
+            if len(sha) == 64:
+                print(sha)
+            sys.exit(0)
+PYSHA
 }
 
 CMD="${1:-show}"
@@ -654,7 +676,18 @@ $(sed 's/^/         /' <<< "$_links")
         warn "the bundle carries no copy of the lock — cannot confirm the
       wheels were resolved from the lock this checkout pins"
       fi
-      "$REPO_DIR/scripts/pydeps.sh" install --from "$DIR/wheels" \
+      # WHO VOUCHES FOR THE LOCK. pydeps accepts the checkout's committed
+      # lock on its own; a SIGNED manifest is a second voucher, and the one
+      # that works on a checkout that is not a git clone. Only a verified
+      # signature counts: an unsigned manifest is written by whoever wrote
+      # the stick, and passing its hash along would make the stick vouch
+      # for itself.
+      _lock_vouch=()
+      if [[ "$_SIG_VERIFIED" -eq 1 ]]; then
+        _lsha="$(_manifest_sha meta/requirements.lock)"
+        [[ -z "$_lsha" ]] || _lock_vouch=(--lock-sha256 "$_lsha")
+      fi
+      "$REPO_DIR/scripts/pydeps.sh" install --from "$DIR/wheels" ${_lock_vouch[@]+"${_lock_vouch[@]}"} \
         || die "the wheelhouse did not satisfy agents/requirements.lock"
       ok "installed the hash-pinned closure with no index contacted"
     fi

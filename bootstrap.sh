@@ -526,9 +526,11 @@ else
        Python packages are the second of the four fetches a closed network
        cannot do. Stage them once on a connected box:
          ./scripts/pydeps.sh wheelhouse wheels
-       copy ./wheels AND agents/requirements.lock here, then re-run. Every
-       artifact is hash-checked at both ends, so the USB stick does not have
-       to be trusted."
+       copy ./wheels here — NOT the lock — then re-run. Every wheel is
+       hash-checked against THIS checkout's committed agents/requirements.lock,
+       so the stick does not have to be trusted as long as the lock did not
+       travel on it. (Not a git checkout? Set OPENBEAST_LOCK_SHA256 to the
+       lock hash the wheelhouse command printed on the connected box.)"
   fi
   # IS THE LOCK CURRENT? Checked before it is trusted, offline and in well
   # under a second. requirements.txt moves without the lock in two ordinary
@@ -604,7 +606,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
     python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
       || die "pip install failed. On a closed network, pre-stage the wheels:
        on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
-       copy ./wheels and agents/requirements.lock here, then:
+       copy ./wheels here (NOT the lock — this checkout's is the trust root), then:
                             ./scripts/pydeps.sh install --from wheels"
     ok "installed huggingface_hub + $(tr '\n' ' ' < "$REPO_DIR/agents/requirements.txt")"
   fi
