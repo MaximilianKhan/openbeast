@@ -226,7 +226,8 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # guaranteed failures. Now: (a) the server's overflow error is recognised
 # and the OLDEST tool results are replaced by one-line stubs before the
 # retry; (b) with --context-budget set, the same eviction runs proactively
-# past ~70% of the budget (4 chars/token estimate). The system prompt, the
+# past ~70% of the budget (4 chars/token estimate), freeing down to ~50% so
+# one compaction buys many turns of stable prefix. The system prompt, the
 # original task, assistant turns and the (transiently injected) plan block
 # are never evicted. Every event is logged to stderr + the JSONL log and
 # counted in the done/max_iterations telemetry (COMPACTIONS: n on stdout).
@@ -241,7 +242,16 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # whose str() embeds that body.
 # ---------------------------------------------------------------------------
 _CHARS_PER_TOKEN = 4
-_COMPACT_FRACTION = 0.70          # proactive target as a fraction of the budget
+_COMPACT_FRACTION = 0.70          # proactive trigger as a fraction of the budget
+#: Proactive compaction frees down to this fraction, not just back under the
+#: trigger (hysteresis). Stubbing an old result rewrites the history near its
+#: START, which invalidates llama-server's cached prefix from that point on —
+#: on the hybrid qwen35 arch everything after the nearest checkpoint is
+#: re-prefilled (~50K tokens at an 85K budget). Freeing only (est - trigger)
+#: meant the next tool result crossed the line again, so ~1 turn in 1.7
+#: re-prefilled (review efficiency-2, 2026-09-29); a 20-point gap buys many
+#: turns of stable prefix per compaction.
+_COMPACT_LOW_WATER = 0.50
 _STUB_MIN_CHARS = 200             # results shorter than this aren't worth stubbing
 _STUB_PREFIX = "[tool result elided:"
 #: An operator message becomes evictable after this many turns (E12). It is
@@ -305,7 +315,9 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     task), assistant turns, user nudges, or results already stubbed. Oldest
     first and stop as soon as enough is freed, so the newest results — the
     ones the model is about to act on — survive unless the older ones can't
-    cover the ask (being stuck beats keeping them). Returns
+    cover the ask (being stuck beats keeping them). One exception: when the
+    walk would reach a single tool result that covers the ask by itself, only
+    that one is stubbed and the older ones are spared. Returns
     (results_evicted, chars_freed). `call_index` maps message position ->
     tool-call ordinal for the stub text.
 
@@ -335,13 +347,39 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # resort: a directive outranks a transcript of `ls`, but it stops short of
     # being unevictable, which is the failure E12 describes.
     candidates = tool_results + aged_steers
+    ask = max(chars_to_free, 1)
+
+    def _stub_for(i: int) -> str:
+        c = messages[i]["content"]
+        return (_steer_stub(c) if messages[i].get("role") != "tool"
+                else _stub(c, call_index.get(i, i)))
+
+    def _gain(i: int) -> int:
+        return len(messages[i]["content"]) - len(_stub_for(i))
+
+    # The oldest-first walk, planned before anything is touched. If it would
+    # reach a tool result that covers the whole ask ON ITS OWN, stub only that
+    # one: an oversized result (fetch allows up to 2M chars) used to strip
+    # EVERY older result first, so one bad call cost the agent its whole
+    # working memory (review efficiency-3). This never stubs a result the
+    # plain walk would have kept — it only spares the older ones.
+    plan, planned = [], 0
+    for i in candidates:
+        if planned >= ask:
+            break
+        plan.append(i)
+        planned += _gain(i)
+    if len(plan) > 1:
+        solo = next((i for i in plan if messages[i].get("role") == "tool"
+                     and _gain(i) >= ask), None)
+        if solo is not None:
+            candidates = [solo]
     evicted = freed = 0
     for i in candidates:
-        if freed >= max(chars_to_free, 1):
+        if freed >= ask:
             break
         content = messages[i]["content"]
-        stub = (_steer_stub(content) if messages[i].get("role") != "tool"
-                else _stub(content, call_index.get(i, i)))
+        stub = _stub_for(i)
         messages[i]["content"] = stub
         freed += len(content) - len(stub)
         evicted += 1
@@ -752,11 +790,15 @@ def run_agent(
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
+            # Once over the trigger, free down to the low-water mark so the
+            # rewritten prefix stays stable for many turns (see
+            # _COMPACT_LOW_WATER).
             est = estimate_tokens(messages, len(plan))
             target = int(context_budget * _COMPACT_FRACTION)
             if est > target:
-                compact("budget", (est - target) * _CHARS_PER_TOKEN,
-                        f" (est {est:,} > {target:,} tokens)")
+                low = int(context_budget * _COMPACT_LOW_WATER)
+                compact("budget", (est - low) * _CHARS_PER_TOKEN,
+                        f" (est {est:,} > {target:,} tokens, to {low:,})")
 
         try:
             response = client.chat.completions.create(
