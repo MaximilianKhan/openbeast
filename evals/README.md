@@ -86,7 +86,15 @@ default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
 `system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
 (`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
 behavior changes what a "cached result" means). Timeouts (`agent_exit_code
-== -1`) are NOT cached: those are environmental, not deterministic.
+== -1`) are NOT cached: those are environmental, not deterministic. Neither
+are FAILs caused by infrastructure (`cacheable_result` in `run_eval.py`):
+a unit whose runner reported `API_ERRORS: n` ≥ 1, or whose server failed
+the health check right after the agent finished, is recorded with
+`reason: server_error`; a unit whose validation output shows fork/thread
+exhaustion (`Resource temporarily unavailable`, `SystemResources`,
+`thread constructor failed`) or a full disk (`No space left on device`,
+`NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
+next run.
 
 `--cache-only` mode is the fast-path for "rebuild the leaderboard from
 prior runs" — no server start, no live calls, cache misses are recorded

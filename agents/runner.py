@@ -212,10 +212,17 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
-                         compactions: int = 0) -> None:
-    """Print the stable-key token line that the eval harness parses."""
+                         compactions: int = 0, api_errors: int = 0) -> None:
+    """Print the stable-key token line that the eval harness parses.
+
+    API_ERRORS counts model calls that failed for a reason other than a
+    context overflow (connection refused, 5xx, timeout). A server that dies
+    mid-task leaves the loop burning its remaining iterations on errors and
+    exiting 0 with the tokens it had, which looks like a model FAIL; the
+    eval harness reads this line to refuse caching such a unit."""
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
     print(f"COMPACTIONS: {compactions}")
+    print(f"API_ERRORS: {api_errors}")
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +678,7 @@ def run_agent(
     tokens_total = 0
     # Context-window management state (see compact_messages).
     compactions = 0
+    api_errors = 0      # non-overflow model-call failures (API_ERRORS: n)
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
@@ -717,7 +725,7 @@ def run_agent(
                     if act["stop"]:
                         print("\nStopped by operator.")
                         _print_token_summary(tokens_prompt, tokens_completion,
-                                             tokens_total, compactions)
+                                             tokens_total, compactions, api_errors)
                         log_event({
                             # COMPLETED turns, so counter-1 — ops are consumed
                             # at the TOP of iteration N, before that turn runs
@@ -795,6 +803,7 @@ def run_agent(
                            "iterations": iteration, "compactions": compactions})
                 stop_reason = "context overflow (nothing left to compact)"
                 break
+            api_errors += 1
             time.sleep(5)
             continue
 
@@ -897,7 +906,7 @@ def run_agent(
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
                 _print_token_summary(tokens_prompt, tokens_completion, tokens_total,
-                                     compactions)
+                                     compactions, api_errors)
                 print(f"{'=' * 60}")
                 log_event({
                     "type": "done", "summary": final_summary, "iterations": iteration,
@@ -913,7 +922,8 @@ def run_agent(
         print(f"\nStopped without task_done: {stop_reason}.")
     else:
         print(f"\nMax iterations ({max_iter}) reached without task_done.")
-    _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions)
+    _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions,
+                         api_errors)
     log_event({
         "type": "max_iterations", "iterations": max_iter,
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,

@@ -1,0 +1,207 @@
+"""Infrastructure failures must never be banked as model FAILs.
+
+Two classes, both seen in the 2026-09 campaigns (docs/reviews/FULL-REVIEW-
+2026-09-29.md, eval-harness-1 / eval-harness-6 / storage-02):
+
+  * server_error — llama-server died AFTER the model had spoken. The runner
+    burned its remaining iterations on "Connection error." and exited 0 with
+    tokens > 0, so cacheable_result banked a permanent FAIL that the Tier-3
+    verdict then replayed.
+  * env_error — the VALIDATOR died to fork/thread EAGAIN (RLIMIT_NPROC is
+    uid-global) or a full disk; exit 0, tokens > 0, banked as a FAIL.
+
+Every case is built here: a fake OpenAI client for the runner, a fake
+run_agent / health check / validation for run_eval. No server, no GPU.
+"""
+
+import importlib
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "evals"))
+sys.path.insert(0, str(ROOT / "agents"))
+
+
+def _fresh(tmp_path: Path):
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = tmp_path / "cache"
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01_alpha.json").write_text(json.dumps({
+        "id": "01_alpha", "name": "alpha", "difficulty": "easy",
+        "task": "do alpha", "validation": {"type": "bash", "script": "false"},
+        "max_iter": 3}))
+    run_eval.TASKS_DIR = str(tasks)
+    run_eval.RESULTS_DIR = str(tmp_path / "results")
+    return run_eval, cache
+
+
+# --- runner: the stable API_ERRORS line ------------------------------------
+
+class _DyingClient:
+    """Answers the first call with a plain message, then the 'server' is gone."""
+
+    def __init__(self):
+        self.chat = self
+        self.completions = self
+        self.n = 0
+
+    def create(self, model, messages, tools, temperature):
+        self.n += 1
+        if self.n == 1:
+            msg = type("M", (), {"content": "thinking", "tool_calls": []})()
+            usage = type("U", (), {"prompt_tokens": 10, "completion_tokens": 50,
+                                   "total_tokens": 60})()
+            return type("R", (), {
+                "choices": [type("C", (), {"message": msg, "finish_reason": "length"})()],
+                "usage": usage})()
+        raise ConnectionError("Connection error.")
+
+
+def test_runner_counts_api_errors(tmp_path, monkeypatch, capsys):
+    import runner
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    monkeypatch.setattr(runner, "OpenAI", lambda **kw: _DyingClient())
+    monkeypatch.setenv("AGENT_WORKDIR", str(tmp_path))
+    runner.run_agent("task", max_iter=4, log_file=str(tmp_path / "r.jsonl"),
+                     system_prompt="s", workdir=str(tmp_path))
+    out = capsys.readouterr().out
+    assert "TOKENS: prompt=10 completion=50 total=60" in out
+    assert "API_ERRORS: 3" in out
+
+
+def test_runner_reports_zero_api_errors_on_clean_run(tmp_path, monkeypatch, capsys):
+    import runner
+
+    class _Done:
+        chat = completions = None
+
+        def __init__(self):
+            self.chat = self
+            self.completions = self
+
+        def create(self, model, messages, tools, temperature):
+            fn = type("F", (), {"name": "task_done", "arguments": '{"summary": "ok"}'})()
+            tc = type("T", (), {"id": "1", "function": fn})()
+            msg = type("M", (), {"content": "", "tool_calls": [tc]})()
+            return type("R", (), {
+                "choices": [type("C", (), {"message": msg, "finish_reason": "tool_calls"})()],
+                "usage": None})()
+
+    monkeypatch.setattr(runner, "OpenAI", lambda **kw: _Done())
+    monkeypatch.setenv("AGENT_WORKDIR", str(tmp_path))
+    runner.run_agent("task", max_iter=2, log_file=str(tmp_path / "r.jsonl"),
+                     system_prompt="s", workdir=str(tmp_path))
+    assert "API_ERRORS: 0" in capsys.readouterr().out
+
+
+# --- run_eval: parsing + the cache predicate -------------------------------
+
+def test_parse_api_errors(tmp_path):
+    run_eval, _ = _fresh(tmp_path)
+    assert run_eval._parse_api_errors("TOKENS: prompt=1 completion=2 total=3\n"
+                                      "COMPACTIONS: 0\nAPI_ERRORS: 7\n") == 7
+    # Older runner / runner killed before its summary: count the event lines.
+    assert run_eval._parse_api_errors("  API error: Connection error.\n"
+                                      "[iter 3/4]\n  API error: Connection error.\n") == 2
+    assert run_eval._parse_api_errors("TOKENS: prompt=1 completion=2 total=3\n") == 0
+
+
+def test_cacheable_result_refuses_infra_failures(tmp_path):
+    run_eval, _ = _fresh(tmp_path)
+    base = {"passed": False, "agent_exit_code": 0, "tokens_completion": 5123,
+            "validation_output": "assertion failed: expected 3 got 4"}
+    assert run_eval.cacheable_result(base) is True            # a real FAIL banks
+    assert run_eval.cacheable_result({**base, "api_errors": 12}) is False
+    assert run_eval.cacheable_result({**base, "reason": "server_error"}) is False
+    assert run_eval.cacheable_result({**base, "reason": "env_error"}) is False
+    for text in ("/bin/sh: fork: retry: Resource temporarily unavailable",
+                 "error: unable to spawn LLD: SystemResources",
+                 "thread constructor failed: Resource temporarily unavailable",
+                 "OpenBLAS blas_thread_init: pthread_create failed for thread 3 of 32",
+                 "RuntimeError: can't start new thread",
+                 "error: unable to write to cache: NoSpaceLeft",
+                 "cp: error writing 'x': No space left on device",
+                 "OSError: [Errno 28] No space left",
+                 "write failed: Disk quota exceeded"):
+        assert run_eval.cacheable_result({**base, "validation_output": text}) is False, text
+    # A PASS is a genuine verdict even when errors were seen on the way.
+    assert run_eval.cacheable_result({**base, "passed": True, "api_errors": 3}) is True
+    # The pre-existing rules still hold.
+    assert run_eval.cacheable_result({**base, "agent_exit_code": -1}) is False
+    assert run_eval.cacheable_result({**base, "tokens_completion": 0}) is False
+
+
+def test_validation_keeps_env_evidence_past_truncation(tmp_path, monkeypatch):
+    run_eval, _ = _fresh(tmp_path)
+    noisy = "x" * 900 + "\n/bin/sh: fork: Resource temporarily unavailable\n"
+    monkeypatch.setattr(run_eval, "_run_reaped", lambda *a, **k: (2, noisy))
+    passed, out = run_eval.run_validation({"validation": {"type": "bash", "script": "x"}})
+    assert passed is False and len(out) <= 700
+    assert "Resource temporarily unavailable" in out
+    # Negative control: an ordinary long failure is cut as before.
+    monkeypatch.setattr(run_eval, "_run_reaped", lambda *a, **k: (2, "y" * 900))
+    _, out = run_eval.run_validation({"validation": {"type": "bash", "script": "x"}})
+    assert out == "y" * 500
+
+
+# --- run_eval end to end: the row is recorded, flagged, and NOT cached -----
+
+def _run(run_eval, monkeypatch, agent, validation, health=None):
+    monkeypatch.setattr(run_eval, "run_agent", lambda *a, **k: dict(agent))
+    monkeypatch.setattr(run_eval, "run_validation", lambda t: validation)
+    monkeypatch.setattr(run_eval, "capture_server_config", lambda: {})
+    monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
+    monkeypatch.setattr(run_eval, "capture_inference_engine_info", lambda: {})
+    return run_eval.run_eval(model_name="m", health_check=health,
+                             recover_cb=(lambda: True) if health else None)
+
+
+_AGENT = {"exit_code": 0, "elapsed_seconds": 1.0, "stdout": "", "stderr": "",
+          "tokens": {"prompt": 10, "completion": 500, "total": 510},
+          "iterations": 3, "compactions": 0, "api_errors": 0}
+
+
+def test_connection_errors_mark_server_error_and_skip_cache(tmp_path, monkeypatch):
+    run_eval, cache = _fresh(tmp_path)
+    res = _run(run_eval, monkeypatch, {**_AGENT, "api_errors": 4}, (False, "FileNotFound"))
+    row = res["tasks"][0]
+    assert row["reason"] == "server_error" and row["api_errors"] == 4
+    assert not (cache.CACHE_DIR.exists() and list(cache.CACHE_DIR.glob("*.json")))
+
+
+def test_dead_server_after_task_marks_server_error(tmp_path, monkeypatch):
+    run_eval, cache = _fresh(tmp_path)
+    calls = []
+
+    def health():                     # healthy before the task, dead after it
+        calls.append(1)
+        return len(calls) == 1
+
+    res = _run(run_eval, monkeypatch, _AGENT, (False, "FileNotFound"), health=health)
+    assert res["tasks"][0]["reason"] == "server_error"
+    assert len(calls) == 2
+    assert not (cache.CACHE_DIR.exists() and list(cache.CACHE_DIR.glob("*.json")))
+
+
+def test_env_exhaustion_marks_env_error(tmp_path, monkeypatch):
+    run_eval, cache = _fresh(tmp_path)
+    res = _run(run_eval, monkeypatch, _AGENT,
+               (False, "/bin/sh: fork: Resource temporarily unavailable"))
+    assert res["tasks"][0]["reason"] == "env_error"
+    assert not (cache.CACHE_DIR.exists() and list(cache.CACHE_DIR.glob("*.json")))
+
+
+def test_genuine_fail_is_still_cached(tmp_path, monkeypatch):
+    """Negative control: a clean-server, clean-validator FAIL banks."""
+    run_eval, cache = _fresh(tmp_path)
+    res = _run(run_eval, monkeypatch, _AGENT, (False, "expected 3 got 4"),
+               health=lambda: True)
+    assert "reason" not in res["tasks"][0]
+    assert len(list(cache.CACHE_DIR.glob("*.json"))) == 1

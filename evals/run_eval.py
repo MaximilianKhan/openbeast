@@ -527,6 +527,43 @@ def _parse_iterations(stdout: str) -> int | None:
     return int(its[-1][0]) if its else None
 
 
+# Environmental resource exhaustion in validation/setup output. None of these
+# is a verdict on the model's code: RLIMIT_NPROC is checked against every
+# task the real uid owns machine-wide, so a busy desktop makes a trivial
+# `cd dir && ./x` fail to fork; a disk filled by a research quantize makes a
+# zig build fail to write its cache. The 2026-09-10..17 rows banked 19 such
+# "failures" (ud-iq3s 115_fft_b / 136_gf256_e, 10 of 30 champion C1 zig
+# rows), and they replayed into paired verdicts as model regressions.
+_ENV_ERROR_RE = re.compile(
+    r"Resource temporarily unavailable"
+    r"|\bEAGAIN\b"
+    r"|\bSystemResources\b"
+    r"|thread constructor failed"
+    r"|can't start new thread"
+    r"|pthread_create\b[^\n]*fail"
+    r"|No space left on device"
+    r"|\bNoSpaceLeft\b"
+    r"|\bENOSPC\b"
+    r"|\[Errno 28\]"
+    r"|Disk quota exceeded"
+    r"|\bDiskQuota\b",
+    re.IGNORECASE)
+
+
+def env_error_signature(text: str | None) -> str | None:
+    """The first line of `text` showing environmental resource exhaustion
+    (fork/thread EAGAIN, ENOSPC), or None. Used both to keep the evidence in
+    a truncated validation_output and to refuse caching the row."""
+    if not text:
+        return None
+    m = _ENV_ERROR_RE.search(text)
+    if not m:
+        return None
+    start = text.rfind("\n", 0, m.start()) + 1
+    end = text.find("\n", m.end())
+    return text[start:end if end != -1 else len(text)].strip()[:200]
+
+
 def cacheable_result(result: dict) -> bool:
     """A result row may enter the cache only if it is a genuine verdict.
     Environmental deaths must retry clean on the next run:
@@ -536,10 +573,28 @@ def cacheable_result(result: dict) -> bool:
         silently replayed in the 2026-09-08 Phase A' rerun.
       0 completion tokens + failed — the model never produced anything
         (server crash/restart window, dead endpoint); a capability verdict
-        requires the model to have actually spoken."""
+        requires the model to have actually spoken.
+      failed + reason server_error / api_errors >= 1 — the server died or
+        errored AFTER the model had spoken. The runner burns its remaining
+        iterations on connection errors and exits 0 with tokens > 0; the
+        2026-09-15 greedy P0 run banked 7 such zig "FAILs" that the Tier-3
+        verdict then replayed.
+      failed + reason env_error / exhaustion text in validation_output —
+        fork/thread EAGAIN or a full disk killed the VALIDATOR, not the
+        model's code (see _ENV_ERROR_RE).
+    A PASS is always a genuine verdict: infrastructure trouble can only
+    make a unit fail, never make it pass."""
     if (result.get("agent_exit_code") or 0) < 0:
         return False
-    if not result.get("passed") and not result.get("tokens_completion"):
+    if result.get("passed"):
+        return True
+    if not result.get("tokens_completion"):
+        return False
+    if result.get("reason") in ("server_error", "env_error"):
+        return False
+    if (result.get("api_errors") or 0) > 0:
+        return False
+    if env_error_signature(result.get("validation_output")):
         return False
     return True
 
@@ -611,6 +666,18 @@ def run_setup(task: dict, log=print) -> bool:
 
 _TOKEN_LINE = re.compile(r"^TOKENS:\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\d+)\s*$", re.MULTILINE)
 _COMPACT_LINE = re.compile(r"^COMPACTIONS:\s+(\d+)\s*$", re.MULTILINE)
+_API_ERRORS_LINE = re.compile(r"^API_ERRORS:\s+(\d+)\s*$", re.MULTILINE)
+_API_ERROR_EVENT = re.compile(r"^\s*API error: ", re.MULTILINE)
+
+
+def _parse_api_errors(stdout: str) -> int:
+    """Failed model calls the runner reported. Prefers the stable
+    `API_ERRORS: n` line; a runner that died before printing it (or an
+    older runner) is counted from its `API error:` event lines instead."""
+    matches = list(_API_ERRORS_LINE.finditer(stdout))
+    if matches:
+        return int(matches[-1].group(1))
+    return len(_API_ERROR_EVENT.findall(stdout))
 
 
 def _parse_compactions(stdout: str) -> int:
@@ -726,6 +793,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "tokens": tokens,
             "iterations": _parse_iterations(stdout),
             "compactions": _parse_compactions(stdout),
+            "api_errors": _parse_api_errors(stdout),
         }
     except subprocess.TimeoutExpired:
         try:
@@ -789,7 +857,14 @@ def run_validation(task: dict) -> tuple[bool, str]:
         else:
             returncode, output = _run_reaped(script, timeout=30, shell=True)
         passed = returncode == 0
-        return passed, output.strip()[:500]
+        kept = output.strip()[:500]
+        # The 500-char cut must never drop the evidence that the VALIDATOR
+        # (not the model's code) died to fork/thread EAGAIN or a full disk:
+        # cacheable_result reads validation_output to refuse banking it.
+        sig = None if passed else env_error_signature(output)
+        if sig and not env_error_signature(kept):
+            kept = kept[:480] + "\n[...] " + sig
+        return passed, kept
     except subprocess.TimeoutExpired:
         return False, "Validation timed out"
     except Exception as e:
@@ -1133,6 +1208,22 @@ def run_eval(
         # Validate
         passed, validation_output = run_validation(task)
 
+        # Infrastructure verdicts (not model verdicts) for a FAILED unit.
+        # server_error: the runner saw failed model calls, or the server is
+        # gone right after the agent finished — the health check above only
+        # runs BEFORE a task, so a server that died mid-task was invisible.
+        # env_error: the validator died to fork/thread EAGAIN or a full disk.
+        api_errors = agent_result.get("api_errors", 0) or 0
+        infra_reason = None
+        if not passed:
+            if api_errors > 0:
+                infra_reason = "server_error"
+            elif (health_check is not None and agent_result["exit_code"] >= 0
+                  and not health_check()):
+                infra_reason = "server_error"
+            elif env_error_signature(validation_output):
+                infra_reason = "env_error"
+
         # Record result
         tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
         result = record({
@@ -1149,10 +1240,15 @@ def run_eval(
             "tokens_total": tokens["total"],
             "iterations": agent_result.get("iterations"),
             "compactions": agent_result.get("compactions", 0),
+            "api_errors": api_errors,
+            **({"reason": infra_reason} if infra_reason else {}),
         })
 
         if passed:
             log(f"  PASS ({agent_result['elapsed_seconds']}s)")
+        elif infra_reason:
+            log(f"  FAIL ({infra_reason}, not cached — retries on the next run): "
+                f"{validation_output[:100]}")
         else:
             log(f"  FAIL: {validation_output[:100]}")
 
@@ -1167,6 +1263,8 @@ def run_eval(
         #   0 completion tokens + failed: the model never produced anything
         #     (server crash/restart window, dead endpoint) — a capability
         #     verdict needs the model to have actually spoken.
+        #   server_error / env_error: see the infra_reason block above and
+        #     cacheable_result.
         if use_cache and cacheable_result(result):
             try:
                 cache.cache_put(ck, result)
