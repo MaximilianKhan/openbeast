@@ -95,9 +95,16 @@ install_units() {
   command -v systemctl >/dev/null 2>&1 || {
     echo "systemctl not found — run ./scripts/logrotate.sh from cron instead (daily)." >&2; exit 1; }
   mkdir -p "$UNIT_DIR"
-  local line
+  # systemd expands %specifiers in both keys, and $VARS, \escapes and quotes
+  # inside ExecStart's quoted path — escape each so the path stays literal.
+  local line pct="${REPO_DIR//%/%%}" exe
+  exe="${pct//\\/\\\\}"; exe="${exe//\"/\\\"}"; exe="${exe//\$/\$\$}"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '%s\n' "${line//@REPO@/$REPO_DIR}"
+    if [[ "$line" == ExecStart=* ]]; then
+      printf '%s\n' "${line//@REPO@/$exe}"
+    else
+      printf '%s\n' "${line//@REPO@/$pct}"
+    fi
   done < "$SCRIPT_DIR/openbeast-logrotate.service" > "$UNIT_DIR/openbeast-logrotate.service"
   cp "$SCRIPT_DIR/openbeast-logrotate.timer" "$UNIT_DIR/openbeast-logrotate.timer"
   systemctl --user daemon-reload

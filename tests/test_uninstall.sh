@@ -268,11 +268,30 @@ printf '#!/bin/bash\necho "systemctl $*" >> "%s/lr-sysd"\n' "$T" > "$T/lrbin/sys
 : > "$T/lr-sysd"
 HOME="$T/lrhome" XDG_CONFIG_HOME="$T/lrhome/.config" PATH="$T/lrbin:$PATH" "$LR/scripts/logrotate.sh" --install >/dev/null
 _U="$T/lrhome/.config/systemd/user"
-if grep -qxF "ExecStart=$LR/scripts/logrotate.sh" "$_U/openbeast-logrotate.service" && [[ -f "$_U/openbeast-logrotate.timer" ]] \
+# ExecStart quoted: unquoted, systemd splits "$T/lr/open beast/…" at the space
+if grep -qxF "ExecStart=\"$LR/scripts/logrotate.sh\"" "$_U/openbeast-logrotate.service" && [[ -f "$_U/openbeast-logrotate.timer" ]] \
    && grep -q "systemctl --user enable --now openbeast-logrotate.timer" "$T/lr-sysd" && ! grep -q sudo "$T/lr-sysd"; then
   pass "--install writes the user service + timer and enables the timer"
 else
   fail "--install: $(ls "$_U" 2>/dev/null | tr '\n' ' ') :: $(tr '\n' '|' < "$T/lr-sysd")"
+fi
+# systemd's own parser, where the host has it: the rendered unit must resolve
+# its ExecStart to the real script (verify only parses; it starts nothing).
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if (cd "$_U" && systemd-analyze --user verify ./openbeast-logrotate.service >/dev/null 2>&1); then
+    pass "systemd-analyze verify accepts the rendered unit (space in the checkout path)"
+  else
+    fail "systemd-analyze verify: $(cd "$_U" && systemd-analyze --user verify ./openbeast-logrotate.service 2>&1 | head -3)"
+  fi
+fi
+# a checkout path systemd would otherwise expand (%specifier, $VAR) stays literal
+LR2="$T/lr2/a%h\$HOME"; mkdir -p "$LR2/scripts"; cp "$LR/scripts/"* "$LR2/scripts/"
+HOME="$T/lrhome" XDG_CONFIG_HOME="$T/lrhome/.config" PATH="$T/lrbin:$PATH" "$LR2/scripts/logrotate.sh" --install >/dev/null
+if grep -qxF "ExecStart=\"$T/lr2/a%%h\$\$HOME/scripts/logrotate.sh\"" "$_U/openbeast-logrotate.service" \
+   && grep -qxF "WorkingDirectory=$T/lr2/a%%h\$HOME" "$_U/openbeast-logrotate.service"; then
+  pass "--install escapes % (and \$ in ExecStart) so systemd keeps the path literal"
+else
+  fail "--install escaping: $(grep -E '^(ExecStart|WorkingDirectory)=' "$_U/openbeast-logrotate.service" | tr '\n' '|')"
 fi
 
 # ---------------------------------------------------------------------------
