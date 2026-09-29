@@ -202,6 +202,45 @@ def test_overflow_detection_negative(err):
     assert not runner._is_context_overflow(err)
 
 
+# vLLM's 400 body (vllm/renderers/params.py, verified 2026-09-29 on main
+# df4dbe46), as the openai client's BadRequestError str() embeds it.
+_VLLM_400 = ("Error code: 400 - {'error': {'message': \"This model's maximum context length "
+             "is 262144 tokens. However, you requested 32768 output tokens and your prompt "
+             "contains 240000 input tokens, for a total of 272768 tokens. Please reduce the "
+             "length of the input prompt or the number of requested output tokens.\", "
+             "'type': 'BadRequestError', 'param': 'input_tokens', 'code': 400}}")
+_VLLM_400_OLD = ("This model's maximum context length is 32768 tokens. However, you requested "
+                 "40000 tokens (38000 in the messages, 2000 in the completion). Please reduce "
+                 "the length of the messages or completion.")
+_TF_CUDA_400 = ("Error code: 400 - {'error': {'message': \"the rendered prompt has 131073 tokens "
+                "and leaves no room for a reply in the server's 131072-token context window "
+                "(model window: 262144 tokens); shorten the prompt\"}}")
+
+
+@pytest.mark.parametrize("err", [_VLLM_400, _VLLM_400_OLD, _TF_CUDA_400,
+                                 "This server's maximum context length is 65,536 tokens, but "
+                                 "the rendered prompt has 70,000 tokens"])
+def test_overflow_detection_on_vllm_and_tensorfold(err):
+    assert runner._is_context_overflow(err)
+
+
+def test_overflow_token_parse_vllm():
+    # vLLM names the window first; the tuple is still (n_prompt, n_ctx).
+    assert runner._overflow_tokens(_VLLM_400) == (240000, 262144)
+    assert runner._overflow_tokens(
+        _VLLM_400.replace("contains 240000", "contains at least 240000")) == (240000, 262144)
+    assert runner._overflow_tokens(_VLLM_400_OLD) == (38000, 32768)
+    # TensorFold states no parseable pair: detection still fires, and the
+    # runner falls back to freeing a quarter of the history.
+    assert runner._overflow_tokens(_TF_CUDA_400) is None
+
+
+def test_overflow_detection_vllm_negative():
+    # A vLLM 404 for an unknown model id is not an overflow.
+    assert not runner._is_context_overflow(
+        "Error code: 404 - {'error': {'message': 'The model `x` does not exist.'}}")
+
+
 def test_overflow_token_parse():
     assert runner._overflow_tokens(_SERVER_400) == (9000, 8192)
     assert runner._overflow_tokens(
