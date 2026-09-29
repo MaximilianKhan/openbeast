@@ -111,8 +111,9 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 - 137 base tasks (v4); 31 of them have multi-language variants (291
   effective test units across Python / Go / C / C++ / Rust / Zig)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
-- Full sweep (11 configured models — `--list` to see them):
-  `python3 evals/benchmark_all.py` (budget well over a day on the 5090)
+- Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
+  model — 20 today (`--list` to see them), several days of GPU on the 5090.
+  Pass `--models <slug>` unless you mean it
 - Score: `python3 evals/scoring.py --show` (ranked by SCORE = capability)
 - Distribution + methodology: `evals/README.md`
 
