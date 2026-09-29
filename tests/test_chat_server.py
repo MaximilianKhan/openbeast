@@ -1880,6 +1880,82 @@ def test_stopping_a_session_never_signals_a_group_it_does_not_lead(monkeypatch):
     assert calls["kill"] == [(9001, signal.SIGTERM)]
 
 
+_FAKE_TOOL_RUNNER = r"""
+import os, subprocess, sys, time
+# What agents/tools.py run_reaped does for every bash-tool command: a NEW
+# session, so the command leads a process group of its own.
+tool = subprocess.Popen(["sleep", "300"], start_new_session=True)
+with open(sys.argv[1] + ".tmp", "w") as fh:
+    fh.write(str(tool.pid))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+tool.wait()                    # "mid-tool-call"; no SIGTERM handler, like runner.py
+"""
+
+
+def _gone(pid: int, start) -> bool:
+    got = sessions.pid_start_time(pid)
+    if got is None or got != start:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rpartition(")")[2].split()[0] in ("Z", "X")
+    except OSError:
+        return True
+
+
+def test_stop_reaches_a_tool_command_in_its_own_session(rig, tmp_path):
+    """Review 2026-09-29: the escalation killpg'd only the runner's group, but
+    every bash-tool command runs under start_new_session=True, and its
+    timeout lived in the runner's proc.wait(). The runner died on SIGTERM and
+    the command ran on as an orphan with NO timeout left. Real processes, a
+    real tree; the bystander in a session of its own is the negative
+    control."""
+    pidfile = tmp_path / "tool.pid"
+    runner = subprocess.Popen([sys.executable, "-c", _FAKE_TOOL_RUNNER,
+                               str(pidfile)], start_new_session=True)
+    bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    tool_pid = None
+    try:
+        for _ in range(200):
+            if pidfile.exists():
+                break
+            time.sleep(0.02)
+        tool_pid = int(pidfile.read_text())
+        tool_start = sessions.pid_start_time(tool_pid)
+        assert tool_start is not None
+        assert os.getpgid(tool_pid) == tool_pid != runner.pid
+        sid = sessions.new_id("agent")
+        rec = sessions.register(sid, kind="agent", pid=runner.pid,
+                                pgid=runner.pid, workdir=str(tmp_path))
+        assert chat_server.signal_session(rec, signal.SIGTERM) is True
+        assert runner.wait(timeout=10) == -signal.SIGTERM
+        for _ in range(250):
+            if _gone(tool_pid, tool_start):
+                break
+            time.sleep(0.02)
+        assert _gone(tool_pid, tool_start), "the tool command outlived Stop"
+        assert bystander.poll() is None, "signalled a process outside the tree"
+    finally:
+        for p in (runner, bystander):
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+        if tool_pid and not _gone(tool_pid, sessions.pid_start_time(tool_pid)):
+            with contextlib.suppress(OSError):
+                os.kill(tool_pid, signal.SIGKILL)
+
+
+def test_descendant_groups_only_lists_groups_a_descendant_leads(monkeypatch):
+    """Built process table: 100 is the session (group 100); 101 is in its
+    group; 102 leads its own (a tool command); 103 joined a FOREIGN group
+    (777) and must never make us signal 777; 200 is not in the tree."""
+    table = {100: (1, 100, 5), 101: (100, 100, 6), 102: (101, 102, 7),
+             103: (102, 777, 8), 104: (103, 104, 9), 200: (1, 200, 10)}
+    monkeypatch.setattr(chat_server, "_proc_table", lambda: table)
+    got = sorted(chat_server._descendant_groups(100, 100))
+    assert got == [(102, 7), (104, 9)]
+
+
 def test_sending_to_a_job_is_refused_not_silently_dropped(rig, tmp_path):
     """A job has no turn boundary and no inbox reader.
 

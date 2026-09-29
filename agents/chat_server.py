@@ -606,6 +606,82 @@ def signal_identity_ok(record: dict) -> bool:
     return _int_or_zero(current) == _int_or_zero(want)
 
 
+def _proc_table() -> dict[int, tuple[int, int, int]]:
+    """{pid: (ppid, pgid, start)} for every process /proc will show us."""
+    table: dict[int, tuple[int, int, int]] = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return table
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        fields = raw.rpartition(")")[2].split()
+        # After comm: state=0, ppid=1, pgrp=2, ..., starttime=19.
+        if len(fields) < 20:
+            continue
+        try:
+            table[int(name)] = (int(fields[1]), int(fields[2]),
+                                int(fields[19]))
+        except ValueError:
+            continue
+    return table
+
+
+def _descendant_groups(pid: int, session_pgid: int) -> list[tuple[int, int]]:
+    """Process groups LED by a descendant of `pid`, outside its own group.
+
+    Why this exists: agents/tools.py runs every bash-tool command with
+    start_new_session=True, so the command sits in a group of its own, and
+    the only thing enforcing its timeout is the runner's proc.wait(). Killing
+    the runner's group — what Stop escalates to when the cooperative stop
+    cannot land mid-tool-call — left that command running as an orphan with
+    no timeout at all, holding its ports, RAM or GPU. The tree has to be
+    read BEFORE the runner dies: after, the orphan's parent is the subreaper
+    and nothing links it to this session any more.
+
+    Only groups a descendant LEADS (pgid == its own pid) are returned, so a
+    descendant that joined somebody else's group can never make us signal
+    that group. Each entry carries the leader's start time so the caller can
+    refuse a pid recycled between this snapshot and the signal.
+    """
+    table = _proc_table()
+    children: dict[int, list[int]] = defaultdict(list)
+    for p, (ppid, _pg, _st) in table.items():
+        children[ppid].append(p)
+    out: list[tuple[int, int]] = []
+    seen = {pid}
+    stack = list(children.get(pid, ()))
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        stack.extend(children.get(p, ()))
+        _ppid, pg, start = table[p]
+        if pg == p and pg != session_pgid and pg > 1:
+            out.append((pg, start))
+    return out
+
+
+def _signal_descendant_groups(groups: list[tuple[int, int]], sig: int) -> None:
+    own = os.getpgrp()
+    for pg, start in groups:
+        if pg == own:
+            continue
+        try:
+            if sessions.pid_start_time(pg) != start:
+                continue                 # gone, or a recycled pid: not ours
+            os.killpg(pg, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+
+
 def signal_session(record: dict, sig: int) -> bool:
     """Signal a session's process GROUP, falling back to the bare pid.
 
@@ -622,6 +698,20 @@ def signal_session(record: dict, sig: int) -> bool:
         return False
     pid = _int_or_zero(record.get("pid"))
     pgid = _int_or_zero(record.get("pgid") or record.get("pid"))
+    # The session's tree reaches past its own group (tool commands run in
+    # sessions of their own — see _descendant_groups). Snapshot it while the
+    # parent links still exist; signal it after the session itself.
+    try:
+        subtree = _descendant_groups(pid, pgid)
+    except Exception:
+        subtree = []
+    try:
+        return _signal_session_group(pid, pgid, sig)
+    finally:
+        _signal_descendant_groups(subtree, sig)
+
+
+def _signal_session_group(pid: int, pgid: int, sig: int) -> bool:
     # LEADERSHIP, not just membership. `pgid == pid` is what makes this pid the
     # group's leader, and it is the only case where killing the group is
     # killing *this session's* tree. Every intended producer satisfies it by
