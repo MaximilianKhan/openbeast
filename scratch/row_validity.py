@@ -30,7 +30,14 @@ zero-token fail, so that shape is only ever the harness's own death record
             exit code and zero elapsed on a live row. Never the model.
   timeout — exit -1, the harness wall-timeout sentinel. An honest fail.
   killed  — any other negative exit: a signal death (-9 OOM, -15 SIGTERM).
-  other   — the agent ran and exited normally.
+  dead    — a live FAILED row with a normal exit (>= 0) and zero completion
+            tokens: the agent never got a single token back. That is what a
+            unit run against a dead or SIGKILLed llama-server looks like —
+            "Connection error." on every iteration, then exit 0 — and every
+            finished zero-token agent log in agents/logs (114 of 114 on
+            2026-09-29) holds API errors. Never the model. (A timeout is -1,
+            so it is not caught here.)
+  other   — the agent ran, produced tokens, and exited normally.
 
 Two more contaminations are not visible in the exit code at all:
   EAGAIN  — validation died on fork/pthread exhaustion (the uid-wide
@@ -41,7 +48,7 @@ Two more contaminations are not visible in the exit code at all:
             Rows are matched to agents/logs/*.jsonl by (tokens_completion,
             tokens_prompt) plus a time window.
 
-A row is INVALID on any infra / EAGAIN / API-error failure (each one is a
+A row is INVALID on any infra / dead / EAGAIN / API-error failure (each one is a
 discordant pair the model did not earn — rerun those units and patch them in
 with patchup_replace.py), on >10% killed zero-token fails, or on CUDA errors
 in the serve log. It is INCOMPLETE when n differs from the pinned suite size.
@@ -79,6 +86,8 @@ def kind(x):
         return "timeout"
     if rc is not None and rc < 0:
         return "killed"
+    if rc is not None and not x.get("passed") and not (x.get("tokens_completion") or 0):
+        return "dead"
     return "other"
 
 
@@ -100,9 +109,14 @@ def _ts(s):
 def load_log_index(log_dir):
     """{(tokens_completion, tokens_prompt): [(log name, [error texts], finish dt)]}
     over every agent log that reached done/max_iterations."""
-    idx = collections.defaultdict(list)
     if not log_dir or not os.path.isdir(log_dir):
-        return idx
+        # None, not an empty index: callers print "API axis unchecked" on
+        # None, and an empty index would read as "checked, found nothing"
+        # (a worktree has no agents/logs of its own).
+        print(f"row_validity: agent-log dir {log_dir!r} not found — API-error axis unchecked",
+              file=sys.stderr)
+        return None
+    idx = collections.defaultdict(list)
     for f in glob.glob(os.path.join(log_dir, "*.jsonl")):
         errs, fin = [], None
         with open(f, errors="ignore") as fh:
@@ -171,6 +185,7 @@ def audit(d, idx=None, want_n=None):
     ztok = [x for x in fails if (x.get("tokens_completion") or 0) == 0]
     killed = [x["id"] for x in ztok if kind(x) == "killed"]
     infra = [x["id"] for x in fails if kind(x) == "infra"]
+    dead = [x["id"] for x in fails if kind(x) == "dead"]
     eag = [x["id"] for x in fails if eagain(x)]
     api = [x["id"] for x in fails if idx is not None
            and api_errors(x, idx, run_lo, run_hi)]
@@ -184,6 +199,9 @@ def audit(d, idx=None, want_n=None):
                        f"{len(killed) / len(fails):.0%} > {KILLED_MAX_FRAC:.0%}")
     if infra:
         reasons.append(f"{len(infra)} harness/setup death(s), never the model: {_ids(infra)}")
+    if dead:
+        reasons.append(f"{len(dead)} live zero-token fail(s) with a normal exit — a dead "
+                       f"llama-server, never the model: {_ids(dead)}")
     if eag:
         reasons.append(f"{len(eag)} fork/thread EAGAIN validation death(s): {_ids(eag)}")
     if api:
@@ -191,22 +209,23 @@ def audit(d, idx=None, want_n=None):
     complete = want_n is None or len(tasks) == want_n
     return {"n": len(tasks), "want_n": want_n, "complete": complete,
             "passed": sum(1 for x in tasks if x.get("passed")), "fails": len(fails),
-            "killed": killed, "infra": infra, "eagain": eag, "api": api,
+            "killed": killed, "infra": infra, "dead": dead, "eagain": eag, "api": api,
             "benign": benign, "reasons": reasons, "valid": not reasons,
-            "contaminated": sorted(set(infra) | set(eag) | set(api))}
+            "contaminated": sorted(set(infra) | set(dead) | set(eag) | set(api))}
 
 
 def contaminated_ids(d, idx):
     """Unit ids of every row (pass or fail) that is not a clean sample:
-    infra deaths, EAGAIN fails, and any row whose agent log holds API errors."""
+    infra and dead-server deaths, EAGAIN fails, and any row whose agent log
+    holds API errors."""
     lo = _ts(d.get("timestamp"))
     lo = lo - datetime.timedelta(seconds=60) if lo else None
     hi = lo + datetime.timedelta(days=2) if lo else None
     out = {}
     for x in d.get("tasks") or []:
         why = []
-        if not x.get("passed") and kind(x) == "infra":
-            why.append("infra")
+        if not x.get("passed") and kind(x) in ("infra", "dead"):
+            why.append(kind(x))
         if eagain(x):
             why.append(f"EAGAIN({eagain(x)})")
         hit = api_errors(x, idx, lo, hi) if idx is not None else None
@@ -252,7 +271,7 @@ def main(argv):
     print(f"VALIDITY {os.path.basename(path)}: n={a['n']}"
           + (f"/{a['want_n']}" if a["want_n"] else "")
           + f" passed={a['passed']} fails={a['fails']} killed={len(a['killed'])}"
-          f" infra={len(a['infra'])} eagain={len(a['eagain'])}"
+          f" infra={len(a['infra'])} dead={len(a['dead'])} eagain={len(a['eagain'])}"
           f" api={len(a['api']) if idx is not None else 'n/a'}"
           + (f" (benign zero-token: {benign})" if benign else "")
           + f" cuda={cuda if cuda is not None else 'n/a'}")

@@ -18,6 +18,8 @@ pins and asserts the negative control next to it.
     uses the shared classifier (a setup death makes the row INVALID).
   * greedy_floor.sh: both floor runs are --no-cache; --single-slot runs a
     -np 1 server with --jobs 1 and stops it by pid, never by name.
+  * row_validity: a live zero-token fail with a normal exit (a dead server)
+    voids the row; a missing agent-log dir reads as "unchecked", not clean.
 """
 
 import copy
@@ -106,6 +108,46 @@ def test_shape_without_reason_is_still_a_harness_death():
                                   tokens_completion=0)) == "timeout"
     assert row_validity.kind(_row("u", passed=False, agent_exit_code=-9,
                                   tokens_completion=0)) == "killed"
+
+
+def test_dead_server_zero_token_fails_void_the_row(tmp_path):
+    # A unit run against a dead/SIGKILLed llama-server: "Connection error." on
+    # every iteration, exit 0, zero tokens. The first fix filed it as benign
+    # "other" and printed "row clean" (review repro rr_deadserver.json).
+    d = _full_row()
+    for t in d["tasks"][-40:]:
+        t.update(passed=False, agent_exit_code=0, elapsed_seconds=31, tokens_completion=0,
+                 tokens_prompt=0, validation_output="unable to load x.zig: FileNotFound")
+    rc, out = _run_validity(tmp_path, d)
+    assert rc == 1, out
+    assert "ROW INVALID" in out and "40 live zero-token fail" in out and "dead=40" in out
+    assert "other" not in out
+    assert row_validity.kind(d["tasks"][-1]) == "dead"
+    assert d["tasks"][-1]["id"] in row_validity.contaminated_ids(d, None)
+    # negative controls: an honest fail WITH tokens, a timeout (rc -1), and a
+    # zero-token PASS are not dead-server rows.
+    assert row_validity.kind(_row("u", passed=False, agent_exit_code=0)) == "other"
+    assert row_validity.kind(_row("u", passed=False, agent_exit_code=-1,
+                                  tokens_completion=0)) == "timeout"
+    assert row_validity.kind(_row("u", passed=True, tokens_completion=0)) == "other"
+    d2 = _full_row()
+    for t in d2["tasks"][:3]:
+        t.update(passed=False, agent_exit_code=0, tokens_completion=900)
+    assert _run_validity(tmp_path, d2)[0] == 0
+
+
+def test_missing_agent_log_dir_reads_as_unchecked_not_clean(tmp_path):
+    assert row_validity.load_log_index(str(tmp_path / "nope")) is None
+    p = tmp_path / "row.json"; p.write_text(json.dumps(_full_row()))
+    r = subprocess.run([sys.executable, str(SCRATCH / "row_validity.py"), str(p),
+                        "--agent-logs", str(tmp_path / "nope")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "api=n/a" in r.stdout and "API-error axis unchecked" in r.stdout
+    # negative control: an existing (empty) dir IS a checked axis
+    (tmp_path / "logs").mkdir()
+    r = subprocess.run([sys.executable, str(SCRATCH / "row_validity.py"), str(p),
+                        "--agent-logs", str(tmp_path / "logs")], capture_output=True, text=True)
+    assert "api=0" in r.stdout and "API-error axis unchecked" not in r.stdout
 
 
 def test_honest_timeouts_do_not_void_a_row(tmp_path):
