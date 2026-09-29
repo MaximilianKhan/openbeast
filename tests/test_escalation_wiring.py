@@ -178,9 +178,8 @@ def test_the_real_facade_is_silent_in_a_measured_unit_unless_the_arm_opens_it(mo
     """The second lock, with the REAL package: BEAST_ESCALATE=1 leaking into an
     ordinary eval child (an ambient rig-wide setting) must change nothing."""
     sys.modules.pop("lang", None)
-    import lang                                   # the real one
     seen = []
-    import lang.escalate as E
+    import lang.escalate as E                     # the real package
     monkeypatch.setattr(E, "render_escalation", lambda *a, **k: seen.append(a) or CARD)
     monkeypatch.setenv("BEAST_ESCALATE", "1")
     monkeypatch.setenv("OPENBEAST_EVAL", "1")
