@@ -93,9 +93,14 @@ fi
 # Where the weights come from: the verified local copy, else the Hub at the pin.
 sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() SERVE_MODEL="" REV_ARGS=()
+OFFLINE_HUB=0
 if [[ -n "$SP_MODEL_DIR" && $SP_LOCATE_RC -eq 0 ]]; then
   MOUNTS+=(-v "$SP_MODEL_DIR:/models/$PF_PROFILE_NAME:ro")
   SERVE_MODEL="/models/$PF_PROFILE_NAME"
+  # A verified local copy needs nothing from the Hub; keep the container from fetching anything
+  # the checkpoint's config might point at. (A SPECULATIVE_CONFIG draft "model" must then already
+  # be in HF_CACHE at its pinned revision.)
+  OFFLINE_HUB=1
 elif [[ $SP_LOCATE_RC -eq 3 && "$PF_PROFILE_IS_HF" == 1 ]]; then
   echo "Warning: $PF_SOURCE@$PF_REVISION is not fetched into MODELS_DIR — vLLM will download it at the pinned revision, UNVERIFIED by us. Run model-fetch.sh --profile $PF_PROFILE_NAME (on both Sparks for TP 2) to verify and lock it." >&2
   SERVE_MODEL="$PF_SOURCE"
@@ -137,6 +142,7 @@ fi
 # that (opencode.json, setup-client.sh); vLLM 404s unknown ids unless told
 # not to (vllm/entrypoints/serve/engine/serving.py).
 CMD+=(-e VLLM_SKIP_MODEL_NAME_VALIDATION=1)
+[[ $OFFLINE_HUB -eq 1 ]] && CMD+=(-e HF_HUB_OFFLINE=1)
 # Pass-through by NAME only (docker copies the value from this shell's env),
 # so a token or a debug level never lands on argv.
 [[ -n "${NCCL_DEBUG:-}" ]] && CMD+=(-e NCCL_DEBUG)

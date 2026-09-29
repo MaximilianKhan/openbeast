@@ -346,6 +346,15 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
                 raise ValueError("not an object")
         except ValueError as e:
             err(f"SPECULATIVE_CONFIG must be a JSON object ({e})")
+        else:
+            # A separate draft model is another checkpoint vLLM downloads: pin it like SOURCE.
+            dm, drev = p.speculative.get("model"), p.speculative.get("revision")
+            if dm is not None and not (isinstance(drev, str) and SHA_RE.match(drev)):
+                err("SPECULATIVE_CONFIG names a draft \"model\" without a full 40-hex \"revision\" — the draft "
+                    "is another checkpoint and a branch can be re-pointed; add \"revision\": \"<commit sha>\"")
+            for bad in ("code_revision", "trust_remote_code"):
+                if bad in p.speculative:
+                    err(f"SPECULATIVE_CONFIG may not set {bad!r}")
     par = p.get("TENSORFOLD_PARALLEL")
     if par and not re.match(r"^(auto|[1-9][0-9]*)$", par):
         err(f"TENSORFOLD_PARALLEL={par!r} — auto or a positive integer")

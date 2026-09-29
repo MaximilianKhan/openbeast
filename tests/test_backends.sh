@@ -645,6 +645,8 @@ if _has "$_O" "-v $_K/models/vtest:/models/vtest:ro" && _has "$_O" "serve /model
 else
   fail "fetched model not mounted/served: $_O"
 fi
+_has "$_O" "-e HF_HUB_OFFLINE=1" && pass "…with HF_HUB_OFFLINE=1: a verified local copy fetches nothing from the Hub" \
+  || fail "no HF_HUB_OFFLINE for a local copy: $_O"
 if _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e GLOO_SOCKET_IFNAME=enp1s0f1np1" \
    && _has "$_O" "-e TP_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e UCX_NET_DEVICES=enp1s0f1np1" \
    && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1" && _has "$_O" "-e VLLM_SKIP_MODEL_NAME_VALIDATION=1"; then
@@ -672,7 +674,7 @@ else
 fi
 _sp "$_VN" -- --profile "$_P/vnofetch.env" --rank 0 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "serve acme/Unfetched-Model --revision $_REV --tokenizer-revision $_REV" \
-   && _has "$_O" "UNVERIFIED" && ! _has "$_O" "--code-revision"; then
+   && _has "$_O" "UNVERIFIED" && ! _has "$_O" "--code-revision" && ! _has "$_O" "HF_HUB_OFFLINE"; then
   pass "an unfetched Hub profile is served AT ITS PINNED REVISION, with a loud 'unverified — run model-fetch' warning"
 else
   fail "unfetched hub profile (rc=$SPRC): $_O"

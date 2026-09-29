@@ -186,3 +186,19 @@ def test_extra_args_fail_closed_without_vendored_data(tmp_path, monkeypatch):
     monkeypatch.setattr(obprofile, "DATA", tmp_path / "nowhere")
     with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS"):
         extra(tmp_path, ["--enable-prefix-caching"])
+
+
+@pytest.mark.parametrize("spec,ok", [
+    ('{"method":"mtp","num_speculative_tokens":3}', True),
+    ('{"model":"attacker/drafter","num_speculative_tokens":3}', False),
+    ('{"model":"acme/drafter","revision":"main","num_speculative_tokens":3}', False),
+    (f'{{"model":"acme/drafter","revision":"{SHA}","num_speculative_tokens":3}}', True),
+    (f'{{"model":"acme/drafter","revision":"{SHA}","code_revision":"main"}}', False),
+])
+def test_speculative_draft_model_must_be_pinned(tmp_path, spec, ok):
+    body = BASE + f"SPECULATIVE_CONFIG={spec}\n"
+    if ok:
+        assert load_body(tmp_path, body).speculative
+    else:
+        with pytest.raises(obprofile.ProfileError, match="SPECULATIVE_CONFIG"):
+            load_body(tmp_path, body)
