@@ -277,5 +277,81 @@ class TestTailnetCGNAT(unittest.TestCase):
         self.assertIsNotNone(_vet_addr("::1"))
 
 
+class _FakeResp:
+    """Minimal urllib response: a byte body behind read()/read1()."""
+
+    def __init__(self, body: bytes, ctype="text/html; charset=utf-8"):
+        import io
+        self._buf = io.BytesIO(body)
+        self.headers = {"Content-Type": ctype}
+
+    def read(self, n=-1):
+        return self._buf.read(n)
+
+    def read1(self, n=-1):
+        return self._buf.read1(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def open(self, req, timeout=None):
+        return _FakeResp(self.body)
+
+
+class TestHtmlStripIsLinear(unittest.TestCase):
+    """The HTML stripper runs under the GIL inside the shared tool server:
+    a page of unterminated openers must not trigger quadratic backtracking
+    (the old patterns took ~6 s per pass on a default-size 200 KB body)."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+
+    def _timed_fetch(self, body: bytes):
+        import time
+        self.tools._fetch_opener = _FakeOpener(body)
+        t0 = time.monotonic()
+        out = self.tools.fetch("http://tarpit.example/")
+        return out, time.monotonic() - t0
+
+    def test_unterminated_script_openers(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<script>" * 25_000)
+        self.assertLess(dt, 1.5)
+
+    def test_bare_angle_brackets(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<" * 200_000)
+        self.assertLess(dt, 1.5)
+
+    def test_unterminated_style_and_break_openers(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<style" * 30_000 + b"<br" * 60_000)
+        self.assertLess(dt, 1.5)
+
+    def test_stripping_semantics_kept(self):
+        out, _ = self._timed_fetch(
+            b"<html><head><style>p{color:red}</style>"
+            b"<script type='x'>var SECRET_JS = 1;</script></head>"
+            b"<body><p>Hello <b>world</b></p><br/>next &amp; last"
+            b"<script>never closed SCRIPT_TAIL")
+        self.assertIn("Hello world", out)
+        self.assertIn("next & last", out)
+        for gone in ("SECRET_JS", "color:red", "SCRIPT_TAIL", "<b>", "<p>"):
+            self.assertNotIn(gone, out)
+
+
 if __name__ == "__main__":
     unittest.main()

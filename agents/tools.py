@@ -1592,10 +1592,17 @@ def fetch(url: str, max_length: int = 50_000) -> str:
             text = raw_bytes.decode(charset, errors="replace")
 
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
-            text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
-            text = re.sub(r"<[^>]+>", " ", text)
+            # Every pattern here must be LINEAR on hostile input: re holds
+            # the GIL, and this runs inside the shared tool server. The old
+            # `<script[^>]*>.*?</script>` / `<[^>]+>` rescanned to end-of-text
+            # from every unterminated opener ('<script>'*N or '<'*N) — minutes
+            # to hours on an 8 MB page, freezing every user's tools. [^<>]
+            # stops each attempt at the next '<', and an unclosed script/style
+            # block swallows the rest (as a browser would) in one pass.
+            text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)
+            text = re.sub(r"<[^<>]+>", " ", text)
             text = html.unescape(text)
             text = re.sub(r"[^\S\n]+", " ", text)
             text = re.sub(r"\n{3,}", "\n\n", text)
