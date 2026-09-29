@@ -94,6 +94,27 @@ else
   fail "spurious warning: $(cat "$T/conf.err")"
 fi
 
+# Review r2: the warning must agree with the READER. BEAST_ASSIST is
+# forwarded verbatim and tools.diagnostics_enabled() wants exactly "1", so
+# `true` (or `1  # on`) leaves the checker off — the warning used _ob_bool and
+# stayed quiet. Cross-check against the real tools.py, not an assumption.
+for spelling in 'true' '1  # on'; do
+  OUT="$(conf_eval "BEAST_ASSIST=$spelling
+BEAST_ESCALATE=1" -- "cd '$REPO_DIR/agents' && python3 -c 'import tools; print(tools.diagnostics_enabled())'")"
+  if [[ "$OUT" == "False" ]] && grep -q 'no effect without BEAST_ASSIST=1' "$T/conf.err"; then
+    pass "BEAST_ASSIST='$spelling' (checker off per tools.py) warns"
+  else
+    fail "BEAST_ASSIST='$spelling': diagnostics_enabled=$OUT, stderr: $(cat "$T/conf.err")"
+  fi
+done
+# Negative control: the internal spelling does turn the checker on.
+OUT="$(conf_eval 'BEAST_ESCALATE=1' OPENBEAST_DIAGNOSTICS=1 -- "cd '$REPO_DIR/agents' && python3 -c 'import tools; print(tools.diagnostics_enabled())'")"
+if [[ "$OUT" == "True" ]] && ! grep -q 'BEAST_ESCALATE' "$T/conf.err"; then
+  pass "negative control: OPENBEAST_DIAGNOSTICS=1 (checker on) does not warn"
+else
+  fail "OPENBEAST_DIAGNOSTICS=1: diagnostics_enabled=$OUT, stderr: $(cat "$T/conf.err")"
+fi
+
 # End to end with the real reader: what conf.sh exports, tools.py honours.
 OUT="$(conf_eval 'BEAST_ASSIST=1
 BEAST_ESCALATE=yes' -- "cd '$REPO_DIR/agents' && python3 -c 'import tools; print(tools.escalation_enabled())'")"
