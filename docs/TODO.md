@@ -21,6 +21,14 @@
   raw `:8443` / `run_eval.py` still say `:8080`, HF `repo@revision` pinning,
   GB10 detection + aarch64 lock for an on-Spark stack.
 
+## 🏷 v1.6.0 CUT 2026-09-29
+
+Everything since v1.5.0 (#94 – #109): the full review (118 findings), the
+Tier-3 re-audit, multi-engine inference (vLLM / TensorFold, DGX Spark, model
+onboarding), beast-lang escalation (#103), opencode-sessions.sh, and the
+README. Notes: [`RELEASE_NOTES_v1.6.0.md`](RELEASE_NOTES_v1.6.0.md). Eval era
+`b5596c660b5ab819`: never pair across it.
+
 ## 🔬 FULL REVIEW 2026-09-29
 
 - **What:** an adversarial review of the whole repo found **118 findings**,

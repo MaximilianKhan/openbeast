@@ -50,7 +50,7 @@ line in `openbeast.conf`.
 | **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, and (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix | v1.5 |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
-| **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | main |
+| **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 
 Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
 capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
@@ -269,7 +269,7 @@ phone --scope chat`). Publish with `setup-tailscale.sh --publish-chat`.
 
 ### beast-lang 📚 — the offline language library
 
-*(main.)* A local model's knowledge of a language freezes at its training
+*(v1.5.0.)* A local model's knowledge of a language freezes at its training
 cutoff; the compiler on your box does not. beast-lang makes the **installed
 toolchain the ground truth**: `scripts/lang-library.sh acquire` fetches each
 language's reference docs for offline use, `introspect` asks the toolchain what
@@ -289,7 +289,7 @@ they can ever be served.
 
 ### Air-gap — the rig that never sees the internet 🔌
 
-*(main.)* An installed rig already serves fine offline; **installing** is what
+*(v1.5.0.)* An installed rig already serves fine offline; **installing** is what
 needed the network. Now: `OFFLINE=true` in `openbeast.conf` makes every
 install/update step that cannot succeed refuse instead of stall, the Python
 closure is a hash-pinned lockfile installed with `--require-hashes` (CI
@@ -311,7 +311,7 @@ payload, which is why `sign` exists.
 
 ### beast-campaign 🧪 — measurement you can trust
 
-*(main.)* Two small tools that exist because their absence cost real
+*(v1.5.0.)* Two small tools that exist because their absence cost real
 GPU-hours: `scripts/gpu-lease.sh` is an advisory **lease on the card** (pid +
 start time, never pid alone), so a build agent cannot start compiling inside a
 measurement's window and the watchdog will not relaunch the stack's model into
@@ -330,7 +330,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 
 ## Beyond one GPU: vLLM, TensorFold and DGX Spark 🟩
 
-*(main, opt-in.)* The rig's own inference is llama.cpp, and that stays the
+*(v1.6.0, opt-in.)* The rig's own inference is llama.cpp, and that stays the
 default byte for byte. Set `INFERENCE_BACKEND=vllm` or `tensorfold` and
 `INFERENCE_URL` in `openbeast.conf`, and the stack talks to that server instead.
 The WebUI, the tool servers, agents, beast-gate and `/api/slot` all follow it.
@@ -809,7 +809,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| *main (next)* | the 2026-09-29 adversarial review: 118 findings fixed, research integrity repaired · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [TODO.md](docs/TODO.md) |
+| v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
 | v1.3.0 | beast-artifact 🎨 | [RELEASE_NOTES_v1.3.0.md](docs/RELEASE_NOTES_v1.3.0.md) |
@@ -817,8 +817,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.1.0 | beast-slot 🎰 + beast-gate 🛡️ | [RELEASE_NOTES_v1.1.0.md](docs/RELEASE_NOTES_v1.1.0.md) |
 | v1.0 | the rig | — |
 
-Everything marked `main` in [What ships](#what-ships) is on `main` and not yet
-in a tagged release.
+Everything in [What ships](#what-ships) is in a tagged release; work that
+lands on `main` after v1.6.0 is marked `main` there until the next one.
 
 ## Uninstall
 

@@ -102,6 +102,11 @@ jobs:
       - name: opencode session clearing tests
         run: bash tests/test_opencode_sessions.sh
 
+      # BEAST_ESCALATE conf wiring (#103): the switch reaches the stack only
+      # through conf.sh, and only as exactly 1/0. run_tests.sh ran it; CI did not.
+      - name: beast-lang escalation conf tests
+        run: bash tests/test_escalate_conf.sh
+
       # Model onboarding for the Sparks: profile parser refusals, model-inspect
       # on fixture checkpoints, model-fetch against a stub Hub (corruption,
       # resume, lock), conformance against stub vLLM / TensorFold / broken
