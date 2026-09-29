@@ -137,3 +137,68 @@ def test_scrub_drops_openai_api_key(monkeypatch):
 def test_scrub_drops_stack_token(monkeypatch):
     monkeypatch.setenv("OPENBEAST_SOME_TOKEN", "t")
     assert "OPENBEAST_SOME_TOKEN" not in tools._scrubbed_env()
+
+
+# --- RLIMIT_NPROC is relative to the uid's live task count ----------------
+# Linux checks NPROC against every task the real uid owns machine-wide, so
+# the old fixed 2048 sat a few hundred tasks above an idle desktop and forks
+# in the bash tool / eval validation died with EAGAIN (banked as model FAILs).
+
+_needs_prlimit = pytest.mark.skipif(not hasattr(tools.resource, "prlimit"),
+                                    reason="prlimit(2) is Linux-only")
+
+_PRINT_NPROC = (f"{sys.executable} -c \"import resource; "
+                f"print(resource.getrlimit(resource.RLIMIT_NPROC)[0])\"")
+
+
+def _expected_cap(n):
+    hard = tools.resource.getrlimit(tools.resource.RLIMIT_NPROC)[1]
+    cap = n + tools._CHILD_NPROC_MARGIN
+    return cap if hard == tools.resource.RLIM_INFINITY else min(cap, hard)
+
+
+@_needs_prlimit
+def test_nproc_cap_is_never_below_current_uid_usage(monkeypatch):
+    # A uid already running 10k tasks: the old fixed 2048 cap made every
+    # fork fail; the per-call cap must sit ABOVE current usage.
+    monkeypatch.setattr(tools, "_uid_task_count", lambda uid=None: 10_000)
+    rc, out = tools.run_reaped(_PRINT_NPROC, 30)
+    assert rc == 0, out
+    assert int(out.strip()) == _expected_cap(10_000)
+    assert int(out.strip()) > 10_000
+
+
+@_needs_prlimit
+def test_nproc_left_inherited_when_count_unmeasurable(monkeypatch):
+    monkeypatch.setattr(tools, "_uid_task_count", lambda uid=None: None)
+    rc, out = tools.run_reaped(_PRINT_NPROC, 30)
+    assert rc == 0, out
+    assert int(out.strip()) == tools.resource.getrlimit(tools.resource.RLIMIT_NPROC)[0]
+
+
+@_needs_prlimit
+def test_nproc_cap_still_stops_a_bomb(monkeypatch):
+    # Negative control: the relative cap still binds. With a 64-task margin
+    # a child trying to start 500 threads must hit EAGAIN well before 500.
+    # Threads live inside the child, so nothing outlives the call.
+    monkeypatch.setattr(tools, "_CHILD_NPROC_MARGIN", 64)
+    bomb = (f"{sys.executable} -c \"import threading\n"
+            "ev = threading.Event(); n = 0\n"
+            "try:\n"
+            "    for _ in range(500):\n"
+            "        threading.Thread(target=ev.wait, daemon=True).start(); n += 1\n"
+            "except RuntimeError:\n"
+            "    pass\n"
+            "print('STARTED', n); ev.set()\"")
+    rc, out = tools.run_reaped(bomb, 60)
+    started = int(out.split("STARTED")[1].split()[0])
+    assert started < 500, out
+
+
+def test_uid_task_count_measures_real_uid():
+    if not os.path.isdir("/proc/self"):
+        pytest.skip("no procfs")
+    n = tools._uid_task_count()
+    assert n is not None and n >= 1
+    # A uid that owns nothing reports "unmeasurable", not a zero cap.
+    assert tools._uid_task_count(uid=2**31 - 7) is None

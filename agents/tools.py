@@ -57,6 +57,65 @@ _MAX_READ_BYTES = 64 * 1024 * 1024
 # a memory bomb can grab in the seconds before the timeout fires.
 _CHILD_AS_LIMIT = 32 * 1024**3
 
+# Fork-bomb headroom: how many MORE tasks (processes + threads) a tool child
+# may add on top of what the uid already runs. Linux checks RLIMIT_NPROC
+# against every task the REAL UID owns machine-wide — not the child's own
+# tree — so the 2026-09-10 fixed cap of 2048 sat ~500 tasks above an idle
+# desktop's ~1500 browser threads: under --jobs 4 and a threaded compiler,
+# trivial forks in the bash tool and in eval validation died with EAGAIN,
+# and those validations were banked as model FAILs. The cap is now computed
+# per call as (current uid task count + this margin), so it can never start
+# below current usage yet still stops a bomb a few thousand tasks in.
+_CHILD_NPROC_MARGIN = 4096
+
+
+def _uid_task_count(uid: int | None = None) -> int | None:
+    """Tasks (processes + threads) whose REAL uid is `uid` — the quantity the
+    kernel compares RLIMIT_NPROC against. None when it can't be measured (no
+    /proc: macOS clients), in which case the caller leaves NPROC alone."""
+    uid = os.getuid() if uid is None else uid
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    total = 0
+    for d in entries:
+        if not d.isdecimal():
+            continue
+        try:
+            with open(f"/proc/{d}/status", "rb") as f:
+                status = f.read()
+        except OSError:
+            continue  # exited mid-scan
+        ruid = threads = None
+        for line in status.split(b"\n"):
+            if line.startswith(b"Uid:"):
+                ruid = int(line.split()[1])
+            elif line.startswith(b"Threads:"):
+                threads = int(line.split()[1])
+                break
+        if ruid == uid and threads:
+            total += threads
+    return total or None
+
+
+def _child_nproc_cap() -> int | None:
+    """Per-call RLIMIT_NPROC for a run_reaped child, or None to leave the
+    inherited limit untouched (task count unmeasurable)."""
+    n = _uid_task_count()
+    if n is None:
+        return None
+    cap = n + _CHILD_NPROC_MARGIN
+    # Never ask for more than the inherited hard limit: raising it needs
+    # CAP_SYS_RESOURCE, and the EPERM would silently drop the cap entirely.
+    try:
+        hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    except (OSError, ValueError, AttributeError):
+        hard = resource.RLIM_INFINITY
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    return cap
+
 
 def _killpg(proc):
     """SIGKILL the whole process group, then reap the leader."""
@@ -114,11 +173,15 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
         # timeout. Generous ceilings — real builds fork hundreds of procs and
-        # write big artifacts; these stop bombs, not work.
-        _limits = ((resource.RLIMIT_AS, _as_limit),
-                   (resource.RLIMIT_NPROC, 2048),
+        # write big artifacts; these stop bombs, not work. NPROC is relative
+        # to the uid's live task count (see _CHILD_NPROC_MARGIN), never a
+        # fixed number the desktop alone can exhaust.
+        _limits = [(resource.RLIMIT_AS, _as_limit),
                    (resource.RLIMIT_FSIZE, 8 * 1024**3),
-                   (resource.RLIMIT_CPU, 1800))
+                   (resource.RLIMIT_CPU, 1800)]
+        _nproc = _child_nproc_cap()
+        if _nproc is not None:
+            _limits.append((resource.RLIMIT_NPROC, _nproc))
         for _res, _cap in _limits:
             try:
                 resource.prlimit(proc.pid, _res, (_cap, _cap))
