@@ -217,6 +217,21 @@ _TF_CUDA_400 = ("Error code: 400 - {'error': {'message': \"the rendered prompt h
                 "(model window: 262144 tokens); shorten the prompt\"}}")
 
 
+# CUDA: prompt fits but prompt + requested reply does not.
+_TF_CUDA_REPLY = ("the rendered prompt has 120000 tokens and requests 32768 reply tokens, "
+                  "exceeding the server's 131072-token safe cache capacity; reduce the "
+                  "prompt or reply length")
+# MLX (server/app.py): window first, thousands commas, "the most this
+# server's memory budget fits" as the optional `why`.
+_TF_MLX_FULL = ("This server's maximum context length is 65,536 tokens, the most this "
+                "server's memory budget fits, but the rendered prompt has 70,000 tokens and "
+                "leaves no room for a reply. Compact or shorten the conversation.")
+_TF_MLX_REPLY = ("the rendered prompt has 60000 tokens and requests 8192 reply tokens; this "
+                 "server's context window is 65536. Reduce the prompt to at most 57344 prompt "
+                 "tokens or request at most 5536 reply tokens, including chat template and "
+                 "thinking tokens.")
+
+
 @pytest.mark.parametrize("err", [_VLLM_400, _VLLM_400_OLD, _TF_CUDA_400,
                                  "This server's maximum context length is 65,536 tokens, but "
                                  "the rendered prompt has 70,000 tokens"])
@@ -230,9 +245,18 @@ def test_overflow_token_parse_vllm():
     assert runner._overflow_tokens(
         _VLLM_400.replace("contains 240000", "contains at least 240000")) == (240000, 262144)
     assert runner._overflow_tokens(_VLLM_400_OLD) == (38000, 32768)
-    # TensorFold states no parseable pair: detection still fires, and the
-    # runner falls back to freeing a quarter of the history.
-    assert runner._overflow_tokens(_TF_CUDA_400) is None
+
+    # TensorFold (strings as its servers format them — cuda/server.py check(),
+    # server/app.py; MLX uses thousands commas).
+    assert runner._overflow_tokens(_TF_CUDA_400) == (131073, 131072)
+    assert runner._overflow_tokens(_TF_CUDA_REPLY) == (120000, 131072)
+    assert runner._overflow_tokens(_TF_MLX_FULL) == (70000, 65536)
+    assert runner._overflow_tokens(_TF_MLX_REPLY) == (60000, 65536)
+
+
+def test_overflow_detection_tensorfold_reply_length_forms():
+    for err in (_TF_CUDA_REPLY, _TF_MLX_FULL, _TF_MLX_REPLY):
+        assert runner._is_context_overflow(err), err
 
 
 def test_overflow_detection_vllm_negative():
