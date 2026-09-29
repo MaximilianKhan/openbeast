@@ -52,7 +52,7 @@ class _DyingClient:
         self.completions = self
         self.n = 0
 
-    def create(self, model, messages, tools, temperature):
+    def create(self, model, messages, tools, temperature, **kw):
         self.n += 1
         if self.n == 1:
             msg = type("M", (), {"content": "thinking", "tool_calls": []})()
@@ -86,7 +86,7 @@ def test_runner_reports_zero_api_errors_on_clean_run(tmp_path, monkeypatch, caps
             self.chat = self
             self.completions = self
 
-        def create(self, model, messages, tools, temperature):
+        def create(self, model, messages, tools, temperature, **kw):
             fn = type("F", (), {"name": "task_done", "arguments": '{"summary": "ok"}'})()
             tc = type("T", (), {"id": "1", "function": fn})()
             msg = type("M", (), {"content": "", "tool_calls": [tc]})()
