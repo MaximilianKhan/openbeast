@@ -41,6 +41,10 @@ def ba(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "RESULTS_DIR", str(tmp_path / "results"))
     monkeypatch.setattr(mod, "LLAMA_PORT", port)
     monkeypatch.setattr(mod, "LLAMA_HEALTH_URL", f"http://127.0.0.1:{port}/health")
+    # The real gpu-lease.sh, but on a private, empty lease dir: FREE, and
+    # never the rig's own .run/gpu.lease.
+    monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("OPENBEAST_BENCH_UNDER_LEASE", raising=False)
     calls = []
     real_run = subprocess.run
 
@@ -181,3 +185,100 @@ def test_live_units_exclude_rows_that_never_ran_the_agent(tmp_path, monkeypatch)
     res = run_eval.run_eval(model_name="m")
     assert res["tasks"][0]["reason"] == "low_disk"
     assert res["summary"]["live_units"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The GPU lease (review lifecycle-4 residual): refuse someone else's lease
+# before loading anything; run under one of our own; take a free one.
+# ---------------------------------------------------------------------------
+
+def _start_ticks(pid: int) -> str:
+    with open(f"/proc/{pid}/stat") as fh:
+        return fh.read().rsplit(") ", 1)[1].split()[19]
+
+
+def _write_lease(run_dir: Path, pid: int) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "gpu.lease").write_text(
+        f"pid={pid}\nstart={_start_ticks(pid)}\nlabel=other campaign\nsince=now\n")
+
+
+@pytest.fixture
+def stranger():
+    """A live process that is NOT our ancestor — someone else's campaign."""
+    p = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    yield p
+    p.kill()
+    p.wait()
+
+
+def test_refuses_to_load_while_someone_else_holds_the_lease(ba, tmp_path, stranger):
+    _write_lease(tmp_path / "run", stranger.pid)
+    marker = tmp_path / "loaded"
+    _serve(tmp_path, f"touch {marker}; exec sleep 30")
+    with pytest.raises(ba.GpuLeaseHeld, match="HELD by pid"):
+        ba.start_model("serve.sh", "m")
+    out = ba.benchmark_model({"name": "M", "slug": "m", "serve": "serve.sh"}, None, None)
+    assert "HELD by pid" in out["error"] and out["gpu_work"] is False
+    assert not ba.restart_server("serve.sh", "m", health_timeout=1)
+    with pytest.raises(ba.GpuLeaseHeld):
+        ba.ensure_gpu_lease(["--models", "m"], exec_fn=lambda *a: pytest.fail("exec'd"))
+    time.sleep(0.3)
+    assert not marker.exists(), "a model was loaded under someone else's lease"
+    assert ba._own_server["proc"] is None
+
+
+def test_a_lease_held_by_our_ancestor_is_ours(ba, tmp_path):
+    """A campaign runs us under `gpu-lease.sh run`: its lease must not refuse
+    its own sweep. (Holder = this test process, an ancestor of the check.)"""
+    _write_lease(tmp_path / "run", os.getpid())
+    assert ba.require_gpu_lease() == ba.LEASE_OURS
+    ba.ensure_gpu_lease(["--models", "m"], exec_fn=lambda *a: pytest.fail("exec'd"))
+    proc, _ = ba.start_model(_serve(tmp_path, "exec sleep 30"), "m")
+    ba.stop_llama_server()
+    assert proc.poll() is not None
+
+
+def test_a_free_lease_is_taken_for_the_whole_sweep(ba, tmp_path, monkeypatch):
+    calls = []
+    ba.ensure_gpu_lease(["--models", "m"],
+                        exec_fn=lambda f, argv, env: calls.append((argv, env)))
+    ((argv, env),) = calls
+    assert argv[:3] == ["bash", ba.GPU_LEASE_SH, "run"]
+    i = argv.index("--")
+    assert argv[i + 1:] == [sys.executable, os.path.abspath(ba.__file__), "--models", "m"]
+    assert env["OPENBEAST_BENCH_UNDER_LEASE"] == "1"
+    assert env["OPENBEAST_RUN_DIR"] == str(tmp_path / "run")
+    # The re-exec'd sweep that STILL reads FREE refuses instead of looping.
+    monkeypatch.setenv("OPENBEAST_BENCH_UNDER_LEASE", "1")
+    with pytest.raises(ba.GpuLeaseHeld, match="unleased"):
+        ba.ensure_gpu_lease(["--models", "m"], exec_fn=lambda *a: pytest.fail("looped"))
+
+
+def test_an_unreadable_lease_is_not_free(ba, tmp_path, monkeypatch):
+    monkeypatch.setattr(ba, "GPU_LEASE_SH", str(tmp_path / "missing-gpu-lease.sh"))
+    with pytest.raises(ba.GpuLeaseHeld, match="unknown is not free"):
+        ba.start_model(_serve(tmp_path, "exec sleep 30"), "m")
+    assert ba._own_server["proc"] is None
+
+
+def test_a_worktree_asks_the_main_trees_lease(tmp_path, monkeypatch):
+    """The lease file is <main tree>/.run/gpu.lease; a worktree's own copy of
+    gpu-lease.sh would read <worktree>/.run and say FREE over a campaign."""
+    for mod in ("cache", "run_eval", "benchmark_all"):
+        sys.modules.pop(mod, None)
+    ba = importlib.import_module("benchmark_all")
+    main, wt = tmp_path / "main", tmp_path / "wt"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
+    subprocess.run(git + ["init", "-q", str(main)], check=True)
+    subprocess.run(git + ["-C", str(main), "commit", "-q", "--allow-empty", "-m", "x"],
+                   check=True)
+    subprocess.run(git + ["-C", str(main), "worktree", "add", "-q", str(wt)], check=True)
+    monkeypatch.delenv("OPENBEAST_RUN_DIR", raising=False)
+    monkeypatch.setattr(ba, "GPU_LEASE_SH", str(wt / "scripts" / "gpu-lease.sh"))
+    assert ba._lease_env()["OPENBEAST_RUN_DIR"] == str(main / ".run")
+    monkeypatch.setattr(ba, "GPU_LEASE_SH", str(main / "scripts" / "gpu-lease.sh"))
+    assert ba._lease_env()["OPENBEAST_RUN_DIR"] == str(main / ".run")
+    # An operator's explicit run dir wins.
+    monkeypatch.setenv("OPENBEAST_RUN_DIR", "/elsewhere")
+    assert ba._lease_env()["OPENBEAST_RUN_DIR"] == "/elsewhere"

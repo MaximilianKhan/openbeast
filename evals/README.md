@@ -40,6 +40,13 @@ python3 evals/tool_efficiency.py --since 2026-05-07  # only logs since this date
 python3 evals/tool_efficiency.py --model SLUG        # drill into one model's tool-call frequencies
 ```
 
+A live `benchmark_all.py` sweep asks the GPU lease (`scripts/gpu-lease.sh
+check`) before it loads anything: held by someone else, or unreadable, it
+refuses (exit 4); free, it re-execs itself under `gpu-lease.sh run` so the
+whole sweep holds the card; under a `run` that already wraps it (a
+campaign), it proceeds. A sweep in a git worktree asks the main tree's
+lease. Every model (re)start asks again.
+
 ## v5-fast — the pinned fast suite (imputation-scored)
 
 `evals/suites/v5-fast.json` pins the 106 units that carry the suite's signal:
