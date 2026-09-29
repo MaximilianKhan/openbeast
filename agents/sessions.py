@@ -79,6 +79,17 @@ _FILE_MODE = 0o600
 # Fields callers may not overwrite through touch() — identity is immutable.
 _IMMUTABLE = ("id", "started_at")
 
+#: meta keys register() and the runner OWN. They are load-bearing for
+#: liveness (`pid_start`, `boot_id` — a wrong value reads as "finished" while
+#: the process keeps running) and for steering (`cursor`). A caller attaching
+#: free-form meta to a session it starts must never supply these; chat_server
+#: strips them (its RESERVED_META is this tuple), and register() assigns the
+#: two liveness keys itself. Keep the list HERE, next to the code that writes
+#: them, so the next liveness field cannot be missed by the caller-side strip
+#: — the [54] boot_id fix was, and a caller's boot_id bore a live agent as
+#: `lost`.
+SERVER_OWNED_META = ("pid_start", "boot_id", "cursor")
+
 # --- Inbox caps (E12) -------------------------------------------------------
 # read_new_ops used to read the whole tail in one go: a 25 MB inbox allocated
 # ~151 MB of Python objects on a turn boundary, and an oversized `say` could
@@ -437,6 +448,11 @@ def register(session_id: str, *, kind: str = "agent", title: str = "",
     except ValueError:
         rec["inbox"] = None
     rec["meta"] = dict(meta or {})
+    # The liveness keys are assigned below or not at all: a caller's boot_id
+    # used to survive whenever this kernel reports none. (`cursor` is NOT
+    # dropped here — the runner itself passes it to carry a --resume forward;
+    # untrusted callers are stripped of it upstream, in chat_server.)
+    rec["meta"].pop("boot_id", None)
     # ASSIGNED, not setdefault: this is the process-identity proof, and it is
     # derived from the pid WE were handed. setdefault let any caller who could
     # reach a register() with a meta dict pre-empt it with a wrong value, and a

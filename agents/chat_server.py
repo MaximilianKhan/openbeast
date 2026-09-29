@@ -142,8 +142,11 @@ CONTROL_EVENT_TYPES = frozenset({"hello", "end", "lost", "log", "unknown"})
 MAX_MESSAGE_BYTES = 32 * 1024
 # Ledger meta keys the SERVER owns. A caller may attach free-form meta to a
 # session it starts; it may not attach these, because they are load-bearing
-# for liveness (`pid_start`) and for steering (`cursor`).
-RESERVED_META = ("pid_start", "cursor")
+# for liveness (`pid_start`, `boot_id`) and for steering (`cursor`). The list
+# lives in sessions.py beside the code that writes them: this copy omitted
+# boot_id after [54] added it, and a caller's boot_id — merged over the
+# runner's own by annotate_when_registered — bore a live agent as `lost`.
+RESERVED_META = sessions.SERVER_OWNED_META
 # How much transcript one read may pull. The SSE reader used to do an
 # uncapped f.read() from the requested offset, and every replay-from-zero —
 # a fresh page load, the Replay button, or the mid-stream `lost` reset —
@@ -813,7 +816,12 @@ def annotate_when_registered(session_id: str, meta: dict, *,
             exists = False
         if exists:
             with contextlib.suppress(Exception):
-                sessions.touch(session_id, meta=dict(meta or {}))
+                # Belt to create_session's strip: this merge lands OVER the
+                # runner's own record, so a server-owned key here would
+                # replace the runner's real pid_start/boot_id/cursor.
+                sessions.touch(session_id, meta={
+                    k: v for k, v in (meta or {}).items()
+                    if k not in RESERVED_META})
             return True
         now = time.monotonic()
         if now >= deadline:

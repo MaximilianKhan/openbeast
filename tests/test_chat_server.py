@@ -1755,6 +1755,34 @@ def test_caller_meta_cannot_forge_the_liveness_proof(rig, tmp_path):
     assert wait_state(sid, "stopped"), sessions.get(sid)
 
 
+def test_caller_meta_cannot_forge_the_boot_id_either(rig, monkeypatch):
+    """Review 2026-09-29: [54] added meta['boot_id'] as a second liveness
+    input, and RESERVED_META was not told. For kind='agent' the caller's meta
+    is merged OVER the runner's own record (annotate_when_registered), so
+    `{"meta": {"boot_id": "x"}}` bore a live agent as `lost` — "started
+    before this boot" — with /send 409 and /stop "already finished"."""
+    monkeypatch.setattr(sessions, "_boot_id", lambda: "boot-A")
+    assert set(sessions.SERVER_OWNED_META) <= set(chat_server.RESERVED_META)
+    assert "boot_id" in chat_server.RESERVED_META
+    sid = rig.session(kind="agent")            # the runner's own record
+    assert sessions.get(sid)["meta"]["boot_id"] == "boot-A"
+    real_start = sessions.get(sid)["meta"]["pid_start"]
+
+    assert chat_server.annotate_when_registered(sid, {
+        "boot_id": "some-other-boot", "pid_start": 1, "cursor": 999,
+        "note": "keep me"}, timeout=1.0)
+    rec = sessions.get(sid)
+    assert rec["state"] == "running", rec
+    assert rec["meta"]["boot_id"] == "boot-A"
+    assert rec["meta"]["pid_start"] == real_start
+    assert rec["meta"]["cursor"] == 0
+    assert rec["meta"]["note"] == "keep me"    # a filter, not a wall
+    # negative control: the same foreign boot_id, written straight into the
+    # record, IS what reads as lost — so the filter above is what saved it
+    sessions.touch(sid, meta={"boot_id": "some-other-boot"})
+    assert sessions.get(sid)["state"] == "lost"
+
+
 def test_the_stream_read_is_bounded_and_still_pages_exactly(tmp_path):
     """`read_lines_from` did an uncapped `f.read()` from the offset, and its
     only caller is inside the async SSE generator — so every replay-from-zero
