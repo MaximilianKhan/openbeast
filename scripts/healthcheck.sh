@@ -23,17 +23,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
+source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 
 # Where the services actually answer (same mapping start.sh uses): loopback
 # for loopback/wildcard binds, the address itself otherwise. llama-server,
 # the tool server, Open WebUI and SearXNG all bind BIND_HOST, so the core
 # probes below derive from it too — they were hard-wired to localhost, and on
 # a rig with BIND_HOST set to its LAN address the watchdog saw four healthy
-# services as DOWN and restarted them every five minutes.
-case "$BIND_HOST" in
-  127.*|localhost|0.*|::) HEALTH_HOST="127.0.0.1" ;;
-  *)                      HEALTH_HOST="$BIND_HOST" ;;
-esac
+# services as DOWN and restarted them every five minutes. (lib/net.sh holds
+# the mapping, shared with start.sh and doctor.sh.)
+HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 
 LLAMA_URL="${LLAMA_URL:-http://$HEALTH_HOST:8080}"
 MCPO_URL="${MCPO_URL:-http://$HEALTH_HOST:3001}"
@@ -44,10 +43,7 @@ SEARXNG_URL="${SEARXNG_URL:-http://$HEALTH_HOST:8888}"
 # (`set -u`: the variable is normally UNSET, so every use carries a default —
 # the first version named it bare in the fall-through arm and killed this
 # whole script, for everyone, on the line below.)
-CHAT_HEALTH_HOST="${OPENBEAST_CHAT_BIND:-127.0.0.1}"
-case "$CHAT_HEALTH_HOST" in
-  0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
-esac
+CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true

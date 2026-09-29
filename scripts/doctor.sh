@@ -19,10 +19,16 @@ source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
 QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
 
-case "$BIND_HOST" in
-  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
-  *)                   HEALTH_HOST="$BIND_HOST" ;;
-esac
+source "$SCRIPT_DIR/lib/net.sh"   # ob_probe_host — the mapping start.sh and healthcheck.sh use
+# Where the core services answer (they bind BIND_HOST). It used to be a
+# private copy of the mapping with no `::` arm, so BIND_HOST=:: built
+# http://:::8080 and every service read as down on a healthy stack.
+HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
+# beast-chat binds OPENBEAST_CHAT_BIND (loopback by default), NOT BIND_HOST —
+# start.sh and healthcheck.sh probe it there; doctor probed BIND_HOST, and on
+# a rig with a LAN BIND_HOST called a healthy console down (and a published
+# :8445 a FAIL).
+CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 PASS=0 WARN=0 FAIL=0
 section() { [[ $QUIET -eq 1 ]] || printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -301,7 +307,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
     printf 'header = "X-OpenBeast-Local: %s"\n' "$_chat_tok" > "$_chat_cfg"
   fi
   _chat=$(curl -s --max-time 4 ${_chat_cfg:+--config "$_chat_cfg"} \
-            "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
+            "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null)
   [[ -n "$_chat_cfg" ]] && rm -f "$_chat_cfg"
   if echo "$_chat" | grep -qi '"status":"ok"'; then
     # [a-z-]: the value is a hyphenated word ("any-identified"), and a
@@ -398,7 +404,7 @@ if command -v tailscale >/dev/null 2>&1; then
     # stop it, start a new one), so a mount pointing at a dead process is
     # worth more than a shrug: the operator thinks they can reach their rig.
     if echo "$_serve" | grep -qE ':8445[^0-9]'; then
-      if curl -s --max-time 4 "http://$HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+      if curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
         pass "beast-chat published on :8445 (tailnet-only)"
       else
         fail ":8445 is published but beast-chat is NOT responding" \

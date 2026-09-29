@@ -88,6 +88,7 @@ fi
 # resolves DEFAULT_SERVE_SCRIPT (conf SERVE_SCRIPT / env OPENBEAST_SERVE_SCRIPT).
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
+source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
@@ -95,13 +96,11 @@ if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   exit 1
 fi
 
-# Probe where services actually listen: loopback answers for loopback and
-# wildcard binds; a specific LAN/tailnet address must be probed directly.
+# Probe where services actually listen: loopback answers for wildcard binds;
+# a specific LAN/tailnet address must be probed directly; IPv6 comes back
+# bracketed (lib/net.sh — the ONE mapping start/doctor/healthcheck share).
 # Used by the daemon launcher's readiness probes AND the supervisor below.
-case "$BIND_HOST" in
-  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
-  *)                   HEALTH_HOST="$BIND_HOST" ;;
-esac
+HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
@@ -604,10 +603,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
       CHAT_OWNED=1
       CHAT_UP=0
-      _chat_host="${OPENBEAST_CHAT_BIND:-127.0.0.1}"    # set -u: normally unset
-      case "$_chat_host" in
-        0.*|localhost|::) _chat_host="127.0.0.1" ;;
-      esac
+      _chat_host="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"    # set -u: normally unset
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
         # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
