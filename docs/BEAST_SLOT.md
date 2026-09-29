@@ -152,7 +152,7 @@ unspecified" rather than switching exhaustively — the set can grow:
 | `open` | no credential required (personal tailnet, gate off, no key) |
 | `key` | one shared `LLAMA_API_KEY` gates the endpoint |
 | `device` | beast-gate is on: you need your own enrolled device key |
-| `anon` | beast-gate is on but `EDGE_ALLOW_ANON=true`, so unregistered callers are served as a single `anon` device — the gate is up, per-device identity is **not** in force |
+| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **no device is enrolled yet**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment one device is enrolled the gate ignores `ALLOW_ANON` (keyless callers get 401) and this reads `device` |
 
 `device` and `anon` were added alongside beast-gate. This is an additive
 change to an existing field's value set, not a rename, so `min_client` stays
@@ -467,7 +467,8 @@ What each remote request now passes through:
 
 **Fails closed.** With `EDGE_GATE=true` and no devices enrolled, remote callers
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
-opts out, at the cost of attribution and revocation. A corrupt or half-written
+opts out, at the cost of attribution and revocation — but only until the first
+device is enrolled; from then on a missing or unknown key is a 401 again. A corrupt or half-written
 registry keeps the last good device map rather than opening up.
 
 **Your local command center is untouched.** Open WebUI and the agent router

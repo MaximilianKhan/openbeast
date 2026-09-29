@@ -42,8 +42,10 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
   OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
                                a prompt array or n>1 counts prompts x n
-  OPENBEAST_EDGE_ALLOW_ANON    "true" = serve callers with no/unknown key as
-                               the "anon" device (default false = fail closed)
+  OPENBEAST_EDGE_ALLOW_ANON    "true" = while NO device is enrolled, serve
+                               every caller as the "anon" device (default
+                               false = fail closed). Ignored once the registry
+                               holds a device: then no/unknown key -> 401
 """
 from __future__ import annotations
 
