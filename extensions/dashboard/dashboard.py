@@ -22,6 +22,28 @@ PORT = int(os.environ.get("DASHBOARD_PORT", "3002"))
 # stack; BIND only controls who can reach the dashboard itself.
 H = "127.0.0.1"
 
+# The inference server (lib/conf.sh INFERENCE_*; docs/DGX_SPARK_PLAN.md).
+# Unset — every rig before multi-backend support — is exactly the old
+# behaviour: llama-server on loopback :8080. INFERENCE_URL is exported only
+# when an operator set it (a vLLM / TensorFold cluster on the Sparks, or a
+# llama-server on another box).
+_BACKEND = os.environ.get("OPENBEAST_INFERENCE_BACKEND", "").strip().lower() or "llama"
+if _BACKEND not in ("llama", "vllm", "tensorfold"):
+    _BACKEND = "llama"
+_INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
+          or f"http://{H}:8080")
+
+
+def _conf_slots():
+    """INFERENCE_SLOTS: the concurrency a server that exposes none was
+    launched with (vLLM --max-num-seqs, TensorFold --parallel), or None."""
+    raw = os.environ.get("OPENBEAST_INFERENCE_SLOTS", "").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
 
 # Keyed llama-server (LLAMA_API_KEY): the dashboard's own probes must present
 # the bearer. start.sh's extension launcher inherits the conf.sh export;
@@ -92,14 +114,14 @@ def gpu_status():
 
 
 def model_status():
-    ok = _get(f"http://{H}:8080/health")[0] == 200
+    ok = _get(f"{_INFER}/health")[0] == 200
     served = ""
     try:
         served = open(os.path.join(REPO_DIR, ".run", "serve-script")).read().strip()
     except Exception:
         pass
     alias = ""
-    st, body = _get(f"http://{H}:8080/v1/models", auth=True)
+    st, body = _get(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             alias = json.loads(body)["data"][0].get("id", "")
@@ -110,7 +132,7 @@ def model_status():
 
 def services_status():
     svc = [
-        ("model", f"http://{H}:8080/health", "ok"),
+        ("model", f"{_INFER}/health", "ok"),
         ("tools", f"http://{H}:8080".replace("8080", "3001") + "/health", "ok"),
         ("webui", f"http://{H}:3000/api/version", "version"),
         ("search", f"http://{H}:8888/", ""),
@@ -119,6 +141,10 @@ def services_status():
     for name, url, needle in svc:
         st, body = _get(url)
         out[name] = bool(st and st < 500 and (needle in body if needle else True))
+    if _BACKEND != "llama":
+        # vLLM's /health is an EMPTY 200 and TensorFold's {"ok": true}: for
+        # them the status code is the answer (a 404 is a wrong URL, not up).
+        out["model"] = _get(f"{_INFER}/health")[0] == 200
     return out
 
 
@@ -218,7 +244,7 @@ def _queue_deferred():
     are opt-in server-side (--metrics); without it /metrics answers 501 and we
     report null rather than pretending the queue is empty.
     """
-    st, body = _get(f"http://{H}:8080/metrics", auth=True)
+    st, body = _get(f"{_INFER}/metrics", auth=True)
     if st != 200:
         return None
     for line in body.splitlines():
@@ -245,16 +271,18 @@ def slot_status():
     states the real total budget, whether it is shared, and the queue depth
     that slots.busy cannot see.
     """
-    ok = _get(f"http://{H}:8080/health")[0] == 200
+    if _BACKEND != "llama":
+        return _slot_status_remote()
+    ok = _get(f"{_INFER}/health")[0] == 200
     model = {"id": None, "ctx": None}
     slots = {"total": None, "busy": None}
-    st, body = _get(f"http://{H}:8080/v1/models", auth=True)
+    st, body = _get(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             model["id"] = json.loads(body)["data"][0].get("id") or None
         except Exception:
             pass
-    st, body = _get(f"http://{H}:8080/props", auth=True)
+    st, body = _get(f"{_INFER}/props", auth=True)
     if st == 200:
         try:
             props = json.loads(body)
@@ -268,7 +296,7 @@ def slot_status():
             pass
     # /slots may be disabled (--no-slots) → busy stays null. Busy detection
     # covers both server generations: is_processing (current) / state != 0.
-    st, body = _get(f"http://{H}:8080/slots", auth=True)
+    st, body = _get(f"{_INFER}/slots", auth=True)
     if st == 200:
         try:
             data = json.loads(body)
@@ -311,13 +339,107 @@ def slot_status():
             "serving_profile": profile,
         },
         "services": services_status(),
-        # Gate-aware: with EDGE_GATE=true remote clients need a per-DEVICE
-        # key even when LLAMA_API_KEY is unset. Reporting "open" there told
-        # clients the opposite of the truth.
-        "auth": ("anon" if (_EDGE_GATE and _EDGE_ANON
-                            and not _edge_has_devices())
-                 else "device" if _EDGE_GATE
-                 else "key" if _API_KEY else "open"),
+        "auth": _auth_mode(),
+    }
+
+
+def _auth_mode():
+    # Gate-aware: with EDGE_GATE=true remote clients need a per-DEVICE
+    # key even when LLAMA_API_KEY is unset. Reporting "open" there told
+    # clients the opposite of the truth.
+    return ("anon" if (_EDGE_GATE and _EDGE_ANON and not _edge_has_devices())
+            else "device" if _EDGE_GATE
+            else "key" if _API_KEY else "open")
+
+
+def _prom(body, name):
+    """Every sample of one Prometheus metric (any label set), as floats.
+
+    vLLM labels its gauges per engine and model_name
+    (`vllm:num_requests_running{engine="0",model_name="m"} 1.0`), so a
+    bare-name prefix match is not enough and there may be several samples.
+    """
+    out = []
+    for line in body.splitlines():
+        if not line.startswith(name):
+            continue
+        rest = line[len(name):]
+        if rest[:1] not in ("{", " "):
+            continue            # a longer name that merely shares the prefix
+        try:
+            out.append(float(line.rsplit(" ", 1)[1]))
+        except (IndexError, ValueError):
+            pass
+    return out
+
+
+def _vllm_metrics():
+    """(running, waiting, kv_usage) from vLLM's /metrics; each None when
+    absent. running/waiting are summed across engines; kv_usage is the
+    fullest engine's fraction (0..1 — "perc" in the name notwithstanding,
+    vllm/v1/metrics/loggers.py: "1 means 100 percent usage"). /metrics is
+    unauthenticated on vLLM even under --api-key; the key is sent anyway."""
+    st, body = _get(f"{_INFER}/metrics", auth=True)
+    if st != 200:
+        return None, None, None
+    run = _prom(body, "vllm:num_requests_running")
+    wait = _prom(body, "vllm:num_requests_waiting")
+    kv = (_prom(body, "vllm:kv_cache_usage_perc")
+          or _prom(body, "vllm:gpu_cache_usage_perc"))   # pre-V1 name
+    return (int(sum(run)) if run else None,
+            int(sum(wait)) if wait else None,
+            max(kv) if kv else None)
+
+
+def _slot_status_remote():
+    """/api/slot for a vLLM or TensorFold server (INFERENCE_BACKEND).
+
+    Same contract version, same fields, plus two that only appear here:
+    top-level `backend` (absent = llama, which keeps a llama rig's answer
+    byte-identical) and `capacity.kv_usage`. Neither server exposes its
+    concurrency, so slots.total is INFERENCE_SLOTS from the conf.
+
+    vLLM: model.ctx is /v1/models max_model_len (the per-request window);
+    busy/queue/kv_usage come from /metrics. PagedAttention draws every
+    sequence from ONE block pool, so ctx_shared is true — but the pool's
+    size in tokens is not something we can read without guessing, so
+    ctx_total stays null (never a guessed budget, as for llama).
+    TensorFold: /health and /v1/models only, so capacity is null.
+    """
+    ok = _get(f"{_INFER}/health")[0] == 200
+    model = {"id": None, "ctx": None}
+    slots = {"total": _conf_slots(), "busy": None}
+    capacity = {"ctx_shared": None, "ctx_total": None, "queue_deferred": None,
+                "kv_usage": None}
+    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    if st == 200:
+        try:
+            first = json.loads(body)["data"][0]
+            model["id"] = first.get("id") or None
+            ctx = first.get("max_model_len")
+            model["ctx"] = ctx if isinstance(ctx, int) and ctx > 0 else None
+        except Exception:
+            pass
+    if _BACKEND == "vllm":
+        capacity["ctx_shared"] = True
+        running, waiting, kv = _vllm_metrics()
+        slots["busy"] = running
+        capacity["queue_deferred"] = waiting
+        capacity["kv_usage"] = kv
+    total = slots["total"]
+    capacity["serving_profile"] = ("unknown" if total is None
+                                   else "single-slot" if total == 1
+                                   else "batched-multi-slot")
+    return {
+        "beast_slot": SLOT_CONTRACT,
+        "min_client": SLOT_MIN_CLIENT,
+        "healthy": ok,
+        "backend": _BACKEND,
+        "model": model,
+        "slots": slots,
+        "capacity": capacity,
+        "services": services_status(),
+        "auth": _auth_mode(),
     }
 
 

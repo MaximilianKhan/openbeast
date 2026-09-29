@@ -71,11 +71,16 @@ class TestSlotContract(unittest.TestCase):
         # _kv_unified() reads the REAL repo's .run/serve-script; pin it per
         # test so capacity assertions don't depend on what this box is serving.
         self._real_kv = dashboard._kv_unified
+        # Same for the backend: a shell that sourced conf.sh on a Spark-backed
+        # rig exports OPENBEAST_INFERENCE_BACKEND/URL. These are llama tests.
+        self._real_backend = (dashboard._BACKEND, dashboard._INFER)
+        dashboard._BACKEND, dashboard._INFER = "llama", "http://127.0.0.1:8080"
 
     def tearDown(self):
         dashboard._get = self._real_get
         dashboard._API_KEY = self._real_key
         dashboard._kv_unified = self._real_kv
+        dashboard._BACKEND, dashboard._INFER = self._real_backend
 
     def _status(self, responses, kv=None):
         dashboard._get = _fake_get(responses)
@@ -263,6 +268,157 @@ class TestSlotContract(unittest.TestCase):
         self.assertEqual(out["slots"], {"total": 6, "busy": 3})
 
 
+# vLLM's Prometheus text: per-engine labels, several samples per gauge
+# (vllm/v1/metrics/loggers.py). kv_cache_usage_perc is a 0..1 FRACTION.
+_VLLM_METRICS = (
+    "# HELP vllm:num_requests_running Number of requests in model execution batches.\n"
+    "# TYPE vllm:num_requests_running gauge\n"
+    'vllm:num_requests_running{engine="0",model_name="q"} 3.0\n'
+    'vllm:num_requests_running{engine="1",model_name="q"} 2.0\n'
+    'vllm:num_requests_waiting{engine="0",model_name="q"} 4.0\n'
+    'vllm:num_requests_waiting_by_reason{engine="0",model_name="q",reason="capacity"} 99.0\n'
+    'vllm:kv_cache_usage_perc{engine="0",model_name="q"} 0.25\n'
+    'vllm:kv_cache_usage_perc{engine="1",model_name="q"} 0.5\n')
+_VLLM_MODELS = {"object": "list", "data": [
+    {"id": "Qwen3.8 27B NVFP4 (vLLM TP2)", "object": "model",
+     "max_model_len": 262144}]}
+
+
+class TestRemoteBackends(unittest.TestCase):
+    """INFERENCE_BACKEND=vllm|tensorfold (docs/DGX_SPARK_PLAN.md): the same
+    contract version, plus `backend` and `capacity.kv_usage`, which appear
+    ONLY there — a llama rig's answer is unchanged (pinned by
+    TestSlotContract.test_full_healthy_contract's exact key sets)."""
+
+    def setUp(self):
+        self._saved = (dashboard._get, dashboard._API_KEY, dashboard._kv_unified,
+                       dashboard._BACKEND, dashboard._INFER, dashboard._EDGE_GATE,
+                       os.environ.get("OPENBEAST_INFERENCE_SLOTS"))
+        dashboard._API_KEY = ""
+        dashboard._EDGE_GATE = False
+        dashboard._INFER = "http://10.0.0.5:8000"
+        # A llama-only probe must never be consulted on these branches.
+        dashboard._kv_unified = lambda: self.fail("_kv_unified read on a remote backend")
+
+    def tearDown(self):
+        (dashboard._get, dashboard._API_KEY, dashboard._kv_unified,
+         dashboard._BACKEND, dashboard._INFER, dashboard._EDGE_GATE, slots) = self._saved
+        if slots is None:
+            os.environ.pop("OPENBEAST_INFERENCE_SLOTS", None)
+        else:
+            os.environ["OPENBEAST_INFERENCE_SLOTS"] = slots
+
+    def _status(self, backend, responses, slots=None):
+        dashboard._BACKEND = backend
+        if slots is None:
+            os.environ.pop("OPENBEAST_INFERENCE_SLOTS", None)
+        else:
+            os.environ["OPENBEAST_INFERENCE_SLOTS"] = str(slots)
+        seen = []
+
+        def get(url, timeout=2, auth=False):
+            seen.append(url)
+            return _fake_get(responses)(url, timeout, auth)
+        dashboard._get = get
+        out = dashboard.slot_status()
+        self.seen = seen
+        return out
+
+    def test_vllm_maps_models_and_metrics(self):
+        out = self._status("vllm", {
+            "8000/health": (200, ""), "/v1/models": (200, _VLLM_MODELS),
+            "8000/metrics": (200, _VLLM_METRICS),
+        }, slots=8)
+        self.assertEqual(out["beast_slot"], 2)
+        self.assertEqual(out["min_client"], 1)
+        self.assertTrue(out["healthy"])           # an EMPTY 200 is healthy
+        self.assertEqual(out["backend"], "vllm")
+        self.assertEqual(out["model"], {"id": "Qwen3.8 27B NVFP4 (vLLM TP2)",
+                                        "ctx": 262144})
+        self.assertEqual(out["slots"], {"total": 8, "busy": 5})   # summed engines
+        self.assertEqual(out["capacity"], {
+            "ctx_shared": True, "ctx_total": None, "queue_deferred": 4,
+            "kv_usage": 0.5, "serving_profile": "batched-multi-slot"})
+        self.assertTrue(out["services"]["model"])
+        self.assertEqual(
+            set(out), {"beast_slot", "min_client", "healthy", "backend", "model",
+                       "slots", "capacity", "services", "auth"})
+        # Every probe went to INFERENCE_URL, none to llama's /props or /slots.
+        self.assertFalse(any(u.endswith(("/props", "/slots")) for u in self.seen))
+        self.assertTrue(all(u.startswith("http://10.0.0.5:8000")
+                            for u in self.seen if "8000" in u))
+
+    def test_vllm_is_v1_compatible(self):
+        out = self._status("vllm", {"8000/health": (200, ""),
+                                    "/v1/models": (200, _VLLM_MODELS)})
+        self.assertTrue(_V1_KEYS <= set(out))
+        self.assertEqual(set(out["model"]), {"id", "ctx"})
+        self.assertEqual(set(out["slots"]), {"total", "busy"})
+
+    def test_vllm_without_metrics_or_slots_is_null_not_zero(self):
+        out = self._status("vllm", {"8000/health": (200, ""),
+                                    "/v1/models": (200, _VLLM_MODELS),
+                                    "8000/metrics": (404, "")})
+        self.assertIsNone(out["slots"]["total"])
+        self.assertIsNone(out["slots"]["busy"])
+        self.assertIsNone(out["capacity"]["queue_deferred"])
+        self.assertIsNone(out["capacity"]["kv_usage"])
+        self.assertEqual(out["capacity"]["serving_profile"], "unknown")
+
+    def test_vllm_prefix_sharing_metric_is_not_counted(self):
+        # num_requests_waiting_by_reason shares the waiting gauge's prefix.
+        body = 'vllm:num_requests_waiting_by_reason{reason="capacity"} 7.0\n'
+        out = self._status("vllm", {"8000/health": (200, ""),
+                                    "8000/metrics": (200, body)})
+        self.assertIsNone(out["capacity"]["queue_deferred"])
+
+    def test_vllm_pre_v1_kv_metric_name(self):
+        body = 'vllm:gpu_cache_usage_perc{model_name="q"} 0.75\n'
+        out = self._status("vllm", {"8000/health": (200, ""),
+                                    "8000/metrics": (200, body)})
+        self.assertEqual(out["capacity"]["kv_usage"], 0.75)
+
+    def test_vllm_down(self):
+        out = self._status("vllm", {"8000/health": (503, "")}, slots=4)
+        self.assertFalse(out["healthy"])
+        self.assertFalse(out["services"]["model"])
+        self.assertIsNone(out["model"]["id"])
+
+    def test_wrong_url_404_is_not_up(self):
+        out = self._status("vllm", {"8000/health": (404, "not found")})
+        self.assertFalse(out["healthy"])
+        self.assertFalse(out["services"]["model"])
+
+    def test_tensorfold_reports_health_model_and_conf_slots(self):
+        out = self._status("tensorfold", {
+            "8000/health": (200, {"ok": True}),
+            "/v1/models": (200, {"object": "list", "data": [{"id": "local-model"}]}),
+            "8000/metrics": (200, _VLLM_METRICS),   # must NOT be read
+        }, slots=1)
+        self.assertTrue(out["healthy"])
+        self.assertEqual(out["backend"], "tensorfold")
+        self.assertEqual(out["model"], {"id": "local-model", "ctx": None})
+        self.assertEqual(out["slots"], {"total": 1, "busy": None})
+        self.assertEqual(out["capacity"], {
+            "ctx_shared": None, "ctx_total": None, "queue_deferred": None,
+            "kv_usage": None, "serving_profile": "single-slot"})
+        self.assertFalse(any(u.endswith("/metrics") for u in self.seen))
+
+    def test_bad_slots_value_is_ignored(self):
+        out = self._status("tensorfold", {"8000/health": (200, {"ok": True})},
+                           slots="eight")
+        self.assertIsNone(out["slots"]["total"])
+
+    def test_llama_backend_has_no_backend_field(self):
+        # The llama answer stays byte-identical: no `backend`, no kv_usage.
+        dashboard._kv_unified = lambda: True
+        out = self._status("llama", {"/health": (200, "ok"),
+                                     "/props": (200, _PROPS),
+                                     "/slots": (200, _SLOTS_CURRENT)})
+        self.assertNotIn("backend", out)
+        self.assertNotIn("kv_usage", out["capacity"])
+
+
 class TestKvUnifiedDerivation(unittest.TestCase):
     """capacity.ctx_shared comes from the recorded launch path, not a guess."""
 
@@ -342,7 +498,8 @@ class TestEdgeAuthMode(unittest.TestCase):
     def setUp(self):
         self._saved = (dashboard.REPO_DIR, dashboard._EDGE_GATE,
                        dashboard._EDGE_ANON, dashboard._API_KEY,
-                       dashboard._get, dashboard._kv_unified)
+                       dashboard._get, dashboard._kv_unified, dashboard._BACKEND)
+        dashboard._BACKEND = "llama"
         dashboard._EDGE_GATE = True
         dashboard._API_KEY = ""
         dashboard._get = _fake_get({"/health": (200, "ok")})
@@ -353,7 +510,8 @@ class TestEdgeAuthMode(unittest.TestCase):
 
     def tearDown(self):
         (dashboard.REPO_DIR, dashboard._EDGE_GATE, dashboard._EDGE_ANON,
-         dashboard._API_KEY, dashboard._get, dashboard._kv_unified) = self._saved
+         dashboard._API_KEY, dashboard._get, dashboard._kv_unified,
+         dashboard._BACKEND) = self._saved
 
     def _auth(self, anon, registry=None):
         dashboard._EDGE_ANON = anon

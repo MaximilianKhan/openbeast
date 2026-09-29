@@ -194,6 +194,26 @@ still safe) and against `min_client` (rig demands newer → update the client);
 - On `--no-slots`, `busy` is `null` but `ctx` still resolves from `/props`.
 - Never contains prompt text, sampling params, or key material.
 
+**Rigs served by vLLM or TensorFold** (`INFERENCE_BACKEND`, see
+[`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md)) answer the same version-2
+contract with two additive fields that appear **only** there — a llama rig's
+answer is unchanged, so a missing `backend` means `llama`:
+
+| field | vLLM | TensorFold |
+|---|---|---|
+| `backend` | `"vllm"` | `"tensorfold"` |
+| `model.ctx` | `/v1/models` `max_model_len` (the per-request window) | `null` |
+| `slots.total` | `INFERENCE_SLOTS` from the rig's conf (its `--max-num-seqs`) — vLLM does not expose it | `INFERENCE_SLOTS` (its `--parallel`) |
+| `slots.busy` | `vllm:num_requests_running` (summed over engines) | `null` |
+| `capacity.ctx_shared` | `true` — PagedAttention draws every sequence from one block pool | `null` |
+| `capacity.ctx_total` | `null` — the pool's size in tokens is not published without guessing | `null` |
+| `capacity.queue_deferred` | `vllm:num_requests_waiting` | `null` |
+| `capacity.kv_usage` | `vllm:kv_cache_usage_perc`, a 0..1 fraction (fullest engine) | `null` |
+| `capacity.serving_profile` | `single-slot` / `batched-multi-slot` / `unknown`, from `slots.total` | same |
+
+`mtp-single-slot` stays a llama-only value (vLLM's MTP batches). Unknown
+`serving_profile` values should be treated as "unknown", like `auth`.
+
 ## Client side (any Mac/Linux device)
 
 ```bash
