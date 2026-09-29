@@ -510,14 +510,15 @@ tailnet includes devices or users you don't fully own:
 echo "LLAMA_API_KEY=$(openssl rand -hex 32)" >> openbeast.conf && chmod 600 openbeast.conf
 ./stop.sh && ./start.sh -d
 # client: re-run setup with the key
-./scripts/setup-client.sh --api-key <the-key>
+./scripts/setup-client.sh --api-key-stdin    # paste the key; it stays out of ps
 ```
 
-When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh passes
-`--api-key`, WebUI (compose), healthcheck, the dashboard's probes, the
+When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh hands it
+to llama-server through the environment (never argv, where `ps` shows it to
+every local user), WebUI (compose), healthcheck, the dashboard's probes, the
 router's classify call, the agent runner (`OPENBEAST_API_KEY`/`OPENAI_API_KEY`
 env or `--api-key`), the eval harness, and clients installed with
-`--api-key`. Rig-side OpenCode against a keyed rig: add
+`--api-key`/`--api-key-stdin`. Rig-side OpenCode against a keyed rig: add
 `"apiKey": "<key>"` to `provider.llama-cpp.options` in your **user-level**
 opencode config (the repo file stays keyless; OpenCode 1.18.x does not
 substitute `{env:...}` in provider apiKey — upstream #27853/#19946).

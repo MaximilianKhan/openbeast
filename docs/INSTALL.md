@@ -730,6 +730,7 @@ slim checkout. Flags:
 |---|---|
 | `--host <fqdn>` | rig's tailnet FQDN — for a second rig, or a `TS_HOSTNAME` other than `beast` |
 | `--api-key <key>` | the enrolled device key (or the rig's `LLAMA_API_KEY`); also read from `$OPENBEAST_API_KEY` |
+| `--api-key-stdin` | the same key, read from stdin (a hidden prompt on a terminal) so it never appears in `ps`; preferred on a shared machine |
 | `--no-search` | skip search wiring entirely |
 | `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
 | `--uninstall` | remove everything below |

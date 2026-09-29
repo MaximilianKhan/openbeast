@@ -25,6 +25,8 @@
 #   --host <fqdn>    rig's tailnet FQDN (default: auto-detect a peer named 'beast')
 #   --api-key <key>  the rig's LLAMA_API_KEY (also read from $OPENBEAST_API_KEY);
 #                    wired into the env file + opencode.json (chmod 600)
+#   --api-key-stdin  same, but read from stdin (prompted, hidden) — keeps the
+#                    key out of `ps`; preferred on a shared machine
 #   --no-search      skip search wiring (web_search disabled on the client)
 #   --local-search   run SearXNG locally via Docker (bridge network — works on
 #                    Docker Desktop) instead of using the rig's :8889
@@ -67,11 +69,24 @@ while [ $# -gt 0 ]; do
                     # null-check would reject exactly that.
                     [ $# -ge 2 ] || { echo "--api-key needs a value (use \"\" to clear)" >&2; exit 2; }
                     API_KEY="$2"; shift ;;
+    --api-key-stdin)
+                    # The key as an ARGUMENT is readable by every local uid
+                    # (ps) for the whole install — pip included. Read one
+                    # line from stdin instead: prompted (silent) on a tty,
+                    # piped otherwise. An empty line clears, like --api-key "".
+                    if [ -t 0 ]; then
+                      printf 'Rig API key (input hidden): ' >&2
+                      IFS= read -rs API_KEY || API_KEY=""
+                      echo >&2
+                    else
+                      IFS= read -r API_KEY || true
+                    fi
+                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')" ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
-    -h|--help)      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
@@ -313,11 +328,17 @@ fi
 
 # -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
 # (published port, stack down) reports as "reachable".
-if [ -n "$API_KEY" ]; then
-  probe_ok="$(curl -fsS -m 5 -H "Authorization: Bearer $API_KEY" "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
+# The bearer goes through lib/curl_auth.sh (a curl --config on an fd), never
+# curl's argv. A copy of this script run outside a checkout has no lib/ —
+# the probe is informational, so it just goes out unkeyed there.
+_curl_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib/curl_auth.sh"
+if [ -f "$_curl_lib" ]; then
+  # shellcheck source=lib/curl_auth.sh
+  . "$_curl_lib"
 else
-  probe_ok="$(curl -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
+  ob_curl_bearer() { shift; curl "$@"; }
 fi
+probe_ok="$(ob_curl_bearer "$API_KEY" -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
 [ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
   || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
 # beast-slot discovery (informational — tells you what the rig has loaded).
@@ -410,7 +431,7 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     echo "OPENBEAST_API_KEY=$(_q "$API_KEY")"
     echo "OPENAI_API_KEY=$(_q "$API_KEY")"
   else
-    echo "# If the rig sets LLAMA_API_KEY, re-run with --api-key <key>."
+    echo "# If the rig sets LLAMA_API_KEY, re-run with --api-key-stdin."
   fi
   [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$(_q "$SEARXNG_CLIENT_SECRET")"
 } > "$ENV_FILE"
