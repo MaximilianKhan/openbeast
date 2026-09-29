@@ -250,10 +250,15 @@ _R="$_T/start-dead"; _rig "$_R"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD" OPENBEAST_LLAMA_LOAD_GRACE=3 OPENBEAST_FAST_BOOT=true)
 _t0=$SECONDS
 _O="$(_run "$_R" 40 "$_R/start.sh")"
-if grep -q "INFERENCE_URL=$_DEAD was not ready after 3s" <<< "$_O"; then
-  pass "a remote backend that never answers times out, naming INFERENCE_URL"
+if grep -q "inference backend NOT ready at $_DEAD after 3s" <<< "$_O"; then
+  pass "a remote backend that never answers is reported NOT ready after the grace, naming INFERENCE_URL"
 else
-  fail "no INFERENCE_URL timeout message: $(tail -n 5 <<< "$_O")"
+  fail "no NOT-ready warning: $(tail -n 5 <<< "$_O")"
+fi
+if grep -q "identity tool server" <<< "$_O"; then
+  pass "…and start.sh brings the rest of the stack up anyway (tool server next), not exit"
+else
+  fail "start.sh stopped at an unready remote backend: $(tail -n 5 <<< "$_O")"
 fi
 (( SECONDS - _t0 < 30 )) && pass "…within the grace (OPENBEAST_LLAMA_LOAD_GRACE), not the 900 s default" \
   || fail "unmanaged wait ignored the grace ($((SECONDS - _t0)) s)"
@@ -284,6 +289,54 @@ grep -q "identity tool server" <<< "$_O" && pass "…and goes on to bring up the
 grep -q serve-marker "$_R/calls.log" && fail "serve script executed on the ready path" \
   || pass "still nothing launched on the ready path"
 [[ ! -f "$_R/.run/serve-script" ]] && pass "a stale serve-script record is cleared" || fail "stale serve-script kept"
+
+# start.sh -d against a DOWN remote backend: the launcher must report the
+# stack up with inference NOT ready (exit 0), never claim readiness. The
+# sandbox's "tool server" is a stub that answers /health on 127.0.0.2:3001
+# (where nothing of the real stack binds); the detached supervisor is
+# stopped afterwards through its own recorded pid.
+_R="$_T/start-daemon"; _rig "$_R"; mkdir -p "$_R/agents"
+cat > "$_R/agents/openapi_tools.py" <<'PY'
+import http.server, threading, time, os
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+srv = http.server.HTTPServer(("127.0.0.2", 3001), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+time.sleep(60); os._exit(0)
+PY
+# start.sh checks `import fastapi, uvicorn` first; HOME is the sandbox's, so
+# the user site-packages are invisible — empty stand-ins satisfy the check.
+mkdir -p "$_R/pylib"; : > "$_R/pylib/fastapi.py"; : > "$_R/pylib/uvicorn.py"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD" OPENBEAST_LLAMA_LOAD_GRACE=2
+  "PYTHONPATH=$_R/pylib")
+_rc=0
+_O="$(env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+  OPENBEAST_BIND=127.0.0.2 OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+  "${RUN_ENV[@]}" timeout 60 bash "$_R/start.sh" -d 2>&1)" || _rc=$?
+_sup="$(cat "$_R/.run/supervisor.pid" 2>/dev/null || true)"
+_tool="$(cat "$_R/.run/mcpo.pid" 2>/dev/null || true)"
+[[ "$_tool" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_tool"
+if [[ $_rc -eq 0 ]] && grep -q "Stack is up — but inference is NOT ready" <<< "$_O" \
+   && grep -q "NOT READY at $_DEAD" <<< "$_O"; then
+  pass "start.sh -d with the Sparks down: 'stack up, inference NOT ready', exit 0"
+else
+  fail "-d launcher (rc=$_rc): $(tail -n 8 <<< "$_O")"
+fi
+grep -qE "^Stack is up:$" <<< "$_O" && fail "-d claimed a plain 'Stack is up' with inference down" \
+  || pass "…and never prints the plain 'Stack is up:' claim"
+# Stop the detached supervisor: it is OURS (recorded, and its command line
+# names this sandbox), and its trap reaps the stub tool server.
+if [[ "$_sup" =~ ^[0-9]+$ ]] && tr '\0' ' ' < "/proc/$_sup/cmdline" 2>/dev/null | grep -qF "$_R/start.sh"; then
+  kill "$_sup" 2>/dev/null || true
+  for _i in $(seq 1 20); do kill -0 "$_sup" 2>/dev/null || break; sleep 0.25; done
+  kill -0 "$_sup" 2>/dev/null && fail "detached supervisor $_sup did not stop" || pass "the detached supervisor stops cleanly on TERM"
+else
+  fail "no live sandbox supervisor recorded ($_sup)"
+fi
 
 # llama on ANOTHER box (192.0.2.1 = TEST-NET-1, never routed): unmanaged by
 # default, so no local llama-server is launched while waiting on it.

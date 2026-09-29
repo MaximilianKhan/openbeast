@@ -132,12 +132,13 @@
 # Env: $OPENBEAST_INFERENCE_URL.
 #INFERENCE_URL=http://192.168.100.10:8000
 
-# Does THIS stack own the server? Default true for llama, false for vllm /
-# tensorfold (always false there — they run on other boxes). false means
-# start.sh only WAITS for it to answer (up to OPENBEAST_LLAMA_LOAD_GRACE
-# seconds, default 900) and brings everything else up; nothing — start.sh,
-# healthcheck.sh --restart, the watchdog, stop.sh — launches, restarts or
-# kills it. Set false with llama to use a llama-server on another box.
+# Does THIS stack own the server? Default true for a local llama, false for
+# vllm / tensorfold (always false there — they run on other boxes) and for a
+# llama INFERENCE_URL on another machine. false means start.sh only WAITS for
+# it to answer (up to OPENBEAST_LLAMA_LOAD_GRACE seconds, default 900) and
+# brings everything else up either way — still down after that is a warning,
+# not a dead stack; nothing — start.sh, healthcheck.sh --restart, the
+# watchdog, stop.sh — launches, restarts or kills it.
 # Env: $OPENBEAST_INFERENCE_MANAGED.
 #INFERENCE_MANAGED=true
 

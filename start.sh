@@ -225,15 +225,29 @@ if [[ $DAEMON -eq 1 ]]; then
     # is up" printed (and openbeast.service reported started) mid-load.
     # ob_backend_ready IS ob_llama_ready for llama; vLLM / TensorFold get
     # their own rule (lib/backend.sh).
-    if ob_backend_ready "$LLAMA_BASE" \
+    # Unmanaged: the supervisor brings the stack up even when the remote
+    # server is still down after the grace (the Sparks may simply be off),
+    # so the tool server answering is the "up" signal — and the report
+    # below says plainly that inference is NOT ready, never that it is.
+    INFER_READY=0
+    ob_backend_ready "$LLAMA_BASE" && INFER_READY=1
+    if [[ $INFER_READY -eq 1 || $MANAGED -eq 0 ]] \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
        && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
       echo ""
-      echo "Stack is up:"
+      if [[ $INFER_READY -eq 1 ]]; then
+        echo "Stack is up:"
+      else
+        echo "Stack is up — but inference is NOT ready:"
+      fi
       if [[ $MANAGED -eq 1 ]]; then
         echo "  Model server:  http://localhost:8080"
-      else
+      elif [[ $INFER_READY -eq 1 ]]; then
         echo "  Model server:  $INFERENCE_URL ($(ob_backend_label), not managed here)"
+      else
+        echo "  Model server:  NOT READY at $INFERENCE_URL ($(ob_backend_label), not managed here)"
+        echo "                 start it where it runs (docs/DGX_SPARK_PLAN.md); .run/stack.log"
+        echo "                 logs the moment it becomes ready. Chat fails until then."
       fi
       echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
       # The WebUI container starts AFTER this readiness point (the
@@ -536,9 +550,10 @@ wait_backend_ready() {
   local t0=$SECONDS
   until ob_backend_ready "$LLAMA_BASE"; do
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
-      echo "Error: the $(ob_backend_label) server at INFERENCE_URL=$LLAMA_BASE was not ready after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE)." >&2
-      echo "       It is not managed by this stack (INFERENCE_BACKEND=$INFERENCE_BACKEND, INFERENCE_MANAGED=false):" >&2
-      echo "       start it where it runs (docs/DGX_SPARK_PLAN.md), or fix INFERENCE_URL in openbeast.conf." >&2
+      echo "WARNING: inference backend NOT ready at $LLAMA_BASE after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE)." >&2
+      echo "         It is not managed by this stack (INFERENCE_BACKEND=$INFERENCE_BACKEND, INFERENCE_MANAGED=false):" >&2
+      echo "         start it where it runs (docs/DGX_SPARK_PLAN.md), or fix INFERENCE_URL in openbeast.conf." >&2
+      echo "         Bringing up tools, WebUI and search anyway; the supervisor logs when it becomes ready." >&2
       return 1
     fi
     sleep 2
@@ -593,10 +608,13 @@ if [[ $MANAGED -eq 0 ]]; then
   if [[ "${MODEL_ROLLBACK:-true}" == "true" ]]; then
     echo "  $(ob_backend_na "Model rollback")"
   fi
-  if ! wait_backend_ready; then
-    exit 1
+  # Not ready is NOT fatal: the remote server is someone else's to start,
+  # and taking tools, WebUI and search down with it helps nobody.
+  INFER_UP=0
+  if wait_backend_ready; then
+    INFER_UP=1
+    echo "$(ob_backend_label) ready at $LLAMA_BASE"
   fi
-  echo "$(ob_backend_label) ready at $LLAMA_BASE"
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
   # Phase 1 is the tiny bridge — it IS the fallback, so no rollback/record here.
@@ -921,8 +939,10 @@ echo ""
 echo "Stack is running:"
 if [[ $MANAGED -eq 1 ]]; then
   echo "  Model server:  http://localhost:8080"
-else
+elif [[ ${INFER_UP:-0} -eq 1 ]]; then
   echo "  Model server:  $LLAMA_BASE ($(ob_backend_label), not managed here)"
+else
+  echo "  Model server:  NOT READY at $LLAMA_BASE ($(ob_backend_label), not managed here)"
 fi
 echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
 echo "  Open WebUI:    http://localhost:3000"
@@ -973,7 +993,7 @@ fi
 # and log only TRANSITIONS of the remote server's readiness, so a Spark
 # rebooting shows up in stack.log without a line every 30 seconds.
 if [[ $MANAGED -eq 0 ]]; then
-  _up=1
+  _up="${INFER_UP:-1}"
   while true; do
     sleep 30 & IDLE_PID=$!
     wait "$IDLE_PID" || true

@@ -84,10 +84,16 @@ LLAMA_API_KEY=<the key in the Spark's VLLM_API_KEY_FILE>   # vLLM only
 What follows from those four lines (all in `scripts/lib/conf.sh`):
 
 - `INFERENCE_MANAGED` defaults to **false** for vLLM / TensorFold (and cannot
-  be true). `start.sh` launches nothing: it waits up to
+  be true), and for a llama `INFERENCE_URL` on another machine (a notice
+  says so; an explicit `INFERENCE_MANAGED=true` there is warned about as
+  conflicting config). `start.sh` launches nothing: it waits up to
   `OPENBEAST_LLAMA_LOAD_GRACE` seconds (900) for `INFERENCE_URL` to be ready,
-  naming the URL if it times out, then brings up tools, WebUI, router, gate
-  and extensions. The supervisor only logs readiness transitions.
+  then brings up tools, WebUI, search, router, gate and extensions **either
+  way** — a server still down after the grace gets a loud "inference backend
+  NOT ready at <INFERENCE_URL>" warning, not a dead stack. `./start.sh -d`
+  then prints "Stack is up — but inference is NOT ready" and exits 0; it
+  never claims readiness it did not see. The supervisor only logs readiness
+  transitions, so stack.log records the moment the Sparks come up.
 - Readiness is per backend (`scripts/lib/backend.sh`): llama = 200
   `{"status":"ok"}` (503 `Loading model` is not ready); vLLM = any 200 (its
   body is empty); TensorFold = 200 `{"ok": true}`.
@@ -251,6 +257,8 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
     `EDGE_GATE=true` if clients will use it).
 12. `./start.sh -d` — expect "Waiting for vLLM at … (not managed here)", no
     llama-server, then "Stack is up" with the Spark URL as the model server.
+    "Stack is up — but inference is NOT ready" means the rig is fine and the
+    Sparks are not answering yet: go back to C.
 13. `./scripts/doctor.sh` — expect the vLLM row ready and serving the model,
     weight rows "not applicable", no keyless warning.
 14. `./scripts/healthcheck.sh` — expect `OK vLLM (vllm @ …)`.
