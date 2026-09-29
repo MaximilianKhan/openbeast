@@ -925,6 +925,76 @@ class TestIntrospectionAuth:
         assert p.exists()
         assert oct(p.stat().st_mode)[-3:] == "600"
 
+    def _fake_uvicorn(self, monkeypatch):
+        """Record what main() would serve; never start a real server."""
+        import types
+        ran = {}
+
+        class Config:
+            def __init__(self, app, **kw):
+                ran["config"] = kw
+
+        class Server:
+            def __init__(self, config):
+                pass
+
+            def run(self, sockets=None):
+                ran["sockets"] = sockets
+
+        fake = types.SimpleNamespace(Config=Config, Server=Server,
+                                     run=lambda *a, **k: ran.setdefault(
+                                         "unbound_run", True))
+        monkeypatch.setitem(sys.modules, "uvicorn", fake)
+        return ran
+
+    def _edge_on(self, tmp_path, monkeypatch, port):
+        monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+        monkeypatch.setenv("OPENBEAST_BIND", "127.0.0.1")
+        monkeypatch.setenv("OPENBEAST_EDGE_PORT", str(port))
+        import edge as _edge
+        importlib.reload(_edge)
+        return _edge
+
+    def test_failed_second_start_keeps_the_live_token(self, tmp_path,
+                                                      monkeypatch):
+        # A LIVE gate owns the port and the token file holds its secret. A
+        # second start must die on the bind WITHOUT rotating that secret —
+        # otherwise doctor/start.sh present a token the live gate rejects.
+        import socket
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        try:
+            _edge = self._edge_on(tmp_path, monkeypatch, busy.getsockname()[1])
+            ran = self._fake_uvicorn(monkeypatch)
+            tok = tmp_path / ".run" / "edge-local.token"
+            tok.parent.mkdir(exist_ok=True)
+            tok.write_text("live-gate-secret")
+            with pytest.raises(SystemExit) as ei:
+                _edge.main()
+            assert ei.value.code == 1
+            assert tok.read_text() == "live-gate-secret", \
+                "failed start rotated the live gate's locality token"
+            assert not ran, "server started despite losing the bind"
+        finally:
+            busy.close()
+
+    def test_successful_start_mints_then_serves_bound_socket(self, tmp_path,
+                                                             monkeypatch):
+        # Negative control: owning the port DOES mint, and uvicorn is handed
+        # the pre-bound socket rather than binding (again) itself.
+        _edge = self._edge_on(tmp_path, monkeypatch, 0)      # any free port
+        ran = self._fake_uvicorn(monkeypatch)
+        _edge.main()
+        try:
+            tok = (tmp_path / ".run" / "edge-local.token").read_text()
+            assert tok and tok == _edge._local_token()
+            assert ran.get("sockets") and len(ran["sockets"]) == 1
+            assert "unbound_run" not in ran
+        finally:
+            for s in ran.get("sockets") or []:
+                s.close()
+
     def test_loopback_health_keeps_detail(self, edge, tmp_path):
         _registry(tmp_path)
         _stub_upstream(edge, {})

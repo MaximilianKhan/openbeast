@@ -52,6 +52,8 @@ import hmac
 import json
 import os
 import re
+import socket
+import sys
 import tempfile
 import time
 import uuid
@@ -1133,8 +1135,33 @@ app = Starlette(
 )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Bind the port FIRST, then mint the local token (D18, as artifact_server).
+
+    uvicorn.run() runs lifespan startup — which minted the token — BEFORE it
+    binds. So a second start (a double start.sh, a healthcheck --restart
+    race, an operator retry) rewrote .run/edge-local.token and only then
+    died on EADDRINUSE, leaving the LIVE gate holding a secret no file
+    matches: doctor and start.sh silently fell back to the anonymous view.
+    A start that cannot own the port now never touches the token file.
+    """
     import uvicorn
+    infos = socket.getaddrinfo(BIND, PORT, type=socket.SOCK_STREAM)
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)   # a NAME: prefer IPv4
+    family, stype, proto, _, addr = infos[0]
+    sock = socket.socket(family, stype, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(addr)
+        sock.listen(128)
+    except OSError as e:
+        sock.close()
+        print(f"ERROR: cannot bind {BIND}:{PORT} ({e}) — another beast-gate "
+              "is probably already running. Its locality token has been left "
+              "alone, so doctor/start.sh introspection keeps working.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    _local_token()          # lifespan's own call is then a no-op
     reg = Registry()
     mode = ("devices" if reg.configured
             else ("ANON (OPENBEAST_EDGE_ALLOW_ANON=true)" if ALLOW_ANON
@@ -1142,4 +1169,9 @@ if __name__ == "__main__":
     print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
           flush=True)
     # Loopback by default like every other service; publish via tailscale.
-    uvicorn.run(app, host=BIND, port=PORT, log_level="warning")
+    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
+
+
+if __name__ == "__main__":
+    main()
