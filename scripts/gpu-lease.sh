@@ -71,30 +71,44 @@ _read_lease() {                   # sets LH_PID LH_START LH_LABEL LH_SINCE
   [[ -n "$LH_PID" ]]
 }
 
-# MiB in use, or EMPTY when the GPU does not report it. A unified-memory
-# GPU (DGX Spark's GB10) answers "[N/A]" here; that string used to reach the
-# `-gt` tests below, which errored into /dev/null — so the busy check was
-# silently skipped. Now it is skipped out loud (_vram_na_note).
-_vram_used() {
+# _vram_read — sets VRAM_USED (MiB, or empty) and VRAM_STATE:
+#   ok      a number
+#   na      nvidia-smi literally answered "[N/A]" — a unified-memory GPU
+#           (DGX Spark's GB10). That string used to reach the `-gt` tests
+#           below, which errored into /dev/null: the busy check was silently
+#           skipped. Now it is skipped out loud (_vram_note).
+#   nodata  nvidia-smi ran but said nothing usable
+#   absent  no nvidia-smi at all (status shows "?", no note)
+# Globals, not stdout: the state must survive into the caller's shell.
+_vram_read() {
   local v
-  command -v nvidia-smi >/dev/null 2>&1 || { echo 0; return 0; }   # no GPU tool: as before
+  VRAM_USED=""; VRAM_STATE=absent
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
   v="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null \
        | head -1 | tr -d ' ' || true)"
-  [[ "$v" =~ ^[0-9]+$ ]] && printf '%s\n' "$v"
-  return 0
+  if [[ "$v" =~ ^[0-9]+$ ]]; then
+    VRAM_USED="$v"; VRAM_STATE=ok
+  elif [[ "$v" == *"[N/A]"* ]]; then
+    VRAM_STATE=na
+  else
+    VRAM_STATE=nodata
+  fi
 }
 
-# One line, only when there IS an nvidia GPU that will not say what it uses.
-_vram_na_note() {
-  say "  GPU memory is not reported (unified-memory GPU, e.g. GB10) — the busy check is not applicable here."
+# One line when there IS an nvidia-smi that would not give a number.
+_vram_note() {
+  case "$VRAM_STATE" in
+    na)     say "  GPU memory is not reported (unified-memory GPU, e.g. GB10) — the busy check is not applicable here." ;;
+    nodata) say "  nvidia-smi returned no data — the busy check could not run." ;;
+  esac
 }
 
 cmd_status() {
-  local used; used="$(_vram_used)"
+  local used; _vram_read; used="$VRAM_USED"
   if _read_lease && _holder_alive "$LH_PID" "$LH_START"; then
     say "HELD by pid $LH_PID — ${LH_LABEL:-unlabelled}  (since ${LH_SINCE:-?})"
     say "  GPU: ${used:-?} MiB in use"
-    [[ -n "$used" ]] || _vram_na_note
+    _vram_note
     return 0
   fi
   if [[ -f "$LEASE" ]]; then
@@ -103,7 +117,7 @@ cmd_status() {
     say "FREE"
   fi
   say "  GPU: ${used:-?} MiB in use"
-  [[ -n "$used" ]] || _vram_na_note
+  _vram_note
   # A free lease with the card full is worth saying out loud: something is
   # using the GPU without claiming it, which is exactly the 09-14 situation.
   if [[ "${used:-0}" -gt "$VRAM_FLOOR_MIB" ]] 2>/dev/null; then
@@ -198,8 +212,8 @@ cmd_acquire() {                   # cmd_acquire <label> [--wait SECONDS] [--forc
   done
   # Refuse to claim a card somebody else is quietly using: a lease that says
   # "mine" over 24 GB of someone else's weights is worse than no lease.
-  local used; used="$(_vram_used)"
-  [[ -n "$used" ]] || _vram_na_note
+  local used; _vram_read; used="$VRAM_USED"
+  _vram_note
   if [[ $force -eq 0 && "${used:-0}" -gt "$VRAM_FLOOR_MIB" ]] 2>/dev/null; then
     say "refusing: ${used} MiB already allocated on the GPU (floor ${VRAM_FLOOR_MIB})." >&2
     say "  Nothing holds the lease, so this is an unclaimed user. Stop it, or --force." >&2

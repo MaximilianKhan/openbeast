@@ -460,6 +460,26 @@ if grep -q "GPU: 123 MiB in use" <<< "$_O" && ! grep -q "not reported" <<< "$_O"
 else
   fail "gpu-lease numeric: $_O"
 fi
+printf '#!/bin/bash\nexit 9\n' > "$_R/bin/nvidia-smi"
+_O="$(env -i HOME="$_R" PATH="$_R/bin:/usr/bin:/bin" OPENBEAST_RUN_DIR="$_R/run" bash "$_R/scripts/gpu-lease.sh" status 2>&1 || true)"
+if grep -q "nvidia-smi returned no data" <<< "$_O" && ! grep -q "unified-memory" <<< "$_O"; then
+  pass "…an nvidia-smi that answers nothing says 'returned no data', not the GB10 note"
+else
+  fail "gpu-lease no-data: $_O"
+fi
+# No nvidia-smi at all: a PATH of just the tools the lease uses (the host
+# may well have a real nvidia-smi in /usr/bin).
+mkdir -p "$_R/bin-nogpu"
+for _c in bash head tr awk cat date mkdir mv rm sed grep id flock sleep printf env; do
+  _p="$(command -v "$_c" 2>/dev/null || true)"
+  [[ -n "$_p" && "$_p" == /* ]] && ln -sf "$_p" "$_R/bin-nogpu/$_c"
+done
+_O="$(env -i HOME="$_R" PATH="$_R/bin-nogpu" OPENBEAST_RUN_DIR="$_R/run" "$_R/bin-nogpu/bash" "$_R/scripts/gpu-lease.sh" status 2>&1 || true)"
+if grep -q "GPU: ? MiB in use" <<< "$_O" && ! grep -qE "not reported|no data" <<< "$_O"; then
+  pass "…and with no nvidia-smi at all: 'GPU: ? MiB', no note"
+else
+  fail "gpu-lease without nvidia-smi: $_O"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
