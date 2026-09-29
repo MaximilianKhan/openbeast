@@ -270,6 +270,35 @@ _CTX_FIELDS_RE = re.compile(r"n_prompt_tokens['\"]?\s*[:=]\s*(\d+).*?n_ctx['\"]?
 _CTX_MSG_RE = re.compile(r"\((\d+) tokens\).*?\((\d+) tokens\)", re.S)
 _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 
+# ---------------------------------------------------------------------------
+# Per-turn generation bound (review efficiency-5, 2026-09-29).
+#
+# --reasoning-budget caps THINKING only; a repetition loop in the answer or a
+# tool's arguments ran until the client's 600 s read timeout, and the openai
+# client then silently retried the identical request twice — ~30 min of the
+# single -np 1 slot for one turn. Agent requests now carry max_tokens (the
+# 20480 thinking budget + a 12K content allowance), overridable with
+# OPENBEAST_AGENT_MAX_TOKENS (0 = uncapped). Eval runs stay uncapped: run_eval
+# bounds each task by wall time, and a cap would change measured behaviour
+# under unlimited-thinking configs.
+# ---------------------------------------------------------------------------
+_DEFAULT_MAX_COMPLETION_TOKENS = 20480 + 12288
+_CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+
+
+def _max_completion_tokens() -> int:
+    """max_tokens for an agent request; 0 means send none (uncapped)."""
+    if os.environ.get(_EVAL_MARKER):
+        return 0
+    raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+
 
 def _is_context_overflow(err: str) -> bool:
     return bool(_CTX_OVERFLOW_RE.search(err or ""))
@@ -595,7 +624,11 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url))
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=_CLIENT_MAX_RETRIES)
+    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    max_tokens = _max_completion_tokens()
+    cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -812,6 +845,7 @@ def run_agent(
                 # and stays for leaderboard rows.
                 temperature=(0.0 if os.environ.get(
                     "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
+                **cap_kwargs,
             )
         except Exception as e:
             err = str(e)
@@ -848,9 +882,17 @@ def run_agent(
 
         choice = response.choices[0]
         message = choice.message
+        # Hit our own output cap: keep only the head of the runaway text —
+        # assistant turns are never compacted, so a 30K-token repetition loop
+        # would otherwise ride along on every later request.
+        truncated = bool(cap_kwargs) and choice.finish_reason == "length"
 
         # Append assistant message to history
-        msg_dict = {"role": "assistant", "content": message.content or ""}
+        content = message.content or ""
+        if truncated and len(content) > _TRUNCATED_KEEP_CHARS:
+            content = (content[:_TRUNCATED_KEEP_CHARS]
+                       + f"\n[... truncated: {len(message.content):,} chars, output cap reached]")
+        msg_dict = {"role": "assistant", "content": content}
         if message.tool_calls:
             msg_dict["tool_calls"] = [
                 {
@@ -869,7 +911,17 @@ def run_agent(
 
         # If no tool calls, the model is just talking — check if it's done
         if not message.tool_calls:
-            if choice.finish_reason == "stop":
+            if truncated:
+                print(f"  (reply hit the {max_tokens:,}-token output cap)")
+                log_event({"type": "output_cap", "iteration": iteration,
+                           "max_tokens": max_tokens})
+                messages.append({
+                    "role": "user",
+                    "content": f"Your last reply hit the {max_tokens:,}-token output cap "
+                               "and was cut off. Do not repeat it: be concise, and make "
+                               "progress with a tool call or call task_done.",
+                })
+            elif choice.finish_reason == "stop":
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done
                 messages.append({

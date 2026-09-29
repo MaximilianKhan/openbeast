@@ -2,6 +2,8 @@
 
 efficiency-2  proactive compaction has hysteresis (frees to a low-water mark)
 efficiency-3  one oversized result is stubbed alone, not after the whole history
+efficiency-5  agent completions carry max_tokens; the client does not triple
+              a timed-out request
 
 Every case builds its own history and a scripted fake client — no server,
 no GPU, no real tool execution beyond a stubbed handler.
@@ -142,7 +144,7 @@ def test_budget_compaction_frees_the_whole_low_water_gap(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# scripted fake client
+# efficiency-5 — max_tokens + client retries
 # ---------------------------------------------------------------------------
 
 class _Msg:
@@ -179,6 +181,69 @@ class _Fake:
 
 def _done():
     return _Resp(_Msg(tool_calls=[_TC("d", "task_done", {"summary": "fin"})]))
+
+
+def _run(tmp_path, monkeypatch, script, env=None):
+    for k in ("OPENBEAST_EVAL", "OPENBEAST_AGENT_MAX_TOKENS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    ctor = {}
+    fake = _Fake(script)
+
+    def factory(**kw):
+        ctor.update(kw)
+        return fake
+
+    monkeypatch.setattr(runner, "OpenAI", factory)
+    out = runner.run_agent("task", max_iter=6, log_file=str(tmp_path / "r.jsonl"),
+                           system_prompt="sys", workdir=str(tmp_path))
+    return out, fake, ctor
+
+
+def test_agent_requests_carry_a_max_tokens_cap(tmp_path, monkeypatch):
+    out, fake, _ = _run(tmp_path, monkeypatch, [_done()])
+    assert out == "fin"
+    assert fake.kwargs[0]["max_tokens"] == runner._DEFAULT_MAX_COMPLETION_TOKENS
+    assert fake.kwargs[0]["max_tokens"] > 20480, "room for the full thinking budget"
+
+
+def test_max_tokens_env_override_and_zero_means_uncapped(tmp_path, monkeypatch):
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_AGENT_MAX_TOKENS": "4096"})
+    assert fake.kwargs[0]["max_tokens"] == 4096
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_AGENT_MAX_TOKENS": "0"})
+    assert "max_tokens" not in fake.kwargs[0]
+
+
+def test_eval_runs_stay_uncapped(tmp_path, monkeypatch):
+    # Eval rows are bounded by run_eval's wall timeout; capping them would
+    # change measured behaviour under unlimited-thinking configs.
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()], env={"OPENBEAST_EVAL": "1"})
+    assert "max_tokens" not in fake.kwargs[0]
+
+
+def test_client_does_not_silently_triple_a_timed_out_request(tmp_path, monkeypatch):
+    _, _, ctor = _run(tmp_path, monkeypatch, [_done()])
+    assert "max_retries" in ctor and ctor["max_retries"] <= 1
+
+
+def test_truncated_turn_is_trimmed_and_nudged(tmp_path, monkeypatch):
+    loop = "blah " * 20_000   # a degenerate repetition the cap cut off
+    script = [_Resp(_Msg(content=loop), finish="length"), _done()]
+    out, fake, _ = _run(tmp_path, monkeypatch, script)
+    assert out == "fin"
+    second = fake.requests[1]
+    stored = [m for m in second if m["role"] == "assistant"][0]["content"]
+    assert len(stored) < 5000, "the runaway text is not re-sent every turn"
+    assert "output cap" in second[-1]["content"]
+
+
+def test_invalid_env_value_falls_back_to_default(tmp_path, monkeypatch):
+    _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
+                      env={"OPENBEAST_AGENT_MAX_TOKENS": "lots"})
+    assert fake.kwargs[0]["max_tokens"] == runner._DEFAULT_MAX_COMPLETION_TOKENS
 
 
 @pytest.fixture(autouse=True)
