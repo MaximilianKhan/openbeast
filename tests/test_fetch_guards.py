@@ -143,10 +143,6 @@ class TestPublicUrlAllowed(unittest.TestCase):
         self.assertIn("Example Domain", result)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestDNSRebindingPin(unittest.TestCase):
     """The IP the guard vets must be the IP the socket dials — no separate
     connect-time resolution a rebinding DNS server could flip."""
@@ -279,3 +275,7 @@ class TestTailnetCGNAT(unittest.TestCase):
         os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
         self.assertIsNotNone(_vet_addr("fd00::1"))
         self.assertIsNotNone(_vet_addr("::1"))
+
+
+if __name__ == "__main__":
+    unittest.main()
