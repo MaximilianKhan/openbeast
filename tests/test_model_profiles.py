@@ -202,3 +202,9 @@ def test_speculative_draft_model_must_be_pinned(tmp_path, spec, ok):
     else:
         with pytest.raises(obprofile.ProfileError, match="SPECULATIVE_CONFIG"):
             load_body(tmp_path, body)
+
+
+@pytest.mark.parametrize("ch", ["\x01", "\x1b", "\t"])
+def test_profile_values_with_control_characters_are_refused(tmp_path, ch):
+    with pytest.raises(obprofile.ProfileError, match="control character"):
+        load_body(tmp_path, BASE.replace("SERVED_MODEL_NAME=x", f"SERVED_MODEL_NAME=x{ch}y"))

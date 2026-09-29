@@ -214,3 +214,83 @@ def test_publish_is_crash_safe(tmp_path, remote, monkeypatch, capsys):
     final = tmp_path / "models" / "brandnew"
     assert (final / WEIGHTS).is_file() and not (final / model_fetch.STAGE_META).exists()
     assert fetch(tmp_path, prof, "--verify") == 0
+
+
+# --------------------------------------------------------------------------- one test per guard
+# Each test below fails if the guard it names is removed (the review's mutation run found them
+# unpinned).
+
+def test_small_file_checked_against_git_blob_id(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    remote.corrupt.add("config.json")                      # not LFS: only the git blob id vouches for it
+    assert fetch(tmp_path, hf_profile(tmp_path)) == 1
+    assert "git blob id" in capsys.readouterr().err
+    assert not (tmp_path / "models" / "brandnew").exists()
+
+
+def test_resume_restarts_when_the_server_ignores_range(tmp_path, remote, monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    remote.ignore_range = True
+    prof = hf_profile(tmp_path)
+    stage = tmp_path / "models" / ".brandnew.partial"
+    stage.mkdir(parents=True)
+    (stage / model_fetch.STAGE_META).write_text(json.dumps({"repo": "acme/Brand-New", "revision": SHA}))
+    full = remote.repos["acme/Brand-New"]["files"][WEIGHTS]
+    (stage / WEIGHTS).write_bytes(full[:1000])
+    assert fetch(tmp_path, prof) == 0
+    assert (tmp_path / "models" / "brandnew" / WEIGHTS).read_bytes() == full
+
+
+def test_stage_of_another_revision_is_refused(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    stage = tmp_path / "models" / ".brandnew.partial"
+    stage.mkdir(parents=True)
+    (stage / model_fetch.STAGE_META).write_text(json.dumps({"repo": "acme/Brand-New", "revision": SHA2}))
+    assert fetch(tmp_path, hf_profile(tmp_path)) == 1
+    assert "holds a different download" in capsys.readouterr().err
+
+
+def test_large_file_without_lfs_hash_is_refused(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    remote.extra_entries = [{"type": "file", "path": "big.safetensors", "size": 20 * 1024 * 1024,
+                             "oid": "0" * 40}]
+    assert fetch(tmp_path, hf_profile(tmp_path)) == 1
+    assert "no LFS sha256" in capsys.readouterr().err
+    assert remote.downloads() == []
+
+
+def test_existing_unlocked_directory_is_never_overwritten(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    final = tmp_path / "models" / "brandnew"
+    final.mkdir(parents=True)
+    (final / "mine.txt").write_text("keep me")
+    assert fetch(tmp_path, hf_profile(tmp_path)) == 1
+    assert "lock does not describe it" in capsys.readouterr().err
+    assert (final / "mine.txt").read_text() == "keep me"
+
+
+def test_verify_flags_unlocked_files_and_same_size_tamper(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    prof = hf_profile(tmp_path)
+    assert fetch(tmp_path, prof) == 0
+    final = tmp_path / "models" / "brandnew"
+    (final / "planted.py").write_text("import os\n")
+    assert fetch(tmp_path, prof, "--verify") == 1
+    assert "unlocked file planted.py" in capsys.readouterr().err
+    (final / "planted.py").unlink()
+    w = final / WEIGHTS
+    b = bytearray(w.read_bytes())
+    b[-1] ^= 0xFF                                          # same size, different content
+    w.write_bytes(bytes(b))
+    assert fetch(tmp_path, prof, "--locate") == 0          # sizes only: the fast path cannot see it
+    capsys.readouterr()
+    assert fetch(tmp_path, prof, "--verify") == 1
+    assert "sha256 differs from the lock" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["../evil.json", "/etc/evil.json", "sub\\\\..\\\\..\\\\evil.json", "a/../../evil.json"])
+def test_unsafe_tree_paths_refuse_the_revision(tmp_path, remote, monkeypatch, capsys, bad):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    remote.extra_entries = [{"type": "file", "path": bad, "size": 1, "oid": "0" * 40}]
+    assert fetch(tmp_path, hf_profile(tmp_path)) == 1
+    assert "unsafe path" in capsys.readouterr().err and remote.downloads() == []

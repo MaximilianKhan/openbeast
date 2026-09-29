@@ -116,6 +116,7 @@ class Hub:
         self.extra_entries: list[dict] = []
         self.sha_override: str | None = None
         self.redirect: str | None = None
+        self.ignore_range = False        # answer 200 + the whole file to a Range request
         self.link_origin = ""            # absolute origin for tree pagination links ("" = relative)
         self.log: list[tuple[str, str | None, str | None]] = []   # (path, Authorization, Range)
         hub = self
@@ -173,7 +174,7 @@ class Hub:
                     if path in hub.corrupt:
                         b = b[:-1] + bytes([b[-1] ^ 0xFF])
                     rng = self.headers.get("Range")
-                    if rng:
+                    if rng and not hub.ignore_range:
                         lo, _, hi = rng.split("=", 1)[1].partition("-")
                         lo, hi = int(lo), (int(hi) if hi else len(b) - 1)
                         return self._send(206, b[lo:hi + 1], "application/octet-stream",
