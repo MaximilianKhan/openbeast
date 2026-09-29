@@ -52,7 +52,7 @@ fi
 
 # --- TIER-3 — pre-registered zig-only mini-A/B + verdict ---------------------
 st "TIER-3 zig mini-A/B (P0a from cache, then P1a P0b P1b C0 C1)"
-unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS
+unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS BEAST_ESCALATE OPENBEAST_ESCALATE  # escalation rides inside assist: strip both or run_eval aborts
 export MANIFEST=$OB/scratch/tier3_cells-20260917.txt
 bash scratch/tier3_zig_ab.sh > "$L/tier3-ab-master3.log" 2>&1; st "tier3 A/B rc=$?"
 pkill -f '[l]lama-server' 2>/dev/null || true; sleep 5
