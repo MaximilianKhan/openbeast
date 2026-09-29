@@ -187,6 +187,23 @@ def test_server_flag_parsing():
     assert "reasoning_budget" not in uncapped
 
 
+def test_server_flag_parsing_last_occurrence_wins():
+    """serve.sh appends the global REASONING_BUDGET override after a serve
+    script's baked flag; llama-server obeys the LAST one, so must we — or a
+    -1/4096 override is stamped rb20480 and replays as the capped era."""
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    run_eval = importlib.import_module("run_eval")
+    base = "/x/llama-server -m /w/m.gguf -c 8192 --reasoning-budget 20480 --jinja"
+    assert run_eval._parse_server_flags(base)["reasoning_budget"] == "20480"
+    info = run_eval._parse_server_flags(base + " -c 4096 --reasoning-budget -1")
+    assert info["reasoning_budget"] == "-1"
+    assert info["context"] == "4096"
+    info = run_eval._parse_server_flags(base + " --reasoning-budget=4096 -np=2")
+    assert info["reasoning_budget"] == "4096"
+    assert info["parallel_slots"] == "2"
+
+
 def test_fixture_dirs_unique_per_task_file():
     """The precondition scheduling-isolation rests on: no /tmp/eval_* dir is
     referenced by more than one task file. A new task reusing another task's

@@ -285,18 +285,28 @@ def _parse_server_flags(cmdline: str) -> dict:
     quant — assembled at launch from serve.sh + openbeast.conf + env, and
     otherwise invisible to results: the 2026-08-20 Qwen3.8 rows ran under a
     gitignored local REASONING_BUDGET=4096 that no file recorded, while the
-    Qwen3.6 champion ran uncapped."""
+    Qwen3.6 champion ran uncapped.
+
+    LAST occurrence wins, as it does in llama-server (common/arg.cpp
+    assigns in argv order): serve.sh appends the global REASONING_BUDGET
+    override AFTER a serve script's baked --reasoning-budget on purpose, so
+    reading the first one stamped the baked value into the cache era while
+    the server decoded under the override. `--flag=value` is honoured too."""
     info: dict = {"cmdline": cmdline}
+    flags = {"--reasoning-budget": "reasoning_budget",
+             "--reasoning": "reasoning",
+             "-np": "parallel_slots",
+             "-c": "context",
+             "-ctk": "kv_cache_type"}
     toks = cmdline.split()
-    for flag, key in (("--reasoning-budget", "reasoning_budget"),
-                      ("--reasoning", "reasoning"),
-                      ("-np", "parallel_slots"),
-                      ("-c", "context"),
-                      ("-ctk", "kv_cache_type")):
-        if flag in toks:
-            i = toks.index(flag)
-            if i + 1 < len(toks):
-                info[key] = toks[i + 1]
+    for i, tok in enumerate(toks):
+        name, eq, val = tok.partition("=")
+        if name not in flags:
+            continue
+        if eq:
+            info[flags[name]] = val
+        elif i + 1 < len(toks):
+            info[flags[name]] = toks[i + 1]
     return info
 
 
