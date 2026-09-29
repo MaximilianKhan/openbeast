@@ -289,8 +289,16 @@ echo 'M=$W/glm-4-9b-chat-Q8_0.gguf' > "$OB/scratch/campaign_master4.sh"
 # … and a live llama-server serves another: named on its cmdline, fd dir empty
 printf '%s\0' llama-server -m "$OB/weights/Qwen3.8-27B-Q6_K.gguf" --port 8080 > "$T/proc/4242/cmdline"
 : > "$T/proc/4242/maps"
+# … and a second live server runs a SPLIT model the way the Flash-Next serve
+# script does: -m names shard 00001 only, --load-mode none maps nothing. Its
+# shards 2 and 3 are live too. A different split set (not served) must still go.
+mkdir -p "$T/proc/4343"
+for n in 1 2 3; do echo w > "$OB/weights/Qwen3.8-Flash-Next-Uncensored-IQ4_XS-0000$n-of-00003.gguf"; done
+for n in 1 2; do echo w > "$OB/weights/Qwen3.8-Flash-Next-Uncensored-Q2_K-0000$n-of-00002.gguf"; done
+printf '%s\0' llama-server -m "$OB/weights/Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00001-of-00003.gguf" --load-mode none > "$T/proc/4343/cmdline"
+: > "$T/proc/4343/maps"
 printf 'services:\n  open-webui:\n    image: ghcr.io/open-webui/open-webui:main@sha256:aa\n  searxng:\n    image: docker.io/searxng/searxng:latest@sha256:bb\n' > "$OB/docker-compose.yml"
-printf '#!/bin/bash\necho 4242\n' > "$PB/pgrep"
+printf '#!/bin/bash\necho 4242; echo 4343\n' > "$PB/pgrep"
 cat > "$PB/docker" <<'EOF'
 #!/bin/bash
 echo "docker $*" >> "$PLOG"
@@ -309,11 +317,18 @@ chmod +x "$PB/pgrep" "$PB/docker"
 if ! grep -q 'OB="${PRUNE_OB:-' "$OB/scratch/prune-2026-09-17.sh"; then
   fail "prune script does not honour PRUNE_OB — NOT run (it would act on the real repo)"
 else
-OUT="$(HOME="$PH" PLOG="$PLOG" PATH="$PB:$PATH" PRUNE_OB="$OB" PRUNE_PROC="$T/proc" bash "$OB/scratch/prune-2026-09-17.sh" --go 2>&1)" || true
+OUT="$(HOME="$PH" PLOG="$PLOG" PATH="$PB:$PATH" PRUNE_OB="$OB" PRUNE_PROC="$T/proc" bash "$OB/scratch/prune-2026-09-17.sh" --go --flash-next 2>&1)" || true
 if [[ -f "$OB/weights/Qwen3.8-27B-Q6_K.gguf" && -f "$OB/weights/glm-4-9b-chat-Q8_0.gguf" && ! -e "$OB/weights/SocratTeachLLM-Q8_0.gguf" ]]; then
   pass "KEEP guard sees a live server's weight via cmdline (not fd) and any scratch/*.sh; an unguarded target still goes"
 else
   fail "prune KEEP guard: $(ls "$OB/weights" | tr '\n' ' ') :: $OUT"
+fi
+_fn="$OB/weights/Qwen3.8-Flash-Next-Uncensored"
+if [[ -f "$_fn-IQ4_XS-00001-of-00003.gguf" && -f "$_fn-IQ4_XS-00002-of-00003.gguf" && -f "$_fn-IQ4_XS-00003-of-00003.gguf" \
+      && ! -e "$_fn-Q2_K-00001-of-00002.gguf" && ! -e "$_fn-Q2_K-00002-of-00002.gguf" ]]; then
+  pass "--flash-next: every shard of a live split model is kept (-m names 00001, --load-mode none); an unserved split set goes"
+else
+  fail "prune split-GGUF guard: $(ls "$OB/weights" | tr '\n' ' ')"
 fi
 if grep -q "^docker image rm sha256:3333333333333333$" "$PLOG" \
    && ! grep -qE "image rm sha256:(1111|2222|4444)" "$PLOG" && ! grep -q "image prune" "$PLOG"; then

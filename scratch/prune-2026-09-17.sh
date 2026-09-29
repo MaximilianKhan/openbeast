@@ -63,7 +63,12 @@ KEEP="$( {
     tr '\0' '\n' < "$PROC/$p/cmdline" 2>/dev/null | grep -o '[A-Za-z0-9._-]*\.gguf'
     grep -o '[A-Za-z0-9._-]*\.gguf' "$PROC/$p/maps" 2>/dev/null
   done
-} | sort -u )"
+} | sed -E 's/-[0-9]{5}-of-[0-9]{5}\.gguf$/.gguf/' | sort -u )"
+# ^ a split GGUF is kept as a whole: a serve script or a live server's -m
+# names only shard 00001 (and with --load-mode none nothing is mmapped), but
+# the server re-opens every sibling shard on its next start. KEEP holds the
+# shard-less name; shard_key() maps a candidate the same way.
+shard_key() { sed -E 's/-[0-9]{5}-of-[0-9]{5}\.gguf$/.gguf/' <<< "$1"; }
 
 kb_of() { ionice -c3 nice -n19 du -sk "$1" 2>/dev/null | awk '{print $1}'; }
 
@@ -71,7 +76,7 @@ rm_path() {                       # rm_path <path> <why>
   local p="$1" why="$2" kb base
   [[ -e "$p" || -L "$p" ]] || return 0
   base="$(basename "$p")"
-  if [[ "$base" == *.gguf ]] && grep -qxF "$base" <<< "$KEEP"; then
+  if [[ "$base" == *.gguf ]] && grep -qxF "$(shard_key "$base")" <<< "$KEEP"; then
     say "  KEEP   $p — still named by a serve script / the campaign / a live server"
     return 0
   fi
