@@ -481,7 +481,11 @@ sha256 (weights) or git blob id (small files) for that commit before it
 counts. Downloads land in `MODELS_DIR/.<name>.partial` (resumable, same
 filesystem), and one rename publishes the directory only when every file has
 passed. The lock `models/<name>.lock` (file → size → sha256, plus source and
-revision) is written first; re-runs verify instead of downloading, and a
+revision) is written on the first fetch and is the pin from then on: a later
+fetch of that revision (the second Spark, a wiped directory, a mirror) must
+reproduce its file set, sizes and sha256s exactly or it is refused, and the
+lock is never rewritten — commit it with the profile. Re-runs verify instead
+of downloading, an interrupted publish is completed by the next run, and a
 changed `REVISION` never overwrites the old directory. Pickled weights, GGUF,
 ONNX and `original/` are skipped unless `FETCH_INCLUDE` names them; a
 disk-space preflight refuses before downloading. `HF_TOKEN_FILE` (0600) for

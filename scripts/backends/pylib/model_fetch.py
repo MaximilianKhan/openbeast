@@ -12,9 +12,14 @@ Guarantees, in the order they matter:
   3. Nothing appears under the final name until every file has passed. Downloads land in
      MODELS_DIR/.NAME.partial (same filesystem, so the last step is one atomic rename), a bad file
      is deleted and the run fails, and an interrupted run resumes from the stage.
-  4. The lock (models/NAME.lock: file → size → sha256, plus source and revision) is written before
-     the rename; a later run re-hashes against it instead of downloading again, and refuses to
-     touch a directory the lock does not describe.
+  4. The lock (models/NAME.lock: file → size → sha256, plus source and revision) is written on the
+     FIRST fetch, before the rename. From then on it is the trust root: a later fetch of the same
+     revision (another Spark, a wiped directory, a mirror) must reproduce its file set, sizes and
+     sha256s exactly — the Hub's hashes only vouch for a first fetch — and never rewrites it. A run
+     re-hashes an existing directory instead of downloading, and refuses to touch one the lock does
+     not describe.
+  5. Crash-safe: the stage keeps its .stage.json until the rename, so an interrupted publish is
+     recognised, re-verified (not re-downloaded) and completed by the next run.
 Pickled weights (*.bin/*.pt/…), GGUF and original/ copies are skipped unless FETCH_INCLUDE names
 them. The Hub is reached only through hfapi.py (HF_ENDPOINT, HF_TOKEN / HF_TOKEN_FILE, OFFLINE).
 """
@@ -38,6 +43,7 @@ import obprofile  # noqa: E402
 CHUNK = 8 * 1024 * 1024
 MARKER = ".openbeast-model.json"
 EXIT_MISMATCH, EXIT_ABSENT = 1, 3
+STAGE_META = ".stage.json"
 
 
 class FetchError(RuntimeError):
@@ -206,7 +212,11 @@ def _verify_entry(p: Path, e: dict) -> str:
     return local
 
 
-def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str]) -> dict:
+def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str], pinned: dict | None = None) -> dict:
+    """Download + verify into the stage. With `pinned` (the lock's entry for this same source+revision)
+    the LOCK is the trust root: the file set, every size and every sha256 must equal it — the Hub's own
+    hashes only vouch for a first fetch, and a mirror (or a re-pointed Hub) can serve different bytes
+    with self-consistent hashes."""
     repo, rev, dirname = a["repo"], a["revision"], a["dir"]
     final, stage = mdir / dirname, mdir / f".{dirname}.partial"
     if final.exists():
@@ -220,9 +230,20 @@ def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str]) 
     big = [e for e in entries if int(e.get("size") or 0) > 10 * 1024 * 1024 and not (e.get("lfs") or {}).get("oid")]
     if big:
         raise FetchError(f"{big[0]['path']} is large but has no LFS sha256 to verify against — refusing")
+    if pinned:
+        want = pinned.get("files") or {}
+        have_paths = {e["path"] for e in entries}
+        if have_paths != set(want):
+            extra, gone = sorted(have_paths - set(want)), sorted(set(want) - have_paths)
+            raise FetchError(f"the Hub's files at {rev} differ from the lock (new: {extra[:3]}, missing: "
+                             f"{gone[:3]}) — the lock is the pin; refusing")
+        bad = [e["path"] for e in entries if int(e.get("size") or 0) != int(want[e["path"]]["size"])]
+        if bad:
+            raise FetchError(f"{bad[0]}: the Hub now lists a different size than the lock pins — refusing "
+                             "(the lock is the pin, not the Hub)")
     if skipped:
         log(f"[{a['key']}] skipping {len(skipped)} file(s): {', '.join(skipped[:6])}{' …' if len(skipped) > 6 else ''}")
-    stage_meta = stage / ".stage.json"
+    stage_meta = stage / STAGE_META
     if stage.exists():
         try:
             m = json.loads(stage_meta.read_text())
@@ -250,6 +271,9 @@ def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str]) 
         _download(repo, rev, e, dest)
         try:
             local = _verify_entry(dest, e)
+            if pinned and local != pinned["files"][e["path"]]["sha256"]:
+                raise FetchError(f"{e['path']}: sha256 {local} is not the one the lock pins "
+                                 f"({pinned['files'][e['path']]['sha256']}) — refusing")
         except FetchError:
             dest.unlink(missing_ok=True)
             raise
@@ -258,7 +282,8 @@ def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str]) 
                             "lfs": bool((e.get("lfs") or {}).get("oid"))}
         log(f"  ok {e['path']}")
     (stage / MARKER).write_text(json.dumps({"source": repo, "revision": rev, "files": len(files)}, indent=1))
-    stage_meta.unlink(missing_ok=True)
+    # .stage.json stays until the directory is published: a run interrupted between here and the
+    # rename finds a stage it recognises, re-verifies it (nothing is downloaded again) and publishes.
     return {"source": repo, "revision": rev, "dir": dirname, "files": files, "_stage": str(stage),
             "_final": str(final)}
 
@@ -288,7 +313,7 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
     locked = set(entry.get("files") or {})
     for p in d.rglob("*"):
         rel = p.relative_to(d).as_posix()
-        if p.is_file() and rel != MARKER and rel not in locked and rel.endswith((".safetensors", ".json", ".py",
+        if p.is_file() and rel not in (MARKER, STAGE_META) and rel not in locked and rel.endswith((".safetensors", ".json", ".py",
                                                                                 ".jinja", ".model", ".txt")):
             problems.append(f"unlocked file {rel} (not from the pinned revision)")
     return problems
@@ -342,14 +367,18 @@ def run(p: obprofile.Profile, mdir: Path | None, mode: str) -> int:
                     log(f"[{a['key']}] not fetched: {d} — run model-fetch.sh --profile {p.name}")
                     rc = max(rc, EXIT_ABSENT)
                     continue
-                new = fetch_artifact(a, mdir, p.fetch_include, p.fetch_exclude)
+                if entry:
+                    log(f"[{a['key']}] the lock pins this revision: every file must match it")
+                new = fetch_artifact(a, mdir, p.fetch_include, p.fetch_exclude, pinned=entry or None)
                 stage, final = Path(new.pop("_stage")), Path(new.pop("_final"))
-                arts[a["key"]] = new
-                lock.update({"schema": 1, "profile": p.name, "artifacts": arts})
-                write_lock(p.lock_path, lock)
+                if not entry:                   # first fetch: the Hub's hashes become the pin
+                    arts[a["key"]] = new
+                    lock.update({"schema": 1, "profile": p.name, "artifacts": arts})
+                    write_lock(p.lock_path, lock)
                 if final.exists():
                     raise FetchError(f"{final} appeared while downloading — not overwriting it")
                 os.rename(stage, final)
+                (final / STAGE_META).unlink(missing_ok=True)
                 log(f"[{a['key']}] verified and moved into place: {final}")
                 log(f"[{a['key']}] lock: {p.lock_path}")
                 if mode == "locate":

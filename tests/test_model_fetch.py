@@ -143,3 +143,74 @@ def test_fetch_shell_wrapper_reads_spark_env(tmp_path, remote):
                         "--env", str(env_file)], capture_output=True, text=True, timeout=60, env=env)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "m2" / "brandnew" / "config.json").is_file()
+
+
+# --------------------------------------------------------------------------- the lock is the pin
+
+WEIGHTS = "model-00001-of-00001.safetensors"
+
+
+def test_lock_is_the_pin_when_the_hub_changes(tmp_path, remote, monkeypatch, capsys):
+    """The review's t_lock.py: a committed lock, a wiped models dir (another Spark), and a Hub or
+    mirror that now serves DIFFERENT bytes with self-consistent hashes. Refetch must refuse."""
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    prof = hf_profile(tmp_path)
+    assert fetch(tmp_path, prof) == 0
+    lock_before = prof.with_suffix(".lock").read_text()
+    import shutil
+    shutil.rmtree(tmp_path / "models")
+    remote.repos["acme/Brand-New"]["files"][WEIGHTS] += b"EVIL"
+    assert fetch(tmp_path, prof) == 1
+    assert "different size than the lock pins" in capsys.readouterr().err
+    assert not (tmp_path / "models" / "brandnew").exists()
+    assert prof.with_suffix(".lock").read_text() == lock_before, "the lock is never rewritten"
+
+
+def test_lock_pin_same_size_different_bytes(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    prof = hf_profile(tmp_path)
+    assert fetch(tmp_path, prof) == 0
+    lock_before = prof.with_suffix(".lock").read_text()
+    import shutil
+    shutil.rmtree(tmp_path / "models")
+    b = remote.repos["acme/Brand-New"]["files"][WEIGHTS]
+    remote.repos["acme/Brand-New"]["files"][WEIGHTS] = b[:-4] + b"EVIL"      # same size, Hub hashes consistent
+    assert fetch(tmp_path, prof) == 1
+    assert "is not the one the lock pins" in capsys.readouterr().err
+    assert not (tmp_path / "models" / "brandnew").exists()
+    assert not (tmp_path / "models" / ".brandnew.partial" / WEIGHTS).exists()
+    assert prof.with_suffix(".lock").read_text() == lock_before
+
+
+def test_lock_pin_file_set_change(tmp_path, remote, monkeypatch, capsys):
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    prof = hf_profile(tmp_path)
+    assert fetch(tmp_path, prof) == 0
+    import shutil
+    shutil.rmtree(tmp_path / "models")
+    remote.repos["acme/Brand-New"]["files"]["added.py"] = b"import os\n"
+    assert fetch(tmp_path, prof) == 1
+    assert "differ from the lock" in capsys.readouterr().err
+
+
+def test_publish_is_crash_safe(tmp_path, remote, monkeypatch, capsys):
+    """Interrupted after the lock is written but before the rename: the next run must recognise its
+    own complete stage, re-verify it without downloading, and publish."""
+    monkeypatch.setenv("HF_ENDPOINT", remote.url)
+    prof = hf_profile(tmp_path)
+    real_rename = model_fetch.os.rename
+
+    def crash(*a):
+        raise SystemExit("simulated crash before publish")
+
+    monkeypatch.setattr(model_fetch.os, "rename", crash)
+    with pytest.raises(SystemExit):
+        fetch(tmp_path, prof)
+    assert prof.with_suffix(".lock").is_file() and not (tmp_path / "models" / "brandnew").exists()
+    monkeypatch.setattr(model_fetch.os, "rename", real_rename)
+    n = len(remote.downloads())
+    assert fetch(tmp_path, prof) == 0, capsys.readouterr().err
+    assert len(remote.downloads()) == n, "a complete stage is re-verified, not downloaded again"
+    final = tmp_path / "models" / "brandnew"
+    assert (final / WEIGHTS).is_file() and not (final / model_fetch.STAGE_META).exists()
+    assert fetch(tmp_path, prof, "--verify") == 0
