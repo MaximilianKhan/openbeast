@@ -813,6 +813,55 @@ def test_a_macro_cannot_be_smuggled_in_under_another_name(secret):
         assert rs.refusal(src) is None, src
 
 
+_RS_CALL = ("macro_rules! call { ($m:ident, $p:literal) => "
+            "{ compile_error!{$m!($p)} } }\n")
+_RS_CALL_PATH = ("macro_rules! call { ($m:path, $p:literal) => "
+                 "{ compile_error!{$m!($p)} } }\n")
+
+
+def _rust_indirections(secret):
+    return [
+        f'{_RS_CALL}call!(include_str, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(include_bytes, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(r#include_str, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(include, "{secret}");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(env, "HOME");\nfn main() {{}}\n',
+        f'{_RS_CALL}call!(option_env, "HOME");\nfn main() {{}}\n',
+        f'{_RS_CALL_PATH}call!(std::env, "HOME");\nfn main() {{}}\n',
+        f'use std::include_str;\n{_RS_CALL}call!(include_str, "{secret}");\n'
+        "fn main() {}\n",
+        f'#![debugger_visualizer(natvis_file = "{secret}")]\nfn main() {{}}\n',
+    ]
+
+
+def test_a_builtin_named_through_a_macro_is_refused(secret):
+    """Round 3: the scans looked for `include_str!`, and a declarative macro
+    that takes the name as a fragment never writes that — rustc still
+    expands the builtin and puts the file in the FIRST diagnostic line."""
+    rs = D.driver_for("rust")
+    for src in _rust_indirections(secret):
+        r = rs.compile_source(src)
+        assert not r and r.refused, (src, r.detail)
+        assert "hunter2" not in r.detail
+    # negative controls: a macro that uses the std::env MODULE, `env` as a
+    # plain variable with no macro in sight, and a non-renaming `use`
+    for src in ('macro_rules! h { () => { std::env::var("X") } }\n'
+                'fn main() { let _ = h!(); }\n',
+                'fn main() { let env = 1; let include = env; let _ = include; }\n',
+                'use std::env;\nmacro_rules! a { () => { env::args() } }\n'
+                'fn main() { let _ = a!(); }\n'):
+        assert rs.refusal(src) is None, src
+
+
+@pytest.mark.skipif(not shutil.which("rustc"), reason="rustc absent")
+def test_the_macro_indirection_leak_was_real(secret, monkeypatch):
+    """The control: with the refusal off, rustc really does read the file
+    through the indirection (else the test above guards nothing)."""
+    monkeypatch.setattr(D.RustDriver, "refusal", lambda self, s: None)
+    r = D.driver_for("rust").compile_source(_rust_indirections(secret)[0])
+    assert not r and "hunter2" in r.detail, r.detail[:300]
+
+
 # --- a refusal is not a verdict, and a comment is not a directive -------------
 
 def test_a_refused_old_form_does_not_make_a_claim_verified(monkeypatch):

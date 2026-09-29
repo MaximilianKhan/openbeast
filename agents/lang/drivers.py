@@ -148,6 +148,23 @@ _RS_PATH_ATTR = re.compile(r"#!?\s*\[[^\]]*\bpath\s*=", re.S)
 #: real code imports all the time) is not.
 _RS_USE = re.compile(r"\buse\b([^;]*);", re.S)
 _RS_MACRO_NAME = re.compile(r"\b(include|include_str|include_bytes|env|option_env)\b")
+#: The same names as bare IDENTIFIERS, with no `!` after them. A declarative
+#: macro can take a builtin's name as a fragment and invoke it in its own body
+#: — `macro_rules! call { ($m:ident, $p:literal) => { compile_error!{$m!($p)} } }
+#: call!(include_str, "/abs");` — so no text ever reads `include_str!`, rustc
+#: still expands it, and the host file lands in the FIRST diagnostic line.
+#: Scanning invocation syntax is scanning the wrong thing; the name is the
+#: primitive. Only a macro the snippet DEFINES can turn a bare name back into
+#: an invocation (no std macro does `$m!`), so the scan applies when one is
+#: defined — `let env = 1;` in ordinary code stays valid. Even then `env` is
+#: also the std MODULE: `env::var` (followed by `::`) and a non-renaming `use`
+#: item stay allowed; any other mention is refused.
+_RS_BARE_NAME = re.compile(
+    r"\b(include|include_str|include_bytes|option_env|env)\b(?!\s*!(?!=))")
+_RS_MACRO_DEF = re.compile(r"\bmacro_rules\b|\bmacro\b")
+#: `#![debugger_visualizer(natvis_file = "/abs")]` makes rustc open that path:
+#: a read, and at minimum a file-existence oracle.
+_RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
 _ZIG_FILE = re.compile(r"@(embedFile|import|cInclude)\b")
 _ZIG_FILE_ARG = re.compile(rf"\s*\(\s*{_LIT}\s*\)")
 
@@ -311,8 +328,19 @@ def _refuse_rust(source: str) -> str | None:
         if named and re.search(r"\bas\b", m.group(1)):
             return (f"a `use` that renames things and names `{named.group(1)}` "
                     f"can smuggle that macro in under another name")
+    # A non-renaming `use` item was just judged; blank it (same length, so the
+    # rest of the view keeps its offsets) and look at every other mention.
+    rest = _RS_USE.sub(lambda u: " " * len(u.group(0)), view)
+    bare = _RS_BARE_NAME.finditer(rest) if _RS_MACRO_DEF.search(view) else ()
+    for m in bare:
+        if m.group(1) == "env" and re.match(r"\s*::", rest[m.end():]):
+            continue                                 # the std::env module
+        return (f"`{m.group(1)}` named without invoking it can reach the "
+                f"builtin through a macro, which no scan of `{m.group(1)}!` sees")
     if _RS_PATH_ATTR.search(view):
         return "a #[path = …] attribute makes rustc read another file"
+    if _RS_FILE_ATTR.search(view):
+        return "a #[debugger_visualizer] attribute makes rustc read another file"
     return None
 
 
