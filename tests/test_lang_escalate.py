@@ -532,6 +532,24 @@ def test_a_summary_member_stands_in_only_for_itself():
     assert sel("anything", "U") == {"b"}, "control: a real `U.*` still covers U"
 
 
+def test_an_arrow_summary_counts_only_the_left_side_as_gone():
+    """`old -> new; old2 -> new2` summaries (mem, fmt, ascii, main_io) have
+    no " — ": the right side of each arrow is a replacement that EXISTS, and
+    recording it as removed was a latent wrong-card path (`mem.sort`,
+    `fmt.printInt` both live in 0.16)."""
+    class C:
+        def __init__(self, cid, summary):
+            self.id, self.summary = cid, summary
+    wild = E.namespace_wildcards([
+        C("a", "`x.T.old` -> `x.T.new`; `U.was` -> `V.now`")])
+    assert wild == {"T.old": {"a"}, "U.was": {"a"}}, wild
+    shipped = E.namespace_wildcards(
+        [c for c in V.load_claims(CLAIMS) if c.lang == "zig"])
+    for live in ("mem.sort", "fmt.printInt", "time.epoch"):
+        assert live not in shipped, (live, shipped.get(live))
+    assert "mem" in shipped.get("sort.sort", set()), "control: the left side"
+
+
 @pytest.mark.skipif(not have_zig, reason="zig absent")
 def test_the_time_random_summary_names_only_members_zig_removed():
     """The card's own words are what escalation trusts, so they are checked
@@ -546,6 +564,8 @@ def test_the_time_random_summary_names_only_members_zig_removed():
         assert not ZIG.compile_source(ZIG.wrap(src)), f"std.time.{m} still exists"
     ok = ZIG.compile_source(ZIG.wrap("const x = std.time.ns_per_s;\n    _ = x;"))
     assert ok, f"control: std.time.ns_per_s should compile: {ok.detail[:200]}"
+    ok = ZIG.compile_source(ZIG.wrap("const x = std.time.epoch;\n    _ = x;"))
+    assert ok, f"the card says std.time.epoch stays: {ok.detail[:200]}"
     assert "time" not in E.namespace_wildcards([claim]), "no `std.time.*` again"
 
 

@@ -198,12 +198,17 @@ def namespace_wildcards(claims) -> dict[str, set[str]]:
 
     Only the part of the summary before its " — " counts: that is the
     "what is gone" clause, and the replacement after it names members that
-    exist. A wildcard is as honest as the summary: `std.time.*` once
-    answered for `std.time.sleepp` (a typo — std.time still has members),
-    which is why the zig summary now lists the removed members instead."""
+    exist. The arrow form (`old -> new`, `;`-separated) is cut the same way:
+    only the left side of each pair is gone (`std.sort.sort -> std.mem.sort`
+    must never record `mem.sort`, which exists). A wildcard is as honest as
+    the summary: `std.time.*` once answered for `std.time.sleepp` (a typo —
+    std.time still has members), which is why the zig summary now lists the
+    removed members instead."""
     out: dict[str, set[str]] = {}
     for c in claims:
         gone = (c.summary or "").split(" — ", 1)[0]
+        # Arrow form, `old -> new; old2 -> new2`: only each LEFT side is gone.
+        gone = " ".join(part.split("->", 1)[0] for part in gone.split(";"))
         for ns in _WILDCARD.findall(gone):
             out.setdefault(ns, set()).add(c.id)
         for ns, member in _NAMED_MEMBER.findall(gone):
