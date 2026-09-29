@@ -137,7 +137,7 @@ class Rig:
         # A REAL Host header: TrustedHostMiddleware now pins it, and
         # TestClient's default "testserver" is exactly the kind of foreign
         # name a rebinding attack arrives under.
-        return TestClient(self._app, base_url="http://127.0.0.1:3003",
+        return TestClient(self._app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3003",
                           headers=dict(headers or {}))
 
     @property
@@ -1504,14 +1504,64 @@ def test_a_foreign_host_header_never_reaches_a_route(rig):
     """The other half of the rebinding defence: a hostile DNS name pointed at
     127.0.0.1 is refused before any handler runs."""
     app = chat_server.create_app()
-    evil = TestClient(app, base_url="http://attacker.example.com",
+    evil = TestClient(app, client=("127.0.0.1", 50000), base_url="http://attacker.example.com",
                       headers=HDR_OK)
     assert evil.get("/api/chat/health").status_code == 400
     assert evil.get("/api/chat/sessions").status_code == 400
-    good = TestClient(app, base_url="http://localhost:3003", headers=HDR_OK)
+    good = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost:3003", headers=HDR_OK)
     assert good.get("/api/chat/health").status_code == 200
     assert "127.0.0.1" in app.state.allowed_hosts
     assert "*.ts.net" in app.state.allowed_hosts
+
+
+def test_a_login_header_from_off_box_is_not_a_read_credential(rig):
+    """Review 2026-09-29: OPENBEAST_CHAT_BIND=0.0.0.0 (or a LAN/tailnet
+    address) let any host that reached :3003 send `Host: localhost` + any
+    login and stream every transcript. The header is real only when
+    `tailscale serve` sets it, and that proxy dials from 127.0.0.1."""
+    sid = rig.session(kind="job")
+    rig.client  # build the app
+    lan = TestClient(rig._app, client=("192.168.1.77", 5555),
+                     base_url="http://localhost:3003")
+    for path in ("/api/chat/sessions", f"/api/chat/sessions/{sid}",
+                 f"/api/chat/sessions/{sid}/events?from=0&follow=0"):
+        assert lan.get(path, headers=HDR_OK).status_code == 404, path
+    rig.operators(LISTED)          # a listed login is still only a claim
+    assert lan.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+    # negative controls: the same header over loopback reads, and a device
+    # key (a secret, not a claim) reads from off the box too
+    assert rig.client.get("/api/chat/sessions").status_code == 200
+    key = rig.enroll("phone", "k-offbox-1", scopes=["chat"])
+    assert lan.get("/api/chat/sessions", headers=key).status_code == 200
+
+
+@pytest.mark.parametrize("host,loop", [
+    ("127.0.0.1", True), ("localhost", True), ("::1", True), ("[::1]", True),
+    ("0.0.0.0", False), ("192.168.1.50", False), ("100.64.0.9", False),
+    ("rig.lan", False), ("::", False),
+])
+def test_bind_is_loopback(host, loop):
+    assert chat_server._bind_is_loopback(host) is loop
+
+
+def test_main_warns_on_an_off_box_bind(monkeypatch, capsys):
+    """Startup says out loud that the header path is loopback-only; it binds
+    nothing here (getaddrinfo is stubbed to stop main right after)."""
+    class Stop(Exception):
+        pass
+
+    def boom(*a, **k):
+        raise Stop()
+    import socket as _socket
+    monkeypatch.setattr(_socket, "getaddrinfo", boom)
+    monkeypatch.setenv("OPENBEAST_CHAT_BIND", "0.0.0.0")
+    with pytest.raises(Stop):
+        chat_server.main()
+    assert "not loopback" in capsys.readouterr().err
+    monkeypatch.setenv("OPENBEAST_CHAT_BIND", "127.0.0.1")
+    with pytest.raises(Stop):
+        chat_server.main()
+    assert "not loopback" not in capsys.readouterr().err
 
 
 def test_a_chat_scoped_device_key_is_an_identity_on_its_own(rig):

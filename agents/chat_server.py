@@ -71,7 +71,9 @@ session reads `running` forever while /send queues into a corpse.
 
 Env:
   OPENBEAST_CHAT_PORT          listen port            (default 3003)
-  OPENBEAST_CHAT_BIND          bind address           (default 127.0.0.1)
+  OPENBEAST_CHAT_BIND          bind address           (default 127.0.0.1;
+                               off loopback, the login header is ignored
+                               from non-loopback peers — device keys only)
   OPENBEAST_CHAT_OPERATORS     comma-separated logins (unset = open reads)
   OPENBEAST_CHAT_RATE_PER_MIN  write rate per device  (default 60)
   OPENBEAST_CHAT_STOP_TERM_S   SIGTERM escalation     (default 30)
@@ -87,6 +89,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import shlex
@@ -164,6 +167,45 @@ CSP = ("default-src 'none'; "
        "base-uri 'none'; "
        "form-action 'none'; "
        "frame-ancestors 'none'")
+
+
+def _peer_is_loopback(request) -> bool:
+    """May this connection's peer assert an identity by HEADER?
+
+    Tailscale-User-Login is a credential only because `tailscale serve` is
+    the one thing that can set it — it strips client copies and dials us
+    from 127.0.0.1. OPENBEAST_CHAT_BIND is an operator knob, and set to
+    0.0.0.0 or a LAN/tailnet address it let any host that could reach the
+    port send `Host: localhost` + any login and read every transcript. The
+    header therefore counts only from a loopback peer (or a Unix socket,
+    which has no address and is on this box by construction). A device key
+    and the locality token are secrets, not claims, and work from anywhere.
+
+    Loopback is necessary, never sufficient: `tailscale serve` makes every
+    remote caller loopback, which is why LOCAL is the token (see module
+    docstring) and not this. Anything that is not an IP literal fails closed.
+    """
+    client = getattr(request, "client", None)
+    if client is None:
+        return True
+    try:
+        addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
+
+
+def _bind_is_loopback(host: str) -> bool:
+    """Is a bind address loopback-only? A NAME counts only if it is
+    `localhost`; anything that has to be resolved is treated as off-box."""
+    h = (host or "").strip().strip("[]")
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def _now_iso() -> str:
@@ -1133,7 +1175,10 @@ def create_app() -> FastAPI:
         """
         if is_local(request):
             return {"login": "local", "device": "local", "local": True}
-        login = (request.headers.get("tailscale-user-login") or "").strip()
+        # Off-box peers cannot claim a login (see _peer_is_loopback); they
+        # still get in with a device key, which is a secret, not a claim.
+        login = ((request.headers.get("tailscale-user-login") or "").strip()
+                 if _peer_is_loopback(request) else "")
         if login and operators.allows(login):
             # Unset operator list = single-user default: any identified login
             # reads. Set = allowlist, and anything else falls through to 404.
@@ -2015,6 +2060,14 @@ def main() -> None:
     import uvicorn
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    if not _bind_is_loopback(host):
+        # Not refused: an enrolled device key is a real credential from any
+        # peer. But the published path is `tailscale serve` → 127.0.0.1, and
+        # off-box callers can no longer read with a login header alone.
+        print(f"WARNING: OPENBEAST_CHAT_BIND={host} is not loopback. "
+              f"Tailscale-User-Login is honoured only from 127.0.0.1 (the "
+              f"`tailscale serve` path); callers on {host} need an enrolled "
+              f"chat-scoped device key.", file=sys.stderr)
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     # IPv4 FIRST. For a NAME, [0] is whatever the resolver lists first —
     # `localhost` gives ::1 on most boxes — and every health probe in this
