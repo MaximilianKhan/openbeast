@@ -345,8 +345,9 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     first and stop as soon as enough is freed, so the newest results — the
     ones the model is about to act on — survive unless the older ones can't
     cover the ask (being stuck beats keeping them). One exception: when the
-    walk would reach a single tool result that covers the ask by itself, only
-    that one is stubbed and the older ones are spared. Returns
+    walk would reach a tool result that frees more than every older one it
+    plans to stub, that one is stubbed first, sparing older results the ask
+    no longer needs. Returns
     (results_evicted, chars_freed). `call_index` maps message position ->
     tool-call ordinal for the stub text.
 
@@ -387,22 +388,27 @@ def compact_messages(messages: list[dict], chars_to_free: int,
         return len(messages[i]["content"]) - len(_stub_for(i))
 
     # The oldest-first walk, planned before anything is touched. If it would
-    # reach a tool result that covers the whole ask ON ITS OWN, stub only that
-    # one: an oversized result (fetch allows up to 2M chars) used to strip
-    # EVERY older result first, so one bad call cost the agent its whole
-    # working memory (review efficiency-3). This never stubs a result the
-    # plain walk would have kept — it only spares the older ones.
+    # reach a tool result that frees more than every older planned result
+    # combined, stub THAT one first and only then continue oldest-first for
+    # whatever is left of the ask: an oversized result (fetch allows up to 2M
+    # chars) used to strip EVERY older result first, so one bad call cost the
+    # agent its whole working memory (review efficiency-3). It must be a
+    # prefix, not a replacement — the proactive ask is the giant result PLUS
+    # the hysteresis gap down to _COMPACT_LOW_WATER, which no single result
+    # covers. Only the order changes: the walk still stops once the ask is
+    # met, so it never stubs a result the plain walk would have kept.
     plan, planned = [], 0
     for i in candidates:
         if planned >= ask:
             break
         plan.append(i)
         planned += _gain(i)
-    if len(plan) > 1:
-        solo = next((i for i in plan if messages[i].get("role") == "tool"
-                     and _gain(i) >= ask), None)
-        if solo is not None:
-            candidates = [solo]
+    tools_in_plan = [i for i in plan if messages[i].get("role") == "tool"]
+    if len(plan) > 1 and tools_in_plan:
+        big = max(tools_in_plan, key=_gain)
+        older = sum(_gain(i) for i in plan[:plan.index(big)])
+        if older and _gain(big) > older:
+            candidates = [big] + [c for c in plan if c != big]
     evicted = freed = 0
     for i in candidates:
         if freed >= ask:

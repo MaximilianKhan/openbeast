@@ -96,12 +96,22 @@ def test_solo_rule_does_not_pick_an_aged_operator_message():
 # efficiency-2 — hysteresis, measured through run_agent itself
 # ---------------------------------------------------------------------------
 
-def _long_run(tmp_path, monkeypatch, budget: int, iters: int, seed: int = 7):
+def _long_run(tmp_path, monkeypatch, budget: int, iters: int, seed: int = 7,
+              giant_at: int | None = None, sink: list | None = None):
     """Drive run_agent itself for `iters` turns of random 1-12 KB bash results
-    under --context-budget; return (compaction events, chars asked per call)."""
+    under --context-budget; return (compaction events, chars asked per call).
+    `giant_at` makes that call (1-based) return 2M chars instead; `sink`
+    receives the fake client, whose .requests are the payloads sent."""
     rng = random.Random(seed)
-    monkeypatch.setattr(tools, "TOOL_HANDLERS", dict(
-        tools.TOOL_HANDLERS, bash=lambda **kw: "r" * rng.randint(1000, 12_000)))
+    calls = [0]
+
+    def bash(**kw):
+        calls[0] += 1
+        if calls[0] == giant_at:
+            return "G" * 2_000_000
+        return "r" * rng.randint(1000, 12_000)
+
+    monkeypatch.setattr(tools, "TOOL_HANDLERS", dict(tools.TOOL_HANDLERS, bash=bash))
     monkeypatch.setattr(runner, "TOOL_HANDLERS", tools.TOOL_HANDLERS)
     asks = []
     real = runner.compact_messages
@@ -115,6 +125,8 @@ def _long_run(tmp_path, monkeypatch, budget: int, iters: int, seed: int = 7):
               for k in range(iters)]
     script.append(_done())
     fake = _Fake(script)
+    if sink is not None:
+        sink.append(fake)
     monkeypatch.setattr(runner, "OpenAI", lambda **kw: fake)
     log = tmp_path / "r.jsonl"
     out = runner.run_agent("task", max_iter=iters + 1, log_file=str(log),
@@ -141,6 +153,47 @@ def test_budget_compaction_frees_the_whole_low_water_gap(tmp_path, monkeypatch):
     # constant, so the test cannot agree with a regressed constant).
     gap_chars = int(budget * 0.20) * runner._CHARS_PER_TOKEN
     assert all(a >= gap_chars for a in asks), asks
+
+
+def _live_results(request):
+    return [m["content"] for m in request if m["role"] == "tool"
+            and not m["content"].startswith(runner._STUB_PREFIX)]
+
+
+@pytest.mark.parametrize("giant_at", [40, 60, 90])
+def test_giant_result_after_hysteresis_spares_the_history(tmp_path, monkeypatch, giant_at):
+    # The two fixes together: past the first compaction the history sits
+    # between the 50% low-water mark and the 70% trigger, so the proactive ask
+    # is the giant result PLUS that gap — no single result covers it. The old
+    # "solo only if it covers the whole ask" rule never fired there and the
+    # oldest-first walk stubbed every older result again (review fixup:
+    # 432/550 simulated positions wiped the whole history).
+    sink: list = []
+    comp, _ = _long_run(tmp_path, monkeypatch, budget=85_000, iters=giant_at + 1,
+                        giant_at=giant_at, sink=sink)
+    reqs = sink[0].requests
+    assert len(comp) >= 2, "the history had compacted before the giant arrived"
+    # Proactive compaction runs before the request is sent, so the giant is
+    # never live in a payload: compare the request before it arrived with the
+    # first one after.
+    older = len(_live_results(reqs[giant_at - 1]))
+    after = _live_results(reqs[giant_at])
+    assert comp[-1]["evicted"] < older, "the giant was the one stubbed first"
+    assert not any(c.startswith("G") for c in after), "the giant itself is stubbed"
+    assert older >= 10
+    # Only the 70%->50% gap's worth of older results may go, not all of them.
+    assert len(after) >= older // 2, (older, len(after))
+
+
+def test_small_results_still_compact_oldest_first_through_run_agent(tmp_path, monkeypatch):
+    # Negative control: no giant, so every compaction still stubs a prefix of
+    # the live results (the oldest), never a newer one ahead of an older one.
+    sink: list = []
+    _long_run(tmp_path, monkeypatch, budget=20_000, iters=30, sink=sink)
+    for req in sink[0].requests:
+        tools_seen = [m["content"] for m in req if m["role"] == "tool"]
+        flags = [c.startswith(runner._STUB_PREFIX) for c in tools_seen]
+        assert flags == sorted(flags, reverse=True), flags
 
 
 # ---------------------------------------------------------------------------
