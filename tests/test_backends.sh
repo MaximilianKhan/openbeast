@@ -596,10 +596,11 @@ fi
 _sp "$_TN" -- --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "serve Vontra/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.168.100.10 --master-port 29551" \
    && _has "$_O" "--parallel auto --name local-model --host 100.64.1.2 --port 8000" \
-   && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@v0.3.7" \
+   && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@6b2e4c40064b1e4a05965f61b19ce87b5e0265b3" \
+   && _has "$_O" "--master-port 29551 --no-update-check" \
    && _has "$_O" "start rank 1 FIRST" && _has "$_O" "NO API key" \
    && _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1"; then
-  pass "tensorfold rank 0 --print: --tp 2 rank/master/port, pinned tag, rank-1-first + no-key notes"
+  pass "tensorfold rank 0 --print: --tp 2 rank/master/port, commit-pinned, no update check, rank-1-first + no-key notes"
 else
   fail "tensorfold rank 0 --print (rc=$SPRC): $_O"
 fi
@@ -613,9 +614,17 @@ fi
 _sp "$_TN" -- --rank 1 --env "$_K/absent.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "--master is required" && pass "tensorfold refuses to start without --master" \
   || fail "tensorfold without master (rc=$SPRC): $_O"
-_sp "$_TN" TENSORFOLD_VERSION=main -- --rank 1 --env "$_K/spark.env" --print
-[[ $SPRC -eq 1 ]] && _has "$_O" "is not a pin" && pass "tensorfold refuses an unpinned TENSORFOLD_VERSION (main)" \
-  || fail "unpinned tensorfold accepted (rc=$SPRC): $_O"
+for _ref in main v0.3.7 6b2e4c4 6B2E4C40064B1E4A05965F61B19CE87B5E0265B3; do
+  _sp "$_TN" "TENSORFOLD_REF=$_ref" -- --rank 1 --env "$_K/spark.env" --print
+  if [[ $SPRC -eq 1 ]] && _has "$_O" "is not a commit SHA"; then
+    pass "tensorfold refuses TENSORFOLD_REF=$_ref (only a full 40-hex commit SHA)"
+  else
+    fail "tensorfold accepted TENSORFOLD_REF=$_ref (rc=$SPRC): $_O"
+  fi
+done
+_sp "$_TN" TENSORFOLD_REF= -- --rank 1 --env "$_K/absent.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "TENSORFOLD_REF is not set" && pass "tensorfold refuses a missing TENSORFOLD_REF" \
+  || fail "missing TENSORFOLD_REF accepted (rc=$SPRC): $_O"
 _sp "$_TN" -- --rank 0 --ckpt Vontra/Other --env "$_K/spark.env" --print
 _has "$_O" "serve Vontra/Other --tp 2" && pass "--ckpt overrides TENSORFOLD_CKPT" || fail "--ckpt: $_O"
 _sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --rank 1 --env "$_K/spark.env"

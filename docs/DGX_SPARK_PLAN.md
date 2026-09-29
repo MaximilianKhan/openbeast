@@ -135,17 +135,20 @@ which is what `start.sh` does too.
 ## 6. TensorFold recipe and its limits
 
 `scripts/backends/tensorfold/spark-node.sh --rank 0|1 --master <rank0 link IP>`
-runs NVIDIA's PyTorch container, pip-installs the **pinned tag**
-(`TENSORFOLD_VERSION=v0.3.7`) and execs `tensorfold serve <ckpt> --tp 2
---rank R --master IP --master-port 29551`, with `--name --host --port` on
-rank 0. **Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
+runs NVIDIA's PyTorch container, pip-installs TensorFold **pinned by commit
+SHA** (`TENSORFOLD_REF`, a full 40-hex commit — v0.3.7 is
+`6b2e4c40064b1e4a05965f61b19ce87b5e0265b3`; tags and branches are refused
+because they can move) and execs `tensorfold serve <ckpt> --tp 2 --rank R
+--master IP --master-port 29551 --no-update-check` (no phoning GitHub for
+releases), with `--name --host --port` on rank 0. A derived image built once
+and pinned by digest would avoid the pip install at every start — later. **Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
 
 Limits — each one is a reason TensorFold is the *second* backend, not the
 first:
 
 | Limit | Detail |
 |---|---|
-| **Alpha** | PyPI "Development Status :: 3 - Alpha"; five releases in ~36 h around v0.3.7. The launcher refuses `main`/`HEAD` |
+| **Alpha** | PyPI "Development Status :: 3 - Alpha"; five releases in ~36 h around v0.3.7. The launcher accepts only a commit SHA |
 | **No GGUF** | CUDA serves MLX-affine 4-bit safetensors (Vontra/* conversions), NVFP4 and EXL3 — and Qwen3.8-27B on **two** ranks only as MLX-4bit (NVFP4/EXL3 are one-GPU) |
 | **No API key, no auth at all** | Must sit behind beast-gate or a firewall (§7) |
 | **Unauthenticated rendezvous on 29551** | The TCPStore listener's bind address is not configurable in TensorFold's CLI — firewall it to the peer's link address |

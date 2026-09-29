@@ -23,7 +23,10 @@
 # wildcards refused), and the rendezvous must be firewalled to the peer's
 # link address — the listener's bind address is not configurable (verify on
 # hardware with `ss -ltnp | grep 29551`). Put beast-gate or a firewall in
-# front of the HTTP port. Alpha software: pin TENSORFOLD_VERSION.
+# front of the HTTP port. Alpha software: TENSORFOLD_REF must be a full
+# 40-hex commit SHA (a tag or branch can be moved under us, and pip installs
+# whatever it names at start time), and --no-update-check stops the server
+# phoning GitHub for newer releases.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib.sh
@@ -55,7 +58,7 @@ ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
-sp_load "$ENV_FILE" TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_VERSION \
+sp_load "$ENV_FILE" TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
   SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND HF_CACHE TENSORFOLD_CKPT \
   TENSORFOLD_NAME TENSORFOLD_PARALLEL TENSORFOLD_CONTEXT
@@ -68,12 +71,12 @@ HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 
 [[ -n "$MASTER" ]] || sp_err "--master is required: rank 0's address on the ConnectX link"
 sp_need TENSORFOLD_IMAGE "NVIDIA's PyTorch container (spark.env)"
-sp_need TENSORFOLD_VERSION "a TensorFold git tag to install (it is Alpha — never an unpinned main)"
+sp_need TENSORFOLD_REF "the TensorFold commit to install, as a full 40-hex SHA"
 sp_need TENSORFOLD_CKPT "the checkpoint (--ckpt); both ranks must match"
 sp_need SPARK_IFACE "the ConnectX-7 interface ibdev2netdev shows Up"
 sp_need SPARK_IB_HCA "the ConnectX-7 HCA ibdev2netdev shows Up"
-if [[ "${TENSORFOLD_VERSION:-}" =~ ^(main|master|HEAD)$ ]]; then
-  sp_err "TENSORFOLD_VERSION=$TENSORFOLD_VERSION is not a pin — use a release tag (e.g. v0.3.7)"
+if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.3.7 = 6b2e4c40064b1e4a05965f61b19ce87b5e0265b3)"
 fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
@@ -92,7 +95,7 @@ fi
 
 IF="$SPARK_IFACE"
 SERVE=(serve "$TENSORFOLD_CKPT" --tp 2 --rank "$RANK"
-  --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
+  --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT" --no-update-check)
 [[ -n "${TENSORFOLD_PARALLEL:-}" ]] && SERVE+=(--parallel "$TENSORFOLD_PARALLEL")
 [[ -n "${TENSORFOLD_CONTEXT:-}" ]] && SERVE+=(--context "$TENSORFOLD_CONTEXT")
 if [[ "$RANK" == 0 ]]; then
@@ -113,7 +116,7 @@ CMD+=(-v "$HF_CACHE:/root/.cache/huggingface"
   -v "$HOME/.cache/tensorfold:/root/.cache/tensorfold"
   --entrypoint bash "$SP_IMAGE_REF"
   -c "$INNER" tensorfold-launch
-  "git+https://github.com/ashhart/TensorFold.git@${TENSORFOLD_VERSION}"
+  "git+https://github.com/ashhart/TensorFold.git@${TENSORFOLD_REF}"
   "${SERVE[@]}")
 
 if [[ $PRINT -eq 1 ]]; then
