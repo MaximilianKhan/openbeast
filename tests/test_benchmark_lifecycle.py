@@ -311,3 +311,29 @@ def test_the_reexec_keeps_interpreter_flags(ba, monkeypatch):
     got = _exec_argv(ba, ["python3", "-u", "-m", "benchmark_all", "--models", "m"],
                      [me, "--models", "m"], monkeypatch)
     assert got == [sys.executable, "-u", me, "--models", "m"]
+
+
+def test_a_reexecd_sweep_refuses_to_load_once_the_lease_reads_free(ba, tmp_path,
+                                                                     monkeypatch):
+    """`gpu-lease.sh run` puts the sweep in its own process group, so a
+    `kill -9` of the wrapper leaves the sweep alive with the lease FREE. It
+    must not keep loading models on a card the lease calls free."""
+    marker = tmp_path / "loaded"
+    serve = _serve(tmp_path, f"touch {marker}; exec sleep 30")
+    monkeypatch.setenv("OPENBEAST_BENCH_UNDER_LEASE", "1")
+    with pytest.raises(ba.GpuLeaseHeld, match="unleased"):
+        ba.start_model(serve, "m")
+    assert not ba.restart_server(serve, "m", health_timeout=1)
+    time.sleep(0.3)
+    assert not marker.exists(), "a model was loaded with the lease wrapper gone"
+    # ...while under a live wrapper (lease ours) it still loads.
+    _write_lease(tmp_path / "run", os.getpid())
+    proc, _ = ba.start_model(serve, "m")
+    ba.stop_llama_server()
+    assert proc.poll() is not None
+    # Negative control: a plain (not re-exec'd) sweep on a free card loads.
+    (tmp_path / "run" / "gpu.lease").unlink()
+    monkeypatch.delenv("OPENBEAST_BENCH_UNDER_LEASE")
+    proc, _ = ba.start_model(serve, "m")
+    ba.stop_llama_server()
+    assert proc.poll() is not None

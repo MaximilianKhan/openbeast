@@ -275,6 +275,15 @@ def gpu_lease_check() -> tuple[int | None, str]:
 def require_gpu_lease() -> int:
     """Raise GpuLeaseHeld unless the card is ours or free. Returns the rc."""
     rc, msg = gpu_lease_check()
+    if rc == LEASE_FREE and os.environ.get(_REEXEC_MARK):
+        # We are the sweep ensure_gpu_lease re-exec'd under `gpu-lease.sh
+        # run`, yet the lease reads FREE: that wrapper is no longer our
+        # ancestor (a `kill -9` of the pid the operator holds hits only the
+        # wrapper — `run` puts us in our own process group). Refuse the load
+        # rather than keep putting models on a card the lease calls free.
+        raise GpuLeaseHeld("this sweep was re-exec'd under `gpu-lease.sh run`, but the "
+                           "lease now reads FREE (the wrapper is gone) — refusing to "
+                           "run unleased.")
     if rc in (LEASE_OURS, LEASE_FREE):
         return rc
     if rc == LEASE_HELD:
@@ -299,9 +308,7 @@ def ensure_gpu_lease(argv: list[str], exec_fn=os.execvpe) -> None:
     if rc == LEASE_OURS:
         return
     env = _lease_env()
-    if env.get(_REEXEC_MARK):
-        # We ARE the re-exec, yet check says FREE: the `run` wrapper is not
-        # our ancestor. Refuse rather than loop or run unleased.
+    if env.get(_REEXEC_MARK):  # require_gpu_lease refuses FREE under the mark
         raise GpuLeaseHeld("re-exec under `gpu-lease.sh run` did not take the lease "
                            "(check still says FREE) — refusing to run unleased.")
     env[_REEXEC_MARK] = "1"
