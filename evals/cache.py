@@ -13,7 +13,8 @@ Hash key components:
 4b. era components (each omitted when off, so legacy keys stay reachable):
    diag (push-diagnostics toolchain fingerprint), rb (finite reasoning
    budget), greedy (low-churn decode), pack (awareness pack sha —
-   task-scoped to the pack's language).
+   task-scoped to the pack's language), env (opt-in environment
+   fingerprint: weights, llama.cpp build, KV flags, toolchains).
 5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
    opencode.json (which pins the available tools/transport), the agent
    runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
@@ -101,7 +102,8 @@ def cache_key(task: dict[str, Any], model_slug: str,
               diag: str | None = None,
               rb: str | None = None,
               greedy: bool = False,
-              pack: str | None = None) -> str:
+              pack: str | None = None,
+              env: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -133,7 +135,14 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # byte-identical with packs on or off (no --context-file is passed) and
     # so legitimately shares the un-packed era's rows. Omitted when None.
     pk = f".{pack}" if pack else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}.{_context_hash_cached()}"
+    # Environment era (2026-09-29, opt-in via OPENBEAST_EVAL_ENV_ERA=1):
+    # `env1-<sha8>` over the weights' identity, the llama.cpp build, the
+    # KV/context serve flags and the validator toolchains — none of which
+    # the rest of the key can see (run_eval.env_fingerprint). Omitted when
+    # None, so every existing key stays reachable.
+    en = f".{env}" if env else ""
+    return (f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}{en}."
+            f"{_context_hash_cached()}")
 
 
 def cache_path(key: str) -> Path:

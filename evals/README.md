@@ -128,6 +128,23 @@ confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
 wiring touches two of the six era files and is a held draft PR (#90), not in
 `main`.
 
+**What the key does not see, and the opt-in env era.** The model is keyed by
+its alias, not its bytes; the llama.cpp build, the KV/context serve flags and
+the validator toolchains (zig/go/rustc/gcc, Python) aren't in the key either.
+So a quant regenerated under the same alias, or a zig upgrade, replays the
+old verdicts. Every live run now computes an `env1-<sha8>` fingerprint over
+exactly those (`run_eval.env_fingerprint`: a weight pinned in
+`scripts/weights.registry` counts as its sha256, an unpinned one as its size +
+mtime, so the file is never hashed). The fingerprint is stamped in
+`harness.env` / `harness.env_component` and on every live row (`env_fp`), and a
+replayed row banked under a different or unrecorded environment is counted
+(`summary.env_drift_replays`, printed as `ENV DRIFT`). It enters the cache
+key only with **`OPENBEAST_EVAL_ENV_ERA=1`**, because turning that on starts
+a new era for every row. Set it for campaigns that pair arms across days or
+across a weight or toolchain change. It's off by default, so existing keys
+stay reachable. `--cache-only` takes the fingerprint from the model's last
+live results file.
+
 Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}[.mi{N}].{ctx_hash}.json`
 (the `.mi{N}` segment carries the effective max-iter when a run threads one).
 Tiny (<1 KB each), atomically written via `tmp+rename`, gitignored.

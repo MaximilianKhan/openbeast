@@ -348,7 +348,10 @@ def _parse_server_flags(cmdline: str) -> dict:
              "--reasoning": "reasoning",
              "-np": "parallel_slots",
              "-c": "context",
-             "-ctk": "kv_cache_type"}
+             "-ctk": "kv_cache_type",
+             "-ctv": "kv_cache_type_v",
+             "-m": "model_path",
+             "--model": "model_path"}
     toks = cmdline.split()
     for i, tok in enumerate(toks):
         name, eq, val = tok.partition("=")
@@ -487,22 +490,95 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
     if not enabled:
         return False, None, {}
     import hashlib
-    import shutil as _sh
-    versions = {}
-    for name, cmd in (("zig", ["zig", "version"]),
-                      ("rustc", ["rustc", "--version"]),
-                      ("go", ["go", "version"]),
-                      ("gcc", ["gcc", "-dumpfullversion"]),
-                      ("shellcheck", ["shellcheck", "--version"])):
-        if _sh.which(cmd[0]):
-            try:
-                out = subprocess.run(cmd, capture_output=True, text=True,
-                                     timeout=10).stdout.strip()
-                versions[name] = out.splitlines()[0][:60] if out else "?"
-            except Exception:
-                versions[name] = "?"
+    versions = dict(toolchain_versions())
     fp = hashlib.sha256(json.dumps(versions, sort_keys=True).encode()).hexdigest()[:8]
     return True, f"diag2-{fp}", versions
+
+
+_TOOLCHAINS: dict | None = None
+
+
+def toolchain_versions() -> dict:
+    """First line of each validator/checker toolchain's version output
+    (zig, rustc, go, gcc, shellcheck), probed once per process. Absent
+    tools are omitted, a probe that fails reads "?"."""
+    global _TOOLCHAINS
+    if _TOOLCHAINS is None:
+        import shutil as _sh
+        versions = {}
+        for name, cmd in (("zig", ["zig", "version"]),
+                          ("rustc", ["rustc", "--version"]),
+                          ("go", ["go", "version"]),
+                          ("gcc", ["gcc", "-dumpfullversion"]),
+                          ("shellcheck", ["shellcheck", "--version"])):
+            if _sh.which(cmd[0]):
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True,
+                                         timeout=10).stdout.strip()
+                    versions[name] = out.splitlines()[0][:60] if out else "?"
+                except Exception:
+                    versions[name] = "?"
+        _TOOLCHAINS = versions
+    return dict(_TOOLCHAINS)
+
+
+WEIGHTS_REGISTRY = os.path.join(EVALS_DIR, "..", "scripts", "weights.registry")
+
+
+def weight_identity(model_path: str | None) -> dict:
+    """Cheap, deterministic identity of the GGUF a server loaded. A pinned
+    weight (scripts/weights.registry row whose byte size matches) is its
+    registry sha256; anything else — research quants regenerated under the
+    same alias — is size + mtime, so a re-emitted file reads as different.
+    Never hashes the file itself (minutes per 20 GB)."""
+    if not model_path:
+        return {}
+    ident: dict = {"file": os.path.basename(model_path)}
+    try:
+        st = os.stat(model_path)
+    except OSError:
+        ident["missing"] = True
+        return ident
+    ident["bytes"] = st.st_size
+    try:
+        with open(WEIGHTS_REGISTRY) as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if (not line.startswith("#") and len(cols) >= 3
+                        and cols[2] == ident["file"] and cols[1] == str(st.st_size)):
+                    ident["sha256"] = cols[0]
+                    return ident
+    except OSError:
+        pass
+    ident["mtime_ns"] = st.st_mtime_ns
+    return ident
+
+
+def env_fingerprint(server_info: dict | None, engine_info: dict | None) -> tuple[str, dict]:
+    """What the cache key does NOT otherwise see (review eval-harness-7):
+    the weights' identity, the llama.cpp build, the KV-cache/context serve
+    flags, and the validator toolchains + Python. Returns
+    (`env1-<sha8>`, the dict it hashes)."""
+    import hashlib
+    import platform
+    server_info = server_info or {}
+    engine_info = engine_info or {}
+    env = {
+        "weights": weight_identity(server_info.get("model_path")),
+        "engine": {k: engine_info[k] for k in ("build", "commit") if engine_info.get(k)},
+        "serve": {k: server_info[k] for k in ("context", "kv_cache_type", "kv_cache_type_v")
+                  if server_info.get(k)},
+        "toolchains": {**toolchain_versions(), "python": platform.python_version()},
+    }
+    fp = hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest()[:8]
+    return f"env1-{fp}", env
+
+
+def env_era_enabled() -> bool:
+    """OPENBEAST_EVAL_ENV_ERA=1 puts env_fingerprint into the cache key.
+    Opt-in because turning it on forks every key into a new era; campaigns
+    that pair arms across days should set it."""
+    return os.environ.get("OPENBEAST_EVAL_ENV_ERA", "").strip() == "1"
 
 
 PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
@@ -944,13 +1020,9 @@ def run_cleanup(task: dict, log=print):
         log(f"  (cleanup error: {e})")
 
 
-def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
-    """The reasoning-budget era a --cache-only replay should look up, and
-    where it came from. An explicit value wins; otherwise the newest results
-    file for this model that came from a LIVE run (it recorded the server's
-    flags). Returns ("", reason) when nothing says — the legacy uncapped era."""
-    if explicit is not None and str(explicit).strip():
-        return str(explicit).strip(), "--reasoning-budget"
+def _last_live_results(model_slug: str) -> tuple[str, dict] | None:
+    """(file name, data) of the newest results file for this model that came
+    from a LIVE run (it recorded the server's flags), or None."""
     try:
         names = sorted((n for n in os.listdir(RESULTS_DIR)
                         if n.startswith(f"eval-{model_slug}-") and n.endswith(".json")),
@@ -963,12 +1035,24 @@ def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
-        server = data.get("server") or {}
         # Slug prefixes collide (qwen-27b-q5 vs qwen-27b-q5-k-xl): match exactly.
-        if data.get("model_slug") != model_slug or not server.get("cmdline"):
-            continue
-        rb = str(server.get("reasoning_budget", "")).strip()
-        return rb, f"from the last live run, {name}"
+        if data.get("model_slug") == model_slug and (data.get("server") or {}).get("cmdline"):
+            return name, data
+    return None
+
+
+def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
+    """The reasoning-budget era a --cache-only replay should look up, and
+    where it came from. An explicit value wins; otherwise the newest LIVE
+    results file for this model. Returns ("", reason) when nothing says —
+    the legacy uncapped era."""
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip(), "--reasoning-budget"
+    last = _last_live_results(model_slug)
+    if last:
+        name, data = last
+        return str(data["server"].get("reasoning_budget", "")).strip(), \
+            f"from the last live run, {name}"
     return "", "no live run on record; pass --reasoning-budget to choose"
 
 
@@ -1100,6 +1184,22 @@ def run_eval(
         print(f"Cache-only reasoning-budget era: {_rb or 'uncapped'} ({_rb_src})")
     if _rb and _rb != "-1":
         rb_component = _rb
+    # Environment identity (weights / engine / serve KV flags / toolchains).
+    # ALWAYS stamped on live rows and in provenance, so a replay banked
+    # under a different environment is counted and disclosed; it enters
+    # the cache key only with OPENBEAST_EVAL_ENV_ERA=1 (see env_era_enabled).
+    env_component, env_info = (None, None)
+    if not cache_only:
+        env_component, env_info = env_fingerprint(server_info, engine_info)
+    else:
+        _last = _last_live_results(model_slug)
+        if _last:
+            env_component = (_last[1].get("harness") or {}).get("env_component")
+            env_info = (_last[1].get("harness") or {}).get("env")
+    env_key = env_component if env_era_enabled() else None
+    if env_era_enabled() and not env_component:
+        raise SystemExit("OPENBEAST_EVAL_ENV_ERA=1 in --cache-only mode needs a live results "
+                         "file for this model that recorded its env_component")
 
     jobs = max(1, int(jobs))
     if cache_only and jobs > 1:
@@ -1178,7 +1278,9 @@ def run_eval(
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {}),
-                    **({"rb_component": rb_component} if rb_component else {})},
+                    **({"rb_component": rb_component} if rb_component else {}),
+                    **({"env_component": env_component, "env": env_info,
+                        "env_in_cache_key": bool(env_key)} if env_component else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -1188,7 +1290,8 @@ def run_eval(
     health_lock = threading.Lock()  # one recovery attempt at a time
     abort = threading.Event()       # set on failed recovery — stop starting units
     indexed: dict[int, dict] = {}   # original task index → recorded result
-    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0}
+    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0,
+                "env_drift_replays": 0}
 
     def process(idx: int, task: dict, log) -> dict | None:
         """One unit end-to-end: cache check → health → setup → agent →
@@ -1241,13 +1344,16 @@ def run_eval(
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
                                  diag=diag_component, rb=rb_component,
                                  greedy=greedy_mode,
-                                 pack=packs_component if task.get("_context_file") else None)
+                                 pack=packs_component if task.get("_context_file") else None,
+                                 env=env_key)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
                 cached["from_cache"] = True
                 with state_lock:
                     counters["cache_hits"] += 1
+                    if env_component and cached.get("env_fp") != env_component:
+                        counters["env_drift_replays"] += 1
                 tag = "PASS" if cached.get("passed") else "FAIL"
                 log(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
                 return record(cached)
@@ -1342,6 +1448,7 @@ def run_eval(
             "compactions": agent_result.get("compactions", 0),
             "api_errors": api_errors,
             **({"reason": infra_reason} if infra_reason else {}),
+            **({"env_fp": env_component} if env_component else {}),
         })
 
         if passed:
@@ -1436,6 +1543,12 @@ def run_eval(
     cache_misses_skipped = counters["cache_misses_skipped"]
     if use_cache and cache_hits:
         print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
+    if counters["env_drift_replays"]:
+        results["summary"]["env_drift_replays"] = counters["env_drift_replays"]
+        _write_results(results_path, results)
+        print(f"ENV DRIFT: {counters['env_drift_replays']} replayed row(s) were banked under a "
+              f"different (or unrecorded) weights/engine/toolchain environment than {env_component}. "
+              f"Set OPENBEAST_EVAL_ENV_ERA=1 to key the cache on it.")
     if cache_only and cache_misses_skipped:
         print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
     if counters["aborted_skips"]:
