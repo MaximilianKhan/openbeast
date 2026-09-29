@@ -16,6 +16,14 @@ source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
 
+# Record that this stop is ON PURPOSE, before anything is signalled (so a
+# watchdog tick landing mid-stop already sees it). healthcheck.sh --restart
+# relaunches nothing while .run/stopped exists; ./start.sh removes it.
+# Without it the watchdog timer brought the whole stack back within five
+# minutes of every ./stop.sh. OPENBEAST_STOP_REASON names the caller.
+mkdir -p "$RUN_DIR"
+printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "${OPENBEAST_STOP_REASON:-./stop.sh}" > "$RUN_DIR/stopped"
+
 # Identity-checked: never TERM — and 20s later KILL — an unrelated process
 # that recycled a stale pidfile's PID. The supervisor records its start time
 # (ob_pid_record), which is exact; 'start\.sh' in a command line is not (any

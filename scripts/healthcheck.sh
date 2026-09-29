@@ -48,6 +48,44 @@ CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
 
+# STOPPED ON PURPOSE. ./stop.sh (also ExecStop of openbeast.service, the
+# profile scripts and uninstall.sh) writes .run/stopped; ./start.sh clears
+# it; the supervisor writes it when it gives up on a crash-looping model.
+# Nothing used to record that, so within five minutes of ./stop.sh the
+# watchdog timer relaunched the ~21 GB model onto a card freed for a game or
+# a profiling sweep — outside the memory-capped scope, with no supervisor
+# and no restart budget — and brought WebUI and SearXNG back up with it.
+STOPPED_FILE="$REPO_DIR/.run/stopped"
+if $RESTART && [[ -f "$STOPPED_FILE" ]]; then
+  echo "Stack is stopped on purpose ($(head -n1 "$STOPPED_FILE" 2>/dev/null || true))"
+  echo "  — reporting only, restarting nothing. ./start.sh clears this."
+  echo ""
+  RESTART=false
+fi
+
+# The no-supervisor llama relaunch below is the watchdog acting on its own,
+# so it gets its own budget, persistent across ticks: at most
+# WD_MAX_RELAUNCHES in any WD_WINDOW seconds. Past that the model is crash-
+# looping (the supervisor's own 3-strike give-up leads here too) and the
+# watchdog marks the stack stopped instead of reloading it every 5 minutes
+# forever.
+WD_BUDGET_FILE="$REPO_DIR/.run/watchdog-relaunches"
+WD_MAX_RELAUNCHES=3
+WD_WINDOW=3600
+_wd_budget_take() { # 0 = a relaunch is allowed (and is now counted)
+  local now t kept=()
+  now="$(date +%s)"
+  if [[ -f "$WD_BUDGET_FILE" ]]; then
+    while read -r t; do
+      [[ "$t" =~ ^[0-9]+$ ]] && (( now - t < WD_WINDOW )) && kept+=("$t")
+    done < "$WD_BUDGET_FILE"
+  fi
+  (( ${#kept[@]} < WD_MAX_RELAUNCHES )) || return 1
+  kept+=("$now")
+  mkdir -p "$REPO_DIR/.run"
+  printf '%s\n' "${kept[@]}" > "$WD_BUDGET_FILE"
+}
+
 HEALTHY=0
 UNHEALTHY=0
 
@@ -154,7 +192,7 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
       echo "       → supervisor alive: killing llama-server, letting it relaunch..."
       _kill_own_llama
       for i in $(seq 1 180); do
-        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
+        if ob_llama_ready "$LLAMA_URL"; then
           echo "       → healthy after ${i}s (supervisor relaunched it)"
           break
         fi
@@ -162,36 +200,52 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
       done
     else
       echo "       → no supervisor: restarting llama.cpp directly..."
-      # Path-anchored and ERE-quoted: never an unrelated llama-server from
-      # another project on the same box.
-      if pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
-        _kill_own_llama
-        sleep 2
-      fi
-      # Relaunch the serve script the stack was STARTED with (.run/serve-script,
-      # recorded by start.sh); fall back to the configured default.
-      SERVE_SCRIPT_NAME="$DEFAULT_SERVE_SCRIPT"
-      if [[ -f "$REPO_DIR/.run/serve-script" ]]; then
-        _recorded="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || true)"
-        if [[ -n "$_recorded" && -x "$SCRIPT_DIR/$_recorded" ]]; then
-          SERVE_SCRIPT_NAME="$_recorded"
+      if ! _wd_budget_take; then
+        echo "       → NOT relaunching: ${WD_MAX_RELAUNCHES} watchdog relaunches in the last $((WD_WINDOW / 60)) min —"
+        echo "         the model is crash-looping. Marking the stack stopped; see .run/stack.log,"
+        echo "         then ./start.sh to try again."
+        mkdir -p "$REPO_DIR/.run"
+        printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" \
+          "watchdog: ${WD_MAX_RELAUNCHES} llama relaunches within $((WD_WINDOW / 60)) min" > "$STOPPED_FILE"
+      else
+        # Path-anchored and ERE-quoted: never an unrelated llama-server from
+        # another project on the same box.
+        if pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
+          _kill_own_llama
+          sleep 2
         fi
-      fi
-      echo "       → launching $SERVE_SCRIPT_NAME"
-      "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
-      # Record the pid (serve.sh execs llama-server, so $! IS the server) —
-      # without it, ./start.sh --status reports llama "not running" after a
-      # watchdog restart. Mirrors the mcpo relaunch below.
-      mkdir -p "$REPO_DIR/.run"
-      echo "$!" > "$REPO_DIR/.run/llama.pid"
-      echo "       → started (waiting for health...)"
-      for i in $(seq 1 180); do
-        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
-          echo "       → healthy after ${i}s"
-          break
+        # Relaunch the serve script the stack was STARTED with (.run/serve-script,
+        # recorded by start.sh); fall back to the configured default.
+        SERVE_SCRIPT_NAME="$DEFAULT_SERVE_SCRIPT"
+        if [[ -f "$REPO_DIR/.run/serve-script" ]]; then
+          _recorded="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || true)"
+          if [[ -n "$_recorded" && -x "$SCRIPT_DIR/$_recorded" ]]; then
+            SERVE_SCRIPT_NAME="$_recorded"
+          fi
         fi
-        sleep 1
-      done
+        echo "       → launching $SERVE_SCRIPT_NAME"
+        "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
+        _NEW_LLAMA=$!
+        # Record the pid (serve.sh execs llama-server, so $! IS the server) —
+        # without it, ./start.sh --status reports llama "not running" after a
+        # watchdog restart. Mirrors the mcpo relaunch below.
+        mkdir -p "$REPO_DIR/.run"
+        echo "$_NEW_LLAMA" > "$REPO_DIR/.run/llama.pid"
+        echo "       → started (waiting for health...)"
+        for i in $(seq 1 180); do
+          if ob_llama_ready "$LLAMA_URL"; then
+            echo "       → healthy after ${i}s"
+            break
+          fi
+          # A relaunch that already died will not become healthy in the
+          # remaining minutes; say so now.
+          if ! kill -0 "$_NEW_LLAMA" 2>/dev/null; then
+            echo "       → relaunch FAILED: the serve script exited during startup"
+            break
+          fi
+          sleep 1
+        done
+      fi
     fi
   fi
 fi
@@ -236,9 +290,14 @@ fi
 if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
   if $RESTART; then
     echo "       → restarting Open WebUI..."
-    docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui
-    sleep 5
-    echo "       → restarted"
+    # `|| …`: under set -e a docker that is down killed the watchdog right
+    # here — no SearXNG/gate/chat/artifact checks, no summary.
+    if docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui; then
+      sleep 5
+      echo "       → restarted"
+    else
+      echo "       → restart FAILED (docker compose up failed — daemon down?)"
+    fi
   fi
 fi
 
@@ -246,9 +305,12 @@ fi
 if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   if $RESTART; then
     echo "       → restarting SearXNG..."
-    docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng
-    sleep 3
-    echo "       → restarted"
+    if docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng; then
+      sleep 3
+      echo "       → restarted"
+    else
+      echo "       → restart FAILED (docker compose up failed — daemon down?)"
+    fi
   fi
 fi
 

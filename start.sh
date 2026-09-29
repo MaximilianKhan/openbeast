@@ -230,6 +230,15 @@ export PATH="$HOME/.local/bin:$PATH"
 # With its start time: 'start\.sh' in a command line is not an identity (any
 # project's ./start.sh matches), and stop.sh SIGKILLs what this record names.
 ob_pid_record "$SUP_PID_FILE" "$$"
+# Starting on purpose ends a stop on purpose: the watchdog may recover this
+# stack again (stop.sh wrote .run/stopped; healthcheck.sh honours it), and
+# its relaunch budget starts fresh.
+rm -f "$RUN_DIR/stopped" "$RUN_DIR/watchdog-relaunches"
+# The supervisor giving up on a crash-looping model is a stop too: without
+# the marker the watchdog relaunched it every five minutes, forever.
+_mark_gave_up() {
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "supervisor gave up: $1" > "$RUN_DIR/stopped"
+}
 # Record which serve script this stack runs so healthcheck.sh --restart can
 # relaunch the SAME model instead of assuming the default.
 echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
@@ -862,6 +871,7 @@ while true; do
   [[ $((SECONDS - LAUNCHED_AT)) -gt 300 ]] && RESTARTS=0
   if [[ $RESTARTS -ge 3 ]]; then
     echo "llama-server exited (status $rc) with the restart budget spent — stopping the stack."
+    _mark_gave_up "llama-server exited $((RESTARTS + 1)) times (status $rc)"
     exit 1
   fi
   RESTARTS=$((RESTARTS + 1))
@@ -871,6 +881,7 @@ while true; do
   # won't come back (e.g. a weight went missing under it) rather than dying.
   if ! launch_and_wait; then
     echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
+    _mark_gave_up "relaunched llama-server never became healthy"
     exit 1
   fi
   echo "llama-server healthy again after restart $RESTARTS ($SERVE_SCRIPT)."

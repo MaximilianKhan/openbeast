@@ -341,6 +341,68 @@ else
   fail "stop.sh left extension records behind: $(ls "$_P/.run")"
 fi
 kill "$_STRANGER" "$_EXT_ORPHAN" "$_EXT_REAL" 2>/dev/null || true
+if [[ -s "$_P/.run/stopped" ]]; then
+  pass "stop.sh records that the stack was stopped on purpose (.run/stopped)"
+else
+  fail "stop.sh left no .run/stopped marker — the watchdog will bring the stack back"
+fi
+
+# ---------------------------------------------------------------------------
+# lifecycle-2: the watchdog must not undo ./stop.sh, and must not relaunch a
+# crash-looping model forever once the supervisor has given up.
+# ---------------------------------------------------------------------------
+echo ""
+echo "healthcheck.sh --restart vs a stack stopped on purpose:"
+_W="$_T/wd"; _sandbox "$_W"
+# llama-server is down; every other core service answers.
+cat > "$_W/bin/curl" <<'SH'
+#!/bin/bash
+url=""; for a in "$@"; do [[ "$a" == http* ]] && url="$a"; done
+case "$url" in
+  *:3001/*) printf '{"status":"ok"}' ;;
+  *:3000/*) printf '{"version":"x"}' ;;
+  *:8888*)  printf '<title>searxng</title>' ;;
+  *) exit 7 ;;
+esac
+SH
+chmod +x "$_W/bin/curl"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_W/bin/docker"; chmod +x "$_W/bin/docker"
+# The serve script the stack was started with: records that it ran, exits.
+printf '#!/bin/bash\necho ran >> "%s/serve.log"\nexit 1\n' "$_W" > "$_W/scripts/serve-stub.sh"
+chmod +x "$_W/scripts/serve-stub.sh"
+echo "serve-stub.sh" > "$_W/.run/serve-script"
+_wd() { # run one watchdog tick; prints its output
+  : > "$_W/serve.log"; : > "$_W/docker.log"
+  RUN_ENV=(DOCKER_LOG="$_W/docker.log")
+  timeout 60 bash -c "$(declare -f _run); RUN_ENV=(${RUN_ENV[*]}); _run '$_W' '$_W/scripts/healthcheck.sh' --restart"
+  RUN_ENV=()
+}
+echo "2026-09-29T10:00:00 ./stop.sh" > "$_W/.run/stopped"
+_O="$(_wd)"
+if [[ ! -s "$_W/serve.log" && "$_O" == *"stopped on purpose"* ]]; then
+  pass "after ./stop.sh the watchdog relaunches nothing (was: the model within 5 minutes)"
+else
+  fail "the watchdog relaunched a stack stopped on purpose: serve ran $(wc -l < "$_W/serve.log")x"
+fi
+rm -f "$_W/.run/stopped" "$_W/.run/watchdog-relaunches"
+_O="$(_wd)"
+if [[ -s "$_W/serve.log" && "$_O" == *"relaunch FAILED"* ]]; then
+  pass "with no marker a crashed model IS relaunched, and a relaunch that dies is reported at once (control)"
+else
+  fail "the watchdog did not relaunch a crashed stack: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_wd >/dev/null; _wd >/dev/null      # relaunches 2 and 3 of the hour
+_O="$(_wd)"
+if [[ ! -s "$_W/serve.log" && -s "$_W/.run/stopped" && "$_O" == *"crash-looping"* ]]; then
+  pass "a 4th relaunch within the hour is refused and the stack is marked stopped"
+else
+  fail "the watchdog relaunched a crash-looping model without limit: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q 'rm -f "$RUN_DIR/stopped"' "$REPO_DIR/start.sh" && grep -q '_mark_gave_up' "$REPO_DIR/start.sh"; then
+  pass "start.sh clears the marker on start and sets it when the supervisor gives up"
+else
+  fail "start.sh does not manage .run/stopped"
+fi
 
 # ---------------------------------------------------------------------------
 # extensions-client-4: an extension name is a directory name, nothing else.

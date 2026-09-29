@@ -744,13 +744,19 @@ when configured:
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service
-that's down is restarted automatically — with two deliberate exceptions.
+that's down is restarted automatically — with three deliberate exceptions.
 A llama-server whose `/health` answers `503 "Loading model"` is reported as
 **LOAD**, not down, and left alone (killing a loading model *is* the outage;
 past `OPENBEAST_LLAMA_LOAD_GRACE` seconds — default 900, judged by the
 recorded pid's age — a server still loading counts as wedged and down). And
 while `scripts/gpu-lease.sh status` says `HELD`, the watchdog will not
-relaunch the stack's model into a campaign's window. Every kill is by the
+relaunch the stack's model into a campaign's window. A stack stopped *on
+purpose* stays stopped: `./stop.sh` writes `.run/stopped` (the reason is
+`OPENBEAST_STOP_REASON`, default `./stop.sh`), `./start.sh` removes it, and
+while it exists `--restart` only reports. The supervisor writes it too when
+it gives up on a crash-looping model, and the watchdog's own no-supervisor
+relaunch is budgeted at 3 per hour (`.run/watchdog-relaunches`) before it
+marks the stack stopped. Every kill is by the
 recorded pid, whose command line must still match (`ob_pid_matches` in
 `scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
 stranger.
