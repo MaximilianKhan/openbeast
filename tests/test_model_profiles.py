@@ -122,3 +122,67 @@ def test_shipped_profiles_and_template():
             assert keys == set(obprofile.KEYS), "TEMPLATE.env documents exactly the known keys"
             continue
         obprofile.load(str(f))
+
+
+# --------------------------------------------------------------------------- EXTRA_ARGS policy
+# vLLM's FlexibleArgumentParser maps "_" to "-" and argparse accepts any
+# unambiguous prefix: every spelling below reaches the engine as the refused
+# flag, so each must be refused.
+
+TF_BASE = f"BACKEND=tensorfold\nSOURCE=acme/Brand-New\nREVISION={SHA}\nSERVED_MODEL_NAME=x\n"
+
+
+def extra(tmp_path, args: list[str], base=BASE, ack=""):
+    import json as _json
+    body = base + f"EXTRA_ARGS={_json.dumps(args)}\n" + (f"EXTRA_ARGS_ACK={ack}\n" if ack else "")
+    return load_body(tmp_path, body)
+
+
+@pytest.mark.parametrize("args", [
+    ["--trust_remote_code"], ["--Trust-Remote-Code"], ["--trust-remote"], ["--trust"],
+    ["--code_revision", "main"], ["--code-rev", "main"], ["--api_key=sk-1"], ["--api-key", "sk-1"],
+    ["--hf_token", "x"], ["--tokenizer", "attacker/tok"], ["--tokenizer-rev", "main"],
+    ["--config", "/tmp/args.yaml"], ["--allowed-local-media-path", "/"], ["--allowed_local_media"],
+    ["--middleware", "evil.mod"], ["--worker-cls", "evil.W"], ["--served-model", "y"],
+    ["-tp", "4"], ["-O3"], ["--model=attacker/other"], ["--tool_call_parser", "x"],
+])
+def test_extra_args_spellings_of_refused_flags(tmp_path, args):
+    with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS"):
+        extra(tmp_path, args)
+    with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS"):   # the ACK does not unlock these
+        extra(tmp_path, args, ack=SHA)
+
+
+def test_extra_args_allow_list_and_ack(tmp_path):
+    p = extra(tmp_path, ["--enable-prefix-caching", "--kv_cache_dtype", "fp8", "--no-enable-prefix-caching",
+                         "--max-num-batched-tokens=8192", "--seed", "-1"])
+    assert p.extra_args[1] == "--kv_cache_dtype" and not p.warnings
+    with pytest.raises(obprofile.ProfileError, match="not on the allow list"):
+        extra(tmp_path, ["--enable-sleep-mode"])
+    with pytest.raises(obprofile.ProfileError, match="abbreviation of"):
+        extra(tmp_path, ["--enable-prefix"])
+    with pytest.raises(obprofile.ProfileError, match="not a known flag"):
+        extra(tmp_path, ["--frobnicate"])
+    with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS_ACK"):
+        extra(tmp_path, ["--enable-sleep-mode"], ack=SHA2)          # an ACK for another revision
+    p = extra(tmp_path, ["--enable-sleep-mode"], ack=SHA)
+    assert any("outside the allow list" in w for w in p.warnings)
+
+
+@pytest.mark.parametrize("args", [["--rank", "1"], ["--master", "10.0.0.1"], ["--master_port=1"],
+                                  ["--backend", "mlx"], ["--vision-urls"], ["--vision"], ["--tp", "1"],
+                                  ["--host", "0.0.0.0"], ["--drafter", "attacker/d"], ["--snapshot-dir", "/"]])
+def test_extra_args_tensorfold_launcher_owned(tmp_path, args):
+    with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS"):
+        extra(tmp_path, args, base=TF_BASE, ack=SHA)
+
+
+def test_extra_args_tensorfold_allowed(tmp_path):
+    p = extra(tmp_path, ["--kv-dtype", "int8", "--no-thinking", "--max_tokens", "8192"], base=TF_BASE)
+    assert not p.warnings
+
+
+def test_extra_args_fail_closed_without_vendored_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(obprofile, "DATA", tmp_path / "nowhere")
+    with pytest.raises(obprofile.ProfileError, match="EXTRA_ARGS"):
+        extra(tmp_path, ["--enable-prefix-caching"])

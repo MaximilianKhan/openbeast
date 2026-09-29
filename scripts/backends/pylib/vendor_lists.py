@@ -37,7 +37,49 @@ VLLM_FILES = {
     "reasoning_parsers": "vllm/reasoning/__init__.py",
     "registry": "vllm/model_executor/models/registry.py",
     "quantization": "vllm/model_executor/layers/quantization/__init__.py",
+    "engine_args": "vllm/engine/arg_utils.py",
+    "frontend_args": "vllm/entrypoints/launchers/cli_args.py",
 }
+
+# EXTRA_ARGS policy (obprofile.py). vLLM's FlexibleArgumentParser maps "_"
+# to "-" and argparse accepts any unambiguous prefix, so a deny list of
+# spellings can always be walked around. Instead: an ALLOW list of flags that
+# only tune performance, scheduling or logging (nothing that names a file, a
+# repo, a URL, a class to import, a secret, or a setting the launcher or a
+# profile key owns), checked against the flags that exist at the vendored
+# commit. Anything else needs EXTRA_ARGS_ACK=<REVISION>. The NEVER list is
+# refused even then: secrets, pins, launcher-owned topology, code-import hooks.
+VLLM_EXTRA_ALLOW = [
+    "enable-prefix-caching", "prefix-caching-hash-algo", "kv-cache-dtype", "max-num-batched-tokens",
+    "long-prefill-token-threshold", "enable-chunked-prefill", "disable-chunked-mm-input", "async-scheduling",
+    "block-size", "cpu-offload-gb", "kv-cache-memory-bytes", "enforce-eager", "max-logprobs",
+    "disable-log-stats", "enable-log-requests", "max-log-len", "uvicorn-log-level", "disable-uvicorn-access-log",
+    "seed", "limit-mm-per-prompt", "mm-processor-cache-gb", "enable-expert-parallel", "cudagraph-capture-sizes",
+    "max-cudagraph-capture-size", "disable-cascade-attn", "disable-sliding-window", "scheduling-policy",
+    "default-chat-template-kwargs", "enable-force-include-usage", "enable-prompt-tokens-details",
+    "exclude-tools-when-tool-choice-none", "load-format", "attention-backend",
+]
+VLLM_EXTRA_NEVER = [
+    "api-key", "hf-token", "trust-remote-code", "revision", "code-revision", "tokenizer-revision", "tokenizer",
+    "model", "model-weights", "served-model-name", "host", "port", "uds", "tensor-parallel-size",
+    "pipeline-parallel-size", "nnodes", "node-rank", "master-addr", "master-port", "headless", "chat-template",
+    "tool-call-parser", "reasoning-parser", "enable-auto-tool-choice", "max-model-len", "config", "middleware",
+    "tool-parser-plugin", "reasoning-parser-plugin", "worker-cls", "scheduler-cls", "io-processor-plugin",
+    "allowed-local-media-path", "allowed-media-domains", "download-dir", "hf-config-path", "hf-overrides",
+    "model-loader-extra-config", "speculative-config", "gpu-memory-utilization", "max-num-seqs", "dtype",
+    "quantization", "trust-request-chat-template", "lora-modules", "ssl-keyfile", "ssl-certfile",
+    "ssl-ca-certs", "allowed-origins", "allow-credentials", "root-path", "data-parallel-address",
+]
+TF_EXTRA_ALLOW = [
+    "max-tokens", "temperature", "top-p", "top-k", "thinking", "no-thinking", "reasoning-effort",
+    "thinking-budget", "no-drafts", "drafter-bits", "mtp-drafts", "mtp-confidence", "lane-kernels",
+    "prompt-cache-gib", "checkpoint-slots", "spill-gib", "max-snapshots", "decode-share", "mlx-cache-gib",
+    "kv-dtype",
+]
+TF_EXTRA_NEVER = [
+    "tp", "rank", "master", "master-port", "name", "host", "port", "drafter", "parallel", "context",
+    "backend", "vision-urls", "snapshot-dir", "no-update-check", "ssd-experts", "ple-on-ssd",
+]
 TF_REPO = "ashhart/TensorFold"
 
 
@@ -71,6 +113,30 @@ def _literal_strings(src: str, name: str) -> list[str]:
     raise SystemExit(f"{name} not found as a Literal[...] — the upstream layout changed; update vendor_lists.py")
 
 
+def _flag_strings(src: str) -> set[str]:
+    """Every "--long-flag" string literal plus every class field (as --field-name)."""
+    flags = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and re.match(r"^--[a-z0-9][a-z0-9-]*$", node.value):
+            flags.add(node.value[2:])
+        elif isinstance(node, ast.ClassDef):
+            for x in node.body:
+                if isinstance(x, ast.AnnAssign) and isinstance(x.target, ast.Name) \
+                        and not x.target.id.startswith("_"):
+                    flags.add(x.target.id.replace("_", "-"))
+    return flags
+
+
+def _policy(engine: str, known: set[str], allow: list[str], never: list[str]) -> dict:
+    missing = [f for f in allow if f not in known and not (f.startswith("no-") and f[3:] in known)]
+    if missing:
+        print(f"{engine}: allow-listed flags absent at this commit, dropped: {missing}", file=sys.stderr)
+    return {"serve_flags": sorted(known),
+            "extra_args_allow": sorted(f for f in allow if f not in missing),
+            "extra_args_never": sorted(never)}
+
+
 def vendor_vllm(commit: str) -> dict:
     src = {k: _raw(VLLM_REPO, commit, p) for k, p in VLLM_FILES.items()}
     reg = src["registry"]
@@ -86,7 +152,9 @@ def vendor_vllm(commit: str) -> dict:
             "repo": f"https://github.com/{VLLM_REPO}",
             "commit": commit,
             "files": VLLM_FILES,
-            "how": "scripts/backends/pylib/vendor_lists.py vllm (ast: dict keys / Literal args; nothing imported)",
+            "how": "scripts/backends/pylib/vendor_lists.py vllm (ast: dict keys, Literal args, flag literals and "
+                   "config-class fields; nothing imported). extra_args_allow/never are OpenBeast policy "
+                   "(vendor_lists.py), checked against serve_flags",
             "note": "A release image (NGC vllm:26.05, vllm-openai:*) may predate or postdate this commit. "
                     "Treat 'unknown' as 'unknown to THIS commit', not 'impossible'.",
         },
@@ -97,6 +165,8 @@ def vendor_vllm(commit: str) -> dict:
         "speculative_architectures": sorted(_dict_keys(reg, "_SPECULATIVE_DECODING_MODELS")),
         "previously_supported": {k: v for k, v in _prev(reg).items()},
         "quantization_methods": sorted(_literal_strings(src["quantization"], "QuantizationMethods")),
+        **_policy("vllm", _flag_strings(src["engine_args"]) | _flag_strings(src["frontend_args"]),
+                  VLLM_EXTRA_ALLOW, VLLM_EXTRA_NEVER),
     }
 
 
@@ -231,7 +301,12 @@ def vendor_tensorfold(commit: str, src_dir: Path | None) -> dict:
         }
         entry.update(TF_CURATED.get(name, {}))
         families[name] = entry
+    cli = read("src/tensorfold/cli.py")
+    tf_flags = {n.value[2:] for n in ast.walk(ast.parse(cli))
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.match(r"^--[a-z0-9-]+$", n.value)}
+    tf_flags.add("no-thinking")                     # --thinking is a BooleanOptionalAction
     return {
+        **_policy("tensorfold", tf_flags, TF_EXTRA_ALLOW, TF_EXTRA_NEVER),
         "_provenance": {
             "engine": "TensorFold",
             "repo": f"https://github.com/{TF_REPO}",
@@ -244,7 +319,9 @@ def vendor_tensorfold(commit: str, src_dir: Path | None) -> dict:
                      "family's own check_quantization; modelopt/compressed-tensors must be NVFP4/FP8 "
                      "(cuda/nvfp4/format.py require_config). Checkpoints outside MODELS run with an 'untested' note. "
                      "Source: src/tensorfold/families/__init__.py, src/tensorfold/cli.py:406-445."),
-            "curated": "tp, tp2_quant_methods and notes are hand-read from the cited lines, not parsed",
+            "curated": "tp, tp2_quant_methods and notes are hand-read from the cited lines, not parsed; "
+                       "extra_args_allow/never are OpenBeast policy (vendor_lists.py), checked against "
+                       "serve_flags parsed from src/tensorfold/cli.py",
         },
         "families": families,
     }

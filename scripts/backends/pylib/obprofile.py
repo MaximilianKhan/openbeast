@@ -53,7 +53,8 @@ KEYS = {
     "GPU_MEMORY_UTILIZATION": "vLLM fraction of the 128 GB unified pool (default 0.80)",
     "MAX_NUM_SEQS": "vLLM concurrent sequences (= the rig's INFERENCE_SLOTS)",
     "SPECULATIVE_CONFIG": "vLLM --speculative-config JSON object",
-    "EXTRA_ARGS": "JSON array of extra engine arguments",
+    "EXTRA_ARGS": "JSON array of extra engine arguments (allow-listed flags; others need EXTRA_ARGS_ACK)",
+    "EXTRA_ARGS_ACK": "must equal REVISION to pass EXTRA_ARGS flags outside the allow list",
     "TENSORFOLD_PARALLEL": "TensorFold --parallel: auto | N",
     "DRAFTER_SOURCE": "TensorFold draft model repo id (fetched and pinned like SOURCE)",
     "DRAFTER_REVISION": "full 40-hex commit SHA of DRAFTER_SOURCE",
@@ -62,18 +63,24 @@ KEYS = {
 }
 BOOL_TRUE = {"true", "yes", "1", "on"}
 BOOL_FALSE = {"false", "no", "0", "off", ""}
-# vLLM flags a profile may not smuggle in through EXTRA_ARGS: each one is
-# either a secret on argv or bypasses a check made on a named key.
-FORBIDDEN_EXTRA = {
-    "--trust-remote-code": "use TRUST_REMOTE_CODE (+ the ACK) so the decision is explicit and pinned",
-    "--api-key": "a key on argv is visible in ps and docker inspect; the launcher passes VLLM_API_KEY by environment",
-    "--revision": "use REVISION", "--tokenizer-revision": "use REVISION", "--code-revision": "use REVISION",
-    "--served-model-name": "use SERVED_MODEL_NAME", "--tensor-parallel-size": "use TENSOR_PARALLEL_SIZE",
-    "--host": "the host settings live in spark.env", "--port": "the host settings live in spark.env",
-    "--tool-call-parser": "use TOOL_CALL_PARSER", "--reasoning-parser": "use REASONING_PARSER",
-    "--chat-template": "use CHAT_TEMPLATE", "--max-model-len": "use MAX_MODEL_LEN",
-    "--tp": "use TENSOR_PARALLEL_SIZE", "--name": "use SERVED_MODEL_NAME", "--context": "use MAX_MODEL_LEN",
-    "--drafter": "use DRAFTER_SOURCE/DRAFTER_REVISION", "--parallel": "use TENSORFOLD_PARALLEL",
+# EXTRA_ARGS policy. A deny list of spellings cannot work: vLLM's
+# FlexibleArgumentParser turns "_" into "-" and argparse accepts any
+# unambiguous prefix, so "--trust_remote_code" and "--trust-remote" are
+# --trust-remote-code. The policy is therefore an ALLOW list per engine
+# (data/<engine>.json extra_args_allow: flags that only tune performance,
+# scheduling or logging, checked against the flags that exist at the
+# vendored commit); every other flag needs EXTRA_ARGS_ACK=<REVISION>; and the
+# extra_args_never list (secrets, pins, launcher-owned topology, code-import
+# hooks) is refused even then. Names are compared after "_"→"-" and
+# lowercasing, and a name that is a PREFIX of a never-listed flag counts as
+# that flag. Short options ("-tp", "-O") are refused: their long form is
+# unambiguous, their short form is not.
+NEVER_WHY = {
+    "trust-remote-code": "use TRUST_REMOTE_CODE (+ the ACK) so the decision is explicit and pinned",
+    "api-key": "a key on argv is visible in ps and docker inspect; the launcher passes VLLM_API_KEY by environment",
+    "hf-token": "a token on argv is visible in ps and docker inspect",
+    "revision": "use REVISION", "tokenizer-revision": "use REVISION", "code-revision": "use REVISION",
+    "tokenizer": "the tokenizer comes from the pinned SOURCE", "config": "a YAML file of arbitrary arguments",
 }
 VLLM_ONLY = ("DTYPE", "QUANTIZATION", "TOOL_CALL_PARSER", "REASONING_PARSER", "CHAT_TEMPLATE",
              "TRUST_REMOTE_CODE", "GPU_MEMORY_UTILIZATION", "MAX_NUM_SEQS", "SPECULATIVE_CONFIG")
@@ -205,10 +212,58 @@ def _json_list(p: Profile, key: str) -> list[str]:
 
 
 def _vllm_names() -> dict:
+    return _engine_data("vllm")
+
+
+def _engine_data(engine: str) -> dict:
     try:
-        return json.loads((DATA / "vllm.json").read_text())
+        return json.loads((DATA / f"{engine}.json").read_text())
     except (OSError, ValueError):
         return {}
+
+
+def _norm_flag(token: str) -> str:
+    return token.split("=", 1)[0].lstrip("-").replace("_", "-").lower()
+
+
+def check_extra_args(args: list[str], engine: str, rev: str, ack: str) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for EXTRA_ARGS under the engine's vendored policy."""
+    data = _engine_data(engine)
+    allow = set(data.get("extra_args_allow") or [])       # empty when data is missing: fail closed
+    never = set(data.get("extra_args_never") or [])
+    known = set(data.get("serve_flags") or [])
+    acked = bool(rev) and ack == rev
+    errs: list[str] = []
+    warns: list[str] = []
+    for tok in args:
+        if not tok.startswith("-") or re.match(r"^-\d", tok):
+            continue                                       # a value (or a negative number)
+        if not tok.startswith("--"):
+            errs.append(f"EXTRA_ARGS: short option {tok!r} — use the long form (a short flag's meaning "
+                        "cannot be checked)")
+            continue
+        name = _norm_flag(tok)
+        base = name[3:] if name.startswith("no-") else name
+        hit = next((n for n in sorted(never) if n in (name, base) or n.startswith(name) or n.startswith(base)),
+                   None)
+        if not name or hit:
+            why = NEVER_WHY.get(hit or "", "a profile key, the launcher or spark.env owns it, or it imports "
+                                           "code / names a file, repo or secret")
+            errs.append(f"EXTRA_ARGS may not contain {tok.split('=', 1)[0]} (= --{hit}): {why}")
+            continue
+        if name in allow or (name.startswith("no-") and base in allow):
+            continue
+        abbrev = [k for k in sorted(known) if k.startswith(name) and k != name]
+        if acked:
+            warns.append(f"EXTRA_ARGS {tok.split('=', 1)[0]} is outside the allow list — accepted because "
+                         "EXTRA_ARGS_ACK equals REVISION")
+            continue
+        what = (f"an abbreviation of --{abbrev[0]}" if abbrev and name not in known
+                else "not a known flag at the vendored commit" if name not in known and base not in known
+                else "not on the allow list")
+        errs.append(f"EXTRA_ARGS {tok.split('=', 1)[0]} is {what} (data/{engine}.json extra_args_allow). "
+                    f"If you have checked what it does, set EXTRA_ARGS_ACK={rev or '<REVISION>'}")
+    return errs, warns
 
 
 def validate(p: Profile, backend: str | None = None) -> Profile:
@@ -316,10 +371,11 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
         p.fetch_exclude = _json_list(p, "FETCH_EXCLUDE")
     except ProfileError as e:
         err(str(e))
-    for a in p.extra_args:
-        flag = a.split("=", 1)[0]
-        if flag in FORBIDDEN_EXTRA:
-            err(f"EXTRA_ARGS may not contain {flag}: {FORBIDDEN_EXTRA[flag]}")
+    if b in ("vllm", "tensorfold") and p.extra_args:
+        xe, xw = check_extra_args(p.extra_args, b, rev, p.get("EXTRA_ARGS_ACK"))
+        for e in xe:
+            err(e)
+        p.warnings.extend(xw)
     if errs:
         raise ProfileError("\n".join(f"{p.path.name}: {e}" for e in errs))
     return p
