@@ -13,7 +13,8 @@ Hash key components:
 4b. era components (each omitted when off, so legacy keys stay reachable):
    diag (push-diagnostics toolchain fingerprint), rb (finite reasoning
    budget), greedy (low-churn decode), pack (awareness pack sha —
-   task-scoped to the pack's language).
+   task-scoped to the pack's language), env (opt-in environment
+   fingerprint: weights, llama.cpp build, KV flags, toolchains).
 5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
    opencode.json (which pins the available tools/transport), the agent
    runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
@@ -101,7 +102,8 @@ def cache_key(task: dict[str, Any], model_slug: str,
               diag: str | None = None,
               rb: str | None = None,
               greedy: bool = False,
-              pack: str | None = None) -> str:
+              pack: str | None = None,
+              env: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -133,7 +135,14 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # byte-identical with packs on or off (no --context-file is passed) and
     # so legitimately shares the un-packed era's rows. Omitted when None.
     pk = f".{pack}" if pack else ""
-    return f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}.{_context_hash_cached()}"
+    # Environment era (2026-09-29, opt-in via OPENBEAST_EVAL_ENV_ERA=1):
+    # `env1-<sha8>` over the weights' identity, the llama.cpp build, the
+    # KV/context serve flags and the validator toolchains — none of which
+    # the rest of the key can see (run_eval.env_fingerprint). Omitted when
+    # None, so every existing key stays reachable.
+    en = f".{env}" if env else ""
+    return (f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}{en}."
+            f"{_context_hash_cached()}")
 
 
 def cache_path(key: str) -> Path:
@@ -169,6 +178,36 @@ def cache_put(key: str, result: dict[str, Any]) -> None:
     os.replace(tmp, cache_path(key))
 
 
+# env_error strikes: how many times a key's unit failed on resource
+# exhaustion (run_eval._ENV_ERROR_RE). Kept beside the cache, one small file
+# per key, outside the *.json glob every other helper walks.
+STRIKES_DIR = CACHE_DIR / "env-strikes"
+
+
+def env_error_strike(key: str) -> int:
+    """Record one more env_error for `key`; return the running count.
+    Unreadable state counts as zero — a lost strike costs one extra rerun."""
+    STRIKES_DIR.mkdir(parents=True, exist_ok=True)
+    p = STRIKES_DIR / f"{key}.json"
+    try:
+        n = int(json.loads(p.read_text()).get("strikes", 0))
+    except (OSError, ValueError, AttributeError):
+        n = 0
+    n += 1
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"strikes": n, "last": datetime.now().isoformat()}))
+    os.replace(tmp, p)
+    return n
+
+
+def env_error_strikes_clear(key: str) -> None:
+    """Forget `key`'s strikes (a real verdict was banked for it)."""
+    try:
+        (STRIKES_DIR / f"{key}.json").unlink()
+    except OSError:
+        pass
+
+
 def cache_stats() -> dict[str, Any]:
     """Quick stats for the CLI."""
     if not CACHE_DIR.exists():
@@ -200,4 +239,6 @@ def cache_clear() -> int:
     for p in CACHE_DIR.glob("*.json"):
         p.unlink()
         n += 1
+    for p in STRIKES_DIR.glob("*.json") if STRIKES_DIR.exists() else []:
+        p.unlink()
     return n

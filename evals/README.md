@@ -27,7 +27,7 @@ python3 evals/run_eval.py --suite v5-fast --jobs 4   # pinned fast suite (~0.85 
 python3 evals/benchmark_all.py                       # full sweep across configured models
 python3 evals/benchmark_all.py --models X --suite v5-fast --jobs 4  # fast comparison sweep (implies --no-leaderboard)
 python3 evals/make_fast_suite.py                     # verify the v5-fast pin (identity + drift); --generate to re-pin
-python3 evals/benchmark_all.py --cache-only          # rebuild leaderboard from cache without ever starting a server
+python3 evals/benchmark_all.py --cache-only          # replay every model from cache, no server (report only; never seated)
 python3 evals/scoring.py --rebuild                   # rescore all eval-*.json files into leaderboard.json
 python3 evals/scoring.py --by-category               # per-category drilldown table
 python3 evals/scoring.py --by-language               # per-language drilldown
@@ -86,11 +86,36 @@ default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
 `system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
 (`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
 behavior changes what a "cached result" means). Timeouts (`agent_exit_code
-== -1`) are NOT cached: those are environmental, not deterministic.
+== -1`) are NOT cached: those are environmental, not deterministic. Neither
+are FAILs caused by infrastructure (`cacheable_result` in `run_eval.py`):
+a unit whose runner reported `API_ERRORS: n` ≥ 1, or whose server failed
+the health check right after the agent finished, is recorded with
+`reason: server_error`; a unit whose validation output shows fork/thread
+exhaustion (`Resource temporarily unavailable`, `SystemResources`,
+`thread constructor failed`) or a full disk (`No space left on device`,
+`NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
+next run, and a run containing either can't enter the leaderboard until
+that rerun is done. An `env_error` that repeats for the same cache key
+(`OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default 3) is the model's own
+program exhausting the machine, so it banks as a plain FAIL
+(`env_error_repeats: N`) instead of rerunning forever. Before each live
+unit the harness also checks free space on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
+`/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
+that unit as `reason: low_disk` and stops starting units, so a disk filled
+mid-sweep doesn't turn the rest of the run into ENOSPC failures;
+`benchmark_all.py` then stops the sweep instead of loading the next model.
 
-`--cache-only` mode is the fast-path for "rebuild the leaderboard from
-prior runs" — no server start, no live calls, cache misses are recorded
-as `skipped_cache_miss` for visibility.
+`--cache-only` mode replays banked verdicts into a results file — no
+server start, no live calls, cache misses are recorded as
+`skipped_cache_miss` for visibility. It has no live host (`gpu`/`server`
+are null, `cache_only: true`), so the leaderboard refuses it: seated, it
+was a second `unknown-host` row for the model. To rescore banked runs
+after a scoring change, use `scoring.py --rebuild`. With no server to read the
+reasoning budget from, it replays the `.rbN` era of the model's newest
+live results file (it prints which); `--reasoning-budget N` picks one
+explicitly (`-1` = the uncapped legacy era). A replay with any cache miss
+is also flagged `skipped_cache_miss`, so a replay against the wrong era
+reads as one at a glance.
 
 **The era hash, and the experiment flags that fork it.** Item (e) above is
 one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it
@@ -103,10 +128,33 @@ decoding, the low-churn mode; env `OPENBEAST_EVAL_GREEDY=1` for `run_eval.py`,
 which has no flag) and `--packs` on either runner (Tier-3 language awareness
 packs — `agents/packs/<lang>.md` injected for tasks in that language, zig
 only today, a task-scoped `pack1-<sha8>` era; env `BEAST_PACKS=1`). Both are
-leaderboard-ineligible experiment rows. A `--escalate` arm (beast-lang's
+leaderboard-ineligible experiment rows, and that is enforced: `benchmark_all`
+turns `--greedy`, `--packs` and beast-assist diagnostics into
+`--no-leaderboard`, and `scoring.update_leaderboard` / `scoring.py --rebuild`
+refuse any results file whose `harness` records one of those arms (or an
+escalation component), a fast suite, or infrastructure rows
+(`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
+`env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
 confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
 wiring touches two of the six era files and is a held draft PR (#90), not in
 `main`.
+
+**What the key does not see, and the opt-in env era.** The model is keyed by
+its alias, not its bytes; the llama.cpp build, the KV/context serve flags and
+the validator toolchains (zig/go/rustc/gcc, Python) aren't in the key either.
+So a quant regenerated under the same alias, or a zig upgrade, replays the
+old verdicts. Every live run now computes an `env1-<sha8>` fingerprint over
+exactly those (`run_eval.env_fingerprint`: a weight pinned in
+`scripts/weights.registry` counts as its sha256, an unpinned one as its size +
+mtime, so the file is never hashed). The fingerprint is stamped in
+`harness.env` / `harness.env_component` and on every live row (`env_fp`), and a
+replayed row banked under a different or unrecorded environment is counted
+(`summary.env_drift_replays`, printed as `ENV DRIFT`). It enters the cache
+key only with **`OPENBEAST_EVAL_ENV_ERA=1`**, because turning that on starts
+a new era for every row. Set it for campaigns that pair arms across days or
+across a weight or toolchain change. It's off by default, so existing keys
+stay reachable. `--cache-only` takes the fingerprint from the model's last
+live results file.
 
 Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}[.mi{N}].{ctx_hash}.json`
 (the `.mi{N}` segment carries the effective max-iter when a run threads one).
@@ -692,8 +740,8 @@ return a `usage` block (some legacy llama.cpp builds). `suite_version`,
 v3.5 and v4 scores never get confused and a result is traceable to the exact
 llama.cpp build that produced it. Results are written incrementally
 (`tmp`+`rename` after each task), so a crashed sweep keeps every completed
-task. `--cache-only` runs record `gpu`/`inference_engine` as `{}` (no live
-probe).
+task. `--cache-only` runs record `gpu`/`inference_engine`/`server` as `null`
+(no live probe) and `cache_only: true`.
 
 ## Adding a task
 
