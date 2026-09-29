@@ -44,11 +44,35 @@ RESULTS="$REPO_DIR/.run/fable-fusion-mtp-${QUANT}-results.txt"
 mkdir -p "$REPO_DIR/.run"
 : > "$RESULTS"
 
-# Free the GPU/port if a stack server is already listening on 8080.
-if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+# THE CARD MUST BE OURS. stop.sh deliberately leaves llama-server alone while
+# a GPU lease is HELD, so on a campaign's card the old "stop the stack, then
+# launch" left the campaign's server on :$PORT, ours failed to bind, and
+# wait_health took the campaign's /health as ours: the sweep's requests went
+# into the campaign's timed cells, and its VRAM was recorded as this model's.
+# So: someone else's lease is a hard stop; the stack is stopped only when no
+# lease is held; anything still answering on the port is a refusal; and the
+# sweep itself runs under its own lease (re-exec under gpu-lease.sh run).
+LEASE_RC=0
+LEASE_MSG="$("$SCRIPT_DIR/gpu-lease.sh" check 2>&1)" || LEASE_RC=$?
+if [[ "$LEASE_RC" -ne 0 && "$LEASE_RC" -ne 3 ]]; then
+  echo "Error: the GPU lease is ${LEASE_MSG:-unreadable (unknown is not free)}" >&2
+  echo "  Refusing to profile on a card another job is using — wait for it (scripts/gpu-lease.sh status)." >&2
+  exit 4
+fi
+if [[ "$LEASE_RC" -eq 3 ]] && curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
   echo "A server is already on :$PORT — stopping the stack for the sweep (restart with ./start.sh -d after)."
   "$REPO_DIR/stop.sh" >/dev/null 2>&1 || true
   sleep 3
+fi
+PROBE_RC=0
+curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || PROBE_RC=$?
+if [[ "$PROBE_RC" -ne 7 ]]; then     # 7 = connection refused: nobody is there
+  echo "Error: something still answers on :$PORT — its numbers would be recorded as this model's." >&2
+  echo "  Stop it first (./stop.sh; scripts/gpu-lease.sh status if a job holds the card)." >&2
+  exit 4
+fi
+if [[ "$LEASE_RC" -eq 3 ]]; then
+  exec "$SCRIPT_DIR/gpu-lease.sh" run "$(basename "$0") $*" -- "$SCRIPT_DIR/$(basename "$0")" "$@"
 fi
 
 # Deterministic ~700-token high-structure technical generation → realistic
@@ -61,9 +85,15 @@ REQ() { # $1 = max_tokens
 }
 
 wait_health() { # $1 = server PID
+  # Liveness FIRST, and again after the probe: a server that died on bind
+  # leaves /health to whoever holds the port, and that answer is not ours.
+  # (Captured, not `curl | grep -q`: under pipefail the early-exiting grep
+  # can SIGPIPE curl and turn a match into a failure.)
+  local body
   for _ in $(seq 1 120); do
-    curl -s "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"ok"' && return 0
     kill -0 "$1" 2>/dev/null || return 1
+    body="$(curl -s "http://127.0.0.1:$PORT/health" 2>/dev/null || true)"
+    [[ "$body" == *'"ok"'* ]] && kill -0 "$1" 2>/dev/null && return 0
     sleep 1
   done
   return 1
@@ -78,6 +108,10 @@ run_one() { # $1 = n-max
     -fa on -ngld 99 --host 127.0.0.1 --port "$PORT" > "$logf" 2>&1 &
   local PID=$!
   if ! wait_health "$PID"; then
+    if grep -qiE "couldn'?t bind|failed to bind|address already in use" "$logf" 2>/dev/null; then
+      echo "n=$N  PORT_CONFLICT (see $logf — :$PORT was taken; nothing was measured)" | tee -a "$RESULTS"
+      kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; return
+    fi
     echo "n=$N  FAILED_TO_START (see $logf — likely VRAM OOM at ctx=$CTX; lower SWEEP_CTX)" | tee -a "$RESULTS"
     kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; return
   fi
