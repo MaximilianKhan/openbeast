@@ -4,13 +4,17 @@
 usage: e32_cap_verdict.py <rowA.json> <rowB.json> [--serve-logs /tmp/e32v2-serve-{alias}.log]
                           [--agent-logs <dir>|none]
 Prints, per row: n/passed, imputed capability (harness scoring), tripwire
-failures, the failure audit (killed / harness-death / EAGAIN / API-error
-rows — the row-validity classifier), tokens, wall, per-language passes,
+failures, the failure audit (killed / harness-death / dead-server / EAGAIN /
+API-error rows — the row-validity classifier), tokens, wall, per-language passes,
 serve-log CUDA error count (validity stamp). Then paired McNemar A-vs-B on
 common units (all / zig / non-zig) — REFUSED when either row is incomplete
 (n != 112) — and the Q5-class reference band (capped-20480 uncensored 3.8
 rows, 112 units). Reference frame + card claims quoted so the verdict reads
 standalone.
+
+exit 0 = a paired verdict on two valid, complete rows; 1 = the verdict was
+refused (a row incomplete) or a row is INVALID — a pipeline step must not
+record either as a success.
 
 Two copies exist and are kept BYTE-IDENTICAL: openbeast-research (canonical,
 what the campaign runs) and openbeast research/lowrank/experiments/
@@ -81,6 +85,7 @@ def audit(f, serve_tpl, log_idx):
         print("  zero-token fails that are NOT crashes: "
               + ", ".join(f"{n} {k}" for k, n in sorted(va['benign'].items())))
     print(f"  killed zero-token fails: {len(va['killed'])}/{len(fails)}  harness deaths: {len(va['infra'])}  "
+          f"dead-server fails: {len(va['dead'])}  "
           f"EAGAIN: {len(va['eagain'])}  API-error fails: {len(va['api']) if log_idx is not None else 'n/a'}")
     for r in va['reasons']:
         print(f"    ← ROW INVALID: {r}")
@@ -125,6 +130,7 @@ def main():
     print("\nREFERENCE BAND (Q5-class 3.8, capped 20480, 112 units):")
     for r in refs: print(f"  {r[0]}: passed {r[1]}, imputed {r[2]}")
     if refs: print(f"  band: passed {min(r[1] for r in refs)}-{max(r[1] for r in refs)}, imputed {min(r[2] for r in refs)}-{max(r[2] for r in refs)}")
+    rc = 0
     if len(rows) >= 2:
         (na, a, ca, va, fa), (nb, b, cb, vb, fb) = rows[0], rows[1]
         common = sorted(set(a) & set(b))
@@ -134,15 +140,21 @@ def main():
             # A truncated row pairs on whatever units survived — a p-value on
             # that subset reads like a verdict and is not one.
             print(f"  ✗ NO PAIRED VERDICT: a row is incomplete (needs {SUITE_N} units each) — rerun it")
-            return
+            # Non-zero: a refused verdict is not a verdict, and the campaign
+            # step that records this rc must not log it as a success.
+            return 1
         for name, ids in (('ALL', common), ('zig', [u for u in common if langmap.get(u) == 'zig']), ('non-zig', [u for u in common if langmap.get(u) != 'zig'])):
             x, y, p = mcnemar(a, b, ids)
             print(f"  {name:8s} A-only {len(x):2d}  B-only {len(y):2d}  net(A-B) {len(x)-len(y):+d}  p={p:.3f}")
             if x: print(f"           A-only: {', '.join(x)}")
             if y: print(f"           B-only: {', '.join(y)}")
-        if not (va and vb): print("  ⚠ at least one row INVALID — do not read the paired result as a capability verdict")
+        if not (va and vb):
+            print("  ⚠ at least one row INVALID — do not read the paired result as a capability verdict")
+            rc = 1
     print("\nCARD CLAIMS (ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF README, read 2026-09-11):")
     print("  IQ3_S 'task-lossless': AIME25 100.00 (=BF16), LCB v6 85.71 (=BF16), GPQA-D 89.39 (-0.51); vs UD-IQ3_S +3.33 AIME, +1.71 LCB, -0.51 GPQA")
     print("  IQ2_XS vs UD-IQ2_S at 8.4GB: +10.00 AIME25, +8.59 GPQA-D, +4.57 LCB v6")
     print("  Our instrument: v5-fast agentic-coding suite (112 pinned units, imputed to the 291-unit v4 scale), capped 20480, single slot, stock b10865.")
-main()
+    return rc
+
+sys.exit(main())

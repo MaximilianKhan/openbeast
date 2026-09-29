@@ -331,11 +331,13 @@ def test_e32_refuses_paired_p_on_an_incomplete_row(tmp_path):
     a = _full_row(); a["model"] = "A"
     b = _full_row(); b["model"] = "B"; b["tasks"] = b["tasks"][:41]
     r = _e32(tmp_path, a, b)
-    assert r.returncode == 0, r.stderr
+    # a refused verdict is not a success for the campaign step recording rc
+    assert r.returncode == 1, r.stdout + r.stderr
     assert "NO PAIRED VERDICT" in r.stdout and "p=" not in r.stdout.split("PAIRED")[1]
-    # negative control: two complete rows get their McNemar lines
+    # negative control: two complete, valid rows get their McNemar lines, rc 0
     b = _full_row(); b["model"] = "B"
     r = _e32(tmp_path, a, b)
+    assert r.returncode == 0, r.stdout + r.stderr
     assert "NO PAIRED VERDICT" not in r.stdout and "ALL " in r.stdout
 
 
@@ -346,6 +348,7 @@ def test_e32_setup_death_is_invalid_not_a_cache_hit(tmp_path):
         t.update(SETUP_DEATH)
     r = _e32(tmp_path, a, b)
     assert "validity A=True B=False" in r.stdout, r.stdout
+    assert r.returncode == 1, r.stdout + r.stderr      # an INVALID row fails the step
     assert "4 cached" not in r.stdout
 
 
