@@ -37,11 +37,23 @@ ob_ext_available() {
 
 # Enabled extensions that actually exist on disk, one name per line. Reads the
 # EXTENSIONS conf value (space-separated); silently skips names with no dir.
+# A word that is not a plain name (^[A-Za-z0-9][A-Za-z0-9_-]*$ — the rule
+# ext.sh enforces) is skipped WITH a warning: a hand-edited `dashboard/`,
+# `../x` or `*` would otherwise flow into every consumer below as a path
+# fragment — compose `-f` args, pidfile names, run.sh lookups. Split with
+# `read -a`, not an unquoted `for … in $EXTENSIONS`, which glob-expanded a
+# `*` into whatever files sat in the caller's cwd.
 ob_ext_enabled() {
-  local name
-  for name in ${EXTENSIONS:-}; do
+  local name words=()
+  read -r -a words <<< "${EXTENSIONS:-}" || true
+  for name in ${words[@]+"${words[@]}"}; do
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+      echo "Warning: ignoring invalid extension name '$name' in EXTENSIONS (letters, digits, - and _ only)" >&2
+      continue
+    fi
     [[ -d "$_OB_EXT_DIR/$name" ]] && printf '%s\n' "$name"
   done
+  return 0
 }
 
 ob_ext_is_enabled() { # $1=name -> 0 if enabled

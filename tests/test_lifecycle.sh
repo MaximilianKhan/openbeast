@@ -470,7 +470,9 @@ _launch() { SANDBOX="$_X" EXTENSIONS="$1" timeout 30 bash "$_X/launch.sh" 2>&1 |
 _O="$(_launch "dashboard/ other")"
 _OTHER_PID="$(cat "$_X/.run/ext-other.pid" 2>/dev/null || true)"
 [[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_OTHER_PID"
-if [[ "$_O" == *LAUNCH-LOOP-DONE* && "$_O" == *"skipping invalid extension name 'dashboard/'"* ]]; then
+# (The warning comes from start.sh's own guard or, since round 2, from
+# lib/extensions.sh's ob_ext_enabled filtering it first — either wording.)
+if [[ "$_O" == *LAUNCH-LOOP-DONE* && "$_O" == *"invalid extension name 'dashboard/'"* ]]; then
   pass "start.sh skips EXTENSIONS=\"dashboard/\" instead of dying on .run/ext-dashboard/.pid"
 else
   fail "start.sh's extension loop aborted on 'dashboard/': $(tr '\n' ' ' <<< "$_O")"
