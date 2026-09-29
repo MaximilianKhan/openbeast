@@ -844,6 +844,11 @@ def _rust_indirections(secret):
         # the name in a macro BODY, glued to a `!` passed in as a fragment
         'macro_rules! call { ($b:tt) => { compile_error!{env $b ("HOME")} } }\n'
         'call!(!);\nfn main() {}\n',
+        # round 5: a macro_rules! ATTRIBUTE arm takes its arguments from
+        # `#[call(...)]`, which is no `name!(` (feature-gated on 1.98 today)
+        'macro_rules! call { attr($m:ident, $p:literal) ($($t:tt)*) => '
+        f'{{ compile_error!{{$m!($p)}} }}; }}\n#[call(include_str, "{secret}")]\n'
+        'fn f() {}\nfn main() {}\n',
     ]
 
 
@@ -980,6 +985,15 @@ def _c_side_channels(path):
         f'_Pragma(XS(GCC P(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
         # a feature test is fine; the alias NEXT to one is still an alias
         f'#define H __has_include\n#if defined(__has_include) && H("{path}")\n#endif\n',
+        # round 5: pasting builds the _Pragma OPERATOR too, so the snippet
+        # never spells "pragma", "dependency" or "#if" — and the digraph
+        # `%:%:` is the same paste
+        '#define S(x) #x\n#define XS(x) S(x)\n#define C(a,b) a##b\n'
+        '#define C2(a,b) C(a,b)\n#define PR(x) C2(_Pr,agma)(x)\n'
+        f'PR(XS(GCC C2(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        '#define S(x) #x\n#define XS(x) S(x)\n#define C(a,b) a %:%: b\n'
+        '#define C2(a,b) C(a,b)\n#define PR(x) C2(_Pr,agma)(x)\n'
+        f'PR(XS(GCC C2(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
     ]
 
 
@@ -988,7 +1002,8 @@ C_SIDE_CHANNEL_CONTROLS = [
     '#line 10 "renamed.c"\nint main(void){return 0;}\n',
     '#pragma once\n#pragma GCC diagnostic ignored "-Wunused"\nint main(void){return 0;}\n',
     'int dependency = 1;\nint main(void){return dependency - 1;}\n',
-    '#define CAT(a,b) a##b\nint CAT(x,y) = 0;\nint main(void){return xy;}\n',
+    # `##` in a string or a comment is not a paste (only a directive line is)
+    'const char *s = "a##b";\nint main(void){return s[0] - 97;}\n',
     '#if __has_include(<stdio.h>)\n#endif\nint main(void){return 0;}\n',
     # the portable feature test takes no path, so it is no oracle
     '#if defined(__has_include)\n#if __has_include(<stdio.h>)\n#endif\n#endif\n'
@@ -1024,6 +1039,12 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     dep = '#pragma GCC dependency "{}"\nint main(void){{return 0;}}\n'
     assert c.compile_source(dep.format(secret))
     assert not c.compile_source(dep.format(secret + ".absent"))
+    # ...and the pasted-operator form, which spells neither word, is the same
+    # oracle (round 5)
+    pasted = _c_side_channels(secret)[-2]
+    assert "_Pr,agma" in pasted, "the case list moved; point this at the paste"
+    assert c.compile_source(pasted)
+    assert not c.compile_source(pasted.replace(secret, secret + ".absent"))
     for src in C_SIDE_CHANNEL_CONTROLS:
         assert c.compile_source(src), (src, c.compile_source(src).detail)
 

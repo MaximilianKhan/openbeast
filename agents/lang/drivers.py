@@ -143,12 +143,15 @@ _C_HAS_FEATURE_TEST = re.compile(
     r"(?:\bdefined" + _GAP_C + r"(?:\(" + _GAP_C + r")?"
     r"|^" + _C_DIRECTIVE + r"(?:ifdef|ifndef|elifdef|elifndef)\b" + _GAP_C + r")\Z",
     re.M | re.S)
-#: Token pasting builds that name too: `CAT(__has_,include)("/abs")` inside
-#: an #if works on gcc, and its fragments can hide in any number of macros.
-#: So pasting and a conditional in the same snippet are refused together —
-#: and pasting next to a pragma, which assembles `GCC P(depend,ency)`.
-_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*##", re.M | re.S)
-_C_IF = re.compile(_C_DIRECTIVE + r"(?:if|elif)\b", re.M | re.S)
+#: Token pasting builds any name, and the fragments can hide in any number
+#: of macros: `CAT(__has_,include)("/abs")` inside an #if, `GCC
+#: P(depend,ency)` beside a pragma — and `C(_Pr,agma)(...)`, which builds the
+#: PRAGMA OPERATOR itself, so the snippet never spells "pragma", "dependency"
+#: or "#if" anywhere (reproduced on gcc 16: "fatal error: /abs: No such file"
+#: vs a clean compile). Every narrower rule was one more spelling to find, so
+#: `##` (and its digraph `%:%:`) on a directive line is refused outright. A
+#: refusal is "not judged", never a verdict — the conservative direction.
+_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*(?:##|%:%:)", re.M | re.S)
 #: `#line N "/abs"` (and the GNU `# N "/abs"` linemarker) makes gcc quote
 #: lines of THAT file in the caret block of every later diagnostic. The
 #: operand must be literal: digits, then optionally a plain relative name.
@@ -233,9 +236,9 @@ def _refuse_c(source: str) -> str | None:
             continue                             # defined(__has_include)
         return ("__has_include named without its argument (aliased by a "
                 "macro) is a file-existence oracle no scan can check")
-    if _C_PASTE.search(src) and (_C_IF.search(src) or "pragma" in src.lower()):
-        return ("token pasting in a snippet with #if or a pragma can assemble "
-                "__has_include or `GCC dependency`, file-existence oracles")
+    if _C_PASTE.search(src):
+        return ("token pasting can assemble __has_include, _Pragma or `GCC "
+                "dependency` out of fragments — file-existence oracles")
     for m in _C_LINE.finditer(src):
         operand = re.sub(r"/\*.*?\*/", " ", m.group(1)).split("//", 1)[0].strip()
         ok = _C_LINE_OK.fullmatch(operand)
@@ -393,9 +396,13 @@ def _refuse_rust(source: str) -> str | None:
 
 
 #: Where a macro's token trees open: `name!(`, `name![`, `name!{` (with
-#: `macro_rules! name {` among them), and a 2.0 `macro name` item.
+#: `macro_rules! name {` among them), a 2.0 `macro name` item — and an
+#: ATTRIBUTE, `#[call(include_str, "/abs")]`: `macro_rules!` attribute and
+#: derive arms (`attr(..) (..) => ..`) invoke a user macro from there. They
+#: are feature-gated on rustc 1.98 (E0658), but a stabilisation must not
+#: silently reopen the hole, so attribute brackets count already.
 _RS_TT_OPEN = re.compile(
-    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+"
+    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+|#!?\s*\["
     r"|\b(?!(?:return|if|while|match|in|else|break)\b)\w+\s*!(?!=)\s*[(\[{]")
 
 
