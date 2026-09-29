@@ -188,9 +188,12 @@ list_artifacts(limit=25)
 
 This maps `tailscale serve --bg --https=8446 http://127.0.0.1:3004`, with the
 same MagicDNS and cert pre-checks as every other published port. OpenBeast now
-publishes several, so `setup-tailscale.sh --status` prints the mount table:
-`:443` WebUI, `:8443` inference, `:8444` slot discovery, `:8889` search,
-`:8446` artifacts.
+publishes several, so every `setup-tailscale.sh` setup run (with or without a
+`--publish-*` flag) ends by printing the mount table — `:443` WebUI, `:8443`
+inference, `:8444` slot discovery, `:8445` chat, `:8446` artifacts, `:8889`
+search — each marked published or not. The script has no read-only status
+flag; to just look, run `tailscale serve status`, which lists the same mounts
+by upstream without reconfiguring anything.
 
 **The URLs follow the mount.** With nothing configured, the store asks
 `tailscale serve status` which name it publishes `:8446` under and hands out
