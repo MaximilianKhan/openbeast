@@ -92,9 +92,11 @@ exactly what to install if anything's missing.
   images, and Python deps in one shot ([`docs/UPDATING.md`](docs/UPDATING.md)).
 - **Something off?** `./start.sh doctor` diagnoses config, security posture,
   supply-chain pins, drive wear and every service in one pass.
-- **Leaving it running?** `./scripts/logrotate.sh --install` (one time, no
-  sudo) adds a daily user timer that keeps `stack.log` and the audit trails in
-  `.run/` bounded — bootstrap does not install it for you yet.
+- **Leaving it running?** `./start.sh` installs a daily user timer
+  (`openbeast-logrotate.timer`, no sudo) that keeps `stack.log` and the audit
+  trails in `.run/` bounded, whenever a systemd `--user` manager is present.
+  `LOGROTATE_AUTOINSTALL=false` in `openbeast.conf` opts out;
+  `./scripts/logrotate.sh --install` does it by hand.
 
 The full walkthrough — prerequisites, per-distro toolchain, GPU/driver notes,
 every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.

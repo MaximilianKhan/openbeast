@@ -53,6 +53,8 @@ be sourced before any `docker compose up` so containers get the real values.
 | `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
 | `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While no device is enrolled, serve every caller as a single `anon` device (ignored once one is — then a missing/unknown key is 401). Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
+| `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
+| `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on. Written automatically (`admin@localhost` + a random password) when it rotates the built-in admin's upstream default password — see "The built-in admin account" below |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
@@ -485,7 +487,9 @@ Trade-off on a tailnet-exposed install: anyone holding any device on your
 tailnet — including a lost phone — gets the full admin UI. Layered defense
 says leave it on there; the cost is one login per device. With it off,
 `setup-tailscale.sh` refuses to publish the WebUI unless you pass
-`--i-accept-open-webui`. Auth-off WebUI signs in with upstream's built-in
+`--i-accept-open-webui`, which it records as `ALLOW_OPEN_WEBUI=true` so later
+runs keep publishing and `doctor` reports the open `:443` as a warning, not a
+failure. Auth-off WebUI signs in with upstream's built-in
 `admin@localhost` / `admin`, so if that password was rotated, set it back
 to `admin` (Settings → Account) before turning auth off, or the auth-off
 UI cannot sign in.

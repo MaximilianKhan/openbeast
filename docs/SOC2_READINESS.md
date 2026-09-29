@@ -87,7 +87,7 @@ self-service request-and-approve flow and no key expiry.
 | Tool-call audit: who ran which tool, when | `agents/openapi_tools.py` → `.run/tool-audit.jsonl` | Provided |
 | Prometheus metrics | `agents/edge.py`, `agents/openapi_tools.py` | Provided |
 | Health and consistency reporting | `scripts/doctor.sh`, `scripts/healthcheck.sh` | Provided |
-| Log rotation | `scripts/logrotate-openbeast.conf`, applied by `scripts/logrotate.sh` (daily user timer via `--install`) | Provided, requires `--install` |
+| Log rotation | `scripts/logrotate-openbeast.conf`, applied by `scripts/logrotate.sh` (daily user timer, installed by `start.sh` when a systemd `--user` manager is present; `LOGROTATE_AUTOINSTALL=false` opts out) | Provided |
 
 **The most important caveat in this document:** with `EDGE_GATE=false`, which is
 the default, **there is no inference audit trail and no per-device identity at
