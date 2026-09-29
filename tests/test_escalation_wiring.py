@@ -325,6 +325,24 @@ def test_escalate_imports_are_hashed_or_covered_by_the_gate_outcome():
     assert not uncovered, f"escalate.py imports {sorted(uncovered)} unstamped"
 
 
+def test_campaign_scripts_that_strip_assist_also_strip_escalate():
+    """conf.sh now forwards BEAST_ESCALATE. A campaign that sources it and
+    unsets only the assist flags keeps BEAST_ESCALATE=1 with the checker off,
+    and run_eval aborts the overnight run at its first cell."""
+    scratch = os.path.join(ROOT, "scratch")
+    offenders = []
+    for name in sorted(os.listdir(scratch)):
+        path = os.path.join(scratch, name)
+        if not (name.endswith(".sh") and os.path.isfile(path)):
+            continue
+        for line in open(path):
+            if re.match(r"\s*unset\b.*\bBEAST_ASSIST\b", line):
+                words = set(line.split())
+                if not {"BEAST_ESCALATE", "OPENBEAST_ESCALATE"} <= words:
+                    offenders.append(name)
+    assert not offenders, offenders
+
+
 def test_the_real_tree_names_every_file_the_selector_loads():
     """Guard against the list drifting from the package: every claim file
     escalate.cards_for would load is part of the real component."""

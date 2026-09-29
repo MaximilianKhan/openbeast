@@ -27,7 +27,7 @@ cd $OB
 # UNTREATED model measurements. run_eval's leak guard already strips it (the
 # 09-14 rows recorded diagnostics=False with the key set), but a measurement
 # should not depend on one guard alone.
-unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS
+unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS BEAST_ESCALATE OPENBEAST_ESCALATE  # escalation rides inside assist: strip both or run_eval aborts
 row() {
   local alias="$1" gguf="$2"
   local slog="$L/v3-serve-$alias.log" elog="$L/v3-cap-$alias.log"

@@ -41,7 +41,7 @@ esac
 L=$OB/scratch/logs/campaign; mkdir -p "$L"
 source scripts/conf.sh 2>/dev/null || true
 # openbeast.conf carries BEAST_ASSIST=1 (Max, 2026-09-10) — this is an UNTREATED measurement: never let it leak into the harness.
-unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS
+unset BEAST_ASSIST OPENBEAST_DIAGNOSTICS BEAST_ESCALATE OPENBEAST_ESCALATE  # escalation rides inside assist: strip both or run_eval aborts
 export OPENBEAST_REASONING_BUDGET=20480
 PORT="${FLOOR_PORT:-8080}"
 
