@@ -476,7 +476,17 @@ def capture_server_config(base_url: str = "http://localhost:8080/v1") -> dict:
         if len(owners) == 1:
             return owners[0]
     by_flag = [info for _, info in procs if _server_port(info) == port]
-    return by_flag[0] if len(by_flag) == 1 else {}
+    if len(by_flag) == 1:
+        return by_flag[0]
+    # llama-server IS running here, but none can be tied to this port — most
+    # often a proxy (beast-gate) in front of it. Say so: an empty record makes
+    # the cache era fall back to uncapped, which is wrong for a capped server.
+    print(f"WARNING: {len(procs)} local llama-server(s) running, but none can be "
+          f"identified as the one serving port {port} (a proxy such as beast-gate "
+          f"in front of it, or two candidates). Server config not recorded; the "
+          f"cache era falls back to UNCAPPED. Point --base-url at llama-server's "
+          f"own port to record it.", file=sys.stderr)
+    return {}
 
 
 def capture_suite_version() -> str:

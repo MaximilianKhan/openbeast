@@ -156,3 +156,22 @@ def test_run_eval_asks_about_its_own_base_url(re_, tmp_path, monkeypatch):
     monkeypatch.setattr(re_, "capture_inference_engine_info", lambda: {})
     re_.run_eval(model_name="m", base_url="http://127.0.0.1:18081/v1")
     assert asked == ["http://127.0.0.1:18081/v1"]
+
+
+def test_a_proxy_port_warns_that_the_era_falls_back_to_uncapped(re_, tmp_path, monkeypatch,
+                                                                capsys):
+    """--base-url on beast-gate's port: llama-server runs (capped) on 8080 but
+    nothing llama-server owns listens on 8443. The record is {} — and the run
+    must say so, since that silently means the uncapped cache era."""
+    re_._pgrep_lines = [f"200 {EVAL}"]
+    _fake_proc(tmp_path, {8080: "222", 8443: "333"}, {"200": ["222"]})
+    monkeypatch.setattr(re_, "PROC_ROOT", str(tmp_path))
+    assert re_.capture_server_config("http://localhost:8443/v1") == {}
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "8443" in err and "UNCAPPED" in err
+    # Negative controls: the server's own port, and no local server at all,
+    # stay quiet.
+    assert re_.capture_server_config("http://localhost:8080/v1")["reasoning_budget"] == "20480"
+    re_._pgrep_lines = []
+    assert re_.capture_server_config("http://localhost:8443/v1") == {}
+    assert "WARNING" not in capsys.readouterr().err

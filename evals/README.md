@@ -753,7 +753,11 @@ becomes the `.rbN` cache era) is the llama-server that LISTENs on the
 `--base-url` port — resolved from the socket's inode in `/proc/net/tcp`,
 else the `--port` on its command line — never simply the first
 `pgrep` hit, which could be a sidecar on another port. A remote
-`--base-url`, or two indistinguishable candidates, records `{}`.
+`--base-url`, or two indistinguishable candidates, records `{}`. So does
+a `--base-url` on a proxy port (beast-gate) in front of llama-server: with
+no server config the cache era is the uncapped one even if the server runs
+capped, so the run prints a WARNING — point `--base-url` at llama-server's
+own port for a capped era.
 
 ## Adding a task
 
