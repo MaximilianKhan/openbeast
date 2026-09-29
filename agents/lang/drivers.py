@@ -134,12 +134,19 @@ _C_HAS = re.compile(
     + r"\(" + _GAP_C + r"(?:" + _C_HEADER + r")?", re.M | re.S)
 #: …and the same operator NOT followed by `(`: `#define H __has_include` then
 #: `#if H("/abs")` evaluates it with an argument no scan above ever sees.
+#: Except the portable feature test, `#if defined(__has_include)` /
+#: `#ifdef __has_include`, which yields 0 or 1 and never takes a path.
 _C_HAS_BARE = re.compile(
-    _C_DIRECTIVE + r"[^\n]*?\b__has_(?:include_next|include|embed)(?:__)?\b"
-    + r"(?!" + _GAP_C + r"\()", re.M | re.S)
+    r"\b__has_(?:include_next|include|embed)(?:__)?\b(?!" + _GAP_C + r"\()")
+_C_DIRECTIVE_AT = re.compile(_C_DIRECTIVE, re.M | re.S)
+_C_HAS_FEATURE_TEST = re.compile(
+    r"(?:\bdefined" + _GAP_C + r"(?:\(" + _GAP_C + r")?"
+    r"|^" + _C_DIRECTIVE + r"(?:ifdef|ifndef|elifdef|elifndef)\b" + _GAP_C + r")\Z",
+    re.M | re.S)
 #: Token pasting builds that name too: `CAT(__has_,include)("/abs")` inside
 #: an #if works on gcc, and its fragments can hide in any number of macros.
-#: So pasting and a conditional in the same snippet are refused together.
+#: So pasting and a conditional in the same snippet are refused together —
+#: and pasting next to a pragma, which assembles `GCC P(depend,ency)`.
 _C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*##", re.M | re.S)
 _C_IF = re.compile(_C_DIRECTIVE + r"(?:if|elif)\b", re.M | re.S)
 #: `#line N "/abs"` (and the GNU `# N "/abs"` linemarker) makes gcc quote
@@ -218,12 +225,17 @@ def _refuse_c(source: str) -> str | None:
         if path is None or _escapes(path):
             return ("__has_include on a host path (or a computed one) is a "
                     "file-existence oracle")
-    if _C_HAS_BARE.search(src):
+    for m in _C_HAS_BARE.finditer(src):
+        start = src.rfind("\n", 0, m.start()) + 1
+        if not _C_DIRECTIVE_AT.match(src, start):
+            continue                             # not on a directive line
+        if _C_HAS_FEATURE_TEST.search(src[start:m.start()]):
+            continue                             # defined(__has_include)
         return ("__has_include named without its argument (aliased by a "
                 "macro) is a file-existence oracle no scan can check")
-    if _C_PASTE.search(src) and _C_IF.search(src):
-        return ("token pasting in a snippet with #if can assemble "
-                "__has_include, a file-existence oracle")
+    if _C_PASTE.search(src) and (_C_IF.search(src) or "pragma" in src.lower()):
+        return ("token pasting in a snippet with #if or a pragma can assemble "
+                "__has_include or `GCC dependency`, file-existence oracles")
     for m in _C_LINE.finditer(src):
         operand = re.sub(r"/\*.*?\*/", " ", m.group(1)).split("//", 1)[0].strip()
         ok = _C_LINE_OK.fullmatch(operand)

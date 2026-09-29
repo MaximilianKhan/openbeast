@@ -975,6 +975,11 @@ def _c_side_channels(path):
         f'#define H __has_include\n#if H("{path}")\n#error present\n#endif\n',
         f'#define H __has_include_next\n#if H(<{path}>)\n#endif\n',
         f'#define CAT(a,b) a##b\n#if CAT(__has_,include)("{path}")\n#error present\n#endif\n',
+        # round 4: pasting builds the word `dependency` with no #if in sight
+        '#define S(x) #x\n#define XS(x) S(x)\n#define P(a,b) a##b\n'
+        f'_Pragma(XS(GCC P(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        # a feature test is fine; the alias NEXT to one is still an alias
+        f'#define H __has_include\n#if defined(__has_include) && H("{path}")\n#endif\n',
     ]
 
 
@@ -985,6 +990,11 @@ C_SIDE_CHANNEL_CONTROLS = [
     'int dependency = 1;\nint main(void){return dependency - 1;}\n',
     '#define CAT(a,b) a##b\nint CAT(x,y) = 0;\nint main(void){return xy;}\n',
     '#if __has_include(<stdio.h>)\n#endif\nint main(void){return 0;}\n',
+    # the portable feature test takes no path, so it is no oracle
+    '#if defined(__has_include)\n#if __has_include(<stdio.h>)\n#endif\n#endif\n'
+    'int main(void){return 0;}\n',
+    '#ifdef __has_include\n#endif\nint main(void){return 0;}\n',
+    '#if defined __has_include\n#endif\nint main(void){return 0;}\n',
 ]
 
 
