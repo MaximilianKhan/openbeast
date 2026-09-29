@@ -1484,6 +1484,28 @@ def _fetch_url_blocked(url: str) -> str | None:
     return reason
 
 
+# Whole-request wall-clock budget for fetch (connect, headers, redirects and
+# body together). urllib's timeout= is PER SOCKET OPERATION: a server that
+# drips one byte every 29 s kept read() looping toward the 8 MB cap for days,
+# pinning a worker of the shared tool server (guest-reachable) per call.
+_FETCH_DEADLINE = 45.0
+_fetch_state = threading.local()
+
+
+def _fetch_track(sock) -> None:
+    """Register a freshly connected socket with the in-flight fetch's
+    watchdog. A dup is kept (not the object) because TLS wrapping detaches
+    the original; shutdown() on the dup still ends the shared connection,
+    which unblocks a recv stuck in another frame of this thread."""
+    socks = getattr(_fetch_state, "socks", None)
+    if socks is None:
+        return
+    try:
+        socks.append(sock.dup())
+    except OSError:
+        pass
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
     hostname — the IP the SSRF guard approved is the exact IP we connect to."""
@@ -1494,6 +1516,7 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
     def connect(self):
         self.sock = socket.create_connection(
             (self._pinned_ip, self.port), self.timeout, self.source_address)
+        _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
 
@@ -1508,6 +1531,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def connect(self):
         sock = socket.create_connection(
             (self._pinned_ip, self.port), self.timeout, self.source_address)
+        _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
@@ -1569,6 +1593,41 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory.
     max_length = max(1, min(int(max_length), 2_000_000))
+    # Total-deadline watchdog: at _FETCH_DEADLINE it shuts down every socket
+    # this call opened, so a slow drip anywhere (TLS handshake, headers,
+    # body, a redirect hop) ends instead of holding the worker.
+    socks: list = []
+    expired = threading.Event()
+
+    def _expire():
+        expired.set()
+        for s_ in list(socks):
+            try:
+                s_.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    deadline = time.monotonic() + _FETCH_DEADLINE
+    watchdog = threading.Timer(_FETCH_DEADLINE, _expire)
+    watchdog.daemon = True
+    _fetch_state.socks = socks
+    watchdog.start()
+    try:
+        return _fetch_body(url, max_length, deadline, expired)
+    finally:
+        watchdog.cancel()
+        _fetch_state.socks = None
+        for s_ in socks:
+            try:
+                s_.close()
+            except OSError:
+                pass
+
+
+def _fetch_body(url: str, max_length: int, deadline: float,
+                expired: threading.Event) -> str:
+    """fetch()'s request + decode, run under its total-deadline watchdog."""
+    raw_bytes = b""
     try:
         req = urllib.request.Request(
             url,
@@ -1588,8 +1647,31 @@ def fetch(url: str, max_length: int = 50_000) -> str:
                     codecs.lookup(charset)
                 except LookupError:
                     charset = "utf-8"
-            raw_bytes = resp.read(max_length * 4)
+            # Chunked read1() (one recv at most per call), not read(n) —
+            # which loops internally until n bytes — so the deadline is
+            # checked between every network read.
+            limit = max_length * 4
+            buf = bytearray()
+            read_some = getattr(resp, "read1", resp.read)
+            while len(buf) < limit and time.monotonic() < deadline:
+                try:
+                    chunk = read_some(min(65536, limit - len(buf)))
+                except (OSError, http.client.HTTPException):
+                    if expired.is_set() and buf:
+                        break  # the watchdog cut it: keep what arrived
+                    raise
+                if not chunk:
+                    break
+                buf += chunk
+            raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
+        cut_note = ""
+        if expired.is_set() or time.monotonic() >= deadline:
+            if not raw_bytes:
+                return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                        f"total deadline (server too slow)")
+            cut_note = (f"\n\n[fetch stopped at its {_FETCH_DEADLINE:.0f}s total "
+                        f"deadline — partial content, {len(raw_bytes)} bytes]")
 
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
             # Every pattern here must be LINEAR on hostile input: re holds
@@ -1611,7 +1693,7 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         if len(text) > max_length:
             text = text[:max_length] + f"\n\n[truncated at {max_length} chars — {len(raw_bytes)} bytes fetched]"
 
-        return text if text else "(empty response)"
+        return (text + cut_note) if text else "(empty response)" + cut_note
     except urllib.error.HTTPError as e:
         body = ""
         try:
@@ -1620,8 +1702,14 @@ def fetch(url: str, max_length: int = 50_000) -> str:
             pass
         return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
     except urllib.error.URLError as e:
+        if expired.is_set():
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (server too slow)")
         return f"URL error: {e.reason}"
     except Exception as e:
+        if expired.is_set():
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (server too slow)")
         return f"Error: {e}"
 
 

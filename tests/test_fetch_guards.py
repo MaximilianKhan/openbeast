@@ -353,5 +353,97 @@ class TestHtmlStripIsLinear(unittest.TestCase):
             self.assertNotIn(gone, out)
 
 
+class TestFetchTotalDeadline(unittest.TestCase):
+    """urllib's timeout= is per socket operation: a server dripping a byte
+    every few seconds used to hold a tool-server worker until the 8 MB cap
+    or EOF. fetch now has a whole-request deadline (_FETCH_DEADLINE)."""
+
+    def setUp(self):
+        import threading
+        import tools
+        self.tools = tools
+        self._saved = (tools._fetch_url_blocked, tools._resolve_vetted,
+                       getattr(tools, "_FETCH_DEADLINE", None))
+        # Loopback tarpit: bypass the SSRF guard for this server only.
+        tools._fetch_url_blocked = lambda url: None
+        tools._resolve_vetted = lambda host, port, scheme: (["127.0.0.1"], None)
+        tools._FETCH_DEADLINE = 1.0
+        self.stop = threading.Event()
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.threads = []
+
+    def tearDown(self):
+        (self.tools._fetch_url_blocked, self.tools._resolve_vetted,
+         self.tools._FETCH_DEADLINE) = self._saved
+        self.stop.set()
+        self.srv.close()
+        for t in self.threads:
+            t.join(timeout=5)
+
+    def _serve(self, head: bytes, drip: bytes, every: float):
+        import threading
+
+        def run():
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.recv(65536)
+                    conn.sendall(head)
+                    for b in drip:
+                        if self.stop.wait(every):
+                            return
+                        conn.sendall(bytes([b]))
+                    self.stop.wait(30)  # then stall, holding the socket open
+                except OSError:
+                    return  # the client hung up — the point of the test
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+    def _timed_fetch(self):
+        import time
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"http://127.0.0.1:{self.port}/")
+        return out, time.monotonic() - t0
+
+    def test_body_drip_is_cut_at_the_deadline(self):
+        self._serve(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: 300\r\n\r\n", b"a" * 300, 0.05)
+        out, dt = self._timed_fetch()
+        self.assertLess(dt, 5.0, out)          # was ~15 s: the whole drip
+        self.assertIn("deadline", out)
+        self.assertIn("aaa", out)              # partial body kept
+
+    def test_header_drip_is_cut_at_the_deadline(self):
+        self._serve(b"HTTP/1.1 200 OK\r\n", b"X-Slow: " + b"z" * 300, 0.05)
+        out, dt = self._timed_fetch()
+        self.assertLess(dt, 5.0, out)
+        self.assertIn("deadline", out)
+
+    def test_stalled_tls_handshake_is_cut_at_the_deadline(self):
+        # The socket is registered BEFORE wrap_socket, so a server that
+        # never answers the ClientHello is cut too (the dup survives the
+        # detach TLS wrapping does to the original socket object).
+        self._serve(b"", b"", 0)
+        import time
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"https://127.0.0.1:{self.port}/")
+        self.assertLess(time.monotonic() - t0, 5.0, out)
+        self.assertIn("deadline", out)
+
+    def test_fast_server_unaffected(self):
+        # Negative control: a prompt response is returned whole, no note.
+        self._serve(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: 5\r\n\r\nhello", b"", 0)
+        out, _ = self._timed_fetch()
+        self.assertEqual(out, "hello")
+
+
 if __name__ == "__main__":
     unittest.main()
