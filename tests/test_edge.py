@@ -381,6 +381,25 @@ class TestBodyFailsClosed:
         assert r.status_code == 400 and "content" not in cap
         assert time.monotonic() - t < 5.0
 
+    def test_utf16_body_cannot_smuggle_depth_past_the_cap(self, edge, tmp_path):
+        # json.loads(bytes) auto-detects UTF-16; "\u2200" encodes as 00 22 —
+        # a stray quote byte that desynced the byte-level depth scan, so
+        # the 2000-deep pad was counted as string content and forwarded.
+        deep = edge.MAX_JSON_DEPTH + 100
+        s = ('{"x":"\u2200","pad":' + "[" * deep + "]" * deep
+             + ',"z":"\u2200","id_slot":3,"messages":[]}')
+        for enc in ("utf-16-le", "utf-16", "utf-32"):
+            r, cap, _ = self._post(edge, tmp_path, s.encode(enc))
+            assert r.status_code == 400, (enc, r.text)
+            assert "content" not in cap
+        # Negative control: the same shallow body in UTF-8 (BOM or not) passes.
+        ok = '{"x":"\u2200","id_slot":3,"messages":[]}'
+        for raw in (ok.encode(), b"\xef\xbb\xbf" + ok.encode()):
+            r, cap, _ = self._post(edge, tmp_path, raw)
+            assert r.status_code == 200, r.text
+            sent = json.loads(cap["content"])
+            assert sent["x"] == "\u2200" and sent["id_slot"] == 0
+
     @pytest.mark.parametrize("content", [
         b"{ this is not json",
         b'[{"id_slot": 3}]',                  # valid JSON, not an object

@@ -635,13 +635,23 @@ def _sanitize_body(raw: bytes, device: dict,
     so a body it cannot parse must never reach llama-server verbatim — that
     was a parser differential that bypassed all of them.
     """
+    # Strict UTF-8 FIRST. json.loads(bytes) would auto-detect UTF-16/32, and
+    # the byte-level depth scan below assumes an ASCII-compatible encoding:
+    # a UTF-16 "∀" (bytes 00 22) is a stray quote that desyncs it, letting a
+    # body nested far past the cap through. llama-server only takes UTF-8.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BadBody("request body is not UTF-8")
+    if text.startswith("\ufeff"):
+        text = text[1:]         # UTF-8 BOM: json.loads(bytes) took it
     if _json_too_deep(raw):
         raise BadBody(f"request body nests deeper than {MAX_JSON_DEPTH} levels")
     try:
-        body = json.loads(raw)
+        body = json.loads(text)
     except (ValueError, RecursionError) as e:
-        # ValueError covers JSONDecodeError, invalid UTF-8 and Python's
-        # int-digit limit; RecursionError is belt-and-braces behind the cap.
+        # ValueError covers JSONDecodeError and Python's int-digit limit;
+        # RecursionError is belt-and-braces behind the cap.
         raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
     if not isinstance(body, dict):
         raise BadBody("request body must be a JSON object")
