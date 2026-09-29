@@ -300,7 +300,7 @@ echo 'EDGE_GATE=true' >> openbeast.conf
 ```
 
 On the laptop, hand the key to the client: `./scripts/setup-client.sh --host
-<rig> --api-key <key>`. Revoke a device with `./scripts/clients.sh revoke
+<rig> --api-key-stdin`, then paste the key (it stays out of `ps`). Revoke a device with `./scripts/clients.sh revoke
 laptop`; the next request 401s. `./start.sh` prints the gate's auth mode
 (`auth=closed` until the first device is enrolled), and
 `.run/inference-audit.jsonl` records every inference call by device.

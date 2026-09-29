@@ -203,8 +203,8 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Or without a clone: fetch just the script and it makes its own slim checkout.
-Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key <key>`
-(keyed rig), `--no-search`, `--local-search` (own SearXNG container via Docker
+Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key-stdin`
+(keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--no-search`, `--local-search` (own SearXNG container via Docker
 Desktop/Engine — bridge network, loopback-only port map), `--uninstall`.
 
 What lands: an isolated venv + slim checkout under `~/.openbeast-client`,
@@ -287,7 +287,7 @@ Three more things that surprise owners:
 ./scripts/setup-client.sh --host their-rig.their-tailnet.ts.net
 ```
 
-Add `--api-key <key>` if they run [keyed mode](#keyed-mode-optional-off-by-default)
+Add `--api-key-stdin` (then paste the key) if they run [keyed mode](#keyed-mode-optional-off-by-default)
 or have enrolled your device through beast-gate; skip `--publish-searxng` on
 their side and pass `--local-search` on yours if you'd rather your queries never
 touch their SearXNG.
@@ -357,7 +357,7 @@ looping unattended on someone else's rig. See
 
 | script | role | takes |
 |---|---|---|
-| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key`, `--local-search`, `--uninstall` |
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--local-search`, `--uninstall` |
 | `scripts/client.sh` | **operates** | subcommands — `status`, `agent`, `search`, `update`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a
@@ -449,7 +449,7 @@ echo "EDGE_GATE=true" >> openbeast.conf
 ./scripts/setup-tailscale.sh          # repoints :8443 at the gate
 
 # client
-./scripts/setup-client.sh --api-key <the key from enroll>
+./scripts/setup-client.sh --api-key-stdin   # paste the key from enroll; it stays out of ps
 ```
 
 What each remote request now passes through:
