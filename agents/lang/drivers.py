@@ -197,6 +197,18 @@ _RS_MACRO_NAME = re.compile(r"\b(include|include_str|include_bytes|env|option_en
 _RS_BARE_NAME = re.compile(
     r"\b(include|include_str|include_bytes|option_env|env)\b(?!\s*!(?!=))")
 _RS_MACRO_DEF = re.compile(r"\bmacro_rules\b|\bmacro\b")
+#: `#[path = "/abs"] mod x;` built by a macro: `($m:meta) => { #[$m] mod x; }`
+#: with `m!(path = "/etc/hostname")`, or `#[$a = "/abs"]` with `m!(path)`.
+#: The text `path =` never appears inside a `#[…]`, and rustc parses the host
+#: file as a module and quotes it in the diagnostic (reproduced on 1.98).
+#: Chasing how the attribute is spelled is the losing game, so both ends are
+#: closed instead: (1) a `#[…]` that holds a `$` (an attribute assembled from
+#: fragments), and (2) the only thing #[path] can act on — an out-of-line
+#: `mod name;`. Inside a macro's tokens a `mod` is allowed only as a plain
+#: inline `mod name {`; `mod x;`, `mod $n`, `$k x;` with `m!(mod)` all refuse.
+#: (An inline `mod a { mod b; }` is caught by its inner `mod b;`.)
+_RS_ATTR_OPEN = re.compile(r"#!?\s*\[")
+_RS_MOD = re.compile(r"\bmod\b(?!\s*(?:r#)?[A-Za-z_]\w*\s*\{)")
 #: `#![debugger_visualizer(natvis_file = "/abs")]` makes rustc open that path:
 #: a read, and at minimum a file-existence oracle.
 _RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
@@ -388,6 +400,14 @@ def _refuse_rust(source: str) -> str | None:
                 return (f"`{m.group(1)}` named inside a macro's tokens can "
                         f"reach the builtin through the macro, which no scan "
                         f"of `{m.group(1)}!` sees")
+        for m in _RS_ATTR_OPEN.finditer(view):
+            if "$" in _balanced(view, m.end() - 1):
+                return ("an attribute built from macro fragments (`#[$m]`) can "
+                        "be #[path = …], which makes rustc read another file")
+        for m in _RS_MOD.finditer(view):
+            if _in_token_tree(view, m.start()):
+                return ("an out-of-line `mod` inside a macro's tokens can take "
+                        "a #[path] the macro assembles, which reads another file")
     if _RS_PATH_ATTR.search(view):
         return "a #[path = …] attribute makes rustc read another file"
     if _RS_FILE_ATTR.search(view):
@@ -404,6 +424,20 @@ def _refuse_rust(source: str) -> str | None:
 _RS_TT_OPEN = re.compile(
     r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+|#!?\s*\["
     r"|\b(?!(?:return|if|while|match|in|else|break)\b)\w+\s*!(?!=)\s*[(\[{]")
+
+
+def _balanced(view: str, at: int) -> str:
+    """The bracketed group opening at `at`, brackets included; to the end of
+    the view when it never closes (the safe side: more text is scanned)."""
+    depth = 0
+    for i in range(at, len(view)):
+        if view[i] in "([{":
+            depth += 1
+        elif view[i] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return view[at:i + 1]
+    return view[at:]
 
 
 def _in_token_tree(view: str, at: int) -> bool:

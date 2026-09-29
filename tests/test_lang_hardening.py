@@ -873,6 +873,16 @@ def _rust_indirections(secret):
         'macro_rules! call { attr($m:ident, $p:literal) ($($t:tt)*) => '
         f'{{ compile_error!{{$m!($p)}} }}; }}\n#[call(include_str, "{secret}")]\n'
         'fn f() {}\nfn main() {}\n',
+        # fixup: #[path] assembled from fragments, so no `#[… path =` exists;
+        # rustc parses the host file as a module and quotes it (1.98)
+        'macro_rules! m { ($m:meta) => { #[$m] mod x; } }\n'
+        f'm!(path = "{secret}");\nfn main() {{}}\n',
+        f'macro_rules! m {{ ($a:ident) => {{ #[$a = "{secret}"] mod x; }} }}\n'
+        'm!(path);\nfn main() {}\n',
+        # …and with no `#[` at all: the `#` passed in, so only the out-of-line
+        # `mod x;` inside the macro is left to refuse
+        'macro_rules! m { ($h:tt $k:tt) => { $h [cfg_attr(all(), $k = '
+        f'"{secret}")] mod x; }} }}\nm!(# path);\nfn main() {{}}\n',
     ]
 
 
@@ -894,7 +904,15 @@ def test_a_builtin_named_through_a_macro_is_refused(secret):
                 'use std::env;\nmacro_rules! a { () => { 1 } }\n'
                 'fn main() { let _ = env::args(); let _ = a!(); }\n',
                 'macro_rules! a { () => { true } }\n'
-                'fn main() { if !a!() { let env = 1; let _ = env; } }\n'):
+                'fn main() { if !a!() { let env = 1; let _ = env; } }\n',
+                # an INLINE module from a macro, a `$t:path` fragment, and a
+                # plain attribute next to a macro stay valid
+                'macro_rules! m { () => { mod inner { pub fn f() {} } } }\n'
+                'm!();\nfn main() { inner::f(); }\n',
+                'macro_rules! m { ($t:path) => { let _: $t = Default::default(); } }\n'
+                'fn main() { m!(u8); }\n',
+                '#[derive(Debug)]\nstruct S;\nmacro_rules! m { () => { 1 } }\n'
+                'fn main() { let _ = m!(); let _ = S; }\n'):
         assert rs.refusal(src) is None, src
         if shutil.which("rustc"):
             assert rs.compile_source(src), (src, rs.compile_source(src).detail)
@@ -907,6 +925,10 @@ def test_the_macro_indirection_leak_was_real(secret, monkeypatch):
     monkeypatch.setattr(D.RustDriver, "refusal", lambda self, s: None)
     r = D.driver_for("rust").compile_source(_rust_indirections(secret)[0])
     assert not r and "hunter2" in r.detail, r.detail[:300]
+    # and through the assembled #[path]: all three read the file
+    for src in _rust_indirections(secret)[-3:]:
+        r = D.driver_for("rust").compile_source(src)
+        assert not r and "hunter2" in r.detail, (src, r.detail[:300])
 
 
 # --- a refusal is not a verdict, and a comment is not a directive -------------
