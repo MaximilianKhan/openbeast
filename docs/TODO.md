@@ -71,10 +71,15 @@ In order, each on Max's go:
    wiring touches no era-hashed file; live-check it on `beastup`.
 4. **Greedy floor**: not needed for the default regime (the Tier-3
    replicates measured it: ~30%). Run `greedy_floor.sh --single-slot` only
-   if single-slot low churn is worth ~20 GPU-h. Both runs are now
-   `--no-cache`. The IQ2 pair (stage F, `master4`) is still pending. The
-   row guard now flags harness deaths, EAGAIN and dead-server fails, and
-   `e32_cap_verdict.py` refuses a p-value when a row is incomplete.
+   if single-slot low churn is worth ~20 GPU-h, and **with the stack
+   DOWN**: it refuses (exit 3) when anything already serves :8080, and
+   aborts unless its own server reports `total_slots == 1`. Both runs are
+   now `--no-cache`. The IQ2 pair (stage F, `master4`) is still pending.
+   The row guard now flags harness deaths, EAGAIN, API-error fails matched
+   in the agent logs, and live zero-token fails with a normal exit (the
+   shape of a unit run against a dead server). `e32_cap_verdict.py` refuses
+   a p-value when a row is incomplete and exits 1 on a refused verdict or
+   an INVALID row.
 5. **Merge draft #90** at that boundary, run the P4 zig mini-A/B
    (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the index
    wins.

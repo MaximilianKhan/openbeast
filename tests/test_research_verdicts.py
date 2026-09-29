@@ -17,7 +17,9 @@ pins and asserts the negative control next to it.
   * e32_cap_verdict: refuses a paired p-value when a row is incomplete and
     uses the shared classifier (a setup death makes the row INVALID).
   * greedy_floor.sh: both floor runs are --no-cache; --single-slot runs a
-    -np 1 server with --jobs 1 and stops it by pid, never by name.
+    -np 1 server with --jobs 1 and stops it by pid, never by name — and
+    refuses to start when something already serves the port, aborting unless
+    its own live pid answers with total_slots == 1.
   * row_validity: a live zero-token fail with a normal exit (a dead server)
     voids the row; a missing agent-log dir reads as "unchecked", not clean.
 """
@@ -371,12 +373,29 @@ def floor_repo(tmp_path):
     (repo / "evals/run_eval.py").write_text(stub_py)
     serve = repo / "scripts/serve-qwen38-27b-uncensored-q5.sh"
     serve.write_text(f'#!/bin/bash\necho "serve $*" >> {rec}\necho $$ > {tmp_path}/serve.pid\n'
-                     'exec sleep 30\n')
+                     '[ -n "${SERVE_DIES:-}" ] && exit 1\nexec sleep 30\n')
     serve.chmod(0o755)
     shutil_copy = (SCRATCH / "greedy_floor.sh").read_text()
     (repo / "scratch/greedy_floor.sh").write_text(shutil_copy)
     bin_ = tmp_path / "bin"; bin_.mkdir()
-    for name, body in (("curl", "exit 0"), ("pkill", f'echo "pkill $*" >> {rec}')):
+    # curl stub: CURL_MODE=own (default) answers only while OUR stub server
+    # lives; foreign = something already serves the port; after-serve = a
+    # foreign server answers once ours was launched (and has died).
+    # /props reports STUB_SLOTS (default 1).
+    pidf = tmp_path / "serve.pid"
+    curl = textwrap.dedent(f"""\
+        url="${{@: -1}}"
+        pid() {{ cat {pidf} 2>/dev/null; }}
+        case "${{CURL_MODE:-own}}" in
+          foreign) ;;
+          after-serve)
+            [ -f {pidf} ] || exit 7
+            for _ in $(seq 1 100); do kill -0 "$(pid)" 2>/dev/null || break; sleep 0.05; done ;;
+          own) [ -f {pidf} ] && kill -0 "$(pid)" 2>/dev/null || exit 7 ;;
+        esac
+        case "$url" in */props) echo "{{\\"total_slots\\": ${{STUB_SLOTS:-1}}}}" ;; esac
+        exit 0""")
+    for name, body in (("curl", curl), ("pkill", f'echo "pkill $*" >> {rec}')):
         f = bin_ / name
         f.write_text(f"#!/bin/bash\n{body}\n"); f.chmod(0o755)
     env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}", OB=str(repo))
@@ -399,7 +418,7 @@ def test_greedy_floor_single_slot_is_single_slot(floor_repo):
                        env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
     lines = rec.read_text().splitlines()
-    assert any(ln.startswith("serve ") and "-np 1" in ln for ln in lines)
+    assert any(ln.startswith("serve ") and "-np 1" in ln and "-p 8080" in ln for ln in lines)
     runs = [c for c in lines if c.startswith("run_eval")]
     assert len(runs) == 2
     assert all("--jobs 1" in c and "--no-cache" in c and c.endswith("GREEDY=1") for c in runs)
@@ -407,6 +426,39 @@ def test_greedy_floor_single_slot_is_single_slot(floor_repo):
     # the stub server (exec'd sleep, same pid) must not outlive the script
     pid = int((rec.parent / "serve.pid").read_text())
     with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def _single(floor_repo, **env_over):
+    repo, rec, env = floor_repo
+    r = subprocess.run(["bash", str(repo / "scratch/greedy_floor.sh"), "--single-slot"],
+                       env=dict(env, **env_over), capture_output=True, text=True, timeout=60)
+    lines = rec.read_text().splitlines() if rec.exists() else []
+    return r, lines
+
+
+def test_greedy_floor_single_slot_refuses_a_server_already_up(floor_repo):
+    # The stack up on :8080: the first cut's /health poll succeeded at once
+    # and both "single-slot" rows ran against the -np 6 stack.
+    r, lines = _single(floor_repo, CURL_MODE="foreign")
+    assert r.returncode == 3 and "REFUSED" in r.stderr, r.stdout + r.stderr
+    assert not any(ln.startswith(("serve ", "run_eval", "pkill")) for ln in lines)
+
+
+def test_greedy_floor_single_slot_aborts_when_its_server_dies(floor_repo):
+    # Ours dies on bind/VRAM while some other server answers the port.
+    r, lines = _single(floor_repo, CURL_MODE="after-serve", SERVE_DIES="1")
+    assert r.returncode == 1 and "SERVER FAILED" in r.stderr, r.stdout + r.stderr
+    assert any(ln.startswith("serve ") for ln in lines)
+    assert not any(ln.startswith("run_eval") for ln in lines)
+
+
+def test_greedy_floor_single_slot_aborts_on_wrong_slot_count(floor_repo):
+    r, lines = _single(floor_repo, STUB_SLOTS="6")
+    assert r.returncode == 1 and "total_slots='6'" in r.stderr, r.stdout + r.stderr
+    assert not any(ln.startswith("run_eval") for ln in lines)
+    pid = int((floor_repo[1].parent / "serve.pid").read_text())
+    with pytest.raises(ProcessLookupError):     # our server stopped, by pid
         os.kill(pid, 0)
 
 
