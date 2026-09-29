@@ -213,7 +213,18 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "Stack is up:"
       echo "  Model server:  http://localhost:8080"
       echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
-      echo "  Open WebUI:    http://localhost:3000"
+      # The WebUI container starts AFTER this readiness point (the
+      # supervisor brings the frontend up once the model is serving), so
+      # this line cannot claim it is up. Say what we can actually tell:
+      # an unreachable docker daemon means it will not come up at all.
+      if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
+        echo "  Open WebUI:    http://localhost:3000"
+      elif ! docker info >/dev/null 2>&1; then
+        echo "  Open WebUI:    NOT STARTING — the docker daemon is not reachable by $(id -un)"
+        echo "                 (is docker running? is $(id -un) in the docker group?)"
+      else
+        echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
+      fi
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
         echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
       fi
