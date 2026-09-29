@@ -26,6 +26,8 @@ evals/results/
 .pytest_cache/
 .ruff_cache/
 evals/cache/
+# Contaminated cache rows a review moved aside (MANIFEST.txt inside): local data.
+evals/cache-quarantine-*/
 .run/
 
 # llama.cpp experiment worktrees
