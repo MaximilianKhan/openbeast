@@ -38,6 +38,8 @@ Env:
   OPENBEAST_BIND              bind address         (default 127.0.0.1)
   OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (either set => auth on)
   OPENBEAST_MCPO_GUEST_KEY    guest profile key
+  OPENBEAST_ALLOW_OPEN_TOOLS  true = serve keyless on a non-loopback bind
+                              anyway (otherwise main() refuses to start)
   OPENBEAST_FILES_SHARDING    off | user | chat    (default user)
   OPENBEAST_FILES_DIR         workspace root (start.sh exports it)
   OPENBEAST_TOOL_AUDIT_PATH   audit log file (default: $OPENBEAST_RUN_DIR,
@@ -46,7 +48,8 @@ Env:
                               rows never land in the rig's real audit trail.
 
 Trust note: identity headers are accepted as sent. On this stack the only
-network path to this port is loopback or WebUI itself; a caller who can
+network path to this port is loopback or WebUI itself (main() refuses a
+keyless non-loopback bind unless ALLOW_OPEN_TOOLS=true); a caller who can
 forge headers here can already reach every service directly. Signed-JWT
 identity (Open WebUI's FORWARD_USER_INFO_HEADER_JWT_SECRET) is the
 enterprise upgrade — see docs/TODO.md.
@@ -54,6 +57,7 @@ enterprise upgrade — see docs/TODO.md.
 import hashlib
 import hmac
 import inspect
+import ipaddress
 import json
 import os
 import re
@@ -572,10 +576,59 @@ def create_app() -> FastAPI:
     return app
 
 
+def bind_is_loopback(host: str) -> bool:
+    """True when `host` only listens on this machine — mirrors conf.sh's
+    ob_bind_is_loopback (127.*, ::1, [::1], localhost). Anything else
+    (0.0.0.0, ::, a LAN/tailnet IP, a hostname, empty) is a network bind."""
+    h = (host or "").strip()
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def open_exposure_refusal(env=None) -> str | None:
+    """The reason to refuse serving, or None when it is safe to start.
+
+    Keyless mode answers every tool — bash included — to anyone who can
+    reach the port, and identity headers are taken as sent (see the trust
+    note above). That is Phase-1 parity on loopback and remote code
+    execution on a LAN/tailnet bind (review identity-rbac-4). conf.sh only
+    warns; this is where it is enforced. OPENBEAST_ALLOW_OPEN_TOOLS=true is
+    the operator's explicit acknowledgement (mirrors ob_tools_exposed_open)."""
+    env = os.environ if env is None else env
+    host = env.get("OPENBEAST_BIND", "127.0.0.1")
+    if bind_is_loopback(host):
+        return None
+    if (env.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
+            or env.get("OPENBEAST_MCPO_GUEST_KEY", "").strip()):
+        return None
+    if env.get("OPENBEAST_ALLOW_OPEN_TOOLS", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return None
+    return (f"refusing to serve the tool server on non-loopback "
+            f"BIND_HOST={host!r} with no MCPO_ADMIN_KEY/MCPO_GUEST_KEY: "
+            f"anyone who can reach {host}:3001 could run shell commands as "
+            f"this user. Run scripts/setup-mcpo-keys.sh, bind 127.0.0.1 "
+            f"(remote access via scripts/setup-tailscale.sh), or set "
+            f"ALLOW_OPEN_TOOLS=true in openbeast.conf to accept the risk.")
+
+
 def main() -> None:
     import uvicorn
     host = os.environ.get("OPENBEAST_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_TOOLS_PORT", "3001"))
+    refusal = open_exposure_refusal()
+    if refusal:
+        print(f"Error: {refusal}", file=sys.stderr)
+        sys.exit(2)
+    # This process holds the RBAC keys, the JWT secret and the WebUI admin
+    # password in its environ, and it is $PPID (or a grandparent, via
+    # start_agent -> runner) of every model-authored shell: make it
+    # non-dumpable before it serves anything, not lazily on first spawn.
+    _tools.harden_process()
     print(f"OpenBeast identity tool server on {host}:{port} "
           f"({len(TOOL_NAMES)} tools)")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")

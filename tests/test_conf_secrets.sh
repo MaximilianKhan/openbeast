@@ -161,8 +161,8 @@ else
 fi
 OUT="$(conf_eval 'BIND_HOST=0.0.0.0' -- 'printf %s "$OPENBEAST_ALLOW_OPEN_TOOLS"')"
 if [[ "$OUT" == "false" ]] && grep -q 'setup-mcpo-keys.sh' "$T/conf.err" \
-   && grep -q 'served open regardless' "$T/conf.err"; then
-  pass "negative control: without the override it is false, the fix is named, and it says nothing is refused"
+   && grep -q 'REFUSE to start' "$T/conf.err"; then
+  pass "negative control: without the override it is false, the fix is named, and it says the tool server refuses"
 else
   fail "ALLOW_OPEN_TOOLS default: got '$OUT'"
 fi
