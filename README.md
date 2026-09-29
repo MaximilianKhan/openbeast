@@ -748,17 +748,24 @@ say `--go`** and keeps the expensive and personal parts unless told otherwise:
 
 ```bash
 ./scripts/uninstall.sh                  # prints every step, touches nothing
-./scripts/uninstall.sh --go             # stop, unpublish, remove units + llama.cpp/ venv/ .run/
-./scripts/uninstall.sh --go --purge-all # ...and weights, openbeast.conf, the WebUI volume, the workspace
+./scripts/uninstall.sh --go             # stop, unpublish, remove units + llama.cpp/ venv/ + .run/'s pids, tokens, logs
+./scripts/uninstall.sh --go --purge-all # ...and weights, openbeast.conf, the WebUI volume, the workspace, all of .run/
 ```
 
 Kept by default, each with its own `--purge-*` flag: **model weights** (the
-expensive part to re-download; `WEIGHTS_DIR` in `openbeast.conf`, which may be
-outside the repo), **`openbeast.conf`** (the per-install secrets, so a
-reinstall picks up where you left off), **Open WebUI's data volume** (your
-chats and accounts) and the **workspace** (`FILES_DIR`: what the model wrote
-for you, every published page, the session ledger). The checkout itself is
-never deleted — `rm -rf` it yourself when you're done.
+expensive part to re-download; `WEIGHTS_DIR`, resolved exactly as the stack
+resolves it — the sibling `../weights` by default, `~` and repo-relative paths
+allowed), **`openbeast.conf`** (the per-install secrets, so a reinstall picks up
+where you left off), **Open WebUI's data volume** (your chats and accounts —
+only the volume of *this* compose project, never another install's), the
+**workspace** (`FILES_DIR`: what the model wrote for you, every published page;
+`--purge-data` also takes the session ledger in `.run/sessions`) and the
+**durable state in `.run/`** (`--purge-state`: beast-gate's device registry,
+the audit trails, the artifact raw-URL key, SSD wear history). `llama.cpp/` is
+kept too when it holds local-only branches, stashes or uncommitted edits
+(`--purge-build` removes it anyway). A purge target that resolves to `/`, a
+system tree, `$HOME` or the checkout is refused. The checkout itself is never
+deleted — `rm -rf` it yourself when you're done.
 
 Nothing OpenBeast installs lives outside the repo, the Docker containers, the
 user systemd units and the tailscale serve config, so that script is the whole
