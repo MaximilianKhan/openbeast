@@ -1,0 +1,4 @@
+gsq-rco-iq2xs c=2048 Final estimate: PPL = 6.8341 +/- 0.04311
+unsloth-ud-iq2s c=2048 Final estimate: PPL = 7.1186 +/- 0.04656
+gsq-rco-iq3s c=2048 Final estimate: PPL = 6.3055 +/- 0.03942
+unsloth-ud-iq3s c=2048 Final estimate: PPL = 6.4173 +/- 0.04074
