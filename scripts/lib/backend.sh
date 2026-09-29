@@ -128,10 +128,13 @@ ob_backend_ready() {
 # ob_backend_models <base-url> — the served model ids, one per line (empty
 # output = none or unreachable; exit 1 when the request failed). Presents
 # LLAMA_API_KEY when set, through lib/curl_auth.sh (never argv) when that is
-# loaded — vLLM with --api-key guards /v1/models.
+# loaded — vLLM with --api-key guards /v1/models. Never to TensorFold.
 ob_backend_models() {
   local url="${1%/}" body
-  if declare -F ob_curl_bearer >/dev/null 2>&1; then
+  # TensorFold has no auth at all: a key sent there buys nothing and is one
+  # more place it can be logged.
+  if [[ "${INFERENCE_BACKEND:-llama}" != "tensorfold" ]] \
+     && declare -F ob_curl_bearer >/dev/null 2>&1; then
     body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1
   else
     body="$(curl -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1

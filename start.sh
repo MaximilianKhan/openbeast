@@ -64,7 +64,23 @@ _pid_pattern() {
 
 if [[ $STATUS -eq 1 ]]; then
   echo "OpenBeast stack status:"
+  # An unmanaged backend has no llama pid to report; "llama: not running"
+  # read as an outage on a stack that is fine. Say what actually serves.
+  _st_managed=1
+  if [[ -f "$SCRIPT_DIR/scripts/lib/backend.sh" ]]; then
+    source "$SCRIPT_DIR/scripts/lib/conf.sh" 2>/dev/null
+    source "$SCRIPT_DIR/scripts/lib/backend.sh"
+    ob_inference_managed || _st_managed=0
+  fi
   for name in supervisor llama mcpo router edge chat artifact; do
+    if [[ $name == llama && $_st_managed -eq 0 ]]; then
+      if ob_backend_ready "$INFERENCE_URL"; then
+        echo "  inference: $(ob_backend_label) at $INFERENCE_URL — ready (not managed here)"
+      else
+        echo "  inference: $(ob_backend_label) at $INFERENCE_URL — NOT ready (not managed here)"
+      fi
+      continue
+    fi
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
       echo "  $name: running (pid $(cat "$f"))"

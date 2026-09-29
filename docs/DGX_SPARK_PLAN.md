@@ -178,7 +178,10 @@ two-rank 71–82 tok/s (docs/recipes/qwen3.8-27b.md). **VERIFY ON HARDWARE.**
   (0600, checked by the launcher) on Spark 1; the same value in the rig's
   `LLAMA_API_KEY`, which WebUI, the runner, the router, the gate and the
   dashboard already present. `doctor.sh` warns when a remote vLLM is reached
-  keyless and whenever the backend is TensorFold.
+  keyless and whenever the backend is TensorFold. **With TensorFold leave
+  `LLAMA_API_KEY` empty:** it has no auth, so a key sent there buys nothing
+  and is one more place to be logged. The dashboard and doctor's probes never
+  send it to TensorFold; WebUI and the agent runner would, if it were set.
 - **Remote clients go through beast-gate.** `EDGE_GATE=true`: the gate's
   upstream follows `INFERENCE_URL`, so per-device keys, the path allowlist and
   the inference audit keep working. The *raw* `:8443` publish

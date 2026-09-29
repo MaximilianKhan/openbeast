@@ -409,6 +409,37 @@ class TestRemoteBackends(unittest.TestCase):
                            slots="eight")
         self.assertIsNone(out["slots"]["total"])
 
+    def test_key_never_sent_to_tensorfold(self):
+        # The real _get, with urlopen captured: TensorFold has no auth, so
+        # the key must not ride along; vLLM (--api-key) must get it.
+        import urllib.request as ur
+        dashboard._get = self._saved[0]
+        dashboard._API_KEY = "k-secret"
+        seen = []
+
+        class R:
+            status = 200
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = ur.urlopen
+        ur.urlopen = lambda req, timeout=2: (seen.append(req.get_header("Authorization")), R())[1]
+        try:
+            for backend, want in (("tensorfold", None), ("vllm", "Bearer k-secret")):
+                seen.clear()
+                dashboard._BACKEND = backend
+                dashboard._get("http://10.0.0.5:8000/v1/models", auth=True)
+                self.assertEqual(seen, [want], backend)
+        finally:
+            ur.urlopen = real
+
     def test_llama_backend_has_no_backend_field(self):
         # The llama answer stays byte-identical: no `backend`, no kv_usage.
         dashboard._kv_unified = lambda: True

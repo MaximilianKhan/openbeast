@@ -40,6 +40,7 @@ _free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1"
 cat > "$_T/stub.py" <<'PY'
 import http.server, json, sys, threading, time, os
 port = int(sys.argv[1])
+AUTH = {}
 MODELS = {"object": "list", "data": [{"id": "Qwen3.8 27B NVFP4 (vLLM TP2)",
                                       "object": "model", "max_model_len": 262144}]}
 def answer(mode, path):
@@ -54,10 +55,13 @@ def answer(mode, path):
         if path == "v1/models":   return 200, json.dumps({"object": "list", "data": [{"id": "local-model"}]})
     if mode == "tf-mlx":          return 200, json.dumps({"status": "ok", "memory": {}})
     if mode == "plain200":        return 200, "hello"
+    if mode == "authecho":        # the served id reports the Authorization header
+        return 200, json.dumps({"data": [{"id": "AUTH:" + (AUTH.get("h") or "none")}]})
     return 404, json.dumps({"error": "not found"})
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
+        AUTH["h"] = self.headers.get("Authorization")
         mode, _, path = self.path.lstrip("/").partition("/")
         st, body = answer(mode, path.rstrip("/"))
         b = body.encode()
@@ -119,6 +123,13 @@ else
   pass "ob_backend_models fails (rc!=0) when the server is unreachable"
 fi
 _NA="$(bash -c "set -- keep these; source '$REPO_DIR/scripts/lib/backend.sh'; echo \"\$*\"")"
+_bm() { # _bm <backend> -> the id ob_backend_models reports from /authecho
+  LLAMA_API_KEY=k-123 INFERENCE_BACKEND="$1" bash -c "source '$REPO_DIR/scripts/lib/curl_auth.sh'; source '$REPO_DIR/scripts/lib/backend.sh'; ob_backend_models '$_S/authecho'"
+}
+_got="$(_bm vllm)"; [[ "$_got" == "AUTH:Bearer k-123" ]] && pass "ob_backend_models presents LLAMA_API_KEY to vLLM" \
+  || fail "vLLM models probe did not send the key: $_got"
+_got="$(_bm tensorfold)"; [[ "$_got" == "AUTH:none" ]] && pass "…and never to TensorFold (it has no auth)" \
+  || fail "the key was sent to TensorFold: $_got"
 [[ "$_NA" == "keep these" ]] && pass "sourcing lib/backend.sh leaves \$@ alone" \
   || fail "sourcing lib/backend.sh clobbered \$@: '$_NA'"
 
@@ -421,6 +432,31 @@ RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
   || fail "no TensorFold no-key warning"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://[::1]:1")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "reached without a key" <<< "$_O" && fail "doctor called http://[::1] a remote keyless backend" \
+  || pass "doctor treats an http://[::1] INFERENCE_URL as loopback (no keyless warning)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "reached without a key" <<< "$_O" && pass "…while a remote keyless vLLM is warned about (control)" \
+  || fail "no keyless warning for a remote vLLM"
+
+echo ""
+echo "start.sh --status on an unmanaged stack:"
+_R="$_T/status"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_S/vllm")
+_O="$(_run "$_R" 30 "$_R/start.sh" --status)"
+if grep -q "inference: vLLM at $_S/vllm — ready (not managed here)" <<< "$_O" && ! grep -q "llama: not running" <<< "$_O"; then
+  pass "--status shows the backend and its readiness, not 'llama: not running'"
+else
+  fail "--status unmanaged: $_O"
+fi
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD")
+_O="$(_run "$_R" 30 "$_R/start.sh" --status)"
+grep -q "inference: vLLM at $_DEAD — NOT ready" <<< "$_O" && pass "…and NOT ready when it is down" || fail "--status down: $_O"
+RUN_ENV=()
+_O="$(_run "$_R" 30 "$_R/start.sh" --status)"
+grep -q "llama: not running" <<< "$_O" && pass "control: a managed stack still reports its llama pid line" || fail "--status managed: $_O"
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -306,8 +306,10 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   fi
   # vLLM leaves /health and /metrics open even with --api-key, and TensorFold
   # has no key at all: the network path to it IS the access control.
-  _be_host="${INFERENCE_URL#*://}"; _be_host="${_be_host%%/*}"; _be_host="${_be_host%:*}"
-  if ! ob_bind_is_loopback "${_be_host#[}"; then
+  # ob_url_host strips an IPv6 literal's brackets: http://[::1]:8000 is
+  # loopback (the old split left "::1]" and warned about it).
+  _be_host="$(ob_url_host "$INFERENCE_URL")"
+  if ! ob_bind_is_loopback "$_be_host"; then
     if [[ "$INFERENCE_BACKEND" == "tensorfold" ]]; then
       warn "TensorFold has no API key: anyone who can reach $INFERENCE_URL can use it" \
            "bind it to the ConnectX / tailnet address only and firewall it (docs/DGX_SPARK_PLAN.md § Security)"
