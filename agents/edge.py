@@ -675,6 +675,40 @@ def _usage_from_sse(tail: bytes) -> dict | None:
     return None
 
 
+def _usage_from_json_tail(tail: bytes) -> dict | None:
+    """Usage from the END of a non-streaming JSON reply too big to buffer.
+
+    llama-server serializes `usage` as the LAST top-level key (nlohmann
+    objects are key-sorted), so it sits inside the bounded tail even when a
+    logprobs-heavy reply is megabytes long. Without this every reply over
+    the whole-body buffer was audited with null tokens while the client got
+    its usage. A quote inside a string value is escaped, so a `"usage"`
+    byte run is a real key; take the last one that decodes to an object.
+    """
+    dec = json.JSONDecoder()
+    text = tail.decode("utf-8", "replace")
+    end = len(text)
+    while True:
+        i = text.rfind('"usage"', 0, end)
+        if i < 0:
+            return None
+        end = i
+        j = i + len('"usage"')
+        while j < len(text) and text[j] in " \t\r\n":
+            j += 1
+        if j >= len(text) or text[j] != ":":
+            continue
+        j += 1
+        while j < len(text) and text[j] in " \t\r\n":
+            j += 1
+        try:
+            obj, _ = dec.raw_decode(text, j)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -877,10 +911,25 @@ async def gate(request: Request):
     hdrs = {k: v for k, v in resp.headers.items()
             if k.lower() not in _HOP_BY_HOP}
     hdrs["X-OpenBeast-Request-Id"] = request_id
-    state = {"tail": b"", "whole": b"", "oversize": False}
+    state = {"tail": b"", "whole": b"", "oversize": False, "audited": False}
+
+    def _audit_reply(usage, outcome_override=None):
+        if state["audited"]:
+            return
+        state["audited"] = True
+        if outcome_override:
+            _outcome, _status = outcome_override
+        elif resp.status_code < 400:
+            _outcome, _status = "ok", resp.status_code
+        else:
+            _outcome, _status = "upstream_status", resp.status_code
+        _audit(device_id, user, path, _status, usage,
+               int((time.monotonic() - started) * 1000), model,
+               _outcome, request_id, uid)
 
     async def body_iter():
         timed_out = False
+        completed = False
         try:
             async for chunk in resp.aiter_raw():
                 # Bounded tail (usage rides the last SSE chunks) plus, for
@@ -891,6 +940,7 @@ async def gate(request: Request):
                 else:
                     state["oversize"] = True
                 yield chunk
+            completed = True
         except httpx.TimeoutException:
             # A read timeout AFTER headers lands HERE, not at client.send().
             # Without this the audit ledger would record the request as a
@@ -919,15 +969,18 @@ async def gate(request: Request):
                     usage = None
             if usage is None:
                 usage = _usage_from_sse(state["tail"])
+            if usage is None and state["oversize"]:
+                usage = _usage_from_json_tail(state["tail"])
             if timed_out:
-                _outcome, _status = "upstream_timeout", 504
-            elif resp.status_code < 400:
-                _outcome, _status = "ok", resp.status_code
+                _audit_reply(usage, ("upstream_timeout", 504))
+            elif not completed:
+                # The client went away mid-body (CancelledError/GeneratorExit
+                # lands here). Recorded as "ok" before, an abort — whose
+                # generated tokens never got a usage chunk — was
+                # indistinguishable from a clean, metered completion.
+                _audit_reply(usage, ("client_disconnect", resp.status_code))
             else:
-                _outcome, _status = "upstream_status", resp.status_code
-            _audit(device_id, user, path, _status, usage,
-                   int((time.monotonic() - started) * 1000), model,
-                   _outcome, request_id, uid)
+                _audit_reply(usage)
 
     # BackgroundTask is a SECOND, idempotent release path. If the client
     # vanishes after upstream headers arrive but before Starlette starts
@@ -940,6 +993,9 @@ async def gate(request: Request):
             await resp.aclose()
         except BaseException:
             pass
+        # Same gap for the ledger: a body_iter() that never started never
+        # audited. No-op when it did (the normal path).
+        _audit_reply(None, ("client_disconnect", resp.status_code))
 
     return StreamingResponse(body_iter(), status_code=resp.status_code,
                              headers=hdrs, background=BackgroundTask(_sweep))

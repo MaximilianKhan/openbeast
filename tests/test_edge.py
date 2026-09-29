@@ -686,6 +686,131 @@ class TestAuditAndMetrics:
         assert not audit.exists() or audit.read_text().strip() == ""
 
 
+class _ChunkedResponse(_FakeResponse):
+    """Upstream that yields its body in 16 KB pieces, as aiter_raw() does."""
+
+    def __init__(self, body: bytes, size: int = 16384):
+        super().__init__(body=body)
+        self._size = size
+
+    async def aiter_raw(self):
+        for i in range(0, len(self._body), self._size):
+            yield self._body[i:i + self._size]
+
+
+def _last_audit(tmp_path) -> dict:
+    return json.loads((tmp_path / ".run" / "inference-audit.jsonl")
+                      .read_text().strip().splitlines()[-1])
+
+
+class TestMeteringEdges:
+    """The audit is the accountability ledger: a reply the client received
+    usage for must not be metered as null, and an aborted stream must not be
+    recorded as a clean "ok"."""
+
+    HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+
+    def _big_reply(self) -> bytes:
+        # ~355 KB non-streaming JSON, logprobs-heavy; llama-server puts usage
+        # LAST (nlohmann sorts keys). Content quoting "usage" must not fool
+        # the tail parser.
+        lp = [{"token": "x", "logprob": -0.1, "top_logprobs": [
+            {"token": "y", "logprob": -2.0}] * 20}] * 500
+        return json.dumps({
+            "choices": [{"message": {"content": 'say "usage": {"a": 1}'},
+                         "logprobs": {"content": lp}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 300},
+        }).encode()
+
+    def test_oversize_json_reply_is_still_metered(self, edge, tmp_path):
+        body = self._big_reply()
+        assert len(body) > 262144 + 16384        # really past the buffer
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            c.app.state.client.send = (
+                lambda req, stream=False: _async(_ChunkedResponse(body)))
+            r = c.post("/v1/chat/completions", json={"messages": []},
+                       headers=self.HDR)
+        assert r.json()["usage"]["completion_tokens"] == 300
+        row = _last_audit(tmp_path)
+        assert (row["prompt_tokens"], row["completion_tokens"]) == (1000, 300)
+        assert row["outcome"] == "ok"
+
+    def test_usage_from_json_tail_skips_non_objects(self, edge):
+        tail = b'..."text":"x","usage":{"prompt_tokens":4,"completion_tokens":2}}'
+        assert edge._usage_from_json_tail(tail) == {
+            "prompt_tokens": 4, "completion_tokens": 2}
+        assert edge._usage_from_json_tail(b'{"usage": 5}') is None
+        assert edge._usage_from_json_tail(b'no usage here') is None
+
+    def test_client_abort_is_not_audited_as_ok(self, edge, tmp_path):
+        # Drive the handler directly: TestClient buffers the whole body, so
+        # it cannot abort mid-stream. Closing the body iterator after one
+        # chunk is exactly what Starlette does when the socket goes away.
+        import asyncio
+        from starlette.requests import Request
+        _registry(tmp_path)
+        sse = b"".join(b'data: {"choices":[{"delta":{"content":"t"}}]}\n\n'
+                       for _ in range(50))
+        app = edge.app
+        app.state.registry = edge.Registry()
+        app.state.limiter = edge.Limiter()
+
+        class _Client:
+            def build_request(self, *a, **kw):
+                return object()
+
+            async def send(self, req, stream=False):
+                return _ChunkedResponse(sse, size=64)
+
+        app.state.client = _Client()
+        payload = json.dumps({"messages": [], "stream": True}).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": payload,
+                    "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "app": app,
+                 "path": "/v1/chat/completions", "raw_path": b"",
+                 "query_string": b"", "root_path": "", "scheme": "http",
+                 "server": ("127.0.0.1", 8090), "client": ("127.0.0.1", 1),
+                 "headers": [(b"authorization",
+                              f"Bearer {DEVICE_KEY}".encode()),
+                             (b"content-type", b"application/json")]}
+
+        async def run(abort: bool):
+            resp = await edge.gate(Request(scope, receive))
+            it = resp.body_iterator
+            if abort:
+                await it.__anext__()
+                await it.aclose()             # the client hung up
+            else:
+                async for _ in it:
+                    pass
+            await resp.background()
+
+        asyncio.run(run(abort=True))
+        row = _last_audit(tmp_path)
+        assert row["outcome"] == "client_disconnect", row
+        assert _laptop_bucket_app(edge, app).inflight == 0
+        # Negative control: the same stream read to the end is "ok".
+        asyncio.run(run(abort=False))
+        assert _last_audit(tmp_path)["outcome"] == "ok"
+        # And each request wrote exactly ONE row (the sweep did not add one).
+        rows = (tmp_path / ".run" / "inference-audit.jsonl").read_text()
+        assert len(rows.strip().splitlines()) == 2
+
+
+async def _async(v):
+    return v
+
+
+def _laptop_bucket_app(edge, app):
+    uid = edge.device_uid({"id": "laptop", "enrolled_at": "2026-07-30T00:00:00Z"})
+    return app.state.limiter._buckets[uid]
+
+
 class TestIntrospectionAuth:
     """/gate/health and /gate/metrics carry the device roster and per-device
     usage. The gate is mounted at the tailnet ROOT, so remote callers must
