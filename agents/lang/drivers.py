@@ -483,8 +483,16 @@ class ZigDriver(Driver):
         r = _run(["zig", "version"])
         return r.detail.strip() if r.ok else None
 
+    #: A test declaration: `test "name" {`, `test {` (unnamed) or `test
+    #: ident {` (a doctest). `test` is a keyword, so a line opening with it
+    #: is one of these.
+    _TEST_DECL = re.compile(r'^[ \t]*test\b[ \t]*(?:"|@"|\{|[A-Za-z_])', re.M)
+
+    def _is_test_root(self, source: str) -> bool:
+        return "pub fn main" not in source and bool(self._TEST_DECL.search(source))
+
     def wrap(self, snippet: str) -> str:
-        if "pub fn main" in snippet or "test \"" in snippet:
+        if "pub fn main" in snippet or self._TEST_DECL.search(snippet):
             return snippet
         head = "" if "@import(\"std\")" in snippet else 'const std = @import("std");\n'
         body = "\n".join("    " + ln for ln in snippet.splitlines())
@@ -501,7 +509,7 @@ class ZigDriver(Driver):
         # VERIFIED and a correct test-block NEW form was NEW_FAILS. It is
         # analysed as the test root it is; --test-no-exec plus no binary
         # keeps the rule that nothing here is ever run.
-        if "pub fn main" not in source and "test \"" in source:
+        if self._is_test_root(source):
             cmd = ["zig", "test", "--test-no-exec", "-fno-emit-bin"]
         else:
             cmd = ["zig", "build-exe", "-fno-emit-bin"]
@@ -796,10 +804,17 @@ class PythonDriver(Driver):
         "    try:\n"
         "        cur = importlib.import_module(mod)\n"
         "    except BaseException as e:\n"
-        "        root = mod.split('.')[0]\n"      # stdlib-LISTED, not built
-        "        if (isinstance(e, ModuleNotFoundError) and e.name == root\n"
-        "                and root in sys.stdlib_module_names):\n"
-        "            res.append([root]); continue\n"   # here (winreg): unjudged
+        # stdlib-LISTED, not built here: winreg on linux, or a module whose
+        # C half is missing (tkinter -> _tkinter without libtk, curses,
+        # dbm.gnu, ssl…) — the failing name, not the one asked for. Unjudged
+        # only if that name really will not load: `asyncio.nope` names a
+        # non-listed module, and `imp` is not listed once it is removed.
+        "        gone = e.name if isinstance(e, ImportError) else None\n"
+        "        if gone in sys.stdlib_module_names:\n"
+        "            try:\n"
+        "                importlib.import_module(gone)\n"
+        "            except BaseException:\n"
+        "                res.append([gone]); continue\n"
         "        res.append('import %s: %s' % (mod, e.__class__.__name__))\n"
         "        continue\n"
         "    path, msg = mod, None\n"
@@ -911,13 +926,15 @@ def _attr_chains(tree: ast.AST) -> list[tuple[str, list[str]]]:
             for a in node.names:               # `import x as os`, `from y import os`
                 if a.asname or isinstance(node, ast.ImportFrom):
                     assigned.add(a.asname or a.name)
+    augmented = {id(n.target) for n in ast.walk(tree) if isinstance(n, ast.AugAssign)}
     out: list[tuple[str, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Attribute):
             continue
-        if not isinstance(node.ctx, ast.Load):
+        if isinstance(node.ctx, ast.Store) and id(node) not in augmented:
             # `logging.X = 1` CREATES X; the chain under it (a Load node of
-            # its own) is still visited and still checked.
+            # its own) is still visited and still checked. `os.X += 1` and
+            # `del os.X` READ X first, so those are checked like a load.
             continue
         parts: list[str] = []
         cur: ast.AST = node

@@ -227,6 +227,38 @@ def test_a_stdlib_module_this_platform_lacks_is_not_judged(monkeypatch):
         assert not r and not r.transient, (src, r.detail)
 
 
+#: Prepended to the resolver child: `_curses` (curses' C half) fails to load
+#: the way _tkinter does on a rig without libtk. Built here, so the test does
+#: not depend on which shared libraries this machine happens to have.
+_NO_C_HALF = (
+    "import sys\n"
+    "class _Gone:\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name == '_curses':\n"
+    "            raise ImportError('libncursesw.so.6: cannot open', name=NAME)\n"
+    "sys.meta_path.insert(0, _Gone())\n")
+
+
+def test_a_stdlib_module_missing_its_c_half_is_not_judged(monkeypatch):
+    """tkinter is present as Python and dies importing _tkinter when libtk is
+    absent: ImportError, not ModuleNotFoundError of the root, so it used to
+    be a verdict — an OLD form "failing" for this rig's packaging."""
+    base = D.PythonDriver._RESOLVER
+    monkeypatch.setattr(D.PythonDriver, "_RESOLVER",
+                        _NO_C_HALF.replace("NAME", "'_curses'") + base)
+    r = PY_D.compile_source("import curses\ncurses.initscr\n")
+    assert not r and r.transient, r.detail
+    assert "_curses" in r.detail and "not judged" in r.detail, r.detail
+    # negative control: the same failure naming a module that is NOT listed
+    # as stdlib is a verdict, as is a nonexistent stdlib submodule
+    monkeypatch.setattr(D.PythonDriver, "_RESOLVER",
+                        _NO_C_HALF.replace("NAME", "'thirdparty_x'") + base)
+    r = PY_D.compile_source("import curses\ncurses.initscr\n")
+    assert not r and not r.transient, r.detail
+    r = PY_D.compile_source("import asyncio.no_such_submodule\n")
+    assert not r and not r.transient, r.detail
+
+
 @pytest.mark.parametrize("src", [
     "import os\ndef f(os):\n    return os.anything\n",
     "import os\nf = lambda os: os.anything\n",
@@ -250,6 +282,10 @@ def test_the_shadowing_fix_still_checks_what_it_should():
     assert "logging.nope does not exist" in \
         PY_D.compile_source("import logging\nlogging.nope.X = 1\n").detail
     assert "sys.nope does not exist" in PY_D.compile_source("import sys\nsys.nope\n").detail
+    # `+=` and `del` READ the attribute first: AttributeError at runtime
+    assert "os.nope does not exist" in PY_D.compile_source("import os\nos.nope += 1\n").detail
+    assert "os.nope does not exist" in PY_D.compile_source("import os\ndel os.nope\n").detail
+    assert PY_D.compile_source("import os\nos.sep += ''\n"), "a real one still passes"
 
 
 ZIG = D.driver_for("zig")
@@ -269,6 +305,13 @@ def test_a_zig_test_block_file_is_judged_on_its_content():
     assert not r and "'io'" in r.detail, r.detail
     got = V.verify(_claim(lang="zig", old=[ok], new=[ok]))
     assert got["verdict"] == V.NOT_A_BREAK, got
+    # unnamed `test {` and doctest `test name {` blocks are test roots too
+    for src in ('const std = @import("std");\ntest {\n'
+                '    try std.testing.expect(1 == 1);\n}\n',
+                'fn two() u8 {\n    return 2;\n}\ntest two {\n    _ = two();\n}\n'):
+        assert ZIG.wrap(src) == src, "wrapped into main"
+        r = ZIG.compile_source(ZIG.wrap(src))
+        assert r, (src, r.detail)
 
 
 def test_a_zig_test_block_file_is_never_run(monkeypatch):
@@ -277,5 +320,7 @@ def test_a_zig_test_block_file_is_never_run(monkeypatch):
     monkeypatch.setattr(D, "_run", lambda argv, **k: seen.append(argv) or D.Result(True))
     ZIG.compile_source('test "t" {\n    @panic("ran");\n}\n')
     ZIG.compile_source('pub fn main() void {}\n')
+    ZIG.compile_source('test {\n    @panic("ran");\n}\n')
     assert seen[0][:4] == ["zig", "test", "--test-no-exec", "-fno-emit-bin"], seen
     assert seen[1][:3] == ["zig", "build-exe", "-fno-emit-bin"], seen
+    assert seen[2][:4] == ["zig", "test", "--test-no-exec", "-fno-emit-bin"], seen
