@@ -138,6 +138,52 @@ def test_dead_server_zero_token_fails_void_the_row(tmp_path):
     assert _run_validity(tmp_path, d2)[0] == 0
 
 
+@pytest.mark.parametrize("reason", ["server_error", "env_error", "low_disk"])
+def test_run_eval_infra_reasons_void_the_row(tmp_path, reason):
+    # The round-1 run_eval stamps these on FAILs that are not the model's.
+    # server_error / env_error rows have a normal exit AND real tokens, so the
+    # shape-based buckets cannot see them — only the reason does.
+    d = _full_row()
+    for t in d["tasks"][:2]:
+        t.update(passed=False, agent_exit_code=0, tokens_completion=4000,
+                 validation_output="FAIL: wrong output", reason=reason)
+    assert row_validity.kind(d["tasks"][0]) == "infra"
+    rc, out = _run_validity(tmp_path, d)
+    assert rc == 1, out
+    assert "ROW INVALID" in out and "infra=2" in out
+    assert d["tasks"][0]["id"] in row_validity.contaminated_ids(d, None)
+
+
+def test_row_api_errors_field_voids_the_row_without_agent_logs(tmp_path):
+    d = _full_row()
+    d["tasks"][5].update(passed=False, agent_exit_code=0, tokens_completion=3000,
+                         api_errors=4)
+    rc, out = _run_validity(tmp_path, d)
+    assert rc == 1, out
+    assert "api=1" in out and "API/connection errors" in out
+    assert d["tasks"][5]["id"] in row_validity.contaminated_ids(d, None)
+    # negative control: api_errors 0 on a fail, and a PASS that saw a
+    # transient API error (a PASS is always the model's), stay clean.
+    d2 = _full_row()
+    d2["tasks"][5].update(passed=False, agent_exit_code=0, api_errors=0)
+    d2["tasks"][6].update(api_errors=2)
+    rc, out = _run_validity(tmp_path, d2)
+    assert rc == 0, out
+    assert "api=n/a" in out
+
+
+def test_banked_env_error_repeat_is_the_models_fail(tmp_path):
+    # run_eval banks an EAGAIN FAIL as a plain verdict once the same key hit
+    # it N times running (the model's own fork loop): not contamination.
+    d = _full_row()
+    d["tasks"][0].update(passed=False, agent_exit_code=0, tokens_completion=900,
+                         validation_output="error: SystemResources",
+                         env_error_repeats=3)
+    assert _run_validity(tmp_path, d)[0] == 0
+    del d["tasks"][0]["env_error_repeats"]      # control: the unbanked one is not
+    assert _run_validity(tmp_path, d)[0] == 1
+
+
 def test_missing_agent_log_dir_reads_as_unchecked_not_clean(tmp_path):
     assert row_validity.load_log_index(str(tmp_path / "nope")) is None
     p = tmp_path / "row.json"; p.write_text(json.dumps(_full_row()))
@@ -363,11 +409,14 @@ def floor_repo(tmp_path):
     (repo / "scripts").mkdir()
     (repo / "scratch").mkdir()
     rec = tmp_path / "calls.txt"
+    slotf = tmp_path / "slots.override"
     stub_py = textwrap.dedent(f"""\
         import os, sys
         with open({str(rec)!r}, "a") as f:
             f.write(os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:])
                     + " GREEDY=" + os.environ.get("OPENBEAST_EVAL_GREEDY", "") + "\\n")
+        if os.environ.get("SLOTS_AFTER_RUN"):
+            open({str(slotf)!r}, "w").write(os.environ["SLOTS_AFTER_RUN"])
         """)
     (repo / "evals/benchmark_all.py").write_text(stub_py)
     (repo / "evals/run_eval.py").write_text(stub_py)
@@ -388,12 +437,19 @@ def floor_repo(tmp_path):
         pid() {{ cat {pidf} 2>/dev/null; }}
         case "${{CURL_MODE:-own}}" in
           foreign) ;;
+          loading) case " $* " in *" -sf "*|*" -f "*) exit 22 ;; esac ;;   # 503: only -f fails
           after-serve)
             [ -f {pidf} ] || exit 7
             for _ in $(seq 1 100); do kill -0 "$(pid)" 2>/dev/null || break; sleep 0.05; done ;;
           own) [ -f {pidf} ] && kill -0 "$(pid)" 2>/dev/null || exit 7 ;;
         esac
-        case "$url" in */props) echo "{{\\"total_slots\\": ${{STUB_SLOTS:-1}}}}" ;; esac
+        n=${{STUB_SLOTS:-1}}; [ -f {slotf} ] && n=$(cat {slotf})
+        case "$url" in
+          */props) if [ -n "${{PROPS_NO_SLOTS:-}}" ]; then echo '{{}}'
+                   else echo "{{\\"total_slots\\": $n}}"; fi ;;
+          */slots) [ -n "${{NO_SLOTS_EP:-}}" ] && exit 22
+                   python3 -c "import json; print(json.dumps([{{'id': i}} for i in range($n)]))" ;;
+        esac
         exit 0""")
     for name, body in (("curl", curl), ("pkill", f'echo "pkill $*" >> {rec}')):
         f = bin_ / name
@@ -410,6 +466,8 @@ def test_greedy_floor_default_runs_both_rows_live(floor_repo):
     calls = [c for c in rec.read_text().splitlines() if c.startswith("benchmark_all")]
     assert len(calls) == 2
     assert all("--no-cache" in c and "--greedy" in c for c in calls)   # run 1 too
+    # benchmark_all stops its own server; the script never kills by name.
+    assert not any(ln.startswith("pkill") for ln in rec.read_text().splitlines())
 
 
 def test_greedy_floor_single_slot_is_single_slot(floor_repo):
@@ -459,6 +517,39 @@ def test_greedy_floor_single_slot_aborts_on_wrong_slot_count(floor_repo):
     assert not any(ln.startswith("run_eval") for ln in lines)
     pid = int((floor_repo[1].parent / "serve.pid").read_text())
     with pytest.raises(ProcessLookupError):     # our server stopped, by pid
+        os.kill(pid, 0)
+
+
+def test_greedy_floor_single_slot_refuses_a_server_still_loading(floor_repo):
+    # A loading llama-server answers /health with 503: `curl -f` fails, so
+    # the -f pre-check waved it through and ours then lost the port to it.
+    r, lines = _single(floor_repo, CURL_MODE="loading")
+    assert r.returncode == 3 and "REFUSED" in r.stderr, r.stdout + r.stderr
+    assert not any(ln.startswith(("serve ", "run_eval")) for ln in lines)
+
+
+def test_greedy_floor_single_slot_falls_back_to_slots_endpoint(floor_repo):
+    r, lines = _single(floor_repo, PROPS_NO_SLOTS="1")          # /slots says 1
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sum(ln.startswith("run_eval") for ln in lines) == 2
+
+
+@pytest.mark.parametrize("env", [{"PROPS_NO_SLOTS": "1", "STUB_SLOTS": "6"},
+                                 {"PROPS_NO_SLOTS": "1", "NO_SLOTS_EP": "1"}])
+def test_greedy_floor_single_slot_aborts_when_it_cannot_verify(floor_repo, env):
+    # /slots says 6, or neither endpoint says anything: never run.
+    r, lines = _single(floor_repo, **env)
+    assert r.returncode == 1 and "SERVER FAILED" in r.stderr, r.stdout + r.stderr
+    assert not any(ln.startswith("run_eval") for ln in lines)
+
+
+def test_greedy_floor_single_slot_rechecks_slots_before_run_2(floor_repo):
+    # The port's slot count changes after run 1: run 2 must not start.
+    r, lines = _single(floor_repo, SLOTS_AFTER_RUN="6")
+    assert r.returncode == 1 and "ABORT before run 2" in r.stderr, r.stdout + r.stderr
+    assert sum(ln.startswith("run_eval") for ln in lines) == 1
+    pid = int((floor_repo[1].parent / "serve.pid").read_text())
+    with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
 
 

@@ -1813,6 +1813,19 @@ if git -C "$REPO_DIR" ls-files --error-unmatch agents/lang/generated >/dev/null 
 else
   pass "no generated L1 artifact is tracked"
 fi
+# A review's quarantined cache rows (evals/cache-quarantine-<date>/) are local
+# data: a `git add -A` in the main checkout must not commit 74 cache files.
+# Same rule as above: ask about a path INSIDE the directory.
+if git -C "$REPO_DIR" check-ignore -q evals/cache-quarantine-2026-09-29/abc.json 2>/dev/null; then
+  pass "evals/cache-quarantine-*/ is gitignored"
+else
+  fail "quarantined cache rows are not gitignored"
+fi
+if git -C "$REPO_DIR" check-ignore -q evals/suites/v5-fast.json 2>/dev/null; then
+  fail "the quarantine pattern swallowed tracked eval sources (evals/suites/)"
+else
+  pass "evals/suites/ is still tracked (quarantine pattern is narrow)"
+fi
 
 echo ""
 echo "Orphaned-stack pid discipline:"

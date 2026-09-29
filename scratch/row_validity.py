@@ -26,8 +26,11 @@ zero-token fail, so that shape is only ever the harness's own death record
 09-14 UD-IQ3 row were four OpenBLAS pthread setup deaths, relabelled benign.
 
   cached  — from_cache is True (a replay; its verdict was stamped when banked)
-  infra   — the harness never ran the agent: reason in INFRA_REASONS, or no
-            exit code and zero elapsed on a live row. Never the model.
+  infra   — the harness says the FAIL is not the model's: reason in
+            INFRA_REASONS (setup_failed, server_unhealthy, skipped_cache_miss,
+            low_disk, and the 2026-09-29 run_eval's server_error / env_error,
+            which carry a normal exit AND real tokens), or no exit code and
+            zero elapsed on a live row. Never the model.
   timeout — exit -1, the harness wall-timeout sentinel. An honest fail.
   killed  — any other negative exit: a signal death (-9 OOM, -15 SIGTERM).
   dead    — a live FAILED row with a normal exit (>= 0) and zero completion
@@ -66,7 +69,14 @@ import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INFRA_REASONS = {"setup_failed", "server_unhealthy", "skipped_cache_miss"}
+# The harness's own non-model verdicts (evals/run_eval.py). setup_failed,
+# server_unhealthy, skipped_cache_miss and low_disk never ran the agent;
+# server_error (API errors, or the server gone right after the agent) and
+# env_error (validator EAGAIN / ENOSPC) ran it, but the FAIL is not the
+# model's. Those two carry a normal exit and real tokens, so only the reason
+# shows it.
+INFRA_REASONS = {"setup_failed", "server_unhealthy", "skipped_cache_miss", "low_disk",
+                 "server_error", "env_error"}
 EAGAIN_RE = re.compile(r"Resource temporarily unavailable|SystemResources|"
                        r"thread constructor failed|pthread_create failed|"
                        r"fork: retry|can't start new thread")
@@ -93,7 +103,10 @@ def kind(x):
 
 def eagain(x):
     """The EAGAIN signature in a FAILED row's validation output, else None."""
-    if x.get("passed"):
+    if x.get("passed") or x.get("env_error_repeats"):
+        # env_error_repeats: run_eval banked it on purpose after the same key
+        # hit exhaustion N times running — the model's own program is the
+        # cause (a fork loop), so it is a genuine FAIL.
         return None
     m = EAGAIN_RE.search(str(x.get("validation_output") or ""))
     return m.group(0) if m else None
@@ -187,8 +200,10 @@ def audit(d, idx=None, want_n=None):
     infra = [x["id"] for x in fails if kind(x) == "infra"]
     dead = [x["id"] for x in fails if kind(x) == "dead"]
     eag = [x["id"] for x in fails if eagain(x)]
-    api = [x["id"] for x in fails if idx is not None
-           and api_errors(x, idx, run_lo, run_hi)]
+    # A row from the 2026-09-29 run_eval carries its own api_errors count;
+    # older rows need the agent-log match.
+    api = [x["id"] for x in fails if (x.get("api_errors") or 0) > 0
+           or (idx is not None and api_errors(x, idx, run_lo, run_hi))]
     benign = collections.Counter(kind(x) for x in ztok
                                  if kind(x) in ("cached", "timeout", "other"))
     if want_n is None:
@@ -229,6 +244,8 @@ def contaminated_ids(d, idx):
         if eagain(x):
             why.append(f"EAGAIN({eagain(x)})")
         hit = api_errors(x, idx, lo, hi) if idx is not None else None
+        if not hit and not x.get("passed") and (x.get("api_errors") or 0) > 0:
+            hit = ("row api_errors field", [None] * int(x["api_errors"]))
         if hit:
             why.append(f"API x{len(hit[1])} ({hit[0]})")
         if why:
@@ -272,7 +289,7 @@ def main(argv):
           + (f"/{a['want_n']}" if a["want_n"] else "")
           + f" passed={a['passed']} fails={a['fails']} killed={len(a['killed'])}"
           f" infra={len(a['infra'])} dead={len(a['dead'])} eagain={len(a['eagain'])}"
-          f" api={len(a['api']) if idx is not None else 'n/a'}"
+          f" api={len(a['api']) if idx is not None or a['api'] else 'n/a'}"
           + (f" (benign zero-token: {benign})" if benign else "")
           + f" cuda={cuda if cuda is not None else 'n/a'}")
     if reasons:
