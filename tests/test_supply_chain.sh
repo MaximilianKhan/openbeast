@@ -157,5 +157,91 @@ fi
 
 # ===========================================================================
 echo ""
+echo "3. land-dependabot.sh — approves only THIS repo's held runs for the PR head:"
+# ===========================================================================
+if ! command -v jq >/dev/null 2>&1; then
+  echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+else
+  LB="$T/bin_land"; mkdir -p "$LB"
+  printf '#!/bin/bash\nexit 0\n' > "$LB/sleep"          # the script waits in 15-30 s steps
+  # A gh that answers from fixtures and evaluates `-q` with real jq, so the
+  # filter the SCRIPT wrote is the one that selects. The runs fixture has one
+  # run that must be approved and four that must not:
+  #   101  ours, head commit, CI                       -> approve
+  #   102  a FORK, same branch NAME, its own commit    -> never
+  #   103  a FORK that pushed the SAME commit          -> never
+  #   104  ours, head commit, the relock workflow      -> never
+  #   105  ours, an OLD commit on the branch           -> never
+  cat > "$LB/gh" <<'STUB'
+#!/bin/bash
+S="$OB_STUB_STATE"
+echo "gh $*" >> "$S/gh.log"
+q=""; args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in -q) q="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
+done
+set -- "${args[@]}"
+out() { if [[ -n "$q" ]]; then jq -r "$q"; else cat; fi; }
+HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+runs() {   # every held run on the branch NAME, in Actions-API shape
+cat <<JSON
+{"workflow_runs": [
+ {"id": 101, "name": "CI", "event": "pull_request", "head_branch": "dependabot/pip/agents/openai-9", "head_sha": "$HEAD", "head_repository": {"full_name": "me/openbeast"}},
+ {"id": 102, "name": "CI", "event": "pull_request", "head_branch": "dependabot/pip/agents/openai-9", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "head_repository": {"full_name": "evil/openbeast"}},
+ {"id": 103, "name": "PR quality", "event": "pull_request", "head_branch": "dependabot/pip/agents/openai-9", "head_sha": "$HEAD", "head_repository": {"full_name": "evil/openbeast"}},
+ {"id": 104, "name": "Dependabot relock", "event": "pull_request", "head_branch": "dependabot/pip/agents/openai-9", "head_sha": "$HEAD", "head_repository": {"full_name": "me/openbeast"}},
+ {"id": 105, "name": "CI", "event": "pull_request", "head_branch": "dependabot/pip/agents/openai-9", "head_sha": "cccccccccccccccccccccccccccccccccccccccc", "head_repository": {"full_name": "me/openbeast"}}
+]}
+JSON
+}
+case "$*" in
+  "repo view"*)                   echo '{"nameWithOwner": "me/openbeast"}' | out ;;
+  "pr view 7 --json headRefName"*) echo '{"headRefName": "dependabot/pip/agents/openai-9"}' | out ;;
+  "pr view 7 --json commits"*)    echo '{"commits": [{"messageHeadline": "deps: regenerate agents/requirements.lock"}]}' | out ;;
+  "pr view 7 --json headRefOid"*) echo "{\"headRefOid\": \"$HEAD\"}" | out ;;
+  "pr view 7 --json state"*)      echo '{"state": "MERGED"}' | out ;;
+  "pr comment"*|"pr checks"*|"pr merge"*) echo ok ;;
+  "api repos/me/openbeast/commits/main"*)  echo '{"sha": "m"}' | out ;;
+  "api repos/me/openbeast/compare/"*)      echo '{"behind_by": 0}' | out ;;
+  "api -X POST repos/me/openbeast/actions/runs/"*"/approve")
+      id="${4#repos/me/openbeast/actions/runs/}"; echo "${id%/approve}" >> "$S/approved" ;;
+  "api repos/me/openbeast/actions/runs?"*)
+      # like GitHub: head_sha= filters by commit; nothing filters by repo
+      sha="$(sed -n 's/.*head_sha=\([0-9a-f]*\).*/\1/p' <<< "$2")"
+      runs | jq --arg s "$sha" '{workflow_runs: [.workflow_runs[] | select($s == "" or .head_sha == $s)]}' | out ;;
+  "run list --branch"*"--status action_required"*)
+      # the gh CLI's shape for the same runs (what the OLD code asked for)
+      runs | jq '[.workflow_runs[] | {databaseId: .id, workflowName: .name, headSha: .head_sha}]' | out ;;
+  "run list"*) echo '[]' | out ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+STUB
+  chmod +x "$LB/gh" "$LB/sleep"
+  : > "$T/state/gh.log"; : > "$T/state/approved"
+  _out="$(env PATH="$LB:$PATH" TMPDIR="$T" bash "$REPO_DIR/scripts/land-dependabot.sh" 7 2>&1)"; _rc=$?
+  _appr="$(sort -n "$T/state/approved" | tr '\n' ' ')"
+  if [[ "$_appr" == "101 " ]]; then
+    pass "only run 101 (this repo, the PR's head commit, not the relock) was approved"
+  else
+    fail "approved: '$_appr' (want only 101; 102/103 are a fork, 104 relock, 105 stale) :: $_out"
+  fi
+  # NEGATIVE CONTROL: the stub really does offer the fork's runs by branch
+  # NAME — i.e. a branch-name filter WOULD have swept them in.
+  _old="$(PATH="$LB:$PATH" gh run list --branch dependabot/pip/agents/openai-9 --status action_required \
+          --json databaseId,workflowName -q '.[] | select(.workflowName!="Dependabot relock") | .databaseId' | tr '\n' ' ')"
+  if [[ "$_old" == *102* && "$_old" == *103* ]]; then
+    pass "negative control: a branch-name query returns the fork's runs (102, 103), so the case can tell"
+  else
+    fail "control: the fixture does not reproduce the fork case ('$_old')"
+  fi
+  if [[ $_rc -eq 0 ]] && has "$_out" "PR 7 -> MERGED" && ! has "$_out" "unexpected gh call"; then
+    pass "the rest of the chain ran to the merge against the stub (no unexpected gh calls)"
+  else
+    fail "land-dependabot run (rc=$_rc): $_out"
+  fi
+fi
+
+# ===========================================================================
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

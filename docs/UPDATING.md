@@ -131,7 +131,8 @@ lock is stale") and stays red. Two pieces close that:
   maintainer's shell, one PR at a time, each step waiting on GitHub:
   `@dependabot rebase` (main moved when the previous PR merged, and branch
   protection wants an up-to-date branch) → wait for the relock push → approve
-  the held runs → wait for CI (re-running a *cancelled* run once — a late
+  the held runs (only this repo's, for the PR's head commit — never a fork's run
+  on a same-named branch) → wait for CI (re-running a *cancelled* run once — a late
   force-push does that) → squash-merge. Sequential on purpose: every one of
   these PRs touches the same two files, so each merge invalidates the next
   PR's lock. It refuses to run twice at once (`flock`), needs `gh`

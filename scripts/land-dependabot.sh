@@ -57,7 +57,17 @@ for pr in "$@"; do
   done
   [[ $ok -eq 1 ]] || { echo "PR $pr: rebase/relock did not land in time — stopping"; exit 1; }
   sleep 15
-  for id in $(gh run list --branch "$br" --status action_required --json databaseId,workflowName -q '.[] | select(.workflowName!="Dependabot relock") | .databaseId'); do
+  # APPROVE ONLY THIS REPO'S HELD RUNS FOR THIS PR'S HEAD COMMIT. This used
+  # to be `gh run list --branch "$br" --status action_required`, and a branch
+  # filter matches head_branch BY NAME: a fork PR from a branch named like
+  # Dependabot's (the names are predictable) produces held runs that matched
+  # too, and this maintainer-token loop approved them — bypassing GitHub's
+  # "approve workflows from outside contributors" gate. The Actions API gives
+  # each run's head_sha and head_repository; both must be ours.
+  _head="$(gh pr view "$pr" --json headRefOid -q .headRefOid)"
+  [[ "$_head" =~ ^[0-9a-f]{40}$ ]] || { echo "PR $pr: could not read its head commit — stopping"; exit 1; }
+  for id in $(gh api "repos/$R/actions/runs?head_sha=$_head&status=action_required&per_page=100" \
+      -q ".workflow_runs[] | select(.head_sha == \"$_head\" and .head_repository.full_name == \"$R\" and .event == \"pull_request\" and .name != \"Dependabot relock\") | .id"); do
     gh api -X POST "repos/$R/actions/runs/$id/approve" >/dev/null && echo "approved run $id"
   done
   sleep 20
