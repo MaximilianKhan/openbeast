@@ -765,6 +765,30 @@ def test_the_scrubbed_env_keeps_locations_and_drops_everything_else(monkeypatch)
     assert go["GOFLAGS"] == "-mod=readonly" and go["GOPROXY"] == "off"
 
 
+def test_the_env_allow_list_is_exact_names_not_prefixes(monkeypatch):
+    """Round 5: the allow list kept anything under LC_/XDG_/ZIG_/MISE_/ASDF_/
+    NIX_ (and GO/CGO_ for go), so a token that merely SHARED a prefix reached
+    every compiler child: GOOGLE_API_KEY starts with `GO`, NIX_CONFIG carries
+    nix `access-tokens`, sshd forwards LC_* by default."""
+    leaky = ("GOOGLE_API_KEY", "GOAUTH", "NIX_CONFIG", "MISE_GITHUB_TOKEN",
+             "ASDF_GITHUB_TOKEN", "ZIG_SECRET", "XDG_SECRET", "LC_SECRET",
+             "CGO_SECRET")
+    for k in leaky:
+        monkeypatch.setenv(k, ENV_SECRET)
+    # the locations the drivers were measured to need still get through
+    keep = {"ZIG_GLOBAL_CACHE_DIR": "/tmp/zc", "XDG_CACHE_HOME": "/tmp/xc",
+            "LC_ALL": "C.UTF-8", "MISE_DATA_DIR": "/tmp/md"}
+    for k, v in keep.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("GOCACHE", "/tmp/gc")
+    for env in (_proc.scrubbed_env(), D.GoDriver.env(CGO_ENABLED="0")):
+        assert ENV_SECRET not in env.values(), sorted(
+            k for k, v in env.items() if v == ENV_SECRET)
+        assert all(env.get(k) == v for k, v in keep.items()), env
+    assert D.GoDriver.env()["GOCACHE"] == "/tmp/gc"
+    assert "GOCACHE" not in _proc.scrubbed_env(), "go locations are the go driver's"
+
+
 @pytest.mark.parametrize("lang,exe", [("c", "gcc"), ("cpp", "g++"), ("rust", "rustc"),
                                       ("zig", "zig"), ("go", "go")])
 def test_a_compiler_that_dumps_its_environment_has_nothing_to_dump(
@@ -844,6 +868,21 @@ def _rust_indirections(secret):
         # the name in a macro BODY, glued to a `!` passed in as a fragment
         'macro_rules! call { ($b:tt) => { compile_error!{env $b ("HOME")} } }\n'
         'call!(!);\nfn main() {}\n',
+        # round 5: a macro_rules! ATTRIBUTE arm takes its arguments from
+        # `#[call(...)]`, which is no `name!(` (feature-gated on 1.98 today)
+        'macro_rules! call { attr($m:ident, $p:literal) ($($t:tt)*) => '
+        f'{{ compile_error!{{$m!($p)}} }}; }}\n#[call(include_str, "{secret}")]\n'
+        'fn f() {}\nfn main() {}\n',
+        # fixup: #[path] assembled from fragments, so no `#[… path =` exists;
+        # rustc parses the host file as a module and quotes it (1.98)
+        'macro_rules! m { ($m:meta) => { #[$m] mod x; } }\n'
+        f'm!(path = "{secret}");\nfn main() {{}}\n',
+        f'macro_rules! m {{ ($a:ident) => {{ #[$a = "{secret}"] mod x; }} }}\n'
+        'm!(path);\nfn main() {}\n',
+        # …and with no `#[` at all: the `#` passed in, so only the out-of-line
+        # `mod x;` inside the macro is left to refuse
+        'macro_rules! m { ($h:tt $k:tt) => { $h [cfg_attr(all(), $k = '
+        f'"{secret}")] mod x; }} }}\nm!(# path);\nfn main() {{}}\n',
     ]
 
 
@@ -865,7 +904,15 @@ def test_a_builtin_named_through_a_macro_is_refused(secret):
                 'use std::env;\nmacro_rules! a { () => { 1 } }\n'
                 'fn main() { let _ = env::args(); let _ = a!(); }\n',
                 'macro_rules! a { () => { true } }\n'
-                'fn main() { if !a!() { let env = 1; let _ = env; } }\n'):
+                'fn main() { if !a!() { let env = 1; let _ = env; } }\n',
+                # an INLINE module from a macro, a `$t:path` fragment, and a
+                # plain attribute next to a macro stay valid
+                'macro_rules! m { () => { mod inner { pub fn f() {} } } }\n'
+                'm!();\nfn main() { inner::f(); }\n',
+                'macro_rules! m { ($t:path) => { let _: $t = Default::default(); } }\n'
+                'fn main() { m!(u8); }\n',
+                '#[derive(Debug)]\nstruct S;\nmacro_rules! m { () => { 1 } }\n'
+                'fn main() { let _ = m!(); let _ = S; }\n'):
         assert rs.refusal(src) is None, src
         if shutil.which("rustc"):
             assert rs.compile_source(src), (src, rs.compile_source(src).detail)
@@ -878,6 +925,10 @@ def test_the_macro_indirection_leak_was_real(secret, monkeypatch):
     monkeypatch.setattr(D.RustDriver, "refusal", lambda self, s: None)
     r = D.driver_for("rust").compile_source(_rust_indirections(secret)[0])
     assert not r and "hunter2" in r.detail, r.detail[:300]
+    # and through the assembled #[path]: all three read the file
+    for src in _rust_indirections(secret)[-3:]:
+        r = D.driver_for("rust").compile_source(src)
+        assert not r and "hunter2" in r.detail, (src, r.detail[:300])
 
 
 # --- a refusal is not a verdict, and a comment is not a directive -------------
@@ -980,6 +1031,27 @@ def _c_side_channels(path):
         f'_Pragma(XS(GCC P(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
         # a feature test is fine; the alias NEXT to one is still an alias
         f'#define H __has_include\n#if defined(__has_include) && H("{path}")\n#endif\n',
+        # round 5: pasting builds the _Pragma OPERATOR too, so the snippet
+        # never spells "pragma", "dependency" or "#if" — and the digraph
+        # `%:%:` is the same paste
+        '#define S(x) #x\n#define XS(x) S(x)\n#define C(a,b) a##b\n'
+        '#define C2(a,b) C(a,b)\n#define PR(x) C2(_Pr,agma)(x)\n'
+        f'PR(XS(GCC C2(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        '#define S(x) #x\n#define XS(x) S(x)\n#define C(a,b) a %:%: b\n'
+        '#define C2(a,b) C(a,b)\n#define PR(x) C2(_Pr,agma)(x)\n'
+        f'PR(XS(GCC C2(depend,ency) "{path}"))\nint main(void){{return 0;}}\n',
+        # fixup: a universal character name spells the keyword without the
+        # word; gcc/g++ 16 reject the UCN and STILL run the pragma. Every
+        # UCN form: \uXXXX, \UXXXXXXXX, C++23 \u{…} and \N{…}
+        f'#pragma GCC depend\\u0065ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'_Pragma("GCC depend\\u0065ncy \\"{path}\\"")\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\U00000065ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\u{{65}}ncy "{path}"\nint main(void){{return 0;}}\n',
+        f'#pragma GCC depend\\N{{LATIN SMALL LETTER E}}ncy "{path}"\n'
+        'int main(void){return 0;}\n',
+        f'#if __has_incl\\u0075de("{path}")\n#endif\n',
+        # a UCN that names nothing cannot be decoded, so it cannot be judged
+        f'#pragma GCC depend\\N{{NO SUCH CHARACTER}}ncy "{path}"\n',
     ]
 
 
@@ -988,13 +1060,16 @@ C_SIDE_CHANNEL_CONTROLS = [
     '#line 10 "renamed.c"\nint main(void){return 0;}\n',
     '#pragma once\n#pragma GCC diagnostic ignored "-Wunused"\nint main(void){return 0;}\n',
     'int dependency = 1;\nint main(void){return dependency - 1;}\n',
-    '#define CAT(a,b) a##b\nint CAT(x,y) = 0;\nint main(void){return xy;}\n',
+    # `##` in a string or a comment is not a paste (only a directive line is)
+    'const char *s = "a##b";\nint main(void){return s[0] - 97;}\n',
     '#if __has_include(<stdio.h>)\n#endif\nint main(void){return 0;}\n',
     # the portable feature test takes no path, so it is no oracle
     '#if defined(__has_include)\n#if __has_include(<stdio.h>)\n#endif\n#endif\n'
     'int main(void){return 0;}\n',
     '#ifdef __has_include\n#endif\nint main(void){return 0;}\n',
     '#if defined __has_include\n#endif\nint main(void){return 0;}\n',
+    # an ordinary UCN in a string literal is not a keyword
+    'const char *s = "caf\\u00e9";\nint main(void){return s[0] - 99;}\n',
 ]
 
 
@@ -1024,8 +1099,32 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     dep = '#pragma GCC dependency "{}"\nint main(void){{return 0;}}\n'
     assert c.compile_source(dep.format(secret))
     assert not c.compile_source(dep.format(secret + ".absent"))
+    # ...and the pasted-operator form, which spells neither word, is the same
+    # oracle (round 5)
+    pasted = next(x for x in _c_side_channels(secret) if "_Pr,agma" in x)
+    assert "_Pr,agma" in pasted, "the case list moved; point this at the paste"
+    assert c.compile_source(pasted)
+    assert not c.compile_source(pasted.replace(secret, secret + ".absent"))
     for src in C_SIDE_CHANNEL_CONTROLS:
         assert c.compile_source(src), (src, c.compile_source(src).detail)
+
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_the_ucn_spelled_dependency_pragma_was_an_oracle(lang, secret, monkeypatch):
+    """The control for the UCN cases: both builds FAIL (the UCN is invalid in
+    an identifier), yet gcc still ran the pragma — only the absent path adds
+    "No such file", so the diagnostic answers existence."""
+    if not _c_works():
+        pytest.skip("no C toolchain here that accepts the driver's flags")
+    drv = D.driver_for(lang)
+    monkeypatch.setattr(type(drv), "refusal", lambda self, s: None)
+    for tpl in ('#pragma GCC depend\\u0065ncy "{}"\nint main(void){{return 0;}}\n',
+                '_Pragma("GCC depend\\u0065ncy \\"{}\\"")\nint main(void){{return 0;}}\n'):
+        there = drv.compile_source(tpl.format(secret)).detail
+        absent = drv.compile_source(tpl.format(secret + ".absent")).detail
+        assert "No such file" not in there, there[:300]
+        assert "No such file" in absent, absent[:300]
 
 
 def test_rust_and_zig_scans_ignore_comments_and_strings(secret):

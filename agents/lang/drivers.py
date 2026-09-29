@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 from . import _proc
 
@@ -143,12 +144,15 @@ _C_HAS_FEATURE_TEST = re.compile(
     r"(?:\bdefined" + _GAP_C + r"(?:\(" + _GAP_C + r")?"
     r"|^" + _C_DIRECTIVE + r"(?:ifdef|ifndef|elifdef|elifndef)\b" + _GAP_C + r")\Z",
     re.M | re.S)
-#: Token pasting builds that name too: `CAT(__has_,include)("/abs")` inside
-#: an #if works on gcc, and its fragments can hide in any number of macros.
-#: So pasting and a conditional in the same snippet are refused together —
-#: and pasting next to a pragma, which assembles `GCC P(depend,ency)`.
-_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*##", re.M | re.S)
-_C_IF = re.compile(_C_DIRECTIVE + r"(?:if|elif)\b", re.M | re.S)
+#: Token pasting builds any name, and the fragments can hide in any number
+#: of macros: `CAT(__has_,include)("/abs")` inside an #if, `GCC
+#: P(depend,ency)` beside a pragma — and `C(_Pr,agma)(...)`, which builds the
+#: PRAGMA OPERATOR itself, so the snippet never spells "pragma", "dependency"
+#: or "#if" anywhere (reproduced on gcc 16: "fatal error: /abs: No such file"
+#: vs a clean compile). Every narrower rule was one more spelling to find, so
+#: `##` (and its digraph `%:%:`) on a directive line is refused outright. A
+#: refusal is "not judged", never a verdict — the conservative direction.
+_C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*(?:##|%:%:)", re.M | re.S)
 #: `#line N "/abs"` (and the GNU `# N "/abs"` linemarker) makes gcc quote
 #: lines of THAT file in the caret block of every later diagnostic. The
 #: operand must be literal: digits, then optionally a plain relative name.
@@ -194,6 +198,18 @@ _RS_MACRO_NAME = re.compile(r"\b(include|include_str|include_bytes|env|option_en
 _RS_BARE_NAME = re.compile(
     r"\b(include|include_str|include_bytes|option_env|env)\b(?!\s*!(?!=))")
 _RS_MACRO_DEF = re.compile(r"\bmacro_rules\b|\bmacro\b")
+#: `#[path = "/abs"] mod x;` built by a macro: `($m:meta) => { #[$m] mod x; }`
+#: with `m!(path = "/etc/hostname")`, or `#[$a = "/abs"]` with `m!(path)`.
+#: The text `path =` never appears inside a `#[…]`, and rustc parses the host
+#: file as a module and quotes it in the diagnostic (reproduced on 1.98).
+#: Chasing how the attribute is spelled is the losing game, so both ends are
+#: closed instead: (1) a `#[…]` that holds a `$` (an attribute assembled from
+#: fragments), and (2) the only thing #[path] can act on — an out-of-line
+#: `mod name;`. Inside a macro's tokens a `mod` is allowed only as a plain
+#: inline `mod name {`; `mod x;`, `mod $n`, `$k x;` with `m!(mod)` all refuse.
+#: (An inline `mod a { mod b; }` is caught by its inner `mod b;`.)
+_RS_ATTR_OPEN = re.compile(r"#!?\s*\[")
+_RS_MOD = re.compile(r"\bmod\b(?!\s*(?:r#)?[A-Za-z_]\w*\s*\{)")
 #: `#![debugger_visualizer(natvis_file = "/abs")]` makes rustc open that path:
 #: a read, and at minimum a file-existence oracle.
 _RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
@@ -207,12 +223,51 @@ def _escapes(path: str) -> bool:
             or ".." in re.split(r"[\\/]", path))
 
 
+#: A universal character name spells a letter without writing it:
+#: `#pragma GCC depend\u0065ncy "/abs"` (and the same inside _Pragma) never
+#: contains the word, gcc 16 rejects the UCN ("not valid in an identifier")
+#: and STILL runs the pragma — a fatal "No such file" only when the path is
+#: absent, so the existence oracle was back. Every form gcc/g++ accept:
+#: \uXXXX, \UXXXXXXXX, and C++23's delimited \u{…} and named \N{…}.
+_C_UCN = re.compile(
+    r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|u\{([^}\n]*)\}|N\{([^}\n]*)\})")
+
+
+def _decode_ucns(src: str) -> str | None:
+    """`src` with every UCN replaced by the character it names, or None when
+    one names nothing decodable (the caller refuses: in doubt, refuse)."""
+    def one(m):
+        if m.group(4) is not None:
+            return unicodedata.lookup(m.group(4))       # KeyError -> doubt
+        cp = int(m.group(1) or m.group(2) or m.group(3), 16)
+        return chr(cp)                                  # ValueError -> doubt
+    try:
+        return _C_UCN.sub(one, src)
+    except (KeyError, ValueError, OverflowError):
+        return None
+
+
 def _refuse_c(source: str) -> str | None:
     # Phases 1-2 of translation happen before any directive is recognised:
     # line endings, trigraphs (live under -std=c99/c++11), then line splicing.
     src = source.replace("\r\n", "\n").replace("\r", "\n")
     src = src.replace("??=", "#").replace("??/", "\\")
     src = re.sub(r"\\[ \t]*\n", "", src)
+    why = _refuse_c_text(src)
+    if why or not _C_UCN.search(src):
+        return why
+    # Scan the UCN-decoded text AS WELL — never instead: decoding can only
+    # reveal a keyword, and scanning both keeps the raw-text verdict intact.
+    decoded = _decode_ucns(src)
+    if decoded is None:
+        return "a universal character name that names no character"
+    why = _refuse_c_text(decoded)
+    if why:
+        return f"{why} (spelled with universal character names)"
+    return None
+
+
+def _refuse_c_text(src: str) -> str | None:
     for rx in (_C_INCLUDE, _CPP_IMPORT):
         for m in rx.finditer(src):
             path = m.group(1) if m.group(1) is not None else m.group(2)
@@ -233,9 +288,9 @@ def _refuse_c(source: str) -> str | None:
             continue                             # defined(__has_include)
         return ("__has_include named without its argument (aliased by a "
                 "macro) is a file-existence oracle no scan can check")
-    if _C_PASTE.search(src) and (_C_IF.search(src) or "pragma" in src.lower()):
-        return ("token pasting in a snippet with #if or a pragma can assemble "
-                "__has_include or `GCC dependency`, file-existence oracles")
+    if _C_PASTE.search(src):
+        return ("token pasting can assemble __has_include, _Pragma or `GCC "
+                "dependency` out of fragments — file-existence oracles")
     for m in _C_LINE.finditer(src):
         operand = re.sub(r"/\*.*?\*/", " ", m.group(1)).split("//", 1)[0].strip()
         ok = _C_LINE_OK.fullmatch(operand)
@@ -385,6 +440,14 @@ def _refuse_rust(source: str) -> str | None:
                 return (f"`{m.group(1)}` named inside a macro's tokens can "
                         f"reach the builtin through the macro, which no scan "
                         f"of `{m.group(1)}!` sees")
+        for m in _RS_ATTR_OPEN.finditer(view):
+            if "$" in _balanced(view, m.end() - 1):
+                return ("an attribute built from macro fragments (`#[$m]`) can "
+                        "be #[path = …], which makes rustc read another file")
+        for m in _RS_MOD.finditer(view):
+            if _in_token_tree(view, m.start()):
+                return ("an out-of-line `mod` inside a macro's tokens can take "
+                        "a #[path] the macro assembles, which reads another file")
     if _RS_PATH_ATTR.search(view):
         return "a #[path = …] attribute makes rustc read another file"
     if _RS_FILE_ATTR.search(view):
@@ -393,10 +456,28 @@ def _refuse_rust(source: str) -> str | None:
 
 
 #: Where a macro's token trees open: `name!(`, `name![`, `name!{` (with
-#: `macro_rules! name {` among them), and a 2.0 `macro name` item.
+#: `macro_rules! name {` among them), a 2.0 `macro name` item — and an
+#: ATTRIBUTE, `#[call(include_str, "/abs")]`: `macro_rules!` attribute and
+#: derive arms (`attr(..) (..) => ..`) invoke a user macro from there. They
+#: are feature-gated on rustc 1.98 (E0658), but a stabilisation must not
+#: silently reopen the hole, so attribute brackets count already.
 _RS_TT_OPEN = re.compile(
-    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+"
+    r"\bmacro_rules\s*!\s*\w+\s*[(\[{]|\bmacro\s+\w+|#!?\s*\["
     r"|\b(?!(?:return|if|while|match|in|else|break)\b)\w+\s*!(?!=)\s*[(\[{]")
+
+
+def _balanced(view: str, at: int) -> str:
+    """The bracketed group opening at `at`, brackets included; to the end of
+    the view when it never closes (the safe side: more text is scanned)."""
+    depth = 0
+    for i in range(at, len(view)):
+        if view[i] in "([{":
+            depth += 1
+        elif view[i] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return view[at:i + 1]
+    return view[at:]
 
 
 def _in_token_tree(view: str, at: int) -> bool:
@@ -641,7 +722,7 @@ class GoDriver(Driver):
         set-GOFLAGS/run/restore dance interleaved under two concurrent calls
         and left -mod=mod set for every later subprocess of any kind."""
         return _proc.scrubbed_env({**cls.OFFLINE_ENV, **extra},
-                                  prefixes=_proc.GO_ENV_PREFIXES)
+                                  names=_proc.GO_ENV_NAMES)
 
     def version(self) -> str | None:
         r = _run(["go", "version"], env=self.env())

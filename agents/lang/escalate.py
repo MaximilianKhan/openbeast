@@ -186,16 +186,33 @@ def _container_key(ident: str) -> str:
 
 #: `std.time.*` in a summary: the claim is about the whole namespace.
 _WILDCARD = re.compile(r"`(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)\.\*`")
+#: `std.time.milliTimestamp` in a summary: the claim names that member.
+_NAMED_MEMBER = re.compile(r"`(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)\.([A-Za-z_]\w*)`")
 
 
 def namespace_wildcards(claims) -> dict[str, set[str]]:
-    """{namespace: claims whose summary says ALL of it is gone}. Read from the
-    claim text, not the index, so it cannot drift from what the card says:
-    only a card that itself claims `X.*` may answer for an unseen member of X."""
+    """{`ns` or `ns.member`: claims whose summary says it is gone}. Read from
+    the claim text, not the index, so it cannot drift from what the card
+    says: only a card that itself claims `X.*` may answer for ANY unseen
+    member of X, and a card that names `X.m` for that one member.
+
+    Only the part of the summary before its " — " counts: that is the
+    "what is gone" clause, and the replacement after it names members that
+    exist. The arrow form (`old -> new`, `;`-separated) is cut the same way:
+    only the left side of each pair is gone (`std.sort.sort -> std.mem.sort`
+    must never record `mem.sort`, which exists). A wildcard is as honest as
+    the summary: `std.time.*` once answered for `std.time.sleepp` (a typo —
+    std.time still has members), which is why the zig summary now lists the
+    removed members instead."""
     out: dict[str, set[str]] = {}
     for c in claims:
-        for ns in _WILDCARD.findall(c.summary or ""):
+        gone = (c.summary or "").split(" — ", 1)[0]
+        # Arrow form, `old -> new; old2 -> new2`: only each LEFT side is gone.
+        gone = " ".join(part.split("->", 1)[0] for part in gone.split(";"))
+        for ns in _WILDCARD.findall(gone):
             out.setdefault(ns, set()).add(c.id)
+        for ns, member in _NAMED_MEMBER.findall(gone):
+            out.setdefault(f"{ns}.{member}", set()).add(c.id)
     return out
 
 
@@ -225,8 +242,9 @@ def _select(table: dict, generic: set, diagnostic: str,
         removal the index knows about. Two exceptions: a form the index
         itself declares open (python's "'T' object has no attribute 'x'",
         where the first name is the USER's class by construction), and a
-        namespace a claim declares gone wholesale (`wildcards`, from a
-        summary saying `std.time.*`), which may stand in for the member.
+        namespace a claim declares gone wholesale, or a member it names
+        (`wildcards`, from a summary saying `X.*` or `std.time.sleep`),
+        which may stand in for the member.
       * a line that quotes nothing has only its form, so the form must be
         non-generic and must not be a blanked template.
     """
@@ -252,14 +270,17 @@ def _select(table: dict, generic: set, diagnostic: str,
                 # GeneralPurposeAllocator card, `std.os.getenv` the same one,
                 # `std.process.getEnvVarOwned` argsAlloc: a card the error is
                 # not evidence for, headed "Confirmed". The one exception is a
-                # claim that declares the WHOLE namespace gone (`std.time.*`):
-                # then any member of it missing is that claim's error.
+                # claim whose own summary says that member (`std.time.sleep`)
+                # or the WHOLE namespace (`X.*`) is gone: then it missing is
+                # that claim's error.
                 unknown = [q for q in quoted
                            if f"ident:{_container_key(q)}" not in table
                            and f"ident:{q}" not in table]
                 if len(unknown) == 1:
                     other = _container_key(next(q for q in quoted if q not in unknown))
-                    agreed &= set((wildcards or {}).get(other, ()))
+                    w = wildcards or {}
+                    agreed &= (set(w.get(other, ()))
+                               | set(w.get(f"{other}.{unknown[0]}", ())))
                 elif unknown:
                     agreed = set()
             if specific:
