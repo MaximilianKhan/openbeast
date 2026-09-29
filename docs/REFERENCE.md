@@ -36,6 +36,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `INFERENCE_URL` | `OPENBEAST_INFERENCE_URL` | `http://<probe host>:8080` | Base URL of that server, without `/v1` (a pasted `/v1` is stripped). Feeds Open WebUI's model connection (`OPENBEAST_MODEL_URL`, unless `AGENT_ROUTER=true`), the router's and beast-gate's upstream, the health probes, and — unless `AGENT_INFERENCE_URL` is set — spawned agents. A key the server demands goes in `LLAMA_API_KEY` |
 | `INFERENCE_MANAGED` | `OPENBEAST_INFERENCE_MANAGED` | `true` for a local llama, `false` for vLLM / TensorFold and for a llama `INFERENCE_URL` on another machine | Whether this stack launches, supervises, rolls back and kills the server. `false`: `start.sh` waits up to `OPENBEAST_LLAMA_LOAD_GRACE` s for `INFERENCE_URL` to be ready and brings up everything else either way (a server still down gets a "NOT ready at <INFERENCE_URL>" warning; `-d` reports "inference NOT ready" and exits 0); `healthcheck.sh --restart`, the watchdog and `stop.sh` report on it but never touch it; fast boot, rollback, KV warming and the weight-registry rows say "not applicable". Always `false` for vLLM / TensorFold (`true` warns) |
 | `INFERENCE_SLOTS` | `OPENBEAST_INFERENCE_SLOTS` | empty | Concurrency `/api/slot` reports as `slots.total` when the server exposes none (vLLM `--max-num-seqs`, TensorFold `--parallel`). Positive integer; anything else warns and is ignored |
+| `INFERENCE_MODEL` | `OPENBEAST_INFERENCE_MODEL` | empty | The served model id, for `vllm` / `tensorfold` only (llama-server ignores ids, so it is not exported there): `conf.sh` exports it as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends as its default `model` (vLLM 404s any other id unless started with `VLLM_SKIP_MODEL_NAME_VALIDATION=1`). A trailing ` # comment` and one layer of quotes are dropped; the id may contain spaces. Written by `scripts/backends/use-model.sh` after `conformance.sh` passes; `doctor.sh` warns when it is unset or not what the server lists. See `docs/DGX_SPARK_PLAN.md` §14 |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
 | `REASONING` | `OPENBEAST_REASONING` | empty (model default) | Global thinking override applied by `serve.sh`: `on` \| `off` \| `auto`. Overrides any per-serve-script default |
 | `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes. Also sets the agent runner's per-turn `max_tokens` (`agents/runner.py`): budget + 12,288 content tokens, 20,480 + 12,288 when unset, no cap at all when `-1`. `OPENBEAST_AGENT_MAX_TOKENS=<n>` overrides it (`0` = uncapped). Eval runs are never capped |
@@ -105,6 +106,36 @@ percent of RAM, on the systemd scope each console-started session runs in
 and, as an aggregate, on the `openbeast-chat-jobs.slice` they all share —
 *outside* the stack's own scope so `./stop.sh` never takes a phone-started
 job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
+
+### DGX Spark settings (`scripts/backends/`, not `openbeast.conf`)
+
+The Sparks read two other files, both parsed and never sourced
+([`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md) §5, §6, §14):
+
+- **`scripts/backends/spark.env`** (from `spark.env.example`) — host and
+  network settings only: image tags + digests, `TENSORFOLD_REF`, the
+  ConnectX interface/HCA, `SPARK_HEAD_IP` / `SPARK_NODE_IP`, rendezvous and
+  serve ports, `SPARK_SERVE_HOST`, the API key file. New with model
+  onboarding: `MODELS_DIR` (where `model-fetch.sh` puts verified
+  checkpoints, default `~/openbeast-models`), `HF_TOKEN_FILE` (a 0600 file
+  with a Hub token for gated repos; never argv), `SPARK_PROFILE` (default for
+  `--profile`). The model keys it used to carry (`MODEL`,
+  `SERVED_MODEL_NAME`, `MAX_MODEL_LEN`, parsers, `VLLM_EXTRA_ARGS`,
+  `TENSORFOLD_CKPT` …) are ignored with a warning.
+- **`scripts/backends/models/<name>.env`** — one per model: `BACKEND`,
+  `SOURCE`, `REVISION` (full commit SHA), `SERVED_MODEL_NAME`,
+  `TENSOR_PARALLEL_SIZE`, `MAX_MODEL_LEN`, `DTYPE`, `QUANTIZATION`,
+  `TOOL_CALL_PARSER`, `REASONING_PARSER`, `CHAT_TEMPLATE`,
+  `TRUST_REMOTE_CODE` (+ `TRUST_REMOTE_CODE_ACK` = `REVISION`),
+  `GPU_MEMORY_UTILIZATION`, `MAX_NUM_SEQS`, `SPECULATIVE_CONFIG`,
+  `TENSORFOLD_PARALLEL`, `DRAFTER_SOURCE` / `DRAFTER_REVISION`, `EXTRA_ARGS`,
+  `FETCH_INCLUDE` / `FETCH_EXCLUDE`. Each is documented in
+  `models/TEMPLATE.env`; an unknown key is an error.
+
+Environment the model tools read (never argv): `HF_ENDPOINT` (a Hub mirror),
+`HF_TOKEN` / `HF_TOKEN_FILE`, `OFFLINE` / `OPENBEAST_OFFLINE` /
+`HF_HUB_OFFLINE` (refuse the network), `MODELS_DIR`,
+`OPENBEAST_PROFILES_DIR` (another profiles directory).
 
 ## VRAM estimates (RTX 5090 — 32GB)
 
@@ -918,6 +949,15 @@ Validates: llama.cpp health, parallel slots, identity-tool-server tool exposure,
 SearXNG, chat completion, native function calling, and direct tool invocation.
 
 ## Adding a new model
+
+For the **DGX Spark backends** (vLLM / TensorFold) a model is a profile, not a
+serve script: `scripts/backends/model-inspect.sh <owner/repo@sha> --write-profile <name>`,
+then `model-fetch.sh`, the rank launchers with `--profile <name>`,
+`conformance.sh` and `use-model.sh` — the runbook is
+[`DGX_SPARK_PLAN.md` §14](DGX_SPARK_PLAN.md#14-onboarding-a-model-youve-never-seen);
+every profile key is documented in `scripts/backends/models/TEMPLATE.env`.
+
+For llama-server (GGUF):
 
 1. Download the GGUF to `weights/`
 2. Create `run-<name>.sh` and `serve-<name>.sh` that call `run.sh`/`serve.sh` with `-m` and appropriate `-c`

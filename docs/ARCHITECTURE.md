@@ -297,8 +297,11 @@ scripts/                     # Server, ops, and feature CLIs
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
                              #   proc.sh (identity-checked signalling), bundle_manifest.py, pydeps_lock.py,
                              #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
-  backends/                  # Run ON the DGX Sparks, not the rig: {vllm,tensorfold}/spark-node.sh
-                             #   rank launchers + spark.env.example (docs/DGX_SPARK_PLAN.md)
+  backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
+                             #   rank launchers (--profile), spark.env.example (host settings),
+                             #   models/<name>.env per-model profiles + TEMPLATE.env, model-inspect.sh,
+                             #   model-fetch.sh (pinned + verified + locked), conformance.sh and
+                             #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists)
 
 agents/                      # Agent framework + servers
   mcp_server.py              # MCP tool surface (18 tools; stdio for OpenCode)
