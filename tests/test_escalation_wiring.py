@@ -248,7 +248,9 @@ def test_the_real_tree_names_every_file_the_selector_loads():
 def test_the_real_facade_is_silent_in_a_measured_unit_unless_the_arm_opens_it(monkeypatch):
     """The second lock, with the REAL package: BEAST_ESCALATE=1 leaking into an
     ordinary eval child (an ambient rig-wide setting) must change nothing."""
-    sys.modules.pop("lang", None)
+    # Restored at teardown: another module's `import lang` object must stay
+    # the one sys.modules hands tools.py, or its monkeypatches stop landing.
+    monkeypatch.delitem(sys.modules, "lang", raising=False)
     seen = []
     import lang.escalate as E                     # the real package
     monkeypatch.setattr(E, "render_escalation", lambda *a, **k: seen.append(a) or CARD)
