@@ -16,20 +16,12 @@ source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
 
-_pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
-  # Identity-checked liveness: never TERM an unrelated process that recycled
-  # a stale pidfile's PID. Unreadable /proc cmdline → plain kill -0 result.
-  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router}" pid cmd
-  [[ -f "$1" ]] || return 1
-  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
-    [[ "$cmd" =~ $pat ]] || return 1
-  fi
-  return 0
-}
-
-if _pid_alive "$RUN_DIR/supervisor.pid" 'start\.sh'; then
+# Identity-checked: never TERM — and 20s later KILL — an unrelated process
+# that recycled a stale pidfile's PID. The supervisor records its start time
+# (ob_pid_record), which is exact; 'start\.sh' in a command line is not (any
+# project's ./start.sh matches it) and is only the fallback for a pidfile
+# written before the start time was recorded.
+if ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh'; then
   SUP_PID=$(cat "$RUN_DIR/supervisor.pid")
   echo "Stopping supervisor (pid $SUP_PID) gracefully..."
   kill -TERM "$SUP_PID" 2>/dev/null || true
@@ -51,10 +43,13 @@ systemctl --user stop openbeast-stack 2>/dev/null || true
 # whole point of stop.sh is to reach the fallback kills below.
 # Reap any process-kind extensions the supervisor launched (belt-and-braces —
 # the supervisor's own trap also reaps them; this covers a SIGKILLed supervisor).
+# Identity-checked (lib/proc.sh ob_ext_reap), like every other pid this
+# script signals: .run/ survives a reboot, and a bare `kill $(cat ext-*.pid)`
+# SIGTERMed whatever process had inherited the number.
 for _pf in "$RUN_DIR"/ext-*.pid; do
   [[ -e "$_pf" ]] || continue
-  kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
-  rm -f "$_pf"
+  _n="$(basename "$_pf" .pid)"
+  ob_ext_reap "$_pf" "$SCRIPT_DIR/extensions/${_n#ext-}"
 done
 
 echo "Stopping Open WebUI..."
@@ -138,6 +133,6 @@ else
 pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
 fi
 
-rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
       "$RUN_DIR/mcpo-guest.pid" "$RUN_DIR/router.pid" \
       "$RUN_DIR/edge.pid" "$RUN_DIR/artifact.pid" "$RUN_DIR/chat.pid" 2>/dev/null || true

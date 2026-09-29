@@ -20,7 +20,9 @@ FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
-_T="$(mktemp -d)"
+# No `.` or other ERE metacharacter in the path: the pkill guard below
+# recognises sandbox-anchored patterns by the literal path.
+_T="$(mktemp -d "${TMPDIR:-/tmp}/oblifecycleXXXXXX")"
 _PIDS=""
 cleanup() {
   local p
@@ -44,6 +46,14 @@ _sandbox() { # _sandbox <dir>
   local c
   for c in curl docker tailscale nvidia-smi sudo systemctl systemd-run smartctl; do
     printf '#!/bin/bash\nexit 1\n' > "$d/bin/$c"; chmod +x "$d/bin/$c"
+  done
+  # pkill/pgrep reach the REAL process table. Let through only patterns
+  # anchored inside this sandbox (stop.sh also carries an unanchored legacy
+  # `pkill -f "mcpo --port"`, which must never run against the host).
+  for c in pkill pgrep; do
+    printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *%s* ]] && exec /usr/bin/%s "$@"; done\nexit 1\n' \
+      "$d" "$c" > "$d/bin/$c"
+    chmod +x "$d/bin/$c"
   done
 }
 # Run a sandbox script with a clean environment and the stubs first on PATH.
@@ -264,6 +274,73 @@ if grep -q 'curl -s -m 2 "http://$HEALTH_HOST:8080/health"' "$REPO_DIR/start.sh"
 else
   pass "start.sh -d readiness requires ob_llama_ready, not any /health answer"
 fi
+
+# ---------------------------------------------------------------------------
+# lifecycle-11 / lifecycle-5 / extensions-client-5: a pidfile is a number on
+# disk, and .run/ survives a reboot. What it names must be the process that
+# was RECORDED, not merely something alive whose command line looks right.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Recorded pids are identities (supervisor + extensions):"
+_P="$_T/pids"; _sandbox "$_P"
+# A stranger that merely MENTIONS start.sh — another project's dev server.
+bash -c 'exec -a "bash /home/someone/proj2/start.sh" sleep 300' & _STRANGER=$!; _PIDS="$_PIDS $!"
+sleep 0.3
+_proc() { bash -c "source '$REPO_DIR/scripts/lib/proc.sh'; $1"; }
+echo "$_STRANGER" > "$_P/.run/supervisor.pid"; echo "1" > "$_P/.run/supervisor.start"
+if _proc "ob_recorded_pid_ours '$_P/.run/supervisor.pid' 'start\\.sh'"; then
+  fail "a recycled pid running some other start.sh passed as our supervisor"
+else
+  pass "a recycled pid whose command line mentions start.sh is NOT our supervisor"
+fi
+_proc "ob_pid_record '$_P/.run/supervisor.pid' $_STRANGER"
+if _proc "ob_recorded_pid_ours '$_P/.run/supervisor.pid' 'start\\.sh'"; then
+  pass "…while the process actually recorded (pid + start time) is (control)"
+else
+  fail "ob_recorded_pid_ours rejected the very process ob_pid_record wrote"
+fi
+# stop.sh, run for real: it must not SIGTERM (then SIGKILL) the stranger.
+echo "$_STRANGER" > "$_P/.run/supervisor.pid"; echo "1" > "$_P/.run/supervisor.start"
+# An extension whose recorded pid is ALSO the stranger (no sidecar: the old
+# format, so only the path fallback can judge it), plus a real extension
+# process whose record was lost — the orphan the path sweep exists for.
+mkdir -p "$_P/extensions/fake"
+printf 'import time\ntime.sleep(300)\n' > "$_P/extensions/fake/server.py"
+python3 "$_P/extensions/fake/server.py" & _EXT_ORPHAN=$!; _PIDS="$_PIDS $!"
+echo "$_STRANGER" > "$_P/.run/ext-fake.pid"
+mkdir -p "$_P/extensions/real"
+printf 'import time\ntime.sleep(300)\n' > "$_P/extensions/real/server.py"
+python3 "$_P/extensions/real/server.py" & _EXT_REAL=$!; _PIDS="$_PIDS $!"
+sleep 0.3
+_proc "ob_pid_record '$_P/.run/ext-real.pid' $_EXT_REAL"
+_O="$(timeout 60 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_P' '$_P/stop.sh'")"
+sleep 0.3
+if kill -0 "$_STRANGER" 2>/dev/null && [[ "$_O" != *"Stopping supervisor"* ]]; then
+  pass "stop.sh leaves a stranger holding a stale supervisor.pid alone (was: TERM, then KILL)"
+else
+  fail "stop.sh signalled a stranger via a stale supervisor.pid: $(grep -i supervisor <<< "$_O" | tr '\n' ' ')"
+fi
+if kill -0 "$_STRANGER" 2>/dev/null && ! grep -q 'extension stopped (fake)\.' <<< "$_O"; then
+  pass "stop.sh does not SIGTERM a stranger that inherited a stale ext-*.pid"
+else
+  fail "stop.sh killed a stranger via ext-fake.pid: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if ! kill -0 "$_EXT_ORPHAN" 2>/dev/null && grep -q 'extension stopped (fake, by path' <<< "$_O"; then
+  pass "…and still reaps the real extension orphan by its path"
+else
+  fail "the extension orphan survived stop.sh: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if ! kill -0 "$_EXT_REAL" 2>/dev/null && grep -q 'extension stopped (real)\.' <<< "$_O"; then
+  pass "a correctly recorded extension is stopped by its pid (control)"
+else
+  fail "stop.sh did not stop a recorded extension: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ ! -e "$_P/.run/ext-fake.pid" && ! -e "$_P/.run/ext-real.start" ]]; then
+  pass "…and the extension records (pid + start time) are removed"
+else
+  fail "stop.sh left extension records behind: $(ls "$_P/.run")"
+fi
+kill "$_STRANGER" "$_EXT_ORPHAN" "$_EXT_REAL" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -40,18 +40,13 @@ for arg in "$@"; do
     *)             SERVE_SCRIPT="$arg" ;;
   esac
 done
+source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_recorded_pid_ours, ob_pid_record, ob_ext_reap
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
-  # unrelated process must not count as "running". If /proc/<pid>/cmdline is
-  # unreadable (exotic /proc, zombie) fall back to the plain liveness check.
-  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router|chat_server}" pid cmd
-  [[ -f "$1" ]] || return 1
-  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
-    [[ "$cmd" =~ $pat ]] || return 1
-  fi
-  return 0
+  # unrelated process must not count as "running". A pidfile written with
+  # ob_pid_record carries the process's start time, which is exact; the
+  # cmdline pattern is the fallback for one that does not (lib/proc.sh).
+  ob_recorded_pid_ours "$1" "${2:-start\.sh|llama|mcpo|openapi_tools|router|chat_server}"
 }
 # Expected cmdline marker per pidfile (bash ERE).
 _pid_pattern() {
@@ -232,7 +227,9 @@ fi
 # Transient systemd units (daemon mode) start with a minimal PATH that lacks
 # ~/.local/bin, where pip --user puts mcpo. Harmless everywhere else.
 export PATH="$HOME/.local/bin:$PATH"
-echo $$ > "$SUP_PID_FILE"
+# With its start time: 'start\.sh' in a command line is not an identity (any
+# project's ./start.sh matches), and stop.sh SIGKILLs what this record names.
+ob_pid_record "$SUP_PID_FILE" "$$"
 # Record which serve script this stack runs so healthcheck.sh --restart can
 # relaunch the SAME model instead of assuming the default.
 echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
@@ -249,7 +246,7 @@ for cname in open-webui searxng; do
     echo "    docker rm -f $cname     # then rerun ./start.sh" >&2
     echo "  If the old project had WebUI data, see docs/INSTALL.md troubleshooting" >&2
     echo "  ('renamed repo directory') for the volume-migration steps." >&2
-    rm -f "$SUP_PID_FILE"
+    rm -f "$SUP_PID_FILE" "$RUN_DIR/supervisor.start"
     exit 1
   fi
 done
@@ -292,13 +289,15 @@ cleanup() {
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
   fi
-  # Reap any process-kind extensions we launched.
+  # Reap any process-kind extensions we launched — identity-checked. This
+  # trap also fires on every early exit of a FRESH start, i.e. against
+  # pidfiles a crashed run left behind, whose numbers may now be anyone's.
   for _pf in "$RUN_DIR"/ext-*.pid; do
     [[ -e "$_pf" ]] || continue
-    kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
-    rm -f "$_pf"
+    _n="$(basename "$_pf" .pid)"
+    ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
         "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
   # ...but only the pidfiles of servers WE started. Removing a live server's
   # recorded pid is what makes an orphan unreapable, which is the whole point
@@ -775,9 +774,16 @@ fi
 # foreground; we background + pidfile it, and cleanup() reaps them on exit).
 while IFS= read -r _ext; do
   [[ -z "$_ext" ]] && continue
+  # The [17] guard, for extensions: a live one (an orphan of a SIGKILLed
+  # supervisor) keeps its port, so a replacement cannot bind — and writing
+  # its pid over the record made the live one unreapable.
+  if ob_recorded_pid_ours "$RUN_DIR/ext-$_ext.pid" "$(_ob_ere "$REPO_DIR/extensions/$_ext/")"; then
+    echo "Extension $_ext already running (pid $(cat "$RUN_DIR/ext-$_ext.pid")) — leaving it alone."
+    continue
+  fi
   echo "Starting extension: $_ext"
   "$REPO_DIR/extensions/$_ext/run.sh" >>"$RUN_DIR/ext-$_ext.log" 2>&1 &
-  echo "$!" > "$RUN_DIR/ext-$_ext.pid"
+  ob_pid_record "$RUN_DIR/ext-$_ext.pid" "$!"
 done < <(ob_ext_processes)
 
 # Configure Open WebUI (tool server + native function calling) in background

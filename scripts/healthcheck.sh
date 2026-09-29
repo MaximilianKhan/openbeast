@@ -148,7 +148,9 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
     # server and let the supervisor's self-healing loop relaunch it —
     # starting our own copy here would race it for the port and the VRAM.
     SUP_PID_FILE="$REPO_DIR/.run/supervisor.pid"
-    if ob_pid_matches "$(cat "$SUP_PID_FILE" 2>/dev/null || true)" 'start\.sh'; then
+    # By recorded start time (lib/proc.sh): 'start\.sh' alone accepted any
+    # process mentioning it, and then nobody relaunched the model.
+    if ob_recorded_pid_ours "$SUP_PID_FILE" 'start\.sh'; then
       echo "       → supervisor alive: killing llama-server, letting it relaunch..."
       _kill_own_llama
       for i in $(seq 1 180); do

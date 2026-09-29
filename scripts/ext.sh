@@ -16,6 +16,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF="$REPO_DIR/openbeast.conf"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/extensions.sh"
+source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours, _ob_ere
 
 _usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -68,8 +69,9 @@ case "$cmd" in
       [[ -z "$name" ]] && continue; en=1
       kind="$(ob_ext_meta "$name" KIND 2>/dev/null || echo '?')"
       run="stopped"
-      if [[ "$kind" == process ]] && [[ -f "$REPO_DIR/.run/ext-$name.pid" ]] \
-         && kill -0 "$(cat "$REPO_DIR/.run/ext-$name.pid" 2>/dev/null)" 2>/dev/null; then run="running"; fi
+      # Identity, not liveness: a stale pidfile's number may be anyone's now.
+      if [[ "$kind" == process ]] \
+         && ob_recorded_pid_ours "$REPO_DIR/.run/ext-$name.pid" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then run="running"; fi
       [[ "$kind" == compose ]] && run="(compose — see docker ps)"
       printf '  %-16s %-8s %s\n' "$name" "$kind" "$run"
     done < <(ob_ext_enabled)
