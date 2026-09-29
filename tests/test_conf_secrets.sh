@@ -1,8 +1,13 @@
 #!/bin/bash
-# Secrets-off-argv fixes (2026-09-29 review) — behavior tests.
+# Config parsing + secrets-off-argv fixes (2026-09-29 review) — behavior tests.
 #
 # Usage: bash tests/test_conf_secrets.sh
 #
+#   1  lib/conf.sh       every boolean key parses through ONE helper
+#                        (network-exposure-2: WEBUI_AUTH/EDGE_GATE failed OPEN
+#                        on an inline comment or on 1/yes)
+#   2  lib/conf.sh       a non-loopback BIND_HOST warns, and names the keyless
+#                        tool server's remote shell (identity-rbac-4)
 #   3  serve.sh          LLAMA_API_KEY reaches llama-server via env, not argv
 #                        (secrets-crypto-1 / network-exposure-4)
 #   4  lib/curl_auth.sh  a credential header never lands on curl's argv, and
@@ -32,6 +37,134 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== conf parsing + secrets off argv ==="
+
+# A sandbox rig: the REAL conf.sh, a conf file this test writes.
+SB="$T/rig"
+mkdir -p "$SB/scripts/lib"
+install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$SB/scripts/lib/"
+
+# conf_eval <conf body> <extra env assignments…> -- <bash snippet>
+# Sources conf.sh in a CLEAN environment (no ambient OPENBEAST_* from the rig
+# running the test), stdout = snippet output, stderr to $T/conf.err.
+conf_eval() {
+  local body="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift
+  printf '%s\n' "$body" > "$SB/openbeast.conf"
+  env -i HOME="$T" PATH="$PATH" REPO_DIR="$SB" ${envs[@]+"${envs[@]}"} \
+    bash -c "source '$SB/scripts/lib/conf.sh'; $1" 2>"$T/conf.err"
+}
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "1. boolean keys (conf.sh _ob_bool):"
+OUT="$(conf_eval 'WEBUI_AUTH=true   # remote access on
+EDGE_GATE=true # per-device keys
+OFFLINE="true" # airgap
+FAST_BOOT=YES
+AGENT_ROUTER=on
+BEAST_CHAT=1
+BEAST_ARTIFACT=true# attached
+ROUTER_REQUIRE_IDENTITY=yes
+EDGE_ALLOW_ANON=no  # keep closed
+FETCH_ALLOW_TAILNET=On' -- \
+  'printf "%s|" "$OPENBEAST_WEBUI_AUTH" "$EDGE_GATE" "$OFFLINE" "$FAST_BOOT" "$AGENT_ROUTER" "$OPENBEAST_BEAST_CHAT" "$BEAST_ARTIFACT" "$OPENBEAST_ROUTER_REQUIRE_IDENTITY" "$OPENBEAST_EDGE_ALLOW_ANON" "$OPENBEAST_FETCH_ALLOW_TAILNET" "$MODEL_ROLLBACK"')"
+if [[ "$OUT" == "true|true|true|true|true|true|true|true|false|true|true|" ]]; then
+  pass "inline comments, quotes, 1/yes/on/YES all parse to canonical true (and no → false)"
+else
+  fail "boolean keys not canonical: got '$OUT'"
+fi
+# The exact finding: Open WebUI's own parse of what compose hands it.
+if OPENBEAST_WEBUI_AUTH="$(conf_eval 'WEBUI_AUTH=true   # remote access on' -- 'printf %s "$OPENBEAST_WEBUI_AUTH"')" \
+   python3 -c 'import os,sys; sys.exit(0 if os.environ["OPENBEAST_WEBUI_AUTH"].lower()=="true" else 1)'; then
+  pass "WEBUI_AUTH with an inline comment reaches Open WebUI as login ON"
+else
+  fail "WEBUI_AUTH with an inline comment still turns the login wall OFF"
+fi
+# Negative controls: false stays false, absent keeps its default.
+OUT="$(conf_eval 'WEBUI_AUTH=false  # local only
+EDGE_GATE=0
+MODEL_ROLLBACK=off' -- 'printf "%s|%s|%s|%s" "$OPENBEAST_WEBUI_AUTH" "$EDGE_GATE" "$MODEL_ROLLBACK" "$FAST_BOOT"')"
+if [[ "$OUT" == "false|false|false|false" ]]; then
+  pass "negative control: false/0/off stay false, absent FAST_BOOT defaults false"
+else
+  fail "negative control broke: got '$OUT'"
+fi
+OUT="$(conf_eval '# empty' -- 'printf "%s|%s|%s" "$MODEL_ROLLBACK" "$OPENBEAST_WEBUI_AUTH" "${OPENBEAST_EDGE_ALLOW_ANON-ABSENT}"')"
+if [[ "$OUT" == "true|false|ABSENT" ]]; then
+  pass "defaults: MODEL_ROLLBACK true, WEBUI_AUTH false, EDGE_ALLOW_ANON not exported"
+else
+  fail "defaults wrong: got '$OUT'"
+fi
+# Env overrides go through the same parser.
+OUT="$(conf_eval 'WEBUI_AUTH=false' OPENBEAST_WEBUI_AUTH=1 OPENBEAST_EDGE_GATE='yes # x' -- 'printf "%s|%s" "$OPENBEAST_WEBUI_AUTH" "$EDGE_GATE"')"
+if [[ "$OUT" == "true|true" ]]; then
+  pass "env overrides (OPENBEAST_WEBUI_AUTH=1, OPENBEAST_EDGE_GATE='yes # x') normalise too"
+else
+  fail "env override not normalised: got '$OUT'"
+fi
+# A typo is visible, not silent.
+OUT="$(conf_eval 'BEAST_CHAT=ture' -- 'printf %s "$BEAST_CHAT"')"
+if [[ "$OUT" == "false" ]] && grep -q "BEAST_CHAT='ture' is not a boolean" "$T/conf.err"; then
+  pass "an unrecognised value resolves false WITH a warning naming the key"
+else
+  fail "typo handling: got '$OUT', stderr: $(cat "$T/conf.err")"
+fi
+if conf_eval 'WEBUI_AUTH=true' -- 'true' && ! grep -q 'not a boolean' "$T/conf.err"; then
+  pass "negative control: a valid value warns about nothing"
+else
+  fail "a valid value produced a spurious warning"
+fi
+# Sourcing must still leave the caller's positional parameters alone.
+printf 'OFFLINE=true # x\n' > "$SB/openbeast.conf"
+OUT="$(env -i HOME="$T" PATH="$PATH" REPO_DIR="$SB" bash -c \
+  'source "$REPO_DIR/scripts/lib/conf.sh" 2>/dev/null; printf "%s|%s" "${1:-}" "$#"' _ sign extra)"
+if [[ "$OUT" == "sign|2" ]]; then
+  pass "sourcing conf.sh leaves \$@ intact"
+else
+  fail "conf.sh clobbered \$@ (got '$OUT')"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "2. non-loopback BIND_HOST (identity-rbac-4):"
+conf_eval 'BIND_HOST=192.168.1.20' -- 'ob_tools_exposed_open && echo EXPOSED' > "$T/out" || true
+if grep -q 'is not loopback' "$T/conf.err" && grep -q 'can run shell commands' "$T/conf.err" \
+   && grep -q EXPOSED "$T/out"; then
+  pass "a specific LAN IP with no MCPO keys warns and names the open tool-server shell"
+else
+  fail "LAN bind without keys not flagged (stderr: $(cat "$T/conf.err"))"
+fi
+conf_eval 'BIND_HOST=100.101.102.103
+MCPO_ADMIN_KEY=abc' -- 'ob_tools_exposed_open && echo EXPOSED' > "$T/out" || true
+if grep -q 'is not loopback' "$T/conf.err" && ! grep -q 'shell commands' "$T/conf.err" \
+   && ! grep -q EXPOSED "$T/out"; then
+  pass "keyed tool server: warns about the bind, not about an open shell"
+else
+  fail "keyed + non-loopback handled wrong (stderr: $(cat "$T/conf.err"))"
+fi
+for _h in 127.0.0.1 127.0.0.53 ::1 localhost; do
+  conf_eval "BIND_HOST=$_h" -- 'ob_tools_exposed_open && echo EXPOSED' > "$T/out" || true
+  if [[ ! -s "$T/conf.err" && ! -s "$T/out" ]]; then
+    pass "negative control: BIND_HOST=$_h is loopback — silent"
+  else
+    fail "BIND_HOST=$_h wrongly flagged (stderr: $(cat "$T/conf.err"))"
+  fi
+done
+OUT="$(conf_eval 'BIND_HOST=0.0.0.0
+ALLOW_OPEN_TOOLS=yes' -- 'printf %s "$OPENBEAST_ALLOW_OPEN_TOOLS"')"
+if [[ "$OUT" == "true" ]] && grep -q 'ALLOW_OPEN_TOOLS=true' "$T/conf.err"; then
+  pass "ALLOW_OPEN_TOOLS is the explicit override, exported canonical"
+else
+  fail "ALLOW_OPEN_TOOLS override: got '$OUT'"
+fi
+OUT="$(conf_eval 'BIND_HOST=0.0.0.0' -- 'printf %s "$OPENBEAST_ALLOW_OPEN_TOOLS"')"
+if [[ "$OUT" == "false" ]] && grep -q 'setup-mcpo-keys.sh' "$T/conf.err"; then
+  pass "negative control: without the override it is false and the fix is named"
+else
+  fail "ALLOW_OPEN_TOOLS default: got '$OUT'"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
