@@ -23,8 +23,8 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              the admin key reaches all tools, the guest key only
              web_search/fetch (403 elsewhere), no key configured = open
              loopback Phase-1 parity. Replaces the two-instance MCPO split.
-  AUDIT      Every tool call is appended to .run/tool-audit.jsonl with
-             ts/user/role/chat/tool/status/ms and an argument DIGEST
+  AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
+             with ts/user/role/chat/tool/status/ms and an argument DIGEST
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
@@ -36,10 +36,14 @@ Env:
                               healthcheck.sh probe 3001; changing this is
                               for standalone runs only)
   OPENBEAST_BIND              bind address         (default 127.0.0.1)
-  OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (both set => auth on)
+  OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (either set => auth on)
   OPENBEAST_MCPO_GUEST_KEY    guest profile key
   OPENBEAST_FILES_SHARDING    off | user | chat    (default user)
   OPENBEAST_FILES_DIR         workspace root (start.sh exports it)
+  OPENBEAST_TOOL_AUDIT_PATH   audit log file (default: $OPENBEAST_RUN_DIR,
+                              else <repo>/.run, + /tool-audit.jsonl). The
+                              test suite points it at a temp dir so fixture
+                              rows never land in the rig's real audit trail.
 
 Trust note: identity headers are accepted as sent. On this stack the only
 network path to this port is loopback or WebUI itself; a caller who can
@@ -169,6 +173,29 @@ def _refuse_ambiguous_identity(request: Request) -> None:
                     "page from them."))
 
 
+def _audit_path() -> str:
+    """Where the tool-call audit trail goes. Overridable so tests never
+    append synthetic rows (forged users, denied /bash probes, "../../etc")
+    to the rig's real security log — an operator could not tell them apart
+    from a genuine attack, and a genuine attack could hide among them."""
+    explicit = os.environ.get("OPENBEAST_TOOL_AUDIT_PATH", "").strip()
+    if explicit:
+        return explicit
+    run_dir = os.environ.get("OPENBEAST_RUN_DIR", "").strip() or \
+        os.path.join(REPO_DIR, ".run")
+    return os.path.join(run_dir, "tool-audit.jsonl")
+
+
+def _key_matches(token: str, key: str) -> bool:
+    """Constant-time key check on BYTES. compare_digest on str raises
+    TypeError for any non-ASCII character, and Starlette decodes header bytes
+    as latin-1 — so `Bearer caf\xe9` used to escape check_auth as an unhandled
+    500: no 401/403, no audit row, no denied metric, a traceback per probe.
+    Same fix as edge.py / chat_server.py / artifact_server.py."""
+    return hmac.compare_digest(token.encode("utf-8", "surrogateescape"),
+                               key.encode("utf-8", "surrogateescape"))
+
+
 def create_app() -> FastAPI:
     """App factory — reads config at call time so tests can vary env."""
     admin_key = os.environ.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
@@ -189,7 +216,13 @@ def create_app() -> FastAPI:
     if sharding not in ("off", "user", "chat"):
         sharding = "user"
     files_dir = os.environ.get("OPENBEAST_FILES_DIR", "")
-    audit_path = os.path.join(REPO_DIR, ".run", "tool-audit.jsonl")
+    audit_path = _audit_path()
+    # O_CREAT's 0600 only applies to a NEW file; a trail created 0644 by an
+    # older build stays world-readable until tightened once here.
+    try:
+        os.chmod(audit_path, 0o600)
+    except OSError:
+        pass
     # Signed identity (enterprise): when this secret is set — the SAME value
     # given to Open WebUI as FORWARD_USER_INFO_HEADER_JWT_SECRET — WebUI
     # stops sending plain X-OpenWebUI-User-* headers and instead mints an
@@ -246,6 +279,27 @@ def create_app() -> FastAPI:
         email = request.headers.get(_HDR_EMAIL, "").strip() or None
         return user, role, chat, email
 
+    def denied_identity(request: Request) -> tuple:
+        """(user, role, chat, claimed_user) for a DENIED call's audit row.
+
+        The denial row used to copy the raw plain headers even in JWT mode,
+        stamped identity=jwt — so any local caller could write "alice probed
+        /bash" into the trail by typing her id. Now the row carries only what
+        identity_from would VERIFY (nothing, if the token is absent or bad);
+        a typed id in JWT mode is kept, clearly marked, as claimed_user.
+        """
+        try:
+            user, role, chat, _email = identity_from(request)
+        except HTTPException:
+            user, role, chat = None, None, \
+                (request.headers.get(_HDR_CHAT, "").strip() or None)
+        claimed = None
+        if jwt_secret:
+            typed = request.headers.get(_HDR_USER, "").strip()
+            if typed and typed != user:
+                claimed = typed
+        return user, role, chat, claimed
+
     app = FastAPI(
         title="OpenBeast local tools",
         version="1.0",
@@ -260,9 +314,9 @@ def create_app() -> FastAPI:
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         if not token:
             raise HTTPException(status_code=401, detail="API key required")
-        if admin_key and hmac.compare_digest(token, admin_key):
+        if admin_key and _key_matches(token, admin_key):
             return "admin"
-        if guest_key and hmac.compare_digest(token, guest_key):
+        if guest_key and _key_matches(token, guest_key):
             if tool not in GUEST_TOOLS:
                 # The guest profile has no such tool — mirror the old guest
                 # instance, where denied tools did not exist at all.
@@ -326,7 +380,8 @@ def create_app() -> FastAPI:
         return shard
 
     def audit(user, role, chat, tool: str, profile: str, ok: bool,
-              ms: int, args: dict, err: str = "", owner: str = "") -> None:
+              ms: int, args: dict, err: str = "", owner: str = "",
+              claimed_user=None) -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
         only a digest and size, so the audit trail can't leak chats."""
         try:
@@ -351,8 +406,17 @@ def create_app() -> FastAPI:
                 # can tie a page owned by an email back to the WebUI account
                 # that published it (`user` above is that raw id).
                 entry["artifact_owner"] = owner
-            os.makedirs(os.path.dirname(audit_path), exist_ok=True)
-            with open(audit_path, "a") as f:
+            if claimed_user:
+                # An UNVERIFIED id the caller typed (JWT mode ignores plain
+                # headers). Kept for forensics, never as `user`.
+                entry["claimed_user"] = str(claimed_user)[:200]
+            os.makedirs(os.path.dirname(audit_path), mode=0o700,
+                        exist_ok=True)
+            # 0600 like every sibling audit/ledger (edge, artifact, chat):
+            # it names WebUI accounts, chats and artifact owners.
+            fd = os.open(audit_path,
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass  # the audit trail must never break the tool call
@@ -383,11 +447,11 @@ def create_app() -> FastAPI:
                 profile = check_auth(request, name)
                 user, role, chat, email = identity_from(request)
             except HTTPException as e:
-                audit(request.headers.get(_HDR_USER) or None,
-                      request.headers.get(_HDR_ROLE) or None,
-                      request.headers.get(_HDR_CHAT) or None,
+                d_user, d_role, d_chat, claimed = denied_identity(request)
+                audit(d_user, d_role, d_chat,
                       name, "denied", False, 0, {},
-                      f"http {e.status_code}: {e.detail}")
+                      f"http {e.status_code}: {e.detail}",
+                      claimed_user=claimed)
                 with metrics_lock:
                     calls[(name, "denied", "error")] += 1
                 raise

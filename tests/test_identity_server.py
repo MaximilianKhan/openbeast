@@ -153,7 +153,7 @@ def test_hostile_user_id_is_sanitized(workspace):
 # --- audit -------------------------------------------------------------------
 
 def test_audit_log_written_without_raw_args(workspace):
-    audit = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    audit = os.environ["OPENBEAST_TOOL_AUDIT_PATH"]   # conftest isolates it
     before = os.path.getsize(audit) if os.path.exists(audit) else 0
     c = client()
     secret = "the-secret-content-should-not-appear"
@@ -180,7 +180,7 @@ def test_sanitize_is_injective():
 
 def test_denied_calls_reach_audit_and_metrics(workspace):
     """401/403/404 must be visible in the audit trail (review bug #4)."""
-    audit = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    audit = os.environ["OPENBEAST_TOOL_AUDIT_PATH"]   # conftest isolates it
     before = os.path.getsize(audit) if os.path.exists(audit) else 0
     c = client(keyed=True)
     c.post("/bash", json={"command": "true"},
@@ -244,3 +244,102 @@ def test_single_key_fails_closed(workspace):
     # The unconfigured guest profile doesn't exist — its old key is invalid.
     assert c.post("/fetch", json={"url": "http://example.com"},
                   headers=GUEST).status_code == 403
+
+
+# --- 2026-09-29 review: audit isolation, file mode, denial integrity ----------
+
+def _rows(path):
+    if not os.path.exists(path):
+        return []
+    return [json.loads(x) for x in open(path).read().splitlines() if x.strip()]
+
+
+def _keyed(monkeypatch, **kw):
+    monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "test-admin-key")
+    monkeypatch.setenv("OPENBEAST_MCPO_GUEST_KEY", "test-guest-key")
+    return TestClient(openapi_tools.create_app(), **kw)
+
+
+def test_audit_path_is_overridable_and_repo_trail_untouched(workspace, tmp_path,
+                                                            monkeypatch):
+    """Tests used to append thousands of fixture rows (forged users, denied
+    /bash probes, "../../etc") to the rig's REAL .run/tool-audit.jsonl."""
+    real = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    before = os.path.getsize(real) if os.path.exists(real) else None
+    target = tmp_path / "elsewhere" / "audit.jsonl"
+    monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH", str(target))
+    c = client()
+    c.post("/write_file", json={"path": "z.md", "content": "z"},
+           headers={"X-OpenWebUI-User-Id": "alice"})
+    assert [r["user"] for r in _rows(str(target))] == ["alice"]
+    after = os.path.getsize(real) if os.path.exists(real) else None
+    assert after == before, "a test run wrote into the repo's live audit trail"
+
+
+def test_audit_path_follows_run_dir(tmp_path, monkeypatch):
+    """Without the explicit override, OPENBEAST_RUN_DIR decides (as it does
+    for the artifact server's audit), then the repo's .run."""
+    monkeypatch.delenv("OPENBEAST_TOOL_AUDIT_PATH", raising=False)
+    monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
+    assert openapi_tools._audit_path() == str(tmp_path / "run" / "tool-audit.jsonl")
+    monkeypatch.delenv("OPENBEAST_RUN_DIR")
+    assert openapi_tools._audit_path() == os.path.join(
+        openapi_tools.REPO_DIR, ".run", "tool-audit.jsonl")
+
+
+def test_audit_file_is_private(workspace, tmp_path, monkeypatch):
+    """0600 like every sibling audit (edge/artifact/chat) — and an existing
+    0644 trail from an older build is tightened at startup."""
+    new = tmp_path / "a" / "new.jsonl"
+    monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH", str(new))
+    client().post("/list_files", json={"directory": ".", "pattern": "*"})
+    assert (os.stat(new).st_mode & 0o777) == 0o600
+    old = tmp_path / "old.jsonl"
+    old.write_text("")
+    os.chmod(old, 0o644)
+    monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH", str(old))
+    client()
+    assert (os.stat(old).st_mode & 0o777) == 0o600
+
+
+def test_non_ascii_bearer_is_denied_and_audited(workspace, monkeypatch):
+    """compare_digest on str raised TypeError for `Bearer caf\\xe9` (Starlette
+    decodes headers as latin-1): an unhandled 500 with no audit row and no
+    denied metric. Now it is an ordinary wrong key."""
+    c = _keyed(monkeypatch, raise_server_exceptions=False)
+    body = {"directory": ".", "pattern": "*"}
+    for raw in (b"Bearer caf\xe9", b"Bearer \xff\xfe"):
+        r = c.post("/list_files", json=body, headers={"Authorization": raw})
+        assert r.status_code == 403, (raw, r.status_code)
+    # Negative control: the real key still works.
+    assert c.post("/list_files", json=body, headers=ADMIN).status_code == 200
+    denied = [e for e in _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])
+              if e["profile"] == "denied"]
+    assert len(denied) == 2 and all("403" in e["error"] for e in denied)
+    assert 'profile="denied"' in c.get("/metrics").text
+
+
+def test_jwt_mode_denial_row_does_not_trust_typed_ids(workspace, monkeypatch):
+    """In JWT mode plain identity headers are forgeable and ignored — but the
+    DENIAL row copied them as `user`, so anyone could write "alice probed
+    /bash" into the trail. The typed id is kept only as claimed_user."""
+    monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", "x" * 40)
+    c = _keyed(monkeypatch)
+    r = c.post("/bash", json={"command": "true"},
+               headers={**GUEST, "X-OpenWebUI-User-Id": "alice-victim",
+                        "X-OpenWebUI-User-Role": "admin"})
+    assert r.status_code == 404
+    row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+    assert row["profile"] == "denied" and row["identity"] == "jwt"
+    assert row["user"] is None and row["role"] is None
+    assert row["claimed_user"] == "alice-victim"
+
+
+def test_header_mode_denial_row_keeps_header_identity(workspace, monkeypatch):
+    """Negative control: header mode trusts the headers everywhere (loopback
+    threat model), so the denial row still names the caller as `user`."""
+    c = _keyed(monkeypatch)
+    c.post("/bash", json={"command": "true"},
+           headers={**GUEST, "X-OpenWebUI-User-Id": "prober"})
+    row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+    assert row["user"] == "prober" and "claimed_user" not in row
