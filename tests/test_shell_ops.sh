@@ -82,7 +82,7 @@ if ":3001/health" in url: out({"status": "ok", "auth": "open", "identity": "head
 if url.endswith("/api/version"): out({"version": "stub"})
 if url.endswith("/api/config"):
     la = os.environ.get("LIVE_AUTH", "true")
-    out({"features": {"auth": la == "true"}})
+    out({} if la == "unknown" else {"features": {"auth": la == "true"}})
 if url.endswith("/api/v1/auths/signin"):
     out({"token": "tok"} if os.environ.get("DEFAULT_PW_WORKS") == "1" else {"detail": "no"})
 if "/gate/health" in url: out({"service": "beast-gate", "auth": "devices", "devices": 1})
@@ -235,6 +235,19 @@ if has "$_O" "does not accept the upstream default password" && ! has "$_O" "sti
 else
   fail "rotated default row: $(grep -iE 'admin' <<< "$_O" | tr '\n' ' ')"
 fi
+# The default fresh install: login off. The probe never signs in, so doctor
+# must not print a green "does not accept the default password" it never
+# checked (it did: configure-webui.sh answered 0 for "login off").
+for _la in false unknown; do
+  RUN_ENV=(LIVE_AUTH=$_la DEFAULT_PW_WORKS=1)
+  doctor WEBUI_AUTH=false
+  if has "$_O" "Open WebUI (:3000)" && ! has "$_O" "does not accept the upstream default password" \
+     && ! has "$_O" "still signs in"; then
+    pass "…live auth=$_la: no default-admin row at all (was a false green)"
+  else
+    fail "auth=$_la default-admin row: $(grep -iE 'admin|WebUI' <<< "$_O" | tr '\n' ' ')"
+  fi
+done
 
 RUN_ENV=(SD_USER=1 TIMER_ON=0)
 doctor

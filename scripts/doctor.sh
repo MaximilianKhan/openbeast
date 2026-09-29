@@ -349,7 +349,10 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
             "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
     0) pass "built-in WebUI admin does not accept the upstream default password" ;;
-    *) ;;   # WebUI went away between the two probes — the row above covers it
+    # 4: login is off (or not reported) on the running WebUI, so the probe
+    # did not sign in at all — no row, never a green check it did not earn.
+    # 3/other: WebUI went away between the two probes — the row above covers it.
+    *) ;;
   esac
 fi
 

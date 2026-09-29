@@ -499,12 +499,15 @@ def test_configure_webui_dials_the_bind_host(rig, bind, host):
 @pytest.mark.parametrize("state,rc", [
     (dict(auth=True, admin_pw="admin"), 1),                 # the finding
     (dict(auth=True, admin_pw="operator-chose-this"), 0),   # rotated
-    (dict(auth=False, admin_pw="admin"), 0),                # auth off: n/a
+    (dict(auth=False, admin_pw="admin"), 4),                # auth off: not probed
+    (dict(auth=None, admin_pw="admin"), 4),                 # auth unreported: not probed
     (dict(auth=True, admin_pw="admin", down=True), 3),      # unreachable
 ])
 def test_check_default_admin_is_a_read_only_probe(rig, state, rc):
     """doctor.sh's row (network-exposure-1 follow-up) reuses this probe. It
-    must answer, and must never change the password it is testing."""
+    must answer, and must never change the password it is testing. Login off
+    or unreported is 4 ("not probed"), not 0: doctor turned 0 into a green
+    "does not accept the default password" that nothing had checked."""
     rig.set_state(**state)
     before = rig.conf.read_text()
     p = rig.run("configure-webui.sh", "--check-default-admin")

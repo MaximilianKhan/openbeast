@@ -15,8 +15,9 @@
 #       setup-tailscale.sh runs this the moment the WebUI goes tailnet-wide.
 #   ./scripts/configure-webui.sh --check-default-admin    read-only probe
 #       (doctor.sh): exit 1 when login is ON and admin@localhost still signs
-#       in with upstream's default password, 0 when it does not (or login is
-#       off, where the question does not arise), 3 when WebUI is unreachable.
+#       in with upstream's default password, 0 when login is ON and it does
+#       not, 4 when the running WebUI has login off (or /api/config does not
+#       say) so the probe did not run, 3 when WebUI is unreachable.
 
 set -euo pipefail
 
@@ -25,7 +26,7 @@ case "${1:-}" in
   "") ;;
   --secure-default-admin) MODE=secure ;;
   --check-default-admin)  MODE=check ;;
-  -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
 esac
 
@@ -221,7 +222,9 @@ _secure_default_admin() {
 if [[ "$MODE" == "check" ]]; then
   # Read-only: sign in with the default, change nothing. The password still
   # travels via env + stdin (_signin), never argv.
-  [[ "$(_live_auth)" == "true" ]] || exit 0
+  # Login off / unknown: the question does not arise, and "0" would read as
+  # "checked, and safe" — a claim nothing verified. Say "not probed" (4).
+  [[ "$(_live_auth)" == "true" ]] || exit 4
   [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && exit 0
   exit 1
 fi
