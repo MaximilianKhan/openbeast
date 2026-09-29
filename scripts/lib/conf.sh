@@ -177,10 +177,14 @@ REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGE
 AGENT_ROUTER="$(_ob_bool "${OPENBEAST_AGENT_ROUTER:-$(_ob_conf_value AGENT_ROUTER || true)}" false AGENT_ROUTER)"
 ROUTER_PORT="${OPENBEAST_ROUTER_PORT:-$(_ob_conf_value ROUTER_PORT || echo 8088)}"
 # Router spawn-gate identity policy (docs/RBAC_PLAN.md): the router only runs
-# its spawn path for X-OpenWebUI-User-Role: admin turns. When this is true and
-# the role header is ABSENT (e.g. header forwarding disabled), the router
-# fails CLOSED (no spawn) instead of open — set true on hardened multi-user
-# installs. Exported so start.sh's router process inherits it.
+# its spawn path for admin turns — the role comes from the plain
+# X-OpenWebUI-User-Role header, or, in signed-identity mode
+# (IDENTITY_JWT_SECRET set), ONLY from the verified X-OpenWebUI-User-Jwt. A
+# turn with NO identity fails CLOSED on its own whenever WEBUI_AUTH=true or
+# IDENTITY_JWT_SECRET is set (agents/router.py REQUIRE_IDENTITY); `true`
+# here forces fail-closed on every other rig too. The `false` default only
+# matters on a single-user, auth-off rig, which sends no identity at all.
+# Exported so start.sh's router process inherits it.
 ROUTER_REQUIRE_IDENTITY="$(_ob_bool "${OPENBEAST_ROUTER_REQUIRE_IDENTITY:-$(_ob_conf_value ROUTER_REQUIRE_IDENTITY || true)}" false ROUTER_REQUIRE_IDENTITY)"
 export OPENBEAST_ROUTER_REQUIRE_IDENTITY="$ROUTER_REQUIRE_IDENTITY"
 # Kernel-level sandbox wrapper for the model's bash tool (docs/SANDBOXING.md).
@@ -280,11 +284,38 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
 fi
+# Where a process ON THIS BOX dials the stack's BIND_HOST services
+# (lib/net.sh: wildcard/empty -> 127.0.0.1, :: -> [::1], a specific LAN or
+# tailnet address -> itself, since a socket bound there refuses loopback).
+# Exported for configure-webui.sh and anyone else building local URLs.
+# (net.sh always ships next to this file; a stripped copy without it — a
+# test sandbox, a hand-copied conf.sh — keeps the old loopback behaviour.)
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/net.sh" ]]; then
+  # shellcheck source=net.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/net.sh"
+  OPENBEAST_PROBE_HOST="$(ob_probe_host "$BIND_HOST")"
+else
+  OPENBEAST_PROBE_HOST=127.0.0.1
+fi
+export OPENBEAST_PROBE_HOST
+# The router hard-binds 127.0.0.1 (agents/router.py) whatever BIND_HOST is,
+# so it is always dialled there; llama-server binds BIND_HOST, so it is
+# dialled on the probe host. It was `localhost` for both, and on a rig with a
+# specific BIND_HOST (the documented LAN/tailnet case) Open WebUI had no model
+# while every health probe, which follows BIND_HOST, read green. Open WebUI
+# runs with network_mode: host (docker-compose.yml), so the address that
+# works from the host shell is the one that works from inside the container.
+# The loopback/wildcard case keeps the historical `localhost` spelling on
+# purpose: configure-webui.sh rewrites WebUI's stored connection (and
+# restarts the container) whenever this string changes.
+_ob_model_host="$OPENBEAST_PROBE_HOST"
+[[ "$_ob_model_host" == "127.0.0.1" ]] && _ob_model_host=localhost
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
 else
-  MODEL_URL="http://localhost:8080/v1"
+  MODEL_URL="http://${_ob_model_host}:8080/v1"
 fi
+unset _ob_model_host
 export AGENT_ROUTER ROUTER_PORT
 # Frontends read this for the model endpoint (docker-compose interpolates it).
 export OPENBEAST_MODEL_URL="$MODEL_URL"
@@ -299,6 +330,20 @@ MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo
 # (0700) workspace instead. Spawned agents keep using their own AGENT_WORKDIR.
 # start.sh creates the dir with the right mode; mcp_server inherits this env.
 OPENBEAST_FILES_DIR="${OPENBEAST_FILES_DIR:-$(_ob_conf_value FILES_DIR || echo "$HOME/openbeast-files")}"
+# Expand a leading ~ and anchor a relative path to the checkout — the same
+# resolution uninstall.sh applies. The example conf's own form is
+# `FILES_DIR=~/openbeast-files`, and _ob_conf_value returns it verbatim, so
+# start.sh ran `mkdir -p "~/openbeast-files"` — a literal `~` directory under
+# its cwd — while the Python side expanduser()'d the same string to $HOME.
+# shellcheck disable=SC2088  # matching a literal ~, not expanding one
+case "$OPENBEAST_FILES_DIR" in
+  "~")   OPENBEAST_FILES_DIR="$HOME" ;;
+  "~/"*) OPENBEAST_FILES_DIR="$HOME/${OPENBEAST_FILES_DIR#\~/}" ;;
+esac
+case "$OPENBEAST_FILES_DIR" in
+  /*) ;;
+  *)  OPENBEAST_FILES_DIR="$REPO_DIR/$OPENBEAST_FILES_DIR" ;;
+esac
 export OPENBEAST_FILES_DIR
 # WEBUI_AUTH default is FALSE (local-only single user — no login wall, and
 # configure-webui.sh can auto-configure via the default admin account). It

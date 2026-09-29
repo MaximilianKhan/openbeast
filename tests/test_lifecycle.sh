@@ -160,11 +160,24 @@ _doctor_out() { # _doctor_out <CURL_OK-regex> <conf-lines...>
   _run "$_D" "$_D/scripts/doctor.sh"
   RUN_ENV=()
 }
+# Round 2 closed the conf.sh half: OPENBEAST_MODEL_URL (what compose hands
+# Open WebUI) now follows the probe host, so on a LAN BIND_HOST the frontend
+# dials the address llama binds and doctor's endpoint row stays quiet —
+# while it still dials OPENBEAST_MODEL_URL, not a URL of its own.
 _O="$(_doctor_out '^http://192\.0\.2\.9:' 'BIND_HOST=192.0.2.9')"
-if grep -q "model endpoint (http://localhost:8080/v1) refuses connections" <<< "$_O"; then
-  pass "doctor FAILs when llama answers on a LAN BIND_HOST but WebUI's localhost model URL is refused"
+if ! grep -q "model endpoint" <<< "$_O" && grep -q '^http://192.0.2.9:8080/v1/models' "$_D/curl.log"; then
+  pass "on a LAN BIND_HOST, WebUI's model URL is http://192.0.2.9:8080/v1 — doctor dials it and it answers"
 else
-  fail "doctor reported green while WebUI cannot reach the model: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ')"
+  fail "doctor on a LAN BIND_HOST: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ') :: $(grep models "$_D/curl.log" | tr '\n' ' ')"
+fi
+# Negative control: a server that answers ONLY its LAN address, while the
+# frontend URL points elsewhere (the router, which hard-binds loopback, is
+# down) is still a FAIL.
+_O="$(_doctor_out '^http://192\.0\.2\.9:' 'BIND_HOST=192.0.2.9' 'AGENT_ROUTER=true')"
+if grep -q "model endpoint (http://localhost:8088/v1)" <<< "$_O"; then
+  pass "…and a frontend URL that refuses connections (router down) still FAILs (control)"
+else
+  fail "doctor missed an unreachable frontend model URL: $(grep -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
 fi
 _O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
 if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
