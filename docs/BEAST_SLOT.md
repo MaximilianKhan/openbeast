@@ -152,7 +152,7 @@ unspecified" rather than switching exhaustively — the set can grow:
 | `open` | no credential required (personal tailnet, gate off, no key) |
 | `key` | one shared `LLAMA_API_KEY` gates the endpoint |
 | `device` | beast-gate is on: you need your own enrolled device key |
-| `anon` | beast-gate is on but `EDGE_ALLOW_ANON=true`, so unregistered callers are served as a single `anon` device — the gate is up, per-device identity is **not** in force |
+| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **no device is enrolled yet**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment one device is enrolled the gate ignores `ALLOW_ANON` (keyless callers get 401) and this reads `device` |
 
 `device` and `anon` were added alongside beast-gate. This is an additive
 change to an existing field's value set, not a rename, so `min_client` stays
@@ -203,8 +203,8 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Or without a clone: fetch just the script and it makes its own slim checkout.
-Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key <key>`
-(keyed rig), `--no-search`, `--local-search` (own SearXNG container via Docker
+Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key-stdin`
+(keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--no-search`, `--local-search` (own SearXNG container via Docker
 Desktop/Engine — bridge network, loopback-only port map), `--uninstall`.
 
 What lands: an isolated venv + slim checkout under `~/.openbeast-client`,
@@ -287,7 +287,7 @@ Three more things that surprise owners:
 ./scripts/setup-client.sh --host their-rig.their-tailnet.ts.net
 ```
 
-Add `--api-key <key>` if they run [keyed mode](#keyed-mode-optional-off-by-default)
+Add `--api-key-stdin` (then paste the key) if they run [keyed mode](#keyed-mode-optional-off-by-default)
 or have enrolled your device through beast-gate; skip `--publish-searxng` on
 their side and pass `--local-search` on yours if you'd rather your queries never
 touch their SearXNG.
@@ -357,7 +357,7 @@ looping unattended on someone else's rig. See
 
 | script | role | takes |
 |---|---|---|
-| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key`, `--local-search`, `--uninstall` |
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--local-search`, `--uninstall` |
 | `scripts/client.sh` | **operates** | subcommands — `status`, `agent`, `search`, `update`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a
@@ -449,7 +449,7 @@ echo "EDGE_GATE=true" >> openbeast.conf
 ./scripts/setup-tailscale.sh          # repoints :8443 at the gate
 
 # client
-./scripts/setup-client.sh --api-key <the key from enroll>
+./scripts/setup-client.sh --api-key-stdin   # paste the key from enroll; it stays out of ps
 ```
 
 What each remote request now passes through:
@@ -458,16 +458,17 @@ What each remote request now passes through:
 |---|---|
 | **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). It does **not** kill a generation already streaming; that request runs to completion. To cut one off immediately, restart the gate with `./scripts/healthcheck.sh --restart` (it kills, relaunches, and rewrites `.run/edge.pid`; a bare `pkill` would leave a stale pidfile) — the local stack is unaffected |
 | **Path allowlist** | Only `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`. Everything else is **404** — not 403, so a remote caller learns nothing about what exists. `/lora-adapters`, `/slots`, `/props`, `/v1/stream`, `/infill` stop existing for remote callers |
-| **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map |
+| **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map. On `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings` a non-empty body that is not a UTF-8 JSON object, or that nests deeper than 64 levels, is refused with **400** and never forwarded — a body the gate cannot parse would otherwise reach llama-server with every tenancy knob intact |
 | **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |
-| **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After` |
-| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: `request_id`, `device`, `device_uid`, `user_claimed`, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too). Never content, never key material. Prometheus at `/gate/metrics` (authenticated — see Introspection below). Rotated by `scripts/logrotate-openbeast.conf` |
-| **Attribution rules** | `device` is the **authenticated** identity. `device_uid` binds the *enrollment*, so a removed-and-re-enrolled `laptop-air` is a distinct device in the trail rather than inheriting its predecessor's history — **join on `device_uid`**, not `device`. `user_claimed` is a client-supplied header and is not proof of anything. `request_id` is echoed to the caller as `X-OpenBeast-Request-Id`, so "what happened to my 11:04 request" is answerable exactly. Unauthenticated rejects are counted in metrics and logged with a key fingerprint, but deliberately not written to the audit file — otherwise any tailnet peer could grow it without bound |
+| **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After`. Both count **generations**, not HTTP requests: a `prompt`/`input` array or `n` > 1 makes llama-server run prompts × `n` tasks, so such a request holds (and pays for) that many units, and one that fans out past `EDGE_MAX_INFLIGHT` is refused with 400 — split it, or raise the cap |
+| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: `request_id`, `device`, `device_uid`, `user_claimed`, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too; a non-streaming reply too large to buffer is metered from its tail). A reply the client abandons mid-body is recorded as `outcome: client_disconnect`, not `ok` — its tokens may be null, since the usage chunk never arrived. A stream the model server breaks off mid-body is `upstream_error` (502), not blamed on the client. Never content, never key material. Prometheus at `/gate/metrics` (authenticated — see Introspection below). Rotated by `scripts/logrotate-openbeast.conf` |
+| **Attribution rules** | `device` is the **authenticated** identity. `device_uid` binds the *enrollment*, so a removed-and-re-enrolled `laptop-air` is a distinct device in the trail rather than inheriting its predecessor's history — **join on `device_uid`**, not `device`. `user_claimed` is a client-supplied header and is not proof of anything. `request_id` is echoed to the caller as `X-OpenBeast-Request-Id`, so "what happened to my 11:04 request" is answerable exactly. Unauthenticated rejects are counted in metrics and logged with a key fingerprint, but deliberately not written to the audit file — otherwise any tailnet peer could grow it without bound. For the same reason the log line is throttled: the first 10 per reason per minute, then one "suppressed N more" summary (the exact count stays in `/gate/metrics`) |
 | **Introspection** | `/gate/health` and `/gate/metrics` carry the device roster and per-device usage, so they require **either** an enrolled device key **or** the rig-local token (`.run/edge-local.token`, 0600, minted per gate start — start.sh/healthcheck/doctor read it). Peer address is deliberately NOT used: `tailscale serve` proxies from 127.0.0.1, so every tailnet caller looks local. Remote `/gate/health` returns liveness only; `/gate/metrics` 404s |
 
 **Fails closed.** With `EDGE_GATE=true` and no devices enrolled, remote callers
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
-opts out, at the cost of attribution and revocation. A corrupt or half-written
+opts out, at the cost of attribution and revocation — but only until the first
+device is enrolled; from then on a missing or unknown key is a 401 again. A corrupt or half-written
 registry keeps the last good device map rather than opening up.
 
 **Your local command center is untouched.** Open WebUI and the agent router
@@ -510,14 +511,15 @@ tailnet includes devices or users you don't fully own:
 echo "LLAMA_API_KEY=$(openssl rand -hex 32)" >> openbeast.conf && chmod 600 openbeast.conf
 ./stop.sh && ./start.sh -d
 # client: re-run setup with the key
-./scripts/setup-client.sh --api-key <the-key>
+./scripts/setup-client.sh --api-key-stdin    # paste the key; it stays out of ps
 ```
 
-When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh passes
-`--api-key`, WebUI (compose), healthcheck, the dashboard's probes, the
+When `LLAMA_API_KEY` is set, the whole stack presents it: serve.sh hands it
+to llama-server through the environment (never argv, where `ps` shows it to
+every local user), WebUI (compose), healthcheck, the dashboard's probes, the
 router's classify call, the agent runner (`OPENBEAST_API_KEY`/`OPENAI_API_KEY`
 env or `--api-key`), the eval harness, and clients installed with
-`--api-key`. Rig-side OpenCode against a keyed rig: add
+`--api-key`/`--api-key-stdin`. Rig-side OpenCode against a keyed rig: add
 `"apiKey": "<key>"` to `provider.llama-cpp.options` in your **user-level**
 opencode config (the repo file stays keyless; OpenCode 1.18.x does not
 substitute `{env:...}` in provider apiKey — upstream #27853/#19946).

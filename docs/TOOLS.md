@@ -50,9 +50,9 @@ agent-management and skills layers on top.
 
 | Tool | Powered by |
 |---|---|
-| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration |
-| `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service. SSRF-guarded at resolve time *and* re-checked at connect time against a pinned IP (see below) |
-| `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking. The endpoint is `SEARXNG_URL`-indirected, which is how client mode points a laptop's local tool at the rig's search over the tailnet (`docs/BEAST_SLOT.md`) |
+| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration. The child env is scrubbed of stack secrets, and the spawning process (tool server, MCP server, runner) makes itself non-dumpable (`PR_SET_DUMPABLE=0`) before its first shell or agent spawn, so a model shell can't read the parent's secrets back from `/proc/$PPID/environ`; `OPENBEAST_KEEP_DUMPABLE=1` opts out (e.g. to attach py-spy/gdb) |
+| `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service. SSRF-guarded at resolve time *and* re-checked at connect time against a pinned IP (see below). A 45 s whole-request deadline (connect, TLS, headers, redirects, body) cuts slow-drip servers, returning any partial body with a note; the HTML stripper is linear-time on hostile markup. Returns at most 200 000 chars whatever `max_length` asks for (a truncation marker says so; env `OPENBEAST_FETCH_MAX_CHARS` overrides, up to 2 000 000) |
+| `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking. The endpoint is `SEARXNG_URL`-indirected, which is how client mode points a laptop's local tool at the rig's search over the tailnet (`docs/BEAST_SLOT.md`). On a rig with a specific `BIND_HOST`, `scripts/lib/conf.sh` exports `SEARXNG_URL=http://<BIND_HOST>:8888` unless you set it yourself |
 
 **`web_search` deliberately bypasses the `fetch` guard.** It calls `SEARXNG_URL`
 through plain `urllib`, with no `_fetch_url_blocked` check, because that URL is
@@ -177,7 +177,10 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
   vetted IP is pinned for the actual connect so a DNS flip can't slip through
-  (the guard applies to all users — defense in depth).
+  (the guard applies to all users — defense in depth). With `http_proxy` /
+  `https_proxy` set (honoring `no_proxy`), fetch dials the operator's proxy
+  and the target is vetted by name on every hop; the IP pin cannot cover a
+  proxied target, because the proxy does its own resolution.
 - **Tailnet is its own blocked class.** `_vet_addr` in `agents/tools.py` pins
   Tailscale's CGNAT range `100.64.0.0/10` and the default v6 ULA range
   `fd7a:115c:a1e0::/48` explicitly, rather than relying on the stdlib: CPython's
@@ -195,10 +198,14 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 > `X-OpenWebUI-User-Role` (`ENABLE_FORWARD_USER_INFO_HEADERS=true` in
 > docker-compose), and the agent-spawn router only runs its spawn path for
 > `admin` turns — guest turns pass through untouched (and skip the classify
-> entirely, so guests add zero latency). For hardened multi-user installs,
-> set `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` to fail closed when the
-> role header is absent (e.g. header forwarding disabled). Details:
-> `docs/RBAC_PLAN.md`.
+> entirely, so guests add zero latency). With signed identity
+> (`IDENTITY_JWT_SECRET`), WebUI sends the role only inside
+> `X-OpenWebUI-User-Jwt`: the router verifies that token (HS256,
+> `iss=open-webui`, `exp`/`sub` required) and ignores the plain headers.
+> A turn with no identity fails closed on its own whenever `WEBUI_AUTH=true`
+> or signed identity is on; `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true` forces
+> that elsewhere too. Spawns carry the caller's identity to the tool server,
+> which does the attribution and sharding. Details: `docs/RBAC_PLAN.md`.
 
 ## Why 18 and not more
 

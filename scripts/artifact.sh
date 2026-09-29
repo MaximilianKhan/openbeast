@@ -17,7 +17,8 @@
 # bash tool), and Max's own terminal without touching the runner registry.
 # Design: docs/BEAST_ARTIFACT_PLAN.md.
 #
-# Talks to the artifact server on loopback (ARTIFACT_PORT, default 3004).
+# Talks to the artifact server where it listens (BIND_HOST — loopback by
+# default — and ARTIFACT_PORT, default 3004).
 # WRITE verbs (POST/PATCH/DELETE) carry the proof-of-locality token from
 # .run/artifact-local.token — the file is 0600, so "can read it" IS "is on
 # this box" (the transport peer proves nothing: tailscale serve reverse-
@@ -71,7 +72,19 @@ PORT="${OPENBEAST_ARTIFACT_PORT:-$(_conf_value ARTIFACT_PORT || echo 3004)}"
 case "$PORT" in
   ''|*[!0-9]*) _die "ARTIFACT_PORT is not a number: '$PORT'" ;;
 esac
-BASE="http://127.0.0.1:$PORT"
+# Dial where the server LISTENS. It binds OPENBEAST_BIND (BIND_HOST in
+# openbeast.conf, same env-over-conf precedence as lib/conf.sh): loopback
+# answers for a loopback or wildcard bind, but a server bound to one specific
+# address (a LAN IP, or another 127.x) accepts nothing on 127.0.0.1 — and the
+# old hard-coded loopback URL told the operator to restart a healthy stack.
+BIND="${OPENBEAST_BIND:-$(_conf_value BIND_HOST || echo 127.0.0.1)}"
+case "$BIND" in
+  ''|0.0.0.0|::|'[::]'|localhost) DIAL="127.0.0.1" ;;
+  \[*\])                         DIAL="$BIND" ;;
+  *:*)                           DIAL="[$BIND]" ;;
+  *)                             DIAL="$BIND" ;;
+esac
+BASE="http://$DIAL:$PORT"
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
 
 TMPDIR_RUN="$(mktemp -d "${TMPDIR:-/tmp}/openbeast-artifact.XXXXXX")"   # 0700

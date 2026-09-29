@@ -3,6 +3,10 @@
 #   cp openbeast.conf.example openbeast.conf
 #
 # openbeast.conf is gitignored, so your local paths never get committed.
+#
+# true/false keys accept true|yes|1|on and false|no|0|off (any case), and an
+# inline "# comment" after the value is fine. Anything else is read as false
+# and warned about, so a typo is visible instead of silently flipping a mode.
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -70,6 +74,20 @@
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
 
+# Log rotation: every ./start.sh makes sure the daily openbeast-logrotate
+# timer (systemd --user; scripts/logrotate.sh) is installed and enabled, so
+# stack.log and the audit trails stay bounded. No-op without a systemd user
+# manager. Set false to manage rotation yourself.
+# Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
+#LOGROTATE_AUTOINSTALL=true
+
+# Agent transcript retention (agents/logs/*.jsonl, *.log). Off by default:
+# transcripts are kept forever. Set a day count and the daily logrotate timer
+# deletes transcripts untouched for that long that no session-ledger record
+# still points at (the ledger itself retires finished sessions after 30 days).
+# Env override: $AGENT_LOG_RETENTION_DAYS.
+#AGENT_LOG_RETENTION_DAYS=0
+
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
@@ -122,13 +140,24 @@
 # Serve's authenticated HTTPS proxy. Set 0.0.0.0 to restore the legacy
 # LAN-open behavior (any device on your network can reach every service,
 # unauthenticated — not recommended).
+# ANY non-loopback value (0.0.0.0, a LAN or tailnet IP) is warned about at
+# every launch — and with no MCPO_*_KEY set below, the tool server on :3001
+# is then an unauthenticated remote SHELL for that network. Set keys with
+# scripts/setup-mcpo-keys.sh. (The launch only WARNS — it does not refuse.)
 #BIND_HOST=127.0.0.1
+
+# Acknowledge the case above: you mean to serve the KEYLESS tool server on a
+# non-loopback BIND_HOST. NOT YET ENFORCED — the tool server is served either
+# way; today this only changes the launch warning. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_TOOLS.
+#ALLOW_OPEN_TOOLS=false
 
 # Optional: require "Authorization: Bearer <key>" on the llama-server API.
 # Off by default — the tailnet is already the security boundary. When set,
 # the WHOLE stack presents it: WebUI, healthcheck, the agent runner and the
 # eval harness (OPENBEAST_API_KEY env), the router's classify probe, and
-# beast-slot clients (setup-client.sh --api-key). Enable if your tailnet
+# beast-slot clients (setup-client.sh --api-key-stdin). llama-server gets it
+# through its environment, never its command line. Enable if your tailnet
 # has devices/users you don't fully own. See docs/BEAST_SLOT.md.
 #LLAMA_API_KEY=
 
@@ -215,6 +244,13 @@
 # the WebUI goes tailnet-wide — that's when a per-user login + the RBAC
 # tiers (docs/RBAC_PLAN.md) start to matter.
 #WEBUI_AUTH=false
+
+# Acknowledge publishing the WebUI on the tailnet (:443) with WEBUI_AUTH off,
+# i.e. every tailnet device is admin (with bash). Written for you by
+# `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep
+# publishing and doctor.sh WARNs instead of FAILing. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
+#ALLOW_OPEN_WEBUI=false
 
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.
@@ -320,10 +356,12 @@
 #ROUTER_PORT=8088
 
 # The router only spawns agents for admin turns (Open WebUI forwards
-# X-OpenWebUI-User-Role; guests pass through untouched). When true, an ABSENT
-# role header also blocks spawning (fail-closed) — set on hardened multi-user
-# installs where header forwarding might be disabled. Default: false
-# (single-user installs send no headers and should keep working).
+# X-OpenWebUI-User-Role, or only a signed X-OpenWebUI-User-Jwt when
+# IDENTITY_JWT_SECRET is set, which the router verifies; guests pass through
+# untouched). An ABSENT identity blocks spawning (fail-closed) on its own
+# whenever WEBUI_AUTH=true or IDENTITY_JWT_SECRET is set; true forces that on
+# any other rig too. Default: false (single-user no-auth installs send no
+# headers and should keep working).
 # Env override: $OPENBEAST_ROUTER_REQUIRE_IDENTITY. See docs/RBAC_PLAN.md.
 #ROUTER_REQUIRE_IDENTITY=false
 

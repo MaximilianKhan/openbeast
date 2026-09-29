@@ -137,7 +137,7 @@ class Rig:
         # A REAL Host header: TrustedHostMiddleware now pins it, and
         # TestClient's default "testserver" is exactly the kind of foreign
         # name a rebinding attack arrives under.
-        return TestClient(self._app, base_url="http://127.0.0.1:3003",
+        return TestClient(self._app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3003",
                           headers=dict(headers or {}))
 
     @property
@@ -1504,14 +1504,94 @@ def test_a_foreign_host_header_never_reaches_a_route(rig):
     """The other half of the rebinding defence: a hostile DNS name pointed at
     127.0.0.1 is refused before any handler runs."""
     app = chat_server.create_app()
-    evil = TestClient(app, base_url="http://attacker.example.com",
+    evil = TestClient(app, client=("127.0.0.1", 50000), base_url="http://attacker.example.com",
                       headers=HDR_OK)
     assert evil.get("/api/chat/health").status_code == 400
     assert evil.get("/api/chat/sessions").status_code == 400
-    good = TestClient(app, base_url="http://localhost:3003", headers=HDR_OK)
+    good = TestClient(app, client=("127.0.0.1", 50000), base_url="http://localhost:3003", headers=HDR_OK)
     assert good.get("/api/chat/health").status_code == 200
     assert "127.0.0.1" in app.state.allowed_hosts
     assert "*.ts.net" in app.state.allowed_hosts
+
+
+def test_a_login_header_from_off_box_is_not_a_read_credential(rig):
+    """Review 2026-09-29: OPENBEAST_CHAT_BIND=0.0.0.0 (or a LAN/tailnet
+    address) let any host that reached :3003 send `Host: localhost` + any
+    login and stream every transcript. The header is real only when
+    `tailscale serve` sets it, and that proxy dials from 127.0.0.1."""
+    sid = rig.session(kind="job")
+    rig.client  # build the app
+    lan = TestClient(rig._app, client=("192.168.1.77", 5555),
+                     base_url="http://localhost:3003")
+    for path in ("/api/chat/sessions", f"/api/chat/sessions/{sid}",
+                 f"/api/chat/sessions/{sid}/events?from=0&follow=0"):
+        assert lan.get(path, headers=HDR_OK).status_code == 404, path
+    rig.operators(LISTED)          # a listed login is still only a claim
+    assert lan.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+    # negative controls: the same header over loopback reads, and a device
+    # key (a secret, not a claim) reads from off the box too
+    assert rig.client.get("/api/chat/sessions").status_code == 200
+    key = rig.enroll("phone", "k-offbox-1", scopes=["chat"])
+    assert lan.get("/api/chat/sessions", headers=key).status_code == 200
+
+
+def test_tailscale_serve_login_survives_uvicorn_proxy_headers(rig):
+    """Review 2026-09-29 (fix-pass blocker). `tailscale serve` dials from
+    127.0.0.1 and always adds X-Forwarded-For: <tailnet IP>; uvicorn's
+    default proxy_headers=True rewrote request.client to that IP, so the
+    loopback gate dropped the login and every phone read 404. Wrap the app
+    the way main() serves it — a bare TestClient skips that middleware."""
+    import uvicorn
+    ts = {**HDR_OK, "X-Forwarded-For": "100.100.201.38",
+          "X-Forwarded-Host": "beast.tail4109f9.ts.net:8445",
+          "X-Forwarded-Proto": "https"}
+    rig.client  # build the app
+
+    def served(cfg, ip="127.0.0.1"):
+        cfg.load()
+        return TestClient(cfg.loaded_app, client=(ip, 50000),
+                          base_url="http://127.0.0.1:3003")
+    ok = served(chat_server._uvicorn_config(rig._app, "127.0.0.1", 3003))
+    assert ok.get("/api/chat/sessions", headers=ts).status_code == 200
+    # the mechanism, pinned: uvicorn's DEFAULT config is what broke it
+    broken = served(uvicorn.Config(rig._app, host="127.0.0.1", port=3003,
+                                   log_level="warning"))
+    assert broken.get("/api/chat/sessions", headers=ts).status_code == 404
+    # negative control: an off-box peer forwarding "127.0.0.1" is still
+    # off-box
+    lan = served(chat_server._uvicorn_config(rig._app, "127.0.0.1", 3003),
+                 ip="192.168.1.77")
+    spoof = {**HDR_OK, "X-Forwarded-For": "127.0.0.1"}
+    assert lan.get("/api/chat/sessions", headers=spoof).status_code == 404
+
+
+@pytest.mark.parametrize("host,loop", [
+    ("127.0.0.1", True), ("localhost", True), ("::1", True), ("[::1]", True),
+    ("0.0.0.0", False), ("192.168.1.50", False), ("100.64.0.9", False),
+    ("rig.lan", False), ("::", False),
+])
+def test_bind_is_loopback(host, loop):
+    assert chat_server._bind_is_loopback(host) is loop
+
+
+def test_main_warns_on_an_off_box_bind(monkeypatch, capsys):
+    """Startup says out loud that the header path is loopback-only; it binds
+    nothing here (getaddrinfo is stubbed to stop main right after)."""
+    class Stop(Exception):
+        pass
+
+    def boom(*a, **k):
+        raise Stop()
+    import socket as _socket
+    monkeypatch.setattr(_socket, "getaddrinfo", boom)
+    monkeypatch.setenv("OPENBEAST_CHAT_BIND", "0.0.0.0")
+    with pytest.raises(Stop):
+        chat_server.main()
+    assert "not loopback" in capsys.readouterr().err
+    monkeypatch.setenv("OPENBEAST_CHAT_BIND", "127.0.0.1")
+    with pytest.raises(Stop):
+        chat_server.main()
+    assert "not loopback" not in capsys.readouterr().err
 
 
 def test_a_chat_scoped_device_key_is_an_identity_on_its_own(rig):
@@ -1542,6 +1622,37 @@ def test_a_job_log_created_by_the_api_is_0600(rig, tmp_path):
     assert rec
     mode = os.stat(rec["transcript"]).st_mode & 0o777
     assert mode == 0o600, oct(mode)
+
+
+def test_an_agent_transcript_created_by_the_api_is_0600(rig, tmp_path,
+                                                        monkeypatch):
+    """Review 2026-09-29: job transcripts were 0600 but agent transcripts —
+    tool output, file contents, fetched pages — took the runner's umask via
+    a plain open(path, "a") and landed 0644 in a 0755 agents/logs/. The
+    fake runner appends exactly that way; the umask is pinned so the
+    negative control below proves what the runner alone would produce."""
+    fake = tmp_path / "fake_runner.py"
+    fake.write_text(FAKE_RUNNER.format(agents=AGENTS))
+    monkeypatch.setenv("FAKE_RUNNER_ARGV", str(tmp_path / "argv.json"))
+    monkeypatch.setattr(chat_server, "RUNNER_PATH", str(fake))
+    old_umask = os.umask(0o022)
+    try:
+        assert not rig.logs.exists()
+        r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+            "kind": "agent", "task": "t", "workdir": str(tmp_path)})
+        assert r.status_code == 201, r.text
+        rec = wait_state(r.json()["session"]["id"], "done")
+        assert rec, "the fake runner never finished"
+        assert os.stat(rec["transcript"]).st_mode & 0o777 == 0o600
+        assert '"start"' in open(rec["transcript"]).read()   # it still writes
+        assert os.stat(rig.logs).st_mode & 0o777 == 0o700
+        # negative control: the runner's own append-open, on a fresh path
+        probe = rig.logs / "probe.jsonl"
+        with open(probe, "a") as fh:
+            fh.write("{}\n")
+        assert os.stat(probe).st_mode & 0o777 == 0o644
+    finally:
+        os.umask(old_umask)
 
 
 def test_the_spawn_audit_carries_the_command(rig, tmp_path):
@@ -1705,6 +1816,34 @@ def test_caller_meta_cannot_forge_the_liveness_proof(rig, tmp_path):
     assert wait_state(sid, "stopped"), sessions.get(sid)
 
 
+def test_caller_meta_cannot_forge_the_boot_id_either(rig, monkeypatch):
+    """Review 2026-09-29: [54] added meta['boot_id'] as a second liveness
+    input, and RESERVED_META was not told. For kind='agent' the caller's meta
+    is merged OVER the runner's own record (annotate_when_registered), so
+    `{"meta": {"boot_id": "x"}}` bore a live agent as `lost` — "started
+    before this boot" — with /send 409 and /stop "already finished"."""
+    monkeypatch.setattr(sessions, "_boot_id", lambda: "boot-A")
+    assert set(sessions.SERVER_OWNED_META) <= set(chat_server.RESERVED_META)
+    assert "boot_id" in chat_server.RESERVED_META
+    sid = rig.session(kind="agent")            # the runner's own record
+    assert sessions.get(sid)["meta"]["boot_id"] == "boot-A"
+    real_start = sessions.get(sid)["meta"]["pid_start"]
+
+    assert chat_server.annotate_when_registered(sid, {
+        "boot_id": "some-other-boot", "pid_start": 1, "cursor": 999,
+        "note": "keep me"}, timeout=1.0)
+    rec = sessions.get(sid)
+    assert rec["state"] == "running", rec
+    assert rec["meta"]["boot_id"] == "boot-A"
+    assert rec["meta"]["pid_start"] == real_start
+    assert rec["meta"]["cursor"] == 0
+    assert rec["meta"]["note"] == "keep me"    # a filter, not a wall
+    # negative control: the same foreign boot_id, written straight into the
+    # record, IS what reads as lost — so the filter above is what saved it
+    sessions.touch(sid, meta={"boot_id": "some-other-boot"})
+    assert sessions.get(sid)["state"] == "lost"
+
+
 def test_the_stream_read_is_bounded_and_still_pages_exactly(tmp_path):
     """`read_lines_from` did an uncapped `f.read()` from the offset, and its
     only caller is inside the async SSE generator — so every replay-from-zero
@@ -1800,6 +1939,82 @@ def test_stopping_a_session_never_signals_a_group_it_does_not_lead(monkeypatch):
                                       signal.SIGTERM) is True
     assert calls["killpg"] == [], "killed a group this session does not lead"
     assert calls["kill"] == [(9001, signal.SIGTERM)]
+
+
+_FAKE_TOOL_RUNNER = r"""
+import os, subprocess, sys, time
+# What agents/tools.py run_reaped does for every bash-tool command: a NEW
+# session, so the command leads a process group of its own.
+tool = subprocess.Popen(["sleep", "300"], start_new_session=True)
+with open(sys.argv[1] + ".tmp", "w") as fh:
+    fh.write(str(tool.pid))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+tool.wait()                    # "mid-tool-call"; no SIGTERM handler, like runner.py
+"""
+
+
+def _gone(pid: int, start) -> bool:
+    got = sessions.pid_start_time(pid)
+    if got is None or got != start:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rpartition(")")[2].split()[0] in ("Z", "X")
+    except OSError:
+        return True
+
+
+def test_stop_reaches_a_tool_command_in_its_own_session(rig, tmp_path):
+    """Review 2026-09-29: the escalation killpg'd only the runner's group, but
+    every bash-tool command runs under start_new_session=True, and its
+    timeout lived in the runner's proc.wait(). The runner died on SIGTERM and
+    the command ran on as an orphan with NO timeout left. Real processes, a
+    real tree; the bystander in a session of its own is the negative
+    control."""
+    pidfile = tmp_path / "tool.pid"
+    runner = subprocess.Popen([sys.executable, "-c", _FAKE_TOOL_RUNNER,
+                               str(pidfile)], start_new_session=True)
+    bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    tool_pid = None
+    try:
+        for _ in range(200):
+            if pidfile.exists():
+                break
+            time.sleep(0.02)
+        tool_pid = int(pidfile.read_text())
+        tool_start = sessions.pid_start_time(tool_pid)
+        assert tool_start is not None
+        assert os.getpgid(tool_pid) == tool_pid != runner.pid
+        sid = sessions.new_id("agent")
+        rec = sessions.register(sid, kind="agent", pid=runner.pid,
+                                pgid=runner.pid, workdir=str(tmp_path))
+        assert chat_server.signal_session(rec, signal.SIGTERM) is True
+        assert runner.wait(timeout=10) == -signal.SIGTERM
+        for _ in range(250):
+            if _gone(tool_pid, tool_start):
+                break
+            time.sleep(0.02)
+        assert _gone(tool_pid, tool_start), "the tool command outlived Stop"
+        assert bystander.poll() is None, "signalled a process outside the tree"
+    finally:
+        for p in (runner, bystander):
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+        if tool_pid and not _gone(tool_pid, sessions.pid_start_time(tool_pid)):
+            with contextlib.suppress(OSError):
+                os.kill(tool_pid, signal.SIGKILL)
+
+
+def test_descendant_groups_only_lists_groups_a_descendant_leads(monkeypatch):
+    """Built process table: 100 is the session (group 100); 101 is in its
+    group; 102 leads its own (a tool command); 103 joined a FOREIGN group
+    (777) and must never make us signal 777; 200 is not in the tree."""
+    table = {100: (1, 100, 5), 101: (100, 100, 6), 102: (101, 102, 7),
+             103: (102, 777, 8), 104: (103, 104, 9), 200: (1, 200, 10)}
+    monkeypatch.setattr(chat_server, "_proc_table", lambda: table)
+    got = sorted(chat_server._descendant_groups(100, 100))
+    assert got == [(102, 7), (104, 9)]
 
 
 def test_sending_to_a_job_is_refused_not_silently_dropped(rig, tmp_path):
@@ -2108,6 +2323,9 @@ def _stub_systemd_run(tmp_path, rc):
         "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done; shift\n"
         "exec \"$@\"\n")
     stub.chmod(0o755)
+    # ...and a systemctl beside it, so the slice cap (_cap_job_slice) never
+    # reaches the REAL user manager from a test. Records like the other.
+    _stub_systemctl(bindir, tmp_path, 0)
     return bindir, log
 
 
@@ -2162,6 +2380,53 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     # control: 0 disables the cap, and only the cap
     monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
+
+
+def _stub_systemctl(bindir, tmp_path, rc):
+    log = tmp_path / "systemctl.calls"
+    stub = bindir / "systemctl"
+    stub.write_text("#!/bin/bash\n"
+                    f"printf '%s\\n' \"$*\" >> {log}\n"
+                    f"exit {rc}\n")
+    stub.chmod(0o755)
+    return log
+
+
+def test_scoped_jobs_share_one_capped_slice(tmp_path, monkeypatch):
+    """Review 2026-09-29: every scope got its own 50%-of-RAM cap and no shared
+    parent, so two runaway phone jobs (or one plus the stack) could still
+    OOM the box. The scopes now go into one slice carrying the same cap as an
+    AGGREGATE. Both stubs record their argv; nothing touches the real
+    user manager."""
+    bindir, log = _stub_systemd_run(tmp_path, 0)
+    ctl_log = _stub_systemctl(bindir, tmp_path, 0)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: True)
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "25")
+    cap = chat_server._job_mem_max_bytes()
+    assert cap > 0
+    prefix = chat_server._probe_scope()
+    assert f"--slice={chat_server.JOB_SLICE}" in prefix
+    assert prefix.index(f"--slice={chat_server.JOB_SLICE}") < prefix.index("--")
+    assert f"MemoryMax={cap}" in prefix          # the per-scope inner bound
+    calls = ctl_log.read_text().splitlines()
+    assert calls == [f"--user set-property --runtime {chat_server.JOB_SLICE} "
+                     f"MemoryMax={cap} MemorySwapMax=0"]
+    assert f"--slice={chat_server.JOB_SLICE}" in log.read_text(), \
+        "the PROBE must test the same flags"
+
+    # control: a manager that refuses the slice cap -> no slice, scope cap kept
+    ctl_log.unlink()
+    _stub_systemctl(bindir, tmp_path, 1)
+    prefix = chat_server._probe_scope()
+    assert not [a for a in prefix if a.startswith("--slice")]
+    assert f"MemoryMax={cap}" in prefix
+    # control: 0 disables capping entirely — no slice, no systemctl call
+    ctl_log.unlink()
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
+    prefix = chat_server._probe_scope()
+    assert not [a for a in prefix if a.startswith("--slice") or "Memory" in a]
+    assert not ctl_log.exists()
 
 
 def test_stop_of_a_job_nobody_reaps_is_stopped_not_lost(rig, tmp_path, monkeypatch):

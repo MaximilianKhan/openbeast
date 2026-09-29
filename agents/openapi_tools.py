@@ -23,8 +23,8 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              the admin key reaches all tools, the guest key only
              web_search/fetch (403 elsewhere), no key configured = open
              loopback Phase-1 parity. Replaces the two-instance MCPO split.
-  AUDIT      Every tool call is appended to .run/tool-audit.jsonl with
-             ts/user/role/chat/tool/status/ms and an argument DIGEST
+  AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
+             with ts/user/role/chat/tool/status/ms and an argument DIGEST
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
@@ -36,13 +36,20 @@ Env:
                               healthcheck.sh probe 3001; changing this is
                               for standalone runs only)
   OPENBEAST_BIND              bind address         (default 127.0.0.1)
-  OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (both set => auth on)
+  OPENBEAST_MCPO_ADMIN_KEY    admin profile key    (either set => auth on)
   OPENBEAST_MCPO_GUEST_KEY    guest profile key
+  OPENBEAST_ALLOW_OPEN_TOOLS  true = serve keyless on a non-loopback bind
+                              anyway (otherwise main() refuses to start)
   OPENBEAST_FILES_SHARDING    off | user | chat    (default user)
   OPENBEAST_FILES_DIR         workspace root (start.sh exports it)
+  OPENBEAST_TOOL_AUDIT_PATH   audit log file (default: $OPENBEAST_RUN_DIR,
+                              else <repo>/.run, + /tool-audit.jsonl). The
+                              test suite points it at a temp dir so fixture
+                              rows never land in the rig's real audit trail.
 
 Trust note: identity headers are accepted as sent. On this stack the only
-network path to this port is loopback or WebUI itself; a caller who can
+network path to this port is loopback or WebUI itself (main() refuses a
+keyless non-loopback bind unless ALLOW_OPEN_TOOLS=true); a caller who can
 forge headers here can already reach every service directly. Signed-JWT
 identity (Open WebUI's FORWARD_USER_INFO_HEADER_JWT_SECRET) is the
 enterprise upgrade — see docs/TODO.md.
@@ -50,6 +57,7 @@ enterprise upgrade — see docs/TODO.md.
 import hashlib
 import hmac
 import inspect
+import ipaddress
 import json
 import os
 import re
@@ -169,6 +177,29 @@ def _refuse_ambiguous_identity(request: Request) -> None:
                     "page from them."))
 
 
+def _audit_path() -> str:
+    """Where the tool-call audit trail goes. Overridable so tests never
+    append synthetic rows (forged users, denied /bash probes, "../../etc")
+    to the rig's real security log — an operator could not tell them apart
+    from a genuine attack, and a genuine attack could hide among them."""
+    explicit = os.environ.get("OPENBEAST_TOOL_AUDIT_PATH", "").strip()
+    if explicit:
+        return explicit
+    run_dir = os.environ.get("OPENBEAST_RUN_DIR", "").strip() or \
+        os.path.join(REPO_DIR, ".run")
+    return os.path.join(run_dir, "tool-audit.jsonl")
+
+
+def _key_matches(token: str, key: str) -> bool:
+    """Constant-time key check on BYTES. compare_digest on str raises
+    TypeError for any non-ASCII character, and Starlette decodes header bytes
+    as latin-1 — so `Bearer caf\xe9` used to escape check_auth as an unhandled
+    500: no 401/403, no audit row, no denied metric, a traceback per probe.
+    Same fix as edge.py / chat_server.py / artifact_server.py."""
+    return hmac.compare_digest(token.encode("utf-8", "surrogateescape"),
+                               key.encode("utf-8", "surrogateescape"))
+
+
 def create_app() -> FastAPI:
     """App factory — reads config at call time so tests can vary env."""
     admin_key = os.environ.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
@@ -189,7 +220,13 @@ def create_app() -> FastAPI:
     if sharding not in ("off", "user", "chat"):
         sharding = "user"
     files_dir = os.environ.get("OPENBEAST_FILES_DIR", "")
-    audit_path = os.path.join(REPO_DIR, ".run", "tool-audit.jsonl")
+    audit_path = _audit_path()
+    # O_CREAT's 0600 only applies to a NEW file; a trail created 0644 by an
+    # older build stays world-readable until tightened once here.
+    try:
+        os.chmod(audit_path, 0o600)
+    except OSError:
+        pass
     # Signed identity (enterprise): when this secret is set — the SAME value
     # given to Open WebUI as FORWARD_USER_INFO_HEADER_JWT_SECRET — WebUI
     # stops sending plain X-OpenWebUI-User-* headers and instead mints an
@@ -246,6 +283,27 @@ def create_app() -> FastAPI:
         email = request.headers.get(_HDR_EMAIL, "").strip() or None
         return user, role, chat, email
 
+    def denied_identity(request: Request) -> tuple:
+        """(user, role, chat, claimed_user) for a DENIED call's audit row.
+
+        The denial row used to copy the raw plain headers even in JWT mode,
+        stamped identity=jwt — so any local caller could write "alice probed
+        /bash" into the trail by typing her id. Now the row carries only what
+        identity_from would VERIFY (nothing, if the token is absent or bad);
+        a typed id in JWT mode is kept, clearly marked, as claimed_user.
+        """
+        try:
+            user, role, chat, _email = identity_from(request)
+        except HTTPException:
+            user, role, chat = None, None, \
+                (request.headers.get(_HDR_CHAT, "").strip() or None)
+        claimed = None
+        if jwt_secret:
+            typed = request.headers.get(_HDR_USER, "").strip()
+            if typed and typed != user:
+                claimed = typed
+        return user, role, chat, claimed
+
     app = FastAPI(
         title="OpenBeast local tools",
         version="1.0",
@@ -260,9 +318,9 @@ def create_app() -> FastAPI:
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         if not token:
             raise HTTPException(status_code=401, detail="API key required")
-        if admin_key and hmac.compare_digest(token, admin_key):
+        if admin_key and _key_matches(token, admin_key):
             return "admin"
-        if guest_key and hmac.compare_digest(token, guest_key):
+        if guest_key and _key_matches(token, guest_key):
             if tool not in GUEST_TOOLS:
                 # The guest profile has no such tool — mirror the old guest
                 # instance, where denied tools did not exist at all.
@@ -326,7 +384,8 @@ def create_app() -> FastAPI:
         return shard
 
     def audit(user, role, chat, tool: str, profile: str, ok: bool,
-              ms: int, args: dict, err: str = "", owner: str = "") -> None:
+              ms: int, args: dict, err: str = "", owner: str = "",
+              claimed_user=None) -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
         only a digest and size, so the audit trail can't leak chats."""
         try:
@@ -351,8 +410,17 @@ def create_app() -> FastAPI:
                 # can tie a page owned by an email back to the WebUI account
                 # that published it (`user` above is that raw id).
                 entry["artifact_owner"] = owner
-            os.makedirs(os.path.dirname(audit_path), exist_ok=True)
-            with open(audit_path, "a") as f:
+            if claimed_user:
+                # An UNVERIFIED id the caller typed (JWT mode ignores plain
+                # headers). Kept for forensics, never as `user`.
+                entry["claimed_user"] = str(claimed_user)[:200]
+            os.makedirs(os.path.dirname(audit_path), mode=0o700,
+                        exist_ok=True)
+            # 0600 like every sibling audit/ledger (edge, artifact, chat):
+            # it names WebUI accounts, chats and artifact owners.
+            fd = os.open(audit_path,
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass  # the audit trail must never break the tool call
@@ -383,11 +451,11 @@ def create_app() -> FastAPI:
                 profile = check_auth(request, name)
                 user, role, chat, email = identity_from(request)
             except HTTPException as e:
-                audit(request.headers.get(_HDR_USER) or None,
-                      request.headers.get(_HDR_ROLE) or None,
-                      request.headers.get(_HDR_CHAT) or None,
+                d_user, d_role, d_chat, claimed = denied_identity(request)
+                audit(d_user, d_role, d_chat,
                       name, "denied", False, 0, {},
-                      f"http {e.status_code}: {e.detail}")
+                      f"http {e.status_code}: {e.detail}",
+                      claimed_user=claimed)
                 with metrics_lock:
                     calls[(name, "denied", "error")] += 1
                 raise
@@ -508,10 +576,59 @@ def create_app() -> FastAPI:
     return app
 
 
+def bind_is_loopback(host: str) -> bool:
+    """True when `host` only listens on this machine — mirrors conf.sh's
+    ob_bind_is_loopback (127.*, ::1, [::1], localhost). Anything else
+    (0.0.0.0, ::, a LAN/tailnet IP, a hostname, empty) is a network bind."""
+    h = (host or "").strip()
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def open_exposure_refusal(env=None) -> str | None:
+    """The reason to refuse serving, or None when it is safe to start.
+
+    Keyless mode answers every tool — bash included — to anyone who can
+    reach the port, and identity headers are taken as sent (see the trust
+    note above). That is Phase-1 parity on loopback and remote code
+    execution on a LAN/tailnet bind (review identity-rbac-4). conf.sh only
+    warns; this is where it is enforced. OPENBEAST_ALLOW_OPEN_TOOLS=true is
+    the operator's explicit acknowledgement (mirrors ob_tools_exposed_open)."""
+    env = os.environ if env is None else env
+    host = env.get("OPENBEAST_BIND", "127.0.0.1")
+    if bind_is_loopback(host):
+        return None
+    if (env.get("OPENBEAST_MCPO_ADMIN_KEY", "").strip()
+            or env.get("OPENBEAST_MCPO_GUEST_KEY", "").strip()):
+        return None
+    if env.get("OPENBEAST_ALLOW_OPEN_TOOLS", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return None
+    return (f"refusing to serve the tool server on non-loopback "
+            f"BIND_HOST={host!r} with no MCPO_ADMIN_KEY/MCPO_GUEST_KEY: "
+            f"anyone who can reach {host}:3001 could run shell commands as "
+            f"this user. Run scripts/setup-mcpo-keys.sh, bind 127.0.0.1 "
+            f"(remote access via scripts/setup-tailscale.sh), or set "
+            f"ALLOW_OPEN_TOOLS=true in openbeast.conf to accept the risk.")
+
+
 def main() -> None:
     import uvicorn
     host = os.environ.get("OPENBEAST_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_TOOLS_PORT", "3001"))
+    refusal = open_exposure_refusal()
+    if refusal:
+        print(f"Error: {refusal}", file=sys.stderr)
+        sys.exit(2)
+    # This process holds the RBAC keys, the JWT secret and the WebUI admin
+    # password in its environ, and it is $PPID (or a grandparent, via
+    # start_agent -> runner) of every model-authored shell: make it
+    # non-dumpable before it serves anything, not lazily on first spawn.
+    _tools.harden_process()
     print(f"OpenBeast identity tool server on {host}:{port} "
           f"({len(TOOL_NAMES)} tools)")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")

@@ -101,7 +101,7 @@
         "time_random.new.1.zig",
         "time_random.new.2.zig"
       ],
-      "summary": "`std.time.*`, `std.Thread.sleep` and `std.crypto.random` are gone \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`",
+      "summary": "`std.time.timestamp`, `std.time.milliTimestamp`, `std.time.microTimestamp`, `std.time.nanoTimestamp`, `std.time.sleep`, `std.time.Instant`, `std.time.Timer`, `std.Thread.sleep` and `std.crypto.random` are gone (std.time keeps its ns_per_s-style unit constants and std.time.epoch) \u2014 use `std.Io.Clock.now(.awake, io)`, `try io.sleep(.fromMilliseconds(5), .awake)`, `io.random(&buf)`",
       "doc_must_contain": [
         "std.Io.Clock.now(.awake, io)",
         "io.sleep(.fromMilliseconds",

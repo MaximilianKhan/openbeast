@@ -1,0 +1,38 @@
+ROW GSQ-RCO-IQ3S-np1  file=eval-gsq-rco-iq3s-np1-20260914-111928.json
+  n=112 passed=88  imputed_capability=98.57
+  tripwire failures (1): 65_miller_rabin_f
+  ZERO-TOKEN fails: 0/24 (clean)
+  serve-log CUDA errors: n/a 
+  completion tokens=2,396,170  summed wall=8.81h
+  per-language: c 13/14, cpp 9/10, go 18/19, python 28/28, rust 11/11, zig 9/30
+ROW UD-IQ3S-np1  file=eval-ud-iq3s-np1-20260914-201133.json
+  n=112 passed=76  imputed_capability=97.53
+  tripwire failures (1): 122_gemm_blocked_d
+  zero-token fails that are NOT crashes: 1 timeout
+  ZERO-TOKEN fails: 0/36 (clean)
+  serve-log CUDA errors: n/a 
+  completion tokens=2,746,833  summed wall=10.98h
+  per-language: c 13/14, cpp 8/10, go 19/19, python 25/28, rust 9/11, zig 2/30
+
+REFERENCE BAND (Q5-class 3.8, capped 20480, 112 units):
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-091027.json: passed 82, imputed 97.7
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-130402.json: passed 84, imputed 97.12
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-225005.json: passed 85, imputed 98.45
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260910-033545.json: passed 91, imputed 98.06
+  band: passed 82-91, imputed 97.12-98.45
+
+PAIRED GSQ-RCO-IQ3S-np1 (A) vs UD-IQ3S-np1 (B), 112 common units  validity A=True B=True
+  ALL      A-only 16  B-only  4  net(A-B) +12  p=0.012
+           A-only: 115_fft_e, 11_bst_a, 122_gemm_blocked_c, 122_gemm_blocked_d, 123_nbody_f, 137_pollard_rho_f, 152_chase_lev_deque, 158_karatsuba_bytes_a, 31_is_power_of_two_f, 36_black_scholes_f, 51_toposort_c, 54_astar_f, 62_crt_f, 63_det_f, 73_count_vowels_f, 74_palindrome_f
+           B-only: 155_tonelli_shanks_f, 158_karatsuba_bytes_c, 65_miller_rabin_f, 71_reverse_list_b
+  zig      A-only  9  B-only  2  net(A-B) +7  p=0.065
+           A-only: 123_nbody_f, 137_pollard_rho_f, 31_is_power_of_two_f, 36_black_scholes_f, 54_astar_f, 62_crt_f, 63_det_f, 73_count_vowels_f, 74_palindrome_f
+           B-only: 155_tonelli_shanks_f, 65_miller_rabin_f
+  non-zig  A-only  7  B-only  2  net(A-B) +5  p=0.180
+           A-only: 115_fft_e, 11_bst_a, 122_gemm_blocked_c, 122_gemm_blocked_d, 152_chase_lev_deque, 158_karatsuba_bytes_a, 51_toposort_c
+           B-only: 158_karatsuba_bytes_c, 71_reverse_list_b
+
+CARD CLAIMS (ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF README, read 2026-09-11):
+  IQ3_S 'task-lossless': AIME25 100.00 (=BF16), LCB v6 85.71 (=BF16), GPQA-D 89.39 (-0.51); vs UD-IQ3_S +3.33 AIME, +1.71 LCB, -0.51 GPQA
+  IQ2_XS vs UD-IQ2_S at 8.4GB: +10.00 AIME25, +8.59 GPQA-D, +4.57 LCB v6
+  Our instrument: v5-fast agentic-coding suite (112 pinned units, imputed to the 291-unit v4 scale), capped 20480, single slot, stock b10865.

@@ -31,14 +31,15 @@ be sourced before any `docker compose up` so containers get the real values.
 | `MEM_LIMIT_PCT` | `OPENBEAST_MEM_LIMIT_PCT` | `75` | Daemon-mode (`./start.sh -d`) memory cap as a percent of physical RAM, recomputed at every launch — a runaway process OOMs the stack's scope, never the box. Swap inside the scope is additionally capped at 8G |
 | `SERVE_SCRIPT` | `OPENBEAST_SERVE_SCRIPT` | `serve-qwen38-27b-uncensored-mtp-q5.sh` | Serve script `start.sh` launches when none is given (also used by `healthcheck.sh --restart`) |
 | `FAST_BOOT` | `OPENBEAST_FAST_BOOT` | `false` | Serve the tiny Qwen3-0.6B bridge (`serve-bootstrap.sh`) on `:8080` for instant chat, bring the stack up, then hot-swap to `SERVE_SCRIPT` once its weights are warmed |
-| `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. `false` hard-fails |
+| `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. "Healthy" means `/health` answered 200 `{"status":"ok"}` — the 503 `Loading model` a server gives while loading does not count, and a load still unfinished after `OPENBEAST_LLAMA_LOAD_GRACE` seconds (default 900) is stopped and counts as failed. `false` hard-fails |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
 | `REASONING` | `OPENBEAST_REASONING` | empty (model default) | Global thinking override applied by `serve.sh`: `on` \| `off` \| `auto`. Overrides any per-serve-script default |
-| `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes |
+| `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes. Also sets the agent runner's per-turn `max_tokens` (`agents/runner.py`): budget + 12,288 content tokens, 20,480 + 12,288 when unset, no cap at all when `-1`. `OPENBEAST_AGENT_MAX_TOKENS=<n>` overrides it (`0` = uncapped). Eval runs are never capped |
 | `FILES_DIR` | `OPENBEAST_FILES_DIR` | `~/openbeast-files` | Private workspace for files the **chat** model reads/writes via the direct tools — see below |
 | `FILES_SHARDING` | `OPENBEAST_FILES_SHARDING` | `user` | Workspace isolation on the identity tool server: `user` (one shard per WebUI account) \| `chat` (additionally per conversation) \| `off` (shared root). Namespacing, not confinement — absolute paths still escape it |
-| `BIND_HOST` | `OPENBEAST_BIND` | `127.0.0.1` | Address the services bind to. Loopback-only by default (remote access comes through Tailscale Serve); `0.0.0.0` restores the legacy LAN-open behavior |
-| `LLAMA_API_KEY` | `OPENBEAST_API_KEY` | empty (off) | When set, llama-server requires `Authorization: Bearer <key>` — and the whole stack presents it: WebUI (compose), healthcheck, agent runner + `agent.sh` (env resolution, or `runner.py --api-key`), eval harness, router classify, dashboard probes, beast-slot clients (`setup-client.sh --api-key`). Rig-side OpenCode needs the key added to user-level config (see docs/BEAST_SLOT.md) |
+| `BIND_HOST` | `OPENBEAST_BIND` | `127.0.0.1` | Address the services bind to. Loopback-only by default (remote access comes through Tailscale Serve); `0.0.0.0` restores the legacy LAN-open behavior. Any non-loopback value warns at launch, and names the open shell when the tool server has no `MCPO_*_KEY` — and the tool server then **refuses to start** (so `./start.sh` stops) unless `ALLOW_OPEN_TOOLS=true` |
+| `ALLOW_OPEN_TOOLS` | `OPENBEAST_ALLOW_OPEN_TOOLS` | `false` | Acknowledges serving the identity tool server (`:3001`, bash included) with no `MCPO_*_KEY` on a non-loopback `BIND_HOST`. Without it, `agents/openapi_tools.py` refuses to start in that state (exit 2, names the fix). Any key set, or a loopback bind, needs no acknowledgement |
+| `LLAMA_API_KEY` | `OPENBEAST_API_KEY` | empty (off) | When set, llama-server requires `Authorization: Bearer <key>` — and the whole stack presents it: WebUI (compose), healthcheck, agent runner + `agent.sh` (env resolution, or `runner.py --api-key`), eval harness, router classify, dashboard probes, beast-slot clients (`setup-client.sh --api-key-stdin`). llama-server receives it through its environment, never argv. Rig-side OpenCode needs the key added to user-level config (see docs/BEAST_SLOT.md) |
 | `WEIGHT_ENFORCE` | `OPENBEAST_WEIGHT_ENFORCE` | `warn` | Check the GGUF about to be served against `scripts/weights.registry`. `warn` logs and starts; `strict` refuses an unlisted or size-mismatched weight; `off` disables. `./start.sh doctor` reports whether `strict` is safe to enable. Size-only per launch — sha256 is `verify-weights.sh --deep` |
 | `FETCH_ALLOW_TAILNET` | `OPENBEAST_FETCH_ALLOW_TAILNET` | empty (blocked) | The model's `fetch` tool blocks Tailscale CGNAT targets (100.64.0.0/10) by default — pinned across Python versions. `true` allows fetching from tailnet hosts. `web_search` is unaffected |
 | `BASH_WRAPPER` | `OPENBEAST_BASH_WRAPPER` | empty (off) | Kernel-level sandbox command wrapped around every model `bash` call (e.g. `sandlock run -p openbeast -w "$PWD" --`). Read per-call by `agents/tools.py`; forwarded only when non-empty. See `docs/SANDBOXING.md` |
@@ -50,9 +51,12 @@ be sourced before any `docker compose up` so containers get the real values.
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
 | `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
-| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | Serve callers with no/unknown key as a single `anon` device. Default fails closed — an empty registry refuses remote callers rather than serving them |
+| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While no device is enrolled, serve every caller as a single `anon` device (ignored once one is — then a missing/unknown key is 401). Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
-| `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on |
+| `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
+| `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
+| `AGENT_LOG_RETENTION_DAYS` | `AGENT_LOG_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for `agents/logs/` transcripts. The daily logrotate timer deletes transcripts untouched for this many days **and** no longer named by any session-ledger record (`sessions.prune_transcripts`); a live session's transcript is never removed |
+| `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on. Written automatically (`admin@localhost` + a random password) when it rotates the built-in admin's upstream default password — see "The built-in admin account" below |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
 | `BEAST_ARTIFACT` | `OPENBEAST_BEAST_ARTIFACT` | `false` | Run beast-artifact (`agents/artifact_server.py`), the publish-and-view service for model- or script-authored HTML. Adds the `publish_artifact`/`list_artifacts` tools to the MCP/WebUI surface (not the autonomous runner's registry). See `docs/BEAST_ARTIFACT.md` |
@@ -62,7 +66,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `BEAST_CHAT` | `OPENBEAST_BEAST_CHAT` | `false` | Run beast-chat (`agents/chat_server.py`), the tailnet operator console for the rig's own agent and job sessions — list, follow the live transcript, `say`, stop, start. Loopback-bound; `setup-tailscale.sh --publish-chat` maps `:8445` at it. See `docs/BEAST_CHAT.md` |
 | `CHAT_PORT` | `OPENBEAST_CHAT_PORT` | `3003` | Loopback port beast-chat listens on when `BEAST_CHAT=true` |
 | `CHAT_OPERATORS` | `OPENBEAST_CHAT_OPERATORS` | *(empty)* | The **read** allowlist: comma-separated tailnet logins (the `Tailscale-User-Login` that `tailscale serve` injects). An unlisted login gets 404, never 403. **Left empty the allowlist is not enforced** — every identified login on your tailnet can read every session (the single-operator default; `doctor` warns). **Writes** (say, stop, start an agent) additionally need a chat-scoped device key: `./scripts/clients.sh enroll phone --scope chat`. Also the fallback for `ARTIFACT_OPERATORS` |
-| `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | `false` | The router only spawns for `X-OpenWebUI-User-Role: admin` turns. `true` makes an **absent** role header also block spawning (fail closed) — for hardened multi-user installs where header forwarding may be off. See `docs/RBAC_PLAN.md` |
+| `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | automatic | The router only spawns for admin turns — the role comes from the plain `X-OpenWebUI-User-Role` header, or, when `IDENTITY_JWT_SECRET` is set, only from the verified `X-OpenWebUI-User-Jwt` (a plain role header is ignored there). A turn with **no** identity fails closed automatically when `WEBUI_AUTH=true` or `IDENTITY_JWT_SECRET` is set; `true` forces fail-closed on any rig. Only a single-user, auth-off rig lets an anonymous turn spawn. See `docs/RBAC_PLAN.md` |
 | `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 18 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
 | `IDENTITY_JWT_SECRET` | `OPENBEAST_IDENTITY_JWT_SECRET` | empty (header mode) | Shared HS256 secret: Open WebUI mints a signed JWT per tool call and the identity tool server verifies it, killing header forgery. Requests without a token stay anonymous; a present-but-invalid token is 401. Generate with `scripts/setup-mcpo-keys.sh --with-jwt` |
@@ -80,7 +84,10 @@ spawned background agents keep using their own `AGENT_WORKDIR`.
 **beast-chat's environment-only knobs.** Beyond the three conf keys above,
 `agents/chat_server.py` reads a handful of `OPENBEAST_CHAT_*` variables that
 have no `openbeast.conf` spelling (defaults in parentheses):
-`OPENBEAST_CHAT_BIND` (`127.0.0.1`), `OPENBEAST_CHAT_ALLOWED_HOSTS` (extra
+`OPENBEAST_CHAT_BIND` (`127.0.0.1`; set off loopback, `Tailscale-User-Login`
+is still honoured only from `127.0.0.1` — the `tailscale serve` path — so
+other peers need a chat-scoped device key, and startup warns),
+`OPENBEAST_CHAT_ALLOWED_HOSTS` (extra
 `Host` values, comma-separated, added to the built-in loopback + hostname +
 `*.ts.net` allowlist — the DNS-rebinding guard in `agents/hostpolicy.py`),
 `OPENBEAST_CHAT_RUN_DIR` (`.run`), `OPENBEAST_CHAT_RATE_PER_MIN` (60),
@@ -89,7 +96,8 @@ polite-stop and escalation deadlines), `OPENBEAST_CHAT_POLL_MS` (250),
 `OPENBEAST_CHAT_HEARTBEAT_S` (15), `OPENBEAST_CHAT_AUTH_RECHECK_S` (the
 heartbeat, capped at 5 s — an open stream re-authorizes on this period), and
 `OPENBEAST_CHAT_JOB_MEM_PCT` (50; `0` disables) — the memory cap, as a
-percent of RAM, on the systemd scope each console-started session runs in,
+percent of RAM, on the systemd scope each console-started session runs in
+and, as an aggregate, on the `openbeast-chat-jobs.slice` they all share —
 *outside* the stack's own scope so `./stop.sh` never takes a phone-started
 job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
 
@@ -447,22 +455,45 @@ account. This is the right mode as long as the WebUI is only reachable on
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
 whole tailnet — that's when a per-user login boundary (and the RBAC tiers
-in `docs/RBAC_PLAN.md`) starts to matter. On an auth-enabled fresh install,
-**the first account to sign up becomes admin** — create yours immediately
-after enabling auth, then mirror the credentials into the gitignored
-`openbeast.conf` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so
-`configure-webui.sh` can keep re-applying tool config on restarts. You log
-in once per device/browser; a session token persists after that. If you
-change the password in the UI (Settings → Account), update
-`openbeast.conf` to match. (Example: a box upgraded from the pre-auth era
-may carry a legacy `admin@localhost` account in its database — treat it as
-that install's admin, not a universal default.)
+in `docs/RBAC_PLAN.md`) starts to matter. It persists `WEBUI_AUTH=true`
+*before* publishing the WebUI, and only publishes `:443` once the running
+WebUI actually enforces logins — if the stack was already up with auth off
+it tells you to restart and re-run instead. If the WebUI is not answering
+yet, it asks docker: a booting container is waited for, and an
+`open-webui` container created with auth off (or one docker can't be asked
+about) keeps `:443` closed until you restart and re-run.
+
+**The built-in admin account.** With auth off, Open WebUI signs every
+visitor in as `admin@localhost` and creates that account as **admin** with
+its hardcoded password `admin` — so any install that started once with the
+default already has it, and new signups land as `pending` (the "first signup
+becomes admin" rule only holds for a database with no users at all). Left
+alone, that is a known admin password on the tailnet. So whenever the
+running WebUI enforces auth, `configure-webui.sh` (every start, and
+`setup-tailscale.sh` before it publishes) signs in with the default; if that
+works it rotates the password to a random one and saves it in the 0600
+`openbeast.conf` as `WEBUI_ADMIN_EMAIL=admin@localhost` /
+`WEBUI_ADMIN_PASSWORD` — or as `WEBUI_DEFAULT_ADMIN_PASSWORD` when the conf
+already names a different admin, whose password it never touches. If the
+rotation fails it prints a `SECURITY WARNING` and `setup-tailscale.sh` does
+not publish the WebUI. Put the admin account you use in `openbeast.conf`
+(`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so `configure-webui.sh` can
+keep re-applying tool config on restarts. You log in once per
+device/browser; a session token persists after that. If you change the
+password in the UI (Settings → Account), update `openbeast.conf` to match.
 
 **Turning auth back off.** Set `WEBUI_AUTH=false` in `openbeast.conf` (or
 `OPENBEAST_WEBUI_AUTH=false` in the environment) before `./start.sh`.
 Trade-off on a tailnet-exposed install: anyone holding any device on your
 tailnet — including a lost phone — gets the full admin UI. Layered defense
-says leave it on there; the cost is one login per device.
+says leave it on there; the cost is one login per device. With it off,
+`setup-tailscale.sh` refuses to publish the WebUI unless you pass
+`--i-accept-open-webui`, which it records as `ALLOW_OPEN_WEBUI=true` so later
+runs keep publishing and `doctor` reports the open `:443` as a warning, not a
+failure. Auth-off WebUI signs in with upstream's built-in
+`admin@localhost` / `admin`, so if that password was rotated, set it back
+to `admin` (Settings → Account) before turning auth off, or the auth-off
+UI cannot sign in.
 
 **Accounts and history — it's real multi-user, not one shared login:**
 - Every account has its **own separate chat history**, settings, and
@@ -744,13 +775,19 @@ when configured:
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service
-that's down is restarted automatically — with two deliberate exceptions.
+that's down is restarted automatically — with three deliberate exceptions.
 A llama-server whose `/health` answers `503 "Loading model"` is reported as
 **LOAD**, not down, and left alone (killing a loading model *is* the outage;
 past `OPENBEAST_LLAMA_LOAD_GRACE` seconds — default 900, judged by the
 recorded pid's age — a server still loading counts as wedged and down). And
 while `scripts/gpu-lease.sh status` says `HELD`, the watchdog will not
-relaunch the stack's model into a campaign's window. Every kill is by the
+relaunch the stack's model into a campaign's window. A stack stopped *on
+purpose* stays stopped: `./stop.sh` writes `.run/stopped` (the reason is
+`OPENBEAST_STOP_REASON`, default `./stop.sh`), `./start.sh` removes it, and
+while it exists `--restart` only reports. The supervisor writes it too when
+it gives up on a crash-looping model, and the watchdog's own no-supervisor
+relaunch is budgeted at 3 per hour (`.run/watchdog-relaunches`) before it
+marks the stack stopped. Every kill is by the
 recorded pid, whose command line must still match (`ob_pid_matches` in
 `scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
 stranger.
@@ -776,10 +813,14 @@ cross-host comparison.
 #### Multi-model benchmark
 
 `evals/benchmark_all.py` runs the full suite against every configured model in
-turn. For each: stops llama-server, starts the model's serve script, waits for
-`/health`, runs the eval, kills the server, scores the run, updates the
-leaderboard. If a model fails to launch or crashes mid-run, it's skipped and
-flagged in the sweep summary.
+turn. For each: starts the model's serve script, waits for `/health`, runs
+the eval, stops the server it started (by its process group — never by name),
+scores the run, updates the leaderboard. It refuses to start when `:8080` is
+already served by something it didn't start, so stop the stack (`./stop.sh`)
+or the other run first; it no longer `pkill`s whatever llama-server it finds.
+If a model fails to launch or crashes mid-run, it's skipped and flagged in
+the sweep summary. The 10-minute cool-off between models is skipped when the
+model never loaded or replayed every unit from cache.
 
 ```bash
 python3 evals/benchmark_all.py                       # all 20 configured models, full suite

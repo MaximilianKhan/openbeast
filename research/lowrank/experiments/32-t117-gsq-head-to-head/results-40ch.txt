@@ -1,0 +1,8 @@
+gsq-rco-iq2xs bytes=8422841472 Mean PPL(Q) : 6.678967 ± 0.160888 Mean KLD: 0.202825 ± 0.004369 Same top p: 81.392 ± 0.385 %
+gsq-rco-iq3s bytes=11771546784 Mean PPL(Q) : 6.027062 ± 0.142534 Mean KLD: 0.052512 ± 0.001231 Same top p: 90.137 ± 0.295 %
+unsloth-ud-iq2s bytes=8371970048 Mean PPL(Q) : 6.563709 ± 0.158496 Mean KLD: 0.131324 ± 0.003096 Same top p: 85.098 ± 0.353 %
+unsloth-ud-q2kxl bytes=9828981664 Mean PPL(Q) : 6.259348 ± 0.148563 Mean KLD: 0.085413 ± 0.002051 Same top p: 87.343 ± 0.329 %
+unsloth-ud-iq3s bytes=12040883104 Mean PPL(Q) : 6.006211 ± 0.142408 Mean KLD: 0.037341 ± 0.001077 Same top p: 91.657 ± 0.274 %
+ours-iq2s-fc128 bytes=8371970048 Mean PPL(Q) : 6.452539 ± 0.154883 Mean KLD: 0.119121 ± 0.002708 Same top p: 85.833 ± 0.345 %
+ours-q2kxl-fc128 bytes=9828981664 Mean PPL(Q) : 6.239405 ± 0.148363 Mean KLD: 0.079960 ± 0.001885 Same top p: 88.049 ± 0.321 %
+ours-iq3s-fc128 bytes=12040883104 Mean PPL(Q) : 6.004079 ± 0.142383 Mean KLD: 0.035251 ± 0.001108 Same top p: 91.745 ± 0.273 %

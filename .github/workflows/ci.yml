@@ -22,9 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -65,6 +65,32 @@ jobs:
       - name: Artifact CLI tests (scripts/artifact.sh)
         run: bash tests/test_artifact_cli.sh
 
+      # tests/run_tests.sh runs this one too and CI did not, so a regression
+      # in scripts/ssd-wear.sh was green here. Stubbed; no disk is touched.
+      - name: SSD wear tests (scripts/ssd-wear.sh)
+        run: bash tests/test_ssd_wear.sh
+
+      # Client venv / agent.sh hash-pinned installs, land-dependabot's run
+      # approval filter, workflow action pinning, client image pin parity.
+      # Stubbed pip / pydeps / gh; nothing is installed or approved.
+      - name: Supply-chain tests
+        run: bash tests/test_supply_chain.sh
+
+      # The 2026-09-29 review's other hermetic suites (tests/run_tests.sh
+      # runs the same files). Stub binaries only; test_conf_secrets.sh's
+      # real-curl check talks to a loopback python http.server it starts and
+      # kills itself; test_gpu_ops.sh's lease reaper needs GNU grep -z and
+      # util-linux flock, both on ubuntu-latest. test_lifecycle.sh and
+      # test_uninstall.sh already run inside "Script structure tests".
+      - name: Conf parsing + secrets-off-argv tests
+        run: bash tests/test_conf_secrets.sh
+
+      - name: GPU lease / update / ops tests
+        run: bash tests/test_gpu_ops.sh
+
+      - name: Shell ops tests (doctor, tailscale, conf, keys)
+        run: bash tests/test_shell_ops.sh
+
       - name: Tool unit tests
         env:
           # No outbound network assumptions in CI (httpbin flakiness);
@@ -88,7 +114,9 @@ jobs:
       - name: Shell syntax sweep
         run: |
           rc=0
-          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh; do
+          # extensions/*/*.sh too: extension launchers (dashboard/run.sh
+          # serves /api/slot) were outside every shell gate.
+          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh; do
             bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
           done
           exit $rc

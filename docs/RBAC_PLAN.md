@@ -17,9 +17,13 @@ keys + Sandlock (below-app enforcement).
 > `X-OpenWebUI-User-Role` on every model request, and the router gates its
 > spawn path on it: `admin` → spawn allowed; any other role → prefilter +
 > classify skipped entirely (zero added latency, no spawn path); header
-> absent → allowed by default (single-user/no-auth installs send no
-> headers), or denied when `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`
-> (recommended for hardened multi-user installs).
+> absent → allowed only on single-user/no-auth installs (which send no
+> headers). The gate fails closed on its own whenever `WEBUI_AUTH=true`
+> or signed identity is on, and `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`
+> forces it anywhere else. In signed-identity mode the role is read ONLY
+> from the verified `X-OpenWebUI-User-Jwt` (HS256, `iss=open-webui`, `exp`
+> and `sub` required), because WebUI then sends no plain role header
+> (review identity-rbac-1, 2026-09-29).
 > **Remaining caveat:** a stack started before 2026-07-08 runs the old
 > router code until its next restart, and disabling WebUI header
 > forwarding re-opens the fail-open default — set
@@ -91,6 +95,28 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 | **Guest** (family) | `user` | **`web_search` + `fetch`** (scheme-filtered, private-network-blocked) | public grant on a filtered connection |
 | *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
 
+> ⚠️ **Admin accounts are NOT isolated from each other (review
+> identity-rbac-2, 2026-09-29).** The tier boundary above (guest vs admin)
+> is enforced. Separation *between* admin-tier accounts is not, and cannot
+> be while `bash` runs as the rig's own uid. The shell tool's env is scrubbed
+> and the spawning server is non-dumpable, so `env` and
+> `/proc/$PPID/environ` no longer leak secrets. But a same-uid shell can
+> still `cat openbeast.conf` (mode 0600, same owner) and read the RBAC keys
+> and the JWT secret (conf key `IDENTITY_JWT_SECRET`, env override
+> `OPENBEAST_IDENTITY_JWT_SECRET`). With that secret, any admin session,
+> or a prompt injection inside one, can mint a signed identity for another
+> account. Without signed identity (header mode, the default when
+> `setup-mcpo-keys.sh` runs without `--with-jwt`) it is easier still: the
+> admin key alone lets a session send forged `X-OpenWebUI-User-*` headers.
+> Either way it can act in another account's workspace shard or publish and
+> list artifacts as that account's email. Treat every admin account as able
+> to act as every other one. Real separation needs one of two things:
+> Sandlock default-on for tool execution, extended beyond Phase 2 item 2
+> below (which wraps only guest-profile execution) to cover admin-profile
+> execution and deny reads of `openbeast.conf`; or running the tool server
+> as a separate uid that cannot read `openbeast.conf`. Both
+> are architecture decisions for Max and are still open.
+
 **Why guest = web_search + guarded fetch (not file reads).** Max's rule:
 "search the web and anything that can't harm the OS; no local filesystem."
 - `web_search` → SearXNG, no local access. **Safe. In.**
@@ -154,9 +180,11 @@ The WebUI checks are policy, not enforcement — a bug or a second frontend
 Defense in depth:
 0. ✅ **DONE 2026-07-08 — router identity gate.** `docker-compose.yml` sets
    `ENABLE_FORWARD_USER_INFO_HEADERS=true`; `agents/router.py` reads
-   `X-OpenWebUI-User-Role` and only spawns for `admin` (non-admin turns skip
-   classification entirely; absent header is fail-open unless
-   `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`). Unit-tested in
+   `X-OpenWebUI-User-Role` (or, with signed identity, the verified
+   `X-OpenWebUI-User-Jwt`) and only spawns for `admin` (non-admin turns skip
+   classification entirely; absent identity is fail-open only on no-auth
+   single-user rigs: it fails closed when `WEBUI_AUTH=true`, when signed
+   identity is on, or when `OPENBEAST_ROUTER_REQUIRE_IDENTITY=true`). Unit-tested in
    `tests/test_router.py` (`_spawn_allowed`).
 0b. ✅ **DONE 2026-07-08 — fetch SSRF guard + guest fetch.** `fetch()` in
    `agents/tools.py` refuses non-http(s) schemes and any host whose

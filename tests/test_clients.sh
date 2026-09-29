@@ -98,10 +98,17 @@ else
 fi
 if echo "$ENROLL_OUT" | grep -qi "not recoverable" \
    && echo "$ENROLL_OUT" | grep -q -- "./scripts/setup-client.sh --host" \
-   && echo "$ENROLL_OUT" | grep -q -- "--api-key $KEY"; then
+   && echo "$ENROLL_OUT" | grep -q -- "--api-key-stdin"; then
   pass "enroll warns the key is unrecoverable + prints the setup-client command"
 else
   fail "enroll output missing the copy-now notice or the client command"
+fi
+# The printed command must never carry the key itself: pasted as-is it lands
+# in shell history and in the client's world-readable /proc/<pid>/cmdline.
+if echo "$ENROLL_OUT" | grep -q -- "--api-key $KEY"; then
+  fail "enroll prints the key on a setup-client command line (--api-key <key>)"
+else
+  pass "enroll's setup-client command keeps the key off argv (--api-key-stdin)"
 fi
 if [[ -f "$REG" ]]; then
   pass "registry created at .run/clients.json"

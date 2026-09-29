@@ -256,6 +256,36 @@ task's target language. Corrected per review:
   checksum-pinned as if generated.
 - Injection edits `runner.py` ⇒ full cache-era break — Tier 3 ships in
   its own era bump, never piggybacked. Own zig-only mini-A/B.
+- **In-sample caveat (2026-09-29 review, research-stats-3).** The curated
+  section (1) of `agents/packs/zig-0.16.md` was written against zig
+  failures seen on the v5-fast units, and the mini-A/B scored it on those
+  same 30 units. Of the 31 zig variants in the suite, 30 are in the pin;
+  the 31st, `158_karatsuba_bytes_f`, is `assumed_failed`. No held-out set
+  exists, so any Tier-3 effect is an **in-sample** estimate. The bullets are
+  generic, compiler-verified 0.15→0.16 migration facts rather than
+  prompt-specific idioms, which limits the inflation but does not remove it.
+  **Held-out check** (proposed, not run; do it before claiming the effect
+  generalizes, and before any further pack edit):
+  1. *Units.* 20 NEW zig tasks, authored with `eval-task-author`. The author
+     does not read the pack and does not see which v5-fast units fail. Match
+     the v5-fast zig difficulty mix (8/13/9 easy/medium/hard → ≈ 5/9/6 of 20). Each task
+     needs its own grader and fixed inputs. Freeze them as
+     `evals/suites/zig-heldout.json`, sha-pinned, committed BEFORE the next
+     pack change. Also add `158_karatsuba_bytes_f`.
+  2. *Firewall.* Held-out failures are logged, never mined: no pack edit may
+     cite a held-out unit. If one ever does, the set is burned and a new
+     one is authored.
+  3. *Design.* Same P0/P1 contrast, 2 fresh replicates each (all
+     `--no-cache`), diag OFF, rb 20480. Run it single-slot if the budget
+     allows (see §7 churn). Otherwise size it for the measured ~30% churn.
+  4. *Pre-registered readout.* One-sided exact sign test on the pooled
+     discordant pairs, P1 > P0, α = 0.05, plus the net and a per-unit list.
+     At ~30% churn, 2×21 units carry about 12 null discordants, so this
+     detects roughly the in-sample effect size (+5 net per 30 units) and
+     not much less. Treat it as a direction-and-magnitude check, not a
+     precision estimate.
+  About 1.5 GPU-h at `--jobs 4`. It can ride along with the Tier-3 rerun as
+  `EXTRA_UNITS`.
 
 **Built 2026-09-11 (zig pack, PR feat/zig-awareness-pack) — opt-in
 `BEAST_PACKS=1` / `OPENBEAST_PACKS=1` / `--packs`, default OFF, not yet
@@ -313,6 +343,16 @@ tokens at 4 chars/token, budget 2,000):
   iterations-to-fix (R2), champion guard (R3), P1-only pass audit list
   (R4), Clause-1 ship rule `net ≥ 7 ∧ p < 0.05 ∧ guard clean` printed as a
   `VERDICT:` line. Stop after this arm regardless (Clause 2).
+- **Ran 2026-09-17: read SHIP (+13, p = 0.019). RE-AUDITED 2026-09-29:
+  NO-SHIP on clean rows (+10, p = 0.064).** Eleven treated-model rows were
+  banked while llama-server was dead ("Connection error." on every
+  remaining iteration, exit 0). Seven of them are P0a rows the 09-15 cache
+  replayed. Ten champion C1 rows died on fork/thread EAGAIN. The verdict is
+  unresolved, not refuted. Keeping the one row that lost only 2 iterations
+  (62_crt_f) gives +11 at p = 0.043. The champion guard's negative
+  direction was mostly EAGAIN: 6/13 raw, 4/1 clean. The fresh rerun is
+  queued after the NPROC and connection-error fixes merge. Record:
+  `scratch/tier3-verdict-reaudit-2026-09-29.txt`.
 
 ## 6. Eval integrity, comparability, era policy
 
@@ -385,7 +425,12 @@ the draft's 2 h.
 
 **Readouts:**
 1. **Primary/ship: B1-vs-B0 zig McNemar — ship iff ≥7 net zig rescues at
-   p<0.05** (well-powered: 3.8's zig churn is near zero).
+   p<0.05**. The draft called this "well-powered: 3.8's zig churn is near
+   zero". That was **false in the regime the cells ran**. Greedy at `--jobs
+   4` against an `-np 6 --kv-unified` server is not single-slot, and the
+   Tier-3 same-config replicates flipped 9/30 and 8/30 zig units (~30%,
+   as high as sampled mode). The exact McNemar stays valid; the power
+   premise does not.
 2. Non-zig guard, stated honestly: at n=1 it detects only ≥~8-net-unit
    regressions — a catastrophe alarm, not a safety proof.
 3. Token/iteration overhead per cell; **readout 6:** iterations-to-fix on
@@ -508,7 +553,11 @@ same-day arms, own cache eras, `--no-cache` replicates.
    diag-ON vs 98.89 untreated the next morning) and most single-run
    "rescues." Any future tool-effect claim on this suite needs paired
    same-day arms minimum, replicates by default, and either effects
-   ≥ ~15 net units or a lower-churn eval mode.
+   ≥ ~15 net units or a lower-churn eval mode. **Greedy alone is not that
+   mode**: with `--jobs 4` on the `-np 6` server, zig churn measured ~30%
+   (Tier-3 replicates, 2026-09-17). Only single-slot greedy
+   (`scratch/greedy_floor.sh --single-slot`) is still a candidate, and it
+   has not been measured.
 5. **Two confounds found and owned:** the reasoning-budget change
    (PR #45) independently unlocked marathon-class zig units the
    diagnostics were initially credited for; and the zig checker's
@@ -523,6 +572,7 @@ free when idle, token-saving when active, provably harmless, honestly
 sized. The decisive next arms are pre-committed: **Tier 3 awareness
 packs** (proactive staleness fix — structurally larger expected
 effect), the **fixed checker** as the new era's baseline, and a
-**low-churn eval mode** (greedy single-slot) to shrink the floor
+**low-churn eval mode** (greedy **single-slot** — greedy on the batched
+`-np 6` server measured ~30% zig churn, so "greedy" alone does not qualify) to shrink the floor
 itself. Progress: real, small, and measured to its exact size — which
 is the only kind of progress a measurement stack should claim.

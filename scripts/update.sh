@@ -9,6 +9,7 @@
 #   ./scripts/update.sh --check      # show current vs available, change nothing
 #   --force    rebuild llama.cpp even if the revision has not moved
 #             (the only way to rebuild offline, where there is no pull)
+#   --ignore-lease  update llama.cpp even while another job holds the GPU lease
 #
 # Flags compose: `--llama --images` updates just those two. Full docs and
 # per-component notes: docs/UPDATING.md.
@@ -42,6 +43,7 @@ DO_LLAMA=0; DO_IMAGES=0; DO_PYTHON=0; DO_OPENCODE=0; CHECK_ONLY=0; ANY=0
 # "already up to date and built" gate can never open — there was no way to
 # ask for a rebuild at all.
 FORCE_REBUILD=0
+IGNORE_LEASE=0
 for arg in "$@"; do
   case "$arg" in
     --llama)    DO_LLAMA=1;    ANY=1 ;;
@@ -50,7 +52,8 @@ for arg in "$@"; do
     --opencode) DO_OPENCODE=1; ANY=1 ;;
     --check)    CHECK_ONLY=1 ;;
     --force)    FORCE_REBUILD=1 ;;
-    -h|--help)  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --ignore-lease) IGNORE_LEASE=1 ;;
+    -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -79,6 +82,24 @@ update_llama() {
     behind=$(git -C "$src" rev-list --count HEAD..origin/master 2>/dev/null || echo "?")
     ok "local $before, upstream $after ($behind commits behind)"
     return 0
+  fi
+
+  # NOT UNDER SOMEBODY ELSE'S LEASE. The build replaces llama.cpp/build/bin/
+  # llama-server — the binary every serve script and every campaign cell
+  # execs — and the eval era does not hash the engine. A campaign holding the
+  # card would launch its remaining cells on a different build than its first
+  # ones, paired rows straddling two engines with nothing in the era to say
+  # so. The pull alone already moves the source HEAD that provenance records.
+  # Checked before the pull, so a refusal changes nothing.
+  if [[ ${IGNORE_LEASE:-0} -eq 0 && -x "$REPO_DIR/scripts/gpu-lease.sh" ]]; then
+    local lease_rc=0 lease_msg
+    lease_msg="$("$REPO_DIR/scripts/gpu-lease.sh" check 2>&1)" || lease_rc=$?
+    if [[ $lease_rc -eq 4 ]]; then
+      die "the GPU lease is $lease_msg
+       Updating llama.cpp now would swap the engine under that job mid-run
+       (its later cells would launch a different llama-server build). Wait for
+       it (scripts/gpu-lease.sh status), or pass --ignore-lease if you are sure."
+    fi
   fi
 
   # A detached HEAD means the user pinned a known-good SHA (see
@@ -178,11 +199,29 @@ update_llama() {
   cmake_flags="$(ob_cmake_flags)" \
     || die "unknown GPU_BACKEND '$GPU_BACKEND' (valid: auto | cuda | hip | sycl | cpu)"
   ok "backend $OB_BACKEND → cmake flags: ${cmake_flags:-none (CPU-only)}"
+  # A failed build must not leave the rig on a half-updated engine: the
+  # binary links ~10 shared libs from build/bin, and a build that dies after
+  # relinking libggml* but before llama-server leaves new libs next to the
+  # old binary — the next serve launches a mismatched mix. Snapshot bin/
+  # first (a reflink on btrfs/xfs: ~80 MB for free) and roll back on any
+  # failure. Cheaper than a second full build tree, same guarantee.
+  local snap="$build/bin.pre-update"
+  rm -rf -- "$snap"
+  if [[ -d "$build/bin" ]]; then
+    cp -a --reflink=auto -- "$build/bin" "$snap" \
+      || die "could not snapshot $build/bin before rebuilding (disk full?)"
+  fi
   # $cmake_flags is deliberately unquoted — it's a flag list.
-  cmake -S "$src" -B "$build" \
-        $cmake_flags -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$build" --config Release -j"$(nproc)" --target llama-server
-  [[ -x "$build/bin/llama-server" ]] || die "rebuild did not produce llama-server"
+  if ! { cmake -S "$src" -B "$build" $cmake_flags -DCMAKE_BUILD_TYPE=Release \
+         && cmake --build "$build" --config Release -j"$(nproc)" --target llama-server \
+         && [[ -x "$build/bin/llama-server" ]]; }; then
+    if [[ -d "$snap" ]]; then
+      rm -rf -- "$build/bin" && mv -- "$snap" "$build/bin"
+      die "rebuild FAILED — build/bin restored to the previous llama-server ($before); the rig is unchanged"
+    fi
+    die "rebuild did not produce llama-server"
+  fi
+  rm -rf -- "$snap"
   ok "rebuilt llama-server ($after)"
   warn "a running llama-server keeps the OLD binary until restarted"
 }
@@ -210,7 +249,24 @@ update_images() {
     return 0
   fi
   local compose="$REPO_DIR/docker-compose.yml"
-  local bumped=0
+  local bumped=0 unpinned=0
+  # The client-mode SearXNG (setup-client.sh --local-search) runs the SAME
+  # digest-pinned image, and nothing moved its pin: it sat six weeks behind
+  # the rig's (review network-exposure-5). Mirror every searxng bump — and
+  # re-sync a pin that has already drifted — so the two move together.
+  local client_compose="$REPO_DIR/scripts/client-searxng.compose.yml"
+  _mirror_client_pin() { # _mirror_client_pin <repo> <spec@digest>
+    [[ "$1" == "searxng/searxng" && -f "$client_compose" ]] || return 0
+    local _cold
+    _cold=$(grep -oE "${1}[^[:space:]]*@sha256:[a-f0-9]+" "$client_compose" | head -1 || true)
+    if [[ -z "$_cold" ]]; then
+      warn "scripts/client-searxng.compose.yml has no searxng digest pin — mirror $2 there by hand"
+    elif [[ "$_cold" != "$2" ]]; then
+      sed -i "s|${_cold}|${2}|" "$client_compose"
+      ok "mirrored the searxng pin into scripts/client-searxng.compose.yml"
+      bumped=1
+    fi
+  }
   for _spec in \
     "ghcr.io/open-webui/open-webui:main" \
     "searxng/searxng:latest"; do
@@ -231,13 +287,82 @@ update_images() {
       else
         ok "$_spec already at latest digest"
       fi
+      _mirror_client_pin "$_repo" "$_new"
+    else
+      # No "<repo>@sha256:" line. After `bundle.sh install` this service's
+      # line reads `image: sha256:<content id>` (save/load cannot carry a
+      # registry digest), and this loop used to fall through here SILENTLY —
+      # then report the update as done while compose still ran the old image.
+      # The box has a registry again (this is not OFFLINE), so restore digest
+      # pinning for that service, at the digest just pulled. Which service is
+      # read from docker-compose.yml.pre-bundle, by NAME (bundle.sh's rule).
+      local _svc=""
+      _svc="$(OB_REPO="$_repo" OB_NEW="${_spec}@${_newdigest}" \
+                python3 - "$compose" "$compose.pre-bundle" <<'PYREPIN'
+import os, re, sys
+repo, new = os.environ["OB_REPO"], os.environ["OB_NEW"]
+def lines_of(path):
+    try:
+        return open(path, encoding="utf-8").read().splitlines(keepends=True)
+    except OSError:
+        return None
+def images_by_service(lines):
+    out, svc = {}, None
+    for line in lines or []:
+        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line.rstrip("\n"))
+        if m:
+            svc = m.group(1); continue
+        st = line.strip()
+        if svc and st.startswith("image:"):
+            out.setdefault(svc, st[len("image:"):].strip())
+    return out
+cur_lines = lines_of(sys.argv[1])
+orig = images_by_service(lines_of(sys.argv[2]))
+cur = images_by_service(cur_lines)
+target = next((svc for svc, img in orig.items()
+               if (img.startswith(repo + ":") or img.startswith(repo + "@"))
+               and cur.get(svc, "").startswith("sha256:")), None)
+if target is None:
+    sys.exit(1)
+svc, done, out = None, False, []
+for line in cur_lines:
+    m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line.rstrip("\n"))
+    if m:
+        svc = m.group(1)
+    elif svc == target and not done and line.strip().startswith("image:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        line = f"{indent}image: {new}\n"
+        done = True
+    out.append(line)
+open(sys.argv[1], "w", encoding="utf-8").writelines(out)
+print(target)
+PYREPIN
+)" || _svc=""
+      if [[ -n "$_svc" ]]; then
+        ok "re-pinned '$_svc' to $_spec -> ${_newdigest:0:19}… (it was a bundle content ID; registry digest pinning resumes)"
+        bumped=1
+      else
+        warn "docker-compose.yml has no registry-digest pin for $_repo, so it was NOT
+       updated — the pulled image will not be used. Pin it by hand
+       (image: ${_spec}@${_newdigest}), or restore docker-compose.yml.pre-bundle
+       if this box was installed from an offline bundle, then re-run --images."
+        unpinned=1
+      fi
     fi
   done
-  [[ $bumped -eq 1 ]] && warn "commit the docker-compose.yml digest bump after verifying the stack"
+  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml + scripts/client-searxng.compose.yml) after verifying the stack"
   # Recreate only containers actually running; a stopped stack stays stopped.
-  if docker compose ps --status running --quiet 2>/dev/null | grep -q .; then
+  local _running=""
+  _running="$(docker compose ps --status running --quiet 2>/dev/null || true)"
+  if [[ -n "$_running" ]]; then
     docker compose up -d
-    ok "running containers recreated on the new images"
+    if [[ $unpinned -eq 1 ]]; then
+      warn "running containers recreated — but the image(s) warned about above are STILL the old ones"
+    else
+      ok "running containers recreated on the new images"
+    fi
+  elif [[ $unpinned -eq 1 ]]; then
+    warn "stack not running — and the image(s) warned about above will NOT change on the next ./start.sh"
   else
     ok "stack not running — new images take effect on next ./start.sh"
   fi
@@ -258,7 +383,8 @@ update_python() {
       grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt" | sed 's/^/        /'
       if [[ -f "$REPO_DIR/agents/requirements.lock" ]]; then
         ok "the hash-pinned closure is reinstallable offline from a wheelhouse:
-      ./scripts/pydeps.sh install --from wheels"
+      ./scripts/pydeps.sh install --from wheels   (against the lock committed
+      in this checkout — or --lock-sha256 <hash 'pydeps.sh wheelhouse' printed>)"
       fi
       return 0
     fi
@@ -322,8 +448,11 @@ update_python() {
   if ob_offline; then
     warn "OFFLINE=true → skipping the python upgrade check (it needs the index).
        To move pins on a closed box: regenerate the lock on a connected one
-       (./scripts/pydeps.sh lock), bring a fresh wheelhouse, then
-       ./scripts/pydeps.sh install --from wheels"
+       (./scripts/pydeps.sh lock), COMMIT it and bring that commit here, bring
+       a fresh wheelhouse, then ./scripts/pydeps.sh install --from wheels.
+       The lock does not travel with the wheels: install --from accepts only
+       the lock committed in this checkout, or one you vouch for with
+       --lock-sha256 <hash that 'pydeps.sh wheelhouse' printed>."
     return 0
   fi
   if ! python3 -m pip install --user $pip_flags -q -U huggingface_hub "${pkgs[@]}"; then

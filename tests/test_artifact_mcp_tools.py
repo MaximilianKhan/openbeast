@@ -336,7 +336,7 @@ def surfaces(rig, tmp_path, monkeypatch):
     # and TestClient's default "testserver" is exactly the foreign name a
     # rebinding attack arrives under.
     return (TestClient(openapi_tools.create_app()),
-            TestClient(server, base_url="http://127.0.0.1:3004"),
+            TestClient(server, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3004"),
             server)
 
 
@@ -668,7 +668,7 @@ def test_the_api_never_returns_the_provenance_id(surfaces, monkeypatch):
                        "max@example.com,kid@example.com")
     import artifact_server                         # noqa: E402
     app = artifact_server.create_app()
-    web = TestClient(app, base_url="http://127.0.0.1:3004")
+    web = TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3004")
     token = {"X-OpenBeast-Local": app.state.local_token,
              "Tailscale-User-Login": TAILNET_LOGIN}
     assert web.patch(f"/api/artifacts/{aid}", json={"visibility": "tailnet"},
@@ -708,7 +708,7 @@ def test_the_audit_row_carries_both_halves_of_the_identity(surfaces,
     the row says which WebUI account published it."""
     tools, _web, _app = surfaces
     _publish_through_the_tool_server(tools, _identity())
-    path = os.path.join(REPO, ".run", "tool-audit.jsonl")
+    path = os.environ["OPENBEAST_TOOL_AUDIT_PATH"]   # conftest isolates it
     rows = [json.loads(x) for x in open(path).read().splitlines() if x.strip()]
     pub = [r for r in rows if r.get("tool") == "publish_artifact"][-1]
     assert pub["user"] == WEBUI_ID

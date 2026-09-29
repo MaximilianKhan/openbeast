@@ -20,6 +20,7 @@ import atexit
 import json
 import os
 import re
+import signal
 import sys
 import time
 import urllib.parse
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+import tools as _tools
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, plan_block, reset_plan, update_plan
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
@@ -212,10 +214,17 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
-                         compactions: int = 0) -> None:
-    """Print the stable-key token line that the eval harness parses."""
+                         compactions: int = 0, api_errors: int = 0) -> None:
+    """Print the stable-key token line that the eval harness parses.
+
+    API_ERRORS counts model calls that failed for a reason other than a
+    context overflow (connection refused, 5xx, timeout). A server that dies
+    mid-task leaves the loop burning its remaining iterations on errors and
+    exiting 0 with the tokens it had, which looks like a model FAIL; the
+    eval harness reads this line to refuse caching such a unit."""
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
     print(f"COMPACTIONS: {compactions}")
+    print(f"API_ERRORS: {api_errors}")
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +235,8 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # guaranteed failures. Now: (a) the server's overflow error is recognised
 # and the OLDEST tool results are replaced by one-line stubs before the
 # retry; (b) with --context-budget set, the same eviction runs proactively
-# past ~70% of the budget (4 chars/token estimate). The system prompt, the
+# past ~70% of the budget (4 chars/token estimate), freeing down to ~50% so
+# one compaction buys many turns of stable prefix. The system prompt, the
 # original task, assistant turns and the (transiently injected) plan block
 # are never evicted. Every event is logged to stderr + the JSONL log and
 # counted in the done/max_iterations telemetry (COMPACTIONS: n on stdout).
@@ -241,7 +251,16 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
 # whose str() embeds that body.
 # ---------------------------------------------------------------------------
 _CHARS_PER_TOKEN = 4
-_COMPACT_FRACTION = 0.70          # proactive target as a fraction of the budget
+_COMPACT_FRACTION = 0.70          # proactive trigger as a fraction of the budget
+#: Proactive compaction frees down to this fraction, not just back under the
+#: trigger (hysteresis). Stubbing an old result rewrites the history near its
+#: START, which invalidates llama-server's cached prefix from that point on —
+#: on the hybrid qwen35 arch everything after the nearest checkpoint is
+#: re-prefilled (~50K tokens at an 85K budget). Freeing only (est - trigger)
+#: meant the next tool result crossed the line again, so ~1 turn in 1.7
+#: re-prefilled (review efficiency-2, 2026-09-29); a 20-point gap buys many
+#: turns of stable prefix per compaction.
+_COMPACT_LOW_WATER = 0.50
 _STUB_MIN_CHARS = 200             # results shorter than this aren't worth stubbing
 _STUB_PREFIX = "[tool result elided:"
 #: An operator message becomes evictable after this many turns (E12). It is
@@ -259,6 +278,67 @@ _CTX_OVERFLOW_RE = re.compile(
 _CTX_FIELDS_RE = re.compile(r"n_prompt_tokens['\"]?\s*[:=]\s*(\d+).*?n_ctx['\"]?\s*[:=]\s*(\d+)", re.S)
 _CTX_MSG_RE = re.compile(r"\((\d+) tokens\).*?\((\d+) tokens\)", re.S)
 _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
+
+# ---------------------------------------------------------------------------
+# Per-turn generation bound (review efficiency-5, 2026-09-29).
+#
+# --reasoning-budget caps THINKING only; a repetition loop in the answer or a
+# tool's arguments ran until the client's 600 s read timeout, and the openai
+# client then silently retried the identical request twice — ~30 min of the
+# single -np 1 slot for one turn. Agent requests now carry max_tokens: the
+# deployment's thinking budget + a 12K content allowance. The budget is the
+# operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
+# serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
+# either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
+# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
+# each task by wall time, and a cap would change measured behaviour under
+# unlimited-thinking configs.
+# ---------------------------------------------------------------------------
+_DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
+_CONTENT_ALLOWANCE_TOKENS = 12288
+_DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
+_CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+_CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
+
+
+def _conf_value(key: str) -> str:
+    """Last `key=value` in openbeast.conf, read (never sourced) the way
+    scripts/lib/conf.sh reads it; "" when absent or unreadable."""
+    val = ""
+    try:
+        with open(_CONF_PATH) as fh:
+            for line in fh:
+                k, sep, v = line.strip().partition("=")
+                if sep and not k.startswith("#") and k.strip() == key:
+                    val = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return val
+
+
+def _max_completion_tokens() -> int:
+    """max_tokens for an agent request; 0 means send none (uncapped)."""
+    if os.environ.get(_EVAL_MARKER):
+        return 0
+    raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
+              or os.environ.get("REASONING_BUDGET", "").strip()
+              or _conf_value("REASONING_BUDGET"))
+    if not budget:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+    try:
+        n = int(budget)
+    except ValueError:
+        return _DEFAULT_MAX_COMPLETION_TOKENS
+    if n < 0:
+        return 0   # unlimited thinking: a token cap would cut it mid-thought
+    return n + _CONTENT_ALLOWANCE_TOKENS
 
 
 def _is_context_overflow(err: str) -> bool:
@@ -295,9 +375,49 @@ def _steer_stub(content: str) -> str:
     return f"{_STEER_STUB_PREFIX} {len(content)} chars]"
 
 
+#: One of the two bars a tool result must clear to count as oversized on
+#: the proactive path: this many times the median of the other live results.
+_OVERSIZED_VS_MEDIAN = 4
+
+
+_STUB_SIZE_RE = re.compile(re.escape(_STUB_PREFIX) + r" (\d+) chars")
+
+
+def _oversized(messages: list[dict], tool_results: list[int], gain,
+               gap: int) -> int | None:
+    """The largest live tool result if it is OVERSIZED, else None.
+
+    Oversized = it frees at least half the hysteresis gap (10% of the
+    context budget on the proactive path) AND at least _OVERSIZED_VS_MEDIAN
+    times the median size of every other tool result this run has seen —
+    stubbed ones counted at their original size, so the bar does not sink
+    as compaction thins the live history. Both bars matter: the gap share
+    alone would call an ordinary 12 KB read oversized under a tiny budget,
+    and the median alone would do the same in a history of `ls` one-liners.
+    An ordinary result never qualifies, so ordinary compaction stays
+    oldest-first down to the low-water mark (efficiency-2)."""
+    if not tool_results or gap <= 0:
+        return None
+    big = max(tool_results, key=gain)
+    g = gain(big)
+    sizes = []
+    for i, m in enumerate(messages):
+        if i <= 1 or i == big or m.get("role") != "tool":
+            continue
+        c = str(m.get("content") or "")
+        hit = _STUB_SIZE_RE.match(c)
+        sizes.append(int(hit.group(1)) if hit else len(c))
+    sizes.sort()
+    median = sizes[len(sizes) // 2] if sizes else 0
+    if 2 * g >= gap and g >= _OVERSIZED_VS_MEDIAN * median:
+        return big
+    return None
+
+
 def compact_messages(messages: list[dict], chars_to_free: int,
                      call_index: dict[int, int] | None = None,
-                     steer_eligible=None) -> tuple[int, int]:
+                     steer_eligible=None,
+                     must_free: int | None = None) -> tuple[int, int]:
     """Replace the OLDEST tool results with one-line stubs until at least
     `chars_to_free` characters are freed (or nothing evictable remains).
 
@@ -305,7 +425,10 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     task), assistant turns, user nudges, or results already stubbed. Oldest
     first and stop as soon as enough is freed, so the newest results — the
     ones the model is about to act on — survive unless the older ones can't
-    cover the ask (being stuck beats keeping them). Returns
+    cover the ask (being stuck beats keeping them). One exception: when the
+    walk would reach a tool result that frees more than every older one it
+    plans to stub, that one is stubbed first, sparing older results the ask
+    no longer needs. Returns
     (results_evicted, chars_freed). `call_index` maps message position ->
     tool-call ordinal for the stub text.
 
@@ -314,6 +437,17 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     considered only after every tool result has been stubbed. It is EMPTY
     whenever steering is off, which is what keeps this function byte-for-byte
     identical to its pre-beast-chat behaviour on every eval unit.
+
+    `must_free` (proactive path) is the part of the ask that is REQUIRED —
+    back under the trigger; the rest of `chars_to_free` is the hysteresis
+    gap down to the low-water mark, which is wanted but not worth history.
+    When the largest live tool result ANYWHERE in the history is oversized
+    (see _oversized: at least half the hysteresis gap chars_to_free -
+    must_free, and several times the run's median result), it is stubbed first
+    and the walk then stops at `must_free`: older results are spent only if
+    the trigger itself needs them, never for the gap (review efficiency-3,
+    rounds 2-3). None = the whole ask is required (the overflow path, and
+    every pre-existing caller).
     """
     call_index = call_index or {}
     steer_eligible = steer_eligible or ()
@@ -335,17 +469,72 @@ def compact_messages(messages: list[dict], chars_to_free: int,
     # resort: a directive outranks a transcript of `ls`, but it stops short of
     # being unevictable, which is the failure E12 describes.
     candidates = tool_results + aged_steers
+    ask = max(chars_to_free, 1)
+    must = ask if must_free is None else max(min(must_free, ask), 1)
+
+    def _stub_for(i: int) -> str:
+        c = messages[i]["content"]
+        return (_steer_stub(c) if messages[i].get("role") != "tool"
+                else _stub(c, call_index.get(i, i)))
+
+    def _gain(i: int) -> int:
+        return len(messages[i]["content"]) - len(_stub_for(i))
+
+    # The oldest-first walk, planned before anything is touched. If it would
+    # reach a tool result that frees more than every older planned result
+    # combined, stub THAT one first and only then continue oldest-first for
+    # whatever is left of the ask: an oversized result (a fetch alone can be
+    # 200K chars) used to strip EVERY older result first, so one bad call
+    # cost the agent its whole working memory (review efficiency-3). On that
+    # overflow path only the order changes: the walk still stops once the
+    # ask is met, so it never stubs a result the plain walk would have kept.
+    # The proactive path first looks for an oversized result in the WHOLE
+    # history (below), since the plain walk to low water rarely reaches it.
+    plan, planned = [], 0
+    for i in candidates:
+        if planned >= ask:
+            break
+        plan.append(i)
+        planned += _gain(i)
+    big = _oversized(messages, tool_results, _gain, ask - must) if must < ask else None
+    if big is not None:
+        # Proactive path, one oversized result anywhere in the history (not
+        # only inside the oldest-first plan: a 50K-200K result is usually
+        # smaller than the older history, so the plan met the ask before
+        # ever reaching it and spent the history instead — review
+        # efficiency-3, round 3). Stub it first, then walk oldest-first only
+        # as far as the TRIGGER needs (usually nowhere): older history is
+        # never spent on reaching the low-water mark.
+        candidates = [big] + [c for c in candidates if c != big]
+        ask = must
+    else:
+        tools_in_plan = [i for i in plan if messages[i].get("role") == "tool"]
+        if len(plan) > 1 and tools_in_plan:
+            big = max(tools_in_plan, key=_gain)
+            older = sum(_gain(i) for i in plan[:plan.index(big)])
+            if older and _gain(big) > older:
+                candidates = [big] + [c for c in plan if c != big]
     evicted = freed = 0
     for i in candidates:
-        if freed >= max(chars_to_free, 1):
+        if freed >= ask:
             break
         content = messages[i]["content"]
-        stub = (_steer_stub(content) if messages[i].get("role") != "tool"
-                else _stub(content, call_index.get(i, i)))
+        stub = _stub_for(i)
         messages[i]["content"] = stub
         freed += len(content) - len(stub)
         evicted += 1
     return evicted, freed
+
+
+def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
+    """(must_free, chars_to_free) for the proactive --context-budget path, or
+    None below the trigger. must_free gets the estimate back under the
+    trigger; chars_to_free goes on to the low-water mark (hysteresis)."""
+    target = int(context_budget * _COMPACT_FRACTION)
+    if context_budget <= 0 or est <= target:
+        return None
+    low = int(context_budget * _COMPACT_LOW_WATER)
+    return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
@@ -557,7 +746,11 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url))
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=_CLIENT_MAX_RETRIES)
+    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    max_tokens = _max_completion_tokens()
+    cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -584,11 +777,14 @@ def run_agent(
         ]
 
     # Set up logging
+    # Transcripts hold full tool output: dirs we create are 0700, files 0600
+    # (the stack's own agents/logs/ is tightened even if it already exists).
     if log_file:
         log_path = log_file
-        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        _tools.private_log_dir(os.path.dirname(log_path) or ".")
     else:
-        os.makedirs(log_dir, exist_ok=True)
+        _tools.private_log_dir(
+            log_dir, tighten=os.path.abspath(log_dir) == os.path.abspath(DEFAULT_LOG_DIR))
         # E18: the same shape sessions.new_id() uses. A bare 1-second
         # timestamp collided under `run_eval.py --jobs N` — two units of the
         # same measurement appended to ONE transcript, and the derived
@@ -642,7 +838,7 @@ def run_agent(
 
     def log_event(event: dict):
         event["timestamp"] = datetime.now().isoformat()
-        with open(log_path, "a") as f:
+        with _tools.open_private_append(log_path) as f:
             f.write(json.dumps(event) + "\n")
         if steering:
             # Throttled: `updated_at` is a liveness heartbeat for the console,
@@ -671,20 +867,23 @@ def run_agent(
     tokens_total = 0
     # Context-window management state (see compact_messages).
     compactions = 0
+    api_errors = 0      # non-overflow model-call failures (API_ERRORS: n)
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
 
-    def compact(reason: str, chars_to_free: int, detail: str = "") -> int:
+    def compact(reason: str, chars_to_free: int, detail: str = "",
+                must_free: int | None = None) -> int:
         nonlocal compactions
         # Empty unless steering is on, which is what keeps compaction
         # byte-identical to the pre-beast-chat behaviour under the guard.
         eligible = {i for i, turn in steer_turn.items()
                     if iteration - turn >= _STEER_STUB_AFTER_TURNS}
         n, freed = compact_messages(messages, chars_to_free, call_index,
-                                    steer_eligible=eligible)
+                                    steer_eligible=eligible,
+                                    must_free=must_free)
         if n:
             compactions += 1
             print(f"[compaction] {reason}: stubbed {n} oldest tool result(s), "
@@ -717,7 +916,7 @@ def run_agent(
                     if act["stop"]:
                         print("\nStopped by operator.")
                         _print_token_summary(tokens_prompt, tokens_completion,
-                                             tokens_total, compactions)
+                                             tokens_total, compactions, api_errors)
                         log_event({
                             # COMPLETED turns, so counter-1 — ops are consumed
                             # at the TOP of iteration N, before that turn runs
@@ -752,11 +951,17 @@ def run_agent(
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
+            # Once over the trigger, free down to the low-water mark so the
+            # rewritten prefix stays stable for many turns (see
+            # _COMPACT_LOW_WATER).
             est = estimate_tokens(messages, len(plan))
-            target = int(context_budget * _COMPACT_FRACTION)
-            if est > target:
-                compact("budget", (est - target) * _CHARS_PER_TOKEN,
-                        f" (est {est:,} > {target:,} tokens)")
+            asks = proactive_asks(est, context_budget)
+            if asks:
+                target = int(context_budget * _COMPACT_FRACTION)
+                low = int(context_budget * _COMPACT_LOW_WATER)
+                compact("budget", asks[1],
+                        f" (est {est:,} > {target:,} tokens, to {low:,})",
+                        must_free=asks[0])
 
         try:
             response = client.chat.completions.create(
@@ -770,6 +975,7 @@ def run_agent(
                 # and stays for leaderboard rows.
                 temperature=(0.0 if os.environ.get(
                     "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
+                **cap_kwargs,
             )
         except Exception as e:
             err = str(e)
@@ -795,6 +1001,7 @@ def run_agent(
                            "iterations": iteration, "compactions": compactions})
                 stop_reason = "context overflow (nothing left to compact)"
                 break
+            api_errors += 1
             time.sleep(5)
             continue
 
@@ -806,9 +1013,17 @@ def run_agent(
 
         choice = response.choices[0]
         message = choice.message
+        # Hit our own output cap: keep only the head of the runaway text —
+        # assistant turns are never compacted, so a 30K-token repetition loop
+        # would otherwise ride along on every later request.
+        truncated = bool(cap_kwargs) and choice.finish_reason == "length"
 
         # Append assistant message to history
-        msg_dict = {"role": "assistant", "content": message.content or ""}
+        content = message.content or ""
+        if truncated and len(content) > _TRUNCATED_KEEP_CHARS:
+            content = (content[:_TRUNCATED_KEEP_CHARS]
+                       + f"\n[... truncated: {len(message.content):,} chars, output cap reached]")
+        msg_dict = {"role": "assistant", "content": content}
         if message.tool_calls:
             msg_dict["tool_calls"] = [
                 {
@@ -827,7 +1042,17 @@ def run_agent(
 
         # If no tool calls, the model is just talking — check if it's done
         if not message.tool_calls:
-            if choice.finish_reason == "stop":
+            if truncated:
+                print(f"  (reply hit the {max_tokens:,}-token output cap)")
+                log_event({"type": "output_cap", "iteration": iteration,
+                           "max_tokens": max_tokens})
+                messages.append({
+                    "role": "user",
+                    "content": f"Your last reply hit the {max_tokens:,}-token output cap "
+                               "and was cut off. Do not repeat it: be concise, and make "
+                               "progress with a tool call or call task_done.",
+                })
+            elif choice.finish_reason == "stop":
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done
                 messages.append({
@@ -897,7 +1122,7 @@ def run_agent(
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
                 _print_token_summary(tokens_prompt, tokens_completion, tokens_total,
-                                     compactions)
+                                     compactions, api_errors)
                 print(f"{'=' * 60}")
                 log_event({
                     "type": "done", "summary": final_summary, "iterations": iteration,
@@ -913,7 +1138,8 @@ def run_agent(
         print(f"\nStopped without task_done: {stop_reason}.")
     else:
         print(f"\nMax iterations ({max_iter}) reached without task_done.")
-    _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions)
+    _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions,
+                         api_errors)
     log_event({
         "type": "max_iterations", "iterations": max_iter,
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
@@ -931,7 +1157,50 @@ def run_agent(
 # CLI
 # ---------------------------------------------------------------------------
 
+#: Seconds a tool command gets to exit on SIGTERM before its group is
+#: SIGKILLed, when the runner itself is told to stop.
+_STOP_GRACE_S = 2.0
+
+
+def _on_stop_signal(signum, frame):
+    """Kill the in-flight tool command(s), then die the way the signal says.
+
+    Every bash-tool command runs in its OWN session (tools.run_reaped), so
+    `job.sh stop`, MCP stop_agent and the console's escalation — which all
+    signal the runner or its group — never reached it, and once the runner
+    was dead nothing enforced its timeout: the command ran on as an orphan
+    (review chat-sessions-orphaned-tool-children-on-stop). SIGTERM/SIGHUP
+    then re-raise with the default action, so the exit status (-15/-1) and
+    the skipped atexit hooks are exactly what they were; SIGINT keeps its
+    KeyboardInterrupt."""
+    try:
+        _tools.kill_live_children(_STOP_GRACE_S)
+    finally:
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def install_stop_handlers() -> None:
+    """Hook the stop signals — but never one the launcher chose to IGNORE.
+
+    `nohup ./agent.sh ... &` ignores SIGHUP and a backgrounded `cmd &` in a
+    non-interactive shell ignores SIGINT; that inherited SIG_IGN is how the
+    run survives a closed terminal. Overriding it turned a hangup into a
+    dead agent (rc 129) — Python itself keeps an inherited SIG_IGN too."""
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
+
+
 def main():
+    # This process is $PPID of every model-authored shell and holds the API
+    # key (and whatever the launcher exported) in its environ: non-dumpable
+    # before the first model call, not lazily at the first tool spawn.
+    _tools.harden_process()
+    install_stop_handlers()
     parser = argparse.ArgumentParser(
         description="Run a local AI agent against a task",
         formatter_class=argparse.RawDescriptionHelpFormatter,

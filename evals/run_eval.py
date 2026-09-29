@@ -70,6 +70,60 @@ _live_pgids: set[int] = set()
 _live_pgid_lock = threading.Lock()
 
 
+def _descendant_pids(root: int) -> list[int]:
+    """Every live descendant of `root`, from /proc (Linux). [] where there
+    is no /proc — the kill then degrades to the runner's own group."""
+    children: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for d in entries:
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                stat = f.read()
+            # comm may contain spaces/parens: fields resume after the LAST ')'.
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(d))
+    out, stack = [], [root]
+    while stack:
+        for c in children.get(stack.pop(), ()):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def _kill_agent_tree(pgid: int) -> None:
+    """SIGKILL an agent's process group AND every group its descendants lead.
+
+    Killing only the runner's group (start_new_session) is not enough:
+    tools.run_reaped starts every bash-tool child in its OWN session, so a
+    command in flight at a wall timeout (a hung `./ts < input.txt`) outlived
+    the runner and kept running — only its own run_reaped timeout could
+    stop it, and that died with the runner. The runner group is frozen
+    first so it cannot spawn another tool child during the /proc walk."""
+    try:
+        os.killpg(pgid, signal.SIGSTOP)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    groups = {pgid}
+    for pid in _descendant_pids(pgid):
+        try:
+            groups.add(os.getpgid(pid))
+        except (ProcessLookupError, OSError):
+            pass
+    groups.discard(os.getpgrp())        # never our own group
+    for g in groups:
+        try:
+            os.killpg(g, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _reap_live_agents() -> None:
     """SIGKILL every agent group we own. Best-effort, last-resort."""
     got = _live_pgid_lock.acquire(blocking=False)
@@ -81,10 +135,7 @@ def _reap_live_agents() -> None:
         if got:
             _live_pgid_lock.release()
     for pgid in pgids:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        _kill_agent_tree(pgid)
 
 
 def _install_signal_reaper() -> None:
@@ -285,34 +336,157 @@ def _parse_server_flags(cmdline: str) -> dict:
     quant — assembled at launch from serve.sh + openbeast.conf + env, and
     otherwise invisible to results: the 2026-08-20 Qwen3.8 rows ran under a
     gitignored local REASONING_BUDGET=4096 that no file recorded, while the
-    Qwen3.6 champion ran uncapped."""
+    Qwen3.6 champion ran uncapped.
+
+    LAST occurrence wins, as it does in llama-server (common/arg.cpp
+    assigns in argv order): serve.sh appends the global REASONING_BUDGET
+    override AFTER a serve script's baked --reasoning-budget on purpose, so
+    reading the first one stamped the baked value into the cache era while
+    the server decoded under the override. `--flag=value` is honoured too."""
     info: dict = {"cmdline": cmdline}
+    flags = {"--reasoning-budget": "reasoning_budget",
+             "--reasoning": "reasoning",
+             "-np": "parallel_slots",
+             "-c": "context",
+             "-ctk": "kv_cache_type",
+             "-ctv": "kv_cache_type_v",
+             "-m": "model_path",
+             "--model": "model_path",
+             "--port": "port"}
     toks = cmdline.split()
-    for flag, key in (("--reasoning-budget", "reasoning_budget"),
-                      ("--reasoning", "reasoning"),
-                      ("-np", "parallel_slots"),
-                      ("-c", "context"),
-                      ("-ctk", "kv_cache_type")):
-        if flag in toks:
-            i = toks.index(flag)
-            if i + 1 < len(toks):
-                info[key] = toks[i + 1]
+    for i, tok in enumerate(toks):
+        name, eq, val = tok.partition("=")
+        if name not in flags:
+            continue
+        if eq:
+            info[flags[name]] = val
+        elif i + 1 < len(toks):
+            info[flags[name]] = toks[i + 1]
     return info
 
 
-def capture_server_config() -> dict:
-    """Best-effort snapshot of the live llama-server invocation (local host
-    only — empty when the server runs elsewhere or isn't up)."""
+PROC_ROOT = "/proc"
+LLAMA_DEFAULT_PORT = 8080     # llama-server's own default for --port
+
+
+def _server_port(info: dict) -> int | None:
+    """The port a parsed llama-server command line listens on (its default
+    8080 when no --port is given), or None if the value is not a number."""
+    try:
+        return int(info.get("port", LLAMA_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        return None
+
+
+def _listening_inodes(port: int) -> set[str]:
+    """Socket inodes LISTENing on `port` (any address), from /proc/net."""
+    inodes: set[str] = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(PROC_ROOT, "net", name)) as fh:
+                next(fh, None)                       # header
+                for line in fh:
+                    f = line.split()
+                    if len(f) < 10 or f[3] != "0A":  # 0A = TCP_LISTEN
+                        continue
+                    if int(f[1].rsplit(":", 1)[1], 16) == port:
+                        inodes.add(f[9])
+        except (OSError, ValueError, IndexError):
+            continue
+    return inodes
+
+
+def _pid_holds_socket(pid: str, inodes: set[str]) -> bool:
+    fd_dir = os.path.join(PROC_ROOT, pid, "fd")
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:                                  # another uid's process
+        return False
+    want = {f"socket:[{i}]" for i in inodes}
+    for fd in fds:
+        try:
+            if os.readlink(os.path.join(fd_dir, fd)) in want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_local_host(host: str | None) -> bool:
+    """Whether `host` names this machine: an address we can bind to."""
+    if not host:
+        return True
+    if host in ("localhost", "0.0.0.0", "::"):
+        return True
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    for family, _, _, _, addr in infos:
+        s = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            s.bind((addr[0], 0))
+            return True
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return False
+
+
+def capture_server_config(base_url: str = "http://localhost:8080/v1") -> dict:
+    """Best-effort snapshot of the llama-server invocation that serves
+    `base_url` (local host only — empty when the server runs elsewhere, isn't
+    up, or can't be told apart from another one).
+
+    It must be THAT server: the reasoning budget read here becomes the cache
+    era (.rbN) and the flags feed the env fingerprint. Taking the first line
+    of `pgrep` described whichever llama-server the kernel listed first — a
+    ChunkHound sidecar on :8081, or a sibling worktree's measurement server
+    — so the run banked its verdicts under the other process's era. The
+    listener is resolved by the socket that LISTENs on the port
+    (/proc/net/tcp inode -> /proc/<pid>/fd), falling back to the --port on
+    the command line (llama-server's default 8080 when absent) for a server
+    whose fds this uid cannot read."""
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(base_url)
+        host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:
+        return {}
+    if not _is_local_host(host):
+        return {}
     try:
         out = subprocess.run(["pgrep", "-ax", "llama-server"],
                              capture_output=True, text=True, timeout=5)
-        lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
-        if not lines:
-            return {}
-        _, _, cmdline = lines[0].partition(" ")
-        return _parse_server_flags(cmdline.strip())
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
+    lines = out.stdout.strip().splitlines() if out.returncode == 0 else []
+    procs = []
+    for line in lines:
+        pid, _, cmdline = line.strip().partition(" ")
+        if pid.isdigit():
+            procs.append((pid, _parse_server_flags(cmdline.strip())))
+    if not procs:
+        return {}
+    inodes = _listening_inodes(port)
+    if inodes:
+        owners = [info for pid, info in procs if _pid_holds_socket(pid, inodes)]
+        if len(owners) == 1:
+            return owners[0]
+    by_flag = [info for _, info in procs if _server_port(info) == port]
+    if len(by_flag) == 1:
+        return by_flag[0]
+    # llama-server IS running here, but none can be tied to this port — most
+    # often a proxy (beast-gate) in front of it. Say so: an empty record makes
+    # the cache era fall back to uncapped, which is wrong for a capped server.
+    print(f"WARNING: {len(procs)} local llama-server(s) running, but none can be "
+          f"identified as the one serving port {port} (a proxy such as beast-gate "
+          f"in front of it, or two candidates). Server config not recorded; the "
+          f"cache era falls back to UNCAPPED. Point --base-url at llama-server's "
+          f"own port to record it.", file=sys.stderr)
+    return {}
 
 
 def capture_suite_version() -> str:
@@ -426,22 +600,95 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
     if not enabled:
         return False, None, {}
     import hashlib
-    import shutil as _sh
-    versions = {}
-    for name, cmd in (("zig", ["zig", "version"]),
-                      ("rustc", ["rustc", "--version"]),
-                      ("go", ["go", "version"]),
-                      ("gcc", ["gcc", "-dumpfullversion"]),
-                      ("shellcheck", ["shellcheck", "--version"])):
-        if _sh.which(cmd[0]):
-            try:
-                out = subprocess.run(cmd, capture_output=True, text=True,
-                                     timeout=10).stdout.strip()
-                versions[name] = out.splitlines()[0][:60] if out else "?"
-            except Exception:
-                versions[name] = "?"
+    versions = dict(toolchain_versions())
     fp = hashlib.sha256(json.dumps(versions, sort_keys=True).encode()).hexdigest()[:8]
     return True, f"diag2-{fp}", versions
+
+
+_TOOLCHAINS: dict | None = None
+
+
+def toolchain_versions() -> dict:
+    """First line of each validator/checker toolchain's version output
+    (zig, rustc, go, gcc, shellcheck), probed once per process. Absent
+    tools are omitted, a probe that fails reads "?"."""
+    global _TOOLCHAINS
+    if _TOOLCHAINS is None:
+        import shutil as _sh
+        versions = {}
+        for name, cmd in (("zig", ["zig", "version"]),
+                          ("rustc", ["rustc", "--version"]),
+                          ("go", ["go", "version"]),
+                          ("gcc", ["gcc", "-dumpfullversion"]),
+                          ("shellcheck", ["shellcheck", "--version"])):
+            if _sh.which(cmd[0]):
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True,
+                                         timeout=10).stdout.strip()
+                    versions[name] = out.splitlines()[0][:60] if out else "?"
+                except Exception:
+                    versions[name] = "?"
+        _TOOLCHAINS = versions
+    return dict(_TOOLCHAINS)
+
+
+WEIGHTS_REGISTRY = os.path.join(EVALS_DIR, "..", "scripts", "weights.registry")
+
+
+def weight_identity(model_path: str | None) -> dict:
+    """Cheap, deterministic identity of the GGUF a server loaded. A pinned
+    weight (scripts/weights.registry row whose byte size matches) is its
+    registry sha256; anything else — research quants regenerated under the
+    same alias — is size + mtime, so a re-emitted file reads as different.
+    Never hashes the file itself (minutes per 20 GB)."""
+    if not model_path:
+        return {}
+    ident: dict = {"file": os.path.basename(model_path)}
+    try:
+        st = os.stat(model_path)
+    except OSError:
+        ident["missing"] = True
+        return ident
+    ident["bytes"] = st.st_size
+    try:
+        with open(WEIGHTS_REGISTRY) as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if (not line.startswith("#") and len(cols) >= 3
+                        and cols[2] == ident["file"] and cols[1] == str(st.st_size)):
+                    ident["sha256"] = cols[0]
+                    return ident
+    except OSError:
+        pass
+    ident["mtime_ns"] = st.st_mtime_ns
+    return ident
+
+
+def env_fingerprint(server_info: dict | None, engine_info: dict | None) -> tuple[str, dict]:
+    """What the cache key does NOT otherwise see (review eval-harness-7):
+    the weights' identity, the llama.cpp build, the KV-cache/context serve
+    flags, and the validator toolchains + Python. Returns
+    (`env1-<sha8>`, the dict it hashes)."""
+    import hashlib
+    import platform
+    server_info = server_info or {}
+    engine_info = engine_info or {}
+    env = {
+        "weights": weight_identity(server_info.get("model_path")),
+        "engine": {k: engine_info[k] for k in ("build", "commit") if engine_info.get(k)},
+        "serve": {k: server_info[k] for k in ("context", "kv_cache_type", "kv_cache_type_v")
+                  if server_info.get(k)},
+        "toolchains": {**toolchain_versions(), "python": platform.python_version()},
+    }
+    fp = hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest()[:8]
+    return f"env1-{fp}", env
+
+
+def env_era_enabled() -> bool:
+    """OPENBEAST_EVAL_ENV_ERA=1 puts env_fingerprint into the cache key.
+    Opt-in because turning it on forks every key into a new era; campaigns
+    that pair arms across days should set it."""
+    return os.environ.get("OPENBEAST_EVAL_ENV_ERA", "").strip() == "1"
 
 
 PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
@@ -527,6 +774,74 @@ def _parse_iterations(stdout: str) -> int | None:
     return int(its[-1][0]) if its else None
 
 
+# Environmental resource exhaustion in validation/setup output. None of these
+# is a verdict on the model's code: RLIMIT_NPROC is checked against every
+# task the real uid owns machine-wide, so a busy desktop makes a trivial
+# `cd dir && ./x` fail to fork; a disk filled by a research quantize makes a
+# zig build fail to write its cache. The 2026-09-10..17 rows banked 19 such
+# "failures" (ud-iq3s 115_fft_b / 136_gf256_e, 10 of 30 champion C1 zig
+# rows), and they replayed into paired verdicts as model regressions.
+_ENV_ERROR_RE = re.compile(
+    r"Resource temporarily unavailable"
+    r"|\bEAGAIN\b"
+    r"|\bSystemResources\b"
+    r"|thread constructor failed"
+    r"|can't start new thread"
+    r"|pthread_create\b[^\n]*fail"
+    r"|No space left on device"
+    r"|\bNoSpaceLeft\b"
+    r"|\bENOSPC\b"
+    r"|\[Errno 28\]"
+    r"|Disk quota exceeded"
+    r"|\bDiskQuota\b",
+    re.IGNORECASE)
+
+
+def env_error_signature(text: str | None) -> str | None:
+    """The first line of `text` showing environmental resource exhaustion
+    (fork/thread EAGAIN, ENOSPC), or None. Used both to keep the evidence in
+    a truncated validation_output and to refuse caching the row."""
+    if not text:
+        return None
+    m = _ENV_ERROR_RE.search(text)
+    if not m:
+        return None
+    start = text.rfind("\n", 0, m.start()) + 1
+    end = text.find("\n", m.end())
+    return text[start:end if end != -1 else len(text)].strip()[:200]
+
+
+# Row reasons recorded BEFORE the agent runs: the unit put no load on the
+# model server.
+NO_AGENT_REASONS = frozenset({"low_disk", "server_unhealthy", "setup_failed"})
+
+
+def low_disk(min_free_gb: float | None = None) -> str | None:
+    """A message when a filesystem the eval writes to (the cache/results
+    tree, $HOME for compiler caches, /tmp for fixtures) is below the floor,
+    else None. Floor: OPENBEAST_EVAL_MIN_FREE_GB (default 5; 0 disables).
+    /home is shared with the weights and with research quantizes that write
+    12-55 GB each; a unit that starts on a nearly-full disk dies in its
+    build with ENOSPC, not on its merits."""
+    import shutil as _sh
+    if min_free_gb is None:
+        try:
+            min_free_gb = float(os.environ.get("OPENBEAST_EVAL_MIN_FREE_GB", "5"))
+        except ValueError:
+            min_free_gb = 5.0
+    if min_free_gb <= 0:
+        return None
+    for path in (EVALS_DIR, os.path.expanduser("~"), "/tmp"):
+        try:
+            free_gb = _sh.disk_usage(path).free / 1e9
+        except OSError:
+            continue
+        if free_gb < min_free_gb:
+            return (f"only {free_gb:.1f} GB free on the filesystem holding {path} "
+                    f"(floor {min_free_gb:g} GB, OPENBEAST_EVAL_MIN_FREE_GB)")
+    return None
+
+
 def cacheable_result(result: dict) -> bool:
     """A result row may enter the cache only if it is a genuine verdict.
     Environmental deaths must retry clean on the next run:
@@ -536,12 +851,44 @@ def cacheable_result(result: dict) -> bool:
         silently replayed in the 2026-09-08 Phase A' rerun.
       0 completion tokens + failed — the model never produced anything
         (server crash/restart window, dead endpoint); a capability verdict
-        requires the model to have actually spoken."""
+        requires the model to have actually spoken.
+      failed + reason server_error / api_errors >= 1 — the server died or
+        errored AFTER the model had spoken. The runner burns its remaining
+        iterations on connection errors and exits 0 with tokens > 0; the
+        2026-09-15 greedy P0 run banked 7 such zig "FAILs" that the Tier-3
+        verdict then replayed.
+      failed + reason env_error / exhaustion text in validation_output —
+        fork/thread EAGAIN or a full disk killed the VALIDATOR, not the
+        model's code (see _ENV_ERROR_RE).
+        Unless it repeated env_error_bank_after() times for the key
+        (env_error_repeats): then the model's own program is the cause.
+    A PASS is always a genuine verdict: infrastructure trouble can only
+    make a unit fail, never make it pass."""
     if (result.get("agent_exit_code") or 0) < 0:
         return False
-    if not result.get("passed") and not result.get("tokens_completion"):
+    if result.get("passed"):
+        return True
+    if not result.get("tokens_completion"):
+        return False
+    if result.get("reason") in ("server_error", "env_error"):
+        return False
+    if (result.get("api_errors") or 0) > 0:
+        return False
+    if (env_error_signature(result.get("validation_output"))
+            and not result.get("env_error_repeats")):
         return False
     return True
+
+
+def env_error_bank_after() -> int:
+    """How many env_error verdicts in a row for one cache key make it a
+    genuine FAIL (OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER, default 3). Machine
+    contention is transient; the same exhaustion three runs running is the
+    model's program exhausting the machine."""
+    try:
+        return max(1, int(os.environ.get("OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER", "3")))
+    except ValueError:
+        return 3
 
 
 SUITES_DIR = os.path.join(EVALS_DIR, "suites")
@@ -611,6 +958,18 @@ def run_setup(task: dict, log=print) -> bool:
 
 _TOKEN_LINE = re.compile(r"^TOKENS:\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\d+)\s*$", re.MULTILINE)
 _COMPACT_LINE = re.compile(r"^COMPACTIONS:\s+(\d+)\s*$", re.MULTILINE)
+_API_ERRORS_LINE = re.compile(r"^API_ERRORS:\s+(\d+)\s*$", re.MULTILINE)
+_API_ERROR_EVENT = re.compile(r"^\s*API error: ", re.MULTILINE)
+
+
+def _parse_api_errors(stdout: str) -> int:
+    """Failed model calls the runner reported. Prefers the stable
+    `API_ERRORS: n` line; a runner that died before printing it (or an
+    older runner) is counted from its `API error:` event lines instead."""
+    matches = list(_API_ERRORS_LINE.finditer(stdout))
+    if matches:
+        return int(matches[-1].group(1))
+    return len(_API_ERROR_EVENT.findall(stdout))
 
 
 def _parse_compactions(stdout: str) -> int:
@@ -700,8 +1059,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
 
     # start_new_session so an agent timeout SIGKILLs the runner's whole
-    # process group, not just the runner (its bash-tool children reap their
-    # own groups — see agents/tools.py run_reaped).
+    # process group, not just the runner. Its bash-tool children run in
+    # their OWN sessions (agents/tools.py run_reaped), so the timeout path
+    # walks the tree and kills those groups too (_kill_agent_tree).
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -726,12 +1086,10 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "tokens": tokens,
             "iterations": _parse_iterations(stdout),
             "compactions": _parse_compactions(stdout),
+            "api_errors": _parse_api_errors(stdout),
         }
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_agent_tree(proc.pid)
         proc.kill()
         try:
             proc.communicate(timeout=5)
@@ -789,7 +1147,14 @@ def run_validation(task: dict) -> tuple[bool, str]:
         else:
             returncode, output = _run_reaped(script, timeout=30, shell=True)
         passed = returncode == 0
-        return passed, output.strip()[:500]
+        kept = output.strip()[:500]
+        # The 500-char cut must never drop the evidence that the VALIDATOR
+        # (not the model's code) died to fork/thread EAGAIN or a full disk:
+        # cacheable_result reads validation_output to refuse banking it.
+        sig = None if passed else env_error_signature(output)
+        if sig and not env_error_signature(kept):
+            kept = kept[:480] + "\n[...] " + sig
+        return passed, kept
     except subprocess.TimeoutExpired:
         return False, "Validation timed out"
     except Exception as e:
@@ -808,6 +1173,42 @@ def run_cleanup(task: dict, log=print):
         log("  (cleanup timed out)")
     except Exception as e:
         log(f"  (cleanup error: {e})")
+
+
+def _last_live_results(model_slug: str) -> tuple[str, dict] | None:
+    """(file name, data) of the newest results file for this model that came
+    from a LIVE run (it recorded the server's flags), or None."""
+    try:
+        names = sorted((n for n in os.listdir(RESULTS_DIR)
+                        if n.startswith(f"eval-{model_slug}-") and n.endswith(".json")),
+                       reverse=True)
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(RESULTS_DIR, name)) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        # Slug prefixes collide (qwen-27b-q5 vs qwen-27b-q5-k-xl): match exactly.
+        if data.get("model_slug") == model_slug and (data.get("server") or {}).get("cmdline"):
+            return name, data
+    return None
+
+
+def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
+    """The reasoning-budget era a --cache-only replay should look up, and
+    where it came from. An explicit value wins; otherwise the newest LIVE
+    results file for this model. Returns ("", reason) when nothing says —
+    the legacy uncapped era."""
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip(), "--reasoning-budget"
+    last = _last_live_results(model_slug)
+    if last:
+        name, data = last
+        return str(data["server"].get("reasoning_budget", "")).strip(), \
+            f"from the last live run, {name}"
+    return "", "no live run on record; pass --reasoning-budget to choose"
 
 
 def _write_results(results_path: str, results: dict) -> None:
@@ -831,12 +1232,19 @@ def run_eval(
     recover_cb=None,
     jobs: int = 1,
     suite: str | None = None,
+    reasoning_budget: str | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
+    reasoning_budget: cache_only only — the reasoning-budget era to replay
+    (e.g. "20480"; "-1" = uncapped). A live run reads it from the server;
+    cache_only has no server, so without this it is inferred from the
+    newest LIVE results file for the model (see _cache_only_rb).
+
     cache_only: when True, never invoke the agent. Cache hits replay; cache
     misses are recorded as 'skipped_cache_miss' with passed=False. Used for
-    fast leaderboard rebuilds from prior runs after a scoring/spec tweak.
+    replays of prior runs; never seated (no live host — scoring.py --rebuild
+    rescores banked runs).
 
     health_check / recover_cb: optional pair injected by benchmark_all.py.
     Before each live task, `health_check()` probes /health; if it returns
@@ -910,22 +1318,44 @@ def run_eval(
     model_slug = slugify(model_name)
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
-    server_info = capture_server_config() if not cache_only else None
+    server_info = capture_server_config(base_url) if not cache_only else None
     # Reasoning-budget cache-era component (see cache.cache_key): a finite
     # --reasoning-budget on the live server stamps its value into every
     # cache key so capped and uncapped rows can never replay across eras.
     # Uncapped (absent or -1) omits the component — legacy keys unchanged.
-    # cache_only mode has no live server to ask, so it replays legacy
-    # (uncapped-era) keys only; capped rows are a miss there, disclosed.
+    # cache_only mode has no live server to ask: the era comes from
+    # reasoning_budget or the model's newest live results file. Guessing
+    # "uncapped" missed every current-era (.rb20480) key and recorded the
+    # whole suite as skipped_cache_miss.
     # Low-churn eval mode (2026-09-10): greedy decoding, own cache era,
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
     # --greedy CLI flag (benchmark_all passes it through as env).
     greedy_mode = os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1"
     rb_component = None
+    _rb = ""
     if server_info:
         _rb = str(server_info.get("reasoning_budget", "")).strip()
-        if _rb and _rb != "-1":
-            rb_component = _rb
+    elif cache_only:
+        _rb, _rb_src = _cache_only_rb(model_slug, reasoning_budget)
+        print(f"Cache-only reasoning-budget era: {_rb or 'uncapped'} ({_rb_src})")
+    if _rb and _rb != "-1":
+        rb_component = _rb
+    # Environment identity (weights / engine / serve KV flags / toolchains).
+    # ALWAYS stamped on live rows and in provenance, so a replay banked
+    # under a different environment is counted and disclosed; it enters
+    # the cache key only with OPENBEAST_EVAL_ENV_ERA=1 (see env_era_enabled).
+    env_component, env_info = (None, None)
+    if not cache_only:
+        env_component, env_info = env_fingerprint(server_info, engine_info)
+    else:
+        _last = _last_live_results(model_slug)
+        if _last:
+            env_component = (_last[1].get("harness") or {}).get("env_component")
+            env_info = (_last[1].get("harness") or {}).get("env")
+    env_key = env_component if env_era_enabled() else None
+    if env_era_enabled() and not env_component:
+        raise SystemExit("OPENBEAST_EVAL_ENV_ERA=1 in --cache-only mode needs a live results "
+                         "file for this model that recorded its env_component")
 
     jobs = max(1, int(jobs))
     if cache_only and jobs > 1:
@@ -999,11 +1429,15 @@ def run_eval(
         "runtime": capture_runtime_info(),
         "jobs": jobs,
         "suite_selection": suite,
+        "cache_only": cache_only,
         "harness": {"diagnostics": diag_on,
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
-                    **({"toolchains": diag_toolchains} if diag_on else {})},
+                    **({"toolchains": diag_toolchains} if diag_on else {}),
+                    **({"rb_component": rb_component} if rb_component else {}),
+                    **({"env_component": env_component, "env": env_info,
+                        "env_in_cache_key": bool(env_key)} if env_component else {})},
         "tasks": [],
         "summary": {"total": len(tasks), "passed": 0, "failed": 0},
     }
@@ -1013,7 +1447,8 @@ def run_eval(
     health_lock = threading.Lock()  # one recovery attempt at a time
     abort = threading.Event()       # set on failed recovery — stop starting units
     indexed: dict[int, dict] = {}   # original task index → recorded result
-    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0}
+    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0,
+                "env_drift_replays": 0}
 
     def process(idx: int, task: dict, log) -> dict | None:
         """One unit end-to-end: cache check → health → setup → agent →
@@ -1066,13 +1501,16 @@ def run_eval(
             ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
                                  diag=diag_component, rb=rb_component,
                                  greedy=greedy_mode,
-                                 pack=packs_component if task.get("_context_file") else None)
+                                 pack=packs_component if task.get("_context_file") else None,
+                                 env=env_key)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
                 cached["from_cache"] = True
                 with state_lock:
                     counters["cache_hits"] += 1
+                    if env_component and cached.get("env_fp") != env_component:
+                        counters["env_drift_replays"] += 1
                 tag = "PASS" if cached.get("passed") else "FAIL"
                 log(f"  CACHED ({cached.get('elapsed_seconds', 0)}s, {tag}) — skipping live run")
                 return record(cached)
@@ -1088,6 +1526,20 @@ def run_eval(
                 "reason": "skipped_cache_miss",
                 "elapsed_seconds": 0,
                 "from_cache": False,
+            })
+
+        # Free-space floor before each live unit: a disk filled mid-sweep
+        # (a research quantize) turns every following unit into an ENOSPC
+        # "failure". Stop starting units instead; a relaunch resumes from
+        # the cache once space is back.
+        disk_msg = low_disk()
+        if disk_msg:
+            abort.set()
+            log(f"  ABORT: {disk_msg}; skipping all remaining tasks")
+            return record({
+                "id": task_id, "name": task_name, "difficulty": difficulty,
+                "model": model_name, "passed": False, "reason": "low_disk",
+                "elapsed_seconds": 0,
             })
 
         # Health check + recovery before each live task. If the server is
@@ -1133,6 +1585,36 @@ def run_eval(
         # Validate
         passed, validation_output = run_validation(task)
 
+        # Infrastructure verdicts (not model verdicts) for a FAILED unit.
+        # server_error: the runner saw failed model calls, or the server is
+        # gone right after the agent finished — the health check above only
+        # runs BEFORE a task, so a server that died mid-task was invisible.
+        # env_error: the validator died to fork/thread EAGAIN or a full disk.
+        api_errors = agent_result.get("api_errors", 0) or 0
+        infra_reason = None
+        env_strikes = 0
+        if not passed:
+            if api_errors > 0:
+                infra_reason = "server_error"
+            elif (health_check is not None and agent_result["exit_code"] >= 0
+                  and not health_check()):
+                infra_reason = "server_error"
+            elif env_error_signature(validation_output):
+                infra_reason = "env_error"
+                # Exhaustion the model's OWN program causes (a fork loop,
+                # thousands of threads) matches the same text and would
+                # rerun live forever, keeping the model off the board. An
+                # env_error that keeps coming back for the same key is a
+                # verdict: bank it as a plain FAIL.
+                if ck is not None:
+                    try:
+                        strikes = cache.env_error_strike(ck)
+                    except OSError:
+                        strikes = 0
+                    if strikes >= env_error_bank_after():
+                        infra_reason = None
+                        env_strikes = strikes
+
         # Record result
         tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
         result = record({
@@ -1149,10 +1631,17 @@ def run_eval(
             "tokens_total": tokens["total"],
             "iterations": agent_result.get("iterations"),
             "compactions": agent_result.get("compactions", 0),
+            "api_errors": api_errors,
+            **({"reason": infra_reason} if infra_reason else {}),
+            **({"env_error_repeats": env_strikes} if env_strikes else {}),
+            **({"env_fp": env_component} if env_component else {}),
         })
 
         if passed:
             log(f"  PASS ({agent_result['elapsed_seconds']}s)")
+        elif infra_reason:
+            log(f"  FAIL ({infra_reason}, not cached — retries on the next run): "
+                f"{validation_output[:100]}")
         else:
             log(f"  FAIL: {validation_output[:100]}")
 
@@ -1167,9 +1656,12 @@ def run_eval(
         #   0 completion tokens + failed: the model never produced anything
         #     (server crash/restart window, dead endpoint) — a capability
         #     verdict needs the model to have actually spoken.
+        #   server_error / env_error: see the infra_reason block above and
+        #     cacheable_result.
         if use_cache and cacheable_result(result):
             try:
                 cache.cache_put(ck, result)
+                cache.env_error_strikes_clear(ck)
             except Exception as e:
                 log(f"  (cache write failed: {e})")
 
@@ -1223,6 +1715,14 @@ def run_eval(
         except (json.JSONDecodeError, OSError, KeyError) as e:
             print(f"Diag latency summary unavailable: {e}")
 
+    # How many units actually ran the model (benchmark_all skips its
+    # thermal cool-off when this is 0, i.e. a full cache replay).
+    results["summary"]["cache_hits"] = counters["cache_hits"]
+    # Rows recorded without invoking the agent (a disk-floor abort, a
+    # failed recovery, a fixture setup failure) put no load on the GPU.
+    no_agent = sum(1 for r in indexed.values() if r.get("reason") in NO_AGENT_REASONS)
+    results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
+                                        - counters["cache_misses_skipped"] - no_agent)
     _write_results(results_path, results)
 
     # Print summary
@@ -1233,6 +1733,12 @@ def run_eval(
     cache_misses_skipped = counters["cache_misses_skipped"]
     if use_cache and cache_hits:
         print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
+    if counters["env_drift_replays"]:
+        results["summary"]["env_drift_replays"] = counters["env_drift_replays"]
+        _write_results(results_path, results)
+        print(f"ENV DRIFT: {counters['env_drift_replays']} replayed row(s) were banked under a "
+              f"different (or unrecorded) weights/engine/toolchain environment than {env_component}. "
+              f"Set OPENBEAST_EVAL_ENV_ERA=1 to key the cache on it.")
     if cache_only and cache_misses_skipped:
         print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
     if counters["aborted_skips"]:
@@ -1283,6 +1789,9 @@ def main():
     parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
                         "(e.g. v5-fast). Mutually exclusive with --tasks; results are "
                         "leaderboard-ineligible and scored via imputation on the v4 scale.")
+    parser.add_argument("--reasoning-budget",
+                        help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
+                             "-1 = uncapped). Default: the model's last live run.")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel eval workers (default 1). Needs a server with -np >= N "
                              "(clamped to /props total_slots when readable; MTP configs are -np 1). "
@@ -1323,6 +1832,7 @@ def main():
         cache_only=args.cache_only,
         jobs=args.jobs,
         suite=args.suite,
+        reasoning_budget=args.reasoning_budget,
     )
 
     # Exit with failure if any task failed

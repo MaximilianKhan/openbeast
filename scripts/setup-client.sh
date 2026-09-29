@@ -25,6 +25,8 @@
 #   --host <fqdn>    rig's tailnet FQDN (default: auto-detect a peer named 'beast')
 #   --api-key <key>  the rig's LLAMA_API_KEY (also read from $OPENBEAST_API_KEY);
 #                    wired into the env file + opencode.json (chmod 600)
+#   --api-key-stdin  same, but read from stdin (prompted, hidden) — keeps the
+#                    key out of `ps`; preferred on a shared machine
 #   --no-search      skip search wiring (web_search disabled on the client)
 #   --local-search   run SearXNG locally via Docker (bridge network — works on
 #                    Docker Desktop) instead of using the rig's :8889
@@ -67,11 +69,24 @@ while [ $# -gt 0 ]; do
                     # null-check would reject exactly that.
                     [ $# -ge 2 ] || { echo "--api-key needs a value (use \"\" to clear)" >&2; exit 2; }
                     API_KEY="$2"; shift ;;
+    --api-key-stdin)
+                    # The key as an ARGUMENT is readable by every local uid
+                    # (ps) for the whole install — pip included. Read one
+                    # line from stdin instead: prompted (silent) on a tty,
+                    # piped otherwise. An empty line clears, like --api-key "".
+                    if [ -t 0 ]; then
+                      printf 'Rig API key (input hidden): ' >&2
+                      IFS= read -rs API_KEY || API_KEY=""
+                      echo >&2
+                    else
+                      IFS= read -r API_KEY || true
+                    fi
+                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')" ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
-    -h|--help)      sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
@@ -313,11 +328,27 @@ fi
 
 # -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
 # (published port, stack down) reports as "reachable".
-if [ -n "$API_KEY" ]; then
-  probe_ok="$(curl -fsS -m 5 -H "Authorization: Bearer $API_KEY" "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
+# The bearer goes through lib/curl_auth.sh (a curl --config on an fd), never
+# curl's argv. A copy of this script fetched on its own (the documented
+# no-clone path) has no lib/ yet — the slim checkout comes later — so the
+# fallback inlines the same fd-3 idiom: dropping the key there would 401 a
+# keyed rig and report a live stack as "not answering".
+_curl_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/lib/curl_auth.sh"
+if [ -f "$_curl_lib" ]; then
+  # shellcheck source=lib/curl_auth.sh
+  . "$_curl_lib"
 else
-  probe_ok="$(curl -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
+  ob_curl_bearer() {
+    local _k="$1"; shift
+    [ -z "$_k" ] && { curl "$@"; return; }
+    case "$_k" in *[[:cntrl:]]*) echo "api key contains a control character — refusing" >&2; return 2 ;; esac
+    _k="$(printf '%s' "$_k" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    curl --config /dev/fd/3 "$@" 3<<EOF
+header = "Authorization: Bearer $_k"
+EOF
+  }
 fi
+probe_ok="$(ob_curl_bearer "$API_KEY" -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
 [ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
   || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
 # beast-slot discovery (informational — tells you what the rig has loaded).
@@ -376,9 +407,37 @@ mkdir -p "$CLIENT_DIR"
 # Build the venv with the interpreter we VETTED, not whatever "python3"
 # resolves to — otherwise a 3.9 on PATH silently creates a 3.9 venv.
 [ -x "$VENV/bin/python3" ] || "$PY" -m venv "$VENV"
-"$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+# THE HASH-PINNED LOCK, the same closure the rig and CI install. This venv
+# runs the tool arsenal (bash, file edits) on THIS machine, and it used to be
+# built from requirements.txt alone: 6 direct versions, ~37 transitive
+# packages resolved fresh from the index, no content pinned — so a
+# compromised transitive release would land here while the rig refused it.
+# pydeps.sh verifies the lock is current and installs with --require-hashes.
+# Its exit 3 is a HASH MISMATCH (the index served substituted bytes): fatal,
+# never a reason to fall back. Any other failure (a python the closure does
+# not cover — Intel macOS needs a compiler for cffi, see pydeps.sh) degrades
+# loudly to requirements.txt, unless OPENBEAST_PIP_STRICT=1.
+_pd_rc=0
+OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+if [ "$_pd_rc" -eq 0 ]; then
+  _pins="hash-pinned closure from agents/requirements.lock"
+elif [ "$_pd_rc" -eq 3 ]; then
+  echo "  ✗ HASH MISMATCH installing the client's python deps (pip's report is above)."
+  echo "    The index served bytes that are NOT the ones agents/requirements.lock pins."
+  echo "    Refusing, and NOT falling back to requirements.txt (same packages, unverified)."
+  echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
+  exit 1
+elif [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
+  echo "  ✗ the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback"
+  exit 1
+else
+  echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
+  echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content."
+  "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+  _pins="pins from agents/requirements.txt — NOT hash-verified"
+fi
 "$VENV/bin/python3" -c "import mcp, openai" || { echo "  ✗ venv deps failed to import"; exit 1; }
-echo "  ✓ venv ready ($VENV, pins from agents/requirements.txt)"
+echo "  ✓ venv ready ($VENV, $_pins)"
 
 # ---- 4. env file (sourced by scripts/client.sh) -----------------------------
 umask 077
@@ -410,7 +469,7 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     echo "OPENBEAST_API_KEY=$(_q "$API_KEY")"
     echo "OPENAI_API_KEY=$(_q "$API_KEY")"
   else
-    echo "# If the rig sets LLAMA_API_KEY, re-run with --api-key <key>."
+    echo "# If the rig sets LLAMA_API_KEY, re-run with --api-key-stdin."
   fi
   [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$(_q "$SEARXNG_CLIENT_SECRET")"
 } > "$ENV_FILE"

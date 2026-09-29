@@ -92,6 +92,11 @@ exactly what to install if anything's missing.
   images, and Python deps in one shot ([`docs/UPDATING.md`](docs/UPDATING.md)).
 - **Something off?** `./start.sh doctor` diagnoses config, security posture,
   supply-chain pins, drive wear and every service in one pass.
+- **Leaving it running?** `./start.sh` installs a daily user timer
+  (`openbeast-logrotate.timer`, no sudo) that keeps `stack.log` and the audit
+  trails in `.run/` bounded, whenever a systemd `--user` manager is present.
+  `LOGROTATE_AUTOINSTALL=false` in `openbeast.conf` opts out;
+  `./scripts/logrotate.sh --install` does it by hand.
 
 The full walkthrough — prerequisites, per-distro toolchain, GPU/driver notes,
 every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
@@ -119,8 +124,8 @@ openbeast-client status                            # what the rig is actually se
 
 **Someone else hosting?** This is a first-class path — you need no GPU and no
 weights, only an invite to their tailnet. Point `--host` at their machine's
-tailnet FQDN, adding `--api-key <key>` if they've keyed the rig or enrolled
-your device. **[Full walkthrough, including the trust model you should
+tailnet FQDN, adding `--api-key-stdin` (then paste the key) if they've keyed
+the rig or enrolled your device. **[Full walkthrough, including the trust model you should
 understand first](docs/BEAST_SLOT.md#using-someone-elses-rig).**
 
 > **Read that trust model before joining a rig you don't own.** Your agent
@@ -277,7 +282,7 @@ installs the same way), and the **bundle** carries everything across:
 ./scripts/bundle.sh sign  /media/usb/openbeast --key ~/.ssh/openbeast-bundle
 # on the air-gapped rig
 ./scripts/bundle.sh verify  /media/usb/openbeast --key allowed_signers
-./scripts/bundle.sh install /media/usb/openbeast
+./scripts/bundle.sh install /media/usb/openbeast --key allowed_signers
 ```
 
 Hashes prove the bundle did not change in transit; the signature proves who
@@ -748,17 +753,24 @@ say `--go`** and keeps the expensive and personal parts unless told otherwise:
 
 ```bash
 ./scripts/uninstall.sh                  # prints every step, touches nothing
-./scripts/uninstall.sh --go             # stop, unpublish, remove units + llama.cpp/ venv/ .run/
-./scripts/uninstall.sh --go --purge-all # ...and weights, openbeast.conf, the WebUI volume, the workspace
+./scripts/uninstall.sh --go             # stop, unpublish, remove units + llama.cpp/ venv/ + .run/'s pids, tokens, logs
+./scripts/uninstall.sh --go --purge-all # ...and weights, openbeast.conf, the WebUI volume, the workspace, all of .run/
 ```
 
 Kept by default, each with its own `--purge-*` flag: **model weights** (the
-expensive part to re-download; `WEIGHTS_DIR` in `openbeast.conf`, which may be
-outside the repo), **`openbeast.conf`** (the per-install secrets, so a
-reinstall picks up where you left off), **Open WebUI's data volume** (your
-chats and accounts) and the **workspace** (`FILES_DIR`: what the model wrote
-for you, every published page, the session ledger). The checkout itself is
-never deleted — `rm -rf` it yourself when you're done.
+expensive part to re-download; `WEIGHTS_DIR`, resolved exactly as the stack
+resolves it — the sibling `../weights` by default, `~` and repo-relative paths
+allowed), **`openbeast.conf`** (the per-install secrets, so a reinstall picks up
+where you left off), **Open WebUI's data volume** (your chats and accounts —
+only the volume of *this* compose project, never another install's), the
+**workspace** (`FILES_DIR`: what the model wrote for you, every published page;
+`--purge-data` also takes the session ledger in `.run/sessions`) and the
+**durable state in `.run/`** (`--purge-state`: beast-gate's device registry,
+the audit trails, the artifact raw-URL key, SSD wear history). `llama.cpp/` is
+kept too when it holds local-only branches, stashes or uncommitted edits
+(`--purge-build` removes it anyway). A purge target that resolves to `/`, a
+system tree, `$HOME` or the checkout is refused. The checkout itself is never
+deleted — `rm -rf` it yourself when you're done.
 
 Nothing OpenBeast installs lives outside the repo, the Docker containers, the
 user systemd units and the tailscale serve config, so that script is the whole

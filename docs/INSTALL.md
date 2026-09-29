@@ -546,6 +546,19 @@ To stop everything:
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
 - **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
+- **Log rotation (automatic on systemd):** `./start.sh` installs
+  `openbeast-logrotate.timer` on every start where it is missing and a
+  systemd `--user` manager is reachable — a daily user timer (no sudo) that
+  applies `scripts/logrotate-openbeast.conf` to `stack.log`, every
+  `*-audit.jsonl` and the extension logs in `.run/`, with `logrotate` if it is
+  installed and its own size rotation otherwise. A failed install only warns.
+  Opt out with `LOGROTATE_AUTOINSTALL=false` in `openbeast.conf`; without a
+  user manager (macOS, containers) run `./scripts/logrotate.sh --install`
+  yourself where it applies, or those files grow without bound.
+  `./start.sh doctor` warns when the timer is missing or disabled.
+  `systemctl --user list-timers openbeast-logrotate.timer` shows it;
+  `./scripts/logrotate.sh --uninstall` (or `scripts/uninstall.sh --go`)
+  removes it.
 
 ## 7. Remote access (optional, recommended)
 
@@ -621,12 +634,25 @@ at a glance.
 ### Post-setup (one time, ~3 minutes)
 
 1. Restart the stack so the loopback binds + WebUI auth take effect:
-   `./stop.sh && ./start.sh`
-2. Open the WebUI URL and **create the admin account immediately** —
-   `WEBUI_AUTH=true` now, and the *first* signup becomes admin.
-3. Mirror those credentials into `openbeast.conf` (`WEBUI_ADMIN_EMAIL` /
-   `WEBUI_ADMIN_PASSWORD`) so `scripts/configure-webui.sh` can keep applying
-   tool-server config on restarts.
+   `./stop.sh && ./start.sh`. If the stack was running when you ran
+   `setup-tailscale.sh`, the script did **not** publish the WebUI (`:443`) —
+   the running container still had auth off, which would have made every
+   tailnet device an admin. Re-run `./scripts/setup-tailscale.sh` after the
+   restart to publish it.
+2. **Your admin account.** Any install that ever started with the default
+   `WEBUI_AUTH=false` already has one: Open WebUI created `admin@localhost`
+   as admin with its built-in password `admin`. The first auth-on start (and
+   `setup-tailscale.sh`) rotates that password to a random one and saves it
+   in `openbeast.conf` as `WEBUI_ADMIN_EMAIL=admin@localhost` /
+   `WEBUI_ADMIN_PASSWORD=…` (the file is 0600); read it there to log in, then
+   change it or create your own admin in Admin Panel → Users. New signups
+   land as `pending` — the "first signup becomes admin" rule only applies to
+   a WebUI database that has never had a user.
+3. If you use a different admin account, put its credentials in
+   `openbeast.conf` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`) so
+   `scripts/configure-webui.sh` can keep applying tool-server config on
+   restarts. (It then saves the rotated built-in password as
+   `WEBUI_DEFAULT_ADMIN_PASSWORD` instead of touching yours.)
 
 ### Add your devices (each ~1 minute)
 
@@ -730,6 +756,7 @@ slim checkout. Flags:
 |---|---|
 | `--host <fqdn>` | rig's tailnet FQDN — for a second rig, or a `TS_HOSTNAME` other than `beast` |
 | `--api-key <key>` | the enrolled device key (or the rig's `LLAMA_API_KEY`); also read from `$OPENBEAST_API_KEY` |
+| `--api-key-stdin` | the same key, read from stdin (a hidden prompt on a terminal) so it never appears in `ps`; preferred on a shared machine |
 | `--no-search` | skip search wiring entirely |
 | `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
 | `--uninstall` | remove everything below |
@@ -900,7 +927,12 @@ pins them by *registry* digest, which `docker save/load` does not carry, so
 - Python deps are installed **only** from a wheelhouse — `./wheels`,
   `./wheelhouse` or `$OPENBEAST_WHEELHOUSE` — via `pydeps.sh install --from`,
   audited against the lock; no wheelhouse is fatal. The index is never
-  contacted.
+  contacted. The **lock does not travel with the wheels**: `install --from`
+  accepts only the lock committed in this git checkout, or one whose sha256
+  you vouch for (`--lock-sha256`, or `OPENBEAST_LOCK_SHA256`, with the hash
+  `pydeps.sh wheelhouse` printed on the connected box; a signed bundle
+  vouches for it when installed with `--key`). A lock copied off the same
+  stick as the wheels would let the stick vouch for itself.
 - A missing weight is fatal with the copy-and-verify instructions; any
   registry weight works, not just the default (set `SERVE_SCRIPT` to match
   what you brought).
@@ -912,8 +944,8 @@ Afterwards `./scripts/update.sh` keeps working offline: it skips pulls,
 digest bumps and index queries, reports what is on disk, and `--force`
 rebuilds llama.cpp without a pull (the only way to rebuild when there is
 nothing to fetch). To move Python pins on a closed box, regenerate the lock
-on a connected one (`pydeps.sh lock`), bring a fresh wheelhouse, and
-`pydeps.sh install --from wheels`. `doctor` distinguishes "serves offline"
+on a connected one (`pydeps.sh lock`), commit it and bring that commit
+here, bring a fresh wheelhouse, and `pydeps.sh install --from wheels`. `doctor` distinguishes "serves offline"
 (every installed rig) from "can be *maintained* offline" (source, a current
 lock, and a wheelhouse that covers it) and says which you have.
 
@@ -1002,9 +1034,10 @@ rename that predates the pin:
      sh -c 'rm -rf /new/* ; cp -a /old/. /new/'
    ```
 3. Rerun `./start.sh`. Note: a database from the `WEBUI_AUTH=false` era has
-   an `admin@localhost` account with no usable password — set one directly
-   before logging in (bcrypt-hash a password into the `auth` table of
-   `webui.db`) or you'll be locked out under `WEBUI_AUTH=true`.
+   an `admin@localhost` **admin** account with Open WebUI's built-in password
+   `admin`. Under `WEBUI_AUTH=true`, `configure-webui.sh` rotates it on start
+   and saves the new one in `openbeast.conf` (`WEBUI_ADMIN_PASSWORD`, or
+   `WEBUI_DEFAULT_ADMIN_PASSWORD` if the conf already names another admin).
 
 **`llama-cli not found`** — llama.cpp isn't built or the build directory structure
 changed. Rebuild and check that `llama.cpp/build/bin/llama-cli` exists.

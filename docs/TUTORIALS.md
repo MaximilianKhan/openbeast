@@ -300,7 +300,7 @@ echo 'EDGE_GATE=true' >> openbeast.conf
 ```
 
 On the laptop, hand the key to the client: `./scripts/setup-client.sh --host
-<rig> --api-key <key>`. Revoke a device with `./scripts/clients.sh revoke
+<rig> --api-key-stdin`, then paste the key (it stays out of `ps`). Revoke a device with `./scripts/clients.sh revoke
 laptop`; the next request 401s. `./start.sh` prints the gate's auth mode
 (`auth=closed` until the first device is enrolled), and
 `.run/inference-audit.jsonl` records every inference call by device.
@@ -326,13 +326,16 @@ On the rig:
 ```bash
 # copy the checkout over (the bundle's source/ holds the llama.cpp tarball, not the repo)
 ./scripts/bundle.sh verify  /media/usb/openbeast --key allowed_signers --identity you@example.com
-./scripts/bundle.sh install /media/usb/openbeast
+./scripts/bundle.sh install /media/usb/openbeast --key allowed_signers --identity you@example.com
 echo 'OFFLINE=true' >> openbeast.conf
 ./bootstrap.sh
 ```
 
 `verify` refuses a bundle whose manifest was rebuilt, not just one whose files
-changed — hashes are integrity, the signature is authenticity. `OFFLINE=true`
+changed — hashes are integrity, the signature is authenticity. `install`
+re-checks both before using anything, but only checks the signature when it
+gets `--key` too: without it, it warns and trusts the medium's own manifest,
+so a bundle rewritten after `verify` would install. `OFFLINE=true`
 makes every step that cannot succeed without the network refuse and say which,
 instead of stalling on a connect timeout. `./scripts/doctor.sh` then reports
 the rig's offline self-sufficiency. Details and what each step does

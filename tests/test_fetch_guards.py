@@ -143,10 +143,6 @@ class TestPublicUrlAllowed(unittest.TestCase):
         self.assertIn("Example Domain", result)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestDNSRebindingPin(unittest.TestCase):
     """The IP the guard vets must be the IP the socket dials — no separate
     connect-time resolution a rebinding DNS server could flip."""
@@ -279,3 +275,300 @@ class TestTailnetCGNAT(unittest.TestCase):
         os.environ["OPENBEAST_FETCH_ALLOW_TAILNET"] = "1"
         self.assertIsNotNone(_vet_addr("fd00::1"))
         self.assertIsNotNone(_vet_addr("::1"))
+
+
+class _FakeResp:
+    """Minimal urllib response: a byte body behind read()/read1()."""
+
+    def __init__(self, body: bytes, ctype="text/html; charset=utf-8"):
+        import io
+        self._buf = io.BytesIO(body)
+        self.headers = {"Content-Type": ctype}
+
+    def read(self, n=-1):
+        return self._buf.read(n)
+
+    def read1(self, n=-1):
+        return self._buf.read1(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def open(self, req, timeout=None):
+        return _FakeResp(self.body)
+
+
+class TestHtmlStripIsLinear(unittest.TestCase):
+    """The HTML stripper runs under the GIL inside the shared tool server:
+    a page of unterminated openers must not trigger quadratic backtracking
+    (the old patterns took ~6 s per pass on a default-size 200 KB body)."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+
+    def _timed_fetch(self, body: bytes):
+        import time
+        self.tools._fetch_opener = _FakeOpener(body)
+        t0 = time.monotonic()
+        out = self.tools.fetch("http://tarpit.example/")
+        return out, time.monotonic() - t0
+
+    def test_unterminated_script_openers(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<script>" * 25_000)
+        self.assertLess(dt, 1.5)
+
+    def test_bare_angle_brackets(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<" * 200_000)
+        self.assertLess(dt, 1.5)
+
+    def test_unterminated_style_and_break_openers(self):
+        _, dt = self._timed_fetch(b"<html>" + b"<style" * 30_000 + b"<br" * 60_000)
+        self.assertLess(dt, 1.5)
+
+    def test_stripping_semantics_kept(self):
+        out, _ = self._timed_fetch(
+            b"<html><head><style>p{color:red}</style>"
+            b"<script type='x'>var SECRET_JS = 1;</script></head>"
+            b"<body><p>Hello <b>world</b></p><br/>next &amp; last"
+            b"<script>never closed SCRIPT_TAIL")
+        self.assertIn("Hello world", out)
+        self.assertIn("next & last", out)
+        for gone in ("SECRET_JS", "color:red", "SCRIPT_TAIL", "<b>", "<p>"):
+            self.assertNotIn(gone, out)
+
+
+class TestFetchTotalDeadline(unittest.TestCase):
+    """urllib's timeout= is per socket operation: a server dripping a byte
+    every few seconds used to hold a tool-server worker until the 8 MB cap
+    or EOF. fetch now has a whole-request deadline (_FETCH_DEADLINE)."""
+
+    def setUp(self):
+        import threading
+        import tools
+        self.tools = tools
+        self._saved = (tools._fetch_url_blocked, tools._resolve_vetted,
+                       getattr(tools, "_FETCH_DEADLINE", None))
+        # Loopback tarpit: bypass the SSRF guard for this server only.
+        tools._fetch_url_blocked = lambda url: None
+        tools._resolve_vetted = lambda host, port, scheme: (["127.0.0.1"], None)
+        tools._FETCH_DEADLINE = 1.0
+        self.stop = threading.Event()
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.threads = []
+
+    def tearDown(self):
+        (self.tools._fetch_url_blocked, self.tools._resolve_vetted,
+         self.tools._FETCH_DEADLINE) = self._saved
+        self.stop.set()
+        self.srv.close()
+        for t in self.threads:
+            t.join(timeout=5)
+
+    def _serve(self, head: bytes, drip: bytes, every: float):
+        import threading
+
+        def run():
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.recv(65536)
+                    conn.sendall(head)
+                    for b in drip:
+                        if self.stop.wait(every):
+                            return
+                        conn.sendall(bytes([b]))
+                    self.stop.wait(30)  # then stall, holding the socket open
+                except OSError:
+                    return  # the client hung up — the point of the test
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+    def _timed_fetch(self):
+        import time
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"http://127.0.0.1:{self.port}/")
+        return out, time.monotonic() - t0
+
+    def test_body_drip_is_cut_at_the_deadline(self):
+        self._serve(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: 300\r\n\r\n", b"a" * 300, 0.05)
+        out, dt = self._timed_fetch()
+        self.assertLess(dt, 5.0, out)          # was ~15 s: the whole drip
+        self.assertIn("deadline", out)
+        self.assertIn("aaa", out)              # partial body kept
+
+    def test_header_drip_is_cut_at_the_deadline(self):
+        self._serve(b"HTTP/1.1 200 OK\r\n", b"X-Slow: " + b"z" * 300, 0.05)
+        out, dt = self._timed_fetch()
+        self.assertLess(dt, 5.0, out)
+        self.assertIn("deadline", out)
+
+    def test_stalled_tls_handshake_is_cut_at_the_deadline(self):
+        # The socket is registered BEFORE wrap_socket, so a server that
+        # never answers the ClientHello is cut too (the dup survives the
+        # detach TLS wrapping does to the original socket object).
+        self._serve(b"", b"", 0)
+        import time
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"https://127.0.0.1:{self.port}/")
+        self.assertLess(time.monotonic() - t0, 5.0, out)
+        self.assertIn("deadline", out)
+
+    def test_fast_server_unaffected(self):
+        # Negative control: a prompt response is returned whole, no note.
+        self._serve(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: 5\r\n\r\nhello", b"", 0)
+        out, _ = self._timed_fetch()
+        self.assertEqual(out, "hello")
+
+
+class TestFetchThroughProxy(unittest.TestCase):
+    """With http_proxy/https_proxy set, fetch used to pin the TARGET's IP but
+    keep the PROXY's port (dialing target_ip:3128), so every proxied fetch
+    failed. It must dial the proxy and still vet the target by name."""
+
+    _NAMES = {"pub.example": "93.184.216.34", "priv.example": "10.0.0.5",
+              "proxy.test": "10.9.9.9"}  # a private proxy is normal
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._env = {k: os.environ.pop(k) for k in list(os.environ)
+                     if k.lower() in ("http_proxy", "https_proxy", "no_proxy",
+                                      "all_proxy")}
+        os.environ["http_proxy"] = "http://proxy.test:3128"
+        os.environ["https_proxy"] = "http://proxy.test:3128"
+        self._opener = tools._fetch_opener
+        tools._fetch_opener = tools._build_fetch_opener()
+        self._gai = socket.getaddrinfo
+        self._cc = socket.create_connection
+        socket.getaddrinfo = lambda h, p, *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (self._NAMES[h], p or 80))]
+        self.dialed = []
+
+        def cc(addr, *a, **k):
+            self.dialed.append(addr)
+            raise OSError("stub dial")
+        socket.create_connection = cc
+
+    def tearDown(self):
+        socket.getaddrinfo = self._gai
+        socket.create_connection = self._cc
+        self.tools._fetch_opener = self._opener
+        for k in ("http_proxy", "https_proxy"):
+            os.environ.pop(k, None)
+        os.environ.update(self._env)
+
+    def test_http_target_dials_the_proxy(self):
+        self.tools.fetch("http://pub.example/page")
+        self.assertEqual(self.dialed, [("proxy.test", 3128)])
+
+    def test_https_target_dials_the_proxy(self):
+        self.tools.fetch("https://pub.example/page")
+        self.assertEqual(self.dialed, [("proxy.test", 3128)])
+
+    def test_private_target_still_refused_through_proxy(self):
+        # Negative control: the proxy path must not skip the SSRF vet. The
+        # name passes fetch()'s up-front check, then resolves privately at
+        # open time — the proxied branch must re-vet and refuse to dial.
+        n = {"i": 0}
+
+        def flip(h, p, *a, **k):
+            if h == "flip.example":
+                n["i"] += 1
+                ip = "93.184.216.34" if n["i"] == 1 else "10.0.0.5"
+            else:
+                ip = self._NAMES[h]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, p or 80))]
+        socket.getaddrinfo = flip
+        for url in ("https://flip.example/", "http://flip.example/"):
+            n["i"] = 0
+            out = self.tools.fetch(url)
+            self.assertIn("non-public address", out)
+        self.assertEqual(self.dialed, [])
+
+    def test_unproxied_opener_still_pins_target_ip(self):
+        for k in ("http_proxy", "https_proxy"):
+            os.environ.pop(k, None)
+        self.tools._fetch_opener = self.tools._build_fetch_opener()
+        self.tools.fetch("http://pub.example/page")
+        self.assertEqual(self.dialed, [("93.184.216.34", 80)])
+
+
+class TestFetchOutputCeiling(unittest.TestCase):
+    """fetch returns at most OPENBEAST_FETCH_MAX_CHARS (default 200K) chars,
+    with a truncation marker, however large a max_length the model asks for
+    (review efficiency-3 handoff: 2M chars exceeded every shipped context)."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        self._env = os.environ.pop("OPENBEAST_FETCH_MAX_CHARS", None)
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+        tools._fetch_opener = _FakeOpener(b"x" * 1_000_000)
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+        os.environ.pop("OPENBEAST_FETCH_MAX_CHARS", None)
+        if self._env is not None:
+            os.environ["OPENBEAST_FETCH_MAX_CHARS"] = self._env
+
+    def _body(self, out):
+        return out.split("\n\n[truncated", 1)[0]
+
+    def test_huge_max_length_is_clamped_with_marker(self):
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 200_000)
+        self.assertIn("[truncated at 200000 chars", out)
+
+    def test_env_override(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "5000"
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 5000)
+        self.assertIn("[truncated at 5000 chars", out)
+
+    def test_bad_env_falls_back_to_default(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "lots"
+        out = self.tools.fetch("http://big.example/", max_length=2_000_000)
+        self.assertEqual(len(self._body(out)), 200_000)
+
+    def test_env_cannot_raise_past_the_memory_bound(self):
+        os.environ["OPENBEAST_FETCH_MAX_CHARS"] = "999999999"
+        self.assertEqual(self.tools._fetch_max_chars(), 2_000_000)
+
+    def test_small_requests_unchanged(self):
+        # Negative control: under the ceiling, max_length rules as before.
+        out = self.tools.fetch("http://big.example/", max_length=1234)
+        self.assertEqual(len(self._body(out)), 1234)
+        self.tools._fetch_opener = _FakeOpener(b"short page")
+        self.assertEqual(self.tools.fetch("http://big.example/"), "short page")
+
+
+if __name__ == "__main__":
+    unittest.main()

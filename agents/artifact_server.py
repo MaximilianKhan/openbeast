@@ -32,7 +32,10 @@ Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
   identity  a caller is the LOCAL principal if it presents the locality token
           (`X-OpenBeast-Local` == .run/artifact-local.token, 0600, minted at
           startup — agents/edge.py:412 pattern), otherwise whoever
-          `Tailscale-User-Login` says, otherwise ANONYMOUS.
+          `Tailscale-User-Login` says, otherwise ANONYMOUS. The header counts
+          only from a LOOPBACK peer (`tailscale serve` proxies from
+          127.0.0.1): with BIND_HOST off loopback, a LAN caller that forges
+          it is ANONYMOUS, not the login it named.
   reads   ANONYMOUS gets 404 on every route but health: no identity, no
           service. With OPENBEAST_ARTIFACT_OPERATORS set (falling back to
           OPENBEAST_CHAT_OPERATORS) the login must also be on that list.
@@ -191,6 +194,19 @@ DENY_OTHER = "other"
 DENY_AUDIT_ROWS = 1000
 DENY_AUDIT_WINDOW_S = 300.0
 
+# storage-04: the same bound for IDENTIFIED callers. Every request from a
+# tailnet login appended an uncapped ~330-byte row, so one buggy client
+# polling /api/artifacts/health in a tight loop (or a hostile peer) could
+# grow artifact-audit.jsonl without bound between rotations. Per login, per
+# window (DENY_AUDIT_WINDOW_S); past it that login's rows are counter-only
+# (/metrics still counts every request) with one row saying so. Exempt:
+# LOCAL callers (this box's own CLI) and successful writes — a publish,
+# republish or delete is the row the log exists for, and is never dropped.
+LOGIN_AUDIT_ROWS = 2000
+# Distinct login buckets kept at once; past it, logins share one overflow
+# bucket, so the budget's own memory is bounded too.
+LOGIN_AUDIT_BUCKETS = 1024
+
 # --- the policies ------------------------------------------------------------
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
 # test fails loudly, on purpose: the isolation IS these headers.
@@ -242,14 +258,34 @@ RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
     "Access-Control-Allow-Origin": "*",
 })
 
+# Cross-Origin-Opener-Policy. frame-ancestors/X-Frame-Options stop FRAMING,
+# not `window.open`, and the identity rides the network (tailscale serve), not
+# a cookie — so any site the viewer visits could open /a/<id>/v/<n> in a popup
+# and count its frames (`w.length`: the shell has one iframe, the 404 has
+# none), learning which private pages and versions exist without reading a
+# byte (an XS-Leak). With COOP the opener's handle is severed on EVERY answer
+# that can differ — shell, gallery, API and the flat 404 alike, because COOP
+# on the 200 alone would make `w.closed` the same oracle. Set by the gate
+# middleware on every response except the capability tree (/raw/<id>/v/<n>/~
+# <token>/...): a hostile page cannot address it (it cannot read the token),
+# and it is where the sandboxed page opens its own files from — a popup out
+# of a sandbox is a network error against a COOP response.
+COOP_HEADER = ("Cross-Origin-Opener-Policy", "same-origin")
+
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Cross-Origin-Resource-Policy": "same-origin",
+    COOP_HEADER[0]: COOP_HEADER[1],
     "Cache-Control": "no-store",
 }
+
+
+def _coop_applies(path: str) -> bool:
+    """Everything but the capability tree gets COOP (see COOP_HEADER)."""
+    return not (path.startswith("/raw/") and "/~" in path)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -272,6 +308,35 @@ def _configured_port() -> int:
 
 def _configured_host() -> str:
     return os.environ.get("OPENBEAST_BIND", "").strip() or "127.0.0.1"
+
+
+def _peer_is_loopback(request) -> bool:
+    """May this connection's peer assert an identity by HEADER?
+
+    `Tailscale-User-Login` is trustworthy only because `tailscale serve` is
+    the one thing that can put it on a request: it strips any client-supplied
+    copy and sets its own, and it reaches us from 127.0.0.1. That premise
+    holds only while every peer is loopback — and this server binds
+    OPENBEAST_BIND, which BIND_HOST=0.0.0.0 or a LAN address takes off the
+    box. A LAN host (or a tailnet node dialling 100.x:3004 directly) then
+    sent `Host: localhost` + the owner's login and read every private page,
+    ARTIFACT_OPERATORS or not. So the header counts only from a loopback
+    peer (or a Unix socket, which has no address and is on this box by
+    construction); from anywhere else the caller is ANONYMOUS.
+
+    The converse is NOT claimed: a loopback peer proves nothing about who is
+    behind the proxy (edge.py:412), which is why writes need the locality
+    token and still do. Fail closed on anything that is not an IP literal.
+    """
+    client = getattr(request, "client", None)
+    if client is None:
+        return True
+    try:
+        addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
 
 
 def _read_local_token() -> str:
@@ -620,7 +685,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
 
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
-        return JSONResponse(NOT_FOUND_BODY, status_code=404)
+        return JSONResponse(NOT_FOUND_BODY, status_code=404,
+                            headers=dict([COOP_HEADER]))
 
     # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
     # and a hit on the one route exempt from the anonymity gate
@@ -666,6 +732,57 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # raw path, and 128 characters is room for /raw/<uuid>/v/N/~<token>/.
         return UNMATCHED_ROUTE, re.sub(r"/~[^/]*", "/~…", request.url.path)[:128]
 
+    def _successful_write(request: Request, status) -> bool:
+        try:
+            return (request.method in WRITE_METHODS
+                    and status != "error" and int(status) < 400)
+        except (TypeError, ValueError):
+            return False
+
+    def _login_bucket(login: str) -> str:
+        """Budget key for one login. Buckets whose window has expired are
+        pruned before a new one is admitted; past LOGIN_AUDIT_BUCKETS live
+        buckets, new logins share one overflow bucket."""
+        key = "login:" + login
+        with metrics_lock:
+            if key in deny_audit:
+                return key
+            logins = [k for k in deny_audit if k.startswith("login:")]
+            if len(logins) >= LOGIN_AUDIT_BUCKETS:
+                now = time.monotonic()
+                for k in logins:
+                    if now - deny_audit[k]["since"] >= DENY_AUDIT_WINDOW_S:
+                        del deny_audit[k]
+                if sum(1 for k in deny_audit
+                       if k.startswith("login:")) >= LOGIN_AUDIT_BUCKETS:
+                    return "login:*"
+        return key
+
+    def _budgeted_audit(entry: dict, key: str, limit: int) -> None:
+        now = time.monotonic()
+        with metrics_lock:
+            budget = deny_audit[key]
+            if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
+                budget.update(written=0, suppressed=0, since=now)
+            allowed = budget["written"] < limit
+            if allowed:
+                budget["written"] += 1
+            else:
+                budget["suppressed"] += 1
+            first_drop = (not allowed and budget["suppressed"] == 1)
+        if allowed:
+            audit(entry)
+        elif first_drop:
+            audit({"ts": _now(), "route": entry.get("route"),
+                   "outcome": entry.get("outcome"),
+                   "denied": "audit-budget",
+                   "reason": key,
+                   "note": f"{limit} {key} rows logged "
+                           f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
+                           f"further {key} rows are counted in "
+                           f"/metrics (with their reason) until it turns "
+                           f"over"})
+
     def _record(request: Request, status, t0: float,
                 extra: dict | None = None) -> None:
         ms = int((time.monotonic() - t0) * 1000)
@@ -698,7 +815,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
         #
         # `reason` stays the METRIC label (still "" for a success, so the
         # bounded label set is unchanged); `budget_key` is the BUDGET bucket.
-        _login = getattr(getattr(request.state, "principal", None), "login", None)
+        _principal = getattr(request.state, "principal", None)
+        _login = getattr(_principal, "login", None)
         budget_key = reason or ("anon-success" if _login is None else "")
         if budget_key and not _trusted(request):
             # D27/R5: counter-only past the budget, PER BUCKET and PER
@@ -708,29 +826,12 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # out — not the fact that they happened, and not their reason.
             # One row per window per reason says so, so the operator is never
             # left wondering where the trail went.
-            now = time.monotonic()
-            with metrics_lock:
-                budget = deny_audit[budget_key]
-                if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
-                    budget.update(written=0, suppressed=0, since=now)
-                allowed = budget["written"] < DENY_AUDIT_ROWS
-                if allowed:
-                    budget["written"] += 1
-                else:
-                    budget["suppressed"] += 1
-                first_drop = (not allowed and budget["suppressed"] == 1)
-            if allowed:
-                audit(entry)
-            elif first_drop:
-                audit({"ts": _now(), "route": entry.get("route"),
-                       "outcome": entry.get("outcome"),
-                       "denied": "audit-budget",
-                       "reason": budget_key,
-                       "note": f"{DENY_AUDIT_ROWS} {budget_key} rows logged "
-                               f"in this {DENY_AUDIT_WINDOW_S:.0f}s window; "
-                               f"further {budget_key} rows are counted in "
-                               f"/metrics (with their reason) until it turns "
-                               f"over"})
+            _budgeted_audit(entry, budget_key, DENY_AUDIT_ROWS)
+        elif (_login is not None and not getattr(_principal, "local", False)
+              and not _successful_write(request, status)):
+            # storage-04: an identified login gets its own budget.
+            _budgeted_audit(entry, _login_bucket(str(_login)[:128]),
+                            LOGIN_AUDIT_ROWS)
         else:
             audit(entry)
         outcome = ("error" if status == "error"
@@ -809,6 +910,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
         finally:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
+        if _coop_applies(request.url.path):
+            response.headers[COOP_HEADER[0]] = COOP_HEADER[1]
         return response
 
     # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
@@ -892,7 +995,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # still sees ANONYMOUS, never an arbitrarily-chosen login.
             return Principal(login=None, local=False, operator=False)
         local = is_local(request)
-        raw = (request.headers.get(_HDR_LOGIN) or "").strip().lower()
+        # A login header from an off-box peer is not an identity at all (see
+        # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
+        raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
+               if _peer_is_loopback(request) else "")
         if operators:
             if raw and raw in operator_set:
                 return Principal(login=raw, local=local, operator=True)
@@ -1482,6 +1588,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
     return app
 
 
+def _uvicorn_config(app, host: str, port: int):
+    """The uvicorn.Config main() serves with — separate so tests load it.
+
+    proxy_headers=False is load-bearing. uvicorn's default trusts
+    X-Forwarded-For from 127.0.0.1 and rewrites request.client to it, and
+    `tailscale serve` — which dials us from 127.0.0.1 — always sends
+    X-Forwarded-For: <tailnet IP>. The app would then see a 100.x peer,
+    _peer_is_loopback() would drop Tailscale-User-Login, and every tailnet
+    viewer would be anonymous (404 everywhere). The auth peer must be the
+    real socket peer; nothing here reads the forwarded address.
+    """
+    import uvicorn
+    return uvicorn.Config(app, host=host, port=port, log_level="warning",
+                          proxy_headers=False, forwarded_allow_ips="")
+
+
 def main() -> None:
     """Bind the port FIRST, then mint the token (D18).
 
@@ -1513,8 +1635,7 @@ def main() -> None:
     app = create_app(local_token=_mint_local_token())
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    uvicorn.Server(config).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

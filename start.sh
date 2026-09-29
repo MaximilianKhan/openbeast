@@ -40,18 +40,13 @@ for arg in "$@"; do
     *)             SERVE_SCRIPT="$arg" ;;
   esac
 done
+source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_recorded_pid_ours, ob_pid_record, ob_ext_reap
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
-  # unrelated process must not count as "running". If /proc/<pid>/cmdline is
-  # unreadable (exotic /proc, zombie) fall back to the plain liveness check.
-  local pat="${2:-start\.sh|llama|mcpo|openapi_tools|router|chat_server}" pid cmd
-  [[ -f "$1" ]] || return 1
-  pid="$(cat "$1" 2>/dev/null)" && [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" && [[ -n "$cmd" ]]; then
-    [[ "$cmd" =~ $pat ]] || return 1
-  fi
-  return 0
+  # unrelated process must not count as "running". A pidfile written with
+  # ob_pid_record carries the process's start time, which is exact; the
+  # cmdline pattern is the fallback for one that does not (lib/proc.sh).
+  ob_recorded_pid_ours "$1" "${2:-start\.sh|llama|mcpo|openapi_tools|router|chat_server}"
 }
 # Expected cmdline marker per pidfile (bash ERE).
 _pid_pattern() {
@@ -88,6 +83,8 @@ fi
 # resolves DEFAULT_SERVE_SCRIPT (conf SERVE_SCRIPT / env OPENBEAST_SERVE_SCRIPT).
 source "$SCRIPT_DIR/scripts/lib/conf.sh"
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
+source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
@@ -95,13 +92,39 @@ if [[ ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   exit 1
 fi
 
-# Probe where services actually listen: loopback answers for loopback and
-# wildcard binds; a specific LAN/tailnet address must be probed directly.
+# Probe where services actually listen: loopback answers for wildcard binds;
+# a specific LAN/tailnet address must be probed directly; IPv6 comes back
+# bracketed (lib/net.sh — the ONE mapping start/doctor/healthcheck share).
 # Used by the daemon launcher's readiness probes AND the supervisor below.
-case "$BIND_HOST" in
-  127.*|localhost|0.*) HEALTH_HOST="127.0.0.1" ;;
-  *)                   HEALTH_HOST="$BIND_HOST" ;;
-esac
+HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
+LLAMA_BASE="http://$HEALTH_HOST:8080"
+# How long a model may take to LOAD before the load counts as failed (the
+# watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
+LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
+[[ "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
+
+# ---- log rotation: installed on the default path, not by a manual step ----
+# stack.log and the audit trails grow without bound unless
+# openbeast-logrotate.timer runs; for a long time it existed only behind a
+# manual `./scripts/logrotate.sh --install` that nothing on the default path
+# ran (review storage-04). So every start makes sure it is there: a no-op
+# when it is already enabled, when there is no reachable systemd --user
+# manager (macOS, a container, a CI runner), or with LOGROTATE_AUTOINSTALL=
+# false in openbeast.conf. Never fatal — rotation is housekeeping, and a
+# failed install must not keep the model from starting.
+ensure_logrotate_timer() {
+  [[ "${LOGROTATE_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -x "$SCRIPT_DIR/scripts/logrotate.sh" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-logrotate.timer 2>/dev/null && return 0
+  # Reachable user manager? (`show-environment` answers only when it is.)
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing daily log rotation (openbeast-logrotate.timer; opt out: LOGROTATE_AUTOINSTALL=false)..."
+  "$SCRIPT_DIR/scripts/logrotate.sh" --install 2>&1 | sed 's/^/  /' \
+    || echo "  Warning: log rotation not installed — run ./scripts/logrotate.sh --install" >&2
+  return 0
+}
+[[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
@@ -158,7 +181,12 @@ if [[ $DAEMON -eq 1 ]]; then
   fi
 
   echo "Waiting for the model to load (log: .run/stack.log)..."
-  for i in $(seq 1 300); do
+  # Deadline, not an iteration count: the supervisor gives a load up to
+  # LLAMA_LOAD_GRACE, and a launcher that quits first reports a failure
+  # while the model is still legitimately coming up.
+  _ready_deadline=$(( SECONDS + LLAMA_LOAD_GRACE + 300 ))
+  _launched_at=$SECONDS
+  while (( SECONDS < _ready_deadline )); do
     # Readiness = llama + MCPO (+ router when enabled; it hard-binds
     # 127.0.0.1 — see agents/router.py — so probe it there like the
     # supervisor does). Without the router term "Stack is up" would print
@@ -175,7 +203,10 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" >/dev/null 2>&1 || EDGE_READY=0
     fi
-    if curl -s -m 2 "http://$HEALTH_HOST:8080/health" >/dev/null 2>&1 \
+    # ob_llama_ready, not `curl -s`: llama-server answers 503 "Loading
+    # model" from the moment it binds, and curl -s exits 0 on a 503 — "Stack
+    # is up" printed (and openbeast.service reported started) mid-load.
+    if ob_llama_ready "$LLAMA_BASE" \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
        && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
       echo ""
@@ -192,14 +223,14 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
     fi
-    if [[ $i -gt 10 ]] && ! _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
+    if (( SECONDS - _launched_at > 20 )) && ! _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervisor)"; then
       echo "Error: supervisor exited during startup. Last log lines:" >&2
       tail -20 "$RUN_DIR/stack.log" 2>/dev/null >&2 || true
       exit 1
     fi
     sleep 2
   done
-  echo "Timed out after 10 min — inspect ./start.sh --status and .run/stack.log" >&2
+  echo "Timed out after $(( LLAMA_LOAD_GRACE / 60 + 5 )) min — inspect ./start.sh --status and .run/stack.log" >&2
   exit 1
 fi
 
@@ -220,7 +251,18 @@ fi
 # Transient systemd units (daemon mode) start with a minimal PATH that lacks
 # ~/.local/bin, where pip --user puts mcpo. Harmless everywhere else.
 export PATH="$HOME/.local/bin:$PATH"
-echo $$ > "$SUP_PID_FILE"
+# With its start time: 'start\.sh' in a command line is not an identity (any
+# project's ./start.sh matches), and stop.sh SIGKILLs what this record names.
+ob_pid_record "$SUP_PID_FILE" "$$"
+# Starting on purpose ends a stop on purpose: the watchdog may recover this
+# stack again (stop.sh wrote .run/stopped; healthcheck.sh honours it), and
+# its relaunch budget starts fresh.
+rm -f "$RUN_DIR/stopped" "$RUN_DIR/watchdog-relaunches"
+# The supervisor giving up on a crash-looping model is a stop too: without
+# the marker the watchdog relaunched it every five minutes, forever.
+_mark_gave_up() {
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "supervisor gave up: $1" > "$RUN_DIR/stopped"
+}
 # Record which serve script this stack runs so healthcheck.sh --restart can
 # relaunch the SAME model instead of assuming the default.
 echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
@@ -237,7 +279,7 @@ for cname in open-webui searxng; do
     echo "    docker rm -f $cname     # then rerun ./start.sh" >&2
     echo "  If the old project had WebUI data, see docs/INSTALL.md troubleshooting" >&2
     echo "  ('renamed repo directory') for the volume-migration steps." >&2
-    rm -f "$SUP_PID_FILE"
+    rm -f "$SUP_PID_FILE" "$RUN_DIR/supervisor.start"
     exit 1
   fi
 done
@@ -280,13 +322,15 @@ cleanup() {
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
   fi
-  # Reap any process-kind extensions we launched.
+  # Reap any process-kind extensions we launched — identity-checked. This
+  # trap also fires on every early exit of a FRESH start, i.e. against
+  # pidfiles a crashed run left behind, whose numbers may now be anyone's.
   for _pf in "$RUN_DIR"/ext-*.pid; do
     [[ -e "$_pf" ]] || continue
-    kill "$(cat "$_pf" 2>/dev/null)" 2>/dev/null && echo "extension stopped ($(basename "$_pf" .pid | sed 's/^ext-//'))."
-    rm -f "$_pf"
+    _n="$(basename "$_pf" .pid)"
+    ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
         "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
   # ...but only the pidfiles of servers WE started. Removing a live server's
   # recorded pid is what makes an orphan unreapable, which is the whole point
@@ -314,9 +358,34 @@ launch_llama() {
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
 }
 
-wait_llama_health() { # returns 1 if the process dies before becoming healthy
-  until curl -s "http://$HEALTH_HOST:8080/health" > /dev/null 2>&1; do
+# Returns 0 once llama-server is READY, 1 if the process dies first or the
+# load outlives LLAMA_LOAD_GRACE.
+#
+# READY means 200 {"status":"ok"} (ob_llama_ready). This used to be
+# `until curl -s .../health`, and llama-server binds its port BEFORE loading
+# the model, answering 503 "Loading model" throughout — which curl -s calls
+# success. So the model counted as healthy the moment the port bound:
+# launch_and_wait recorded a model that then OOMed mid-load as LAST-GOOD
+# (overwriting the real one, so MODEL_ROLLBACK could never fire), the KV
+# warmer fired into the 503, and fast boot announced "Full model live"
+# during the load.
+#
+# The deadline covers the other direction: a load wedged in CUDA or on a
+# stalled read says "Loading model" forever and never dies, and this loop
+# waited on it forever. Past the grace the load has FAILED: stop the process
+# (it still holds the port and VRAM) so a rollback can have them.
+wait_llama_health() {
+  local t0=$SECONDS _i
+  until ob_llama_ready "$LLAMA_BASE"; do
     kill -0 "$LLAMA_PID" 2>/dev/null || return 1
+    if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
+      echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
+      kill "$LLAMA_PID" 2>/dev/null || true
+      for _i in $(seq 1 20); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
+      kill -KILL "$LLAMA_PID" 2>/dev/null || true
+      for _i in $(seq 1 5); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
+      return 1
+    fi
     sleep 1
   done
 }
@@ -397,14 +466,14 @@ warm_kv_cache() {
     if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
       SYS="$SYS"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
     fi
-    python3 - "$SYS" <<'WARM' >/dev/null 2>&1 || true
+    python3 - "$SYS" "$LLAMA_BASE" <<'WARM' >/dev/null 2>&1 || true
 import json, sys, urllib.request
 body=json.dumps({"messages":[{"role":"system","content":sys.argv[1].strip()},
     {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
     "chat_template_kwargs":{"enable_thinking":False}}).encode()
 try:
     urllib.request.urlopen(urllib.request.Request(
-        "http://127.0.0.1:8080/v1/chat/completions", data=body,
+        sys.argv[2] + "/v1/chat/completions", data=body,
         headers={"Content-Type":"application/json"}), timeout=60).read()
 except Exception:
     pass
@@ -526,9 +595,13 @@ echo "Tool server ready on http://localhost:3001"
 # spawned agents are never routed. See docs/RESEARCH_FINDINGS §8-11.
 if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "Starting agent-spawn router on http://localhost:${ROUTER_PORT}..."
+  # Upstreams on the PROBE host, not a hardcoded 127.0.0.1: llama-server and
+  # the tool server bind BIND_HOST, and a socket bound to a specific LAN or
+  # tailnet address refuses 127.0.0.1 — every routed request was a 502 while
+  # every health probe (which did follow BIND_HOST) reported green.
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
-  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
-  OPENBEAST_MCPO_URL="http://127.0.0.1:3001" \
+  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
+  OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
     python3 "$SCRIPT_DIR/agents/router.py" &
   ROUTER_PID=$!
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
@@ -550,8 +623,9 @@ fi
 # only on the tailnet side (setup-tailscale.sh points :8443 here).
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   echo "Starting beast-gate on http://localhost:${EDGE_PORT}..."
+  # Upstream on the probe host for the same reason as the router's above.
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
-  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
     python3 "$SCRIPT_DIR/agents/edge.py" &
   EDGE_PID=$!
   echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
@@ -571,7 +645,9 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # peer is useless: tailscale serve proxies from 127.0.0.1). The token file
   # is 0600 and only readable on this box.
   _EDGE_TOK=$(cat "$RUN_DIR/edge-local.token" 2>/dev/null || true)
-  _EDGE_AUTH=$(curl -s -m 2 -H "X-OpenBeast-Local: ${_EDGE_TOK}" "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
+  # The header goes through ob_curl_hdr (curl --config on fd 3), never argv:
+  # /proc/*/cmdline is world-readable, and this token unlocks /gate/*.
+  _EDGE_AUTH=$(ob_curl_hdr "${_EDGE_TOK:+X-OpenBeast-Local: $_EDGE_TOK}" -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4 || true)
   echo "beast-gate ready on http://localhost:${EDGE_PORT} (auth=${_EDGE_AUTH:-?})"
   if [[ "$_EDGE_AUTH" == "closed" ]]; then
     echo "  No devices enrolled yet — remote clients will get 401 until:"
@@ -604,10 +680,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
       CHAT_OWNED=1
       CHAT_UP=0
-      _chat_host="${OPENBEAST_CHAT_BIND:-127.0.0.1}"    # set -u: normally unset
-      case "$_chat_host" in
-        0.*|localhost|::) _chat_host="127.0.0.1" ;;
-      esac
+      _chat_host="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"    # set -u: normally unset
       for _i in $(seq 1 20); do
         kill -0 "$CHAT_PID" 2>/dev/null || break
         # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
@@ -736,9 +809,23 @@ fi
 # foreground; we background + pidfile it, and cleanup() reaps them on exit).
 while IFS= read -r _ext; do
   [[ -z "$_ext" ]] && continue
+  # A hand-edited EXTENSIONS="dashboard/" names a real directory, and the
+  # pidfile write below then fails under set -e — tearing the stack down
+  # after the model load. Skip the word, loudly (ext.sh validates the same).
+  if [[ ! "$_ext" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    echo "Warning: skipping invalid extension name '$_ext' in EXTENSIONS (fix it in openbeast.conf)." >&2
+    continue
+  fi
+  # The [17] guard, for extensions: a live one (an orphan of a SIGKILLed
+  # supervisor) keeps its port, so a replacement cannot bind — and writing
+  # its pid over the record made the live one unreapable.
+  if ob_recorded_pid_ours "$RUN_DIR/ext-$_ext.pid" "$(_ob_ere "$REPO_DIR/extensions/$_ext/")"; then
+    echo "Extension $_ext already running (pid $(cat "$RUN_DIR/ext-$_ext.pid")) — leaving it alone."
+    continue
+  fi
   echo "Starting extension: $_ext"
   "$REPO_DIR/extensions/$_ext/run.sh" >>"$RUN_DIR/ext-$_ext.log" 2>&1 &
-  echo "$!" > "$RUN_DIR/ext-$_ext.pid"
+  ob_pid_record "$RUN_DIR/ext-$_ext.pid" "$!"
 done < <(ob_ext_processes)
 
 # Configure Open WebUI (tool server + native function calling) in background
@@ -799,6 +886,10 @@ fi
 # STOPPING via the trap, so a shutdown is never mistaken for a crash.
 RESTARTS=0
 while true; do
+  # Stamped only once launch_and_wait has proved the model READY, so the
+  # 5-minute refill below means "served for 5 minutes", never "spent 5
+  # minutes loading and then died" (which relaunched a model that could
+  # never finish loading, forever).
   LAUNCHED_AT=$SECONDS
   rc=0
   wait $LLAMA_PID || rc=$?
@@ -806,6 +897,7 @@ while true; do
   [[ $((SECONDS - LAUNCHED_AT)) -gt 300 ]] && RESTARTS=0
   if [[ $RESTARTS -ge 3 ]]; then
     echo "llama-server exited (status $rc) with the restart budget spent — stopping the stack."
+    _mark_gave_up "llama-server exited $((RESTARTS + 1)) times (status $rc)"
     exit 1
   fi
   RESTARTS=$((RESTARTS + 1))
@@ -815,6 +907,7 @@ while true; do
   # won't come back (e.g. a weight went missing under it) rather than dying.
   if ! launch_and_wait; then
     echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
+    _mark_gave_up "relaunched llama-server never became healthy"
     exit 1
   fi
   echo "llama-server healthy again after restart $RESTARTS ($SERVE_SCRIPT)."

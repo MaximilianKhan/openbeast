@@ -111,8 +111,9 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 - 137 base tasks (v4); 31 of them have multi-language variants (291
   effective test units across Python / Go / C / C++ / Rust / Zig)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
-- Full sweep (11 configured models — `--list` to see them):
-  `python3 evals/benchmark_all.py` (budget well over a day on the 5090)
+- Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
+  model — 20 today (`--list` to see them), several days of GPU on the 5090.
+  Pass `--models <slug>` unless you mean it
 - Score: `python3 evals/scoring.py --show` (ranked by SCORE = capability)
 - Distribution + methodology: `evals/README.md`
 
@@ -140,7 +141,7 @@ are overhead. Use them when the task involves design choices, multi-step
 reasoning, or domain-specific discipline. The bar: would loading the skill
 prevent a real failure mode? If yes, load it. If no, just do the task.
 
-## Tool surface (15 MCP tools)
+## Tool surface (18 MCP tools)
 
 Beyond skills (`skill`, `start_skill_agent`), you have:
 - File / code: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
@@ -148,6 +149,14 @@ Beyond skills (`skill`, `start_skill_agent`), you have:
 - Web: `fetch`, `web_search` (via local SearXNG)
 - Long-running agents: `start_agent`, `check_agent`, `tail_agent`,
   `list_agents`, `stop_agent`
+- Language: `language_reference` — the installed toolchain's verified claims
+  about a language (beast-lang); ask it before guessing whether a zig 0.16 /
+  C++ / Python API still exists
+- Artifacts: `publish_artifact`, `list_artifacts` — publish a self-contained
+  HTML page to a tailnet URL (they refuse unless `BEAST_ARTIFACT=true`)
+
+The last three are on the MCP/WebUI surface only, not in the autonomous
+runner's registry. Details: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 Prefer `edit_file` over `write_file` for existing files. Prefer running code
 over reasoning about what it should do.

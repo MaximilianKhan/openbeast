@@ -941,8 +941,10 @@ else
   fail "dashboard.py missing the /api/slot beast-slot contract"
 fi
 # Keyed installs: healthcheck must present the bearer to llama-server.
+# (Through ob_curl_bearer — lib/curl_auth.sh — so the key is never on argv;
+# tests/test_shell_ops.sh proves it by running the script.)
 if grep -qE 'check "llama.cpp server".*LLAMA_API_KEY' "$REPO_DIR/scripts/healthcheck.sh" \
-   && grep -q 'LLAMA_AUTH' "$REPO_DIR/scripts/healthcheck.sh"; then
+   && grep -q 'ob_curl_bearer "${LLAMA_API_KEY:-}"' "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck presents LLAMA_API_KEY to llama-server"
 else
   fail "healthcheck.sh doesn't pass the bearer to llama-server checks"
@@ -1272,7 +1274,7 @@ if grep -q 'chat-local.token' "$_DC"; then
 else
   fail "doctor probes chat health unauthenticated — the detail fields stay empty"
 fi
-if grep -q 'header = "X-OpenBeast-Local' "$_DC"; then
+if grep -q 'ob_curl_hdr "${_chat_tok:+X-OpenBeast-Local' "$_DC"; then
   pass "the chat token goes through a --config file, not argv (ps is world-readable)"
 else
   fail "the chat token may be passed in argv"
@@ -1811,6 +1813,19 @@ if git -C "$REPO_DIR" ls-files --error-unmatch agents/lang/generated >/dev/null 
 else
   pass "no generated L1 artifact is tracked"
 fi
+# A review's quarantined cache rows (evals/cache-quarantine-<date>/) are local
+# data: a `git add -A` in the main checkout must not commit 74 cache files.
+# Same rule as above: ask about a path INSIDE the directory.
+if git -C "$REPO_DIR" check-ignore -q evals/cache-quarantine-2026-09-29/abc.json 2>/dev/null; then
+  pass "evals/cache-quarantine-*/ is gitignored"
+else
+  fail "quarantined cache rows are not gitignored"
+fi
+if git -C "$REPO_DIR" check-ignore -q evals/suites/v5-fast.json 2>/dev/null; then
+  fail "the quarantine pattern swallowed tracked eval sources (evals/suites/)"
+else
+  pass "evals/suites/ is still tracked (quarantine pattern is narrow)"
+fi
 
 echo ""
 echo "Orphaned-stack pid discipline:"
@@ -2136,6 +2151,7 @@ chmod +x "$_RV/bin/curl"
 {
   echo 'set -uo pipefail'
   echo "source '$REPO_DIR/scripts/lib/proc.sh'"
+  echo "source '$REPO_DIR/scripts/lib/curl_auth.sh'"
   echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
   sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
   echo '"$@"'
@@ -2379,65 +2395,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# scripts/uninstall.sh — the rig's decommissioning path (README § Uninstall)
+# scripts/uninstall.sh — the rig's decommissioning path (README § Uninstall),
+# plus scripts/logrotate.sh and scratch/prune-2026-09-17.sh. The cases live in
+# tests/test_uninstall.sh (each builds its own throwaway rig); run here so CI
+# runs them.
 # ---------------------------------------------------------------------------
 echo ""
-echo "uninstall.sh (rig):"
-_UN="$(mktemp -d)"
-_un_build() {   # a throwaway rig: build, venv, runtime state, weights, conf, workspace, a unit
-  rm -rf "$_UN/rig" "$_UN/home"; mkdir -p "$_UN/rig/scripts" "$_UN/rig/llama.cpp/build" "$_UN/rig/venv" "$_UN/rig/.run" \
-    "$_UN/rig/weights" "$_UN/home/openbeast-files/users/x" "$_UN/home/.config/systemd/user" "$_UN/bin"
-  cp "$REPO_DIR/scripts/uninstall.sh" "$_UN/rig/scripts/"
-  printf '#!/bin/bash\necho stop >> "$UN_LOG"\n' > "$_UN/rig/stop.sh"; chmod +x "$_UN/rig/stop.sh"
-  echo "WEIGHTS_DIR=$_UN/rig/weights # comment" > "$_UN/rig/openbeast.conf"
-  echo "FILES_DIR=$_UN/home/openbeast-files" >> "$_UN/rig/openbeast.conf"
-  echo weight > "$_UN/rig/weights/m.gguf"; echo page > "$_UN/home/openbeast-files/users/x/p.html"
-  echo unit > "$_UN/home/.config/systemd/user/openbeast-watchdog.timer"
-  : > "$_UN/log"
-  for c in tailscale docker systemctl sudo; do
-    printf '#!/bin/bash\necho "%s $*" >> "$UN_LOG"\n[[ "$1 $2" == "serve status" ]] && echo "https://x:443 (tailnet only)\n|-- / proxy http://127.0.0.1:3000"\n[[ "$1 $2" == "volume ls" ]] && echo openbeast_open-webui-data\nexit 0\n' "$c" > "$_UN/bin/$c"
-    chmod +x "$_UN/bin/$c"
-  done
-}
-_un() { HOME="$_UN/home" XDG_CONFIG_HOME="$_UN/home/.config" UN_LOG="$_UN/log" PATH="$_UN/bin:$PATH" \
-        bash "$_UN/rig/scripts/uninstall.sh" "$@"; }
-_un_build
-_UN_OUT="$(_un 2>&1)"
-# Read-only queries (`tailscale serve status`) are allowed in a dry run; any
-# mutating verb is not.
-if [[ -d "$_UN/rig/llama.cpp" && -d "$_UN/rig/.run" && -f "$_UN/rig/weights/m.gguf" ]] \
-   && ! grep -qE "reset|stop$|disable|volume rm|^stop" "$_UN/log" \
-   && grep -q "DRY RUN" <<< "$_UN_OUT" && grep -q "would  ./stop.sh" <<< "$_UN_OUT"; then
-  pass "dry run by default: lists every step, removes nothing, mutates nothing"
+echo "uninstall.sh / logrotate.sh / prune (tests/test_uninstall.sh):"
+_UN_RC=0; _UN_OUT="$(bash "$REPO_DIR/tests/test_uninstall.sh" 2>&1)" || _UN_RC=$?   # set -e: never `; rc=$?`
+if [[ $_UN_RC -eq 0 ]]; then
+  pass "tests/test_uninstall.sh: $(grep -o '[0-9]* passed' <<< "$_UN_OUT" | tail -n1)"
 else
-  fail "dry run touched something: log=$(cat "$_UN/log") :: $_UN_OUT"
+  fail "tests/test_uninstall.sh failed:"$'\n'"$(grep -E 'FAIL|Results' <<< "$_UN_OUT")"
 fi
-_UN_OUT="$(_un --go 2>&1)"
-if [[ ! -e "$_UN/rig/llama.cpp" && ! -e "$_UN/rig/venv" && ! -e "$_UN/rig/.run" ]] \
-   && [[ -f "$_UN/rig/weights/m.gguf" && -f "$_UN/rig/openbeast.conf" && -f "$_UN/home/openbeast-files/users/x/p.html" ]] \
-   && grep -q "^stop$" "$_UN/log" && grep -q "^sudo tailscale serve reset" "$_UN/log" \
-   && grep -q "disable --now openbeast-watchdog.timer" "$_UN/log" && [[ ! -e "$_UN/home/.config/systemd/user/openbeast-watchdog.timer" ]] \
-   && ! grep -q "volume rm" "$_UN/log"; then
-  pass "--go: stops, unpublishes, removes the unit + build/venv/.run; KEEPS weights, conf, workspace, the WebUI volume"
+
+# --- Stack lifecycle (tests/test_lifecycle.sh) ---
+# Its own file (stub llama-server, sandboxed start/stop/healthcheck/doctor/
+# ext runs), run from here so every caller of this suite — CI included —
+# runs it too.
+echo ""
+echo "Stack lifecycle (tests/test_lifecycle.sh):"
+if _LC_OUT="$(bash "$REPO_DIR/tests/test_lifecycle.sh" 2>&1)"; then
+  pass "lifecycle suite: $(grep -o '[0-9]* passed, [0-9]* failed' <<< "$_LC_OUT" | tail -n1)"
 else
-  fail "--go removed the wrong things: $(ls "$_UN/rig" | tr '\n' ' ') :: log=$(tr '\n' '|' < "$_UN/log")"
+  grep -E 'FAIL|passed, ' <<< "$_LC_OUT" | sed 's/^/    /' || true
+  fail "lifecycle suite failed (bash tests/test_lifecycle.sh for detail)"
 fi
-_un_build
-_UN_OUT="$(_un --go --purge-all 2>&1)"
-if [[ ! -e "$_UN/rig/weights" && ! -e "$_UN/rig/openbeast.conf" && ! -e "$_UN/home/openbeast-files" ]] \
-   && grep -q "^docker volume rm openbeast_open-webui-data" "$_UN/log" && [[ -f "$_UN/rig/scripts/uninstall.sh" ]]; then
-  pass "--purge-all: weights, conf, workspace and the WebUI volume go; the checkout itself never does"
-else
-  fail "--purge-all: $(ls -a "$_UN/rig" | tr '\n' ' ') :: log=$(tr '\n' '|' < "$_UN/log")"
-fi
-_un_build
-_UN_RC=0; _UN_OUT="$(_un --bogus 2>&1)" || _UN_RC=$?   # set -e: never `; rc=$?` after a failing substitution
-if [[ $_UN_RC -eq 2 && -d "$_UN/rig/.run" && ! -s "$_UN/log" ]]; then
-  pass "an unknown flag is a usage error, and nothing runs"
-else
-  fail "unknown flag: rc=$_UN_RC"
-fi
-rm -rf "$_UN"
 
 # --- Summary ---
 echo ""

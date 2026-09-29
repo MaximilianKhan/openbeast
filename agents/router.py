@@ -10,16 +10,26 @@ the model's normal thinking-on behavior.
 
 Flow for POST /v1/chat/completions:
   0. Identity gate (docs/RBAC_PLAN.md Phase 2). Open WebUI forwards the
-     caller's role in X-OpenWebUI-User-Role when
-     ENABLE_FORWARD_USER_INFO_HEADERS=true (set in docker-compose.yml):
+     caller's role when ENABLE_FORWARD_USER_INFO_HEADERS=true (set in
+     docker-compose.yml) — as the plain X-OpenWebUI-User-Role header, or, in
+     signed-identity mode (OPENBEAST_IDENTITY_JWT_SECRET set), ONLY inside
+     the HS256 X-OpenWebUI-User-Jwt (open-webui utils/headers.py returns the
+     JWT *instead of* the plain headers). The router verifies that token with
+     the same secret/issuer as the identity tool server:
        - role == "admin"            -> spawn path enabled (steps 1-3 below).
        - role present, != "admin"   -> prefilter+classify SKIPPED entirely:
          guest turns get zero added latency and can never spawn; the request
-         passes through transparently (step 4).
-       - role header ABSENT         -> spawn allowed (fail-open) because
-         single-user / no-auth setups send no identity headers. Hardened
-         multi-user installs set OPENBEAST_ROUTER_REQUIRE_IDENTITY=true to
-         fail CLOSED (absent header -> no spawn).
+         passes through transparently (step 4). A forged/expired JWT counts
+         here too.
+       - no identity at all         -> spawn allowed (fail-open) ONLY on a
+         single-user rig. The gate fails CLOSED when
+         OPENBEAST_ROUTER_REQUIRE_IDENTITY=true, when WebUI auth is on
+         (OPENBEAST_WEBUI_AUTH=true), or when signed identity is configured:
+         those are the multi-user rigs, and on the JWT one every WebUI turn
+         arrives with no plain role header at all — header-only gating used
+         to read every guest turn as "anonymous" and hand it the admin key.
+     A plain role header is IGNORED in JWT mode (WebUI never sends one there,
+     so one that arrives was typed by somebody).
   1. Recall-oriented keyword prefilter on the last user turn (cheap; skips the
      classify for obviously-non-spawn turns so normal chat stays fast).
   2. If it passes, a grammar-constrained pre-flight call to the SAME upstream
@@ -28,6 +38,10 @@ Flow for POST /v1/chat/completions:
      affect the user's normal thinking-on turns.
   3. spawn=true  -> POST MCPO /start_agent {task,workdir}; return a synthetic
      assistant reply ("started agent <id>"), honoring the stream flag.
+     The caller's identity headers travel WITH the spawn (the JWT in JWT
+     mode, the plain X-OpenWebUI-User-*/Chat-Id headers otherwise), so the
+     tool server audits the agent under the real account and anchors its
+     workdir inside that account's workspace shard.
   4. spawn=false -> transparently proxy the ORIGINAL request upstream
      (streaming or not), model behaves exactly as if the router weren't there.
 All other paths (/v1/models, /health, GET, non-chat POST) forward transparently.
@@ -39,8 +53,12 @@ Env:
   OPENBEAST_ROUTER_PORT      listen port (default 8088)
   OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_MCPO_URL         MCPO base for start_agent (default http://127.0.0.1:3001)
-  OPENBEAST_ROUTER_REQUIRE_IDENTITY  "true" = no role header, no spawn
-                             (default "false": fail-open for single-user installs)
+  OPENBEAST_ROUTER_REQUIRE_IDENTITY  "true" = no identity, no spawn. Any
+                             other value = automatic: fail-open only when
+                             neither of the two below is on.
+  OPENBEAST_WEBUI_AUTH       "true" = login wall on -> anonymous turns can't spawn
+  OPENBEAST_IDENTITY_JWT_SECRET  signed-identity mode: verify the forwarded
+                             JWT (same value WebUI signs with) -> role from it
 """
 from __future__ import annotations
 
@@ -52,6 +70,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import httpx
+import jwt as pyjwt
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -73,18 +92,33 @@ MCPO_HEADERS = {"Authorization": f"Bearer {_MCPO_KEY}"} if _MCPO_KEY else {}
 # forwards the client's Authorization header untouched.
 _LLAMA_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
 UPSTREAM_HEADERS = {"Authorization": f"Bearer {_LLAMA_KEY}"} if _LLAMA_KEY else {}
-# Identity gate hardening: when "true", a request WITHOUT an
-# X-OpenWebUI-User-Role header may never spawn (fail-closed). Default "false"
-# keeps single-user/no-auth setups working (WebUI sends no identity headers
-# until ENABLE_FORWARD_USER_INFO_HEADERS is on and a user is signed in).
+# Signed identity: the SAME secret Open WebUI signs with
+# (FORWARD_USER_INFO_HEADER_JWT_SECRET) and the identity tool server verifies
+# with. conf.sh exports it; start.sh's router process inherits it.
+JWT_SECRET = os.environ.get("OPENBEAST_IDENTITY_JWT_SECRET", "").strip()
+_WEBUI_AUTH = os.environ.get("OPENBEAST_WEBUI_AUTH", "false").strip().lower() == "true"
+# Identity gate hardening: when true, a request carrying NO identity may never
+# spawn (fail-closed). Explicit "true" forces it; otherwise it turns on by
+# itself on any rig with more than one person on it — a WebUI login wall or
+# signed identity. It used to default to false everywhere (and conf.sh always
+# exports "false"), so on a --with-jwt rig, where WebUI sends the role ONLY
+# inside the JWT, every guest turn looked anonymous and spawned with the
+# admin key. Single-user/no-auth setups keep fail-open: WebUI sends no
+# identity there at all.
 REQUIRE_IDENTITY = (
-    os.environ.get("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "false").strip().lower() == "true"
+    os.environ.get("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "").strip().lower() == "true"
+    or _WEBUI_AUTH or bool(JWT_SECRET)
 )
 
 # Role header Open WebUI forwards when ENABLE_FORWARD_USER_INFO_HEADERS=true
 # (verified in open-webui 0.10.2: env.py FORWARD_USER_INFO_HEADER_USER_ROLE
 # defaults to "X-OpenWebUI-User-Role"; utils/headers.py sends the raw role).
 _ROLE_HEADER = "x-openwebui-user-role"
+_JWT_HEADER = "x-openwebui-user-jwt"
+# What travels with a spawn so the tool server can attribute + shard it.
+_PLAIN_IDENTITY_HEADERS = ("x-openwebui-user-id", "x-openwebui-user-email",
+                           _ROLE_HEADER, "x-openwebui-user-name")
+_CHAT_HEADER = "x-openwebui-chat-id"
 
 # Prefilter: if the last user turn contains NONE of these, skip the classify
 # call and pass straight through (normal chat = zero added latency). Tuned for
@@ -121,27 +155,95 @@ _CLASSIFIER_SYS = (
 )
 
 
-def _spawn_allowed(headers, require_identity=None):
+def _header(headers, name):
+    """Case-insensitive lookup over Starlette Headers or a plain dict."""
+    for k, v in headers.items():
+        if k.lower() == name:
+            return v
+    return None
+
+
+def _caller_role(headers, jwt_secret=None):
+    """The caller's role, or None when the request carries no identity.
+
+    JWT mode (a secret is configured): the role comes ONLY from a verified
+    X-OpenWebUI-User-Jwt — same algorithm, issuer and required claims as
+    openapi_tools.identity_from. A token that fails verification returns the
+    sentinel "invalid" (a non-admin role: it can never spawn). The plain role
+    header is ignored: WebUI replaces it with the JWT in this mode, so a plain
+    one was written by whoever sent the request.
+    Header mode: the plain X-OpenWebUI-User-Role, as sent.
+    """
+    if jwt_secret is None:
+        jwt_secret = JWT_SECRET
+    if jwt_secret:
+        token = (_header(headers, _JWT_HEADER) or "").strip()
+        if not token:
+            return None
+        try:
+            claims = pyjwt.decode(token, jwt_secret, algorithms=["HS256"],
+                                  issuer="open-webui",
+                                  options={"require": ["exp", "sub"]})
+        except pyjwt.PyJWTError as exc:
+            logging.warning("router: rejected identity token: %s", exc)
+            return "invalid"
+        role = claims.get("role")
+        return role if isinstance(role, str) else "invalid"
+    return _header(headers, _ROLE_HEADER)
+
+
+def _spawn_allowed(headers, require_identity=None, jwt_secret=None):
     """Identity gate for the spawn path (docs/RBAC_PLAN.md Phase 2).
 
     Pure decision function over a headers mapping (Starlette's Headers or a
     plain dict — lookup is case-insensitive either way):
       role == "admin" (any case)  -> True
-      role present, != "admin"    -> False  (guests/pending can never spawn)
-      role header absent          -> not require_identity
-        (fail-open by default for single-user installs that send no identity
-         headers; OPENBEAST_ROUTER_REQUIRE_IDENTITY=true flips to fail-closed)
+      role present, != "admin"    -> False  (guests/pending/forged tokens
+                                             can never spawn)
+      no identity                 -> not require_identity
+        (fail-open only on single-user installs that send no identity; see
+         REQUIRE_IDENTITY for when it hardens on its own)
+    The role is read from the verified JWT in signed-identity mode and from
+    the plain header otherwise — see _caller_role.
     """
     if require_identity is None:
         require_identity = REQUIRE_IDENTITY
-    role = None
-    for k, v in headers.items():
-        if k.lower() == _ROLE_HEADER:
-            role = v
-            break
+    role = _caller_role(headers, jwt_secret)
     if role is None:
         return not require_identity
     return role.strip().lower() == "admin"
+
+
+def _identity_headers(headers, jwt_secret=None):
+    """The caller's identity, re-sent on the spawn call.
+
+    Without it /start_agent saw an anonymous admin-key call: the audit row
+    said user=null and the tool server skipped the per-user workspace shard,
+    so the classifier's "." resolved to the tool server's own cwd (the repo).
+    JWT mode forwards the signed token (the tool server re-verifies it and
+    ignores plain headers); header mode forwards the plain headers. The chat
+    id rides along in both, as WebUI sends it.
+
+    Starlette decodes header bytes as latin-1 and httpx encodes str values
+    as ASCII, so a non-ASCII value (an internationalized email) would raise
+    in client.post and break the spawn. Such values go back out as the
+    exact bytes WebUI sent; one that isn't latin-1 at all is dropped.
+    """
+    if jwt_secret is None:
+        jwt_secret = JWT_SECRET
+    names = (_JWT_HEADER,) if jwt_secret else _PLAIN_IDENTITY_HEADERS
+    out = {}
+    for name in names + (_CHAT_HEADER,):
+        v = _header(headers, name)
+        if not v:
+            continue
+        if not v.isascii():
+            try:
+                v = v.encode("latin-1")
+            except UnicodeEncodeError:
+                continue
+        out[name] = v
+    return out
 
 
 def _last_user_text(messages):
@@ -185,12 +287,16 @@ async def _classify(client, user_text):
     return False, "", "."
 
 
-async def _spawn(client, task, workdir):
-    """Spawn via the real MCPO start_agent tool. Returns (agent_id, error)."""
+async def _spawn(client, task, workdir, identity=None):
+    """Spawn via the real MCPO start_agent tool. Returns (agent_id, error).
+
+    `identity` = the caller's identity headers (_identity_headers), sent
+    alongside the admin key so the spawn is attributed and sharded."""
     try:
         r = await client.post(f"{MCPO}/start_agent",
                               json={"task": task, "workdir": workdir},
-                              headers=MCPO_HEADERS, timeout=30)
+                              headers={**(identity or {}), **MCPO_HEADERS},
+                              timeout=30)
         txt = r.text
         try:
             data = r.json()
@@ -289,7 +395,8 @@ async def chat_completions(request: Request):
                 "but I couldn't pin down a clear task for it. Want to rephrase it as "
                 "a concrete task, or should I just handle it here inline?", stream)
         if spawn:
-            agent_id, err = await _spawn(client, task, workdir)
+            agent_id, err = await _spawn(client, task, workdir,
+                                         _identity_headers(request.headers))
             if agent_id:
                 msg = (f"🦁 Started a background agent (`{agent_id}`) to: {task}\n\n"
                        f"It's running independently in `{workdir}` — ask me to check on "
@@ -342,7 +449,7 @@ if __name__ == "__main__":
     import uvicorn
     print(f"OpenBeast router on :{PORT}  ->  upstream {UPSTREAM}  (spawn via {MCPO})")
     # Loopback ALWAYS, deliberately unlike the sibling servers: the spawn path
-    # is fail-open by default (ROUTER_REQUIRE_IDENTITY=false), so honoring a
+    # is fail-open on a single-user rig (see REQUIRE_IDENTITY), so honoring a
     # BIND_HOST=0.0.0.0 here would hand agent-spawn to the whole LAN. WebUI
     # reaches it on 127.0.0.1, and start.sh probes 127.0.0.1 for readiness.
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

@@ -34,6 +34,8 @@ state (field 3 == `Z`): an unreaped child keeps both its /proc entry and its
 start time, which is why every console-started session used to read `running`
 forever. And a record with NO recorded start time is alive enough to show in
 a list but NOT alive enough to signal — see `is_alive(require_start=True)`.
+Where there is no /proc (the macOS client install), the same state + start
+time come from `ps -o stat=,lstart=`; with neither, nothing is guessed `lost`.
 
 Record writes are serialised by an exclusive flock per record: `touch` is a
 read-modify-write and `finalize` is a compare-and-set, so a slow writer can
@@ -50,7 +52,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import stat as _stat
+import subprocess
 import tempfile
 import time
 import uuid
@@ -78,6 +82,17 @@ _FILE_MODE = 0o600
 
 # Fields callers may not overwrite through touch() — identity is immutable.
 _IMMUTABLE = ("id", "started_at")
+
+#: meta keys register() and the runner OWN. They are load-bearing for
+#: liveness (`pid_start`, `boot_id` — a wrong value reads as "finished" while
+#: the process keeps running) and for steering (`cursor`). A caller attaching
+#: free-form meta to a session it starts must never supply these; chat_server
+#: strips them (its RESERVED_META is this tuple), and register() assigns the
+#: two liveness keys itself. Keep the list HERE, next to the code that writes
+#: them, so the next liveness field cannot be missed by the caller-side strip
+#: — the [54] boot_id fix was, and a caller's boot_id bore a live agent as
+#: `lost`.
+SERVER_OWNED_META = ("pid_start", "boot_id", "cursor")
 
 # --- Inbox caps (E12) -------------------------------------------------------
 # read_new_ops used to read the whole tail in one go: a 25 MB inbox allocated
@@ -154,6 +169,46 @@ def new_id(kind: str = "agent") -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
+def _have_proc() -> bool:
+    """Does this OS expose /proc/<pid>/stat? Linux yes; macOS (the client
+    install ships this module) no."""
+    return os.path.exists("/proc/self/stat")
+
+
+def _ps_stat(pid: int) -> tuple[str, int] | None:
+    """The /proc-less fallback: (state char, start time) from `ps`, or None.
+
+    Without it every record on a macOS client reconciled to `lost` on first
+    read — there is no /proc/<pid>/stat, so _proc_stat was always None — and
+    `job.sh stop` refused ("already 'lost'") while the job ran on. `lstart`
+    is the process's absolute start time, so it is a pid-reuse proof on its
+    own (no boot frame needed), and `stat`'s first letter carries the zombie
+    state the same way /proc does. Both flags exist in BSD and procps ps.
+    LC_ALL=C pins the lstart format. A process that is gone prints nothing.
+    """
+    try:
+        pid = int(pid)
+        out = subprocess.run(
+            ["ps", "-o", "stat=,lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return None
+    parts = (out.stdout or "").split()
+    if out.returncode != 0 or len(parts) < 6:
+        return None
+    try:
+        started = time.strptime(" ".join(parts[1:6]), "%a %b %d %H:%M:%S %Y")
+        return parts[0][:1], int(time.mktime(started))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _liveness_probe_available() -> bool:
+    """Can this box tell a live pid from a dead one at all?"""
+    return _have_proc() or shutil.which("ps") is not None
+
+
 def _proc_stat(pid: int) -> tuple[str, int] | None:
     """(state char, start time) from /proc/<pid>/stat, or None.
 
@@ -162,7 +217,14 @@ def _proc_stat(pid: int) -> tuple[str, int] | None:
     the split, field N lives at index N-3: field 3 (state) is index 0 and
     field 22 (starttime) is index 19. One read gives us both, so the zombie
     check below costs nothing extra.
+
+    Where there is no /proc (macOS) the same pair comes from `ps` instead —
+    see _ps_stat. The start-time UNITS differ (clock ticks vs epoch seconds),
+    which is fine: a value is only ever compared with one captured on the
+    same box by this same function.
     """
+    if not _have_proc():
+        return _ps_stat(pid)
     try:
         with open(f"/proc/{int(pid)}/stat", "rb") as f:
             raw = f.read().decode("utf-8", "replace")
@@ -437,6 +499,11 @@ def register(session_id: str, *, kind: str = "agent", title: str = "",
     except ValueError:
         rec["inbox"] = None
     rec["meta"] = dict(meta or {})
+    # The liveness keys are assigned below or not at all: a caller's boot_id
+    # used to survive whenever this kernel reports none. (`cursor` is NOT
+    # dropped here — the runner itself passes it to carry a --resume forward;
+    # untrusted callers are stripped of it upstream, in chat_server.)
+    rec["meta"].pop("boot_id", None)
     # ASSIGNED, not setdefault: this is the process-identity proof, and it is
     # derived from the pid WE were handed. setdefault let any caller who could
     # reach a register() with a meta dict pre-empt it with a wrong value, and a
@@ -572,6 +639,12 @@ def reconcile(record: dict) -> dict:
     if not isinstance(record, dict):
         return record
     if record.get("state") != "running":
+        return record
+    if not _liveness_probe_available():
+        # No /proc and no ps: we cannot tell, so we must not guess `lost` —
+        # finalize() refuses a terminal record, and the session's own verdict
+        # would be thrown away. Signalling still refuses (is_alive fails
+        # closed without a probe), so this only affects the reported state.
         return record
     meta = record.get("meta")
     pid_start = meta.get("pid_start") if isinstance(meta, dict) else None
@@ -887,6 +960,55 @@ def prune(days: int = 30, *, keep_logs: bool = False) -> int:
                 except OSError:
                     pass
             os.rmdir(box)
+        except OSError:
+            pass
+    return removed
+
+
+def prune_transcripts(log_dir: str, days: int) -> int:
+    """Delete agent transcripts in `log_dir` untouched for more than `days`.
+
+    Opt-in retention for agents/logs/ (AGENT_LOG_RETENTION_DAYS, run daily by
+    scripts/logrotate.sh; 0 or unset = keep forever, the default). A file is
+    removed only when BOTH hold: its mtime is past the cutoff, and no ledger
+    record — live or terminal — still names it as its transcript. `prune()`
+    retires terminal records after 30 days, so a transcript outlives its index
+    entry and is then collected here; a live session's file is never touched.
+    Only regular *.jsonl / *.log files directly in `log_dir` are considered.
+    """
+    if days <= 0:
+        return 0
+    referenced = set()
+    try:
+        names = os.listdir(_dir())
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".json") and not name.startswith("."):
+            rec = _read_record(os.path.join(_dir(), name))
+            if rec and rec.get("transcript"):
+                referenced.add(os.path.realpath(str(rec["transcript"])))
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        entries = list(os.scandir(log_dir))
+    except OSError:
+        return 0
+    for ent in entries:
+        if not ent.name.endswith((".jsonl", ".log")):
+            continue
+        try:
+            if not ent.is_file(follow_symlinks=False):
+                continue
+            if ent.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        if os.path.realpath(ent.path) in referenced:
+            continue
+        try:
+            os.unlink(ent.path)
+            removed += 1
         except OSError:
             pass
     return removed

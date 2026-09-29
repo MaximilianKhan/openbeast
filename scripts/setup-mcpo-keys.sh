@@ -52,7 +52,31 @@ set_key() { # set_key <NAME>
     if $ROTATE; then
       local newval
       newval="$(genkey)"
-      sed -i -E "s|^[[:space:]]*${name}[[:space:]]*=.*|${name}=${newval}|" "$CONF"
+      # The new key reaches awk through its ENVIRONMENT, never argv: `sed -i
+      # "s|…|NAME=<key>|"` put the fresh secret in /proc/<pid>/cmdline, which
+      # every local uid can read. /proc/<pid>/environ is owner-only. The temp
+      # file is created under umask 077 (above) in the conf's own directory,
+      # so the rename is atomic and the result stays 0600.
+      local tmp
+      tmp="$(mktemp "$CONF.XXXXXX")"
+      if OB_KEY_NAME="$name" OB_KEY_VAL="$newval" awk '
+          BEGIN { n = ENVIRON["OB_KEY_NAME"]; v = ENVIRON["OB_KEY_VAL"] }
+          {
+            line = $0; sub(/^[[:space:]]+/, "", line)
+            if (index(line, n) == 1) {
+              rest = substr(line, length(n) + 1); sub(/^[[:space:]]+/, "", rest)
+              if (substr(rest, 1, 1) == "=") { print n "=" v; next }
+            }
+            print
+          }' "$CONF" > "$tmp"; then
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$CONF"
+      else
+        rm -f "$tmp"
+        echo "  ${name}: rotation FAILED — openbeast.conf left unchanged." >&2
+        return 1
+      fi
+      unset newval
       echo "  ${name}: rotated."
     else
       echo "  ${name}: already set — leaving as-is (use --rotate to replace)."

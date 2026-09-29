@@ -940,7 +940,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
-    os.makedirs(_LOG_DIR, exist_ok=True)
+    # 0700 dir, 0600 transcript (full tool output lands in it) — the
+    # runner appends to the file this pre-creates.
+    _tools.private_log_dir(_LOG_DIR, tighten=True)
 
     # A deliberately conservative context budget advertised to the spawned
     # agent so it self-manages. It is NOT a per-slot capacity: under
@@ -965,7 +967,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     # event — runner.py appends its own "start" event right after. This keeps
     # base_url visible in check_agent even across an MCP server restart.
     try:
-        with open(log_path, "a") as f:
+        with _tools.open_private_append(log_path) as f:
             f.write(json.dumps({
                 "type": "spawn",
                 "agent_id": agent_id,
@@ -977,6 +979,12 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     except OSError:
         pass  # log dir problems surface via the Popen below
 
+    # The runner's model shell can walk up to THIS process
+    # (/proc/<grandparent>/environ). Harden here, not only in __main__: the
+    # :3001 identity tool server imports this module and never runs it, so
+    # a chat whose first tool call is start_agent would otherwise spawn
+    # from a still-dumpable, secret-holding server.
+    _tools.harden_process()
     try:
         process = subprocess.Popen(
             cmd,
@@ -1721,6 +1729,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--port", type=int, default=3001, help="HTTP port (default: 3001)")
     args = parser.parse_args()
+
+    # Before any agent/shell child exists: a spawned runner's model shell
+    # must not read this process's secrets (device key, stack keys) from
+    # /proc/<ancestor>/environ. run_reaped and start_agent also do this
+    # lazily (the :3001 server imports this module and relies on them).
+    _tools.harden_process()
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")

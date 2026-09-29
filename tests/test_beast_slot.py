@@ -334,5 +334,59 @@ class TestKvUnifiedDerivation(unittest.TestCase):
         self.assertIn(dashboard._kv_unified(), (True, False, None))
 
 
+class TestEdgeAuthMode(unittest.TestCase):
+    """`auth: anon` promises a keyless client it will be served. beast-gate
+    honours ALLOW_ANON only while NO device is enrolled — past that a keyless
+    caller gets 401 — so the contract must say "device" there too."""
+
+    def setUp(self):
+        self._saved = (dashboard.REPO_DIR, dashboard._EDGE_GATE,
+                       dashboard._EDGE_ANON, dashboard._API_KEY,
+                       dashboard._get, dashboard._kv_unified)
+        dashboard._EDGE_GATE = True
+        dashboard._API_KEY = ""
+        dashboard._get = _fake_get({"/health": (200, "ok")})
+        dashboard._kv_unified = lambda: None
+        self.repo = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.repo, ".run"))
+        dashboard.REPO_DIR = self.repo
+
+    def tearDown(self):
+        (dashboard.REPO_DIR, dashboard._EDGE_GATE, dashboard._EDGE_ANON,
+         dashboard._API_KEY, dashboard._get, dashboard._kv_unified) = self._saved
+
+    def _auth(self, anon, registry=None):
+        dashboard._EDGE_ANON = anon
+        if registry is not None:
+            with open(os.path.join(self.repo, ".run", "clients.json"), "w") as f:
+                f.write(registry if isinstance(registry, str)
+                        else json.dumps(registry))
+        return dashboard.slot_status()["auth"]
+
+    def test_anon_with_enrolled_device_is_device(self):
+        reg = {"version": 1, "devices": [{"id": "laptop",
+                                          "key_sha256": "ab" * 32}]}
+        self.assertEqual(self._auth(True, reg), "device")
+
+    def test_anon_with_only_revoked_devices_is_still_device(self):
+        # The gate counts revoked entries as "configured" (a revoked key is
+        # refused, it does not reopen the anon door).
+        reg = {"version": 1, "devices": [{"id": "old", "key_sha256": "cd" * 32,
+                                          "revoked_at": "2026-09-01T00:00:00Z"}]}
+        self.assertEqual(self._auth(True, reg), "device")
+
+    def test_corrupt_registry_does_not_claim_anon(self):
+        self.assertEqual(self._auth(True, "{ half-written"), "device")
+
+    def test_anon_holds_while_registry_is_empty(self):
+        # Negative controls: no file, or a file with no keyed device — the
+        # gate really does serve keyless callers as "anon" then.
+        self.assertEqual(self._auth(True), "anon")
+        self.assertEqual(self._auth(True, {"version": 1, "devices": []}), "anon")
+
+    def test_gate_without_anon_is_device(self):
+        self.assertEqual(self._auth(False), "device")
+
+
 if __name__ == "__main__":
     unittest.main()

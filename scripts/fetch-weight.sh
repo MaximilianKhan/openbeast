@@ -62,15 +62,21 @@ cmd_list() {
 # A closed-network rig must get a SENTENCE, not a five-retry backoff chain
 # ending in a python traceback. This is the whole difference between "no
 # network, here is what to do" and hanging for minutes.
+# Probe the endpoint the download will actually use: huggingface_hub honours
+# HF_ENDPOINT (a mirror or an internal proxy), and a box that reaches HF only
+# through one was told "no route" here and refused a download that would
+# have worked.
+HF_BASE="${HF_ENDPOINT:-https://huggingface.co}"
+HF_BASE="${HF_BASE%/}"
 online() {
-  curl -fsS --max-time 6 -o /dev/null "https://huggingface.co/api/whoami-v2" 2>/dev/null && return 0
-  curl -fsS --max-time 6 -o /dev/null "https://huggingface.co" 2>/dev/null
+  curl -fsS --max-time 6 -o /dev/null "$HF_BASE/api/whoami-v2" 2>/dev/null && return 0
+  curl -fsS --max-time 6 -o /dev/null "$HF_BASE" 2>/dev/null
 }
 
 sideload_help() {                     # sideload_help <name> <repo> <remote>
   local name="$1" repo="$2" remote="$3"
   say ""
-  say "  No route to huggingface.co. This weight can still be sideloaded:"
+  say "  No route to $HF_BASE. This weight can still be sideloaded:"
   say "    1. on a connected machine:  hf download $repo $remote"
   say "    2. copy it to this box as:  $WEIGHTS_DIR/$name"
   say "    3. verify the pin:          ./scripts/verify-weights.sh --file $name"

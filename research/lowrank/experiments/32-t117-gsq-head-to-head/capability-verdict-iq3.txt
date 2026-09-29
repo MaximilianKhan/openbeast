@@ -1,0 +1,91 @@
+E32 / T1.17 CAPABILITY HALF — IQ3 PAIR VERDICT
+==============================================
+Rerun 2026-09-15 11:0x with the FIXED zero-token classifier (the 06:30 run of
+this verdict used the pre-fix script and called the UD row INVALID; it is not).
+
+PROVENANCE / VALIDITY
+  Both rows: v5-fast, 112 pinned units, -np 1, --jobs 1, -c 262144,
+  --reasoning-budget 20480, stock b10865 (d4389a4dd), RTX 5090.
+  Both measured PRE-merge of #61/#62 and in the SAME cache era as each other,
+  so the pairing is clean. Rows measured after 2026-09-15 f7e81a5 (greedy
+  floor, Tier-3 cells, the IQ2 pair) belong to a NEW era — never pair across.
+  Serve-log CUDA errors: 0 for BOTH rows. The logs themselves were in /tmp and
+  were lost to the 09-15 10:05 power-off, but the chain log banked the counts
+  at row exit (scratch/logs/e32v2-chain.log: "serve CUDA errors: 0" x2), so
+  the validity stamp stands on recorded evidence rather than a surviving file.
+  The verdict below therefore prints CUDA as n/a; read it as 0.
+  Byte sizes (FineWeb control, same artifacts): GSQ-RCO-IQ3_S 11,771,546,784
+  vs UD-IQ3_S 12,040,883,104 — the WINNER is also 269 MB SMALLER.
+
+⚠ SUPERSEDED — STAGE G HAS NOW RUN. READ capability-verdict-iq3-final.txt.
+  Final: net(A-B) +12, p=0.012 (was +14, p=0.004 here). The repair cost
+  exactly the 2 units the OpenBLAS contamination was flattering A by:
+  115_fft_b and 122_gemm_blocked_b flipped False->True for UD on rerun,
+  the other three stayed False (honest fails). zig +7 (p=0.065), non-zig
+  +5 (p=0.180) — the win is zig-led. Both rows valid. Kept for the record
+  of what the contaminated numbers were.
+
+  ORIGINAL PROVISIONAL NOTE FOLLOWS:
+  Five units in row B (UD) did not fail on the model. Their SETUP died with
+  OpenBLAS "blas_thread_init: pthread_create failed / Resource temporarily
+  unavailable" — the harness could not spawn threads to generate expected
+  output — because six parallel build agents were running on this box from
+  20:55, inside row B's window (20:11-06:17). Row A (11:19-20:11) has ZERO
+  setup failures. The contamination is therefore ASYMMETRIC and it flatters
+  A: three of the four 122_gemm_blocked_* units are A-only wins in the paired
+  contrast below. Coordinator-caused, i.e. mine.
+  Stage G reruns them once, --no-cache, alone on the GPU
+  (scratch/patchup_tripwires.sh): 115_fft_b + 122_gemm_blocked_{b,c,d,e} on
+  UD, 65_miller_rabin_f on GSQ-RCO. Row A's own gemm units ran clean and are
+  NOT rerun — rerunning a clean unit to "match" a repaired one is the same
+  error in the other direction. Read net(A-B)=+14 as an UPPER bound until
+  capability-verdict-iq3-final.txt exists.
+
+  ERA NOTE for that rerun: it happens after the #61/#62 merge (f7e81a5) while
+  the rows are pre-merge. Of the six files evals/cache.py hashes, exactly ONE
+  moved: agents/runner.py. Every line it gained is gated behind
+  _steering_enabled(), which returns False whenever OPENBEAST_EVAL is set —
+  and run_eval.py sets it in every child env unconditionally. #62 proved the
+  inertness differentially against main: with steering off, transcript,
+  request payloads, stdout and stderr are byte-identical. So the cache era
+  rotated (conservative invalidation) while the measurement did not change.
+  The rerun is comparable on evidence, not on assumption.
+
+ROW GSQ-RCO-IQ3S-np1  file=eval-gsq-rco-iq3s-np1-20260914-111928.json
+  n=112 passed=88  imputed_capability=98.57
+  tripwire failures (1): 65_miller_rabin_f
+  ZERO-TOKEN fails: 0/24 (clean)
+  serve-log CUDA errors: n/a 
+  completion tokens=2,402,672  summed wall=8.83h
+  per-language: c 13/14, cpp 9/10, go 18/19, python 28/28, rust 11/11, zig 9/30
+ROW UD-IQ3S-np1  file=eval-ud-iq3s-np1-20260914-201133.json
+  n=112 passed=74  imputed_capability=97.45
+  tripwire failures (2): 115_fft_b, 122_gemm_blocked_d
+  zero-token fails that are NOT crashes: 4 cached, 1 timeout
+  ZERO-TOKEN fails: 0/38 (clean)
+  serve-log CUDA errors: n/a 
+  completion tokens=2,503,471  summed wall=10.23h
+  per-language: c 12/14, cpp 8/10, go 18/19, python 25/28, rust 9/11, zig 2/30
+
+REFERENCE BAND (Q5-class 3.8, capped 20480, 112 units):
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-091027.json: passed 82, imputed 97.7
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-130402.json: passed 84, imputed 97.12
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260909-225005.json: passed 85, imputed 98.45
+  eval-qwen3-8-27b-uncensored-q5-k-m-20260910-033545.json: passed 91, imputed 98.06
+  band: passed 82-91, imputed 97.12-98.45
+
+PAIRED GSQ-RCO-IQ3S-np1 (A) vs UD-IQ3S-np1 (B), 112 common units  validity A=True B=True
+  ALL      A-only 18  B-only  4  net(A-B) +14  p=0.004
+           A-only: 115_fft_b, 115_fft_e, 11_bst_a, 122_gemm_blocked_b, 122_gemm_blocked_c, 122_gemm_blocked_d, 123_nbody_f, 137_pollard_rho_f, 152_chase_lev_deque, 158_karatsuba_bytes_a, 31_is_power_of_two_f, 36_black_scholes_f, 51_toposort_c, 54_astar_f, 62_crt_f, 63_det_f, 73_count_vowels_f, 74_palindrome_f
+           B-only: 155_tonelli_shanks_f, 158_karatsuba_bytes_c, 65_miller_rabin_f, 71_reverse_list_b
+  zig      A-only  9  B-only  2  net(A-B) +7  p=0.065
+           A-only: 123_nbody_f, 137_pollard_rho_f, 31_is_power_of_two_f, 36_black_scholes_f, 54_astar_f, 62_crt_f, 63_det_f, 73_count_vowels_f, 74_palindrome_f
+           B-only: 155_tonelli_shanks_f, 65_miller_rabin_f
+  non-zig  A-only  9  B-only  2  net(A-B) +7  p=0.065
+           A-only: 115_fft_b, 115_fft_e, 11_bst_a, 122_gemm_blocked_b, 122_gemm_blocked_c, 122_gemm_blocked_d, 152_chase_lev_deque, 158_karatsuba_bytes_a, 51_toposort_c
+           B-only: 158_karatsuba_bytes_c, 71_reverse_list_b
+
+CARD CLAIMS (ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF README, read 2026-09-11):
+  IQ3_S 'task-lossless': AIME25 100.00 (=BF16), LCB v6 85.71 (=BF16), GPQA-D 89.39 (-0.51); vs UD-IQ3_S +3.33 AIME, +1.71 LCB, -0.51 GPQA
+  IQ2_XS vs UD-IQ2_S at 8.4GB: +10.00 AIME25, +8.59 GPQA-D, +4.57 LCB v6
+  Our instrument: v5-fast agentic-coding suite (112 pinned units, imputed to the 291-unit v4 scale), capped 20480, single slot, stock b10865.

@@ -1,0 +1,524 @@
+#!/bin/bash
+# Stack lifecycle tests: start.sh / stop.sh / healthcheck.sh / doctor.sh /
+# ext.sh and the libs they share (lib/net.sh, lib/proc.sh). The 2026-09-29
+# review's "lifecycle" findings, each pinned by a case that FAILS on the old
+# code.
+#
+# Same rules as tests/test_scripts.sh: no GPU, no docker, no network, no real
+# stack. Everything that would touch one is a stub on PATH or a throwaway
+# HTTP server on an ephemeral loopback port; every process this file starts
+# exits on its own or is reaped by the EXIT trap. Never `pkill -f` here: the
+# harness's own command line would match.
+#
+# Usage: bash tests/test_lifecycle.sh
+
+set -euo pipefail
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+PASS=0
+FAIL=0
+pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+
+# No `.` or other ERE metacharacter in the path: the pkill guard below
+# recognises sandbox-anchored patterns by the literal path.
+_T="$(mktemp -d "${TMPDIR:-/tmp}/oblifecycleXXXXXX")"
+_PIDS=""
+cleanup() {
+  local p
+  for p in $_PIDS; do kill "$p" 2>/dev/null || true; done
+  rm -rf "$_T"
+}
+trap cleanup EXIT
+
+# A sandbox copy of the repo's scripts: the scripts under test resolve
+# everything relative to their own location, so a copy runs against a .run/
+# and an openbeast.conf that belong to this test and nothing else.
+_sandbox() { # _sandbox <dir>
+  local d="$1"
+  mkdir -p "$d/scripts/lib" "$d/.run" "$d/bin" "$d/home" "$d/extensions"
+  cp "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh" "$d/"
+  cp "$REPO_DIR/scripts/healthcheck.sh" "$REPO_DIR/scripts/doctor.sh" \
+     "$REPO_DIR/scripts/ext.sh" "$d/scripts/"
+  cp "$REPO_DIR"/scripts/lib/*.sh "$d/scripts/lib/"
+  : > "$d/openbeast.conf"
+  # Every host tool that could reach the real machine answers "not here".
+  local c
+  for c in curl docker tailscale nvidia-smi sudo systemctl systemd-run smartctl; do
+    printf '#!/bin/bash\nexit 1\n' > "$d/bin/$c"; chmod +x "$d/bin/$c"
+  done
+  # pkill/pgrep reach the REAL process table. Let through only patterns
+  # anchored inside this sandbox (stop.sh also carries an unanchored legacy
+  # `pkill -f "mcpo --port"`, which must never run against the host).
+  for c in pkill pgrep; do
+    printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *%s* ]] && exec /usr/bin/%s "$@"; done\nexit 1\n' \
+      "$d" "$c" > "$d/bin/$c"
+    chmod +x "$d/bin/$c"
+  done
+}
+# Run a sandbox script with a clean environment and the stubs first on PATH.
+_run() { # _run <dir> <script> [args...]   (extra env via RUN_ENV array)
+  local d="$1"; shift
+  env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" ${RUN_ENV[@]+"${RUN_ENV[@]}"} \
+    bash "$@" 2>&1 || true
+}
+RUN_ENV=()
+
+# ---------------------------------------------------------------------------
+echo "=== Lifecycle tests ==="
+echo ""
+echo "lib/net.sh — one BIND_HOST -> probe-host mapping:"
+_ph() { bash -c "source '$REPO_DIR/scripts/lib/net.sh'; ob_probe_host \"\$1\"" _ "$1"; }
+while IFS='|' read -r _in _want; do
+  _got="$(_ph "$_in")"
+  if [[ "$_got" == "$_want" ]]; then
+    pass "ob_probe_host '$_in' -> '$_want'"
+  else
+    fail "ob_probe_host '$_in' gave '$_got', want '$_want'"
+  fi
+done <<'CASES'
+127.0.0.1|127.0.0.1
+0.0.0.0|127.0.0.1
+|127.0.0.1
+localhost|127.0.0.1
+::|[::1]
+[::]|[::1]
+::1|[::1]
+fd7a:115c:a1e0::5|[fd7a:115c:a1e0::5]
+[fd7a:115c:a1e0::5]|[fd7a:115c:a1e0::5]
+192.168.1.50|192.168.1.50
+127.0.0.2|127.0.0.2
+CASES
+_NA="$(bash -c "set -- keep these; source '$REPO_DIR/scripts/lib/net.sh'; echo \"\$*\"")"
+[[ "$_NA" == "keep these" ]] && pass "sourcing lib/net.sh leaves \$@ alone" \
+  || fail "sourcing lib/net.sh clobbered \$@: '$_NA'"
+
+# No script keeps a private copy of the mapping (that is how they drifted).
+for _f in start.sh scripts/doctor.sh scripts/healthcheck.sh; do
+  if grep -qE 'case "\$(BIND_HOST|CHAT_HEALTH_HOST|_chat_host)"' "$REPO_DIR/$_f"; then
+    fail "$_f still carries its own BIND_HOST case instead of ob_probe_host"
+  elif grep -q 'ob_probe_host' "$REPO_DIR/$_f"; then
+    pass "$_f derives its probe host from lib/net.sh"
+  else
+    fail "$_f does not use ob_probe_host"
+  fi
+done
+
+# doctor.sh, run for real: which URLs does it ask for?
+echo ""
+echo "doctor.sh probes (stubbed curl records every URL):"
+_D="$_T/doctor"; _sandbox "$_D"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http* ]] && echo "$a" >> "$CURL_LOG"; done\nexit 1\n' > "$_D/bin/curl"
+_doctor_urls() { # _doctor_urls <conf-lines...> -> prints the URL log
+  printf '%s\n' "$@" > "$_D/openbeast.conf"
+  : > "$_D/curl.log"
+  RUN_ENV=(CURL_LOG="$_D/curl.log")
+  _run "$_D" "$_D/scripts/doctor.sh" >/dev/null
+  RUN_ENV=()
+  cat "$_D/curl.log"
+}
+_U="$(_doctor_urls 'BIND_HOST=::')"
+if grep -q '^http://\[::1\]:8080/health' <<< "$_U" && ! grep -q ':::' <<< "$_U"; then
+  pass "BIND_HOST=:: -> doctor probes http://[::1]:8080 (was http://:::8080, curl rc=3)"
+else
+  fail "doctor with BIND_HOST=:: built: $(tr '\n' ' ' <<< "$_U")"
+fi
+_U="$(_doctor_urls 'BIND_HOST=192.0.2.9' 'BEAST_CHAT=true')"
+if grep -q '^http://127.0.0.1:3003/api/chat/health' <<< "$_U" \
+   && ! grep -q '^http://192.0.2.9:3003' <<< "$_U"; then
+  pass "doctor probes beast-chat on OPENBEAST_CHAT_BIND (loopback), not a LAN BIND_HOST"
+else
+  fail "doctor probed beast-chat at: $(grep 3003 <<< "$_U" | tr '\n' ' ')"
+fi
+if grep -q '^http://192.0.2.9:8080/health' <<< "$_U"; then
+  pass "…while the core services are still probed on BIND_HOST (control)"
+else
+  fail "doctor stopped probing llama on BIND_HOST: $(tr '\n' ' ' <<< "$_U")"
+fi
+
+# lifecycle-6: with a specific-address BIND_HOST the services refuse
+# localhost, which is exactly what Open WebUI dials. Every probe that follows
+# BIND_HOST reads green; doctor must dial what the frontend dials.
+# This curl answers ONLY URLs matching $CURL_OK (a server bound to one address).
+cat > "$_D/bin/curl" <<'SH'
+#!/bin/bash
+url=""; w=0
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; [[ "$a" == "%{http_code}" ]] && w=1; done
+echo "$url" >> "$CURL_LOG"
+if [[ -n "${CURL_OK:-}" && "$url" =~ $CURL_OK ]]; then
+  [[ $w -eq 1 ]] && { printf '200'; exit 0; }
+  printf '{"status":"ok"}'; exit 0
+fi
+[[ $w -eq 1 ]] && printf '000'
+exit 7
+SH
+chmod +x "$_D/bin/curl"
+_doctor_out() { # _doctor_out <CURL_OK-regex> <conf-lines...>
+  local ok="$1"; shift
+  printf '%s\n' "$@" > "$_D/openbeast.conf"
+  RUN_ENV=(CURL_LOG="$_D/curl.log" CURL_OK="$ok")
+  _run "$_D" "$_D/scripts/doctor.sh"
+  RUN_ENV=()
+}
+# Round 2 closed the conf.sh half: OPENBEAST_MODEL_URL (what compose hands
+# Open WebUI) now follows the probe host, so on a LAN BIND_HOST the frontend
+# dials the address llama binds and doctor's endpoint row stays quiet —
+# while it still dials OPENBEAST_MODEL_URL, not a URL of its own.
+_O="$(_doctor_out '^http://192\.0\.2\.9:' 'BIND_HOST=192.0.2.9')"
+if ! grep -q "model endpoint" <<< "$_O" && grep -q '^http://192.0.2.9:8080/v1/models' "$_D/curl.log"; then
+  pass "on a LAN BIND_HOST, WebUI's model URL is http://192.0.2.9:8080/v1 — doctor dials it and it answers"
+else
+  fail "doctor on a LAN BIND_HOST: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ') :: $(grep models "$_D/curl.log" | tr '\n' ' ')"
+fi
+# Negative control: a server that answers ONLY its LAN address, while the
+# frontend URL points elsewhere (the router, which hard-binds loopback, is
+# down) is still a FAIL.
+_O="$(_doctor_out '^http://192\.0\.2\.9:' 'BIND_HOST=192.0.2.9' 'AGENT_ROUTER=true')"
+if grep -q "model endpoint (http://localhost:8088/v1)" <<< "$_O"; then
+  pass "…and a frontend URL that refuses connections (router down) still FAILs (control)"
+else
+  fail "doctor missed an unreachable frontend model URL: $(grep -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
+if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
+  pass "…and stays quiet on a loopback rig where the frontend reaches the model (control)"
+else
+  fail "doctor flagged a reachable model endpoint: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+# The inter-service upstreams follow the probe host too.
+if grep -qE 'OPENBEAST_(LLAMA_UPSTREAM|MCPO_URL)="http://127\.0\.0\.1' "$REPO_DIR/start.sh" "$REPO_DIR/scripts/healthcheck.sh"; then
+  fail "router/beast-gate upstreams are still hardcoded to 127.0.0.1 (a specific BIND_HOST refuses it)"
+else
+  pass "router/beast-gate upstreams follow BIND_HOST's probe host"
+fi
+
+# ---------------------------------------------------------------------------
+# lifecycle-1: a model is healthy when /health says so — not when it binds.
+# llama-server binds before it loads and answers 503 "Loading model" for the
+# whole load; `curl -s` exits 0 on that 503. The stub below is a real HTTP
+# server on an ephemeral port that behaves the same way.
+# ---------------------------------------------------------------------------
+echo ""
+echo "start.sh model readiness + rollback (stub llama-server, real HTTP):"
+_L="$_T/load"; mkdir -p "$_L/scripts" "$_L/.run"
+cat > "$_L/scripts/stub_llama.py" <<'PY'
+import http.server, json, sys, threading, time, os
+mode, port = sys.argv[1], int(sys.argv[2])
+t0 = time.time()
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        ok = mode == "ok"
+        body = json.dumps({"status": "ok"} if ok else
+                          {"error": {"code": 503, "message": "Loading model"}}).encode()
+        self.send_response(200 if ok else 503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+srv = http.server.HTTPServer(("127.0.0.1", port), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+# loading-then-die: the OOM-mid-load shape. Everything else has a hard
+# lifetime so nothing outlives the test even if the harness is killed.
+life = {"loading-then-die": 3, "ok": 20, "loading-forever": 60}[mode]
+time.sleep(life)
+os._exit(1 if mode != "ok" else 0)
+PY
+for _m in loading-then-die ok loading-forever; do
+  _n="serve-${_m}.sh"
+  printf '#!/bin/bash\nexec python3 "$(dirname "$0")/stub_llama.py" %s "$STUB_PORT" >/dev/null 2>&1\n' "$_m" > "$_L/scripts/$_n"
+  chmod +x "$_L/scripts/$_n"
+done
+# The functions under test, lifted out of start.sh verbatim.
+{
+  echo 'set -euo pipefail'
+  echo "source '$REPO_DIR/scripts/lib/net.sh'"
+  echo 'SCRIPT_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"'
+  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"'
+  echo 'LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"'
+  echo 'reconfigure_webui_for_model() { :; }'
+  for _fn in launch_llama wait_llama_health record_last_good launch_and_wait; do
+    sed -n "/^${_fn}() {/,/^}/p" "$REPO_DIR/start.sh"
+  done
+  echo 'rc=0; launch_and_wait || rc=$?'
+  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) PID=$LLAMA_PID"'
+} > "$_L/harness.sh"
+_free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] -> result line
+  local port; port="$(_free_port)"
+  rm -f "$_L/.run/last-good-serve-script"
+  [[ -n "$2" ]] && echo "$2" > "$_L/.run/last-good-serve-script"
+  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true \
+    OPENBEAST_LLAMA_LOAD_GRACE="${3:-900}" \
+    timeout 40 bash "$_L/harness.sh" > "$_L/out" 2>&1 || true
+  local line; line="$(grep '^RC=' "$_L/out" || echo "RC=hung $(tail -n 2 "$_L/out" | tr '\n' ' ')")"
+  # Reap whatever stub is still up (by its recorded pid, never a pattern).
+  local p="${line##*PID=}"; [[ "$p" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $p"
+  echo "$line"
+}
+_R="$(_launch_case serve-loading-then-die.sh serve-ok.sh)"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
+  pass "a model that 503s 'Loading model' then dies is NOT recorded last-good; rollback serves the real last-good"
+else
+  fail "load-then-die was treated as healthy (MODEL_ROLLBACK dead, last-good overwritten): $_R"
+fi
+_T0=$SECONDS
+_R="$(_launch_case serve-loading-forever.sh "" 2)"
+_WEDGED="${_R##*PID=}"
+if [[ "$_R" == "RC=1 "* ]] && (( SECONDS - _T0 < 35 )); then
+  pass "a load wedged on 'Loading model' fails after OPENBEAST_LLAMA_LOAD_GRACE (was: waited forever)"
+else
+  fail "wedged load did not fail at the grace: $_R"
+fi
+if [[ "$_WEDGED" =~ ^[0-9]+$ ]] && ! kill -0 "$_WEDGED" 2>/dev/null; then
+  pass "…and the wedged server is stopped, freeing the port/VRAM for a rollback"
+else
+  fail "the wedged llama-server (pid $_WEDGED) was left running past the grace"
+fi
+_R="$(_launch_case serve-ok.sh "")"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
+  pass "a model answering 200 {\"status\":\"ok\"} is healthy and recorded last-good (control)"
+else
+  fail "a healthy stub was not accepted: $_R"
+fi
+for _p in $_PIDS; do kill "$_p" 2>/dev/null || true; done
+# The -d launcher's readiness probe uses the same helper, not `curl -s`.
+if grep -q 'curl -s -m 2 "http://$HEALTH_HOST:8080/health"' "$REPO_DIR/start.sh"; then
+  fail "start.sh -d still treats any /health answer (a 503 included) as ready"
+else
+  pass "start.sh -d readiness requires ob_llama_ready, not any /health answer"
+fi
+
+# ---------------------------------------------------------------------------
+# lifecycle-11 / lifecycle-5 / extensions-client-5: a pidfile is a number on
+# disk, and .run/ survives a reboot. What it names must be the process that
+# was RECORDED, not merely something alive whose command line looks right.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Recorded pids are identities (supervisor + extensions):"
+_P="$_T/pids"; _sandbox "$_P"
+# A stranger that merely MENTIONS start.sh — another project's dev server.
+bash -c 'exec -a "bash /home/someone/proj2/start.sh" sleep 300' & _STRANGER=$!; _PIDS="$_PIDS $!"
+sleep 0.3
+_proc() { bash -c "source '$REPO_DIR/scripts/lib/proc.sh'; $1"; }
+echo "$_STRANGER" > "$_P/.run/supervisor.pid"; echo "1" > "$_P/.run/supervisor.start"
+if _proc "ob_recorded_pid_ours '$_P/.run/supervisor.pid' 'start\\.sh'"; then
+  fail "a recycled pid running some other start.sh passed as our supervisor"
+else
+  pass "a recycled pid whose command line mentions start.sh is NOT our supervisor"
+fi
+_proc "ob_pid_record '$_P/.run/supervisor.pid' $_STRANGER"
+if _proc "ob_recorded_pid_ours '$_P/.run/supervisor.pid' 'start\\.sh'"; then
+  pass "…while the process actually recorded (pid + start time) is (control)"
+else
+  fail "ob_recorded_pid_ours rejected the very process ob_pid_record wrote"
+fi
+# stop.sh, run for real: it must not SIGTERM (then SIGKILL) the stranger.
+echo "$_STRANGER" > "$_P/.run/supervisor.pid"; echo "1" > "$_P/.run/supervisor.start"
+# An extension whose recorded pid is ALSO the stranger (no sidecar: the old
+# format, so only the path fallback can judge it), plus a real extension
+# process whose record was lost — the orphan the path sweep exists for.
+mkdir -p "$_P/extensions/fake"
+printf 'import time\ntime.sleep(300)\n' > "$_P/extensions/fake/server.py"
+python3 "$_P/extensions/fake/server.py" & _EXT_ORPHAN=$!; _PIDS="$_PIDS $!"
+echo "$_STRANGER" > "$_P/.run/ext-fake.pid"
+mkdir -p "$_P/extensions/real"
+printf 'import time\ntime.sleep(300)\n' > "$_P/extensions/real/server.py"
+python3 "$_P/extensions/real/server.py" & _EXT_REAL=$!; _PIDS="$_PIDS $!"
+sleep 0.3
+_proc "ob_pid_record '$_P/.run/ext-real.pid' $_EXT_REAL"
+_O="$(timeout 60 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_P' '$_P/stop.sh'")"
+sleep 0.3
+if kill -0 "$_STRANGER" 2>/dev/null && [[ "$_O" != *"Stopping supervisor"* ]]; then
+  pass "stop.sh leaves a stranger holding a stale supervisor.pid alone (was: TERM, then KILL)"
+else
+  fail "stop.sh signalled a stranger via a stale supervisor.pid: $(grep -i supervisor <<< "$_O" | tr '\n' ' ')"
+fi
+if kill -0 "$_STRANGER" 2>/dev/null && ! grep -q 'extension stopped (fake)\.' <<< "$_O"; then
+  pass "stop.sh does not SIGTERM a stranger that inherited a stale ext-*.pid"
+else
+  fail "stop.sh killed a stranger via ext-fake.pid: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if ! kill -0 "$_EXT_ORPHAN" 2>/dev/null && grep -q 'extension stopped (fake, by path' <<< "$_O"; then
+  pass "…and still reaps the real extension orphan by its path"
+else
+  fail "the extension orphan survived stop.sh: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if ! kill -0 "$_EXT_REAL" 2>/dev/null && grep -q 'extension stopped (real)\.' <<< "$_O"; then
+  pass "a correctly recorded extension is stopped by its pid (control)"
+else
+  fail "stop.sh did not stop a recorded extension: $(grep extension <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ ! -e "$_P/.run/ext-fake.pid" && ! -e "$_P/.run/ext-real.start" ]]; then
+  pass "…and the extension records (pid + start time) are removed"
+else
+  fail "stop.sh left extension records behind: $(ls "$_P/.run")"
+fi
+kill "$_STRANGER" "$_EXT_ORPHAN" "$_EXT_REAL" 2>/dev/null || true
+if [[ -s "$_P/.run/stopped" ]]; then
+  pass "stop.sh records that the stack was stopped on purpose (.run/stopped)"
+else
+  fail "stop.sh left no .run/stopped marker — the watchdog will bring the stack back"
+fi
+
+# ---------------------------------------------------------------------------
+# lifecycle-2: the watchdog must not undo ./stop.sh, and must not relaunch a
+# crash-looping model forever once the supervisor has given up.
+# ---------------------------------------------------------------------------
+echo ""
+echo "healthcheck.sh --restart vs a stack stopped on purpose:"
+_W="$_T/wd"; _sandbox "$_W"
+# llama-server is down; every other core service answers.
+cat > "$_W/bin/curl" <<'SH'
+#!/bin/bash
+url=""; for a in "$@"; do [[ "$a" == http* ]] && url="$a"; done
+case "$url" in
+  *:3001/*) printf '{"status":"ok"}' ;;
+  *:3000/*) printf '{"version":"x"}' ;;
+  *:8888*)  printf '<title>searxng</title>' ;;
+  *) exit 7 ;;
+esac
+SH
+chmod +x "$_W/bin/curl"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_W/bin/docker"; chmod +x "$_W/bin/docker"
+# The serve script the stack was started with: records that it ran, exits.
+printf '#!/bin/bash\necho ran >> "%s/serve.log"\nexit 1\n' "$_W" > "$_W/scripts/serve-stub.sh"
+chmod +x "$_W/scripts/serve-stub.sh"
+echo "serve-stub.sh" > "$_W/.run/serve-script"
+_wd() { # run one watchdog tick; prints its output
+  : > "$_W/serve.log"; : > "$_W/docker.log"
+  RUN_ENV=(DOCKER_LOG="$_W/docker.log")
+  timeout 60 bash -c "$(declare -f _run); RUN_ENV=(${RUN_ENV[*]}); _run '$_W' '$_W/scripts/healthcheck.sh' --restart"
+  RUN_ENV=()
+}
+echo "2026-09-29T10:00:00 ./stop.sh" > "$_W/.run/stopped"
+_O="$(_wd)"
+if [[ ! -s "$_W/serve.log" && "$_O" == *"stopped on purpose"* ]]; then
+  pass "after ./stop.sh the watchdog relaunches nothing (was: the model within 5 minutes)"
+else
+  fail "the watchdog relaunched a stack stopped on purpose: serve ran $(wc -l < "$_W/serve.log")x"
+fi
+rm -f "$_W/.run/stopped" "$_W/.run/watchdog-relaunches"
+_O="$(_wd)"
+if [[ -s "$_W/serve.log" && "$_O" == *"relaunch FAILED"* ]]; then
+  pass "with no marker a crashed model IS relaunched, and a relaunch that dies is reported at once (control)"
+else
+  fail "the watchdog did not relaunch a crashed stack: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_wd >/dev/null; _wd >/dev/null      # relaunches 2 and 3 of the hour
+_O="$(_wd)"
+if [[ ! -s "$_W/serve.log" && -s "$_W/.run/stopped" && "$_O" == *"crash-looping"* ]]; then
+  pass "a 4th relaunch within the hour is refused and the stack is marked stopped"
+else
+  fail "the watchdog relaunched a crash-looping model without limit: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q 'rm -f "$RUN_DIR/stopped"' "$REPO_DIR/start.sh" && grep -q '_mark_gave_up' "$REPO_DIR/start.sh"; then
+  pass "start.sh clears the marker on start and sets it when the supervisor gives up"
+else
+  fail "start.sh does not manage .run/stopped"
+fi
+
+# ---------------------------------------------------------------------------
+# extensions-client-4: an extension name is a directory name, nothing else.
+# ---------------------------------------------------------------------------
+echo ""
+echo "ext.sh names + start.sh's extension launch:"
+_X="$_T/ext"; _sandbox "$_X"
+for _e in dashboard other; do
+  mkdir -p "$_X/extensions/$_e"
+  printf 'NAME=%s\nKIND=process\n' "$_e" > "$_X/extensions/$_e/manifest"
+  printf 'import time\ntime.sleep(300)\n' > "$_X/extensions/$_e/server.py"
+  printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_X/extensions/$_e/run.sh"
+  chmod +x "$_X/extensions/$_e/run.sh"
+done
+_ext_conf() { grep '^EXTENSIONS=' "$_X/openbeast.conf" || true; }
+_ext() { _run "$_X" "$_X/scripts/ext.sh" "$@"; }
+echo 'EXTENSIONS="dashboard other"' > "$_X/openbeast.conf"
+for _bad in 'dashboard/' 'dash/' '.*' '../x'; do
+  _verb=disable; [[ "$_bad" == dashboard/ ]] && _verb=enable
+  _O="$(_ext "$_verb" "$_bad")"
+  if [[ "$(_ext_conf)" == 'EXTENSIONS="dashboard other"' && "$_O" == *"Invalid extension name"* ]]; then
+    pass "ext.sh $_verb '$_bad' is refused and leaves EXTENSIONS alone"
+  else
+    fail "ext.sh $_verb '$_bad' -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+    echo 'EXTENSIONS="dashboard other"' > "$_X/openbeast.conf"
+  fi
+done
+_O="$(_ext disable nope)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="dashboard other"' && "$_O" == *"not enabled"* ]]; then
+  pass "disabling an extension that is not enabled says so and changes nothing"
+else
+  fail "ext.sh disable nope -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+_O="$(_ext disable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
+  pass "disable removes exactly the named extension (control)"
+else
+  fail "ext.sh disable dashboard -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+# start.sh's launch loop, lifted verbatim, under set -euo pipefail.
+python3 - "$REPO_DIR/start.sh" "$_X/launch.sh" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+a = src.index("while IFS= read -r _ext; do")
+b = src.index("done < <(ob_ext_processes)", a) + len("done < <(ob_ext_processes)")
+open(sys.argv[2], "w").write(
+    'set -euo pipefail\nREPO_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"\n'
+    'source "$SANDBOX/scripts/lib/proc.sh"; source "$SANDBOX/scripts/lib/extensions.sh"\n'
+    + src[a:b] + '\necho LAUNCH-LOOP-DONE\n')
+PY
+_launch() { SANDBOX="$_X" EXTENSIONS="$1" timeout 30 bash "$_X/launch.sh" 2>&1 || true; }
+_O="$(_launch "dashboard/ other")"
+_OTHER_PID="$(cat "$_X/.run/ext-other.pid" 2>/dev/null || true)"
+[[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_OTHER_PID"
+# (The warning comes from start.sh's own guard or, since round 2, from
+# lib/extensions.sh's ob_ext_enabled filtering it first — either wording.)
+if [[ "$_O" == *LAUNCH-LOOP-DONE* && "$_O" == *"invalid extension name 'dashboard/'"* ]]; then
+  pass "start.sh skips EXTENSIONS=\"dashboard/\" instead of dying on .run/ext-dashboard/.pid"
+else
+  fail "start.sh's extension loop aborted on 'dashboard/': $(tr '\n' ' ' <<< "$_O")"
+fi
+sleep 0.3
+if [[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && kill -0 "$_OTHER_PID" 2>/dev/null && [[ -s "$_X/.run/ext-other.start" ]]; then
+  pass "…and still launches the valid one, recorded with its start time"
+else
+  fail "the valid extension was not launched/recorded: $(ls "$_X/.run")"
+fi
+_O="$(_launch "other")"
+if [[ "$_O" == *"already running"* && "$(cat "$_X/.run/ext-other.pid")" == "$_OTHER_PID" ]]; then
+  pass "a live extension is not spawned over (its record is kept)"
+else
+  fail "start.sh spawned over a live extension: $(tr '\n' ' ' <<< "$_O")"
+  _p="$(cat "$_X/.run/ext-other.pid" 2>/dev/null || true)"; [[ "$_p" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_p"
+fi
+[[ "$_OTHER_PID" =~ ^[0-9]+$ ]] && kill "$_OTHER_PID" 2>/dev/null || true
+
+# extensions-client-9: `ext.sh disable x` then `./stop.sh` (as ext.sh says)
+# must still bring x's containers down.
+echo ""
+echo "stop.sh brings down compose extensions, enabled or just disabled:"
+_C="$_T/compose"; _sandbox "$_C"
+mkdir -p "$_C/extensions/cx"
+printf 'NAME=cx\nKIND=compose\n' > "$_C/extensions/cx/manifest"
+printf 'services: {}\n' > "$_C/extensions/cx/compose.yaml"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_C/bin/docker"; chmod +x "$_C/bin/docker"
+: > "$_C/openbeast.conf"   # cx NOT enabled: it was just disabled
+RUN_ENV=(DOCKER_LOG="$_C/docker.log")
+_run "$_C" "$_C/stop.sh" >/dev/null
+RUN_ENV=()
+if grep -q -- "down" "$_C/docker.log" && grep -q -- "-f $_C/extensions/cx/compose.yaml" "$_C/docker.log"; then
+  pass "a disabled compose extension's fragment is still passed to 'docker compose down'"
+else
+  fail "stop.sh left a just-disabled compose extension running: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+if grep -q -- "-f $_C/docker-compose.yml" "$_C/docker.log"; then
+  pass "…alongside the core compose file (control)"
+else
+  fail "stop.sh no longer passes the core compose file: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "================================"
+echo "Lifecycle: $PASS passed, $FAIL failed"
+echo "================================"
+[[ $FAIL -eq 0 ]]

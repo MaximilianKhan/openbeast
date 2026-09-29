@@ -71,7 +71,9 @@ session reads `running` forever while /send queues into a corpse.
 
 Env:
   OPENBEAST_CHAT_PORT          listen port            (default 3003)
-  OPENBEAST_CHAT_BIND          bind address           (default 127.0.0.1)
+  OPENBEAST_CHAT_BIND          bind address           (default 127.0.0.1;
+                               off loopback, the login header is ignored
+                               from non-loopback peers — device keys only)
   OPENBEAST_CHAT_OPERATORS     comma-separated logins (unset = open reads)
   OPENBEAST_CHAT_RATE_PER_MIN  write rate per device  (default 60)
   OPENBEAST_CHAT_STOP_TERM_S   SIGTERM escalation     (default 30)
@@ -87,6 +89,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import shlex
@@ -139,8 +142,11 @@ CONTROL_EVENT_TYPES = frozenset({"hello", "end", "lost", "log", "unknown"})
 MAX_MESSAGE_BYTES = 32 * 1024
 # Ledger meta keys the SERVER owns. A caller may attach free-form meta to a
 # session it starts; it may not attach these, because they are load-bearing
-# for liveness (`pid_start`) and for steering (`cursor`).
-RESERVED_META = ("pid_start", "cursor")
+# for liveness (`pid_start`, `boot_id`) and for steering (`cursor`). The list
+# lives in sessions.py beside the code that writes them: this copy omitted
+# boot_id after [54] added it, and a caller's boot_id — merged over the
+# runner's own by annotate_when_registered — bore a live agent as `lost`.
+RESERVED_META = sessions.SERVER_OWNED_META
 # How much transcript one read may pull. The SSE reader used to do an
 # uncapped f.read() from the requested offset, and every replay-from-zero —
 # a fresh page load, the Replay button, or the mid-stream `lost` reset —
@@ -164,6 +170,45 @@ CSP = ("default-src 'none'; "
        "base-uri 'none'; "
        "form-action 'none'; "
        "frame-ancestors 'none'")
+
+
+def _peer_is_loopback(request) -> bool:
+    """May this connection's peer assert an identity by HEADER?
+
+    Tailscale-User-Login is a credential only because `tailscale serve` is
+    the one thing that can set it — it strips client copies and dials us
+    from 127.0.0.1. OPENBEAST_CHAT_BIND is an operator knob, and set to
+    0.0.0.0 or a LAN/tailnet address it let any host that could reach the
+    port send `Host: localhost` + any login and read every transcript. The
+    header therefore counts only from a loopback peer (or a Unix socket,
+    which has no address and is on this box by construction). A device key
+    and the locality token are secrets, not claims, and work from anywhere.
+
+    Loopback is necessary, never sufficient: `tailscale serve` makes every
+    remote caller loopback, which is why LOCAL is the token (see module
+    docstring) and not this. Anything that is not an IP literal fails closed.
+    """
+    client = getattr(request, "client", None)
+    if client is None:
+        return True
+    try:
+        addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
+
+
+def _bind_is_loopback(host: str) -> bool:
+    """Is a bind address loopback-only? A NAME counts only if it is
+    `localhost`; anything that has to be resolved is treated as off-box."""
+    h = (host or "").strip().strip("[]")
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def _now_iso() -> str:
@@ -561,6 +606,82 @@ def signal_identity_ok(record: dict) -> bool:
     return _int_or_zero(current) == _int_or_zero(want)
 
 
+def _proc_table() -> dict[int, tuple[int, int, int]]:
+    """{pid: (ppid, pgid, start)} for every process /proc will show us."""
+    table: dict[int, tuple[int, int, int]] = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return table
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        fields = raw.rpartition(")")[2].split()
+        # After comm: state=0, ppid=1, pgrp=2, ..., starttime=19.
+        if len(fields) < 20:
+            continue
+        try:
+            table[int(name)] = (int(fields[1]), int(fields[2]),
+                                int(fields[19]))
+        except ValueError:
+            continue
+    return table
+
+
+def _descendant_groups(pid: int, session_pgid: int) -> list[tuple[int, int]]:
+    """Process groups LED by a descendant of `pid`, outside its own group.
+
+    Why this exists: agents/tools.py runs every bash-tool command with
+    start_new_session=True, so the command sits in a group of its own, and
+    the only thing enforcing its timeout is the runner's proc.wait(). Killing
+    the runner's group — what Stop escalates to when the cooperative stop
+    cannot land mid-tool-call — left that command running as an orphan with
+    no timeout at all, holding its ports, RAM or GPU. The tree has to be
+    read BEFORE the runner dies: after, the orphan's parent is the subreaper
+    and nothing links it to this session any more.
+
+    Only groups a descendant LEADS (pgid == its own pid) are returned, so a
+    descendant that joined somebody else's group can never make us signal
+    that group. Each entry carries the leader's start time so the caller can
+    refuse a pid recycled between this snapshot and the signal.
+    """
+    table = _proc_table()
+    children: dict[int, list[int]] = defaultdict(list)
+    for p, (ppid, _pg, _st) in table.items():
+        children[ppid].append(p)
+    out: list[tuple[int, int]] = []
+    seen = {pid}
+    stack = list(children.get(pid, ()))
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        stack.extend(children.get(p, ()))
+        _ppid, pg, start = table[p]
+        if pg == p and pg != session_pgid and pg > 1:
+            out.append((pg, start))
+    return out
+
+
+def _signal_descendant_groups(groups: list[tuple[int, int]], sig: int) -> None:
+    own = os.getpgrp()
+    for pg, start in groups:
+        if pg == own:
+            continue
+        try:
+            if sessions.pid_start_time(pg) != start:
+                continue                 # gone, or a recycled pid: not ours
+            os.killpg(pg, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+
+
 def signal_session(record: dict, sig: int) -> bool:
     """Signal a session's process GROUP, falling back to the bare pid.
 
@@ -577,6 +698,20 @@ def signal_session(record: dict, sig: int) -> bool:
         return False
     pid = _int_or_zero(record.get("pid"))
     pgid = _int_or_zero(record.get("pgid") or record.get("pid"))
+    # The session's tree reaches past its own group (tool commands run in
+    # sessions of their own — see _descendant_groups). Snapshot it while the
+    # parent links still exist; signal it after the session itself.
+    try:
+        subtree = _descendant_groups(pid, pgid)
+    except Exception:
+        subtree = []
+    try:
+        return _signal_session_group(pid, pgid, sig)
+    finally:
+        _signal_descendant_groups(subtree, sig)
+
+
+def _signal_session_group(pid: int, pgid: int, sig: int) -> bool:
     # LEADERSHIP, not just membership. `pgid == pid` is what makes this pid the
     # group's leader, and it is the only case where killing the group is
     # killing *this session's* tree. Every intended producer satisfies it by
@@ -651,6 +786,12 @@ _CHILDREN_LOCK = threading.Lock()
 
 _SCOPE_PREFIX: list[str] | None = None
 _SCOPE_LOCK = threading.Lock()
+# The parent every console-started scope lands in. Per-scope MemoryMax bounds
+# ONE runaway session; two of them at 50% each (or one plus the stack) still
+# filled the box, because the scopes shared no parent — the "never the box"
+# promise held only for a session running alone. The slice carries the SAME
+# cap as an aggregate, so the whole set of phone-started work is bounded.
+JOB_SLICE = "openbeast-chat-jobs.slice"
 
 
 def _in_service_cgroup() -> bool:
@@ -670,6 +811,7 @@ def _job_mem_max_bytes() -> int:
     start.sh's cap exists to prevent ("a runaway process can only take down
     the stack, never the box"). So every scope gets a cap of its own:
     OPENBEAST_CHAT_JOB_MEM_PCT percent of RAM (default 50; 0 disables).
+    The same figure bounds all of them TOGETHER, via JOB_SLICE.
     """
     try:
         pct = int(os.environ.get("OPENBEAST_CHAT_JOB_MEM_PCT") or 50)
@@ -697,6 +839,12 @@ def _probe_scope() -> list[str]:
     prefix = [exe, "--user", "--scope", "--quiet", "--collect"]
     cap = _job_mem_max_bytes()
     if cap:
+        # The aggregate bound first: a runtime drop-in on the shared slice
+        # (a slice needs no unit file to be loaded, and --runtime keeps it off
+        # disk). Only if it took do the scopes go into that slice — a slice
+        # without its cap would be a promise with nothing behind it.
+        if _cap_job_slice(cap):
+            prefix.append(f"--slice={JOB_SLICE}")
         # No swap escape hatch either: a job thrashing swap takes the box's
         # responsiveness with it just as surely as one that fills RAM.
         prefix += ["-p", f"MemoryMax={cap}", "-p", "MemorySwapMax=0"]
@@ -717,6 +865,27 @@ def _probe_scope() -> list[str]:
               "started from the console will live inside this unit (they die "
               "with ./stop.sh and share its memory cap)", file=sys.stderr)
     return prefix if ok else []
+
+
+def _cap_job_slice(cap: int) -> bool:
+    """Set MemoryMax/MemorySwapMax on JOB_SLICE; True when it took."""
+    import shutil
+    exe = shutil.which("systemctl")
+    if not exe:
+        return False
+    try:
+        ok = subprocess.run(
+            [exe, "--user", "set-property", "--runtime", JOB_SLICE,
+             f"MemoryMax={cap}", "MemorySwapMax=0"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if not ok:
+        print(f"[beast-chat] could not cap {JOB_SLICE} — each console "
+              f"session keeps its own memory cap, but they are not bounded "
+              f"together", file=sys.stderr)
+    return ok
 
 
 def scope_prefix() -> list[str]:
@@ -771,7 +940,12 @@ def annotate_when_registered(session_id: str, meta: dict, *,
             exists = False
         if exists:
             with contextlib.suppress(Exception):
-                sessions.touch(session_id, meta=dict(meta or {}))
+                # Belt to create_session's strip: this merge lands OVER the
+                # runner's own record, so a server-owned key here would
+                # replace the runner's real pid_start/boot_id/cursor.
+                sessions.touch(session_id, meta={
+                    k: v for k, v in (meta or {}).items()
+                    if k not in RESERVED_META})
             return True
         now = time.monotonic()
         if now >= deadline:
@@ -1133,7 +1307,10 @@ def create_app() -> FastAPI:
         """
         if is_local(request):
             return {"login": "local", "device": "local", "local": True}
-        login = (request.headers.get("tailscale-user-login") or "").strip()
+        # Off-box peers cannot claim a login (see _peer_is_loopback); they
+        # still get in with a device key, which is a secret, not a claim.
+        login = ((request.headers.get("tailscale-user-login") or "").strip()
+                 if _peer_is_loopback(request) else "")
         if login and operators.allows(login):
             # Unset operator list = single-user default: any identified login
             # reads. Set = allowlist, and anything else falls through to 404.
@@ -1677,7 +1854,9 @@ def create_app() -> FastAPI:
                 # mcp_server.start_agent already writes agent-<id>.jsonl
                 # here, so check_agent/tail_agent and this console read the
                 # same files instead of two divergent archives.
-                os.makedirs(LOG_DIR, exist_ok=True)
+                # 0700 when we are the one creating it (an existing
+                # directory's mode is the operator's call, not ours).
+                os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
                 if kind == "agent":
                     transcript = os.path.join(LOG_DIR, f"agent-{session_id}.jsonl")
                 else:
@@ -1748,6 +1927,12 @@ def create_app() -> FastAPI:
                     # as "down". main() also warms it at start.
                     cmd = await asyncio.to_thread(scope_prefix) + cmd
                     if kind == "agent":
+                        # The runner appends with a plain open(), which takes
+                        # the umask: every console-streamed agent transcript
+                        # (tool output, file contents, fetched pages) landed
+                        # 0644 while job transcripts were 0600. Create it
+                        # 0600 FIRST; an append-open keeps an existing mode.
+                        _create_private(transcript)
                         proc = subprocess.Popen(
                             cmd, cwd=workdir, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
@@ -1909,6 +2094,17 @@ def _inflight(lock, gauges):
             gauges["inflight"] -= 1
 
 
+def _create_private(path: str) -> None:
+    """Create `path` empty and 0600 if absent; tighten it to 0600 if not."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _body_str(body: dict, key: str, default: str = "") -> str:
     """A string field, or 400. Explicit types: a list where a string belongs
     used to reach shlex/Popen and 500 from deep inside the spawn."""
@@ -2003,6 +2199,23 @@ def _prune_ledger_soon(days: int = 30) -> None:
     threading.Thread(target=run, name="chat-prune", daemon=True).start()
 
 
+def _uvicorn_config(app, host: str, port: int):
+    """The uvicorn.Config main() serves with — separate so tests load it.
+
+    proxy_headers=False is load-bearing. uvicorn's default trusts
+    X-Forwarded-For from 127.0.0.1 and rewrites request.client to it, and
+    `tailscale serve` — which dials us from 127.0.0.1 — always sends
+    X-Forwarded-For: <tailnet IP>. The app would then see a 100.x peer,
+    _peer_is_loopback() would drop Tailscale-User-Login, and every phone on
+    the tailnet would get 404 from the console. The auth peer must be the
+    real socket peer; nothing here reads the forwarded address.
+    """
+    import uvicorn
+    return uvicorn.Config(app, host=host, port=port, log_level="warning",
+                          timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+                          proxy_headers=False, forwarded_allow_ips="")
+
+
 def main() -> None:
     """Bind the port FIRST, then build the app (which mints the token).
 
@@ -2015,6 +2228,14 @@ def main() -> None:
     import uvicorn
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    if not _bind_is_loopback(host):
+        # Not refused: an enrolled device key is a real credential from any
+        # peer. But the published path is `tailscale serve` → 127.0.0.1, and
+        # off-box callers can no longer read with a login header alone.
+        print(f"WARNING: OPENBEAST_CHAT_BIND={host} is not loopback. "
+              f"Tailscale-User-Login is honoured only from 127.0.0.1 (the "
+              f"`tailscale serve` path); callers on {host} need an enrolled "
+              f"chat-scoped device key.", file=sys.stderr)
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     # IPv4 FIRST. For a NAME, [0] is whatever the resolver lists first —
     # `localhost` gives ::1 on most boxes — and every health probe in this
@@ -2039,9 +2260,7 @@ def main() -> None:
                      daemon=True).start()
     print(f"OpenBeast beast-chat on {host}:{port} "
           f"(sessions: {sessions.SESSIONS_DIR})")
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning",
-                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
-    uvicorn.Server(config).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

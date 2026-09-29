@@ -1,5 +1,57 @@
 # TODO
 
+## 🔬 FULL REVIEW 2026-09-29
+
+- **What:** an adversarial review of the whole repo found **118 findings**,
+  and verification refuted none of them (many were downgraded). The report
+  (`docs/reviews/FULL-REVIEW-2026-09-29.md`) is local to the rig and **not
+  committed**: it has exploit-level detail for items still open, and this
+  repo is public (see Max call 7).
+- **Fixes landed** on `fix/review-2026-09-29` in two rounds, one branch per
+  area; code fixes carry regression tests (docs and data-only fixes do
+  not). The per-item not-fixed reasons are
+  in the round reports.
+- **Tier-3 re-audit** (`scratch/tier3-verdict-reaudit-2026-09-29.txt`): *"The
+  pre-registered SHIP (net +13, p = 0.0192) does NOT hold on clean rows.
+  Dropping the rows the model did not produce leaves net +10 (b = 17, c = 7),
+  exact McNemar p = 0.0639. That is NO-SHIP under Clause 1 (p < 0.05). The
+  verdict is UNRESOLVED, not refuted."* The call rides on one unit
+  (62_crt_f: keeping it gives +11, p = 0.043). The champion guard's
+  "negative" was mostly EAGAIN artifact: clean, it is 4 vs 1 on 14 units,
+  which is uninformative. Greedy churn is about 30%, not about 0. The
+  estimate is in-sample. **Do not wire the pack per model on the 09-17
+  verdict.**
+- **Decisions (Max, 2026-09-29):**
+  1. **E13 `heretic27b-Q2K-rr2.gguf` — DELETED** (storage-06). Byte-identical
+     to the referenced `rr.gguf` (cmp) and misnamed; `rr.gguf` stays.
+  2. **Same-uid conf read (identity-rbac-2) — DEFERRED, documented.**
+     `/proc/$PPID/environ` is closed, but admin-tier `bash` can still read
+     `openbeast.conf` (and so the JWT secret). Landlock is allow-list only,
+     so it cannot carve one file out of an otherwise free shell; Sandlock
+     default-on changes eval behaviour (needs a GPU measurement first) and a
+     separate uid needs sudo/system setup. See [`RBAC_PLAN.md`](RBAC_PLAN.md).
+  3. **GPU reruns — NOT YET** (Max: "no re-run yet", "not yet"). When wanted,
+     in the new era: Tier-3 FRESH (`FRESH=1 bash scratch/tier3_zig_ab.sh`,
+     ~7 GPU-h, +1.5 h optional held-out zig set); single-slot greedy floor
+     (`bash scratch/greedy_floor.sh --single-slot`, ~20 GPU-h). Until then the
+     pack stays unwired: Tier-3 is UNRESOLVED.
+  4. **llama.cpp rebuild — DONE differently.** `update.sh --llama` refuses
+     under a foreign GPU lease, and now reflink-snapshots `build/bin` and
+     rolls it back when a rebuild fails, so a half-built lib/binary mix can
+     never be served. A second full build tree was rejected (doubles compile
+     time for the same guarantee).
+  5. **Aborted-stream token metering — KEPT AS IS.** Aborts are audited as
+     `outcome=client_disconnect` with tokens null; an invented count would be
+     worse than none.
+  6. **`agents/logs/` retention — DONE, opt-in.** `AGENT_LOG_RETENTION_DAYS`
+     (default 0 = forever): the daily logrotate timer removes transcripts past
+     the cutoff that no ledger record still names.
+  7. **The review report stays local** (`docs/reviews/FULL-REVIEW-2026-09-29.md`,
+     untracked): most items are now fixed, but it carries exploit-level detail
+     and this repo is public.
+  8. **Max's own, unchanged:** `scratch/prune-2026-09-17.sh --go --sudo` and
+     the docsync GLM-5.3 exclude — leave them.
+
 ## 📱 beast-chat + 🎨 beast-artifact — BOTH SHIPPED 2026-09-15
 
 - **beast-artifact** shipped in **v1.3.0** (PR #61). Docs:
@@ -21,37 +73,71 @@
   can now publish their own tables with a stable id per verdict (a rerun
   becomes version 2 of the same URL instead of a new link). Not wired yet.
 
-## ⏭ NEXT — decided 2026-09-17 night, for when Max revisits
+## ⏭ NEXT — decided 2026-09-17 night, RE-AUDITED 2026-09-29
 
-**Tier-3 verdict (2026-09-17): SHIP.** The zig awareness pack on Qwen3.8-27B
-Uncensored: net +13 rescues (20/7, McNemar p = 0.019), replicated +5/+8;
-2.9 fewer iterations-to-fix (p = 0.008). Champion guard clean by the
-pre-registered rule (p = 0.17) but *negative in direction* (14 vs 21, n = 1).
-Record: `scratch/tier3-verdict.txt`, journal in the research repo.
+**Tier-3 verdict: UNRESOLVED. The 09-17 "SHIP" does not survive clean rows.**
+As registered it read net +13 (20/7, p = 0.019). Eleven treated-model rows
+were banked while llama-server was dead ("Connection error." for the rest of
+the unit, exit 0). Seven of those are P0a rows replayed from the 09-15 cache.
+Dropping them leaves **net +10 (17/7), p = 0.064, NO-SHIP** under the
+pre-registered rule. Direction and iterations-to-fix (−3.2, p = 0.008) hold.
+The ship/no-ship line rides on one row: keeping 62_crt_f, which lost only 2
+iterations, gives +11, p = 0.043. The effect is also **in-sample**: the pack
+was written against failures on these same 30 zig units, and there is no
+held-out set yet (`LANG_AWARENESS_PLAN.md` §5 has the proposed design).
+**Champion guard: the "negative direction" was mostly an artifact.** 10 of
+the 30 C1 rows died on fork/thread EAGAIN, the uid-wide RLIMIT_NPROC cap.
+Clean, it reads 4 rescues vs 1 regression on 14 units: uninformative, not
+negative. The per-model gating below had no real measurement behind it.
+Record: `scratch/tier3-verdict-reaudit-2026-09-29.txt` (+ the journal). The
+74 contaminated cache entries (all eras) were moved to
+`evals/cache-quarantine-2026-09-29/`; `MANIFEST.txt` there lists each file
+and why.
+
+**Greedy is not near-zero churn here.** At `--jobs 4` against the `-np 6`
+server, the same-config Tier-3 replicates flipped ~30% of zig units. Size
+any future arm on that, or measure single-slot
+(`scratch/greedy_floor.sh --single-slot`, ~20 h).
 
 **beast-assist and beast-lang both stay — they are not redundant.** Assist is
 the reactive sensor (compiler verdict after a write; small measured effect,
 zero regressions). The pack is proactive (facts before the write) and is the
-arm that won. Escalation (#90) is the bridge and needs both. The one genuine
-overlap is assist's hand-curated `_ZIG_FIX_HINTS` table in `agents/tools.py`,
-which the generated escalation index supersedes — retire it after #90's A/B.
+leading arm, though not a proven one. Escalation (#90) is the bridge and
+needs both. The one genuine overlap is assist's hand-curated
+`_ZIG_FIX_HINTS` table in `agents/tools.py`, which the generated escalation
+index supersedes. Retire it after #90's A/B.
 
-**The winning arm reaches no production model yet.** Only the eval harness
-injects the pack (`--packs` → `runner.py --context-file`). In order, each on
-Max's go:
+In order, each on Max's go:
 
-1. **Wire the pack into production, gated per model** via the `LANG_PACKS`
-   allow list — on for Qwen3.8-unc, **off for the Qwen3.6 champion** until it
-   has its own replicate. `start.sh` / `configure-webui.sh` wiring; touches no
-   era-hashed file; live-check on `beastup`.
-2. **Resume the campaign** (`master4` = greedy floor → IQ2) for the churn floor
-   the +13 is read against. Run 1 of the floor was SIGKILLed by something at
-   21:12 on 09-17 (not by us, no OOM); 21 units are cached. The stack has to
-   come down for it.
-3. **Merge draft #90** at that boundary (the eval era rolls), run the P4 zig
-   mini-A/B (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the
-   index wins.
-4. Max's own: `scratch/prune-2026-09-17.sh --go --sudo`.
+1. **Land the two contamination fixes**: the RLIMIT_NPROC cap
+   (tools-mcp-security-1) and connection errors not banked as model
+   verdicts (eval-harness-1). Both roll the eval era.
+2. **Rerun Tier-3 fresh in the new era**: `FRESH=1 bash
+   scratch/tier3_zig_ab.sh`, all six cells `--no-cache`, ~7 GPU-h. Add
+   the held-out zig set as `EXTRA_UNITS` if it is authored by then
+   (+~1.5 h). Patching the 29 contaminated unit-runs into the 09-17 cells
+   would mix eras, so don't.
+3. **Only if the rerun ships**: wire the pack into production, gated per
+   model, via the `LANG_PACKS` allow list. Decide the champion from its own
+   clean cells, not from the 09-17 guard. `start.sh` / `configure-webui.sh`
+   wiring touches no era-hashed file; live-check it on `beastup`.
+4. **Greedy floor**: not needed for the default regime (the Tier-3
+   replicates measured it: ~30%). Run `greedy_floor.sh --single-slot` only
+   if single-slot low churn is worth ~20 GPU-h, and **with the stack
+   DOWN**: it refuses (exit 3) when anything already serves :8080, and
+   aborts unless its own server reports `total_slots == 1`. Both runs are
+   now `--no-cache`. The IQ2 pair (stage F, `master4`) is still pending.
+   The row guard now flags harness deaths, EAGAIN, API-error fails matched
+   in the agent logs, live zero-token fails with a normal exit (the shape
+   of a unit run against a dead server), and every run_eval infra reason
+   (`setup_failed`, `server_unhealthy`, `skipped_cache_miss`, `low_disk`,
+   `server_error`, `env_error`) or nonzero per-row `api_errors` count.
+   `e32_cap_verdict.py` refuses a p-value when a row is incomplete and
+   exits 1 on a refused verdict or an INVALID row.
+5. **Merge draft #90** at that boundary, run the P4 zig mini-A/B
+   (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the index
+   wins.
+6. Max's own: `scratch/prune-2026-09-17.sh --go --sudo`.
 
 ## 🧭 FABLE REVIEW 2026-09-17 — what a fresh read found after the 152-agent pass
 
@@ -1413,9 +1499,17 @@ the choke point where identity, quotas, audit, and metering all attach.
   latency (no user labels — cardinality/privacy; per-user detail is the
   audit log). REMAINING: llama-server metrics scrape config + Grafana
   dashboard JSON.
-- ✅ **Rotation (DONE 2026-07-09):** scripts/logrotate-openbeast.conf
+- ◐ **Rotation (policy 2026-07-09; installer 2026-09-29; NOT on by default):** scripts/logrotate-openbeast.conf
   covers stack.log / tool-audit.jsonl / sweep logs (weekly or 50M, 8 kept).
-  REMAINING: structured JSON log option for the tool server.
+  2026-09-29: it was never INSTALLED anywhere and missed chat-audit,
+  artifact-audit and ext-*.log — now covered, and `scripts/logrotate.sh
+  --install` sets up a daily systemd --user timer (no sudo; built-in size
+  rotation where logrotate is absent); README + INSTALL §6 tell the user to
+  run it. STILL OPEN (review storage-04): nothing on the default path runs
+  --install — call it idempotently from bootstrap.sh/start.sh + a doctor
+  row when the timer is missing; a per-caller bound on artifact-audit; a retention
+  decision for agents/logs/ transcripts; structured JSON log option for the
+  tool server.
 - **Backup/restore CLI (M).** scripts/backup.sh: WebUI volume + conf +
   workspaces + leaderboard → one tarball; restore path TESTED (an
   untested backup is a wish, not a backup).

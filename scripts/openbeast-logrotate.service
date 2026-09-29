@@ -1,0 +1,14 @@
+# Service half of the OpenBeast log-rotation timer — see
+# scripts/openbeast-logrotate.timer (installed by ./scripts/logrotate.sh --install).
+
+[Unit]
+Description=OpenBeast log rotation
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+# Quoted: a checkout path with a space must stay one argument. logrotate.sh
+# --install escapes the path for systemd (%, $, \ and ") when it renders this.
+ExecStart="@REPO@/scripts/logrotate.sh"
+Nice=19
+IOSchedulingClass=idle

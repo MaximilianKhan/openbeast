@@ -195,6 +195,66 @@ def test_a_drafted_claim_must_show_what_stopped_working(rig):
     assert "no OLD form" in rep["candidates"][0]["reason"]
 
 
+#: the maketrans claim, but its OLD form fails on a syntax error that has
+#: nothing to do with maketrans: verify() still calls that VERIFIED
+COINCIDENTAL = dict(GOOD, id="coincidence",
+                    old=["import string\nt = string.maketrans('a', 'b'\n"])
+#: an OLD form that fails, and never touches what the summary is about
+UNRELATED = dict(GOOD, id="unrelated", old=["import string\nt = string.nosuch\n"])
+
+
+def test_an_old_form_that_fails_for_another_reason_is_not_evidence(rig):
+    """Round 5: VERIFIED only says every old form FAILED. A drafted old form
+    that fails on a typo or a syntax error proved nothing about the claimed
+    removal, and it used to be staged all the same."""
+    for bad, why in ((COINCIDENTAL, "never names maketrans"),
+                     (UNRELATED, "uses none of the names")):
+        assert V.verify(S._as_claim(S.validate(bad, "python"), str(rig.tmp)))[
+            "verdict"] == V.VERIFIED, "control: the verifier alone accepts it"
+        rep = S.draft_run("python", S.StubClient([_reply(bad)]), rig.sections(),
+                          max_prompts=1)
+        assert rep["counts"][S.VERIFIED] == 0, rep
+        assert rep["counts"][S.REJECTED] == 1, rep
+        assert why in rep["candidates"][0]["reason"], rep["candidates"][0]
+    assert not rig.staging()
+    # negative control: the same claim whose old failure DOES name it
+    rep = S.draft_run("python", S.StubClient([_reply(GOOD)]), rig.sections(),
+                      max_prompts=1)
+    assert rep["counts"][S.VERIFIED] == 1, rep
+
+
+def test_the_evidence_check_reads_error_lines_not_the_quoted_source(monkeypatch):
+    """A caret block quotes the source line, which carries the name whatever
+    the error is about; only the error lines count when there are any."""
+    cand = V.Claim({"id": "t", "lang": "zig", "topic": "t",
+                    "summary": "`std.time.timestamp` is gone",
+                    "old": ["_ = std.time.timestamp();\n"], "new": ["_ = 1;\n"]},
+                   "synthesized", "/nonexistent")
+    quoted = D.Result(False, "claim.zig:2:30: error: expected ';', found '}'\n"
+                             "    _ = std.time.timestamp()\n        ^~~~")
+    monkeypatch.setattr(V, "old_failures", lambda c: [(c.old[0], quoted)])
+    assert "never names time, timestamp" in (S.unrelated_failure(cand) or "")
+    named = D.Result(False, "claim.zig:2:17: error: root source file struct "
+                            "'time' has no member named 'timestamp'")
+    monkeypatch.setattr(V, "old_failures", lambda c: [(c.old[0], named)])
+    assert S.unrelated_failure(cand) is None
+    # an availability claim (no OLD code) is exempt: only the variant differs
+    cand.old = []
+    monkeypatch.setattr(V, "old_failures",
+                        lambda c: pytest.fail("an availability claim was re-compiled"))
+    assert S.unrelated_failure(cand) is None
+
+
+def test_promote_applies_the_evidence_check_too(rig):
+    path = _stage(rig, GOOD)
+    doc = json.loads(open(path).read())
+    doc["claims"][0]["old"] = COINCIDENTAL["old"]         # a hand edit
+    open(path, "w").write(json.dumps(doc))
+    rc, msgs = S.promote(path, None)
+    assert rc == 1 and any("never names" in m for m in msgs), msgs
+    assert not (rig.claims / "python-synthesized.json").exists()
+
+
 # --- hostile input ------------------------------------------------------------
 
 def test_a_hostile_python_import_never_reaches_the_resolver(rig, monkeypatch):

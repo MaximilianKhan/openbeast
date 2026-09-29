@@ -8,19 +8,63 @@
 #   3. System prompt from system-prompt.md
 #
 # Called automatically by start.sh after Open WebUI is ready.
+#
+#   ./scripts/configure-webui.sh                          full configuration
+#   ./scripts/configure-webui.sh --secure-default-admin   ONLY retire the
+#       upstream default admin password (see _secure_default_admin below);
+#       setup-tailscale.sh runs this the moment the WebUI goes tailnet-wide.
+#   ./scripts/configure-webui.sh --check-default-admin    read-only probe
+#       (doctor.sh): exit 1 when login is ON and admin@localhost still signs
+#       in with upstream's default password, 0 when login is ON and it does
+#       not, 4 when the running WebUI has login off (or /api/config does not
+#       say) so the probe did not run, 3 when WebUI is unreachable.
 
 set -euo pipefail
 
-WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
-MCPO_URL="${MCPO_URL:-http://localhost:3001}"
+MODE=full
+case "${1:-}" in
+  "") ;;
+  --secure-default-admin) MODE=secure ;;
+  --check-default-admin)  MODE=check ;;
+  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
+# Every credential header below (the admin JWT, LLAMA_API_KEY) goes through
+# ob_curl_hdr / ob_curl_bearer — curl --config on fd 3, never argv, because
+# /proc/*/cmdline is world-readable and the admin JWT is bash-equivalent.
+source "$SCRIPT_DIR/lib/curl_auth.sh"
+CONF="$REPO_DIR/openbeast.conf"
 
+# Open WebUI, the tool server and SearXNG all bind BIND_HOST, and WebUI runs
+# with network_mode: host — so both this script's own calls AND the URLs it
+# stores in WebUI's config must dial the probe host (lib/net.sh via conf.sh),
+# not a hard-coded localhost that a socket bound to a specific LAN/tailnet
+# address refuses. Loopback/wildcard binds keep the `localhost` spelling.
+_OB_LOCAL_HOST="${OPENBEAST_PROBE_HOST:-127.0.0.1}"
+[[ "$_OB_LOCAL_HOST" == "127.0.0.1" ]] && _OB_LOCAL_HOST=localhost
+WEBUI_URL="${WEBUI_URL:-http://$_OB_LOCAL_HOST:3000}"
+MCPO_URL="${MCPO_URL:-http://$_OB_LOCAL_HOST:3001}"
+
+# Open WebUI's built-in default admin (open_webui/routers/auths.py, the
+# WEBUI_AUTH == False branch of signin): with auth OFF, signing in as
+# admin@localhost creates that account as ADMIN with the hardcoded password
+# "admin" — and this script does exactly that on every auth-off start. When
+# auth is later turned ON (setup-tailscale.sh), the account survives with the
+# same well-known password, so any tailnet device could sign in as admin and
+# reach bash through the privileged tool connection.
+DEFAULT_ADMIN_EMAIL="admin@localhost"
+DEFAULT_ADMIN_PASSWORD="admin"
+
+if [[ "$MODE" == "full" ]]; then
 # Refresh the generated skill menu so the prompt always matches skills/
 # (non-fatal: a broken generator must not block WebUI configuration).
 python3 "$SCRIPT_DIR/generate-skill-index.py" >/dev/null 2>&1 \
   || echo "Warning: skill index regeneration failed — prompt may list stale skills" >&2
+fi
 
 # Load system prompt: soul file + tool guidance (Open WebUI needs both)
 SYSTEM_PROMPT=""
@@ -31,14 +75,20 @@ if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
   SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
 fi
 
-echo "Configuring Open WebUI..."
+[[ "$MODE" == "full" ]] && echo "Configuring Open WebUI..."
 
 # Wait for Open WebUI to be ready — bounded so a container that never comes
 # up can't leave this loop orphaned forever (start.sh backgrounds us).
-for _i in $(seq 1 180); do
+# --secure-default-admin is called against a WebUI that is already up, so
+# it gets a short bound instead of three minutes.
+_WAIT_S=180
+[[ "$MODE" == "secure" ]] && _WAIT_S=15
+[[ "$MODE" == "check" ]] && _WAIT_S=2
+for _i in $(seq 1 "$_WAIT_S"); do
   curl -s "$WEBUI_URL/api/version" > /dev/null 2>&1 && break
-  if [[ $_i -eq 180 ]]; then
-    echo "Error: Open WebUI not reachable after 180s — giving up." >&2
+  if [[ $_i -eq $_WAIT_S ]]; then
+    [[ "$MODE" == "check" ]] && exit 3
+    echo "Error: Open WebUI not reachable after ${_WAIT_S}s — giving up." >&2
     echo "       Re-run ./scripts/configure-webui.sh once it's up." >&2
     exit 1
   fi
@@ -46,11 +96,13 @@ for _i in $(seq 1 180); do
 done
 
 # Get admin token. Two paths:
-#   • WEBUI_AUTH=false (legacy): the default admin user signs in with an
-#     empty password.
-#   • WEBUI_AUTH=true (default since the Tailscale rollout): set
-#     WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in openbeast.conf to the
-#     admin account you created on first visit.
+#   • WEBUI_AUTH=false (the default): signing in as admin@localhost works
+#     with any password — upstream substitutes its built-in default and
+#     creates that account as admin on an empty DB.
+#   • WEBUI_AUTH=true (set by setup-tailscale.sh): WEBUI_ADMIN_EMAIL /
+#     WEBUI_ADMIN_PASSWORD in openbeast.conf name an admin account. If the
+#     built-in admin@localhost still has the default password, it is rotated
+#     first and its new password becomes those two keys (see below).
 _signin() {
   # || true: a non-JSON response (502 HTML, connection reset) makes the
   # python step exit 1; under pipefail that would silently kill the whole
@@ -67,6 +119,129 @@ _signin() {
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null \
     || true
 }
+
+# Is the RUNNING WebUI enforcing logins? /api/config is public (the login
+# page needs it) and carries features.auth. Prints true / false / unknown.
+_live_auth() {
+  curl -s -m 5 "$WEBUI_URL/api/config" 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    a = json.load(sys.stdin).get('features', {}).get('auth')
+except Exception:
+    a = None
+print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
+    || echo unknown
+}
+
+# Set KEY=VALUE in openbeast.conf (replacing every existing assignment),
+# keeping the file 0600 — it is where the stack's secrets live. The value
+# travels via env, never argv.
+_conf_set() {
+  ( umask 077
+    CONF_PATH="$CONF" CONF_KEY="$1" CONF_VAL="$2" python3 -c '
+import os, re, tempfile
+path, key, val = os.environ["CONF_PATH"], os.environ["CONF_KEY"], os.environ["CONF_VAL"]
+try:
+    lines = open(path).read().splitlines()
+except FileNotFoundError:
+    lines = []
+pat = re.compile(r"^\s*" + re.escape(key) + r"\s*=")
+out, done = [], False
+for ln in lines:
+    if pat.match(ln):
+        if not done:
+            out.append(f"{key}={val}")
+            done = True
+        continue
+    out.append(ln)
+if not done:
+    out.append(f"{key}={val}")
+d = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".openbeast.conf.")
+with os.fdopen(fd, "w") as f:
+    f.write("\n".join(out) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+' )
+}
+
+# Retire the upstream default admin password (review network-exposure-1).
+# Only while the LIVE WebUI enforces auth: with auth off, upstream's signin
+# checks the stored hash against its hardcoded default, so rotating then would
+# break the running auth-off UI until the next restart. Returns 0 when the
+# default no longer works (rotated now, or never there), 1 when it still does.
+_secure_default_admin() {
+  local tok newpw resp
+  [[ "$(_live_auth)" == "true" ]] || return 0
+  tok=$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")
+  [[ -n "$tok" ]] || return 0      # default password doesn't work: nothing to do
+  newpw=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+  resp=$(OLD_PW="$DEFAULT_ADMIN_PASSWORD" NEW_PW="$newpw" python3 -c \
+      'import json,os; print(json.dumps({"password": os.environ["OLD_PW"], "new_password": os.environ["NEW_PW"]}))' \
+    | ob_curl_bearer "$tok" -s -m 10 "$WEBUI_URL/api/v1/auths/update/password" \
+        -H "Content-Type: application/json" -d @- \
+    2>/dev/null || true)
+  if [[ "$resp" == "true" ]]; then
+    # Record it where this script (and the operator) look for admin creds —
+    # unless the conf already names a DIFFERENT admin account, whose
+    # password must not be clobbered.
+    if [[ -z "${WEBUI_ADMIN_EMAIL:-}" || "$WEBUI_ADMIN_EMAIL" == "$DEFAULT_ADMIN_EMAIL" ]]; then
+      if _conf_set WEBUI_ADMIN_EMAIL "$DEFAULT_ADMIN_EMAIL" \
+          && _conf_set WEBUI_ADMIN_PASSWORD "$newpw"; then
+        WEBUI_ADMIN_EMAIL="$DEFAULT_ADMIN_EMAIL"; WEBUI_ADMIN_PASSWORD="$newpw"
+        echo "SECURITY: the built-in WebUI admin ($DEFAULT_ADMIN_EMAIL) still had" >&2
+        echo "  upstream's default password. Rotated it to a random one, saved as" >&2
+        echo "  WEBUI_ADMIN_PASSWORD in openbeast.conf (0600)." >&2
+        return 0
+      fi
+    elif _conf_set WEBUI_DEFAULT_ADMIN_PASSWORD "$newpw"; then
+      echo "SECURITY: the built-in WebUI admin ($DEFAULT_ADMIN_EMAIL) still had" >&2
+      echo "  upstream's default password. Rotated it to a random one, saved as" >&2
+      echo "  WEBUI_DEFAULT_ADMIN_PASSWORD in openbeast.conf (0600). Your own" >&2
+      echo "  admin ($WEBUI_ADMIN_EMAIL) is untouched; you can delete the" >&2
+      echo "  built-in account in Admin Panel → Users." >&2
+      return 0
+    fi
+    echo "SECURITY: rotated $DEFAULT_ADMIN_EMAIL's default password, but could not" >&2
+    echo "  save the new one to $CONF — the account is now locked (safe)." >&2
+    echo "  Reset it from Admin Panel → Users if you need it." >&2
+    return 0
+  fi
+  # Rotation refused. Another run may have just rotated it (tokens are
+  # revoked on a password change) — re-probe before crying wolf.
+  [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && return 0
+  echo "SECURITY WARNING: WebUI login is ON, but $DEFAULT_ADMIN_EMAIL still signs in" >&2
+  echo "  as ADMIN with upstream's default password \"$DEFAULT_ADMIN_PASSWORD\", and rotating it" >&2
+  echo "  failed. Anyone who can reach the WebUI can take admin (and bash)." >&2
+  echo "  Fix now: sign in as $DEFAULT_ADMIN_EMAIL / $DEFAULT_ADMIN_PASSWORD → Settings → Account" >&2
+  echo "  → change the password (or delete the account from Admin Panel → Users)." >&2
+  return 1
+}
+
+if [[ "$MODE" == "check" ]]; then
+  # Read-only: sign in with the default, change nothing. The password still
+  # travels via env + stdin (_signin), never argv.
+  # Login off / unknown: the question does not arise, and "0" would read as
+  # "checked, and safe" — a claim nothing verified. Say "not probed" (4).
+  [[ "$(_live_auth)" == "true" ]] || exit 4
+  [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && exit 0
+  exit 1
+fi
+
+if [[ "$MODE" == "secure" ]]; then
+  if [[ "$(_live_auth)" != "true" ]]; then
+    echo "WebUI login is not enforced by the running WebUI yet — nothing to rotate" >&2
+    echo "  (the next start with WEBUI_AUTH=true retires the default password)." >&2
+    exit 0   # --secure-default-admin: nothing to rotate yet
+  fi
+  _secure_default_admin || exit 1
+  exit 0     # --secure-default-admin ends here; full mode never exits early
+fi
+
+# Auth ON: retire the default password before anything signs in with it.
+# A failure warns loudly but does not stop the rest of the configuration.
+_secure_default_admin || true
 
 TOKEN=$(_signin "admin@localhost" "")
 if [[ -z "$TOKEN" && -n "$WEBUI_ADMIN_EMAIL" ]]; then
@@ -148,36 +323,42 @@ echo "  Reconciling RBAC tool-server connections..."
 # connection 1 carries the admin key (all tools), connection 2 the guest key
 # (server enforces web_search/fetch only for it). Keys absent = both
 # connections keyless, server open — Phase-1 single-user behavior.
-curl -s -H "$AUTH" "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
+ob_curl_hdr "$AUTH" -s "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
   | MCPO_URL="$MCPO_URL" python3 -c "
 import sys, os, json
 MCPO = os.environ['MCPO_URL']
 ADMIN_KEY = os.environ.get('OPENBEAST_MCPO_ADMIN_KEY', '').strip()
 GUEST_KEY = os.environ.get('OPENBEAST_MCPO_GUEST_KEY', '').strip()
-keyed = bool(ADMIN_KEY and GUEST_KEY)
+# Each connection carries ITS profile key whenever that key is set —
+# independently, the same predicate the server uses (either key = keyed).
+# Requiring both here sent NO key on either connection when only one was
+# configured, so every call, admin included, got 401 from a keyed server.
 data = json.load(sys.stdin)
 conns = [c for c in data.get('TOOL_SERVER_CONNECTIONS', [])
          if not (c.get('info', {}).get('id') in ('1', '2', 'local-tools'))]
 priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
-        'auth_type': 'bearer' if keyed else 'none',
-        'headers': None, 'key': ADMIN_KEY if keyed else '',
+        'auth_type': 'bearer' if ADMIN_KEY else 'none',
+        'headers': None, 'key': ADMIN_KEY,
         'config': {'enable': True, 'function_name_filter_list': '!web_search,!fetch', 'access_grants': []},
         'spec_type': 'url', 'spec': '',
         'info': {'id': '1', 'name': 'Local Tools (privileged)',
                  'description': 'bash, file r/w/edit, grep, agents, skills — admin-only'}}
 web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
-       'auth_type': 'bearer' if keyed else 'none',
-       'headers': None, 'key': GUEST_KEY if keyed else '',
+       'auth_type': 'bearer' if GUEST_KEY else 'none',
+       'headers': None, 'key': GUEST_KEY,
        'config': {'enable': True, 'function_name_filter_list': 'web_search,fetch',
                   'access_grants': [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]},
        'spec_type': 'url', 'spec': '',
        'info': {'id': '2', 'name': 'Web Search (all users)',
                 'description': 'web_search via SearXNG + SSRF-guarded fetch — safe for guest accounts'}}
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
-" | curl -s -H "$AUTH" -H "Content-Type: application/json" \
+" | ob_curl_hdr "$AUTH" -s -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  Tool server configured (Phase 2: admin + guest profiles keyed, one server :3001)."
+elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
+  echo "  Tool server configured with ONE profile key — the other profile is disabled" >&2
+  echo "  (the server fails closed). Run scripts/setup-mcpo-keys.sh to generate both." >&2
 else
   echo "  Tool server configured (privileged=admin-only, web_search+fetch=all users)."
 fi
@@ -194,7 +375,7 @@ fi   # TOKEN_OK
 # Written straight to the DB rather than through the API because the API needs
 # an admin token, and that sign-in fails the moment the operator changes their
 # WebUI password from the one in openbeast.conf — which is the normal case.
-SEARXNG_QUERY_URL="${SEARXNG_URL:-http://localhost:8888}/search?q=<query>"
+SEARXNG_QUERY_URL="${SEARXNG_URL:-http://$_OB_LOCAL_HOST:8888}/search?q=<query>"
 echo "  Wiring built-in Web Search → SearXNG ..."
 if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
 import sqlite3, json, os, sys, time
@@ -263,7 +444,7 @@ TOOL_REFS='["server:1","server:2"]'
 MODELS=""
 for _i in $(seq 1 30); do
   if [[ "$TOKEN_OK" == "1" ]]; then
-    MODELS=$(curl -s -m 5 -H "$AUTH" "$WEBUI_URL/api/models" 2>/dev/null \
+    MODELS=$(ob_curl_hdr "$AUTH" -s -m 5 "$WEBUI_URL/api/models" 2>/dev/null \
       | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -276,7 +457,7 @@ for m in data.get('data', []):
         print(f'{mid}|{fc}')
 " 2>/dev/null || true)
   else
-    MODELS=$(curl -s -m 5 ${LLAMA_API_KEY:+-H "Authorization: Bearer $LLAMA_API_KEY"} \
+    MODELS=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -m 5 \
         "${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}/models" 2>/dev/null \
       | python3 -c "
 import sys, json

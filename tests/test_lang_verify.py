@@ -197,3 +197,130 @@ def test_doc_linkage_reports_verified_knowledge_the_pack_omits(tmp_path):
                 "doc_must_contain": ["never checked"]}]
     missing = V.check_doc_linkage(results, str(pack))
     assert len(missing) == 1 and "takeDelimiter" in missing[0]
+
+
+# --- a driver that fails VALID code makes any OLD form "fail" -----------------
+# verify() counts ANY failure of an OLD form as proof of a break, so each of
+# these false failures was a route to a false VERIFIED.
+
+def _platform_absent_stdlib():
+    """A module this interpreter LISTS as stdlib and cannot import here."""
+    import importlib.util
+    for name in ("winreg", "msvcrt", "_winapi", "nt", "posix", "grp", "pwd"):
+        if name in sys.stdlib_module_names and importlib.util.find_spec(name) is None:
+            return name
+    pytest.skip("every candidate module is importable on this platform")
+
+
+def test_a_stdlib_module_this_platform_lacks_is_not_judged(monkeypatch):
+    mod = _platform_absent_stdlib()
+    r = PY_D.compile_source(f"import {mod}\n{mod}.anything\n")
+    assert not r and r.transient, r.detail
+    monkeypatch.setattr(V, "_VERDICTS", {})
+    got = V.verify(_claim(old=[f"import {mod}\n"], new=["import os\nos.getcwd\n"]))
+    assert got["verdict"] == V.UNVERIFIABLE, got
+    # negative controls: a module that is really gone, a submodule that does
+    # not exist, and a real miss next to the absent one are still verdicts
+    for src in ("import imp\n", "import xml.no_such_submodule\n",
+                f"import {mod}\nimport string\nstring.maketrans\n"):
+        r = PY_D.compile_source(src)
+        assert not r and not r.transient, (src, r.detail)
+
+
+#: Prepended to the resolver child: `_curses` (curses' C half) fails to load
+#: the way _tkinter does on a rig without libtk. Built here, so the test does
+#: not depend on which shared libraries this machine happens to have.
+_NO_C_HALF = (
+    "import sys\n"
+    "class _Gone:\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name == '_curses':\n"
+    "            raise ImportError('libncursesw.so.6: cannot open', name=NAME)\n"
+    "sys.meta_path.insert(0, _Gone())\n")
+
+
+def test_a_stdlib_module_missing_its_c_half_is_not_judged(monkeypatch):
+    """tkinter is present as Python and dies importing _tkinter when libtk is
+    absent: ImportError, not ModuleNotFoundError of the root, so it used to
+    be a verdict — an OLD form "failing" for this rig's packaging."""
+    base = D.PythonDriver._RESOLVER
+    monkeypatch.setattr(D.PythonDriver, "_RESOLVER",
+                        _NO_C_HALF.replace("NAME", "'_curses'") + base)
+    r = PY_D.compile_source("import curses\ncurses.initscr\n")
+    assert not r and r.transient, r.detail
+    assert "_curses" in r.detail and "not judged" in r.detail, r.detail
+    # negative control: the same failure naming a module that is NOT listed
+    # as stdlib is a verdict, as is a nonexistent stdlib submodule
+    monkeypatch.setattr(D.PythonDriver, "_RESOLVER",
+                        _NO_C_HALF.replace("NAME", "'thirdparty_x'") + base)
+    r = PY_D.compile_source("import curses\ncurses.initscr\n")
+    assert not r and not r.transient, r.detail
+    r = PY_D.compile_source("import asyncio.no_such_submodule\n")
+    assert not r and not r.transient, r.detail
+
+
+@pytest.mark.parametrize("src", [
+    "import os\ndef f(os):\n    return os.anything\n",
+    "import os\nf = lambda os: os.anything\n",
+    "import os\nxs = [os.anything for os in range(3)]\n",
+    "import os\nif (os := 3):\n    os.anything\n",
+    "import os\ntry:\n    pass\nexcept Exception as os:\n    os.anything\n",
+    "import os\nclass os:\n    pass\nos.anything\n",
+    "import os\nimport json as os\nos.anything\n",
+    "import sys\nsys.ps1\nsys.last_exc\n",
+    "import logging\nlogging.MY_LEVEL = 1\n",
+])
+def test_valid_python_is_not_reported_as_a_missing_api(src):
+    r = PY_D.compile_source(src)
+    assert r, r.detail
+
+
+def test_the_shadowing_fix_still_checks_what_it_should():
+    """Negative control: the unshadowed module, and the chain UNDER a store."""
+    assert "os.anything does not exist" in \
+        PY_D.compile_source("import os\ndef f(x):\n    return os.anything\n").detail
+    assert "logging.nope does not exist" in \
+        PY_D.compile_source("import logging\nlogging.nope.X = 1\n").detail
+    assert "sys.nope does not exist" in PY_D.compile_source("import sys\nsys.nope\n").detail
+    # `+=` and `del` READ the attribute first: AttributeError at runtime
+    assert "os.nope does not exist" in PY_D.compile_source("import os\nos.nope += 1\n").detail
+    assert "os.nope does not exist" in PY_D.compile_source("import os\ndel os.nope\n").detail
+    assert PY_D.compile_source("import os\nos.sep += ''\n"), "a real one still passes"
+
+
+ZIG = D.driver_for("zig")
+
+
+@pytest.mark.skipif(not (ZIG and ZIG.available()), reason="zig absent")
+def test_a_zig_test_block_file_is_judged_on_its_content():
+    """wrap() passes a `test "…"` file through, and build-exe failed EVERY one
+    for lack of `main` — so a test-block OLD form verified anything."""
+    ok = ('const std = @import("std");\ntest "t" {\n'
+          '    try std.testing.expect(1 == 1);\n}\n')
+    stale = ('const std = @import("std");\ntest "t" {\n'
+             '    _ = std.io.getStdOut();\n}\n')
+    r = ZIG.compile_source(ZIG.wrap(ok))
+    assert r, r.detail
+    r = ZIG.compile_source(ZIG.wrap(stale))
+    assert not r and "'io'" in r.detail, r.detail
+    got = V.verify(_claim(lang="zig", old=[ok], new=[ok]))
+    assert got["verdict"] == V.NOT_A_BREAK, got
+    # unnamed `test {` and doctest `test name {` blocks are test roots too
+    for src in ('const std = @import("std");\ntest {\n'
+                '    try std.testing.expect(1 == 1);\n}\n',
+                'fn two() u8 {\n    return 2;\n}\ntest two {\n    _ = two();\n}\n'):
+        assert ZIG.wrap(src) == src, "wrapped into main"
+        r = ZIG.compile_source(ZIG.wrap(src))
+        assert r, (src, r.detail)
+
+
+def test_a_zig_test_block_file_is_never_run(monkeypatch):
+    """Built with its own stub: the test root is analysed, never executed."""
+    seen = []
+    monkeypatch.setattr(D, "_run", lambda argv, **k: seen.append(argv) or D.Result(True))
+    ZIG.compile_source('test "t" {\n    @panic("ran");\n}\n')
+    ZIG.compile_source('pub fn main() void {}\n')
+    ZIG.compile_source('test {\n    @panic("ran");\n}\n')
+    assert seen[0][:4] == ["zig", "test", "--test-no-exec", "-fno-emit-bin"], seen
+    assert seen[1][:3] == ["zig", "build-exe", "-fno-emit-bin"], seen
+    assert seen[2][:4] == ["zig", "test", "--test-no-exec", "-fno-emit-bin"], seen

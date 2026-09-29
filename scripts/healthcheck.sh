@@ -23,17 +23,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
+source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
+source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 
 # Where the services actually answer (same mapping start.sh uses): loopback
 # for loopback/wildcard binds, the address itself otherwise. llama-server,
 # the tool server, Open WebUI and SearXNG all bind BIND_HOST, so the core
 # probes below derive from it too — they were hard-wired to localhost, and on
 # a rig with BIND_HOST set to its LAN address the watchdog saw four healthy
-# services as DOWN and restarted them every five minutes.
-case "$BIND_HOST" in
-  127.*|localhost|0.*|::) HEALTH_HOST="127.0.0.1" ;;
-  *)                      HEALTH_HOST="$BIND_HOST" ;;
-esac
+# services as DOWN and restarted them every five minutes. (lib/net.sh holds
+# the mapping, shared with start.sh and doctor.sh.)
+HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 
 LLAMA_URL="${LLAMA_URL:-http://$HEALTH_HOST:8080}"
 MCPO_URL="${MCPO_URL:-http://$HEALTH_HOST:3001}"
@@ -44,13 +44,48 @@ SEARXNG_URL="${SEARXNG_URL:-http://$HEALTH_HOST:8888}"
 # (`set -u`: the variable is normally UNSET, so every use carries a default —
 # the first version named it bare in the fall-through arm and killed this
 # whole script, for everyone, on the line below.)
-CHAT_HEALTH_HOST="${OPENBEAST_CHAT_BIND:-127.0.0.1}"
-case "$CHAT_HEALTH_HOST" in
-  0.*|localhost|::) CHAT_HEALTH_HOST="127.0.0.1" ;;
-esac
+CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
+
+# STOPPED ON PURPOSE. ./stop.sh (also ExecStop of openbeast.service, the
+# profile scripts and uninstall.sh) writes .run/stopped; ./start.sh clears
+# it; the supervisor writes it when it gives up on a crash-looping model.
+# Nothing used to record that, so within five minutes of ./stop.sh the
+# watchdog timer relaunched the ~21 GB model onto a card freed for a game or
+# a profiling sweep — outside the memory-capped scope, with no supervisor
+# and no restart budget — and brought WebUI and SearXNG back up with it.
+STOPPED_FILE="$REPO_DIR/.run/stopped"
+if $RESTART && [[ -f "$STOPPED_FILE" ]]; then
+  echo "Stack is stopped on purpose ($(head -n1 "$STOPPED_FILE" 2>/dev/null || true))"
+  echo "  — reporting only, restarting nothing. ./start.sh clears this."
+  echo ""
+  RESTART=false
+fi
+
+# The no-supervisor llama relaunch below is the watchdog acting on its own,
+# so it gets its own budget, persistent across ticks: at most
+# WD_MAX_RELAUNCHES in any WD_WINDOW seconds. Past that the model is crash-
+# looping (the supervisor's own 3-strike give-up leads here too) and the
+# watchdog marks the stack stopped instead of reloading it every 5 minutes
+# forever.
+WD_BUDGET_FILE="$REPO_DIR/.run/watchdog-relaunches"
+WD_MAX_RELAUNCHES=3
+WD_WINDOW=3600
+_wd_budget_take() { # 0 = a relaunch is allowed (and is now counted)
+  local now t kept=()
+  now="$(date +%s)"
+  if [[ -f "$WD_BUDGET_FILE" ]]; then
+    while read -r t; do
+      [[ "$t" =~ ^[0-9]+$ ]] && (( now - t < WD_WINDOW )) && kept+=("$t")
+    done < "$WD_BUDGET_FILE"
+  fi
+  (( ${#kept[@]} < WD_MAX_RELAUNCHES )) || return 1
+  kept+=("$now")
+  mkdir -p "$REPO_DIR/.run"
+  printf '%s\n' "${kept[@]}" > "$WD_BUDGET_FILE"
+}
 
 HEALTHY=0
 UNHEALTHY=0
@@ -59,9 +94,10 @@ check() {
   # check <name> <url> <match> [bearer-key] — key adds an Authorization
   # header (keyed MCPO instances answer 401 without it, RBAC Phase 2).
   local name="$1" url="$2" match="$3" key="${4:-}"
-  local auth=()
-  [[ -n "$key" ]] && auth=(-H "Authorization: Bearer $key")
-  if curl -s --max-time 5 "${auth[@]}" "$url" 2>/dev/null | grep -qi "$match"; then
+  # The key rides curl's --config on fd 3 (lib/curl_auth.sh), never argv:
+  # the watchdog runs this every 5 minutes and /proc/*/cmdline is readable
+  # by every local uid.
+  if ob_curl_bearer "$key" -s --max-time 5 "$url" 2>/dev/null | grep -qi "$match"; then
     echo "  OK   $name"
     HEALTHY=$((HEALTHY + 1))
     return 0
@@ -78,8 +114,7 @@ echo ""
 # llama.cpp — bearer passed for keyed installs (LLAMA_API_KEY set); /health
 # itself is public in llama-server but /slots below is not, and sending the
 # key to a keyless server is harmless.
-LLAMA_AUTH=()
-[[ -n "${LLAMA_API_KEY:-}" ]] && LLAMA_AUTH=(-H "Authorization: Bearer $LLAMA_API_KEY")
+# (Sent through ob_curl_bearer — off argv, see check() above.)
 LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
 
 # Is llama-server still LOADING? Then it is not down, and killing it is the
@@ -95,7 +130,7 @@ _llama_loading() {
   local body pid age=""
   pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
   ob_pid_matches "$pid" "$_LLAMA_ARGV0" && age="$(ob_pid_age "$pid")"
-  body="$(curl -s --max-time 5 "${LLAMA_AUTH[@]}" "$LLAMA_URL/health" 2>/dev/null || true)"
+  body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 5 "$LLAMA_URL/health" 2>/dev/null || true)"
   if [[ "$body" == *"Loading model"* ]]; then
     # BOUNDED. A server wedged mid-load (a CUDA hang, a stalled weight read)
     # says "Loading model" forever, and nothing else in the stack bounds a
@@ -152,11 +187,13 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
     # server and let the supervisor's self-healing loop relaunch it —
     # starting our own copy here would race it for the port and the VRAM.
     SUP_PID_FILE="$REPO_DIR/.run/supervisor.pid"
-    if ob_pid_matches "$(cat "$SUP_PID_FILE" 2>/dev/null || true)" 'start\.sh'; then
+    # By recorded start time (lib/proc.sh): 'start\.sh' alone accepted any
+    # process mentioning it, and then nobody relaunched the model.
+    if ob_recorded_pid_ours "$SUP_PID_FILE" 'start\.sh'; then
       echo "       → supervisor alive: killing llama-server, letting it relaunch..."
       _kill_own_llama
       for i in $(seq 1 180); do
-        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
+        if ob_llama_ready "$LLAMA_URL"; then
           echo "       → healthy after ${i}s (supervisor relaunched it)"
           break
         fi
@@ -164,36 +201,52 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
       done
     else
       echo "       → no supervisor: restarting llama.cpp directly..."
-      # Path-anchored and ERE-quoted: never an unrelated llama-server from
-      # another project on the same box.
-      if pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
-        _kill_own_llama
-        sleep 2
-      fi
-      # Relaunch the serve script the stack was STARTED with (.run/serve-script,
-      # recorded by start.sh); fall back to the configured default.
-      SERVE_SCRIPT_NAME="$DEFAULT_SERVE_SCRIPT"
-      if [[ -f "$REPO_DIR/.run/serve-script" ]]; then
-        _recorded="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || true)"
-        if [[ -n "$_recorded" && -x "$SCRIPT_DIR/$_recorded" ]]; then
-          SERVE_SCRIPT_NAME="$_recorded"
+      if ! _wd_budget_take; then
+        echo "       → NOT relaunching: ${WD_MAX_RELAUNCHES} watchdog relaunches in the last $((WD_WINDOW / 60)) min —"
+        echo "         the model is crash-looping. Marking the stack stopped; see .run/stack.log,"
+        echo "         then ./start.sh to try again."
+        mkdir -p "$REPO_DIR/.run"
+        printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" \
+          "watchdog: ${WD_MAX_RELAUNCHES} llama relaunches within $((WD_WINDOW / 60)) min" > "$STOPPED_FILE"
+      else
+        # Path-anchored and ERE-quoted: never an unrelated llama-server from
+        # another project on the same box.
+        if pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
+          _kill_own_llama
+          sleep 2
         fi
-      fi
-      echo "       → launching $SERVE_SCRIPT_NAME"
-      "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
-      # Record the pid (serve.sh execs llama-server, so $! IS the server) —
-      # without it, ./start.sh --status reports llama "not running" after a
-      # watchdog restart. Mirrors the mcpo relaunch below.
-      mkdir -p "$REPO_DIR/.run"
-      echo "$!" > "$REPO_DIR/.run/llama.pid"
-      echo "       → started (waiting for health...)"
-      for i in $(seq 1 180); do
-        if curl -s --max-time 2 "$LLAMA_URL/health" | grep -q "ok"; then
-          echo "       → healthy after ${i}s"
-          break
+        # Relaunch the serve script the stack was STARTED with (.run/serve-script,
+        # recorded by start.sh); fall back to the configured default.
+        SERVE_SCRIPT_NAME="$DEFAULT_SERVE_SCRIPT"
+        if [[ -f "$REPO_DIR/.run/serve-script" ]]; then
+          _recorded="$(head -n1 "$REPO_DIR/.run/serve-script" 2>/dev/null || true)"
+          if [[ -n "$_recorded" && -x "$SCRIPT_DIR/$_recorded" ]]; then
+            SERVE_SCRIPT_NAME="$_recorded"
+          fi
         fi
-        sleep 1
-      done
+        echo "       → launching $SERVE_SCRIPT_NAME"
+        "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
+        _NEW_LLAMA=$!
+        # Record the pid (serve.sh execs llama-server, so $! IS the server) —
+        # without it, ./start.sh --status reports llama "not running" after a
+        # watchdog restart. Mirrors the mcpo relaunch below.
+        mkdir -p "$REPO_DIR/.run"
+        echo "$_NEW_LLAMA" > "$REPO_DIR/.run/llama.pid"
+        echo "       → started (waiting for health...)"
+        for i in $(seq 1 180); do
+          if ob_llama_ready "$LLAMA_URL"; then
+            echo "       → healthy after ${i}s"
+            break
+          fi
+          # A relaunch that already died will not become healthy in the
+          # remaining minutes; say so now.
+          if ! kill -0 "$_NEW_LLAMA" 2>/dev/null; then
+            echo "       → relaunch FAILED: the serve script exited during startup"
+            break
+          fi
+          sleep 1
+        done
+      fi
     fi
   fi
 fi
@@ -238,9 +291,14 @@ fi
 if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
   if $RESTART; then
     echo "       → restarting Open WebUI..."
-    docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui
-    sleep 5
-    echo "       → restarted"
+    # `|| …`: under set -e a docker that is down killed the watchdog right
+    # here — no SearXNG/gate/chat/artifact checks, no summary.
+    if docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui; then
+      sleep 5
+      echo "       → restarted"
+    else
+      echo "       → restart FAILED (docker compose up failed — daemon down?)"
+    fi
   fi
 fi
 
@@ -248,9 +306,12 @@ fi
 if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   if $RESTART; then
     echo "       → restarting SearXNG..."
-    docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng
-    sleep 3
-    echo "       → restarted"
+    if docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng; then
+      sleep 3
+      echo "       → restarted"
+    else
+      echo "       → restart FAILED (docker compose up failed — daemon down?)"
+    fi
   fi
 fi
 
@@ -264,8 +325,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       # Record the pid like the llama/mcpo relaunch paths do — without it
       # ./start.sh --status reports the gate down after a watchdog restart,
       # and the supervisor is left holding a stale pid.
+      # Upstream where llama-server answers (BIND_HOST), as start.sh does:
+      # a specific-address bind refuses 127.0.0.1.
       OPENBEAST_REPO_DIR="$REPO_DIR" \
-        OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+        OPENBEAST_LLAMA_UPSTREAM="http://$HEALTH_HOST:8080" \
         python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &
       mkdir -p "$REPO_DIR/.run"
       echo "$!" > "$REPO_DIR/.run/edge.pid"
@@ -463,7 +526,7 @@ for _mount_label in "weights:$_weights_dir" "repo:$REPO_DIR"; do
 done
 
 # Slot utilization (/slots is key-protected when LLAMA_API_KEY is set)
-SLOTS_JSON=$(curl -s --max-time 3 "${LLAMA_AUTH[@]}" "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
+SLOTS_JSON=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 3 "$LLAMA_URL/slots" 2>/dev/null || echo "[]")
 ACTIVE_SLOTS=$(echo "$SLOTS_JSON" | python3 -c "
 import sys, json
 try:

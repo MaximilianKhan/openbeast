@@ -21,9 +21,19 @@ PRE-REGISTERED READOUTS (fixed 2026-09-11, before any cell ran):
   SHIP RULE (Clause 1): net rescues >= 7 AND p < 0.05 AND guard clean.
   Overhead: prompt-token delta per unit (the pack costs ~2k tokens/request).
 
+VALIDITY (added 2026-09-29, after the fact — review eval-harness-1 /
+tools-mcp-security-1): a row that llama-server died under (API/connection
+errors in its agent log), whose validation died on fork/thread EAGAIN, or that
+the harness never ran is not a sample of the model. Such a row drops its unit
+from THAT pair (both arms), the same row classifier as scratch/row_validity.py.
+The 09-17 cells read SHIP (+13, p=0.019) only with those rows counted; see
+scratch/tier3-verdict-reaudit-2026-09-29.txt. --raw reproduces the
+as-registered read; --keep CELL:UNIT keeps one flagged row (sensitivity).
+
 Usage:
   python3 scratch/tier3_verdict.py --manifest scratch/tier3_cells-<stamp>.txt
   python3 scratch/tier3_verdict.py --p0 A.json B.json --p1 C.json D.json [--c0 X.json --c1 Y.json]
+  [--agent-logs DIR|none] [--raw] [--keep P0a:62_crt_f ...]
 """
 from __future__ import annotations
 
@@ -33,11 +43,14 @@ import math
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import row_validity  # noqa: E402  (the one row classifier; see its docstring)
+
 SHIP_MIN_NET = 7
 SHIP_ALPHA = 0.05
 
 
-def load_cell(path: str, language: str = "zig") -> dict:
+def load_cell(path: str, language: str = "zig", log_idx=None) -> dict:
     r = json.loads(Path(path).read_text())
     rows = {}
     for t in r.get("tasks", []):
@@ -50,7 +63,17 @@ def load_cell(path: str, language: str = "zig") -> dict:
             "iters": t.get("iterations"),
             "cached": bool(t.get("from_cache")),
         }
-    return {"path": path, "model": r.get("model"), "harness": r.get("harness", {}), "rows": rows}
+    bad = row_validity.contaminated_ids(r, log_idx)
+    return {"path": path, "model": r.get("model"), "harness": r.get("harness", {}), "rows": rows,
+            "contaminated": {k: v for k, v in bad.items() if k in rows}}
+
+
+def drop_contaminated(cell: dict, name: str, keep: set) -> dict:
+    """The cell with its contaminated rows removed (paired() then drops the
+    unit from this pair), except rows named in keep as CELL:UNIT."""
+    drop = {u for u in cell["contaminated"] if f"{name}:{u}" not in keep}
+    return {**cell, "rows": {u: v for u, v in cell["rows"].items() if u not in drop},
+            "dropped": sorted(drop)}
 
 
 def mcnemar_exact(b: int, c: int) -> float:
@@ -111,6 +134,12 @@ def main() -> int:
     ap.add_argument("--c0", help="champion packs-OFF results file")
     ap.add_argument("--c1", help="champion packs-ON results file")
     ap.add_argument("--language", default="zig")
+    ap.add_argument("--agent-logs", default=str(Path(__file__).resolve().parent.parent / "agents" / "logs"),
+                    help="agents/logs dir for the API-error check, or 'none'")
+    ap.add_argument("--raw", action="store_true",
+                    help="count every row, contaminated or not (the as-registered read)")
+    ap.add_argument("--keep", action="append", default=[], metavar="CELL:UNIT",
+                    help="keep one flagged row anyway (sensitivity), e.g. P0a:62_crt_f")
     a = ap.parse_args()
     p0, p1, c0, c1 = list(a.p0), list(a.p1), a.c0, a.c1
     if a.manifest:
@@ -123,8 +152,12 @@ def main() -> int:
         print("need equal numbers of P0 and P1 replicate files", file=sys.stderr)
         return 2
 
-    P0 = [load_cell(p, a.language) for p in p0]
-    P1 = [load_cell(p, a.language) for p in p1]
+    idx = None if a.agent_logs == "none" else row_validity.load_log_index(a.agent_logs)
+    keep = set(a.keep)
+    P0 = [load_cell(p, a.language, idx) for p in p0]
+    P1 = [load_cell(p, a.language, idx) for p in p1]
+    names0 = [f"P0{chr(97 + k)}" for k in range(len(P0))]
+    names1 = [f"P1{chr(97 + k)}" for k in range(len(P1))]
     for cell, want in [(x, {}) for x in P0] + [(x, "on") for x in P1]:
         packs = cell["harness"].get("packs", {})
         if want == "on" and not packs:
@@ -136,6 +169,16 @@ def main() -> int:
     print("Tier-3 zig-0.16 awareness pack — zig-only mini-A/B verdict")
     print("=" * 72)
     print(f"treated model: {P1[0]['model']}   replicates: {len(P0)}   pack: {P1[0]['harness'].get('packs')}")
+    print("VALIDITY    " + ("--raw: contaminated rows COUNTED (as-registered read)" if a.raw else
+                          "contaminated rows dropped from their pair"
+                          + ("" if idx is not None else " (agent logs not read: API axis unchecked)")))
+    for nm, cell in zip(names0 + names1, P0 + P1):
+        if cell["contaminated"]:
+            print(f"    {nm}: " + "; ".join(f"{u} [{', '.join(w)}]" + (" KEPT" if f"{nm}:{u}" in keep else "")
+                                        for u, w in sorted(cell["contaminated"].items())))
+    if not a.raw:
+        P0 = [drop_contaminated(c, n, keep) for c, n in zip(P0, names0)]
+        P1 = [drop_contaminated(c, n, keep) for c, n in zip(P1, names1)]
 
     # R1 primary — pooled replicates
     B = C = 0
@@ -170,12 +213,19 @@ def main() -> int:
     # R3 guard
     guard_clean = None
     if c0 and c1:
-        G0, G1 = load_cell(c0, a.language), load_cell(c1, a.language)
+        G0, G1 = load_cell(c0, a.language, idx), load_cell(c1, a.language, idx)
+        for nm, cell in (("C0", G0), ("C1", G1)):
+            if cell["contaminated"]:
+                print(f"    {nm} contaminated: " + "; ".join(
+                    f"{u} [{', '.join(w)}]" + (" KEPT" if f"{nm}:{u}" in keep else "")
+                    for u, w in sorted(cell["contaminated"].items())))
+        if not a.raw:
+            G0, G1 = drop_contaminated(G0, "C0", keep), drop_contaminated(G1, "C1", keep)
         g = paired(G0, G1)
         gp = mcnemar_exact(len(g["b"]), len(g["c"]))
         gnet = len(g["b"]) - len(g["c"])
         guard_clean = gp > 0.05 or gnet >= 0
-        print(f"R3 GUARD    champion {G1['model']}: C0 pass={g['pass0']} C1 pass={g['pass1']} "
+        print(f"R3 GUARD    champion {G1['model']}: units={len(g['ids'])} C0 pass={g['pass0']} C1 pass={g['pass1']} "
               f"rescues={len(g['b'])} regressions={len(g['c'])} net={gnet:+d} p={gp:.3f} → "
               f"{'CLEAN' if guard_clean else 'REGRESSION'}")
     elif c1:

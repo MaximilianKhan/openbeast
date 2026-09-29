@@ -88,33 +88,43 @@ def _killpg(proc: subprocess.Popen) -> None:
 #: What a child may inherit. A compiler can be made to PRINT its environment
 #: (rust's env!(), a C `#error` built from a macro the driver defines from
 #: one…), and Result.detail is attached to a model's next turn, so the child
-#: gets an allow list, not os.environ. Names, then prefixes. Everything here
-#: is "where is the toolchain / where may it cache", which is what each one
-#: was MEASURED to need on this rig (zig: HOME or XDG_CACHE_HOME for its
-#: global cache; go: HOME/GOPATH/GOCACHE; rustc and gcc: PATH alone) plus the
-#: locator variables of the ways toolchains get installed elsewhere (rustup,
-#: mise/asdf shims, nix wrappers, macOS SDKs, a non-system gcc).
+#: gets an allow list, not os.environ. EXACT NAMES, no prefixes: a prefix is
+#: an invitation to whatever else shares it — `GO` let GOOGLE_API_KEY reach
+#: the go driver, NIX_ carried NIX_CONFIG (which holds `access-tokens =`),
+#: and LC_ is the family sshd forwards by default, so anything rides in on
+#: it. Everything here is "where is the toolchain / where may it cache",
+#: which is what each one was MEASURED to need on this rig (zig: HOME or
+#: XDG_CACHE_HOME for its global cache; go: HOME/GOPATH/GOCACHE; rustc and
+#: gcc: PATH alone — zig and go here are mise INSTALLS on PATH, not shims)
+#: plus the documented locator variables of the other ways toolchains get
+#: installed (rustup, a mise/asdf data dir, macOS SDKs, a non-system gcc).
 _ENV_NAMES = frozenset({
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TMPDIR", "TMP",
     "TEMP", "TERM", "NO_COLOR", "SOURCE_DATE_EPOCH",
+    "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_NUMERIC",
+    "LC_TIME", "LC_MONETARY",
+    "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "ZIG_LIB_DIR",
+    "MISE_DATA_DIR", "MISE_CONFIG_DIR", "MISE_CACHE_DIR",
+    "ASDF_DIR", "ASDF_DATA_DIR",
     "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
     "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH",
     "GCC_EXEC_PREFIX", "COMPILER_PATH", "SDKROOT", "DEVELOPER_DIR",
     "MACOSX_DEPLOYMENT_TARGET", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
     "SYSTEMROOT",
 })
-_ENV_PREFIXES = ("LC_", "XDG_", "ZIG_", "MISE_", "ASDF_", "NIX_")
-#: Go reads its configuration from GO* variables; only the go driver asks for
-#: them (the operator's GOPATH/GOCACHE/GOROOT are locations, not secrets —
-#: GOFLAGS/GOPROXY/GOTOOLCHAIN are then overridden by the driver anyway).
-GO_ENV_PREFIXES = ("GO", "CGO_")
+#: Only the go driver asks for these: the operator's go LOCATIONS. Behaviour
+#: (GOFLAGS/GOPROXY/GOTOOLCHAIN/CGO_ENABLED) the driver sets itself.
+GO_ENV_NAMES = frozenset({
+    "GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE", "GOBIN", "GOTMPDIR", "GOENV",
+})
 
 
-def scrubbed_env(extra: dict | None = None, prefixes: tuple = ()) -> dict:
-    """A fresh dict for `env=`: the allow list above, then `extra` on top."""
-    keep = _ENV_PREFIXES + tuple(prefixes)
-    env = {k: v for k, v in os.environ.items()
-           if k in _ENV_NAMES or k.startswith(keep)}
+def scrubbed_env(extra: dict | None = None, names=()) -> dict:
+    """A fresh dict for `env=`: the allow list above plus `names`, then
+    `extra` on top."""
+    keep = _ENV_NAMES | frozenset(names)
+    env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(extra or {})
     return env
 

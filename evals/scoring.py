@@ -449,6 +449,56 @@ def _suite_version(results: dict) -> str:
     return "legacy" if total else "unknown"
 
 
+# Row reasons that record an INFRASTRUCTURE outcome, not a model verdict:
+# the model never ran (cache miss in --cache-only, dead server, broken
+# fixture) or the server / environment failed under it (run_eval's
+# server_error / env_error). A run containing any of them under-reports the
+# model; it is kept for inspection but never seated on the board.
+INFRA_REASONS = frozenset({"skipped_cache_miss", "server_unhealthy", "setup_failed",
+                           "server_error", "env_error", "low_disk"})
+
+
+def ineligibility_reasons(results: dict) -> list[str]:
+    """Why a results file must not become a leaderboard row ([] = eligible).
+
+    The board holds serving reality: sampled decode, no harness assists,
+    every unit a real model verdict. --greedy, --packs, beast-assist
+    diagnostics and --escalate arms were all documented as
+    "leaderboard-ineligible experiment rows", but nothing enforced it — the
+    newest full-suite experiment run replaced the model's baseline row on
+    the next update or `--rebuild`."""
+    reasons = []
+    # A --cache-only replay has no live host (gpu/server null): seated, it
+    # became a second "unknown-host" row for the model with a SPD read from
+    # whatever server log matched the replay's timestamp. Rescoring banked
+    # runs is `scoring.py --rebuild`. Legacy replays predate the flag but
+    # are the only files with gpu, engine AND server all null (a live run
+    # always records a dict, {} when nvidia-smi is absent).
+    if results.get("cache_only") or (
+            "gpu" in results and results.get("gpu") is None
+            and results.get("inference_engine") is None and results.get("server") is None):
+        reasons.append("cache-only replay (no live host)")
+    if results.get("suite_selection"):
+        reasons.append(f"fast suite {results['suite_selection']}")
+    harness = results.get("harness") or {}
+    if harness.get("greedy"):
+        reasons.append("greedy decode")
+    if harness.get("diagnostics"):
+        reasons.append("beast-assist diagnostics")
+    if harness.get("packs"):
+        reasons.append("awareness packs")
+    if harness.get("escalate") or harness.get("escalate_component"):
+        reasons.append("escalation cards")
+    infra: dict[str, int] = defaultdict(int)
+    for t in results.get("tasks", []):
+        if t.get("reason") in INFRA_REASONS:
+            infra[t["reason"]] += 1
+    if infra:
+        reasons.append("infrastructure rows (" + ", ".join(
+            f"{n} {r}" for r, n in sorted(infra.items())) + ")")
+    return reasons
+
+
 def score_run(results: dict) -> dict:
     """Compute scores for a single eval run. Returns dict suitable for the
     leaderboard."""
@@ -515,6 +565,8 @@ def score_run(results: dict) -> dict:
         "breakdown": breakdown,
         "by_category": by_category,
         "by_language": by_language,
+        # update_leaderboard / --rebuild refuse a row with reasons here.
+        "ineligible_reasons": ineligibility_reasons(results),
     }
 
 
@@ -576,8 +628,14 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH,
 
     Partial-run guard: a v4 entry that doesn't cover the full 291 effective
     units is REFUSED (aborted/smoke runs would otherwise enter with accuracy
-    computed over the subset that happened to complete). Pass force=True to
-    override deliberately."""
+    computed over the subset that happened to complete). So is an entry with
+    `ineligible_reasons` (experiment arms, infrastructure rows — see
+    ineligibility_reasons). Pass force=True to override deliberately."""
+    if not force and score_entry.get("ineligible_reasons"):
+        print(f"REFUSED leaderboard update for {score_entry.get('model', '?')}: "
+              f"leaderboard-ineligible run ({'; '.join(score_entry['ineligible_reasons'])}). "
+              f"Existing leaderboard unchanged.")
+        return load_leaderboard(path)
     if (not force and score_entry.get("suite_version") == "v4"
             and score_entry.get("tasks_total") not in (291,)):
         print(f"REFUSED leaderboard update for {score_entry.get('model', '?')}: "
@@ -816,14 +874,17 @@ def main():
             # score_run (106 hardest units, no imputation), and update_
             # leaderboard's 291-guard doesn't run on this path — without
             # this check, an era whose only files are fast-suite partials
-            # would seat that garbage as its best row.
+            # would seat that garbage as its best row. Same for experiment
+            # arms (greedy/packs/diag/escalate) and runs with infrastructure
+            # rows (a --cache-only replay full of skipped_cache_miss seated a
+            # 0/291 row): see ineligibility_reasons.
             try:
                 with open(full) as fh:
                     raw = json.load(fh)
-                if raw.get("suite_selection"):
-                    skipped_partial += 1
-                    continue
             except (OSError, json.JSONDecodeError):
+                continue
+            if ineligibility_reasons(raw):
+                skipped_partial += 1
                 continue
             entry = score_results_file(full)
             if not is_full_suite(entry):
@@ -838,7 +899,8 @@ def main():
                            {"updated_at": datetime.now().isoformat(), "entries": entries})
         n_hosts = len({entry_host_id(e) for e in entries})
         print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s)."
-              + (f" ({skipped_partial} partial/fast-suite file(s) excluded)" if skipped_partial else ""))
+              + (f" ({skipped_partial} partial/fast-suite/ineligible file(s) excluded)"
+                 if skipped_partial else ""))
 
     if args.compare_hosts:
         entries = load_leaderboard()

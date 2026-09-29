@@ -3,8 +3,15 @@
 Multi-model benchmark — run the full eval suite against every model and
 produce a ranked leaderboard.
 
+Before the first model: the GPU lease (scripts/gpu-lease.sh check). Held
+by someone else (or unreadable) -> refuse, exit 4. Held by a `gpu-lease.sh
+run` that wraps us -> ours. Free -> re-exec this sweep under `gpu-lease.sh
+run`, so the whole sweep holds the card. (--cache-only never asks: it
+starts no server.) Every model (re)start asks again.
+
 For each model:
-  1. Stop any running llama-server
+  1. Stop the llama-server this harness started (by PID; a server it did
+     not start is refused, never killed)
   2. Start the model's serve script in the background
   3. Wait for /health to return ok
   4. Run the full eval suite (results tagged with model name + GPU info)
@@ -172,17 +179,185 @@ COOLOFF_SECONDS = 600  # 10-min thermal break between models
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
+# The serve script THIS process started (start_new_session=True, so its pid
+# is its process group). The harness stops only this — never by name.
+# `pkill -f llama-server` (what this used to run) SIGKILLed every process
+# with that string in argv: the stack's model under its supervisor, a
+# sibling worktree's measurement server mid-cell, a ChunkHound sidecar, even
+# `tail -f ...llama-server.log` — the ops rule is "target by PID".
+_own_server: dict = {"proc": None}
+
+
 def stop_llama_server():
-    """Kill any running llama-server. Tolerant — pkill returns 1 if no match."""
-    subprocess.run(["pkill", "-TERM", "-f", "llama-server"], check=False, timeout=5)
-    # Wait briefly for graceful shutdown
+    """Stop the llama-server this harness started, by its process group:
+    SIGTERM, a short grace, then SIGKILL. A no-op when we started none —
+    a server someone else owns is not ours to kill."""
+    proc = _own_server["proc"]
+    _own_server["proc"] = None
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    # The group, not just the leader: anything the serve script left behind.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    # Let the kernel release the port before the next bind.
     for _ in range(10):
         if not _port_in_use(LLAMA_PORT):
             return
         time.sleep(0.5)
-    # Escalate
-    subprocess.run(["pkill", "-KILL", "-f", "llama-server"], check=False, timeout=5)
-    time.sleep(1)
+
+
+class PortBusy(RuntimeError):
+    """LLAMA_PORT is already served by a process this harness did not start."""
+
+
+class GpuLeaseHeld(RuntimeError):
+    """The GPU lease (scripts/gpu-lease.sh) is held by someone else, or
+    cannot be read. Unknown is not free."""
+
+
+# ---------------------------------------------------------------------------
+# The GPU lease (scripts/gpu-lease.sh). Advisory: it only protects work that
+# ASKS, and this harness is what campaigns run — so it asks before it loads
+# anything. `check` answers 0 = ours (a `gpu-lease.sh run` is our ancestor),
+# 3 = free, 4 = somebody else's; it walks the ancestry itself, so a campaign
+# that runs us under its lease is not refused by its own lease.
+# ---------------------------------------------------------------------------
+
+GPU_LEASE_SH = os.path.join(REPO_DIR, "scripts", "gpu-lease.sh")
+LEASE_OURS, LEASE_FREE, LEASE_HELD = 0, 3, 4
+
+
+def _lease_env(env=None) -> dict:
+    """The environment to ask the lease in. The lease file lives in the MAIN
+    tree's .run/ (gpu-lease.sh: $SCRIPT_DIR/.run), so a git worktree asking
+    its own copy of the script reads an empty directory and is told FREE
+    while a campaign in the main tree holds the card. Pin OPENBEAST_RUN_DIR
+    to the main tree's .run unless the operator already set it."""
+    env = dict(os.environ if env is None else env)
+    if env.get("OPENBEAST_RUN_DIR"):
+        return env
+    common = _git_common_dir(os.path.dirname(os.path.dirname(GPU_LEASE_SH)))
+    if common and os.path.basename(common) == ".git":
+        env["OPENBEAST_RUN_DIR"] = os.path.join(os.path.dirname(common), ".run")
+    return env
+
+
+def _git_common_dir(tree: str) -> str:
+    """Absolute path of `tree`'s git common dir, or "" if unknown.
+
+    Plain `--git-common-dir` (not `--path-format=absolute`, git >= 2.31:
+    older git echoes an unknown flag as a line of output and still exits 0)
+    and resolved against `tree` ourselves — git prints it relative to the
+    -C directory in the main tree, absolute in a worktree. Anything but one
+    line is refused rather than turned into a bogus run dir."""
+    try:
+        r = subprocess.run(["git", "-C", tree, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    lines = r.stdout.strip().splitlines() if r.returncode == 0 else []
+    if len(lines) != 1 or not lines[0].strip() or lines[0].startswith("-"):
+        return ""
+    return os.path.normpath(os.path.join(os.path.abspath(tree), lines[0].strip()))
+
+
+def gpu_lease_check() -> tuple[int | None, str]:
+    """(rc, message) from `gpu-lease.sh check`; rc None = could not ask."""
+    try:
+        r = subprocess.run(["bash", GPU_LEASE_SH, "check"], capture_output=True,
+                           text=True, timeout=30, env=_lease_env())
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, str(e)
+    return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+
+def require_gpu_lease() -> int:
+    """Raise GpuLeaseHeld unless the card is ours or free. Returns the rc."""
+    rc, msg = gpu_lease_check()
+    if rc == LEASE_FREE and os.environ.get(_REEXEC_MARK):
+        # We are the sweep ensure_gpu_lease re-exec'd under `gpu-lease.sh
+        # run`, yet the lease reads FREE: that wrapper is no longer our
+        # ancestor (a `kill -9` of the pid the operator holds hits only the
+        # wrapper — `run` puts us in our own process group). Refuse the load
+        # rather than keep putting models on a card the lease calls free.
+        raise GpuLeaseHeld("this sweep was re-exec'd under `gpu-lease.sh run`, but the "
+                           "lease now reads FREE (the wrapper is gone) — refusing to "
+                           "run unleased.")
+    if rc in (LEASE_OURS, LEASE_FREE):
+        return rc
+    if rc == LEASE_HELD:
+        raise GpuLeaseHeld(
+            f"the GPU lease is {msg}\n  Loading a model now would put a second "
+            f"model on a card that job is measuring on. Wait for it "
+            f"(scripts/gpu-lease.sh status), then rerun.")
+    raise GpuLeaseHeld(f"could not read the GPU lease (gpu-lease.sh check: rc={rc}: "
+                       f"{msg}) — unknown is not free.")
+
+
+_REEXEC_MARK = "OPENBEAST_BENCH_UNDER_LEASE"
+
+
+def ensure_gpu_lease(argv: list[str], exec_fn=os.execvpe) -> None:
+    """Before a live sweep: refuse someone else's lease (GpuLeaseHeld); run
+    on under a lease that already wraps us; and when the card is FREE,
+    re-exec this sweep under `gpu-lease.sh run` (the measure-vram.sh
+    pattern) so the whole sweep — every model load, every restart — holds
+    the card, and a concurrent sweep or `stop.sh` sees it as taken."""
+    rc = require_gpu_lease()
+    if rc == LEASE_OURS:
+        return
+    env = _lease_env()
+    if env.get(_REEXEC_MARK):  # require_gpu_lease refuses FREE under the mark
+        raise GpuLeaseHeld("re-exec under `gpu-lease.sh run` did not take the lease "
+                           "(check still says FREE) — refusing to run unleased.")
+    env[_REEXEC_MARK] = "1"
+    label = "benchmark_all " + " ".join(argv)
+    print(f"GPU lease is free — taking it for this sweep: {label}")
+    sys.stdout.flush()
+    exec_fn("bash", ["bash", GPU_LEASE_SH, "run", label.strip(), "--",
+                     sys.executable, *_interpreter_flags(),
+                     os.path.abspath(__file__), *argv], env)
+
+
+def _interpreter_flags() -> list[str]:
+    """The interpreter options this process was started with (`-u`, `-X
+    utf8`, `-W ...`), so the re-exec keeps them: dropping `-u` turns a
+    `python3 -u benchmark_all.py > log` sweep block-buffered, and a SIGKILL
+    or OOM kill then loses the log's tail — the crash diagnostic. Taken from
+    sys.orig_argv: everything between the interpreter and the script. `-m`/
+    `-c` and what follows are not options for a script path, so stop there."""
+    orig = list(getattr(sys, "orig_argv", []) or [])
+    n = len(orig) - len(sys.argv)
+    flags = []
+    for a in (orig[1:n] if n > 1 else []):
+        if a[:2] in ("-m", "-c"):
+            break
+        flags.append(a)
+    return flags
+
+
+def _foreign_servers() -> str:
+    """Read-only listing of llama-server processes, for the refusal message."""
+    try:
+        out = subprocess.run(["pgrep", "-ax", "llama-server"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        out = ""
+    return out or "(no llama-server process visible — something else holds the port)"
 
 
 def _port_in_use(port: int) -> bool:
@@ -214,6 +389,19 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     full_path = os.path.join(REPO_DIR, serve_script)
     if not os.path.isfile(full_path):
         raise FileNotFoundError(f"Serve script not found: {full_path}")
+    # Asked on every (re)start, not just at launch: a mid-sweep recovery
+    # after someone took the card with `acquire --force` must not load a
+    # second model into their window.
+    require_gpu_lease()
+    # Our own previous server is stopped by now, so a bound port belongs to
+    # someone else (the stack, another worktree's campaign). Refuse rather
+    # than kill it or, worse, measure it: wait_for_health would accept
+    # whatever answers the port as "our model".
+    if _port_in_use(LLAMA_PORT):
+        raise PortBusy(
+            f"port {LLAMA_PORT} is already serving and this harness did not start it. "
+            f"Stop it by PID (or ./stop.sh for the stack), then rerun.\n"
+            f"{_foreign_servers()}")
     log_path = _server_log_path(slug)
     log_fp = open(log_path, "wb", buffering=0)
     print(f"  Server log: {log_path}")
@@ -230,13 +418,22 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         # parent's copy is not needed either way and would otherwise leak
         # one fd per (re)start — including when Popen itself raises.
         log_fp.close()
+    _own_server["proc"] = proc
     return proc, log_path
 
 
-def wait_for_health(timeout: int = HEALTH_TIMEOUT) -> bool:
-    """Poll /health until ok or timeout."""
+def wait_for_health(timeout: int = HEALTH_TIMEOUT,
+                    proc: subprocess.Popen | None = None) -> bool:
+    """Poll /health until ok or timeout. With `proc` (the serve script we
+    started), give up as soon as it exits: a script that dies in its first
+    second (weight pruned, WEIGHT_ENFORCE=strict exit 3, OOM at load) used
+    to cost the full timeout, and an unchecked poll would also accept some
+    OTHER server answering the port as ours."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            print(f"  Serve script exited (rc {proc.returncode}) before /health came up.")
+            return False
         try:
             with urllib.request.urlopen(LLAMA_HEALTH_URL, timeout=2) as resp:
                 if b"ok" in resp.read():
@@ -272,12 +469,12 @@ def restart_server(serve_script: str, slug: str,
     print("  Server unhealthy — restarting...")
     stop_llama_server()
     try:
-        start_model(serve_script, slug)
-    except FileNotFoundError as e:
+        proc, _ = start_model(serve_script, slug)
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
-    if not wait_for_health(timeout=health_timeout):
+    if not wait_for_health(timeout=health_timeout, proc=proc):
         print("  Server failed to come back healthy.")
         return False
     print("  Server recovered.")
@@ -293,7 +490,8 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                     use_cache: bool = True,
                     cache_only: bool = False,
                     jobs: int = 1,
-                    suite: str | None = None) -> dict:
+                    suite: str | None = None,
+                    reasoning_budget: str | None = None) -> dict:
     """Run the full eval suite against one model. Returns a dict with either
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
@@ -312,6 +510,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                 use_cache=True,
                 cache_only=True,
                 suite=suite,
+                reasoning_budget=reasoning_budget,
             )
         except Exception as e:
             return {"slug": model["slug"], "name": model["name"],
@@ -321,20 +520,22 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
                     "error": "eval produced no results"}
         return {"slug": model["slug"], "name": model["name"], "results": results}
 
-    print("Stopping any running llama-server...")
+    print("Stopping this harness's llama-server (if any)...")
     stop_llama_server()
 
     print(f"Starting {model['serve']}...")
     try:
-        start_model(model["serve"], model["slug"])
-    except FileNotFoundError as e:
-        return {"slug": model["slug"], "name": model["name"], "error": str(e)}
+        proc, _ = start_model(model["serve"], model["slug"])
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+        return {"slug": model["slug"], "name": model["name"], "error": str(e),
+                "gpu_work": False}
 
     print(f"Waiting for /health (up to {HEALTH_TIMEOUT}s)...")
-    if not wait_for_health():
+    if not wait_for_health(proc=proc):
         stop_llama_server()
         return {"slug": model["slug"], "name": model["name"],
-                "error": "model failed to become healthy within timeout"}
+                "error": "model failed to become healthy within timeout",
+                "gpu_work": False}
 
     # Per-task recovery: if /health stops responding mid-sweep, kill+restart
     # the serve script before the next task instead of letting the agent burn
@@ -379,7 +580,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
               cache_only: bool = False,
               update_leaderboard: bool = True,
               jobs: int = 1,
-              suite: str | None = None) -> dict:
+              suite: str | None = None,
+              reasoning_budget: str | None = None) -> dict:
     sweep_start = datetime.now()
     sweep_summary = {
         "started_at": sweep_start.isoformat(),
@@ -394,7 +596,8 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
         print(f"\n[{i}/{len(models)}] Starting model")
         outcome = benchmark_model(model, task_filter, max_iter_override,
                                    use_cache=use_cache, cache_only=cache_only,
-                                   jobs=jobs, suite=suite)
+                                   jobs=jobs, suite=suite,
+                                   reasoning_budget=reasoning_budget)
 
         if "error" in outcome:
             print(f"\n>>> SKIPPED {model['name']}: {outcome['error']}")
@@ -429,15 +632,48 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
                   f"(solve {entry.get('problem_solving')} / lang {entry.get('language_breadth')}) "
                   f"| accuracy {entry['accuracy']} speed {entry['speed']}")
 
-        if i < len(models) and not cache_only:
-            # No thermal load in cache-only mode — skip the cool-off.
+        if _hit_low_disk(outcome):
+            # The disk floor holds for every model: loading the next one
+            # only to abort on its first live unit (after a cool-off) is
+            # ~11 model loads and ~100 idle minutes for zero units.
+            rest = models[i:]
+            print(f"\n>>> DISK FLOOR: stopping the sweep; {len(rest)} model(s) not started. "
+                  f"Free space, then relaunch — the cache resumes every banked unit.")
+            for m in rest:
+                sweep_summary["models_skipped"] += 1
+                sweep_summary["skipped"].append({"slug": m["slug"], "name": m["name"],
+                                                 "reason": "low_disk (sweep stopped)"})
+            break
+
+        if i < len(models) and not cache_only and _did_gpu_work(outcome):
+            # No thermal load in cache-only mode, for a model that never
+            # loaded, or for a run that replayed every unit from cache —
+            # skip the cool-off. (A resumed 11-model sweep paid 10 idle
+            # minutes per fully-cached model before any new work.)
             print(f"\nCool-off for {COOLOFF_SECONDS}s before next model...")
             time.sleep(COOLOFF_SECONDS)
+        elif i < len(models) and not cache_only:
+            print("\nNo live GPU work for this model — skipping the cool-off.")
 
     sweep_summary["finished_at"] = datetime.now().isoformat()
     sweep_summary["elapsed_seconds"] = round(
         (datetime.now() - sweep_start).total_seconds(), 1)
     return sweep_summary
+
+
+def _hit_low_disk(outcome: dict) -> bool:
+    """Whether a model's run stopped on the eval's free-space floor."""
+    tasks = (outcome.get("results") or {}).get("tasks") or []
+    return any(t.get("reason") == "low_disk" for t in tasks)
+
+
+def _did_gpu_work(outcome: dict) -> bool:
+    """Whether a model's run put thermal load on the GPU. Unknown = yes."""
+    if "gpu_work" in outcome:
+        return bool(outcome["gpu_work"])
+    summary = (outcome.get("results") or {}).get("summary") or {}
+    live = summary.get("live_units")
+    return live is None or live > 0
 
 
 def save_sweep_summary(summary: dict) -> str:
@@ -452,6 +688,21 @@ def save_sweep_summary(summary: dict) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def experiment_arms(env=None) -> list[str]:
+    """Experiment modes active for this sweep, read from the same env that
+    run_eval reads (so a conf-enabled BEAST_ASSIST=1 counts too). Each makes
+    the rows leaderboard-ineligible; scoring enforces that as well."""
+    env = os.environ if env is None else env
+    arms = []
+    if env.get("OPENBEAST_EVAL_GREEDY", "") == "1":
+        arms.append("--greedy")
+    if "1" in (env.get("BEAST_PACKS", "").strip(), env.get("OPENBEAST_PACKS", "").strip()):
+        arms.append("--packs")
+    if "1" in (env.get("OPENBEAST_DIAGNOSTICS", "").strip(), env.get("BEAST_ASSIST", "").strip()):
+        arms.append("beast-assist diagnostics")
+    return arms
+
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all local models")
@@ -484,6 +735,9 @@ def main():
                              "leaderboard-ineligible experiment rows). Same as BEAST_PACKS=1.")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
+    parser.add_argument("--reasoning-budget",
+                        help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
+                             "-1 = uncapped). Default: each model's last live run.")
     args = parser.parse_args()
 
     if args.list:
@@ -527,17 +781,32 @@ def main():
         print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
               f"scores are imputed readouts, never leaderboard rows).")
         update_lb = False
+    arms = experiment_arms()
+    if arms and update_lb:
+        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
+              f"arms are leaderboard-ineligible; the board holds serving reality).")
+        update_lb = False
     if args.tasks and not args.no_leaderboard:
         print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
               "will be recorded in leaderboard.json and mix incomparably with "
               "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
               file=sys.stderr)
+    # The GPU lease, before anything touches the card. cache-only never
+    # starts a server, so it neither needs nor takes the lease.
+    if not args.cache_only:
+        try:
+            ensure_gpu_lease(sys.argv[1:])
+        except GpuLeaseHeld as e:
+            print(f"Refusing to start: {e}", file=sys.stderr)
+            sys.exit(4)
+
     summary = run_sweep(models, task_filter, args.max_iter,
                          use_cache=not args.no_cache,
                          cache_only=args.cache_only,
                          update_leaderboard=update_lb,
                          jobs=args.jobs,
-                         suite=args.suite)
+                         suite=args.suite,
+                         reasoning_budget=args.reasoning_budget)
     summary_path = save_sweep_summary(summary)
 
     # Final report

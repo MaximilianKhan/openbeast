@@ -166,14 +166,15 @@ PYEOF
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
 
+# Bearer via lib/curl_auth.sh: the device key rides a curl --config on an fd,
+# never curl's argv (world-readable through ps on a shared box).
+# shellcheck source=lib/curl_auth.sh
+. "$REPO/scripts/lib/curl_auth.sh"
+
 _curl_auth() {
   # _curl_auth <url> [extra curl args…] — bearer added when keyed.
   _u="$1"; shift
-  if [ -n "${OPENBEAST_API_KEY:-}" ]; then
-    curl -s -m 5 -H "Authorization: Bearer $OPENBEAST_API_KEY" "$@" "$_u"
-  else
-    curl -s -m 5 "$@" "$_u"
-  fi
+  ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -m 5 "$@" "$_u"
 }
 
 _http_code() {
@@ -186,12 +187,8 @@ _http_code() {
   # a trailing `|| echo 000` yields '000000' and the 000 branch never matches.
   # Capture, ignore the exit status, and default only when the output is empty.
   _u="$1"
-  if [ -n "${OPENBEAST_API_KEY:-}" ]; then
-    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
-      -H "Authorization: Bearer $OPENBEAST_API_KEY" "$_u" 2>/dev/null) || true
-  else
-    _c=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
-  fi
+  _c=$(ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -o /dev/null \
+    -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
   echo "${_c:-000}"
 }
 
@@ -229,7 +226,7 @@ case "$CMD" in
           echo "  ✓ rig model API reachable ($BASE)"; ok=$((ok+1))
         else
           echo "  ✗ rig reachable but /v1/models refused — wrong or missing"
-          echo "    API key? Re-run: setup-client.sh --api-key <rig LLAMA_API_KEY>"
+          echo "    API key? Re-run: setup-client.sh --api-key-stdin (paste the key)"
           bad=$((bad+1))
         fi
       else
@@ -238,7 +235,7 @@ case "$CMD" in
           401|403)
             echo "  ✗ rig rejected this device (401/403) — key wrong, or your"
             echo "    device was revoked. Ask the rig owner to re-enroll:"
-            echo "    ./scripts/clients.sh enroll <name>, then setup-client.sh --api-key <key>" ;;
+            echo "    ./scripts/clients.sh enroll <name>, then setup-client.sh --api-key-stdin" ;;
           503)
             echo "  ! rig is up but still loading the model (503) — retry shortly" ;;
           502|504)
@@ -384,10 +381,38 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     else
       echo "  ! $REPO is not a git checkout, so the source cannot be updated." >&2
     fi
+    # Same install as setup-client.sh step 3: the hash-pinned closure from
+    # agents/requirements.lock via pydeps.sh. A plain `pip install -r
+    # requirements.txt` here re-resolved every transitive dependency, unpinned
+    # and unverified, into the venv that runs bash and the file tools — on the
+    # first update after a hash-pinned install. pydeps.sh exit 3 is a HASH
+    # MISMATCH: fatal, never a fallback. Any other failure (a python the
+    # closure does not cover) degrades loudly to requirements.txt, unless
+    # OPENBEAST_PIP_STRICT=1. (Bash 3.2-safe: this file runs on macOS.)
     if [ -x "$VENV/bin/pip" ]; then
-      if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
-        echo "  x dependency install failed." >&2
+      _pd_rc=0
+      if [ -x "$REPO/scripts/pydeps.sh" ]; then
+        OPENBEAST_PYTHON="$VENV/bin/python3" "$REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+      else
+        _pd_rc=127
+      fi
+      if [ "$_pd_rc" -eq 3 ]; then
+        echo "  x HASH MISMATCH installing the client's python deps (pip's report is above)." >&2
+        echo "    The index served bytes that are NOT the ones agents/requirements.lock pins." >&2
+        echo "    Refusing, and NOT falling back to requirements.txt (same packages, unverified)." >&2
+        echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first." >&2
         exit 1
+      elif [ "$_pd_rc" -ne 0 ]; then
+        if [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
+          echo "  x the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback" >&2
+          exit 1
+        fi
+        echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —" >&2
+        echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content." >&2
+        if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
+          echo "  x dependency install failed." >&2
+          exit 1
+        fi
       fi
     fi
     # Always refresh, even when the pull was a no-op: the catalog can be stale

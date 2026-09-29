@@ -243,9 +243,12 @@ flowchart TB
   are loopback-only; remote devices arrive exclusively through Tailscale's
   authenticated HTTPS proxy (see [Remote access](REMOTE_ACCESS_PLAN.md)).
 - **Inference.** llama.cpp serves an OpenAI-compatible API with MTP
-  speculative decoding; `serve.sh` auto-scales context to the card's VRAM
-  (the shipped default serves 350K context across six unified-KV slots on the
-  32 GB reference card), and bootstrap refuses GPUs under the 24 GB floor.
+  speculative decoding; `serve.sh` auto-scales context down to the card's VRAM
+  (the shipped default, Qwen3.8 27B Uncensored MTP, serves its native 262K
+  context on a **single** slot on the 32 GB reference card — its serve script
+  pins `-np 1`, as MTP scripts do; a serve script that passes no `-np` gets
+  `serve.sh`'s six unified-KV slots), and bootstrap refuses GPUs under the
+  24 GB floor.
 
 ## Project structure
 
@@ -281,6 +284,7 @@ scripts/                     # Server, ops, and feature CLIs
   eval-era.sh                # The eval era hash and the six files behind it
   land-dependabot.sh         # Rebase → relock → approve → merge, one Dependabot PR at a time
   uninstall.sh               # Rig decommissioning (dry run by default; --go; --purge-*)
+  logrotate.sh               # Log rotation for .run/ (policy: logrotate-openbeast.conf; --install = daily user timer)
   ext.sh                     # Extension manager (enable/disable/list optional services)
   ssd-wear.sh                # SMART-based drive wear report
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
