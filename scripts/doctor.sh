@@ -267,9 +267,28 @@ fi
 
 # ── Services ────────────────────────────────────────────────────────────────
 section "Services"
-probe "http://$HEALTH_HOST:8080/health" "ok" \
-  && pass "llama.cpp server (:8080)" \
-  || warn "llama.cpp server not responding (:8080)" "./start.sh -d, or ./scripts/healthcheck.sh --restart"
+if probe "http://$HEALTH_HOST:8080/health" "ok"; then
+  pass "llama.cpp server (:8080)"
+  # The model is up — but can the FRONTEND reach it? Open WebUI dials
+  # OPENBEAST_MODEL_URL (localhost), and a server bound to a specific LAN or
+  # tailnet BIND_HOST refuses localhost: chat has no model while every probe
+  # above, which follows BIND_HOST, reads green. Dial what WebUI dials.
+  _mu="${OPENBEAST_MODEL_URL:-}"
+  if [[ -n "$_mu" ]]; then
+    _mcode="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "${_mu%/}/models" 2>/dev/null || true)"
+    if [[ -z "$_mcode" || "$_mcode" == "000" ]]; then
+      if [[ "$HEALTH_HOST" != "127.0.0.1" && "$HEALTH_HOST" != "[::1]" ]]; then
+        fail "Open WebUI's model endpoint ($_mu) refuses connections: services bind only $BIND_HOST" \
+             "set BIND_HOST=127.0.0.1 (remote access via Tailscale) or 0.0.0.0 — frontends dial localhost"
+      else
+        fail "Open WebUI's model endpoint ($_mu) is not answering, though llama-server is" \
+             "AGENT_ROUTER=true? check the router: ./scripts/healthcheck.sh --restart"
+      fi
+    fi
+  fi
+else
+  warn "llama.cpp server not responding (:8080)" "./start.sh -d, or ./scripts/healthcheck.sh --restart"
+fi
 
 if probe "http://$HEALTH_HOST:3001/health" "ok"; then
   mode=$(curl -s --max-time 4 "http://$HEALTH_HOST:3001/health" 2>/dev/null)

@@ -126,6 +126,49 @@ else
   fail "doctor stopped probing llama on BIND_HOST: $(tr '\n' ' ' <<< "$_U")"
 fi
 
+# lifecycle-6: with a specific-address BIND_HOST the services refuse
+# localhost, which is exactly what Open WebUI dials. Every probe that follows
+# BIND_HOST reads green; doctor must dial what the frontend dials.
+# This curl answers ONLY URLs matching $CURL_OK (a server bound to one address).
+cat > "$_D/bin/curl" <<'SH'
+#!/bin/bash
+url=""; w=0
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; [[ "$a" == "%{http_code}" ]] && w=1; done
+echo "$url" >> "$CURL_LOG"
+if [[ -n "${CURL_OK:-}" && "$url" =~ $CURL_OK ]]; then
+  [[ $w -eq 1 ]] && { printf '200'; exit 0; }
+  printf '{"status":"ok"}'; exit 0
+fi
+[[ $w -eq 1 ]] && printf '000'
+exit 7
+SH
+chmod +x "$_D/bin/curl"
+_doctor_out() { # _doctor_out <CURL_OK-regex> <conf-lines...>
+  local ok="$1"; shift
+  printf '%s\n' "$@" > "$_D/openbeast.conf"
+  RUN_ENV=(CURL_LOG="$_D/curl.log" CURL_OK="$ok")
+  _run "$_D" "$_D/scripts/doctor.sh"
+  RUN_ENV=()
+}
+_O="$(_doctor_out '^http://192\.0\.2\.9:' 'BIND_HOST=192.0.2.9')"
+if grep -q "model endpoint (http://localhost:8080/v1) refuses connections" <<< "$_O"; then
+  pass "doctor FAILs when llama answers on a LAN BIND_HOST but WebUI's localhost model URL is refused"
+else
+  fail "doctor reported green while WebUI cannot reach the model: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
+if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
+  pass "…and stays quiet on a loopback rig where the frontend reaches the model (control)"
+else
+  fail "doctor flagged a reachable model endpoint: $(grep -iE 'llama|model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+# The inter-service upstreams follow the probe host too.
+if grep -qE 'OPENBEAST_(LLAMA_UPSTREAM|MCPO_URL)="http://127\.0\.0\.1' "$REPO_DIR/start.sh" "$REPO_DIR/scripts/healthcheck.sh"; then
+  fail "router/beast-gate upstreams are still hardcoded to 127.0.0.1 (a specific BIND_HOST refuses it)"
+else
+  pass "router/beast-gate upstreams follow BIND_HOST's probe host"
+fi
+
 # ---------------------------------------------------------------------------
 # lifecycle-1: a model is healthy when /health says so — not when it binds.
 # llama-server binds before it loads and answers 503 "Loading model" for the

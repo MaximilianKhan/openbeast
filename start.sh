@@ -563,9 +563,13 @@ echo "Tool server ready on http://localhost:3001"
 # spawned agents are never routed. See docs/RESEARCH_FINDINGS §8-11.
 if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "Starting agent-spawn router on http://localhost:${ROUTER_PORT}..."
+  # Upstreams on the PROBE host, not a hardcoded 127.0.0.1: llama-server and
+  # the tool server bind BIND_HOST, and a socket bound to a specific LAN or
+  # tailnet address refuses 127.0.0.1 — every routed request was a 502 while
+  # every health probe (which did follow BIND_HOST) reported green.
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
-  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
-  OPENBEAST_MCPO_URL="http://127.0.0.1:3001" \
+  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
+  OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
     python3 "$SCRIPT_DIR/agents/router.py" &
   ROUTER_PID=$!
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
@@ -587,8 +591,9 @@ fi
 # only on the tailnet side (setup-tailscale.sh points :8443 here).
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   echo "Starting beast-gate on http://localhost:${EDGE_PORT}..."
+  # Upstream on the probe host for the same reason as the router's above.
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
-  OPENBEAST_LLAMA_UPSTREAM="http://127.0.0.1:8080" \
+  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
     python3 "$SCRIPT_DIR/agents/edge.py" &
   EDGE_PID=$!
   echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
