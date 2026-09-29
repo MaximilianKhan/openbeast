@@ -95,8 +95,11 @@ exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `thread constructor failed`) or a full disk (`No space left on device`,
 `NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
 next run, and a run containing either can't enter the leaderboard until
-that rerun is done. Before each live unit the harness also checks free space
-on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
+that rerun is done. An `env_error` that repeats for the same cache key
+(`OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default 3) is the model's own
+program exhausting the machine, so it banks as a plain FAIL
+(`env_error_repeats: N`) instead of rerunning forever. Before each live
+unit the harness also checks free space on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
 `/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
 that unit as `reason: low_disk` and stops starting units, so a disk filled
 mid-sweep doesn't turn the rest of the run into ENOSPC failures;

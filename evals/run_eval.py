@@ -750,6 +750,8 @@ def cacheable_result(result: dict) -> bool:
       failed + reason env_error / exhaustion text in validation_output —
         fork/thread EAGAIN or a full disk killed the VALIDATOR, not the
         model's code (see _ENV_ERROR_RE).
+        Unless it repeated env_error_bank_after() times for the key
+        (env_error_repeats): then the model's own program is the cause.
     A PASS is always a genuine verdict: infrastructure trouble can only
     make a unit fail, never make it pass."""
     if (result.get("agent_exit_code") or 0) < 0:
@@ -762,9 +764,21 @@ def cacheable_result(result: dict) -> bool:
         return False
     if (result.get("api_errors") or 0) > 0:
         return False
-    if env_error_signature(result.get("validation_output")):
+    if (env_error_signature(result.get("validation_output"))
+            and not result.get("env_error_repeats")):
         return False
     return True
+
+
+def env_error_bank_after() -> int:
+    """How many env_error verdicts in a row for one cache key make it a
+    genuine FAIL (OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER, default 3). Machine
+    contention is transient; the same exhaustion three runs running is the
+    model's program exhausting the machine."""
+    try:
+        return max(1, int(os.environ.get("OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER", "3")))
+    except ValueError:
+        return 3
 
 
 SUITES_DIR = os.path.join(EVALS_DIR, "suites")
@@ -1468,6 +1482,7 @@ def run_eval(
         # env_error: the validator died to fork/thread EAGAIN or a full disk.
         api_errors = agent_result.get("api_errors", 0) or 0
         infra_reason = None
+        env_strikes = 0
         if not passed:
             if api_errors > 0:
                 infra_reason = "server_error"
@@ -1476,6 +1491,19 @@ def run_eval(
                 infra_reason = "server_error"
             elif env_error_signature(validation_output):
                 infra_reason = "env_error"
+                # Exhaustion the model's OWN program causes (a fork loop,
+                # thousands of threads) matches the same text and would
+                # rerun live forever, keeping the model off the board. An
+                # env_error that keeps coming back for the same key is a
+                # verdict: bank it as a plain FAIL.
+                if ck is not None:
+                    try:
+                        strikes = cache.env_error_strike(ck)
+                    except OSError:
+                        strikes = 0
+                    if strikes >= env_error_bank_after():
+                        infra_reason = None
+                        env_strikes = strikes
 
         # Record result
         tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
@@ -1495,6 +1523,7 @@ def run_eval(
             "compactions": agent_result.get("compactions", 0),
             "api_errors": api_errors,
             **({"reason": infra_reason} if infra_reason else {}),
+            **({"env_error_repeats": env_strikes} if env_strikes else {}),
             **({"env_fp": env_component} if env_component else {}),
         })
 
@@ -1522,6 +1551,7 @@ def run_eval(
         if use_cache and cacheable_result(result):
             try:
                 cache.cache_put(ck, result)
+                cache.env_error_strikes_clear(ck)
             except Exception as e:
                 log(f"  (cache write failed: {e})")
 

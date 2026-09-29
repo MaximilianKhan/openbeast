@@ -178,6 +178,36 @@ def cache_put(key: str, result: dict[str, Any]) -> None:
     os.replace(tmp, cache_path(key))
 
 
+# env_error strikes: how many times a key's unit failed on resource
+# exhaustion (run_eval._ENV_ERROR_RE). Kept beside the cache, one small file
+# per key, outside the *.json glob every other helper walks.
+STRIKES_DIR = CACHE_DIR / "env-strikes"
+
+
+def env_error_strike(key: str) -> int:
+    """Record one more env_error for `key`; return the running count.
+    Unreadable state counts as zero — a lost strike costs one extra rerun."""
+    STRIKES_DIR.mkdir(parents=True, exist_ok=True)
+    p = STRIKES_DIR / f"{key}.json"
+    try:
+        n = int(json.loads(p.read_text()).get("strikes", 0))
+    except (OSError, ValueError, AttributeError):
+        n = 0
+    n += 1
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"strikes": n, "last": datetime.now().isoformat()}))
+    os.replace(tmp, p)
+    return n
+
+
+def env_error_strikes_clear(key: str) -> None:
+    """Forget `key`'s strikes (a real verdict was banked for it)."""
+    try:
+        (STRIKES_DIR / f"{key}.json").unlink()
+    except OSError:
+        pass
+
+
 def cache_stats() -> dict[str, Any]:
     """Quick stats for the CLI."""
     if not CACHE_DIR.exists():
@@ -209,4 +239,6 @@ def cache_clear() -> int:
     for p in CACHE_DIR.glob("*.json"):
         p.unlink()
         n += 1
+    for p in STRIKES_DIR.glob("*.json") if STRIKES_DIR.exists() else []:
+        p.unlink()
     return n

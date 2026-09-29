@@ -278,3 +278,34 @@ def test_cache_only_explicit_rb_wins(tmp_path):
     _bank_rb20480(run_eval, cache, tmp_path)
     res = run_eval.run_eval(model_name="m", cache_only=True, reasoning_budget="-1")
     assert res["tasks"][0]["reason"] == "skipped_cache_miss"   # uncapped era: a miss
+
+
+def test_reproducible_env_error_banks_as_fail(tmp_path, monkeypatch):
+    """The model's OWN program exhausting threads/processes matches the env
+    text every run; unbounded, it reran live forever and kept the model off
+    the board. The Nth env_error for one key banks as a plain FAIL."""
+    run_eval, cache = _fresh(tmp_path)
+    monkeypatch.delenv("OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER", raising=False)
+    exhaust = (False, "thread constructor failed: Resource temporarily unavailable")
+    for _ in range(2):
+        res = _run(run_eval, monkeypatch, _AGENT, exhaust)
+        assert res["tasks"][0]["reason"] == "env_error"
+        assert not list(cache.CACHE_DIR.glob("*.json"))
+    res = _run(run_eval, monkeypatch, _AGENT, exhaust)
+    row = res["tasks"][0]
+    assert "reason" not in row and row["env_error_repeats"] == 3
+    (banked,) = cache.CACHE_DIR.glob("*.json")
+    assert not list(cache.STRIKES_DIR.glob("*.json"))    # strikes forgotten
+    # And it now replays like any genuine FAIL.
+    res = _run(run_eval, monkeypatch, _AGENT, (True, "unused"))
+    assert res["tasks"][0]["from_cache"] is True and res["tasks"][0]["passed"] is False
+
+
+def test_env_error_strikes_are_per_key(tmp_path, monkeypatch):
+    """Negative control: strikes on one key never bank another."""
+    run_eval, cache = _fresh(tmp_path)
+    for _ in range(5):
+        assert cache.env_error_strike("a.key") >= 1
+    assert cache.env_error_strike("b.key") == 1
+    monkeypatch.setenv("OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER", "junk")
+    assert run_eval.env_error_bank_after() == 3
