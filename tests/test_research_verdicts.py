@@ -138,6 +138,52 @@ def test_dead_server_zero_token_fails_void_the_row(tmp_path):
     assert _run_validity(tmp_path, d2)[0] == 0
 
 
+@pytest.mark.parametrize("reason", ["server_error", "env_error", "low_disk"])
+def test_run_eval_infra_reasons_void_the_row(tmp_path, reason):
+    # The round-1 run_eval stamps these on FAILs that are not the model's.
+    # server_error / env_error rows have a normal exit AND real tokens, so the
+    # shape-based buckets cannot see them — only the reason does.
+    d = _full_row()
+    for t in d["tasks"][:2]:
+        t.update(passed=False, agent_exit_code=0, tokens_completion=4000,
+                 validation_output="FAIL: wrong output", reason=reason)
+    assert row_validity.kind(d["tasks"][0]) == "infra"
+    rc, out = _run_validity(tmp_path, d)
+    assert rc == 1, out
+    assert "ROW INVALID" in out and "infra=2" in out
+    assert d["tasks"][0]["id"] in row_validity.contaminated_ids(d, None)
+
+
+def test_row_api_errors_field_voids_the_row_without_agent_logs(tmp_path):
+    d = _full_row()
+    d["tasks"][5].update(passed=False, agent_exit_code=0, tokens_completion=3000,
+                         api_errors=4)
+    rc, out = _run_validity(tmp_path, d)
+    assert rc == 1, out
+    assert "api=1" in out and "API/connection errors" in out
+    assert d["tasks"][5]["id"] in row_validity.contaminated_ids(d, None)
+    # negative control: api_errors 0 on a fail, and a PASS that saw a
+    # transient API error (a PASS is always the model's), stay clean.
+    d2 = _full_row()
+    d2["tasks"][5].update(passed=False, agent_exit_code=0, api_errors=0)
+    d2["tasks"][6].update(api_errors=2)
+    rc, out = _run_validity(tmp_path, d2)
+    assert rc == 0, out
+    assert "api=n/a" in out
+
+
+def test_banked_env_error_repeat_is_the_models_fail(tmp_path):
+    # run_eval banks an EAGAIN FAIL as a plain verdict once the same key hit
+    # it N times running (the model's own fork loop): not contamination.
+    d = _full_row()
+    d["tasks"][0].update(passed=False, agent_exit_code=0, tokens_completion=900,
+                         validation_output="error: SystemResources",
+                         env_error_repeats=3)
+    assert _run_validity(tmp_path, d)[0] == 0
+    del d["tasks"][0]["env_error_repeats"]      # control: the unbanked one is not
+    assert _run_validity(tmp_path, d)[0] == 1
+
+
 def test_missing_agent_log_dir_reads_as_unchecked_not_clean(tmp_path):
     assert row_validity.load_log_index(str(tmp_path / "nope")) is None
     p = tmp_path / "row.json"; p.write_text(json.dumps(_full_row()))

@@ -76,10 +76,12 @@ In order, each on Max's go:
    aborts unless its own server reports `total_slots == 1`. Both runs are
    now `--no-cache`. The IQ2 pair (stage F, `master4`) is still pending.
    The row guard now flags harness deaths, EAGAIN, API-error fails matched
-   in the agent logs, and live zero-token fails with a normal exit (the
-   shape of a unit run against a dead server). `e32_cap_verdict.py` refuses
-   a p-value when a row is incomplete and exits 1 on a refused verdict or
-   an INVALID row.
+   in the agent logs, live zero-token fails with a normal exit (the shape
+   of a unit run against a dead server), and every run_eval infra reason
+   (`setup_failed`, `server_unhealthy`, `skipped_cache_miss`, `low_disk`,
+   `server_error`, `env_error`) or nonzero per-row `api_errors` count.
+   `e32_cap_verdict.py` refuses a p-value when a row is incomplete and
+   exits 1 on a refused verdict or an INVALID row.
 5. **Merge draft #90** at that boundary, run the P4 zig mini-A/B
    (`BEAST_LANG_PLAN.md` §10), then retire `_ZIG_FIX_HINTS` if the index
    wins.
