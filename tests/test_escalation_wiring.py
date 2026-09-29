@@ -157,21 +157,92 @@ def test_escalate_flag_off_is_none(monkeypatch):
     assert run_eval.escalate_flag(False) == (False, None, {})
 
 
-def test_escalate_flag_stamps_the_index_and_needs_diagnostics(monkeypatch, tmp_path):
-    idx = tmp_path / "escalate-index.json"
-    idx.write_text('{"langs": {}}')
-    monkeypatch.setattr(run_eval, "ESCALATE_INDEX", str(idx))
+def _lang_tree(root):
+    """A minimal copy of what the esc1 component reads: its own case, so the
+    test never depends on (or edits) the real agents/lang/."""
+    (root / "claims" / "staging").mkdir(parents=True)
+    (root / "escalate-index.json").write_text('{"langs": {}}')
+    (root / "escalate.py").write_text("MAX_IDENT_FANOUT = 3\n")
+    (root / "verify.py").write_text("# loader\n")
+    (root / "__init__.py").write_text("# facade\n")
+    (root / "claims" / "zig-0.16.json").write_text(
+        '[{"id": "stdout", "summary": "std.io is std.Io in 0.16"}]')
+    (root / "claims" / "staging" / "zig-draft.json").write_text("[]")
+    return root
+
+
+@pytest.fixture()
+def esc_tree(monkeypatch, tmp_path):
+    root = _lang_tree(tmp_path / "lang")
+    monkeypatch.setattr(run_eval, "ESCALATE_LANG_DIR", str(root))
     monkeypatch.setenv("BEAST_ESCALATE", "1")
+    monkeypatch.delenv("OPENBEAST_LANG_MAX_CARDS", raising=False)
+    return root
+
+
+def test_escalate_flag_stamps_the_treatment_and_needs_diagnostics(esc_tree):
     on, comp, meta = run_eval.escalate_flag(True)
-    assert on and comp == f"esc1-{meta['index_sha']}" and len(meta["index_sha"]) == 8
-    # the index IS the treatment: a rebuilt index is a different era
-    idx.write_text('{"langs": {"zig": {}}}')
-    assert run_eval.escalate_flag(True)[1] != comp
+    assert on and comp == f"esc1-{meta['treatment_sha']}" and len(meta["treatment_sha"]) == 8
+    assert len(meta["index_sha"]) == 8
+    assert "claims/zig-0.16.json" in meta["files"]
+    # negative control: nothing changed, nothing moves (the era is stable)
+    assert run_eval.escalate_flag(True)[1] == comp
     # an --escalate arm with the checker off would measure nothing, under a
     # name that says it measured something
     with pytest.raises(SystemExit) as e:
         run_eval.escalate_flag(False)
     assert "BEAST_ASSIST" in str(e.value)
+
+
+@pytest.mark.parametrize("edit", [
+    # the index: which errors select which cards
+    lambda r, mp: (r / "escalate-index.json").write_text('{"langs": {"zig": {}}}'),
+    # a claim SUMMARY: the sentence the model actually reads (review open-prs-1:
+    # this edit used to leave the component at the same esc1-<sha>)
+    lambda r, mp: (r / "claims" / "zig-0.16.json").write_text(
+        '[{"id": "stdout", "summary": "EDITED: use std.debug.print for all output"}]'),
+    # a new served claim file
+    lambda r, mp: (r / "claims" / "cpp-std.json").write_text("[]"),
+    # the selector (_select, the tie-break, render_escalation's header)
+    lambda r, mp: (r / "escalate.py").write_text("MAX_IDENT_FANOUT = 4\n"),
+    # how a claim file becomes a served summary; the eval facade
+    lambda r, mp: (r / "verify.py").write_text("# loader v2\n"),
+    lambda r, mp: (r / "__init__.py").write_text("# facade v2\n"),
+    # how many cards are shown
+    lambda r, mp: mp.setenv("OPENBEAST_LANG_MAX_CARDS", "3"),
+], ids=["index", "claim-summary", "new-claim-file", "selector", "loader",
+        "facade", "max-cards"])
+def test_everything_that_reaches_the_model_moves_the_era(esc_tree, monkeypatch, edit):
+    before = run_eval.escalate_flag(True)[1]
+    edit(esc_tree, monkeypatch)
+    assert run_eval.escalate_flag(True)[1] != before
+
+
+def test_unserved_staging_claims_do_not_split_the_era(esc_tree):
+    """verify.load_claims never recurses, so staging/ is not served; a draft
+    being reviewed there must not invalidate a measured arm."""
+    before = run_eval.escalate_flag(True)[1]
+    (esc_tree / "claims" / "staging" / "zig-draft.json").write_text('[{"id": "x"}]')
+    assert run_eval.escalate_flag(True)[1] == before
+
+
+def test_an_unreadable_treatment_refuses_the_arm(esc_tree):
+    (esc_tree / "escalate.py").unlink()
+    with pytest.raises(SystemExit) as e:
+        run_eval.escalate_flag(True)
+    assert "escalate.py" in str(e.value)
+
+
+def test_the_real_tree_names_every_file_the_selector_loads():
+    """Guard against the list drifting from the package: every claim file
+    escalate.cards_for would load is part of the real component."""
+    real = [rel for rel, _ in run_eval._escalate_treatment()]
+    lang_dir = os.path.abspath(run_eval.ESCALATE_LANG_DIR)
+    served = sorted(n for n in os.listdir(os.path.join(lang_dir, "claims"))
+                    if n.endswith(".json"))
+    assert served and all(f"claims/{n}" in real for n in served)
+    for rel in ("escalate-index.json", "escalate.py", "verify.py", "__init__.py"):
+        assert rel in real
 
 
 def test_the_real_facade_is_silent_in_a_measured_unit_unless_the_arm_opens_it(monkeypatch):

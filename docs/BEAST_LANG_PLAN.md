@@ -428,8 +428,12 @@ must clear a v5-suite eval before joining the runner registry.
     byte-identical, pinned by `tests/test_escalation_wiring.py`. Under eval it
     is doubly locked: the facade is silent under `OPENBEAST_EVAL` unless
     `run_eval.py --escalate` opens it, and that arm stamps its own cache era
-    (`<diag component>+esc1-<sha8 of escalate-index.json>` — the index IS the
-    treatment, so a rebuilt index is a new era by construction).
+    (`<diag component>+esc1-<sha8>`, hashed over the treatment as delivered:
+    `escalate-index.json`, every served `claims/*.json` — the card sentences
+    live there — the selector and facade source (`escalate.py`, `verify.py`,
+    `__init__.py`) and `OPENBEAST_LANG_MAX_CARDS`. An edited summary, a
+    retuned selector or a rebuilt index is a new era by construction; a draft
+    in `claims/staging/`, which is never served, is not).
   - **The A/B to run once the GPU is free** (zig-only, greedy, same shape as
     the Tier-3 mini-A/B; diagnostics ON in BOTH arms so the only difference is
     the card): `BEAST_ASSIST=1 python3 evals/benchmark_all.py --models

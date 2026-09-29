@@ -736,7 +736,7 @@ def main():
     parser.add_argument("--escalate", action="store_true",
                         help="beast-lang escalation: attach the toolchain-confirmed fix when the "
                              "diagnostics checker reports a known-cause error (needs BEAST_ASSIST=1; "
-                             "own esc1-<sha8> cache era; leaderboard-ineligible). Same as BEAST_ESCALATE=1.")
+                             "own esc1-<sha8 of the delivered treatment> cache era; leaderboard-ineligible). Same as BEAST_ESCALATE=1.")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — never start a server, never call the model. Cache misses recorded as 'skipped_cache_miss'.")
     parser.add_argument("--reasoning-budget",

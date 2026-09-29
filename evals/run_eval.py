@@ -758,7 +758,42 @@ def packs_flag() -> tuple[bool, str | None, dict]:
     return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
 
 
-ESCALATE_INDEX = os.path.join(EVALS_DIR, "..", "agents", "lang", "escalate-index.json")
+ESCALATE_LANG_DIR = os.path.join(EVALS_DIR, "..", "agents", "lang")
+# What decides the card text a measured unit sees, relative to
+# ESCALATE_LANG_DIR. The index says which errors select which claim ids; the
+# claim files carry the `summary` sentence that is actually delivered (and are
+# what escalate.namespace_wildcards reads); escalate.py is the selector
+# (_select, the tie-break, the fan-out limits, render_escalation's header);
+# verify.py turns a claim file into the summary that is served; __init__.py is
+# the facade that decides whether anything is said under eval at all.
+# Only TOP-LEVEL claims/*.json count, matching verify.load_claims: staging/ is
+# never served, so editing it must not split the era.
+ESCALATE_TREATMENT_FILES = ("escalate-index.json", "escalate.py", "verify.py",
+                            "__init__.py")
+ESCALATE_KNOBS = ("OPENBEAST_LANG_MAX_CARDS",)
+
+
+def _escalate_treatment() -> list[tuple[str, bytes]]:
+    """(relative path, bytes) for every file that shapes a delivered card,
+    in a fixed order. A missing file is a refusal: an arm whose treatment
+    cannot be read cannot be named."""
+    base = os.path.abspath(ESCALATE_LANG_DIR)
+    rels = list(ESCALATE_TREATMENT_FILES)
+    claims = os.path.join(base, "claims")
+    try:
+        rels += sorted(f"claims/{n}" for n in os.listdir(claims)
+                       if n.endswith(".json") and os.path.isfile(os.path.join(claims, n)))
+    except OSError as e:
+        raise SystemExit(f"--escalate: cannot list {claims} ({e})")
+    out = []
+    for rel in rels:
+        path = os.path.join(base, rel)
+        try:
+            with open(path, "rb") as f:
+                out.append((rel, f.read()))
+        except OSError as e:
+            raise SystemExit(f"--escalate: cannot read {path} ({e})")
+    return out
 
 
 def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
@@ -772,9 +807,11 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
     a measured row that silently did nothing, under a name that says it did.
 
     Returns (enabled, cache_component, meta). The component is
-    `esc1-<sha8 of agents/lang/escalate-index.json>` — the index IS the
-    treatment (which errors select which cards, and the toolchain it was
-    built against), so a rebuilt index is a new era by construction."""
+    `esc1-<sha8>` over the treatment AS DELIVERED: the index, every served
+    claim file (the card sentences), the selector and facade source, and the
+    knobs that change how many cards are shown. Hashing the index alone let
+    an edited summary or a retuned selector replay rows measured under the
+    old text, silently mixing two treatments in one A/B."""
     enabled = (os.environ.get("BEAST_ESCALATE", "").strip() == "1"
                or os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1")
     if not enabled:
@@ -784,13 +821,21 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
                          "(BEAST_ASSIST=1): the card is attached to the checker's "
                          "verdict, so without the checker this arm would measure nothing.")
     import hashlib
-    try:
-        with open(ESCALATE_INDEX, "rb") as f:
-            data = f.read()
-    except OSError as e:
-        raise SystemExit(f"--escalate: cannot read {ESCALATE_INDEX} ({e})")
-    sha8 = hashlib.sha256(data).hexdigest()[:8]
-    return True, f"esc1-{sha8}", {"index_sha": sha8}
+    h = hashlib.sha256()
+    shas = {}
+    for rel, data in _escalate_treatment():
+        shas[rel] = hashlib.sha256(data).hexdigest()[:8]
+        h.update(f"{rel}\0{len(data)}\0".encode())
+        h.update(data)
+    # The RAW knob value, not the parsed one: an unset knob and an explicit
+    # default then read as two eras, which costs a rerun, never a mixed row.
+    knobs = {k: os.environ.get(k, "").strip() for k in ESCALATE_KNOBS}
+    for k, v in knobs.items():
+        h.update(f"{k}={v}\0".encode())
+    sha8 = h.hexdigest()[:8]
+    return True, f"esc1-{sha8}", {"treatment_sha": sha8,
+                                  "index_sha": shas["escalate-index.json"],
+                                  "files": shas, "knobs": knobs}
 
 
 _ITER_LINE = re.compile(r"^\[iter (\d+)/(\d+)\]\s*$", re.MULTILINE)
@@ -1454,7 +1499,8 @@ def run_eval(
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
     if esc_on:
-        print(f"Escal:  beast-lang escalation ON (index {esc_meta['index_sha']}) — "
+        print(f"Escal:  beast-lang escalation ON (treatment {esc_meta['treatment_sha']}, "
+              f"index {esc_meta['index_sha']}) — "
               f"cache era {esc_component} (leaderboard-ineligible experiment rows)")
     if packs_on:
         packed = sum(1 for t in tasks if t.get("_context_file"))
