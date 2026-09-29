@@ -210,6 +210,15 @@ else
 fi
 
 _build
+OUT="$(_un --help 2>&1)" || true
+if grep -q "^Uninstall the RIG" <<< "$OUT" && grep -q "^anywhere else\.$" <<< "$OUT" \
+   && ! grep -qE "set -uo|SCRIPT_DIR" <<< "$OUT" && [[ ! -s "$LOG" ]]; then
+  pass "--help prints the header comment and no code, and runs nothing"
+else
+  fail "--help: $OUT"
+fi
+
+_build
 RC=0; OUT="$(_un --bogus 2>&1)" || RC=$?
 if [[ $RC -eq 2 && -d "$RIG/.run" && ! -s "$LOG" ]]; then
   pass "an unknown flag is a usage error, and nothing runs"

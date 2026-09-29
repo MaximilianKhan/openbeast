@@ -35,7 +35,7 @@ for a in "$@"; do
     --purge-weights) PW=1 ;; --purge-data) PD=1 ;; --purge-conf) PC=1 ;;
     --purge-state) PS=1 ;; --purge-build) PB=1 ;;
     --purge-all) PW=1; PD=1; PC=1; PS=1 ;;
-    -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     *) echo "unknown option: $a (see --help)" >&2; exit 2 ;;
   esac
 done
