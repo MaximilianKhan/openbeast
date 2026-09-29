@@ -356,6 +356,31 @@ class TestBodyFailsClosed:
         r, cap, _ = self._post(edge, tmp_path, body.encode())
         assert r.status_code == 200 and "content" in cap
 
+    def test_depth_scan_is_linear_on_unterminated_strings(self, edge):
+        # Every '"' opens a string that never closes. The old token regex
+        # failed each one and finditer rescanned the tail from the next
+        # quote: O(n^2), 128 KB = 24 s of a frozen event loop. 1 MB would
+        # have taken ~26 min; linear it is milliseconds.
+        import time
+        body = b'{"a":' + b'"\\' * (1 << 19)
+        t = time.monotonic()
+        assert edge._json_too_deep(body) is False
+        assert time.monotonic() - t < 1.0
+        # Negative control: unterminated tails still cannot hide real depth
+        # that PRECEDES them, and brackets inside strings still do not count.
+        assert edge._json_too_deep(b"[" * 10 + b'"\\', limit=5) is True
+        assert edge._json_too_deep(b'"' + b"[" * 10, limit=5) is False
+        assert edge._json_too_deep(b'"[[[[[[\\"[["' + b"[" * 3,
+                                   limit=5) is False
+
+    def test_unterminated_string_body_is_refused_fast(self, edge, tmp_path):
+        import time
+        t = time.monotonic()
+        r, cap, _ = self._post(edge, tmp_path,
+                               b'{"a":' + b'"\\' * (1 << 19))
+        assert r.status_code == 400 and "content" not in cap
+        assert time.monotonic() - t < 5.0
+
     @pytest.mark.parametrize("content", [
         b"{ this is not json",
         b'[{"id_slot": 3}]',                  # valid JSON, not an object

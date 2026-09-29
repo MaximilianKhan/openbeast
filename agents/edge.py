@@ -555,8 +555,12 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
 
 # A JSON string token (escapes included) or one structural bracket. Strings
 # are matched whole so a "[" inside a string never counts as nesting. The
-# unrolled string form is linear — no catastrophic backtracking.
-_JSON_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
+# unrolled string form never backtracks, and an UNTERMINATED string runs to
+# end-of-input (`\\?\Z`) instead of failing: a failed match made finditer
+# retry from the next quote and rescan the tail, so a body of repeated '"\\'
+# cost O(n^2) — 128 KB froze the gate's event loop for 24 s.
+_JSON_TOKEN = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*(?:"|\\?\Z)|[\[\]{}]',
+                         re.DOTALL)
 
 
 def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
