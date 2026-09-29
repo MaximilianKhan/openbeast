@@ -107,3 +107,25 @@ sp_print_cmd() {
   for a in "$@"; do out+="$(printf '%q' "$a") "; done
   printf '%s\n' "${out% }"
 }
+
+# sp_backends_hub_env <backends-dir> [args...] — export the Hub / storage
+# settings the python helpers read (HF_ENDPOINT, HF_TOKEN_FILE, MODELS_DIR,
+# OFFLINE) from the environment, else spark.env (or --env FILE in args), else
+# — for OFFLINE only — the rig's openbeast.conf. Values are exported by name;
+# the token itself is only ever read from its file, by python.
+sp_backends_hub_env() {
+  local here="$1" env_file="" conf k; shift
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --env ]] && env_file="${2:-}"
+    shift
+  done
+  env_file="${env_file:-${SPARK_ENV:-$here/spark.env}}"
+  sp_load "$env_file" HF_ENDPOINT HF_TOKEN_FILE MODELS_DIR OFFLINE
+  conf="$here/../../openbeast.conf"
+  if [[ -z "${OFFLINE:-}" && -z "${OPENBEAST_OFFLINE:-}" && -f "$conf" ]]; then
+    OFFLINE="$(_sp_env_value "$conf" OFFLINE || true)"
+  fi
+  for k in HF_ENDPOINT HF_TOKEN_FILE MODELS_DIR OFFLINE; do
+    if [[ -n "${!k:-}" ]]; then export "${k?}"; fi
+  done
+}
