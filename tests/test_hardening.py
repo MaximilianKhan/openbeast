@@ -400,3 +400,51 @@ def test_parent_environ_readable_without_hardening(tmp_path):
     # Negative control: proves the probe detects the leak on this kernel.
     out = _run_leak_probe(tmp_path, OPENBEAST_KEEP_DUMPABLE="1")
     assert "OPENBEAST_IDENTITY_JWT_SECRET=s3cr3t-demo" in out, out
+
+
+# start_agent Popens runner.py directly (not via run_reaped). The :3001 tool
+# server imports mcp_server as a module, so its __main__ hardening never
+# runs there: the spawn itself must harden, or the runner's model shell reads
+# the server's secrets from /proc/<grandparent>/environ.
+_START_AGENT_PROBE = r'''
+import ctypes, sys
+sys.path.insert(0, sys.argv[1])
+import mcp_server
+mcp_server._LOG_DIR = sys.argv[2]
+libc = ctypes.CDLL(None, use_errno=True)
+dumpable = lambda: libc.prctl(3, 0, 0, 0, 0)   # PR_GET_DUMPABLE
+print("BEFORE", dumpable())
+seen = []
+def fake_popen(*a, **kw):
+    seen.append(dumpable())
+    raise OSError("stub: no spawn")
+mcp_server.subprocess.Popen = fake_popen
+print(mcp_server.start_agent("noop", workdir=sys.argv[2]))
+print("AT_SPAWN", seen)
+'''
+
+
+def _run_start_agent_probe(tmp_path, **extra_env):
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(extra_env)
+    r = subprocess.run([sys.executable, "-c", _START_AGENT_PROBE,
+                        str(ROOT / "agents"), str(tmp_path)],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+@_linux_only
+def test_start_agent_hardens_before_spawning_runner(tmp_path):
+    out = _run_start_agent_probe(tmp_path)
+    assert "BEFORE 1" in out, out              # importing alone doesn't harden
+    assert "Error starting agent" in out, out  # the stubbed Popen was reached
+    assert "AT_SPAWN [0]" in out, out          # non-dumpable at the spawn
+
+
+@_linux_only
+def test_start_agent_keep_dumpable_opt_out(tmp_path):
+    # Negative control: the probe sees a dumpable process when opted out.
+    out = _run_start_agent_probe(tmp_path, OPENBEAST_KEEP_DUMPABLE="1")
+    assert "AT_SPAWN [1]" in out, out

@@ -977,6 +977,12 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     except OSError:
         pass  # log dir problems surface via the Popen below
 
+    # The runner's model shell can walk up to THIS process
+    # (/proc/<grandparent>/environ). Harden here, not only in __main__: the
+    # :3001 identity tool server imports this module and never runs it, so
+    # a chat whose first tool call is start_agent would otherwise spawn
+    # from a still-dumpable, secret-holding server.
+    _tools.harden_process()
     try:
         process = subprocess.Popen(
             cmd,
@@ -1724,8 +1730,8 @@ if __name__ == "__main__":
 
     # Before any agent/shell child exists: a spawned runner's model shell
     # must not read this process's secrets (device key, stack keys) from
-    # /proc/<ancestor>/environ. run_reaped also does this lazily, but
-    # start_agent Popens runner.py without going through it.
+    # /proc/<ancestor>/environ. run_reaped and start_agent also do this
+    # lazily (the :3001 server imports this module and relies on them).
     _tools.harden_process()
 
     if args.transport == "http":
