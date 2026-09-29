@@ -130,9 +130,21 @@ if systemctl --user show openbeast-stack -p Environment --value 2>/dev/null \
 else
   pass "no secrets in the systemd unit environment"
 fi
-if [[ "$BIND_HOST" == "0.0.0.0" || "$BIND_HOST" == "::" ]]; then
-  warn "BIND_HOST=$BIND_HOST exposes the whole stack unauthenticated" \
+# Loopback is decided by the one helper conf.sh uses (ob_bind_is_loopback):
+# this row used to call ANY value other than 0.0.0.0/:: "loopback-scoped", so
+# BIND_HOST=192.168.1.20 — every service on the LAN — printed a green check.
+if ! ob_bind_is_loopback "$BIND_HOST"; then
+  warn "BIND_HOST=$BIND_HOST is not loopback — the stack's services are reachable from that network" \
        "prefer Tailscale (scripts/setup-tailscale.sh); set BIND_HOST=127.0.0.1"
+  if ob_tools_exposed_open; then
+    if [[ "${ALLOW_OPEN_TOOLS:-false}" == "true" ]]; then
+      warn "tool server keyless on a network bind (ALLOW_OPEN_TOOLS=true acknowledges it)" \
+           "./scripts/setup-mcpo-keys.sh"
+    else
+      fail "tool server keyless on a network bind — anyone on that network can run shell commands" \
+           "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
+    fi
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi
@@ -305,9 +317,41 @@ else
   warn "identity tool server not responding (:3001)" "./scripts/healthcheck.sh --restart"
 fi
 
-probe "http://$HEALTH_HOST:3000/api/version" "version" \
-  && pass "Open WebUI (:3000)" \
-  || warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
+_WEBUI_UP=0
+if probe "http://$HEALTH_HOST:3000/api/version" "version"; then
+  _WEBUI_UP=1
+  pass "Open WebUI (:3000)"
+else
+  warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
+fi
+# What the RUNNING WebUI enforces (features.auth on the public /api/config):
+# true / false / unknown. The conf can say one thing while the container,
+# started before the conf changed, still does the other.
+_webui_live_auth() {
+  curl -s --max-time 4 "http://$HEALTH_HOST:3000/api/config" 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    a = json.load(sys.stdin).get('features', {}).get('auth')
+except Exception:
+    a = None
+print('unknown' if a is None else ('true' if a else 'false'))" 2>/dev/null \
+    || echo unknown
+}
+# Upstream's built-in admin@localhost / "admin" (network-exposure-1): with
+# login ON, a WebUI that still accepts it hands admin — and the privileged
+# tool connection, i.e. bash — to anyone who can reach it. configure-webui.sh
+# rotates it on start; this row catches a rig where that did not happen. The
+# probe is configure-webui.sh's own (password via env + stdin, never argv).
+if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
+  WEBUI_URL="http://$HEALTH_HOST:3000" "$SCRIPT_DIR/configure-webui.sh" --check-default-admin >/dev/null 2>&1
+  case $? in
+    1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
+            "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
+    0) pass "built-in WebUI admin does not accept the upstream default password" ;;
+    *) ;;   # WebUI went away between the two probes — the row above covers it
+  esac
+fi
 
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.
@@ -424,6 +468,24 @@ if command -v tailscale >/dev/null 2>&1; then
       warn "BEAST_CHAT=true but :8445 is not published — the console is loopback-only" \
            "./scripts/setup-tailscale.sh --publish-chat"
     fi
+    # :443 is the WebUI. Published with login OFF, every tailnet device is the
+    # default admin — with bash through the privileged tool connection
+    # (network-exposure-3). The default :443 entry prints with NO port token
+    # (https://<fqdn> …), an explicit one as :443. Judge both the conf and the
+    # RUNNING container: a conf flipped to true is not in force until WebUI
+    # restarts.
+    if echo "$_serve" | grep -qE '^https://[^:/[:space:]]+(:443)?([[:space:]/]|$)'; then
+      _live_auth="$(_webui_live_auth)"
+      if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+        fail "the WebUI is published on :443 but WEBUI_AUTH is off — every tailnet device is admin (and has bash)" \
+             "set WEBUI_AUTH=true in openbeast.conf and ./stop.sh && ./start.sh -d, or: sudo tailscale serve --https=443 off"
+      elif [[ "$_live_auth" == "false" ]]; then
+        fail "the WebUI is published on :443 and the RUNNING WebUI still has login off" \
+             "WEBUI_AUTH=true is set but not live yet — ./stop.sh && ./start.sh -d"
+      else
+        pass "WebUI published on :443 with login enforced (live auth=${_live_auth})"
+      fi
+    fi
     if echo "$_serve" | grep -qE ':8443[^0-9]'; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
       # the OpenAI routes and keys per device; raw llama-server publishes its
@@ -491,6 +553,21 @@ except Exception: print("")' 2>/dev/null)"
         fi
       fi
     fi
+  fi
+fi
+
+# ── Log rotation ────────────────────────────────────────────────────────────
+# stack.log and the audit trails grow without bound unless the daily
+# openbeast-logrotate timer runs (storage-04). start.sh installs it; this row
+# catches a rig where it is missing or was disabled. Skipped where there is
+# no systemd user manager to ask (macOS, containers, CI).
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  section "Housekeeping"
+  if systemctl --user is-enabled --quiet openbeast-logrotate.timer 2>/dev/null; then
+    pass "log rotation timer enabled (openbeast-logrotate.timer)"
+  else
+    warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
+         "./scripts/logrotate.sh --install"
   fi
 fi
 
