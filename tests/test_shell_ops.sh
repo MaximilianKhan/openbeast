@@ -415,6 +415,21 @@ else
   fail "MODEL_URL default='$_M0' wildcard='$_MW' router='$_MR'"
 fi
 
+_S="$(conf_eval 'BIND_HOST=192.168.1.50' -- 'echo "${SEARXNG_URL-unset}"')"
+_S0="$(conf_eval '' -- 'echo "${SEARXNG_URL-unset}"')"
+_SW="$(conf_eval 'BIND_HOST=0.0.0.0' -- 'echo "${SEARXNG_URL-unset}"')"
+_SO="$(conf_eval 'BIND_HOST=192.168.1.50' SEARXNG_URL=http://search.lan:9 -- 'echo "$SEARXNG_URL"')"
+if [[ "$_S" == "http://192.168.1.50:8888" ]]; then
+  pass "a LAN BIND_HOST exports SEARXNG_URL on the bind host for the model's web_search (lifecycle-6)"
+else
+  fail "SEARXNG_URL for BIND_HOST=192.168.1.50 -> '$_S'"
+fi
+if [[ "$_S0" == unset && "$_SW" == unset && "$_SO" == "http://search.lan:9" ]]; then
+  pass "…loopback/wildcard leave it unset, and an operator's SEARXNG_URL wins (controls)"
+else
+  fail "SEARXNG_URL default='$_S0' wildcard='$_SW' operator='$_SO'"
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "6. lib/extensions.sh — only plain names reach the consumers:"

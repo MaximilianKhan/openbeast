@@ -298,6 +298,15 @@ else
   OPENBEAST_PROBE_HOST=127.0.0.1
 fi
 export OPENBEAST_PROBE_HOST
+# The tool server's web_search (agents/tools.py) defaults SEARXNG_URL to
+# localhost:8888, but SearXNG binds BIND_HOST — and a socket bound to a
+# specific LAN/tailnet address refuses loopback, so the MODEL's search tool
+# was refused on exactly the rigs whose WebUI search now worked. Point it at
+# the probe host there. Loopback/wildcard binds leave it unset (the
+# historical default already works), and an operator's own SEARXNG_URL wins.
+if [[ -z "${SEARXNG_URL:-}" && "$OPENBEAST_PROBE_HOST" != "127.0.0.1" ]]; then
+  export SEARXNG_URL="http://${OPENBEAST_PROBE_HOST}:8888"
+fi
 # The router hard-binds 127.0.0.1 (agents/router.py) whatever BIND_HOST is,
 # so it is always dialled there; llama-server binds BIND_HOST, so it is
 # dialled on the probe host. It was `localhost` for both, and on a rig with a
