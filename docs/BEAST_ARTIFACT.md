@@ -55,18 +55,27 @@ echo "ARTIFACT_OPERATORS=you@example.com" >> openbeast.conf   # your tailnet log
 ./stop.sh && ./start.sh -d
 
 ./scripts/artifact.sh publish page.html --title "Weekly numbers"
-#   → https://beast:8446/a/3f1c9e4a-77b2-4d0e-9a51-0d2e6b8c4411  (v1)
+#   → http://localhost:3004/a/3f1c9e4a-77b2-4d0e-9a51-0d2e6b8c4411  (v1)
 ```
 
-`ARTIFACT_OPERATORS` is what lets *you* open the rig's private pages from a
-phone: everything the rig publishes is owned by the rig, and the first login
-on that list administers it. Leave it out and no tailnet login can open a
-private page the rig published — `publish` warns you every time until it is
-set. To reach the page from your phone, publish the port once:
+The link printed before the port is published is a **loopback** URL, and no
+browser can open it: the viewer refuses a caller that presents no tailnet
+login, and a browser on the rig presents none (`artifact.sh list/show` works
+right away). `ARTIFACT_OPERATORS` is what lets *you* open the rig's private
+pages from a phone: everything the rig publishes is owned by the rig, and the
+first login on that list administers it. Leave it out and no tailnet login can
+open a private page the rig published — `publish` warns you every time until
+it is set. Then publish the port once:
 
 ```bash
 ./scripts/setup-tailscale.sh --publish-artifact      # needs sudo
 ```
+
+From then on every URL is the tailnet form
+`https://beast.<tailnet>.ts.net:8446/a/<id>`, and it opens on the phone and
+in the rig's own browser. Without `ARTIFACT_OPERATORS`, private pages (the
+default) open for nobody from a phone. `./scripts/doctor.sh` warns about
+that and about a published `:8446` with no server behind it.
 
 In chat, the same thing is one sentence: *"write me a page showing X and
 publish it."* The model calls `publish_artifact` and answers with the link.
@@ -189,6 +198,23 @@ Caps, enforced at publish and mirroring what Claude Code's artifacts accept:
 **16 MB** for the page or any text file, **15 MB** per binary file, **255**
 files and **64 MB** total per version. A rejection names the file and the cap
 it broke.
+
+### Verdicts and the leaderboard: `scripts/publish-verdict.sh`
+
+A campaign stage can publish its verdict to a URL that stays the same across
+reruns:
+
+```bash
+./scripts/publish-verdict.sh tier3-zig "$OUT/verdict.txt"         # .txt → escaped <pre> page
+python3 evals/scoring.py --html "$OUT/board.html" \
+  && ./scripts/publish-verdict.sh leaderboard "$OUT/board.html"
+```
+
+The id is `uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>")`, so each rerun
+adds a version to the same page. Each version is labelled
+`<git short sha> era=<eval era>` unless you pass `--label`. Pages are always
+private. The script never fails its caller: with `BEAST_ARTIFACT` off or the
+server down it prints one stderr line and exits 0.
 
 ## The two tools
 

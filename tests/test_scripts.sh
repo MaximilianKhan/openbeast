@@ -1855,7 +1855,9 @@ PY
     fail "start.sh spawns $_svc without checking whether one is already live"
   fi
   _guard_at="$(grep -n "_pid_alive \"\$RUN_DIR/$_svc.pid\"" <<< "$_blk" | head -1 | cut -d: -f1)"
-  _write_at="$(grep -n "> \"\$RUN_DIR/$_svc.pid\"" <<< "$_blk" | head -1 | cut -d: -f1)"
+  # The write is either inline or inside _spawn_ready (called with the
+  # pidfile's name), which writes "$RUN_DIR/$pidname.pid" after the spawn.
+  _write_at="$(grep -nE "> \"\\\$RUN_DIR/$_svc\.pid\"|_spawn_ready beast-[a-z]+ $_svc " <<< "$_blk" | head -1 | cut -d: -f1)"
   if [[ -n "$_guard_at" && -n "$_write_at" && $_guard_at -lt $_write_at ]]; then
     pass "start.sh checks for a live $_svc BEFORE overwriting its pidfile"
   else

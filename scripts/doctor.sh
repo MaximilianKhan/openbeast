@@ -489,6 +489,87 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   fi
 fi
 
+# Whether an address is loopback, as ob_probe_host prints it.
+_is_loop() { case "$1" in 127.*|"[::1]"|::1|localhost) return 0 ;; *) return 1 ;; esac; }
+
+if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+  # An EMPTY allowlist is not "open": the rig's own publishes (artifact.sh,
+  # the model's tools, campaign scripts) are owned by the principal "local",
+  # private is the default visibility, and a phone always presents its real
+  # tailnet login — so on the default config every private page opens for
+  # nobody from a phone, the operator included (integration-ops-1/-5). The
+  # server falls back to CHAT_OPERATORS, so either list counts.
+  _art_ops="${OPENBEAST_ARTIFACT_OPERATORS:-}${OPENBEAST_CHAT_OPERATORS:-}"
+  if [[ -z "${_art_ops// /}" ]]; then
+    warn "beast-artifact has no operator allowlist — private pages (the default) cannot be opened from a phone, by anyone" \
+         "set ARTIFACT_OPERATORS=<your-tailnet-login> in openbeast.conf, then ./stop.sh && ./start.sh -d"
+  fi
+  # Identity headers count only from a LOOPBACK peer (anything else could
+  # forge them), and tailscale serve dials the address the server binds.
+  if ! _is_loop "$HEALTH_HOST"; then
+    warn "beast-artifact binds $HEALTH_HOST (BIND_HOST), not loopback — tailnet logins are not honoured through :8446, so pages will not open from a phone" \
+         "keep BIND_HOST=127.0.0.1 (the default) for login-gated reads"
+  fi
+fi
+if [[ "${BEAST_CHAT:-false}" == "true" ]] && ! _is_loop "$CHAT_HEALTH_HOST"; then
+  warn "beast-chat binds $CHAT_HEALTH_HOST (OPENBEAST_CHAT_BIND), not loopback — tailnet logins are not honoured through :8445" \
+       "unset OPENBEAST_CHAT_BIND to restore login-gated reads"
+fi
+
+# ── Notifications (beast-chat → ntfy) ───────────────────────────────────────
+# Only when configured or when the ntfy extension is on: a row for a feature
+# nobody asked for is noise. The topic path is never printed — with ntfy's
+# default open access the topic name IS the secret.
+_ntfy_on=0
+[[ " ${EXTENSIONS:-} " == *" ntfy "* ]] && _ntfy_on=1
+if [[ -n "${CHAT_NOTIFY_URL:-}" || $_ntfy_on -eq 1 ]]; then
+  section "Notifications"
+  if [[ -z "${CHAT_NOTIFY_URL:-}" ]]; then
+    warn "the ntfy extension is enabled but CHAT_NOTIFY_URL is empty — beast-chat sends no notifications" \
+         "set CHAT_NOTIFY_URL=http://127.0.0.1:${NTFY_PORT:-3005}/<long-random-topic> in openbeast.conf"
+  elif [[ ! "$CHAT_NOTIFY_URL" =~ ^(https?://[^/[:space:]]+)(/[^[:space:]]*)?$ ]]; then
+    fail "CHAT_NOTIFY_URL is not an http(s) URL" \
+         "CHAT_NOTIFY_URL=http://127.0.0.1:${NTFY_PORT:-3005}/<long-random-topic>"
+  else
+    _n_origin="${BASH_REMATCH[1]}"
+    pass "notifications configured → $_n_origin (on: ${CHAT_NOTIFY_ON:-failed,lost,done})"
+    if [[ "${BEAST_CHAT:-false}" != "true" ]]; then
+      warn "CHAT_NOTIFY_URL is set but BEAST_CHAT is off — beast-chat is what sends notifications" \
+           "set BEAST_CHAT=true in openbeast.conf, then ./stop.sh && ./start.sh -d"
+    fi
+    # Reachable = any HTTP answer. /v1/health is ntfy's; another endpoint
+    # answers it with a 404, which still proves the host is up. GET only, no
+    # token: this must never itself send a notification.
+    _n_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$_n_origin/v1/health" 2>/dev/null || true)"
+    if [[ "$_n_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+      pass "notification endpoint reachable ($_n_origin, HTTP $_n_code)"
+    elif [[ $_ntfy_on -eq 1 ]]; then
+      warn "notification endpoint not reachable ($_n_origin) — notifications are being dropped" \
+           "the ntfy extension starts with the stack: ./stop.sh && ./start.sh -d (docker logs ntfy)"
+    else
+      warn "notification endpoint not reachable ($_n_origin) — notifications are being dropped" \
+           "check CHAT_NOTIFY_URL, or enable the bundled server: ./scripts/ext.sh enable ntfy"
+    fi
+  fi
+  if [[ -n "${CHAT_NOTIFY_TOKEN_FILE:-}" ]]; then
+    if [[ ! -f "$CHAT_NOTIFY_TOKEN_FILE" ]]; then
+      warn "CHAT_NOTIFY_TOKEN_FILE does not exist ($CHAT_NOTIFY_TOKEN_FILE) — notifications go out unauthenticated" \
+           "create it (0600) with the endpoint's token, or remove the key"
+    else
+      _n_mode="$(stat -c %a "$CHAT_NOTIFY_TOKEN_FILE" 2>/dev/null || stat -f %Lp "$CHAT_NOTIFY_TOKEN_FILE" 2>/dev/null || echo "")"
+      if [[ "$_n_mode" =~ ^[0-7]+$ ]] && (( 8#$_n_mode & 8#077 )); then
+        warn "CHAT_NOTIFY_TOKEN_FILE is readable by other users (mode $_n_mode)" "chmod 600 $CHAT_NOTIFY_TOKEN_FILE"
+      else
+        pass "notification token file is private (mode ${_n_mode:-?})"
+      fi
+    fi
+  fi
+  if ob_offline && [[ -n "${OPENBEAST_NTFY_UPSTREAM_BASE_URL:-}" ]]; then
+    warn "OFFLINE=true but NTFY_UPSTREAM_BASE_URL is set — every notification sends a poll request off the box" \
+         "unset NTFY_UPSTREAM_BASE_URL (iOS then shows messages only when the app is open)"
+  fi
+fi
+
 # ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
 # Informational: what tailscale serve currently maps, and whether the raw
 # inference endpoint is published without a bearer key. Keyless is the
@@ -520,6 +601,32 @@ if command -v tailscale >/dev/null 2>&1; then
     elif [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       warn "BEAST_CHAT=true but :8445 is not published — the console is loopback-only" \
            "./scripts/setup-tailscale.sh --publish-chat"
+    fi
+    # :8446 is beast-artifact. Every URL the model hands out is built from
+    # this mount (agents/artifact.py reads `tailscale serve status`), so a
+    # mount over a dead server means every link on the phone is a 502.
+    if echo "$_serve" | grep -qE ':8446[^0-9]'; then
+      if probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
+        pass "beast-artifact published on :8446 (tailnet-only)"
+      else
+        fail ":8446 is published but beast-artifact is NOT responding" \
+             "every artifact link 502s from the phone — set BEAST_ARTIFACT=true and ./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
+      fi
+    elif [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
+      warn "BEAST_ARTIFACT=true but :8446 is not published — artifact links open only on this box" \
+           "./scripts/setup-tailscale.sh --publish-artifact"
+    fi
+    # :8447 is the ntfy extension (the phone app's subscription).
+    if echo "$_serve" | grep -qE ':8447[^0-9]'; then
+      if probe "http://127.0.0.1:${NTFY_PORT:-3005}/v1/health" 'healthy'; then
+        pass "ntfy published on :8447 (tailnet-only)"
+      else
+        fail ":8447 is published but ntfy is NOT responding" \
+             "the phone app cannot subscribe — ./scripts/ext.sh enable ntfy && ./stop.sh && ./start.sh -d, or ./scripts/setup-tailscale.sh --unpublish-ntfy"
+      fi
+    elif [[ " ${EXTENSIONS:-} " == *" ntfy "* && -n "${CHAT_NOTIFY_URL:-}" ]]; then
+      warn "the ntfy extension is on but :8447 is not published — the phone app cannot subscribe" \
+           "./scripts/setup-tailscale.sh --publish-ntfy"
     fi
     # :443 is the WebUI. Published with login OFF, every tailnet device is the
     # default admin — with bash through the privileged tool connection
@@ -671,6 +778,28 @@ if ob_offline; then
   else
     warn "offline, but a REBUILD would need: ${_off_missing[*]}" \
          "serving is unaffected; stage them on a connected box (./scripts/bundle.sh build ./bundle)"
+  fi
+  # Compose-kind extensions (ntfy, …) are merged into the SAME `docker compose
+  # up --pull never` as WebUI and SearXNG, so one missing extension image
+  # aborts the whole frontend. bundle.sh and update.sh --images carry only the
+  # core docker-compose.yml's images: an extension image has to be moved by
+  # hand. Checked by digest, then by repo:tag (docker load drops the digest).
+  if command -v docker >/dev/null 2>&1; then
+    for _ext in ${EXTENSIONS:-}; do
+      _ext_compose="$REPO_DIR/extensions/$_ext/compose.yaml"
+      [[ -f "$_ext_compose" ]] || continue
+      while IFS= read -r _img; do
+        [[ -n "$_img" ]] || continue
+        if docker image inspect "$_img" >/dev/null 2>&1 \
+           || docker image inspect "${_img%%@*}" >/dev/null 2>&1; then
+          pass "offline: the $_ext extension's image is present (${_img%%@*})"
+        else
+          fail "offline: the $_ext extension's image ${_img%%@*} is not on this box — compose up --pull never fails, taking WebUI and SearXNG down with it" \
+               "on a connected box: docker pull $_img && docker save -o $_ext.tar ${_img%%@*}; here: docker load -i $_ext.tar (bundle.sh does not carry extension images) — or ./scripts/ext.sh disable $_ext"
+        fi
+      done < <(grep -oE '^[[:space:]]*image:[[:space:]]*[^[:space:]]+' "$_ext_compose" \
+                 | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | sort -u)
+    done
   fi
 fi
 

@@ -29,6 +29,10 @@
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
+#   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
+#       (env OPENBEAST_CHAT_NOTIFY_*)  default empty / failed,lost,done / empty
+#       beast-chat push notifications; NTFY_PORT (default 3005) for the
+#       opt-in ntfy extension.
 #   OFFLINE          (env OPENBEAST_OFFLINE)     default false
 #       "This box has no route to the internet and never will." An installed
 #       rig SERVES fine offline already; what OFFLINE changes is that steps
@@ -311,6 +315,58 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
 fi
+# beast-chat push notifications (openbeast.conf.example § beast-chat). The
+# chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. ON always
+# carries a value; the token file is a PATH (a leading ~/ expanded), never the
+# token, and is exported only when set.
+#
+# The URL is NOT exported. With ntfy's default read-write access the topic in
+# it IS the credential, and the name matches none of the secret filters
+# (*KEY*/*SECRET*/*PASSWORD*/*TOKEN*): exported here it rode `./start.sh -d`'s
+# `systemd-run --setenv=` onto argv and into the unit environment, and reached
+# every model-authored bash command through tools._scrubbed_env (review
+# 2026-09-30). It stays a plain shell variable; ob_exec_chat_server hands it to
+# the chat server's process ALONE. An env override is honoured once, then
+# removed from the environment so nothing this shell starts inherits it.
+if [[ -n "${OPENBEAST_CHAT_NOTIFY_URL:-}" ]]; then
+  _OB_NOTIFY_URL_ENV="$OPENBEAST_CHAT_NOTIFY_URL"
+fi
+unset OPENBEAST_CHAT_NOTIFY_URL
+export -n CHAT_NOTIFY_URL 2>/dev/null || true
+CHAT_NOTIFY_URL="${_OB_NOTIFY_URL_ENV:-$(_ob_conf_value CHAT_NOTIFY_URL || true)}"
+CHAT_NOTIFY_ON="${OPENBEAST_CHAT_NOTIFY_ON:-$(_ob_conf_value CHAT_NOTIFY_ON || echo failed,lost,done)}"
+CHAT_NOTIFY_TOKEN_FILE="${OPENBEAST_CHAT_NOTIFY_TOKEN_FILE:-$(_ob_conf_value CHAT_NOTIFY_TOKEN_FILE || true)}"
+[[ "$CHAT_NOTIFY_TOKEN_FILE" == "~/"* ]] && CHAT_NOTIFY_TOKEN_FILE="$HOME/${CHAT_NOTIFY_TOKEN_FILE#\~/}"
+export OPENBEAST_CHAT_NOTIFY_ON="$CHAT_NOTIFY_ON"
+if [[ -n "$CHAT_NOTIFY_TOKEN_FILE" ]]; then
+  export OPENBEAST_CHAT_NOTIFY_TOKEN_FILE="$CHAT_NOTIFY_TOKEN_FILE"
+fi
+
+# ob_exec_chat_server <chat_server.py> — exec the chat server with the notify
+# URL in ITS environment only. Run it as a background job (`… &`): the export
+# lands in that subshell and exec replaces it, so the URL never appears on an
+# argv and never enters the caller's environment. start.sh and healthcheck.sh
+# both launch the console through here.
+ob_exec_chat_server() {
+  if [[ -n "${CHAT_NOTIFY_URL:-}" ]]; then
+    export OPENBEAST_CHAT_NOTIFY_URL="$CHAT_NOTIFY_URL"
+  fi
+  exec python3 "$1"
+}
+
+# The opt-in ntfy extension (extensions/ntfy): its loopback port, and the two
+# settings only iOS instant delivery needs. Exported for compose
+# interpolation; the fragment defaults every one of them, so an unset value
+# never fails `docker compose` (stop.sh passes every fragment on disk).
+NTFY_PORT="${OPENBEAST_NTFY_PORT:-$(_ob_conf_value NTFY_PORT || echo 3005)}"
+export OPENBEAST_NTFY_PORT="$NTFY_PORT"
+_NTFY_BASE="${OPENBEAST_NTFY_BASE_URL:-$(_ob_conf_value NTFY_BASE_URL || true)}"
+[[ -n "$_NTFY_BASE" ]] && export OPENBEAST_NTFY_BASE_URL="$_NTFY_BASE"
+_NTFY_UP="${OPENBEAST_NTFY_UPSTREAM_BASE_URL:-$(_ob_conf_value NTFY_UPSTREAM_BASE_URL || true)}"
+[[ -n "$_NTFY_UP" ]] && export OPENBEAST_NTFY_UPSTREAM_BASE_URL="$_NTFY_UP"
+_NTFY_ACCESS="${OPENBEAST_NTFY_DEFAULT_ACCESS:-$(_ob_conf_value NTFY_DEFAULT_ACCESS || true)}"
+[[ -n "$_NTFY_ACCESS" ]] && export OPENBEAST_NTFY_DEFAULT_ACCESS="$_NTFY_ACCESS"
+unset _NTFY_BASE _NTFY_UP _NTFY_ACCESS
 # Where a process ON THIS BOX dials the stack's BIND_HOST services
 # (lib/net.sh: wildcard/empty -> 127.0.0.1, :: -> [::1], a specific LAN or
 # tailnet address -> itself, since a socket bound there refuses loopback).
