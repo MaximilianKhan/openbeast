@@ -1,0 +1,9 @@
+{
+ "status": 200,
+ "body": "{\"ok\": true}",
+ "expect": {
+  "llama": "down",
+  "vllm": "ready",
+  "tensorfold": "ready"
+ }
+}
