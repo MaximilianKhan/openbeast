@@ -28,6 +28,24 @@ FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
+# The baseline proof must never skip silently (review minor 2): say which
+# way it goes, and refuse a ref this clone cannot read.
+if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
+  if ! git -C "$REPO_DIR" rev-parse -q --verify "${WIRING_BASELINE_REF}^{commit}" >/dev/null; then
+    echo "FAIL: WIRING_BASELINE_REF='$WIRING_BASELINE_REF' is not a commit in this clone" >&2
+    exit 1
+  fi
+  if git -C "$REPO_DIR" show "${WIRING_BASELINE_REF}:scripts/lib/conf.sh" | grep -q 'HYDRA_READY_GRACE'; then
+    echo "NOTE: $WIRING_BASELINE_REF already contains the wiring — the side-by-side diff shows only"
+    echo "      that off-mode output did not change since it, not that it matches a pre-wiring stack."
+  fi
+elif [[ "${WIRING_BASELINE_REQUIRED:-0}" == "1" ]]; then
+  echo "FAIL: WIRING_BASELINE_REQUIRED=1 but no WIRING_BASELINE_REF" >&2
+  exit 1
+else
+  echo "SKIP: the side-by-side byte-identity diff (set WIRING_BASELINE_REF=<a pre-wiring ref>)"
+fi
+
 _T="$(mktemp -d "${TMPDIR:-/tmp}/obwiringXXXXXX")"
 _PIDS=""
 cleanup() {

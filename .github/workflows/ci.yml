@@ -113,13 +113,24 @@ jobs:
           bash tests/test_hydra_sim.sh
 
       # The shared stack wiring for beast-hydra + beast-instinct: conf.sh
-      # derivations (HYDRA/INSTINCT off = byte-identical, diffed against the
-      # merge base when it is in the clone), start/stop/healthcheck in a
-      # stub sandbox. curl reaches only the suite's own fake servers.
+      # derivations, start/stop/healthcheck in a stub sandbox. curl reaches
+      # only the suite's own fake servers. On the PR that INTRODUCES the
+      # wiring (its base has no HYDRA key) the off-mode byte-identity proof
+      # also runs side by side against that base, fetched explicitly — the
+      # default checkout is shallow and has no origin/main, which is how an
+      # earlier `git merge-base` spelling skipped it without a word.
       - name: beast-hydra / beast-instinct stack wiring tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
-          WIRING_BASELINE_REF="$base" bash tests/test_hydra_instinct_wiring.sh
+          ref=""
+          if [[ -n "$BASE_SHA" ]]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if ! git show "$BASE_SHA:scripts/lib/conf.sh" | grep -q 'HYDRA_READY_GRACE'; then
+              ref="$BASE_SHA"
+            fi
+          fi
+          WIRING_BASELINE_REF="$ref" bash tests/test_hydra_instinct_wiring.sh
 
       # opencode session clearing: a stub opencode (python + sqlite) with
       # 1.18's delete cascade; a stub pgrep decides "is opencode running".
