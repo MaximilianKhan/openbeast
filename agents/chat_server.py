@@ -2921,16 +2921,19 @@ def create_app() -> FastAPI:
                 text = body.get("text") or body.get("message") or ""
                 if not isinstance(text, str) or not text.strip():
                     raise HTTPException(status_code=400, detail="empty message")
+                # Strip HERE and store what was checked. sessions.read_new_ops
+                # clips the RAW text at OP_MAX_TEXT before the runner strips
+                # it, so checking the stripped length but storing the padded
+                # text acknowledged a message whose tail was then dropped.
+                text = text.strip()
                 blob = text.encode("utf-8")
-                # The runner strips surrounding whitespace before clipping, so
-                # the stripped length is what must fit.
                 if (len(blob) > MAX_MESSAGE_BYTES
-                        or len(text.strip()) > MAX_MESSAGE_CHARS):
+                        or len(text) > MAX_MESSAGE_CHARS):
                     raise HTTPException(
                         status_code=413,
                         detail=(f"message too long — an agent receives at "
                                 f"most {MAX_MESSAGE_CHARS} characters per "
-                                f"message (this one is {len(text.strip())}); "
+                                f"message (this one is {len(text)}); "
                                 f"split it into several"))
                 rec = load_session(session_id)
                 if rec.get("state") in TERMINAL_STATES:

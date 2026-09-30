@@ -57,6 +57,20 @@ def test_send_refuses_a_message_longer_than_the_agent_receives(rig):
     assert _ops(sid) == [], "a refused message still reached the inbox"
 
 
+def test_a_whitespace_padded_message_is_stored_as_checked(rig):
+    """The stripped length fits, the raw length does not: the message must
+    arrive WHOLE (stored stripped), not be acked and then clipped."""
+    sid = rig.session(kind="agent", state="running")
+    text = "\n" * 500 + "A" * 3900 + " FINAL INSTRUCTION: do not delete anything"
+    assert len(text) > sessions.OP_MAX_TEXT >= len(text.strip())
+    r = rig.client.post(f"/api/chat/sessions/{sid}/send", json={"text": text},
+                        headers=rig.local)
+    assert r.status_code == 200, r.text
+    ops, _ = sessions.read_new_ops(sid, 0)
+    assert ops[0]["text"] == text.strip()
+    assert ops[0]["text"].endswith("do not delete anything")
+
+
 def test_send_at_exactly_the_cap_arrives_whole(rig):
     """Negative control: the largest accepted message is delivered intact."""
     sid = rig.session(kind="agent", state="running")
