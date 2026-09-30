@@ -406,7 +406,7 @@ def test_listing_and_filtering(rig):
 
     done = c.get("/api/chat/sessions?state=done").json()
     assert {r["id"] for r in done["sessions"]} == {b, j}
-    jobs =c.get("/api/chat/sessions?kind=job").json()
+    jobs = c.get("/api/chat/sessions?kind=job").json()
     assert {r["id"] for r in jobs["sessions"]} == {j}
     assert c.get("/api/chat/sessions?state=nonsense").status_code == 400
 
