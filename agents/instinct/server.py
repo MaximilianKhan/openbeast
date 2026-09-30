@@ -280,6 +280,16 @@ def create_app(inst: Instinct, key: str, *, allowed_hosts: list[str] | None = No
     return app
 
 
+def configure_logging() -> None:
+    """INFO for instinct's own lines only. httpx/httpcore log EVERY engine
+    request at INFO (a /tokenize + a /completion per decide), and instinct.sh
+    appends stdout to .run/instinct.log — that grew without bound with
+    traffic (B-instinct-09). Engine trouble still shows up as fallbacks."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s instinct %(message)s")
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -287,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="beast-instinct service")
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s instinct %(message)s")
+    configure_logging()
     try:
         cfg = load_config(args.config)
     except ConfigError as exc:
