@@ -881,8 +881,11 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
 fi
 
 # beast-artifact (opt-in, BEAST_ARTIFACT=true) — the publish-and-view service
-# for model- or script-authored HTML (docs/BEAST_ARTIFACT_PLAN.md). Loopback
-# only; setup-tailscale.sh --publish-artifact puts it on :8446 for phones.
+# for model- or script-authored HTML (docs/BEAST_ARTIFACT_PLAN.md). Binds
+# BIND_HOST (loopback by default); setup-tailscale.sh --publish-artifact puts
+# it on :8446 for phones. A login header counts only from a peer on this host
+# (loopback, or the bind address itself — how tailscale serve reaches a LAN
+# bind), so a LAN caller dialling the port directly is anonymous: 404.
 # It SERVES the pages; it is not on the publish path for the tools —
 # publish_artifact/list_artifacts call the store (agents/artifact.py) in
 # process. scripts/artifact.sh is the one that speaks HTTP to it, with the

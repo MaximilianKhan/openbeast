@@ -610,7 +610,36 @@ def test_tailscale_mounts_follow_the_bind_host(ts_rig, bind, host):
     # The WebUI auth probe dials the same host.
     assert f"http://{host}:3000/api/config" in {c.get("url") for c in ts_rig.calls()}
     lan = host not in ("127.0.0.1", "[::1]")
-    assert ("logins are NOT" in p.stdout) == lan
+    # A LAN bind is honoured through :8446 (the peer is the bind address, on
+    # this host), and there is no 'public' visibility to fall back on.
+    assert "logins are NOT" not in p.stdout
+    assert "public" not in p.stdout
+    assert ("honoured through :8446 from this host"
+            in " ".join(p.stdout.split())) == lan
+
+
+def test_tailscale_publish_artifact_warns_without_operators(ts_rig):
+    """integration-ops-1: publishing :8446 with neither ARTIFACT_OPERATORS nor
+    CHAT_OPERATORS set warns that private pages (owner 'rig') open for nobody
+    from a phone; an allowlist or ARTIFACT_ADMINS changes that (controls)."""
+    ts_rig.set_state(auth=True, admin_pw="operator-chose-this")
+    base = {"OPENBEAST_ARTIFACT_OPERATORS": "", "OPENBEAST_CHAT_OPERATORS": "",
+            "OPENBEAST_ARTIFACT_ADMINS": ""}
+    p = ts_rig.run("setup-tailscale.sh", "--publish-artifact", env_extra=base)
+    assert p.returncode == 0, p.stderr
+    out = " ".join(p.stdout.split())
+    assert "neither ARTIFACT_OPERATORS nor CHAT_OPERATORS is set" in out
+    assert "PRIVATE pages (the default) open for NOBODY" in out
+    assert "owner 'local'" not in out
+    p = ts_rig.run("setup-tailscale.sh", "--publish-artifact",
+                   env_extra=dict(base, OPENBEAST_ARTIFACT_ADMINS="me@example.com"))
+    out = " ".join(p.stdout.split())
+    assert "neither ARTIFACT_OPERATORS" in out and "open for NOBODY" not in out
+    p = ts_rig.run("setup-tailscale.sh", "--publish-artifact",
+                   env_extra=dict(base, OPENBEAST_CHAT_OPERATORS="me@example.com"))
+    out = " ".join(p.stdout.split())
+    assert "neither ARTIFACT_OPERATORS" not in out
+    assert "Reads are gated on the tailnet login" in out
 
 
 def _serve_mounts(rig):

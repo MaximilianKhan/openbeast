@@ -504,10 +504,15 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   sudo tailscale serve --bg --https=8446 "http://$UP_HOST:${ARTIFACT_PORT:-3004}"
   echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
   if ! _is_loop "$UP_HOST"; then
-    echo "      NOTE: beast-artifact binds $UP_HOST (BIND_HOST), not loopback — tailnet"
-    echo "            logins are NOT honoured through :8446 (identity headers count only"
-    echo "            from 127.0.0.1), so only pages marked public open. Keep BIND_HOST"
-    echo "            loopback (the default) for login-gated reads."
+    # There is no 'public' visibility (private/tailnet only). The server
+    # trusts Tailscale-User-Login from loopback OR from a peer whose address
+    # is the one the connection was accepted on — tailscaled dialling the
+    # BIND_HOST address from this box (artifact-security-1). So the mount
+    # works; what BIND_HOST adds is a LAN-reachable port that answers 404.
+    echo "      NOTE: beast-artifact binds $UP_HOST (BIND_HOST). tailnet logins are honoured"
+    echo "            through :8446 from this host (tailscale serve dials $UP_HOST from"
+    echo "            here); a LAN caller that dials :${ARTIFACT_PORT:-3004} directly is anonymous"
+    echo "            and gets 404 for everything."
   fi
   # Honesty about the READ gate: "gated on ARTIFACT_OPERATORS" is only true
   # when that list has somebody in it. Empty means every signed-in device on
@@ -515,14 +520,19 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   # moment they open the port, not discover it later.
   _ART_OPS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_OPERATORS || true)}"
   if [[ -z "$_ART_OPS" ]]; then
-    _ART_OPS="$(_ob_conf_value CHAT_OPERATORS || true)"
+    # conf.sh already resolved it (env override, then openbeast.conf).
+    _ART_OPS="${CHAT_OPERATORS:-}"
   fi
+  _ART_ADMINS="${OPENBEAST_ARTIFACT_ADMINS:-$(_ob_conf_value ARTIFACT_ADMINS || true)}"
   if [[ -z "${_ART_OPS// /}" ]]; then
-    echo "      NOTE: ARTIFACT_OPERATORS is EMPTY — reads are NOT gated to a"
-    echo "            list. Every device signed in to your tailnet can open"
-    echo "            the gallery and every artifact marked 'tailnet' — and"
-    echo "            PRIVATE pages (the default) open for NOBODY from a phone,"
-    echo "            you included: the rig publishes them as owner 'local'."
+    echo "      WARNING: neither ARTIFACT_OPERATORS nor CHAT_OPERATORS is set — reads"
+    echo "            are NOT gated to a list. Every device signed in to your tailnet"
+    echo "            can open the gallery and every artifact marked 'tailnet'."
+    if [[ -z "${_ART_ADMINS// /}" ]]; then
+      echo "            PRIVATE pages (the default) open for NOBODY from a phone, you"
+      echo "            included: the rig owns them (owner 'rig') and no login is an"
+      echo "            admin until an operator (or ARTIFACT_ADMINS) names one."
+    fi
     echo "            Gate it:  echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf"
     echo "                      ./stop.sh && ./start.sh"
   else
