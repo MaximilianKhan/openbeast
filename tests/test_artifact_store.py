@@ -207,6 +207,21 @@ def test_binary_file_cap_is_tighter_than_text(store):
     assert r["version"] == 1
 
 
+def test_per_version_total_cap(store, monkeypatch):
+    """The store's own 64 MB per-version bound. The HTTP body gate sits in
+    front of it only for server publishes; publish_artifact calls the store
+    in process, so this check is the only one on that path (tests-docs-3)."""
+    monkeypatch.setitem(artifact.CAPS, "version_bytes", 4096)
+    files = {"a.txt": b"x" * 3000, "b.txt": b"y" * 3000}   # each well under
+    with pytest.raises(artifact.ArtifactError) as e:        # the text cap
+        store.publish(PAGE, files=files)
+    assert "per-version cap" in str(e.value)
+    assert store.list_artifacts() == []
+    # control: the same shape under the total publishes
+    r = store.publish(PAGE, files={"a.txt": b"x" * 1000, "b.txt": b"y" * 1000})
+    assert r["version"] == 1
+
+
 def test_failed_publish_leaves_no_version_dir(store):
     """The version directory is written BEFORE meta.json, so the failure that
     matters is one after the bytes are on disk. (This test used to trip a cap,

@@ -603,3 +603,54 @@ def test_real_server_takes_logins_only_on_its_unix_socket(tmp_path):
             assert e.code == 404
     finally:
         srv.kill()
+
+
+# ---------------------------------------------------------------------------
+# tests-docs-3: the guards a mutation pass could delete with every test green
+# ---------------------------------------------------------------------------
+
+def test_descendant_groups_are_rechecked_before_killpg(monkeypatch):
+    """_signal_descendant_groups snapshots (pgid, start time) and signals
+    later. A pgid whose start time no longer matches is a recycled pid — an
+    unrelated process group — and must not be killed; neither may our own
+    group. BEAST_CHAT.md promises both."""
+    sent = []
+    starts = {4001: 111, 4002: 999, 4003: None}
+    monkeypatch.setattr(chat_server.sessions, "pid_start_time",
+                        lambda pid: starts.get(pid))
+    monkeypatch.setattr(chat_server.os, "killpg",
+                        lambda pg, sig: sent.append((pg, sig)))
+    own = os.getpgrp()
+    starts[own] = 5
+    chat_server._signal_descendant_groups(
+        [(4001, 111),        # still the process we saw: signalled (control)
+         (4002, 222),        # recycled: start time moved
+         (4003, 333),        # gone
+         (own, 5)],          # our own group, even with a matching start
+        15)
+    assert sent == [(4001, 15)]
+
+
+def test_operator_stop_is_told_apart_from_an_outside_signal(rig, tmp_path):
+    """tests-docs-2. A console job runs under job.sh's supervisor, which
+    records `stopped | stopped by operator` for ANY TERM it receives — so the
+    summary cannot say who asked. The record's `stop_requested_by` does: set
+    by /stop, absent when something outside beast-chat sent the signal."""
+    import signal as _signal
+    sid = _start(rig, kind="job", cmd="sleep 60", workdir=str(tmp_path))
+    assert wait_state(sid, "running")
+    r = rig.client.post(f"/api/chat/sessions/{sid}/stop", json={},
+                        headers=rig.local)
+    assert r.status_code == 200, r.text
+    rec = wait_state(sid, "stopped", "failed", timeout=30)
+    assert rec and rec["state"] == "stopped", rec
+    assert (rec.get("meta") or {}).get("stop_requested_by") == "local"
+
+    # control: the same job, signalled from outside beast-chat
+    sid2 = _start(rig, kind="job", cmd="sleep 60", workdir=str(tmp_path))
+    assert wait_state(sid2, "running")
+    proc = chat_server._CHILDREN[sid2]
+    os.killpg(proc.pid, _signal.SIGTERM)       # ours: we spawned it
+    rec2 = wait_state(sid2, "stopped", "failed", timeout=30)
+    assert rec2 and rec2["state"] in ("stopped", "failed"), rec2
+    assert "stop_requested_by" not in (rec2.get("meta") or {})
