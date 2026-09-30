@@ -666,6 +666,29 @@ def test_source_session_is_stamped_linked_and_filterable(make_client,
     assert page_rows(g) == 1
 
 
+def test_session_provenance_is_per_version(make_client):
+    """A-artifact-1: a later session's republish overwrote the page-level
+    session, so the first session's filter lost the page and the pinned v1
+    viewer named a session that did not make v1."""
+    c = make_client()
+    a = publish(c, source_session="chat-A")
+    publish(c, artifact_id=a["id"], source_session="chat-B")
+    for sess in ("chat-A", "chat-B"):
+        rows = c.get(f"/api/artifacts?session={sess}",
+                     headers=local(c)).json()["artifacts"]
+        assert [r["id"] for r in rows] == [a["id"]], sess
+    assert c.get("/api/artifacts?session=chat-C",
+                 headers=local(c)).json()["artifacts"] == []
+    v1 = c.get(f"/a/{a['id']}/v/1", headers=local(c)).text
+    v2 = c.get(f"/a/{a['id']}/v/2", headers=local(c)).text
+    assert "made by session chat-A" in v1 and "chat-B" not in v1
+    assert "made by session chat-B" in v2
+    # a version published outside any session names none
+    publish(c, artifact_id=a["id"])
+    v3 = c.get(f"/a/{a['id']}/v/3", headers=local(c)).text
+    assert "made by session chat-" not in v3
+
+
 def test_the_tool_stamps_the_session_and_falls_back_to_the_filename(
         env, monkeypatch):
     import mcp_server

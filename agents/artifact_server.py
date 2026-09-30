@@ -1484,9 +1484,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
         except Exception:
             return ""
 
-    def _session_link(meta) -> str:
-        sess = meta.get("source_session") if isinstance(meta, dict) else None
-        if not isinstance(sess, str) or not store._SESSION_RE.match(sess):
+    def _session_link(meta, version) -> str:
+        sess = store.version_session(meta, version)
+        if not sess:
             return ""
         chat = _chat_base()
         label = f"made by session {_esc(sess)}"
@@ -1610,7 +1610,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             "VISIBILITY": _esc(meta.get("visibility") or "private"),
             "SANDBOX": IFRAME_SANDBOX,
             "FAVICON_HREF": _esc(_favicon_href(meta.get("favicon"))),
-            "SESSION_LINK": _session_link(meta),
+            # The session that made THIS version, not the latest one.
+            "SESSION_LINK": _session_link(meta, version),
             "OWNER": _esc(owner if admin and owner != viewer else ""),
             "PINNED": "1" if meta.get("pinned") is True else "",
             "TAGS": _esc(",".join(store._tags_of(meta))),

@@ -478,13 +478,17 @@ id is recorded on the version and as the page's latest `source_session`
 (validated to the ledger's id shape; anything else is dropped, never an
 error).
 
-- The viewer shows **made by session `<id>`**. It is a link to
+- The viewer shows **made by session `<id>`** for the version on screen —
+  a pinned `/a/<id>/v/<n>` names the session that made version `n`, not the
+  latest publisher, and a version published outside any session names none.
+  It is a link to
   `https://<rig>:8445/#/s/<id>` only when `tailscale serve` publishes the
   chat console on `:8445` (same detection as the artifact URL); otherwise it
   is plain text. `CHAT_BASE_URL` in `openbeast.conf` overrides the console's
   base URL, and `off` or `none` turns the link off.
 - `/?session=<id>`, `GET /api/artifacts?session=<id>` and `artifact.sh list
-  --session <id>` list what one session published.
+  --session <id>` list every page that session published any version of,
+  including pages a later session has republished since.
 
 ## The security posture
 
