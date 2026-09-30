@@ -174,11 +174,14 @@ targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]
 require = ["vision"]
 
 [routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
-description = "Grammar-constrained spawn classifier — keep it off the 1-slot 5090"
+description = "Grammar-constrained spawn classifier — a routing DECISION, so a full 27B"
+# Decisions go to a full model, never a small or 3B-active one (the 35B-A3B
+# MoE here is ~3B active; the MoE lesson: judge by active compute), and never
+# to a stock one. Until beast-instinct's own 27B engine runs, the rig's 27B
+# is the classifier. Add another deployment only if it is an uncensored
+# dense 27B-class model (tests/test_hydra_core.py pins this).
 targets = [
-  { d = "qwen36-a3b-q4@ti",    priority = 0 },
-  { d = "qwen38-nvfp4@sparks", priority = 1 },
-  { d = "qwen38-unc-q5@rig",   priority = 2 },
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
 ]
 require      = ["json_schema"]
 affinity     = "none"

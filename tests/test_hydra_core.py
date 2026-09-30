@@ -103,6 +103,20 @@ def test_example_config_validates(tmp_path, monkeypatch):
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
 
 
+def test_example_classify_route_decides_on_a_full_uncensored_27b():
+    """The router's spawn classifier is a routing decision: the example sent
+    it to the 35B-A3B MoE (~3B active) first, then a STOCK Sparks model.
+    Owner's rule: decisions on a full model, and every model uncensored."""
+    raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
+    deps = raw["deployments"]
+    targets = sorted(raw["routes"]["classify"]["targets"], key=lambda t: t.get("priority", 0))
+    assert targets and targets[0]["d"] == "qwen38-unc-q5@rig"
+    for t in targets:
+        fam = deps[t["d"]]["family"]
+        assert "uncensored" in fam, (t["d"], fam)
+        assert "a3b" not in fam.lower(), (t["d"], fam)
+
+
 def _served_alias(script: str) -> str:
     import re
     m = re.search(r'^\s*-a "([^"]+)"', (REPO / "scripts" / script).read_text(), re.M)
