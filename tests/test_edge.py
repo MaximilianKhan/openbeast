@@ -1151,7 +1151,12 @@ class TestHydraCaller:
         return p
 
     def test_token_and_request_id_reach_hydra(self, tmp_path, monkeypatch):
-        r, hdrs, _ = self._gate(tmp_path, monkeypatch, self._token(tmp_path))
+        r, hdrs, captured = self._gate(tmp_path, monkeypatch, self._token(tmp_path))
+        # ONE request-id header, the gate's: the client's own is dropped, not
+        # merely out-cased — two would let a remote device pick its id in
+        # hydra's audit (review minor 6)
+        rid = [v for k, v in captured["headers"].items() if k.lower() == "x-openbeast-request-id"]
+        assert rid == [r.headers["X-OpenBeast-Request-Id"]], captured["headers"]
         assert hdrs["x-hydra-caller"] == "t" * 64
         assert hdrs["x-openbeast-request-id"] == r.headers["X-OpenBeast-Request-Id"]
         assert hdrs["x-openbeast-device"] == "laptop"
