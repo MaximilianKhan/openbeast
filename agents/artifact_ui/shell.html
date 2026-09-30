@@ -200,6 +200,10 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
   overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
 }
 @media (max-width:560px){
+  /* The strip WRAPS on a phone. On one clipped line, the provenance chips
+     (tags, "made by session <id>") at its end were cut to "made b…" at
+     390px — the very link F-A3 exists to show. */
+  .strip{flex-wrap:wrap; row-gap:3px; white-space:normal}
   .desc{display:none}
   .aid{display:none}
   .btn .label{display:none}
