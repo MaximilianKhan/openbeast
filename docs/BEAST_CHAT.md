@@ -607,7 +607,9 @@ Delivery is bounded. A session notifies at most once a minute, and one diff
 sends at most 10; past that it sends one "N more sessions ended" summary.
 Every ~5 s the ledger is compared with `.run/notify-state.json` (0600), so a
 job that ended while the server was down still notifies on the next start. A
-failing endpoint costs one stderr line per five minutes.
+failing endpoint costs one stderr line per five minutes, and an alert it
+could not take is retried on later passes (at most once a minute) until it is
+delivered or 24 hours have passed since the session ended.
 **Test alert** in the 🔑 sheet sends one on demand (`POST
 /api/chat/notify/test`, write gate; 409 when notifications are off).
 

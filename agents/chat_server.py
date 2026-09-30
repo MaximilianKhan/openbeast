@@ -1566,6 +1566,10 @@ def _iso_epoch(value) -> float | None:
         return None
 
 
+# How long an undelivered end-of-session alert keeps being retried.
+NOTIFY_RETRY_MAX_AGE = 24 * 3600.0
+
+
 class Notifier:
     """Tells the operator's phone when a session ENDS — opt-in, off by default.
 
@@ -1746,7 +1750,16 @@ class Notifier:
             mono = time.monotonic()
             for rec in due:
                 sid = rec["id"]
+                ended = _iso_epoch(rec.get("ended_at")) or now
+                # A send that fails (ntfy restarting, relay down) or is held
+                # back by min_interval must be tried again next tick — so the
+                # snapshot keeps it `running` until it is delivered. Give up
+                # after NOTIFY_RETRY_MAX_AGE so a dead endpoint cannot keep
+                # a stale alert pending forever.
+                retry = now - ended < NOTIFY_RETRY_MAX_AGE
                 if mono - self._last_sent.get(sid, -1e9) < self.min_interval:
+                    if retry:
+                        current[sid] = "running"
                     continue
                 if len(fired) >= self.burst:
                     overflow += 1
@@ -1754,6 +1767,8 @@ class Notifier:
                 self._last_sent[sid] = mono
                 if self.notify_session(rec):
                     fired.append(sid)
+                elif retry:
+                    current[sid] = "running"
             if overflow:
                 self.send(title="beast-chat: more sessions ended",
                           body=f"{overflow} more session(s) ended — open the "

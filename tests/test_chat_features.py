@@ -457,6 +457,39 @@ def test_a_burst_is_capped_with_one_summary(rig, stub):
     assert "3 more" in s.calls[-1]["body"].decode()
 
 
+def test_a_failed_send_is_retried_next_tick(rig, stub):
+    """A-chat-2: the ntfy endpoint being briefly down must not lose the
+    failed-job alert — the snapshot keeps it pending until it is delivered."""
+    results = [False, True]
+    sent = []
+
+    def poster(body, headers):
+        ok = results.pop(0) if results else True
+        sent.append((body, ok))
+        return ok
+
+    sid = rig.session(kind="job", state="running", title="nightly")
+    n = _notifier(rig, "http://127.0.0.1:9/t", poster=poster)
+    assert n.tick() == []
+    sessions.finalize(sid, "failed")
+    assert n.tick() == []                     # endpoint down
+    assert n.tick() == [sid]                  # retried once it is back
+    assert [ok for _, ok in sent] == [False, True]
+    assert n.tick() == [] and len(sent) == 2  # and only once after that
+
+
+def test_an_undelivered_alert_is_given_up_after_the_max_age(rig, monkeypatch):
+    sent = []
+    sid = rig.session(kind="job", state="running")
+    n = _notifier(rig, "http://127.0.0.1:9/t",
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    sessions.finalize(sid, "failed")
+    late = time.time() + chat_server.NOTIFY_RETRY_MAX_AGE + 60
+    assert n.tick(now=late) == [] and len(sent) == 1
+    assert n.tick(now=late + 1) == [] and len(sent) == 1
+
+
 def test_a_failed_post_never_logs_the_token(rig, tmp_path, capsys):
     token = tmp_path / "tok"
     token.write_text("tk_do_not_print")
