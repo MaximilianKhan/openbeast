@@ -680,8 +680,8 @@ class Hydra:
         return {"config_hash": cfg.hash, "config_source": cfg.source, "implicit": self.implicit,
                 "loaded_at": self.loaded_at, "last_reload_error": self.last_reload_error,
                 "uptime_s": round(time.monotonic() - self.started, 1), "default_route": cfg.default_route,
-                "warnings": cfg.warnings, "nodes": nodes, "deployments": deps, "routes": routes,
-                "decisions": list(self.decisions)[-50:]}
+                "warnings": cfg.warnings, "audit": str(self.audit.path), "nodes": nodes,
+                "deployments": deps, "routes": routes, "decisions": list(self.decisions)[-50:]}
 
     # ─── responses ───
     def hydra_headers(self, request_id: str, *, route: str | None = None, rules=(), cand=None,
