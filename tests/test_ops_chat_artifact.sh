@@ -645,11 +645,23 @@ if [[ $_rc -eq 0 && $_rc2 -eq 0 ]] && has "$_O" "not published" && has "$_O2" "n
 else
   fail "usage errors: $_rc/$_rc2 :: $_O :: $_O2"
 fi
-_rc=0; (set -e; pv tier3-zig "$T/missing.txt" >/dev/null; echo STILL-HERE > "$T/sete") || _rc=$?
-if [[ -e "$T/sete" ]]; then
-  pass "…verified under the caller's set -e"
+# A separate process whose status is NOT tested by || or && — bash turns
+# errexit off inside such a context, so the old `(set -e; …) || rc=$?` form
+# passed even with no script at all.
+sete_caller() { # sete_caller <script> <marker> — a campaign-shaped set -e caller
+  rm -f "$2"
+  env -i HOME="$T" PATH="/usr/bin:/bin" STUB_DIR="$T" ART_RC=4 \
+    bash -c 'set -e; bash "$0" tier3-zig "$1" >/dev/null 2>&1; echo STILL-HERE > "$2"' \
+    "$1" "$T/verdict.txt" "$2"
+  return 0
+}
+sete_caller "$PV/scripts/publish-verdict.sh" "$T/sete"
+printf '#!/bin/bash\nexit 1\n' > "$T/fails.sh"
+sete_caller "$T/fails.sh" "$T/sete-control"
+if [[ -e "$T/sete" && ! -e "$T/sete-control" ]]; then
+  pass "…verified under the caller's set -e (control: a script that exits 1 does stop it)"
 else
-  fail "publish-verdict killed a set -e caller (rc=$_rc)"
+  fail "set -e caller: publish-verdict=$(test -e "$T/sete" && echo survived || echo KILLED) control=$(test -e "$T/sete-control" && echo 'survived (test is blind)' || echo stopped)"
 fi
 
 # One real round trip: the real artifact.sh against a real artifact server.
