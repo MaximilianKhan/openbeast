@@ -13,14 +13,17 @@ corrected from measurements on the day the nodes come online):
   tensorfold  /health {"ok": true}; no auth at all (ignores keys); ids ignored
 
 Faults, per request with `X-Fake-Fault: <mode>[:arg]` or sticky with
-`POST /_fake/fault {"mode": ..., "count": n}` (count -1 = until cleared):
+`POST /_fake/fault {"mode": ..., "count": n}` (count -1 = until cleared).
 
-  refuse  loading  http_500  http_503  http_401  http_404_model  http_429
-  overflow_400  ttft_ms:N  headers_then_close  die_after_chunks:N
-  stall_after_chunks:N:ms  wrong_model
-
-`refuse` stops listening (FakeEngine.stop()); a later start() re-binds the
-same port. Recording: GET /_fake/requests (last 200 {path, headers, body}),
+  Request faults (POST only; a sticky count is consumed by requests, never
+  by probes): http_500 http_503 http_401 http_404_model http_429
+  overflow_400 loading_503 ttft_ms:N headers_then_close die_after_chunks:N
+  stall_after_chunks:N:ms
+  Node states (sticky until cleared; seen by probes too): loading
+  (/health 503 "Loading model" and every POST 503), health_down (/health
+  503), wrong_model (/v1/models lists another id), models_401 (/v1/models
+  refuses the key), refuse (stop listening: FakeEngine.stop(); start()
+  re-binds the same port). Recording: GET /_fake/requests (last 200 {path, headers, body}),
 GET /_fake/inflight, GET /_fake/stats (disconnects), POST /_fake/reset.
 
 The shape helpers (chat_response, tool_call, sse_frames) were extracted from
@@ -106,7 +109,7 @@ class FakeEngine:
         srv.daemon_threads = True
         self.srv = srv
         self.port = srv.server_address[1]
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
 
     def stop(self) -> None:
         """Stop listening (the `refuse` fault). Connections are refused after this."""
@@ -118,22 +121,26 @@ class FakeEngine:
     close = stop
 
     def set_fault(self, mode: str | None, count: int = -1) -> None:
+        if mode == "refuse":
+            self.stop()
+            return
         with self._lock:
             self.sticky = None if not mode else {"mode": mode, "count": count}
-        if mode == "loading":
-            self.loading = True
-        elif mode is None:
-            self.loading = False
+        self.loading = mode == "loading"
+
+    STATES = ("loading", "health_down", "wrong_model", "models_401")
+
+    def node_state(self) -> str | None:
+        s = self.sticky
+        return s["mode"] if s and s["mode"] in self.STATES else None
 
     def _take_fault(self, header: str | None) -> str | None:
         if header:
             return header
         with self._lock:
             s = self.sticky
-            if not s:
+            if not s or s["mode"] in self.STATES:
                 return None
-            if s["mode"] in ("loading", "wrong_model"):
-                return s["mode"]
             if s["count"] == 0:
                 self.sticky = None
                 return None
@@ -173,7 +180,7 @@ def _handler(eng: FakeEngine):
 
         def _record(self, body):
             eng.requests.append({"path": self.path, "method": self.command,
-                                 "headers": {k: v for k, v in self.headers.items()}, "body": body})
+                                 "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
 
         # ─── GET ───
         def do_GET(self):  # noqa: N802
@@ -186,15 +193,15 @@ def _handler(eng: FakeEngine):
                 return self._json(200, {"inflight": eng.inflight, "max_seen": eng.max_inflight_seen,
                                         "disconnects": eng.disconnects, "served": eng.served,
                                         "requests": len(eng.requests)})
-            fault = eng._take_fault(self.headers.get("X-Fake-Fault")) if p == "/health" else None
             if p == "/health":
+                fault = self.headers.get("X-Fake-Fault") or eng.node_state()
                 if eng.loading or fault == "loading":
                     if eng.personality == "llama":
                         return self._json(503, {"error": {"code": 503, "message": "Loading model",
                                                           "type": "unavailable_error"}})
                     return self._send(503, b"")
-                if fault in ("http_503", "http_500"):
-                    return self._send(int(fault[5:]), b"")
+                if fault in ("http_503", "http_500", "health_down"):
+                    return self._send(500 if fault == "http_500" else 503, b"")
                 if eng.personality == "llama":
                     return self._json(200, {"status": "ok"})
                 if eng.personality == "vllm":
@@ -208,11 +215,12 @@ def _handler(eng: FakeEngine):
                     txt = (f'vllm:num_requests_running{{model_name="{eng.model}"}} {eng.inflight}\n'
                            f'vllm:num_requests_waiting{{model_name="{eng.model}"}} 0\n')
                 return self._send(200, txt.encode(), ctype="text/plain; version=0.0.4")
+            self._record(None)
             if not self._authed():
                 return
             if p == "/v1/models":
-                fault = eng._take_fault(self.headers.get("X-Fake-Fault"))
-                if fault == "http_401":
+                fault = self.headers.get("X-Fake-Fault") or eng.node_state()
+                if fault in ("http_401", "models_401"):
                     return self._json(401, {"error": {"message": "Invalid API Key"}})
                 mid = "some-other-model" if fault == "wrong_model" else eng.model
                 return self._json(200, {"object": "list", "data": [
@@ -248,7 +256,7 @@ def _handler(eng: FakeEngine):
                 return self._json(404, {"error": {"message": "File Not Found"}})
             fault = eng._take_fault(self.headers.get("X-Fake-Fault"))
             mode, _, arg = (fault or "").partition(":")
-            if eng.loading or mode == "loading":
+            if eng.loading or mode in ("loading", "loading_503"):
                 if eng.personality == "llama":
                     return self._json(503, {"error": {"code": 503, "message": "Loading model",
                                                       "type": "unavailable_error"}})
