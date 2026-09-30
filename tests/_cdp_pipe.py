@@ -46,9 +46,12 @@ def _usable_chrome(path: str) -> bool:
 
 
 def find_chrome() -> str | None:
-    env = os.environ.get("CHROME_BIN", "").strip()
-    if env and os.path.exists(env):
-        return env
+    """CHROME_BIN or OPENBEAST_TEST_CHROME (either, for every browser suite),
+    else the first usable binary on PATH; None when there is none."""
+    for var in ("CHROME_BIN", "OPENBEAST_TEST_CHROME"):
+        env = os.environ.get(var, "").strip()
+        if env and os.access(env, os.X_OK):
+            return env
     for name in CANDIDATES:
         path = shutil.which(name)
         if path and _usable_chrome(path):
