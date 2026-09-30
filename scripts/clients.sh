@@ -39,6 +39,11 @@
 #            stop one, start a new agent). Starting an agent is remote code
 #            execution on the rig, so watching is tailnet identity and ACTING
 #            is this key. See docs/BEAST_CHAT.md.
+#   artifact — lifecycle access to beast-artifact from that device's browser:
+#            pin, tags, share/unshare, rollback and delete, on pages its
+#            tailnet login owns (or administers). Never publishing — that
+#            stays on the rig. `enroll phone --scope artifact`, then paste
+#            the key into a page's Manage sheet. See docs/BEAST_ARTIFACT.md.
 # A device with no `scopes` field, or an empty one, has no scopes — absence is
 # never a grant.
 
