@@ -641,6 +641,14 @@ if [[ "$HYDRA" == "true" ]]; then
   # real id from there instead of taking the route for the served model. An
   # id that came from the env only is gone once that export is recognised as
   # derived (_ob_override): it is empty then, and recovered the same way.
+  # An operator's own OPENBEAST_INFERENCE_MODEL is overwritten with the
+  # route below and no record is kept for it, so stash his value: with hydra
+  # flipped off in the same shell, the else branch hands it back.
+  if [[ "$_ob_im_env" == 1 && -n "$INFERENCE_MODEL" && "$INFERENCE_MODEL" != "$HYDRA_DEFAULT_MODEL" ]]; then
+    export OPENBEAST_HYDRA_OPERATOR_MODEL="$INFERENCE_MODEL"
+  elif [[ "$_ob_im_env" != 1 ]]; then
+    unset OPENBEAST_HYDRA_OPERATOR_MODEL
+  fi
   if [[ -z "$INFERENCE_MODEL" || "$INFERENCE_MODEL" == "$HYDRA_DEFAULT_MODEL" ]]; then
     INFERENCE_MODEL="${OPENBEAST_HYDRA_UPSTREAM_MODEL:-}"
   fi
@@ -672,9 +680,16 @@ else
   # hydra back on, or agents sending the route id to the bare engine. Only
   # values this file exported are dropped; an operator's env is kept.
   if [[ -n "${OPENBEAST_DERIVED_HYDRA+x}" ]]; then
+    # The operator's own served id, overwritten with the route while hydra
+    # was on: give it back, unless he has exported a new one since.
+    if [[ -n "${OPENBEAST_HYDRA_OPERATOR_MODEL:-}" \
+          && "${OPENBEAST_INFERENCE_MODEL:-}" == "${OPENBEAST_HYDRA_DEFAULT_MODEL:-}" ]]; then
+      INFERENCE_MODEL="$OPENBEAST_HYDRA_OPERATOR_MODEL"
+      export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
+    fi
     _ob_underive HYDRA; _ob_underive HYDRA_PORT; _ob_underive HYDRA_CONFIG
     _ob_underive HYDRA_DEFAULT_MODEL; _ob_underive INFERENCE_MODEL
-    unset OPENBEAST_HYDRA_UPSTREAM_MODEL
+    unset OPENBEAST_HYDRA_UPSTREAM_MODEL OPENBEAST_HYDRA_OPERATOR_MODEL
   fi
 fi
 INSTINCT="$(_ob_bool "$(_ob_override INSTINCT || _ob_conf_value INSTINCT || true)" false INSTINCT)"
