@@ -148,6 +148,9 @@ MAX_MESSAGE_BYTES = 32 * 1024
 # delete anything" arrived without its last line and without any marker the
 # model could see. A message the agent cannot receive whole is now refused.
 MAX_MESSAGE_CHARS = sessions.OP_MAX_TEXT
+# Longest caller-controlled string (a claimed login, a device id) an audit row
+# will carry. The login header alone can be ~16 KB (the h11 header limit).
+AUDIT_FIELD_MAX = 256
 # Ledger meta keys the SERVER owns. A caller may attach free-form meta to a
 # session it starts; it may not attach these, because they are load-bearing
 # for liveness (`pid_start`, `boot_id`) and for steering (`cursor`). The list
@@ -1069,8 +1072,13 @@ def _still_running(session_id: str) -> bool:
 
 def start_escalation(session_id: str, term_after: float, kill_after: float,
                      poll: float = 0.5, *,
-                     already_signalled: bool = False) -> threading.Thread:
+                     already_signalled: bool = False,
+                     on_event=None) -> threading.Thread:
     """Watch a stopping session and escalate if it does not go quietly.
+
+    `on_event(dict)` hears every signal this thread actually sends and the
+    terminal state it records — the audit trail's view of an escalation,
+    which used to exist only as a ledger summary (review chat-security-8).
 
     An agent's cooperative stop lands at the next turn, which can be a minute
     if it is mid-tool-call. So: ask nicely (the inbox op, written by the
@@ -1099,10 +1107,16 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
         sent_kill = False
         kill_deadline = None
 
+        def report(**ev):
+            if on_event is not None:
+                with contextlib.suppress(Exception):
+                    on_event(ev)
+
         def finalize_stopped():
             summary = ("SIGKILL after stop request" if sent_kill
                        else "SIGTERM after stop request")
             record_terminal_state(session_id, "stopped", summary)
+            report(outcome="finalized", state="stopped", summary=summary)
 
         while not done.wait(poll):
             if not _still_running(session_id):
@@ -1123,7 +1137,9 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
                     return
                 continue
             if elapsed >= kill_after:
-                signal_session(rec, signal.SIGKILL)
+                delivered = bool(signal_session(rec, signal.SIGKILL))
+                report(outcome="signal", signal="SIGKILL", delivered=delivered,
+                       pgid=rec.get("pgid"))
                 sent_kill = True
                 kill_deadline = now + max(poll * 4, 0.5)
                 continue
@@ -1131,6 +1147,9 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
                 # The RETURN VALUE, not True: a session that died on its own
                 # in this window was not stopped by us and must not say so.
                 sent_term = bool(signal_session(rec, signal.SIGTERM))
+                if sent_term:          # failures retry each second: not rows
+                    report(outcome="signal", signal="SIGTERM", delivered=True,
+                           pgid=rec.get("pgid"))
                 if not sent_term:
                     term_at = elapsed + max(poll, 1.0)      # try again shortly
 
@@ -1197,45 +1216,117 @@ def create_app() -> FastAPI:
 
     # -- audit -------------------------------------------------------------
 
+    # [review chat-security-2] Every unauthenticated 404 used to append a
+    # row, with the CLAIMED login copied verbatim: one loopback client grew
+    # the file ~1.3 GB/hour (x100 with a padded header) on the disk that holds
+    # the ledger and the inboxes. Now: identity strings are clipped, denial
+    # rows are sampled per peer (the rest become one counted summary row), and
+    # the file rotates once it passes a size cap — logrotate is opt-in.
+    audit_max = int(float(os.environ.get("OPENBEAST_CHAT_AUDIT_MAX_MB")
+                          or 50) * 1024 * 1024)
+    denial_budget = max(1, int(os.environ.get("OPENBEAST_CHAT_AUDIT_DENIALS_PER_MIN")
+                               or 60))
+    denials: dict[str, list] = {}      # peer -> [window_start, rows, dropped]
+    denials_lock = threading.Lock()
+
+    def _clip(value, n: int = AUDIT_FIELD_MAX):
+        if isinstance(value, str) and len(value) > n:
+            return value[:n] + "…"
+        return value
+
+    def _admit_denial(peer: str) -> tuple[bool, int]:
+        """(write this denial row?, rows dropped in the window that ended)."""
+        now = time.monotonic()
+        with denials_lock:
+            slot = denials.get(peer)
+            if slot is None or now - slot[0] >= 60.0:
+                dropped = slot[2] if slot else 0
+                if len(denials) >= 1024 and peer not in denials:
+                    denials.pop(next(iter(denials)))   # bounded: oldest peer out
+                denials[peer] = [now, 1, 0]
+                return True, dropped
+            if slot[1] < denial_budget:
+                slot[1] += 1
+                return True, 0
+            slot[2] += 1
+            return False, 0
+
+    def _append_audit(row: dict) -> None:
+        os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+        try:
+            if os.path.getsize(audit_path) >= audit_max:
+                # One generation kept, 0600 like the live file. logrotate
+                # (scripts/logrotate-openbeast.conf) still does better when
+                # installed; this is the floor when it is not.
+                os.replace(audit_path, audit_path + ".1")
+        except OSError:
+            pass
+        fd = os.open(audit_path,
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps(row) + "\n")
+
     def audit(principal, route: str, session: str | None, outcome: str,
               ms: int, extra: dict | None = None) -> None:
         """Append-only operator trail. Message TEXT never appears here — a
         /send row carries the sha256 and the length, which is enough to prove
-        what was sent without the audit log becoming a transcript of it."""
+        what was sent without the audit log becoming a transcript of it.
+
+        Every row says WHERE it came from (`peer`, the socket address) and
+        whether the identity was checked (`verified`): a denial carrying a
+        forged login is otherwise indistinguishable from the operator's own
+        phone (review chat-security-8)."""
         try:
+            p = principal or {}
+            verified = bool(p.get("verified"))
+            peer = p.get("peer")
             row = {
                 "ts": _now_iso(),
-                "login": (principal or {}).get("login"),
-                "device": (principal or {}).get("device"),
+                "login": _clip(p.get("login")),
+                "device": _clip(p.get("device")),
+                "verified": verified,
+                "peer": peer,
                 "route": route,
-                "session": session,
+                "session": _clip(session),
                 "outcome": outcome,
                 "ms": ms,
             }
             if extra:
                 row.update(extra)
-            os.makedirs(os.path.dirname(audit_path), exist_ok=True)
-            fd = os.open(audit_path,
-                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            try:
-                os.fchmod(fd, 0o600)
-            except OSError:
-                pass
-            with os.fdopen(fd, "a") as f:
-                f.write(json.dumps(row) + "\n")
+            if not verified and outcome.startswith("http_4"):
+                ok, dropped = _admit_denial(str(peer))
+                if dropped:
+                    _append_audit({"ts": _now_iso(), "peer": peer,
+                                   "verified": False,
+                                   "route": "*", "outcome": "denials_suppressed",
+                                   "count": dropped})
+                if not ok:
+                    return
+            _append_audit(row)
         except Exception:
             pass  # the audit trail must never break the request
+
+    def _peer_of(request: Request):
+        client = getattr(request, "client", None)
+        if client is None:
+            return "unix"
+        return _clip(client.host or "", 64)
 
     def claimed(request: Request) -> dict:
         """Who the caller SAYS they are, before anything is verified.
 
         Seeded into the audit context BEFORE the gate runs: a denial whose
         row says `login: null` records that somebody probed but not who, and
-        the probe is the whole reason this log exists.
+        the probe is the whole reason this log exists. CLIPPED: the header is
+        caller-controlled and up to ~16 KB.
         """
         login = (request.headers.get("tailscale-user-login") or "").strip()
-        return {"login": login or "anonymous", "device": None,
-                "verified": False}
+        return {"login": _clip(login) or "anonymous", "device": None,
+                "verified": False, "peer": _peer_of(request)}
 
     @contextlib.contextmanager
     def audited(route: str, session: str | None = None,
@@ -1260,6 +1351,15 @@ def create_app() -> FastAPI:
                   ctx["extra"])
             with metrics_lock:
                 counters[(route, ctx["outcome"])] += 1
+
+    def escalation_audit(principal: dict, session_id: str):
+        """on_event for start_escalation: every signal it actually delivers,
+        and the state it records, become audit rows under the stopper's
+        identity — not just a ledger summary nobody can attribute."""
+        def emit(ev: dict) -> None:
+            audit(principal, "stop escalation", session_id,
+                  str(ev.get("outcome") or "event"), 0, dict(ev))
+        return emit
 
     # -- auth --------------------------------------------------------------
 
@@ -1313,8 +1413,10 @@ def create_app() -> FastAPI:
         and curl have no header to be injected into); a caller that can read
         the 0600 token in .run/ is on the box.
         """
+        peer = _peer_of(request)
         if is_local(request):
-            return {"login": "local", "device": "local", "local": True}
+            return {"login": "local", "device": "local", "local": True,
+                    "verified": True, "peer": peer}
         # Off-box peers cannot claim a login (see _peer_is_loopback); they
         # still get in with a device key, which is a secret, not a claim.
         login = ((request.headers.get("tailscale-user-login") or "").strip()
@@ -1322,12 +1424,13 @@ def create_app() -> FastAPI:
         if login and operators.allows(login):
             # Unset operator list = single-user default: any identified login
             # reads. Set = allowlist, and anything else falls through to 404.
-            return {"login": login, "device": None, "local": False}
+            return {"login": login, "device": None, "local": False,
+                    "verified": True, "peer": peer}
         dev = device_for(request)
         if dev is not None:
             dev_id = dev.get("id") or "device"
             return {"login": login or f"device:{dev_id}", "device": dev_id,
-                    "local": False}
+                    "local": False, "verified": True, "peer": peer}
         # 404, never 403. A stranger must not learn that beast-chat is here.
         raise HTTPException(status_code=404, detail="Not Found")
 
@@ -1561,6 +1664,7 @@ def create_app() -> FastAPI:
         closing_at = None
         ident = _file_ident(path)
         last_auth = time.monotonic()
+        opened = last_auth
 
         def lost_frame(reason: str, requested: int, size: int) -> str:
             # The llama.cpp OFFSET_LOST case. Rather than 400 a phone that did
@@ -1690,6 +1794,13 @@ def create_app() -> FastAPI:
         finally:
             with metrics_lock:
                 gauges["sse_open"] -= 1
+            # What a reader actually pulled, and for how long — the open row
+            # alone cannot say whether a revoked or hostile reader drained a
+            # whole transcript (review chat-security-8).
+            audit(principal, "GET /events", session_id, "stream_close",
+                  int((time.monotonic() - opened) * 1000),
+                  {"from": start, "offset": offset,
+                   "bytes": max(0, offset - start)})
 
     # -- writes ------------------------------------------------------------
 
@@ -1808,7 +1919,9 @@ def create_app() -> FastAPI:
                         "device": principal.get("device"),
                     })
                     start_escalation(session_id, term_after, kill_after,
-                                     poll=min(1.0, max(0.05, poll)))
+                                     poll=min(1.0, max(0.05, poll)),
+                                     on_event=escalation_audit(principal,
+                                                               session_id))
                     ctx["extra"] = {"op": "stop", "op_id": op_id,
                                     "escalation": [term_after, kill_after]}
                     with metrics_lock:
@@ -1827,7 +1940,9 @@ def create_app() -> FastAPI:
                 start_escalation(session_id, 0.0,
                                  max(1.0, kill_after - term_after),
                                  poll=min(1.0, max(0.05, poll)),
-                                 already_signalled=bool(sent))
+                                 already_signalled=bool(sent),
+                                 on_event=escalation_audit(principal,
+                                                           session_id))
                 ctx["extra"] = {"op": "signal", "signal": "SIGTERM",
                                 "delivered": sent}
                 with metrics_lock:

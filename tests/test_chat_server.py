@@ -1090,8 +1090,9 @@ def test_denials_are_audited(rig):
 def test_stream_open_is_audited_with_its_offset(rig):
     sid = rig.session(kind="agent", state="done")
     drain(rig.client, sid, frm=7)
-    rows = [a for a in rig.audit_rows() if a["route"] == "GET /events"]
-    assert rows[-1]["outcome"] == "stream_open" and rows[-1]["from"] == 7
+    rows = [a for a in rig.audit_rows() if a["route"] == "GET /events"
+            and a["outcome"] == "stream_open"]      # a stream_close follows it
+    assert rows[-1]["from"] == 7
 
 
 # ---------------------------------------------------------------------------
