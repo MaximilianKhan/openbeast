@@ -91,6 +91,13 @@ jobs:
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 
+      # beast-chat / beast-artifact ops: port ownership at start, watchdog
+      # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
+      # notification rows, publish-verdict.sh, scoring.py --html. Loopback
+      # python servers on ephemeral ports, killed by recorded pid.
+      - name: beast-chat / beast-artifact ops tests
+        run: bash tests/test_ops_chat_artifact.sh
+
       # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
       # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
       # recording stubs.
