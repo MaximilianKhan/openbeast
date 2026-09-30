@@ -216,7 +216,8 @@ def test_shadow_only_act_does_not_hide_a_gated_engine(tmp_path):
         assert inst.lifecycle(DID, "linear", "enforce") == ("shadow", "no_gate")
         assert inst.lifecycle(DID, "stub", "enforce") == ("enforce", None)
         r = await _decide(inst, "what is 17 times 23")
-        # control: under a shadow ceiling the first act is decisive again
+        # under a shadow ceiling the answer is still the first act (linear's),
+        # but the walk goes on so shadow data measures every engine (A-2)
         rs = await _decide(inst, "what is 17 times 23", ceiling="shadow")
         await inst.aclose()
         return r, rs
@@ -226,7 +227,9 @@ def test_shadow_only_act_does_not_hide_a_gated_engine(tmp_path):
                                                                   ("stub", "act")]
     assert r["cascade"][0]["mode"] == "shadow"
     assert r["enforce"] is True and r["engine"]["id"] == "stub"
-    assert [c["engine"] for c in rs["cascade"]] == ["linear"] and rs["enforce"] is False
+    assert [c["engine"] for c in rs["cascade"]] == ["linear", "stub", "rules"]
+    assert rs["engine"]["id"] == "linear" and rs["enforce"] is False
+    assert rs["cascade"][1]["action"] == "act" and "probabilities" in rs["cascade"][1]
 
 
 def test_unenforceable_act_is_still_the_would_answer(tmp_path):
@@ -399,9 +402,14 @@ def test_reload_keeps_auto_demotion_until_the_hash_changes(tmp_path):
     cfgp, _ = H.promote_linear(tmp_path)
     inst = Instinct(load_config(cfgp, env={}), repo_root=tmp_path)
     H.run(inst.start())
-    inst.demotions.auto[DID] = {"reason": "fallback_rate 9/100", "at": 0}
+    inst.autodemoter._demote(DID, "fallback_rate 9/100")
     H.run(inst.reload())                       # e.g. SIGHUP from another decision's demote
     assert inst.demotions.reason(DID) == "auto:fallback_rate 9/100"
+    # B-instinct-06: and a RESTART (a new process) does not re-arm it either
+    again = Instinct(load_config(cfgp, env={}), repo_root=tmp_path)
+    H.run(again.start())
+    assert again.demotions.reason(DID) == "auto:fallback_rate 9/100"
+    H.run(again.aclose())
     spec = tmp_path / "decisions" / f"{DID}.toml"
     spec.write_text(spec.read_text().replace("version     = 1", "version     = 2", 1)
                     .replace("version = 1", "version = 2", 1))

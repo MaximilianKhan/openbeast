@@ -30,12 +30,13 @@ import httpx
 
 from ..render import Rendered, placeholder_inputs, render
 from ..spec import DecisionSpec, parse_spec
-from . import (Engine, EngineError, LockResult, ProbeResult, ScoreReq, ScoreRes,
+from . import (Engine, EngineBusy, EngineError, LockResult, ProbeResult, ScoreReq, ScoreRes,
                ScoreRow, read_key_file)
 
 KNOWN_MARGIN = 0.5
 KNOWN_MASS = 0.6
 REPLAY_N = 10
+REPLAY_N_PRIMARY = 3
 REPLAY_STD = 0.02
 MIS_DELTA = 0.05
 
@@ -100,6 +101,14 @@ class LLMEngine(Engine):
 
     def _headers(self) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
+        if self.binding.key_env:
+            # The primary's key (LLAMA_API_KEY) reaches the service through its
+            # environment — instinct.sh resolves it the way conf.sh does and
+            # never puts it on argv. Unset/empty = the primary needs no key.
+            key = os.environ.get(self.binding.key_env, "").strip()
+            if key:
+                h["Authorization"] = f"Bearer {key}"
+            return h
         if self.binding.key_file:
             try:
                 key = read_key_file(self.binding.key_file)
@@ -139,9 +148,12 @@ class LLMEngine(Engine):
         except ValueError:
             raise EngineError(f"{self.id}: {path} returned non-JSON") from None
 
-    async def _get(self, path: str) -> Any:
+    async def _get(self, path: str, timeout_s: float | None = None) -> Any:
         try:
-            r = await self.client().get(path, headers=self._headers())
+            kw = {"timeout": timeout_s} if timeout_s is not None else {}
+            r = await self.client().get(path, headers=self._headers(), **kw)
+        except httpx.TimeoutException:
+            raise asyncio.TimeoutError(f"{self.id}: GET {path} timed out") from None
         except httpx.HTTPError as exc:
             raise EngineError(f"{self.id}: GET {path}: {exc.__class__.__name__}") from None
         if r.status_code != 200:
@@ -164,6 +176,11 @@ class LLMEngine(Engine):
 
     async def _identity(self) -> str | None:  # pragma: no cover
         raise NotImplementedError
+
+    async def ensure_idle(self, timeout_s: float = 0.05) -> None:
+        """busy_skip bindings only: raise EngineBusy when the engine's slot is
+        serving someone. Other engines are never busy (they are ours)."""
+        return None
 
     # --- label lock ---
     async def lock(self, spec: DecisionSpec) -> LockResult:
@@ -213,6 +230,10 @@ class LLMEngine(Engine):
     async def score(self, req: ScoreReq) -> ScoreRes:
         if not req.label_ids:
             raise EngineError(f"{self.id}: no label lock for {req.spec.id}")
+        # Before anything else: a busy primary costs ~1 ms, not a deadline. The
+        # check is not engine latency, and a busy call records none at all,
+        # so p95 (the deadline-skip input) measures an idle slot only.
+        await self.ensure_idle(min(0.05, max(0.001, req.deadline_s)))
         t0 = time.perf_counter()
         splitter = await self._truncating_splitter(req.spec, req.inputs)
         rendered = render(req.spec, req.inputs, req.items, splitter=splitter,
@@ -228,6 +249,7 @@ class LLMEngine(Engine):
     async def _p_yes(self, spec: DecisionSpec, locks: dict[str, int], question: str,
                      timeout_s: float) -> tuple[float, float | None]:
         r = render(spec, {"question": question})
+        await self.ensure_idle()   # a probe never queues in front of a user
         t0 = time.perf_counter()
         rows, _, _ = await self._score_rendered(r, locks, timeout_s)
         # Probe calls seed the rolling latency window, so a fresh engine's p95
@@ -264,8 +286,11 @@ class LLMEngine(Engine):
                     return ProbeResult(False, checks, "known_answer: no separation")
                 if my is not None and mn is not None and min(my, mn) < KNOWN_MASS:
                     return ProbeResult(False, checks, "known_answer: label_mass below 0.6")
+                # A primary gets 3 replays, not 10: every probe call on it
+                # swaps the user's conversation out of its only slot.
+                n_rep = REPLAY_N_PRIMARY if self.binding.busy_skip else REPLAY_N
                 reps = [(await self._p_yes(g, lk.ids, GENERIC_YES, t_s))[0]
-                        for _ in range(REPLAY_N)]
+                        for _ in range(n_rep)]
                 sd = statistics.pstdev(reps)
                 checks[f"replay_std[{fmt}]"] = sd
                 nondet = nondet or sd > REPLAY_STD
@@ -277,6 +302,7 @@ class LLMEngine(Engine):
                     continue  # reported per decision via attach
                 for i, k in enumerate(s.probe_known):
                     r = render(s, k["inputs"])
+                    await self.ensure_idle()
                     rows, _, _ = await self._score_rendered(r, lk.ids, t_s)
                     q = rows[0].q or {}
                     tot = sum(q.values()) or 1.0
@@ -287,6 +313,8 @@ class LLMEngine(Engine):
                         return ProbeResult(False, checks, f"known_answer: {s.id} pair {i}")
             forced = await self._mis_equivalence(checks, t_s)
             return ProbeResult(True, checks, None, nondeterministic=nondet, exec_forced=forced)
+        except EngineBusy:
+            raise   # deferred, not failed: the service keeps the last result
         except (EngineError, asyncio.TimeoutError, KeyError, ValueError, TypeError,
                 ZeroDivisionError, AttributeError, IndexError) as exc:
             return ProbeResult(False, checks, f"probe error: {exc.__class__.__name__}: {exc}")

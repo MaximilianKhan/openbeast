@@ -84,6 +84,12 @@ class EngineError(RuntimeError):
     """The engine answered, but not with something we can trust (fallback)."""
 
 
+class EngineBusy(EngineError):
+    """A primary binding (busy_skip) found its slot serving someone. The
+    cascade skips it in ~1 ms (`engine_busy`) instead of queueing a decision
+    in front of — or behind — a user's turn; the probe is deferred."""
+
+
 def read_key_file(path: str) -> str:
     """Read a bearer key from a 0600 file. Fail closed on a group/world
     readable file — a key anyone on the box can read is not a key."""

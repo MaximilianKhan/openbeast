@@ -88,24 +88,57 @@ def gate_record_ok(rec: dict | None, dhash: str, calib_rec: dict | None) -> bool
     return rec.get("calib_sha256") == calib_rec.get("_sha256")
 
 
+def _read_map(path: Path) -> dict[str, dict]:
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) \
+        else {}
+
+
 class Demotions:
     """Operator demotions (.run/instinct/demoted.json, written by
-    `scripts/instinct.sh demote`) plus in-memory auto-demotions."""
+    `scripts/instinct.sh demote`) plus auto-demotions, which PERSIST to
+    auto-demoted.json beside it (B-instinct-06): a restart must not re-arm a
+    flapping engine. An auto-demotion records the decision's engine hashes;
+    it ends only when one of them changes (a new thing) or on `undemote`."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, auto_path: Path | None = None):
         self.path = Path(path)
+        self.auto_path = Path(auto_path) if auto_path else self.path.with_name(
+            "auto-demoted.json")
         self.operator: dict[str, dict] = {}
         self.auto: dict[str, dict] = {}
         self.load()
 
     def load(self) -> None:
+        """(Re)read both files. The service is the only writer of the auto
+        file, so re-reading it on SIGHUP picks up an `undemote` and nothing
+        else."""
+        self.operator = _read_map(self.path)
+        self.auto = {k: v for k, v in _read_map(self.auto_path).items()
+                     if isinstance(v.get("reason"), str)}
+
+    def add_auto(self, decision: str, rec: dict) -> None:
+        self.auto[decision] = rec
+        self.save_auto()
+
+    def drop_auto(self, decision: str) -> None:
+        if self.auto.pop(decision, None) is not None:
+            self.save_auto()
+
+    def save_auto(self) -> None:
         try:
-            with open(self.path) as fh:
-                data = json.load(fh)
-            self.operator = {k: v for k, v in data.items() if isinstance(v, dict)} \
-                if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            self.operator = {}
+            self.auto_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.auto_path.with_suffix(".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(self.auto, fh, indent=2, sort_keys=True)
+            os.replace(tmp, self.auto_path)
+        except OSError:
+            pass   # a full disk must not take decisions down; memory still holds it
 
     def reason(self, decision: str) -> str | None:
         if decision in self.operator:
@@ -116,6 +149,7 @@ class Demotions:
 
     def clear_auto(self) -> None:
         self.auto.clear()
+        self.save_auto()
 
 
 class AutoDemoter:
@@ -124,8 +158,10 @@ class AutoDemoter:
     more than 0.2 below the calibration reference over the last 200 calls."""
 
     def __init__(self, demotions: Demotions, *, window: int = 100, rate: float = 0.05,
-                 mass_window: int = 200, mass_drop: float = 0.2):
+                 mass_window: int = 200, mass_drop: float = 0.2, hashes_for=None):
         self.demotions = demotions
+        # decision -> {engine: decision_hash}: what the demotion judged
+        self.hashes_for = hashes_for
         self.window, self.rate = window, rate
         self.mass_window, self.mass_drop = mass_window, mass_drop
         self.outcomes: dict[str, deque] = {}
@@ -161,5 +197,8 @@ class AutoDemoter:
 
     def _demote(self, decision: str, reason: str) -> str:
         if decision not in self.demotions.auto:
-            self.demotions.auto[decision] = {"reason": reason, "at": time.time()}
+            rec = {"reason": reason, "at": time.time()}
+            if self.hashes_for is not None:
+                rec["hashes"] = self.hashes_for(decision)
+            self.demotions.add_auto(decision, rec)
         return reason

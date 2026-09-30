@@ -29,6 +29,16 @@ INPUT_TYPES = ("text", "int", "bool")
 LOG_INPUTS = ("hash", "excerpt", "full")
 PROMPT_FORMATS = ("qwen3-nothink/1", "plain/1")
 RULE_SETS = ("router_hints", "hydra_static", "none")
+# How a decision may use an engine bound to the PRIMARY (allow_primary = true):
+#   none        never (the default);
+#   async       only when nobody awaits the verdict (ceiling below enforce);
+#   substitute  the verdict REPLACES a call the caller makes on the primary
+#               anyway (router.spawn_intent replaces router._classify) — so
+#               scoring there adds no primary load. Only on requests whose
+#               caller declares it would make that call (baseline = "hint").
+PRIMARY_USES = ("none", "async", "substitute")
+# The baseline a caller sends when it would otherwise run the substituted call.
+SUBSTITUTE_BASELINE = "hint"
 
 # The fixed gate-metric vocabulary (plan §5.3: "no eval()").
 GATE_METRICS = (
@@ -101,7 +111,13 @@ class Policy:
     min_margin: float = 0.0
     cost: dict[str, float] = field(default_factory=dict)
     hard_constraints: list[Constraint] = field(default_factory=list)
-    async_only: bool = False
+    primary_use: str = "none"
+    substitutes: str = ""
+
+    @property
+    def async_only(self) -> bool:
+        """Back-compat view of the pre-2026-09-30 key (alias of primary_use=async)."""
+        return self.primary_use == "async"
 
 
 @dataclass
@@ -213,7 +229,8 @@ _TOP_KEYS = {"id", "version", "owner", "description", "type", "form", "labels",
 _TOP_REQUIRED = {"id", "version", "owner", "description", "type", "form", "labels",
                  "prompt", "inputs", "engines", "policy", "gate"}
 _POLICY_KEYS = {"mode", "canary_pct", "act", "review", "min_margin", "min_label_mass",
-                "cost", "hard_constraints", "deadline_ms", "async_only"}
+                "cost", "hard_constraints", "deadline_ms", "async_only",
+                "primary_use", "substitutes"}
 _POLICY_REQUIRED = {"mode", "act", "min_label_mass", "deadline_ms"}
 
 
@@ -365,6 +382,23 @@ def parse_spec(data: dict, *, path: str = "", expect_id: str | None = None) -> D
     async_only = pol.get("async_only", False)
     if not isinstance(async_only, bool):
         raise SpecError("policy.async_only must be a bool")
+    primary_use = pol.get("primary_use")
+    if primary_use is None:
+        # `async_only = true` is the one-version alias of primary_use = "async".
+        primary_use = "async" if async_only else "none"
+    elif primary_use not in PRIMARY_USES:
+        raise SpecError(f"policy.primary_use must be one of {PRIMARY_USES}")
+    elif async_only and primary_use != "async":
+        raise SpecError("policy.async_only = true contradicts policy.primary_use "
+                        f"{primary_use!r} (async_only is the old spelling of 'async')")
+    substitutes = pol.get("substitutes", "")
+    if not isinstance(substitutes, str):
+        raise SpecError("policy.substitutes must be a string (the replaced call site)")
+    if primary_use == "substitute" and not substitutes.strip():
+        raise SpecError("policy.primary_use = 'substitute' needs policy.substitutes = "
+                        "'<file>:<function>' — the primary call this decision replaces")
+    if substitutes and primary_use != "substitute":
+        raise SpecError("policy.substitutes is only meaningful with primary_use = 'substitute'")
     policy = Policy(
         mode=mode, act=act_f,
         min_label_mass=_num("policy.min_label_mass", pol["min_label_mass"], 0.0, 1.0),
@@ -372,7 +406,8 @@ def parse_spec(data: dict, *, path: str = "", expect_id: str | None = None) -> D
         canary_pct=_int("policy.canary_pct", pol.get("canary_pct", 0), lo=0, hi=100),
         review=review_f,
         min_margin=_num("policy.min_margin", pol.get("min_margin", 0.0), 0.0, 1.0),
-        cost=cost_f, hard_constraints=constraints, async_only=async_only)
+        cost=cost_f, hard_constraints=constraints, primary_use=primary_use,
+        substitutes=substitutes.strip())
 
     forbidden = data.get("forbidden_contexts", ["eval"])
     if not isinstance(forbidden, list) or not all(isinstance(x, str) for x in forbidden):

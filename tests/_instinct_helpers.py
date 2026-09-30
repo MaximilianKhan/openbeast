@@ -87,7 +87,8 @@ def llama_binding(url: str, **kw) -> dict:
 
 def sglang_binding(url: str, **kw) -> dict:
     b = {"adapter": "sglang_score", "url": url, "model": "stub-lexicon",
-         "model_sha256": "stub", "exec": "mis", "timeout_ms": 1500}
+         "model_sha256": "stub", "exec": "mis", "mis_delimiter": "<|mis|>",
+         "timeout_ms": 1500}
     b.update(kw)
     return b
 
