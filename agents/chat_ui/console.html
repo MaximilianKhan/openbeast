@@ -1307,7 +1307,11 @@ $("#csCancel").addEventListener("click", function(){ closeSheetEl($("#confirmShe
 $("#csGo").addEventListener("click", function(){
   if(!NS.body) return;
   $("#csGo").disabled = true;
-  api("/api/chat/sessions", { method: "POST", body: JSON.stringify(NS.body) })
+  // Pin the start to what was reviewed: the server refuses (409) if the
+  // command it would run now differs from the one this dialog showed.
+  var go = {}; for(var k in NS.body) go[k] = NS.body[k];
+  if(NS.plan && NS.plan.plan_sha256) go.confirm_sha256 = NS.plan.plan_sha256;
+  api("/api/chat/sessions", { method: "POST", body: JSON.stringify(go) })
     .then(function(d){
       closeSheetEl($("#confirmSheet")); closeSheetEl($("#newSheet"));
       $("#nsTask").value = ""; $("#nsCmd").value = "";

@@ -89,6 +89,9 @@ def test_enter_sends(html):
 def test_new_session_goes_through_a_server_dry_run(html):
     """F-C1: the confirm dialog shows the SERVER's argv."""
     assert "dry.dry_run = true" in html and "#csArgv" in html
+    # ...and Start is pinned to it: the reviewed plan's digest rides along.
+    assert "go.confirm_sha256 = NS.plan.plan_sha256" in html
+    assert "JSON.stringify(NS.body)" not in html
 
 
 # ---------------------------------------------------------------------------

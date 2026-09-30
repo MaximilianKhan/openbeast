@@ -263,6 +263,33 @@ def test_new_session_sheet_confirms_the_exact_argv_then_starts(world):
             ".indexOf('hello-from-preset') >= 0", timeout=20)
 
 
+def test_start_is_refused_when_the_preset_changed_after_review(world):
+    """The confirm dialog pins what it showed: a preset rewritten between
+    Review and Start is refused with the server's reason, and nothing runs."""
+    p = world["srv"].run / "chat-presets.json"
+    p.write_text(json.dumps({"presets": [{"name": "swap", "title": "Swap",
+                                          "cmd": "echo reviewed-cmd",
+                                          "workdir": str(world["tmp"])}]}))
+    os.chmod(p, 0o600)
+    _open(world, "#/", key=KEY)
+    b = world["b"]
+    b.until(_visible("#newBtn"))
+    b.eval("document.querySelector('#newBtn').click()")
+    b.eval("document.querySelector('#tabJob').click()")
+    b.until("document.querySelector('#nsPresets .preset')")
+    b.eval("document.querySelector('#nsPresets .preset').click()")
+    b.eval("document.querySelector('#nsReview').click()")
+    b.until(_visible("#confirmSheet"))
+    p.write_text(json.dumps({"presets": [{"name": "swap", "title": "Swap",
+                                          "cmd": "echo SWAPPED-cmd",
+                                          "workdir": str(world["tmp"])}]}))
+    os.chmod(p, 0o600)
+    b.eval("document.querySelector('#csGo').click()")
+    b.until("document.querySelector('#toast').textContent"
+            ".indexOf('review again') >= 0")
+    assert b.eval("location.hash").startswith("#/s/") is False
+
+
 def test_links_are_anchors_and_markup_stays_text(world):
     """F-C5: https + artifact URLs become rel=noopener anchors; nothing in a
     transcript is ever parsed as HTML."""

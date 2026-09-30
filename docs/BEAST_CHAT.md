@@ -449,7 +449,12 @@ working directory. *Job*: pick one of the operator's **presets**, or open
 *Custom command* and type one. **Review…** asks the server for a dry run
 (`POST /api/chat/sessions` with `"dry_run": true`, same write gate, nothing
 spawned) and the confirm dialog shows the exact argv it returned — then
-**Start** runs that. Starting needs the device key like every other write.
+**Start** runs that. Only the per-start values differ: a fresh session id
+and the transcript path named after it. The dry run also returns
+`plan_sha256`; the console sends it back as `confirm_sha256`, and the server
+answers 409 ("review again") if what it would run has changed since — a
+preset edited on disk between Review and Start is refused, not run.
+Starting needs the device key like every other write.
 Agents started this way are steerable (`--session-id … --steer`); jobs run
 under `scripts/job.sh`'s supervisor.
 

@@ -3088,7 +3088,11 @@ def create_app() -> FastAPI:
         """Validate a create request and work out EXACTLY what would run.
 
         Shared by the real spawn and by `dry_run`, so the argv the console's
-        confirm dialog echoes is the argv that executes, byte for byte.
+        confirm dialog echoes is the argv that executes — except the
+        per-start values, a fresh session id and the transcript path named
+        after it. A preset is re-resolved from disk at Start, so the dry run
+        also returns `plan_sha256` (see plan_digest) and a Start carrying
+        `confirm_sha256` is refused if what would run has changed since.
         """
         body = resolve_preset(body)
         kind = _body_str(body, "kind", "agent").strip().lower()
@@ -3177,6 +3181,18 @@ def create_app() -> FastAPI:
                 "max_iter": max_iter, "cmd": cmd, "argv": list(cmd),
                 "display": display, "meta_in": meta_in}
 
+    def plan_digest(plan: dict) -> str:
+        """sha256 of what a plan RUNS, minus its per-start values: the argv
+        with the session id and transcript path replaced by placeholders,
+        plus kind, workdir and title."""
+        sid, log = plan["session_id"], plan["transcript"]
+        argv = ["<session-id>" if a == sid else "<log-file>" if a == log
+                else a for a in plan["argv"]]
+        blob = json.dumps({"kind": plan["kind"], "workdir": plan["workdir"],
+                           "title": plan["title"], "argv": argv},
+                          sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
     @app.post("/api/chat/sessions")
     async def create_session(request: Request):
         with audited("POST /api/chat/sessions", request=request) as ctx:
@@ -3195,8 +3211,17 @@ def create_app() -> FastAPI:
                     return {"dry_run": True, "kind": plan["kind"],
                             "argv": plan["argv"], "display": plan["display"],
                             "workdir": plan["workdir"], "title": plan["title"],
+                            "plan_sha256": plan_digest(plan),
                             "wrapper": ("scripts/job.sh __supervise"
                                         if plan["kind"] == "job" else None)}
+                confirmed = body.get("confirm_sha256")
+                if confirmed is not None and confirmed != plan_digest(plan):
+                    # The operator approved one command; the rig would now run
+                    # another (a preset edited on disk, a workdir renamed…).
+                    raise HTTPException(
+                        status_code=409,
+                        detail="what would run changed since you reviewed it "
+                               "— review again")
                 kind = plan["kind"]
                 session_id = plan["session_id"]
                 workdir = plan["workdir"]

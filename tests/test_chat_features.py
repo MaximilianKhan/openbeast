@@ -229,6 +229,39 @@ def test_dry_run_echoes_the_exact_argv_and_spawns_nothing(rig, tmp_path):
         "kind": "job", "cmd": "id", "dry_run": True}).status_code == 404
 
 
+def test_start_refuses_a_command_changed_since_review(rig, tmp_path):
+    """The confirm dialog pins the start: a preset edited on disk between
+    Review and Start is refused, not silently run."""
+    _write_presets(rig, {"presets": [
+        {"name": "hello", "cmd": "echo reviewed", "workdir": str(tmp_path)}]})
+    d = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "preset": "hello", "dry_run": True}).json()
+    sha = d["plan_sha256"]
+    # Same body reviewed twice: same digest, although each plan mints a new
+    # session id (the per-start values are not part of it).
+    assert rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "preset": "hello", "dry_run": True}).json()["plan_sha256"] == sha
+    _write_presets(rig, {"presets": [
+        {"name": "hello", "cmd": "echo SWAPPED", "workdir": str(tmp_path)}]})
+    before = set(os.listdir(rig.sdir))
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "preset": "hello", "confirm_sha256": sha})
+    assert r.status_code == 409 and "review again" in r.json()["detail"]
+    time.sleep(0.2)
+    assert set(os.listdir(rig.sdir)) == before, "a refused start spawned"
+    # Negative control: the digest of what WOULD run now starts it.
+    agent = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "agent", "task": "x", "workdir": str(tmp_path),
+        "dry_run": True}).json()
+    assert agent["plan_sha256"] != sha
+    now = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "preset": "hello", "dry_run": True}).json()["plan_sha256"]
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "preset": "hello", "confirm_sha256": now})
+    assert r.status_code == 201, r.text
+    wait_state(r.json()["session"]["id"], "done", "failed")
+
+
 def test_models_come_from_beast_slot(rig, stub, monkeypatch):
     s = stub(body=json.dumps({"model": {"id": "qwen38-27b-q5",
                                         "ctx": 262144}}).encode())
