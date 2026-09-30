@@ -877,7 +877,9 @@ source component is skipped and the manifest says so):
 
 `build` writes a `git archive` of `llama.cpp/` at its current commit, fills
 `wheels/` with the exact artifacts the lock names (it runs
-`pydeps.sh wheelhouse` for you), saves the two digest-pinned images, and —
+`pydeps.sh wheelhouse` for you), saves the digest-pinned images (the core two, plus every
+`extensions/*/compose.yaml` fragment's, such as ntfy — install rewrites
+whichever compose file runs each one, keeping a `.pre-bundle` copy), and —
 only when asked — copies weights; every file is recorded with its sha256 in
 `MANIFEST.json`, alongside the repo commit and the eval era. Weights are
 opt-in because a 20 GB copy is a different operation from a 60 MB one, and
