@@ -1024,6 +1024,35 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
     assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
 
 
+def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, tmp_path):
+    # Max 2026-09-30: never answer from a stock model. The plan for `retry`
+    # (rig -> stock sparks) was made before a reload added
+    # allowed_families = ["unc"]; its failover must honour the NEW policy.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1), cfg_file=True)
+    got = {}
+    before = len(posts(sparks))
+
+    def slow():
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    raw = copy.deepcopy(srv.raw)
+    raw["hydra"]["allowed_families"] = ["unc"]
+    for r in raw["routes"].values():
+        r["targets"] = [tg for tg in r["targets"] if raw["deployments"][tg["d"]]["family"] == "unc"]
+    raw["routes"] = {k: v for k, v in raw["routes"].items() if v["targets"]}
+    (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
+    rl = httpx.post(srv.url + "/hydra/reload", headers=srv.local()).json()
+    assert rl["ok"], rl
+    t.join(15)
+    assert got["r"][1] != "nvfp4@sparks" and got["r"][0] != 200, got
+    assert "nvfp4@sparks:skipped" in (got["r"][2] or ""), got
+    assert len(posts(sparks)) == before, "a stock engine was called after the policy forbade it"
+    assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
+
+
 def test_a_half_open_trial_is_exclusive_across_failover(fleet):
     # A holds the 1-slot rig and times out into sparks; B has meanwhile spilled
     # to sparks as the single HALF_OPEN trial. A's failover (planned before B

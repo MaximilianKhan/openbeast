@@ -704,12 +704,189 @@ def test_same_family_and_max_attempts():
     raw["routes"]["beast"]["same_family"] = True
     cfg = cfg_of(raw)
     d = decide(cfg, ready_state(cfg))
-    assert ids(d) == ["unc@rig"] and d.trace.excluded["nvfp4@sparks"] == "family stock != unc"
+    assert ids(d) == ["unc@rig"] and d.trace.excluded["nvfp4@sparks"].startswith("family stock != unc")
     raw = base()
     raw["routes"]["beast:fast"]["max_attempts"] = 2
     cfg = cfg_of(raw)
     assert len(ids(decide(cfg, ready_state(cfg), {"model": "beast:fast"}))) == 2
     assert len(ids(decide(cfg_of(), ready_state(cfg_of()), {"model": "beast:fast"}))) == 3
+
+
+# ─────────────────── family policy (Max 2026-09-30: never stock) ───────────────────
+
+def _uncensored_only(raw=None):
+    """base() with the fleet policy on: only the uncensored family may serve.
+    Routes drop the stock/MoE targets (validation refuses a route target
+    outside the policy); those stay as pinnable deployments."""
+    raw = raw or base()
+    raw["hydra"]["allowed_families"] = ["unc"]
+    for r in raw["routes"].values():
+        r["targets"] = [t for t in r["targets"] if t["d"] == "unc@rig"]
+    return raw
+
+
+def _with_policy(cfg, **kw):
+    cfg.settings = core.Settings(**{**{k: getattr(cfg.settings, k) for k in cfg.settings.__dataclass_fields__},
+                                    **kw})
+    return cfg
+
+
+def test_allowed_families_refuses_a_route_target_outside_the_policy():
+    raw = base()
+    raw["hydra"]["allowed_families"] = ["unc"]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nvfp4@sparks is family 'stock', outside hydra.allowed_families" in x for x in e.value.errors)
+    assert any("moe@ti is family 'moe'" in x for x in e.value.errors)
+
+
+def test_allowed_families_leaves_strict_pins_alone_and_warns_about_them():
+    cfg = cfg_of(_uncensored_only())
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)                   # the 1-slot rig is busy
+    assert ids(decide(cfg, st)) == ["unc@rig"]           # queue on the rig, never spill off-policy
+    assert ids(decide(cfg, st, {"model": "nvfp4@sparks", "messages": []})) == ["nvfp4@sparks"]
+    assert any("deployments.nvfp4@sparks: family 'stock' is outside hydra.allowed_families" in w
+               for w in cfg.warnings)
+
+
+def test_allowed_families_is_a_hard_filter_in_decide_on_spill_and_ctx_last_resort():
+    # Old code has no policy: with the rig saturated `beast` spills to stock.
+    # decide() filters every non-strict candidate even when a route still
+    # lists a forbidden target (a Config built around validation, as a hot
+    # reload racing an in-flight plan could leave it).
+    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)
+    d = decide(cfg, st)
+    assert ids(d) == ["unc@rig"], ids(d)
+    assert d.trace.excluded["nvfp4@sparks"] == "family stock not in hydra.allowed_families"
+    big = {"model": "beast", "messages": [{"role": "user", "content": "x " * 450_000}]}   # ~300K tokens
+    d = decide(cfg, st, big)
+    assert ids(d) == ["unc@rig"], (ids(d), d.trace.notes)
+
+
+def test_same_family_anchor_is_explicit_never_list_order():
+    # A-hydra-2: beast:long lists the stock target FIRST at priority 0. The old
+    # anchor was min(targets) = first listed = stock, so same_family excluded
+    # the UNCENSORED rig. Now a mixed top group is a config error…
+    raw = base()
+    raw["routes"]["beast:long"]["same_family"] = True
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("routes.beast:long: same_family, but the priority-0 targets span stock, unc" in x
+               for x in e.value.errors), e.value.errors
+    # …and an explicit family anchors it, whatever the order.
+    raw["routes"]["beast:long"]["family"] = "unc"
+    cfg = cfg_of(raw)
+    assert cfg.routes["beast:long"].family == "unc"
+    d = decide(cfg, ready_state(cfg), {"model": "beast:long", "messages": []})
+    assert ids(d) == ["unc@rig"], ids(d)
+    assert d.trace.excluded["nvfp4@sparks"].startswith("family stock != unc")
+
+
+def test_family_key_rules():
+    raw = base()
+    raw["routes"]["beast"].update(family="unc", same_family=False)
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("family implies same_family" in x for x in e.value.errors)
+    raw = base()
+    raw["routes"]["beast"]["family"] = "martian"
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("no target has that family" in x for x in e.value.errors)
+    raw = base()
+    raw["routes"]["beast"]["family"] = "unc"            # family alone implies same_family
+    cfg = cfg_of(raw)
+    assert cfg.routes["beast"].same_family
+    assert any("nvfp4@sparks (family stock) can never serve" in w for w in cfg.warnings)
+
+
+def test_same_family_survives_a_rule_hop():
+    # B-hydra-2: the guard read the route AFTER the rule rewrite, so a huge
+    # `beast` prompt redirected to beast:long went to stock first.
+    raw = base()
+    raw["routes"]["beast"]["same_family"] = True
+    raw["rules"] = [{"name": "long", "when": {"min_prompt_tokens": 1000, "model": ["beast"]},
+                     "then": {"route": "beast:long"}}]
+    cfg = cfg_of(raw)
+    big = {"model": "beast", "messages": [{"role": "user", "content": "x " * 3000}]}
+    d = decide(cfg, ready_state(cfg), big)
+    assert d.route == "beast:long" and ids(d) == ["unc@rig"], (d.route, ids(d))
+    assert "same_family" in d.trace.excluded["nvfp4@sparks"]
+
+
+def test_a_rule_that_strands_a_same_family_route_is_a_config_error():
+    raw = base()
+    raw["routes"]["beast"]["same_family"] = True
+    raw["routes"]["stock-only"] = {"targets": [{"d": "nvfp4@sparks"}]}
+    raw["rules"] = [{"name": "strand", "when": {"device": "phone"}, "then": {"route": "stock-only"}}]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("rules.strand: sends same_family route beast (family unc) to stock-only, which has no unc"
+               in x for x in e.value.errors), e.value.errors
+    raw["routes"]["stock-only"] = {"targets": [{"d": "nvfp4@sparks"}, {"d": "unc@rig", "priority": 1}],
+                                   "family": "stock"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("anchored on stock" in x for x in e.value.errors), e.value.errors
+
+
+def test_ctx_last_resort_is_chosen_among_policy_clean_targets():
+    # A-hydra-3: the last resort picked max(ctx) FIRST and only then checked
+    # the family, so a bigger stock target turned an overflow 400 (which the
+    # runner compacts on) into a hydra 503.
+    raw = base()
+    raw["deployments"]["unc@rig"]["ctx"] = 131072
+    raw["routes"]["t"] = {"targets": [{"d": "unc@rig", "priority": 0}, {"d": "nvfp4@sparks", "priority": 1}],
+                          "same_family": True}
+    cfg = cfg_of(raw)
+    big = {"model": "t", "messages": [{"role": "user", "content": "x " * 400_000}]}   # ~267K tokens
+    d = decide(cfg, ready_state(cfg), big)
+    assert d.ok and ids(d) == ["unc@rig"], (d.status, ids(d), d.trace.excluded)
+    assert any("last resort -> unc@rig" in n for n in d.trace.notes)
+
+
+def test_sticky_affinity_cannot_hold_a_conversation_on_a_forbidden_family():
+    # B-hydra-4: a turn that spilled to stock stayed there (sticky) after the
+    # rig freed up. Under the policy a stale entry naming stock is ignored.
+    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+    cfg.routes["beast"] = core.Route(**{**{k: getattr(cfg.routes["beast"], k)
+                                           for k in core.Route.__dataclass_fields__}, "affinity": "sticky"})
+    cfg.route_by_id_or_alias["beast"] = cfg.routes["beast"]
+    st = ready_state(cfg)
+    f = feats(cfg)
+    st.affinity.put(f.session_key, "nvfp4@sparks", 999.0)
+    d = decide(cfg, st)
+    assert ids(d) == ["unc@rig"] and not any("sticky hit" in n for n in d.trace.notes), d.trace.notes
+
+
+def test_rule_warnings_prefer_that_cannot_apply_and_a_model_scoped_route_rule():
+    # A-hydra-5: a prefer outside every reachable route did nothing silently,
+    # and the phone rule (no when.model) rewrote beast:max to beast:fast.
+    raw = base()
+    raw["rules"] = [{"name": "p", "when": {"model": ["beast:vision"]}, "then": {"prefer": ["moe@ti"]}},
+                    {"name": "phone", "when": {"device": "phone", "model": ["beast"]},
+                     "then": {"route": "beast:fast"}}]
+    cfg = cfg_of(raw)
+    assert any("rules.p.then.prefer: 'moe@ti' is not a target of any route" in w for w in cfg.warnings)
+    assert not any("redirects EVERY route" in w for w in cfg.warnings)
+    phone = core.Caller(trusted=True, device="phone")
+    assert decide(cfg, ready_state(cfg), {"model": "beast:max", "messages": []}, caller=phone).route == "beast:max"
+
+
+def test_no_policy_warns_when_routes_mix_families():
+    assert any("no hydra.allowed_families" in w for w in cfg_of().warnings)
+    assert not any("no hydra.allowed_families" in w for w in cfg_of(_uncensored_only()).warnings)
+
+
+def test_allowed_families_bad_entries_are_config_errors():
+    raw = base()
+    raw["hydra"]["allowed_families"] = ["unc", ""]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("hydra.allowed_families" in x for x in e.value.errors)
 
 
 # ───────────────────────────── health ─────────────────────────────
