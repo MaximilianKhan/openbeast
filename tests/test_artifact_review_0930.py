@@ -237,6 +237,25 @@ def test_artifact_admins_names_the_admins(make_client, monkeypatch):
     assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 404
 
 
+def test_an_admin_off_the_operator_list_is_still_an_operator(make_client,
+                                                              monkeypatch,
+                                                              capsys):
+    """A-artifact-2: ARTIFACT_ADMINS "see and manage every page", but an
+    admin not also on ARTIFACT_OPERATORS got the flat 404 everywhere."""
+    boss = {"Tailscale-User-Login": "boss@example.com"}
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "boss@example.com")
+    c = make_client(operators="max@example.com")
+    a = publish(c)                                   # rig-owned
+    assert c.get("/", headers=boss).status_code == 200
+    assert c.get(f"/a/{a['id']}", headers=boss).status_code == 200
+    # the documented replacement of the first-operator default is announced
+    assert "does not name the first operator (max@example.com)" in \
+        capsys.readouterr().err
+    # negative control: a login on neither list stays anonymous
+    stranger = {"Tailscale-User-Login": "eve@example.com"}
+    assert c.get("/", headers=stranger).status_code == 404
+
+
 # --- security-1 / integration-ops-4: a LAN bind address ----------------------
 
 def test_a_lan_bind_trusts_tailscale_serve_on_the_same_host(make_client,

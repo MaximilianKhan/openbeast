@@ -183,6 +183,12 @@ start prints a line on stderr and writes an `admin-default` audit row naming
 the implicit admin, since that login can manage the other operators' private
 pages. Set `ARTIFACT_ADMINS` to choose explicitly.
 
+An `ARTIFACT_ADMINS` login does not also need to be on `ARTIFACT_OPERATORS`:
+being an admin makes it an operator. Setting `ARTIFACT_ADMINS` *replaces*
+the first-operator default rather than adding to it, so if the first
+operator is not named there it stops seeing the rig's own pages; every
+start says so on stderr.
+
 The model's `list_artifacts` tool never gets the admin view, even on the rig:
 it sees the rig's own pages and `tailnet` ones, so another owner's private
 titles never enter a model's context.

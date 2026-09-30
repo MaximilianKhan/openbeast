@@ -1263,7 +1263,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
         if raw in store.RESERVED_LOGINS:
             raw = ""
         if operators:
-            if raw and raw in operator_set:
+            # An ARTIFACT_ADMINS login is an operator too: the docs promise it
+            # "sees and manages every page", and an admin left off the read
+            # allowlist got the flat 404 on everything (review A-artifact-2).
+            if raw and (raw in operator_set or store.is_admin(raw)):
                 return Principal(login=raw, local=local, operator=True,
                                  admin=local or store.is_admin(raw))
             if local:
@@ -2073,6 +2076,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
         audit({"ts": _now(), "login": RIG_LOGIN, "local": True,
                "event": "admin-default", "admin": ops[0],
                "operators": len(ops)})
+
+    admins_set = store._logins(store.conf_value("ARTIFACT_ADMINS"))
+    if ops and admins_set and ops[0] not in admins_set:
+        # Documented, but easy to trip over: naming ARTIFACT_ADMINS replaces
+        # the first-operator default rather than adding to it.
+        print(f"artifact: ARTIFACT_ADMINS is set and does not name the first "
+              f"operator ({ops[0]}), so that login no longer sees rig-owned "
+              f"pages (CLI, campaign and OpenCode publishes). Add it to "
+              f"ARTIFACT_ADMINS if it should.", file=sys.stderr, flush=True)
 
     def sweep() -> list:
         """One pass of the opt-in retention sweep (F-A2). Audited per page.
