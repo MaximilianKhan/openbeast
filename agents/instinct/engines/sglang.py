@@ -27,7 +27,7 @@ import math
 
 from ..render import Rendered, placeholder_inputs, render
 from . import Caps, EngineError, ScoreRow
-from ._llm import MIS_DELTA, MIS_PROBE_ITEMS, LLMEngine, generic_probe_spec
+from ._llm import MIS_DELTA, MIS_PROBE_ITEMS, LLMEngine, generic_probe_spec, token_ids
 
 
 def parse_scores(resp: dict, n_rows: int, n_labels: int) -> list[list[float]]:
@@ -74,15 +74,7 @@ class SGLangEngine(LLMEngine):
             toks = data.get("tokens", data.get("input_ids"))
         if not isinstance(toks, list):
             raise EngineError("/tokenize: no tokens list")
-        out = []
-        for t in toks:
-            if isinstance(t, dict):
-                out.append(int(t["id"]))
-            elif isinstance(t, int) and not isinstance(t, bool):
-                out.append(t)
-            else:
-                raise EngineError("/tokenize: unexpected token entry")
-        return out
+        return token_ids(toks)
 
     def _body(self, query, items: list[str], ids: list[int]) -> dict:
         body = {"query": query, "items": items, "label_token_ids": ids,

@@ -27,7 +27,7 @@ import os
 
 from ..render import Rendered
 from . import Caps, EngineError, ScoreRow
-from ._llm import LLMEngine
+from ._llm import LLMEngine, token_ids
 
 
 def parse_top_logprobs(resp: dict) -> dict[int, float]:
@@ -37,12 +37,20 @@ def parse_top_logprobs(resp: dict) -> dict[int, float]:
         entries = cp[0]["top_logprobs"]
     except (KeyError, IndexError, TypeError):
         raise EngineError("completion_probabilities[0].top_logprobs missing") from None
+    # Every shape check lives here: whatever the engine sends back, a bad
+    # answer is an EngineError (-> fallback), never an exception that escapes.
+    if not isinstance(entries, list):
+        raise EngineError("top_logprobs is not a list")
     out: dict[int, float] = {}
     for e in entries:
+        if not isinstance(e, dict):
+            raise EngineError("malformed top_logprobs entry")
         try:
+            if isinstance(e["id"], bool) or isinstance(e["logprob"], bool):
+                raise TypeError("bool")
             tid = int(e["id"])
             lp = float(e["logprob"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             raise EngineError("malformed top_logprobs entry") from None
         if not math.isfinite(lp) or lp > 1e-6:
             raise EngineError("top_logprobs carries a non-log-probability")
@@ -84,15 +92,7 @@ class LlamaCppEngine(LLMEngine):
         return toks
 
     async def _tokenize(self, text: str) -> list[int]:
-        out = []
-        for t in await self._tokenize_raw(text):
-            if isinstance(t, dict):
-                out.append(int(t["id"]))
-            elif isinstance(t, int):
-                out.append(t)
-            else:
-                raise EngineError("/tokenize: unexpected token entry")
-        return out
+        return token_ids(await self._tokenize_raw(text))
 
     async def _pieces(self, text: str) -> list[str] | None:
         try:

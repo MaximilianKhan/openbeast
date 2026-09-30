@@ -133,13 +133,28 @@ class Instinct:
         self.demotions.clear_auto()
         for name, eng in self.engines.items():
             relevant = [s for s in specs.values() if name in chains.get(s.id, [])]
-            locks = await eng.attach(relevant) if relevant else {}
+            locks = await self._attach(eng, relevant) if relevant else {}
             self.states[name].locks = locks
             if eng.caps.needs_render:
                 self._write_locks(name, locks)
             if not eng.caps.needs_render:
                 self.states[name].healthy = True
         self.refresh_records()
+
+    @staticmethod
+    async def _attach(eng: Engine, specs: list[DecisionSpec]) -> dict[str, LockResult]:
+        """Engine.attach, contained: whatever an engine does wrong (an
+        unexpected /tokenize shape, a squatter), the result is a failed lock
+        for THIS engine's decisions — never an exception out of start/reload."""
+        try:
+            locks = await eng.attach(specs)
+            if not isinstance(locks, dict):
+                raise TypeError("attach returned no lock map")
+        except Exception as exc:  # noqa: BLE001
+            why = f"label_lock_failed: attach crashed: {exc.__class__.__name__}"
+            return {s.id: LockResult(False, reason=why) for s in specs}
+        return {s.id: locks.get(s.id) or LockResult(False, reason="label_lock_failed: no lock")
+                for s in specs}
 
     def _write_locks(self, engine: str, locks: dict[str, LockResult]) -> None:
         d = Path(self.cfg.state_dir) / "locks"
@@ -216,7 +231,7 @@ class Instinct:
                 eng.exec_forced = forced
                 changed = True
             if res.ok and any(not lk.ok for lk in st.locks.values()):
-                st.locks = await eng.attach(relevant)
+                st.locks = await self._attach(eng, relevant)
                 self._write_locks(name, st.locks)
                 changed = True
         if changed:
@@ -360,6 +375,13 @@ class Instinct:
                                 "reason": "engine_unavailable", "ms": round(
                                     (self.clock() - t0) * 1000, 3),
                                 "error": str(exc)[:200]})
+                last_err = "engine_unavailable"
+                continue
+            except Exception as exc:  # noqa: BLE001 - engine trouble is a fallback, never a 500
+                cascade.append({"engine": name, "action": "fallback",
+                                "reason": "engine_unavailable", "ms": round(
+                                    (self.clock() - t0) * 1000, 3),
+                                "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
                 last_err = "engine_unavailable"
                 continue
             entry = {"engine": name, "action": out.action, "reason": out.reason,
