@@ -156,6 +156,39 @@ def wait_ready(srv, deps, state=core.READY, timeout=8):
     raise AssertionError({d: srv.hy.state.health[d].h.state for d in deps})
 
 
+def pause_probes(srv, timeout=8):
+    """Stop hydra's 1 s prober and wait until no tick is still in flight.
+
+    A state that a REQUEST sets (LOADING from a 503, MISMATCH from a model
+    404) is transient by design: the next /health or /v1/models probe of a
+    node that is fine again clears it. Asserting it while the prober runs is a
+    race a slow CI runner loses. probe_loop awaits each tick in turn, so once
+    the no-op below has been called, the last real tick (and the models
+    check it awaited) has finished and nothing can move health behind the
+    test's back."""
+    called = threading.Event()
+
+    async def idle(force: bool = False) -> None:
+        called.set()
+    srv.hy.probe_tick = idle
+    assert called.wait(timeout), "hydra's probe loop never came back around"
+
+
+def wait_audit(tmp, pred, timeout=5) -> dict:
+    """The newest audit row matching pred, polled with a deadline.
+
+    finish() writes the row on hydra's loop thread; for a caller that left
+    (and for a relay's finally) nothing orders that write before the test's
+    read, so a bare audit_rows(tmp)[-1] can see an empty file."""
+    deadline = time.time() + timeout
+    while True:
+        rows = [r for r in audit_rows(tmp) if pred(r)]
+        if rows:
+            return rows[-1]
+        assert time.time() < deadline, ("no matching audit row", audit_rows(tmp))
+        time.sleep(0.02)
+
+
 def auth(extra=None) -> dict:
     h = {"Authorization": f"Bearer {INBOUND}"}
     h.update(extra or {})
@@ -225,6 +258,7 @@ def test_non_stream_and_embeddings(fleet):
 @pytest.mark.parametrize("fault", ["http_500", "http_503", "headers_then_close", "http_429", "loading_503"])
 def test_precommit_failover(fleet, fault, tmp_path):
     srv, rig, sparks, _ = fleet()
+    pause_probes(srv)                 # LOADING is transient: the next probe would clear it
     rig.set_fault(fault, 1)
     r = post(srv, chat(stream=True))
     assert r.status_code == 200, r.text
@@ -272,6 +306,7 @@ def test_node_401_is_auth_failed_and_never_the_callers_401(fleet):
 
 def test_model_404_is_mismatch_and_fails_over(fleet):
     srv, rig, sparks, _ = fleet()
+    pause_probes(srv)                 # a one-shot 404: the next /v1/models recheck clears MISMATCH
     sparks.set_fault("http_404_model", 1)
     r = post(srv, chat(model="beast:fast"))
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "unc@rig"
@@ -339,9 +374,8 @@ def test_midstream_failure_is_loud_and_never_replayed(fleet, fault, tmp_path):
     assert err["type"] == "hydra_upstream_error" and err["code"] == "upstream_failed_midstream"
     assert err["hydra_deployment"] == "unc@rig"
     assert not posts(sparks), "never a replay"
-    time.sleep(0.2)
+    row = wait_audit(tmp_path, lambda x: x["outcome"] != "ok")
     assert srv.hy.state.health["unc@rig"].h.fail_total == 1
-    row = audit_rows(tmp_path)[-1]
     assert row["outcome"] == "upstream_failed_midstream" and row["deployment"] == "unc@rig"
     assert srv.hy.state.inflight("unc@rig") == 0
 
@@ -479,8 +513,7 @@ def test_provenance_headers_and_audit(fleet, tmp_path):
     assert (h["x-hydra-route"], h["x-hydra-deployment"], h["x-hydra-node"], h["x-hydra-engine"],
             h["x-hydra-upstream-model"]) == ("beast", "unc@rig", "rig", "llama", "qwen-unc")
     assert h["x-hydra-attempts"] == "unc@rig:200" and h["x-hydra-config"] == srv.hy.cfg.hash
-    time.sleep(0.2)
-    row = audit_rows(tmp_path)[-1]
+    row = wait_audit(tmp_path, lambda x: x["request_id"] == h["x-hydra-request-id"])
     assert AUDIT_KEYS <= set(row), AUDIT_KEYS - set(row)
     assert row["outcome"] == "ok" and row["status"] == 200 and row["body_edits"] == ["model"]
     assert row["usage"]["completion_tokens"] == 5
@@ -1101,7 +1134,8 @@ def test_a_caller_that_leaves_before_the_commit_point_is_released(fleet, stream,
     while (rig.inflight or not rig.disconnects) and time.time() < deadline + 1:
         time.sleep(0.05)
     assert rig.disconnects >= 1 and not rig.inflight, "the ENGINE must see the hang-up (plan §6.6)"
-    row = audit_rows(tmp_path)[-1]
+    # release() runs before finish() writes the row: wait for the row itself
+    row = wait_audit(tmp_path, lambda x: x["status"] == 499)
     assert row["outcome"] == "client_disconnect" and row["status"] == 499, row
     assert srv.hy.state.health["unc@rig"].h.fails == 0, "a caller leaving is not the node's fault"
 
@@ -1111,8 +1145,7 @@ def test_an_oversized_nonstream_body_that_fails_midway_is_not_a_clean_eof(fleet,
     srv, rig, _, _ = fleet()
     with pytest.raises(httpx.HTTPError):
         post(srv, chat(model="solo"), {"X-Fake-Fault": "body_then_close:4000"})
-    time.sleep(0.3)
-    row = audit_rows(tmp_path)[-1]
+    row = wait_audit(tmp_path, lambda x: x["outcome"] != "ok")
     assert row["outcome"] == "upstream_failed_midstream", row
     assert srv.hy.state.node_inflight("rig") == 0
 
