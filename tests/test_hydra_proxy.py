@@ -854,8 +854,12 @@ def test_feedback_is_accepted_by_the_real_instinct(fleet, tmp_path, real_instinc
     assert r.status_code == 200
     row = audit_rows(tmp_path)[-1]
     assert row["instinct"] and row["instinct"]["trace_id"], row["instinct"]
+    # instinct writes its ledger row BEFORE its response reaches hydra, and
+    # hydra counts the result only after that response lands: wait for both
+    # (the counter lagged the ledger on the CI runner).
     deadline = time.time() + 5
-    while not _feedback_rows(ledger) and time.time() < deadline:
+    while (not _feedback_rows(ledger) or not srv.hy.instinct.feedback_result) \
+            and time.time() < deadline:
         time.sleep(0.05)
     fb = _feedback_rows(ledger)
     assert len(fb) == 1, (fb, srv.hy.instinct.feedback_result)
