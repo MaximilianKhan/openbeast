@@ -336,6 +336,7 @@ def test_load_report_must_be_this_subjects_and_mostly_succeed():
     for rep, why in ((_load(engine="stub"), "not router.spawn_intent/rig-27b"),
                      (_load(decision="hydra.task_class"), "not router.spawn_intent"),
                      (_load(decision_hash="x" * 64), "another decision_hash"),
+                     (_load(decision_hash=None), "no decision_hash"),
                      (_load(points=[{"qps": 0.5, "sent": 64, "errors": 22}]), "error rate"),
                      (_load(points=[]), "sent no calls")):
         assert why in (RUN.load_report_problem(rep, DID, "rig-27b", "h" * 64) or ""), rep

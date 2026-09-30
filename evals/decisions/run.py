@@ -312,7 +312,11 @@ def load_report_problem(load: dict, decision: str, engine: str, dhash: str) -> s
     if load.get("decision") != decision or load.get("engine") != engine:
         return (f"load report is for {load.get('decision')}/{load.get('engine')}, "
                 f"not {decision}/{engine}")
-    if load.get("decision_hash") not in (None, dhash):
+    if load.get("decision_hash") is None:
+        # loadgen stamps the hash; an unstamped report predates that and may
+        # have been measured on other weights under the same engine name.
+        return "load report has no decision_hash (re-run loadgen)"
+    if load.get("decision_hash") != dhash:
         return "load report was measured under another decision_hash"
     pts = [p for p in load.get("points") or [] if isinstance(p, dict)]
     intended = load.get("intended_qps")
