@@ -619,6 +619,20 @@ def test_the_example_conf_documents_admins_and_retention(env, monkeypatch):
     assert store.retain_days() == 0
 
 
+def test_a_bad_gallery_page_number_opens_page_one(make_client):
+    """B-artifact-4: ?page=abc showed an operator a raw 422 JSON body."""
+    c = make_client(operators="max@example.com")
+    publish(c, title="only page")
+    for bad in ("abc", "2x", "", "-3", "9" * 5000):
+        r = c.get(f"/?page={bad}", headers=MAX)
+        assert r.status_code == 200, (bad, r.text[:200])
+        assert "text/html" in r.headers["content-type"]
+        assert page_rows(r.text) == 1
+    # a stranger still gets the flat 404, not the gallery
+    r = c.get("/?page=abc", headers={"Tailscale-User-Login": "eve@example.com"})
+    assert r.status_code == 404
+
+
 def test_the_server_sweep_is_audited(make_client, monkeypatch):
     c = make_client()
     a = publish(c)

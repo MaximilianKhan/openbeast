@@ -1529,12 +1529,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
             f'</a></li>')
 
     @app.get("/", response_class=HTMLResponse)
-    def gallery(request: Request, page: int = 1, q: str = "",
+    def gallery(request: Request, page: str = "1", q: str = "",
                 session: str = "", tag: str = ""):
         viewer = viewer_of(request)
         admin = is_admin(request)
+        # `page` is a str on purpose: typed as int, FastAPI answered a
+        # hand-edited ?page=2x with a raw 422 JSON body before this fallback
+        # could run (review B-artifact-4).
         try:
-            page = max(1, int(page))
+            page = max(1, int(str(page).strip()))
         except (TypeError, ValueError):
             page = 1
         q = str(q or "").strip()[:100]
