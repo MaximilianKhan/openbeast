@@ -1031,12 +1031,12 @@ def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, 
     # Max 2026-09-30: never answer from a stock model. The plan for `retry`
     # (rig -> stock sparks) was made before a reload added
     # allowed_families = ["unc"]; its failover must honour the NEW policy.
-    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1), cfg_file=True)
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=3), cfg_file=True)
     got = {}
     before = len(posts(sparks))
 
     def slow():
-        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:4500"})
         got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
     t = threading.Thread(target=slow)
     t.start()
