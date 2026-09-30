@@ -149,7 +149,9 @@ jobs:
           ref=v1.6.0
           git fetch --no-tags --depth=1 origin "+refs/tags/$ref:refs/tags/$ref"
           if [[ -n "$BASE_SHA" ]]; then
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            # The I8 step already deepened the base: re-fetching it at depth 1
+            # would make it a shallow root again and widen I8's BASE..HEAD.
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
             if ! git show "$BASE_SHA:scripts/lib/conf.sh" | grep -q 'HYDRA_READY_GRACE'; then
               ref="$BASE_SHA"
             fi
@@ -190,7 +192,7 @@ jobs:
       # (~2 min of the job was running twice). Keep this list in step with
       # them: a file named above and not ignored here just runs twice; one
       # ignored here and not named above would never run, which
-      # tests/test_scripts.sh checks.
+      # tests/test_ci_workflow.py checks.
       - name: Full pytest suite
         env:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"

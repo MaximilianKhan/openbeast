@@ -99,3 +99,60 @@ def test_the_i8_guard_gets_a_base():
     text = CI.read_text()
     assert "OPENBEAST_I8_BASE=$BASE_SHA" in text and "OPENBEAST_I8_BASE=none" in text
     assert text.index("OPENBEAST_I8_BASE=") < text.index("name: beast-hydra / beast-instinct tests")
+
+
+def _wiring_step(text: str) -> str:
+    step = text[text.index("name: beast-hydra / beast-instinct stack wiring tests"):]
+    return step[:step.index("      - name:", 10)]
+
+
+def _i8_base_depth(guard: str) -> int:
+    """Commits in BASE..HEAD after the I8 deepen, then the wiring step's base
+    fetch line `guard`, run in a depth-1 clone of a built repo."""
+    import subprocess
+    import tempfile
+
+    def git(cwd, *a):
+        return subprocess.run(["git", "-c", "protocol.file.allow=always", *a], cwd=cwd,
+                              check=True, capture_output=True, text=True,
+                              env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                                   "PATH": "/usr/bin:/bin", "HOME": tmp}).stdout.strip()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        up = Path(tmp) / "up"
+        up.mkdir()
+        git(up, "init", "-q", "-b", "main")
+        # A PR forked from an older main, while main moved on to `base`;
+        # CI's HEAD is the refs/pull merge commit of the two.
+        for i in range(3):
+            git(up, "commit", "-q", "--allow-empty", "-m", f"old{i}")
+        git(up, "checkout", "-q", "-b", "pr")
+        for i in range(2):                        # the PR's own commits
+            git(up, "commit", "-q", "--allow-empty", "-m", f"pr{i}")
+        git(up, "checkout", "-q", "main")
+        for i in range(3):                        # main after the fork
+            git(up, "commit", "-q", "--allow-empty", "-m", f"main{i}")
+        base = git(up, "rev-parse", "HEAD")
+        git(up, "merge", "-q", "--no-ff", "--no-edit", "pr")
+        head = git(up, "rev-parse", "HEAD")
+        wt = Path(tmp) / "wt"
+        git(tmp, "clone", "-q", "--depth=1", f"file://{up}", str(wt))
+        git(wt, "fetch", "-q", "--no-tags", "--depth=200", "origin", base, head)
+        subprocess.run(["bash", "-c", guard], cwd=wt, check=True, capture_output=True,
+                       env={"BASE_SHA": base, "PATH": "/usr/bin:/bin", "HOME": tmp,
+                            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow",
+                            "GIT_CONFIG_VALUE_0": "always"})
+        return len(git(wt, "log", "--format=%H", f"{base}..{head}").split())
+
+
+def test_the_wiring_step_does_not_reshallow_the_i8_base():
+    """The wiring step ran `git fetch --depth=1 origin $BASE_SHA` after I8
+    deepened it, which made the base a shallow root again: I8's BASE..HEAD
+    then held main's own history too, and could fail a PR over an old
+    instinct commit on main."""
+    line = next(ln.strip() for ln in _wiring_step(CI.read_text()).splitlines()
+                if '"$BASE_SHA"' in ln and "fetch" in ln)
+    assert _i8_base_depth(line) == 3, line  # pr0, pr1, the merge
+    # negative control: the old unguarded fetch widens the range
+    assert _i8_base_depth('git fetch --no-tags --depth=1 origin "$BASE_SHA"') > 3
