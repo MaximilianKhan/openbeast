@@ -941,7 +941,7 @@ def main():
                              "scripts/publish-verdict.sh leaderboard PATH")
     args = parser.parse_args()
 
-    if args.score:
+    if args.score and not args.html:          # --html wins, as it always did
         entry = score_results_file(args.score)
         print(json.dumps(entry, indent=2))
         return
@@ -989,9 +989,11 @@ def main():
         _atomic_write_json(LEADERBOARD_PATH,
                            {"updated_at": datetime.now().isoformat(), "entries": entries})
         n_hosts = len({entry_host_id(e) for e in entries})
+        # `--html -` writes the page to stdout: keep this line out of it.
         print(f"Rebuilt leaderboard from {len(entries)} entries across {n_hosts} host(s)."
               + (f" ({skipped_partial} partial/fast-suite/ineligible file(s) excluded)"
-                 if skipped_partial else ""))
+                 if skipped_partial else ""),
+              file=sys.stderr if args.html == "-" else sys.stdout)
 
     # After --rebuild, never before it: `--rebuild --html board.html` used to
     # render the stale leaderboard.json and skip the rebuild without a word.

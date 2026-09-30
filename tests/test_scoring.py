@@ -150,5 +150,22 @@ def test_html_to_a_missing_directory_is_one_error_line(monkeypatch, tmp_path):
     assert not (tmp_path / "nope").exists()
 
 
+def test_rebuild_html_to_stdout_is_only_the_page(monkeypatch, tmp_path, capsys):
+    """`--rebuild --html -` printed "Rebuilt leaderboard…" ahead of the page,
+    so a piped board began with a line of text."""
+    (tmp_path / "results").mkdir()
+    _cli(monkeypatch, tmp_path, "--rebuild", "--html", "-")
+    got = capsys.readouterr()
+    assert got.out.lstrip().lower().startswith("<!doctype html"), got.out[:80]
+    assert "Rebuilt leaderboard" in got.err
+
+
+def test_html_still_wins_over_score(monkeypatch, tmp_path, capsys):
+    (tmp_path / "results").mkdir()
+    out = tmp_path / "board.html"
+    _cli(monkeypatch, tmp_path, "--score", str(tmp_path / "absent.json"), "--html", str(out))
+    assert out.exists() and "Wrote" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     unittest.main()
