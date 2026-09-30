@@ -571,6 +571,183 @@ if [[ -n "${CHAT_NOTIFY_URL:-}" || $_ntfy_on -eq 1 ]]; then
   fi
 fi
 
+# ── beast-hydra (HYDRA=true only) ───────────────────────────────────────────
+# docs/BEAST_HYDRA_PLAN.md §6.7. Rows: config, process, gate → hydra, and
+# per node / deployment / route from /hydra/status (admin: the per-start
+# local token, through ob_curl_hdr — never argv). The formatters print
+# `pass|msg|fix` rows; _doctor_rows dispatches them.
+_doctor_rows() {
+  local _st _msg _fix
+  while IFS='|' read -r _st _msg _fix; do
+    case "$_st" in
+      pass) pass "$_msg" ;;
+      warn) warn "$_msg" "$_fix" ;;
+      fail) fail "$_msg" "$_fix" ;;
+    esac
+  done
+}
+if [[ "${HYDRA:-false}" == "true" ]]; then
+  section "beast-hydra"
+  read -r -d '' _HY_CHECK_FMT <<'PY' || true
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("fail|hydra config: agents/hydra.py --check gave no verdict|scripts/hydra.sh check")
+    sys.exit()
+if not d.get("ok"):
+    for e in d.get("errors") or ["invalid"]:
+        print("fail|hydra config: %s|fix hydra.toml (scripts/hydra.sh check)" % e)
+else:
+    for w in d.get("warnings") or []:
+        print("warn|hydra config: %s|" % w)
+    print("pass|hydra config ok (%s: %s node(s), %s route(s))|"
+          % (d.get("source"), d.get("nodes"), d.get("routes")))
+PY
+  read -r -d '' _HY_STATUS_FMT <<'PY' || true
+import json, sys
+try:
+    s = json.load(sys.stdin)
+    from hydra_core import host_class
+except Exception:
+    print("warn|hydra status unreadable (/hydra/status)|scripts/hydra.sh status")
+    sys.exit()
+if not isinstance(s, dict) or "deployments" not in s:
+    why = ((s.get("error") or {}).get("message") if isinstance(s, dict) else None) or "no status"
+    print("warn|hydra status unreadable (/hydra/status: %s) — a stale .run/hydra-local.token?|scripts/hydra.sh status" % why)
+    sys.exit()
+for nid, n in (s.get("nodes") or {}).items():
+    host = n.get("host") or "?"
+    cls = host_class("http://" + (("[%s]" % host) if ":" in host else host))[1]
+    if cls == "public":
+        print("warn|node %s: public address %s (allow_public)|keep nodes on loopback, RFC1918 or the tailnet" % (nid, host))
+    else:
+        print("pass|node %s: %s address, key %s|" % (nid, cls, n.get("key")))
+    if cls != "loopback" and n.get("key") == "none" and n.get("engine") != "tensorfold":
+        print("warn|node %s: remote node with no key|set key_file (0600) in hydra.toml" % nid)
+for did, d in (s.get("deployments") or {}).items():
+    st = d.get("state")
+    if st == "READY":
+        print("pass|deployment %s: READY (%s/%s, breaker %s)|" % (did, d.get("inflight"), d.get("slots"), d.get("breaker")))
+    elif st == "LOADING":
+        print("warn|deployment %s: LOADING|" % did)
+    elif st == "MISMATCH":
+        print("fail|deployment %s: served id %r is not in the node's /v1/models|fix upstream in hydra.toml" % (did, d.get("upstream")))
+    elif st == "AUTH_FAILED":
+        print("fail|deployment %s: the node refused hydra's key (AUTH_FAILED)|check the node's key_file / key_env" % did)
+    else:
+        print("fail|deployment %s: %s %s|scripts/hydra.sh status" % (did, st, d.get("detail") or ""))
+    c = d.get("conformance")
+    if c in ("fail", "missing") and not d.get("routable"):
+        print("fail|deployment %s: conformance %s (required)|scripts/hydra.sh conformance %s" % (did, c, did))
+    elif c in ("fail", "missing", "stale"):
+        print("warn|deployment %s: conformance %s|scripts/hydra.sh conformance %s" % (did, c, did))
+for rid, r in (s.get("routes") or {}).items():
+    groups = r.get("candidates_per_group") or []
+    if not r.get("routable"):
+        print("fail|route %s: nothing routable|scripts/hydra.sh status" % rid)
+    elif len(groups) > 1 and not any(groups[:-1]):
+        print("warn|route %s: only its last-priority group is routable|" % rid)
+    else:
+        print("pass|route %s: routable|" % rid)
+PY
+  _hy_args=(--check)
+  [[ -f "$HYDRA_CONFIG" ]] && _hy_args+=("$HYDRA_CONFIG")
+  _hy_check="$(python3 "$REPO_DIR/agents/hydra.py" "${_hy_args[@]}" --json 2>/dev/null || true)"
+  _doctor_rows < <(printf '%s' "$_hy_check" | python3 -c "$_HY_CHECK_FMT" 2>/dev/null)
+  _hy_url="${HYDRA_URL:-http://127.0.0.1:${HYDRA_PORT:-8095}}"
+  _hy_code="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "$_hy_url/health" 2>/dev/null || true)"
+  case "$_hy_code" in
+    200) pass "beast-hydra ($_hy_url) — default route routable" ;;
+    [1-5][0-9][0-9]) warn "beast-hydra is up but has NO routable default route (HTTP $_hy_code)" \
+                          "scripts/hydra.sh status names the down/loading nodes" ;;
+    *)   fail "beast-hydra is not answering on $_hy_url — every consumer's inference goes through it" \
+              "./scripts/healthcheck.sh --restart (or HYDRA=false to bypass it)" ;;
+  esac
+  if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+    _gate_tok=$(cat "$REPO_DIR/.run/edge-local.token" 2>/dev/null || true)
+    _gate_up="$(ob_curl_hdr "${_gate_tok:+X-OpenBeast-Local: $_gate_tok}" -s --max-time 4 \
+                  "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null \
+                | grep -o '"upstream":"[^"]*"' | cut -d'"' -f4 || true)"
+    if [[ -z "$_gate_up" ]]; then
+      warn "gate → hydra: beast-gate did not report its upstream" "./scripts/healthcheck.sh --restart"
+    elif [[ "${_gate_up%/}" == "${_hy_url%/}" ]]; then
+      pass "gate → hydra ($_gate_up)"
+    else
+      fail "beast-gate's upstream is $_gate_up, not hydra ($_hy_url) — remote clients bypass it" \
+           "restart the gate so it picks up OPENBEAST_CONSUMER_BASE: ./stop.sh && ./start.sh -d"
+    fi
+  fi
+  _hy_tok="$(cat "$REPO_DIR/.run/hydra-local.token" 2>/dev/null || true)"
+  if [[ -n "$_hy_tok" && "$_hy_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+    _doctor_rows < <(ob_curl_hdr "X-OpenBeast-Local: $_hy_tok" -s -m 4 "$_hy_url/hydra/status" 2>/dev/null \
+                     | PYTHONPATH="$REPO_DIR/agents" python3 -c "$_HY_STATUS_FMT" 2>/dev/null)
+  fi
+fi
+
+# ── beast-instinct (INSTINCT=true only) ─────────────────────────────────────
+# docs/BEAST_INSTINCT_PLAN.md §5.9: health, key-file mode, the scorer engine,
+# and any decision whose TARGET is enforce while its effective mode is lower.
+if [[ "${INSTINCT:-false}" == "true" ]]; then
+  section "beast-instinct"
+  read -r -d '' _IN_FMT <<'PY' || true
+import json, os, sys
+docs = [ln for ln in sys.stdin.read().split("\n") if ln.strip()]
+try:
+    engines, decisions = json.loads(docs[0]), json.loads(docs[1])
+except Exception:
+    print("warn|instinct engines/decisions unreadable (key?)|scripts/instinct.sh status")
+    sys.exit()
+if os.environ.get("INSTINCT_SCORER") == "true":
+    port = ":" + os.environ.get("SCORER_PORT", "8082")
+    hits = [e for e in engines.get("engines", []) if port in ((e.get("pins") or {}).get("url") or "")]
+    if not hits:
+        print("warn|no instinct engine binding points at the scorer (%s)|add one to the instinct config" % port)
+    for e in hits:
+        if e.get("healthy"):
+            print("pass|instinct scorer engine %s healthy|" % e["id"])
+        else:
+            r = (e.get("probe") or {}).get("reason") or "not probed yet"
+            print("warn|instinct scorer engine %s unhealthy: %s|scripts/instinct.sh probe" % (e["id"], r))
+for name, err in (engines.get("invalid") or {}).items():
+    print("warn|instinct engine %s refused: %s|" % (name, err))
+for d in decisions.get("decisions", []):
+    if d.get("target_mode") != "enforce":
+        continue
+    if any(e.get("effective_mode") == "enforce" for e in d.get("engines", [])):
+        print("pass|decision %s: enforcing|" % d["id"])
+    else:
+        why = "; ".join("%s: %s" % (e["engine"], e.get("reason")) for e in d.get("engines", [])) or "no engines"
+        print("warn|decision %s: target enforce, effective lower (%s)|docs/BEAST_INSTINCT.md (lifecycle)" % (d["id"], why))
+PY
+  _in_url="http://127.0.0.1:${INSTINCT_PORT:-8094}"
+  _in_up=0
+  if probe "$_in_url/health" "ok"; then
+    _in_up=1
+    pass "beast-instinct ($_in_url)"
+  else
+    warn "beast-instinct not responding ($_in_url) — consumers fail open to today's behaviour" \
+         "scripts/instinct.sh up (or ./scripts/healthcheck.sh --restart)"
+  fi
+  _in_kf="$(PYTHONPATH="$REPO_DIR/agents" INSTINCT_CONFIG="${INSTINCT_CONFIG:-}" \
+            python3 -m instinct.cli cfg 2>/dev/null | sed -n 's/^INSTINCT_KEY_FILE=//p' || true)"
+  _in_kf="${_in_kf:-$REPO_DIR/.run/instinct.key}"
+  if [[ ! -f "$_in_kf" ]]; then
+    warn "instinct key $_in_kf does not exist yet" "scripts/instinct.sh up mints it (0600)"
+  elif [[ "$(stat -c '%a' "$_in_kf" 2>/dev/null)" != "600" ]]; then
+    fail "instinct key $_in_kf is mode $(stat -c '%a' "$_in_kf" 2>/dev/null) — the service refuses it" "chmod 600 $_in_kf"
+  else
+    pass "instinct key file is 0600"
+  fi
+  if [[ -f "$_in_kf" && $_in_up -eq 1 ]]; then
+    _in_key="$(cat "$_in_kf" 2>/dev/null || true)"
+    _doctor_rows < <( { ob_curl_bearer "$_in_key" -s -m 4 "$_in_url/v1/instinct/engines" 2>/dev/null; echo
+                        ob_curl_bearer "$_in_key" -s -m 4 "$_in_url/v1/instinct/decisions" 2>/dev/null; echo; } \
+                      | INSTINCT_SCORER="${INSTINCT_SCORER:-false}" \
+                        SCORER_PORT="${INSTINCT_SCORER_PORT:-8082}" python3 -c "$_IN_FMT" 2>/dev/null)
+  fi
+fi
+
 # ── Published tailnet surfaces (beast-slot) ─────────────────────────────────
 # Informational: what tailscale serve currently maps, and whether the raw
 # inference endpoint is published without a bearer key. Keyless is the
@@ -671,6 +848,11 @@ if command -v tailscale >/dev/null 2>&1; then
           fail ":8443 points at beast-gate but the gate is NOT responding" \
                "remote clients are getting 502 — ./scripts/healthcheck.sh --restart"
         fi
+      elif [[ "${HYDRA:-false}" == "true" ]]; then
+        # hydra holds node keys: raw publication would hand the tailnet an
+        # inference port with no per-device identity in front of the fleet.
+        fail ":8443 publishes a raw inference port while HYDRA=true" \
+             "set EDGE_GATE=true and re-run ./scripts/setup-tailscale.sh (it refuses raw publication under hydra)"
       elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
         warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
              "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"
