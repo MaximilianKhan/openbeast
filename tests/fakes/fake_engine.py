@@ -42,6 +42,7 @@ import argparse
 import collections
 import http.server
 import json
+import select
 import socket
 import sys
 import threading
@@ -353,8 +354,10 @@ def _handler(eng: FakeEngine):
                 eng.inflight += 1
                 eng.max_inflight_seen = max(eng.max_inflight_seen, eng.inflight)
             try:
-                if mode == "ttft_ms":
-                    time.sleep(int(arg or 0) / 1000)
+                if mode == "ttft_ms" and not self._think(int(arg or 0) / 1000):
+                    eng.disconnects += 1          # the caller hung up: abort, like llama-server
+                    self.close_connection = True
+                    return None
                 if p == "/v1/embeddings":
                     return self._json(200, {"object": "list", "model": eng.model,
                                             "data": [{"object": "embedding", "index": 0,
@@ -374,6 +377,27 @@ def _handler(eng: FakeEngine):
             finally:
                 with eng._lock:
                     eng.inflight -= 1
+
+        def _think(self, seconds: float) -> bool:
+            """Sleep `seconds` while watching the socket; False if the peer closed.
+
+            llama-server aborts a task whose HTTP connection is gone, for
+            non-stream requests too, before any byte is written — a plain
+            sleep could not see that, so a proxy that never closed its
+            upstream would look identical to one that did."""
+            end = time.monotonic() + seconds
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return True
+                r, _, _ = select.select([self.connection], [], [], min(left, 0.02))
+                if r:
+                    try:
+                        if self.connection.recv(1, socket.MSG_PEEK) == b"":
+                            return False
+                    except OSError:
+                        return False
+                    time.sleep(min(left, 0.02))   # pipelined bytes: not a hang-up
 
         def _stream(self, body, mode, arg):
             rk = "reasoning" if eng.personality == "vllm" else "reasoning_content"

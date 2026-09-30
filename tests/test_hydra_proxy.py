@@ -1055,6 +1055,9 @@ def test_a_caller_that_leaves_before_the_commit_point_is_released(fleet, stream,
     while srv.hy.state.node_inflight("rig") and time.time() < deadline:
         time.sleep(0.05)
     assert srv.hy.state.node_inflight("rig") == 0, "hydra held the slot for a caller that had left"
+    while (rig.inflight or not rig.disconnects) and time.time() < deadline + 1:
+        time.sleep(0.05)
+    assert rig.disconnects >= 1 and not rig.inflight, "the ENGINE must see the hang-up (plan §6.6)"
     row = audit_rows(tmp_path)[-1]
     assert row["outcome"] == "client_disconnect" and row["status"] == 499, row
     assert srv.hy.state.health["unc@rig"].h.fails == 0, "a caller leaving is not the node's fault"
