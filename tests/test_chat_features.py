@@ -339,6 +339,59 @@ def test_a_session_ending_fires_title_state_and_link_only(rig, stub, tmp_path):
     assert n.tick() == []                              # once, not every pass
 
 
+def _job_with_command(title, command):
+    sid = sessions.new_id("job")
+    sessions.register(sid, kind="job", title=title, pid=os.getpid(),
+                      pgid=os.getpid(), meta={"command": command})
+    return sid
+
+
+def _notified_text(s):
+    call = s.calls[-1]
+    return call["body"].decode() + json.dumps(call["headers"])
+
+
+def test_a_job_command_title_is_never_sent_to_the_notify_url(rig, stub):
+    """A job's default title is its shell command; the notify URL is often
+    public ntfy.sh. The command's secrets must not leave the rig."""
+    s = stub()
+    cmd = "HF_TOKEN=hf_abcdefSECRET123 python download.py"
+    sid = _job_with_command(cmd[:80], cmd)
+    n = _notifier(rig, s.url + "/t")
+    n.tick()
+    sessions.finalize(sid, "failed")
+    assert n.tick() == [sid]
+    text = _notified_text(s)
+    assert "hf_abcdefSECRET123" not in text and "download.py" not in text
+    assert sid[-8:] in text and "failed" in text
+    # job.sh shape: argv list, title = first word
+    sid2 = _job_with_command("curl", ["curl", "-H", "Authorization: Bearer "
+                                      "abcdefgh12345678", "https://x"])
+    n.tick()
+    sessions.finalize(sid2, "failed")
+    n.tick()
+    assert "abcdefgh12345678" not in _notified_text(s)
+
+
+def test_a_named_title_is_scrubbed_but_still_sent(rig, stub):
+    s = stub()
+    sid = _job_with_command("nightly build", "make all")   # negative control
+    agent = sessions.new_id("agent")
+    sessions.register(agent, kind="agent", pid=os.getpid(), pgid=os.getpid(),
+                      title="deploy with API_KEY=sk-abc123def456 and "
+                            "Authorization: Bearer tok_abcdefgh1234")
+    n = _notifier(rig, s.url + "/t")
+    n.tick()
+    sessions.finalize(sid, "failed")
+    sessions.finalize(agent, "failed")
+    assert set(n.tick()) == {sid, agent}
+    bodies = [c["body"].decode() + json.dumps(c["headers"]) for c in s.calls]
+    assert any("nightly build" in b for b in bodies)
+    joined = "".join(bodies)
+    assert "sk-abc123def456" not in joined and "tok_abcdefgh1234" not in joined
+    assert any("deploy with" in b for b in bodies)
+
+
 def test_notify_on_filters_states(rig, stub):
     s = stub()
     sid = rig.session(kind="job", state="running")

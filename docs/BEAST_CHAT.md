@@ -495,6 +495,10 @@ topic URL (`OPENBEAST_CHAT_NOTIFY_URL`), optionally `CHAT_NOTIFY_ON`
 bearer token — never argv, never logged). Every ~5 s `chat_server` diffs the
 ledger against `.run/notify-state.json`; a session going from `running` to one
 of those states POSTs **title + state + a deep link, never transcript text**.
+The title is run through the export's secret scrubber, and a job whose title
+is just (part of) its own command — the default for console, API and
+`job.sh run` jobs — sends `job <short id>` instead: the notify server is often
+public ntfy.sh and the text lands on a lock screen.
 Because the snapshot is on disk, a job that ended while the server was down
 still notifies on the next start. Deep links use `CHAT_PUBLIC_URL`
 (`OPENBEAST_CHAT_PUBLIC_URL`), else the `:8445` name `tailscale serve`

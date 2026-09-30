@@ -1664,7 +1664,22 @@ class Notifier:
         sid = str(rec.get("id") or "")
         state = str(rec.get("state") or "")
         kind = str(rec.get("kind") or "agent")
-        title = " ".join(str(rec.get("title") or sid).split())
+        title = " ".join(str(rec.get("title") or "").split())
+        # The notify URL is often public ntfy.sh (anyone with the topic reads
+        # it) and the text lands on a lock screen. A job's default title IS
+        # its shell command (console/API: cmd[:80]; job.sh: the first word)
+        # and an agent's is its task prompt, so an inline HF_TOKEN=… or
+        # Authorization header went out verbatim. A job whose title is just
+        # a piece of its command sends no title at all — kind, state and
+        # a short id say which one — and every title is scrubbed regardless.
+        meta = rec.get("meta") if isinstance(rec.get("meta"), dict) else {}
+        raw_cmd = meta.get("command") or ""
+        if isinstance(raw_cmd, list):      # job.sh records the argv
+            raw_cmd = " ".join(str(c) for c in raw_cmd)
+        command = " ".join(str(raw_cmd).split())
+        if kind != "agent" and title and command and title in command:
+            title = ""
+        title = scrub_secrets(title) or f"{kind} {sid[-8:]}"
         if len(title) > 80:
             title = title[:79] + "…"
         return self.send(
