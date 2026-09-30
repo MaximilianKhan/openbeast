@@ -155,9 +155,10 @@ class Deployment:
     enabled: bool = True
     listed: bool = True
     profile: str | None = None
-    # Internal (not a TOML key): the implicit config does not know the served
-    # id of a llama-server (it ignores the request's `model` anyway), so the
-    # /v1/models MISMATCH check would be a false alarm there.
+    # `verify_upstream = false` turns off the /v1/models MISMATCH check. Only
+    # for a deployment whose served id is not known yet: the implicit config
+    # (and the file --print-default-config writes from it) cannot know what
+    # id a llama-server lists, and llama ignores the request's `model` anyway.
     verify_upstream: bool = True
 
 
@@ -236,6 +237,7 @@ _NODE_TYPES = {
 _DEP_TYPES = {
     "node": (str,), "profile": (str,), "upstream": (str,), "ctx": (int,), "family": (str,),
     "caps": (list,), "conformance": (str,), "enabled": (bool,), "listed": (bool,),
+    "verify_upstream": (bool,),
 }
 _ROUTE_TYPES = {
     "targets": (list,), "aliases": (list,), "spill": (bool,), "same_family": (bool,),
@@ -585,7 +587,11 @@ def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
             family=d.get("family") or upstream, caps=frozenset(c for c in caps if c in CAPS),
             conformance=conformance if conformance in ("required", "advisory", "off") else "required",
             enabled=bool(d.get("enabled", True)),
-            listed=bool(d.get("listed", s.list_deployments)), profile=prof if isinstance(prof, str) else None)
+            listed=bool(d.get("listed", s.list_deployments)), profile=prof if isinstance(prof, str) else None,
+            verify_upstream=bool(d.get("verify_upstream", True)))
+        if d.get("verify_upstream") is False:
+            warnings.append(f"{where}: verify_upstream = false — a swapped model on the node will not be "
+                            "detected (set the served id and drop it)")
 
     # [routes]
     routes: dict[str, Route] = {}
@@ -750,7 +756,8 @@ def implicit_raw(env: dict | None = None) -> dict:
     slots = int(slots_raw) if slots_raw.isdigit() and int(slots_raw) > 0 else 1
     # NOT OPENBEAST_INFERENCE_MODEL: under HYDRA=true conf.sh points that at
     # the route id (`beast`) so runner.py sends a routable name.
-    upstream = _env(env, "OPENBEAST_HYDRA_UPSTREAM_MODEL", "INFERENCE_MODEL") or "local"
+    known = _env(env, "OPENBEAST_HYDRA_UPSTREAM_MODEL", "INFERENCE_MODEL")
+    upstream = known or "local"
     default = _env(env, "HYDRA_DEFAULT_MODEL", "OPENBEAST_HYDRA_DEFAULT_MODEL") or "beast"
     if not ROUTE_ID_RE.match(default):
         default = "beast"
@@ -766,7 +773,9 @@ def implicit_raw(env: dict | None = None) -> dict:
         "hydra": {"default_route": default},
         "nodes": {"rig": node},
         "deployments": {"local@rig": {"node": "rig", "upstream": upstream, "ctx": 0,
-                                      "caps": caps, "conformance": "off"}},
+                                      "caps": caps, "conformance": "off",
+                                      # an unknown served id is a guess: never judge it
+                                      **({} if known else {"verify_upstream": False})}},
         "routes": {default: {"description": "This rig's engine (implicit config)",
                              "targets": [{"d": "local@rig", "priority": 0}], "aliases": aliases}},
     }
@@ -775,11 +784,12 @@ def implicit_raw(env: dict | None = None) -> dict:
 def implicit_config(env: dict | None = None, *, repo: Path = REPO) -> Config:
     raw = implicit_raw(env)
     cfg = validate(raw, env, repo=repo, source="implicit")
-    # llama-server ignores the request `model`; an implicit upstream is a
-    # guess, so it must not be judged against /v1/models.
+    # llama-server ignores the request `model`, so the implicit config never
+    # judges the served id — even when conf.sh named one — and its ctx = 0 is
+    # by design. Neither is worth a warning on every start.
     d = cfg.deployments["local@rig"]
     cfg.deployments["local@rig"] = Deployment(**{**d.__dict__, "verify_upstream": False})
-    cfg.warnings = [w for w in cfg.warnings if "ctx = 0" not in w]
+    cfg.warnings = [w for w in cfg.warnings if "ctx = 0" not in w and "verify_upstream" not in w]
     cfg.hash = config_hash(cfg)
     return cfg
 

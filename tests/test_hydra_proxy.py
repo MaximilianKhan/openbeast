@@ -817,3 +817,22 @@ def test_instinct_without_the_contract_is_not_asked(fleet, tmp_path):
         assert ins.routes == []
     finally:
         ins.close()
+
+
+def test_verify_upstream_false_skips_the_mismatch_check(fleet):
+    def mut(raw):
+        raw["deployments"]["unc@rig"].update(upstream="not-what-llama-lists", verify_upstream=False)
+    srv, rig, _, _ = fleet(mut)
+    srv.hy.next_models.clear()
+    time.sleep(1.5)                           # at least one more /v1/models check
+    assert srv.hy.state.health["unc@rig"].h.state == core.READY
+    r = post(srv, chat(model="unc@rig"))
+    assert r.status_code == 200 and posts(rig)[-1]["body"]["model"] == "not-what-llama-lists"
+
+
+def test_a_known_served_id_that_vanishes_is_mismatch(fleet):
+    srv, rig, _, _ = fleet()
+    rig.set_fault("wrong_model")              # the rig was relaunched with another model
+    srv.hy.next_models.clear()
+    wait_ready(srv, ["unc@rig"], core.MISMATCH)
+    assert post(srv, chat(model="unc@rig")).status_code == 503

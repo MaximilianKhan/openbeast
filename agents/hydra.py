@@ -385,6 +385,7 @@ class Hydra:
         self.conf_mtime: dict[str, float | None] = {}
         self.conf_checked = -1e9
         self.tasks: list[asyncio.Task] = []
+        self.background: set[asyncio.Task] = set()
         self.inbound_key = self._inbound_key()
 
     # ─── config ───
@@ -540,9 +541,13 @@ class Hydra:
             if after != before:
                 _log(f"{d.id}: {before} -> {after} ({detail})")
             became_ready |= after == core.READY and before != core.READY
-        bad = all(self.state.health[d.id].h.state in (core.DOWN, core.AUTH_FAILED, core.MISMATCH)
-                  for d in deps if d.id in self.state.health) and deps
-        self.next_probe[n.id] = now + (s.probe_down_interval_s if bad else s.probe_interval_s)
+        states = [self.state.health[d.id].h.state for d in deps if d.id in self.state.health]
+        bad = bool(states) and all(x in (core.DOWN, core.AUTH_FAILED, core.MISMATCH) for x in states)
+        # UNKNOWN (boot, a new node) is probed every second, so up_after is
+        # reached in seconds rather than up_after x probe_interval.
+        fresh = any(x == core.UNKNOWN for x in states)
+        self.next_probe[n.id] = now + (s.probe_down_interval_s if bad else
+                                       min(1.0, s.probe_interval_s) if fresh else s.probe_interval_s)
         stuck = any(self.state.health[d.id].h.state in (core.AUTH_FAILED, core.MISMATCH)
                     for d in deps if d.id in self.state.health)
         if result == "ready" and (became_ready or stuck or self.next_models.get(n.id, 0) <= now):
@@ -895,7 +900,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             fb = {"source": "hydra", "served_pool": deployment, "ttft_ms": ttft, "status": status,
                   "outcome": outcome, "error": None if outcome == "ok" else outcome, "route": dec.route}
             with contextlib.suppress(RuntimeError):
-                asyncio.get_running_loop().create_task(hy.instinct.feedback(ins["trace_id"], fb))
+                # keep a reference: the loop holds tasks weakly
+                t = asyncio.get_running_loop().create_task(hy.instinct.feedback(ins["trace_id"], fb))
+                hy.background.add(t)
+                t.add_done_callback(hy.background.discard)
 
     if not dec.ok:
         finish(dec.status, OUTCOME_OF.get(dec.error_type, "error"))

@@ -105,6 +105,9 @@ upstream = "qwen38-27b-uncensored-mtp-q5"
 ctx      = 262144                             # the full -c: --kv-unified, never divide by slots
 family   = "qwen3.8-27b-uncensored"
 caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "vision", "id_slot"]
+# upstream must be listed by the node's /v1/models, or the deployment is
+# MISMATCH (a relaunched node serving other weights is never routed to).
+# verify_upstream = false turns that off — only while the served id is unknown.
 
 [deployments."qwen38-nvfp4@sparks"]
 node     = "sparks"

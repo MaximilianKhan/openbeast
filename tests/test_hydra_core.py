@@ -819,3 +819,15 @@ def test_host_class():
     assert core.host_class("http://example.com:80")[1] == "public"
     assert core.host_class("ftp://10.0.0.1:1")[1] == "invalid"
     assert core.host_class("http://10.0.0.1:1/v1")[1] == "invalid"
+
+
+def test_unknown_served_id_is_never_judged_but_a_known_one_is():
+    raw = core.implicit_raw({})
+    assert raw["deployments"]["local@rig"]["verify_upstream"] is False
+    cfg = core.validate(raw, {})              # the file --print-default-config writes
+    assert not cfg.deployments["local@rig"].verify_upstream
+    assert any("verify_upstream = false" in w for w in cfg.warnings), "a disabled check must be visible"
+    named = core.implicit_raw({"INFERENCE_MODEL": "qwen38-27b-uncensored-mtp-q5"})
+    assert "verify_upstream" not in named["deployments"]["local@rig"]
+    assert core.validate(named, {}).deployments["local@rig"].verify_upstream
+    assert not core.implicit_config({}).warnings
