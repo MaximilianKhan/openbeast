@@ -102,7 +102,64 @@ source "$SCRIPT_DIR/scripts/lib/extensions.sh"   # optional-service system
 source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
+source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
+
+# _spawn_ready <label> <pidname> <port> <health-url> <cmd…>
+# Start one loopback helper server (beast-chat, beast-artifact) and wait for
+# it. "Ready" means the health route answers AND the process we started is the
+# one holding the port. The old loop checked only that our pid was alive and
+# that SOMETHING answered: a spawn that loses the bind race is still alive for
+# ~0.2 s, so an orphan or a sibling worktree's server on the same port made
+# start.sh print "ready" and record a pid about to die (integration-ops-6).
+#   0  ready, and the listener is ours                  (SPAWN_PID = its pid)
+#   1  did not come up; SPAWN_PID is the pid if it is still alive, else empty
+#      (and its pidfile is removed)
+#   2  the port was already held — nothing spawned, no pidfile written
+_spawn_ready() {
+  local label="$1" pidname="$2" port="$3" url="$4" holder _i _h own
+  shift 4
+  SPAWN_PID=""
+  if ob_port_listening "$port"; then
+    holder="$(ob_port_pids "$port" 2>/dev/null | tr '\n' ' ' || true)"; holder="${holder% }"
+    echo "WARNING: $label: port $port is already in use${holder:+ by pid $holder}, by a process" >&2
+    echo "         this stack has no record of — a sibling worktree's server or an orphan of a" >&2
+    echo "         killed stack. Not starting a second one (it could not bind). Stop that" >&2
+    echo "         process, then: ./scripts/healthcheck.sh --restart" >&2
+    return 2
+  fi
+  "$@" &
+  SPAWN_PID=$!
+  echo "$SPAWN_PID" > "$RUN_DIR/$pidname.pid"
+  for _i in $(seq 1 20); do
+    kill -0 "$SPAWN_PID" 2>/dev/null || break
+    # -f plus a body match: a 400 used to count as "ready" (curl -s exits 0
+    # on any HTTP status).
+    _h="$(curl -fsS -m 2 "$url" 2>/dev/null || true)"
+    if [[ "$_h" == *'"status"'* ]]; then
+      own=0; ob_pid_owns_port "$SPAWN_PID" "$port" || own=$?
+      if [[ $own -eq 2 ]]; then
+        # No ss / lsof / /proc to ask: outlive the bind-failure window, then
+        # require that our process is still there.
+        sleep 1
+        if kill -0 "$SPAWN_PID" 2>/dev/null; then own=0; else own=1; fi
+      fi
+      [[ $own -eq 0 ]] && return 0
+      # Something answered, but it is not the process we started: ours is
+      # losing (or has lost) the bind. Keep looking; kill -0 ends the loop.
+    fi
+    sleep 1
+  done
+  if ! kill -0 "$SPAWN_PID" 2>/dev/null; then
+    if [[ -n "${_h:-}" ]]; then
+      echo "WARNING: $label exited, and a DIFFERENT process answers on port $port — not ours," >&2
+      echo "         so not reported as ready. Find it with: ss -ltnp 'sport = :$port'" >&2
+    fi
+    rm -f "$RUN_DIR/$pidname.pid"
+    SPAWN_PID=""
+  fi
+  return 1
+}
 
 # INFERENCE_MANAGED=false (always, for vLLM / TensorFold): the inference
 # server belongs to someone else — a cluster on other boxes. This stack
@@ -794,36 +851,27 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       echo "beast-chat already running (pid $(cat "$RUN_DIR/chat.pid")) — leaving it alone."
     else
       echo "Starting beast-chat console on http://localhost:${CHAT_PORT:-3003}..."
-      python3 "$SCRIPT_DIR/agents/chat_server.py" &
-      CHAT_PID=$!
-      echo "$CHAT_PID" > "$RUN_DIR/chat.pid"
-      CHAT_OWNED=1
-      CHAT_UP=0
+      # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND (loopback)
+      # whatever BIND_HOST says, so probing the LAN address reported a
+      # healthy console as down.
       _chat_host="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"    # set -u: normally unset
-      for _i in $(seq 1 20); do
-        kill -0 "$CHAT_PID" 2>/dev/null || break
-        # Not $HEALTH_HOST: chat_server binds OPENBEAST_CHAT_BIND
-        # (loopback) whatever BIND_HOST says, so probing the LAN address
-        # reported a healthy console as down.
-        _h="$(curl -fsS -m 2 "http://$_chat_host:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null || true)"
-        [[ "$_h" == *'"status"'* ]] && { CHAT_UP=1; break; }
-        sleep 1
-      done
-      if [[ $CHAT_UP -eq 1 ]]; then
+      _rc=0
+      _spawn_ready beast-chat chat "${CHAT_PORT:-3003}" \
+        "http://$_chat_host:${CHAT_PORT:-3003}/api/chat/health" \
+        python3 "$SCRIPT_DIR/agents/chat_server.py" || _rc=$?
+      CHAT_PID="$SPAWN_PID"
+      [[ -n "$CHAT_PID" ]] && CHAT_OWNED=1
+      if [[ $_rc -eq 0 ]]; then
         echo "beast-chat ready on http://localhost:${CHAT_PORT:-3003}"
         if [[ -z "${CHAT_OPERATORS:-}" ]]; then
           echo "  CHAT_OPERATORS is empty — once published, EVERY tailnet login can"
           echo "  read every session. Set it in openbeast.conf to pin it to you."
         fi
-      else
+      elif [[ $_rc -eq 1 ]]; then
+        # A pid left on record after the process died is a number the kernel
+        # will hand to something else — _spawn_ready removed it.
         echo "Warning: beast-chat not serving after 20s — the rest of the stack is fine." >&2
         echo "         Diagnose with: ./scripts/doctor.sh" >&2
-        # Mirror the artifact branch below: a pid left on record after the
-        # process died is a number the kernel will hand to something else.
-        if ! kill -0 "$CHAT_PID" 2>/dev/null; then
-          rm -f "$RUN_DIR/chat.pid"
-          CHAT_PID=""
-        fi
       fi
     fi
   fi
@@ -851,24 +899,16 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
     echo "beast-artifact already running (pid $(cat "$RUN_DIR/artifact.pid")) — leaving it alone."
   else
     echo "Starting beast-artifact on http://localhost:${ARTIFACT_PORT:-3004}..."
-    OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
-    OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
-      python3 "$SCRIPT_DIR/agents/artifact_server.py" &
-    ARTIFACT_PID=$!
-    echo "$ARTIFACT_PID" > "$RUN_DIR/artifact.pid"
-    ARTIFACT_OWNED=1
-    ARTIFACT_UP=0
-    for _i in $(seq 1 20); do
-      kill -0 "$ARTIFACT_PID" 2>/dev/null || break
-      # -f plus a body match: a 400 from the server used to count as "ready"
-      # (curl -s exits 0 on any HTTP status).
-      _h="$(curl -fsS -m 2 "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null || true)"
-      [[ "$_h" == *'"status"'* ]] && { ARTIFACT_UP=1; break; }
-      sleep 1
-    done
-    if [[ $ARTIFACT_UP -eq 1 ]]; then
+    _rc=0
+    _spawn_ready beast-artifact artifact "${ARTIFACT_PORT:-3004}" \
+      "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" \
+      env OPENBEAST_REPO_DIR="$SCRIPT_DIR" OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
+        python3 "$SCRIPT_DIR/agents/artifact_server.py" || _rc=$?
+    ARTIFACT_PID="$SPAWN_PID"
+    [[ -n "$ARTIFACT_PID" ]] && ARTIFACT_OWNED=1
+    if [[ $_rc -eq 0 ]]; then
       echo "beast-artifact ready on http://localhost:${ARTIFACT_PORT:-3004} (publish: ./scripts/artifact.sh publish <file.html>)"
-    else
+    elif [[ $_rc -eq 1 ]]; then
       # WARNING, not fatal: this is an opt-in cosmetic service. Taking the whole
       # stack — the model included — down because a page viewer failed to bind
       # is a far worse outcome than not being able to open an artifact URL.
@@ -877,7 +917,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       echo "         artifact URLs will not serve until it starts. Publishing" >&2
       echo "         through the model's tools still works (in-process store)." >&2
       echo "         Retry it on its own:  ./scripts/healthcheck.sh --restart" >&2
-      kill "$ARTIFACT_PID" 2>/dev/null || true
+      [[ -n "$ARTIFACT_PID" ]] && kill "$ARTIFACT_PID" 2>/dev/null || true
       rm -f "$RUN_DIR/artifact.pid"
       ARTIFACT_PID=""
     fi
