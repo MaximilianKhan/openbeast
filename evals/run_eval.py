@@ -692,42 +692,25 @@ def env_era_enabled() -> bool:
 
 
 PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
-# Language → pack file. Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig
-# has a pack today; every other language gets nothing — its agent command
-# line is byte-identical with packs on or off.
-PACK_FILES = {"zig": "zig-0.16.md"}
-_PACK_HEADER_RE = re.compile(
-    r"^\(2\) GENERATED signature digest — zig (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
-    re.MULTILINE)
+# Language → pack file, and the drift check, live in agents/lang/pack_context
+# so the harness and PRODUCTION agents (which get the same pack since the
+# Tier-3 SHIP) cannot disagree about which file a pack is or when it is stale.
+# Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig has a pack today; every
+# other language gets nothing — its agent command line is byte-identical with
+# packs on or off.
+from lang import pack_context as _pack_context  # noqa: E402
+PACK_FILES = _pack_context.PACK_FILES
 
 
 def _verify_pack(lang: str, path: str, data: bytes) -> None:
     """Drift-abort at run start (roadmap R2): the generated section's
     stamped sha must match its bytes, and the pack's zig version must
     match the installed compiler — a pack generated against another
-    stdlib is a different experiment and must never run under this era."""
-    import hashlib
-    import shutil as _sh
-    text = data.decode("utf-8", errors="replace")
-    m = _PACK_HEADER_RE.search(text)
-    if not m:
-        raise SystemExit(f"pack {path}: no generated-section header — regenerate with "
-                         f"agents/packs/gen_zig_pack.py")
-    version, _n, stamped = m.group(1), m.group(2), m.group(3)
-    digest = text[m.end():].split("\n", 1)[1] if "\n" in text[m.end():] else ""
-    actual = hashlib.sha256(digest.encode()).hexdigest()[:16]
-    if actual != stamped:
-        raise SystemExit(f"pack {path}: generated section drifted (stamped {stamped}, "
-                         f"actual {actual}) — regenerate with agents/packs/gen_zig_pack.py")
-    if lang == "zig" and _sh.which("zig"):
-        try:
-            installed = subprocess.run(["zig", "version"], capture_output=True, text=True,
-                                       timeout=10).stdout.strip()
-        except Exception:
-            installed = ""
-        if installed and installed != version:
-            raise SystemExit(f"pack {path}: generated for zig {version} but zig {installed} is "
-                             f"installed — regenerate with agents/packs/gen_zig_pack.py")
+    stdlib is a different experiment and must never run under this era.
+    The check itself is pack_context.pack_problem (shared with production)."""
+    problem = _pack_context.pack_problem(lang, path, data)
+    if problem:
+        raise SystemExit(problem)
 
 
 def packs_flag() -> tuple[bool, str | None, dict]:

@@ -232,6 +232,14 @@ GPU time, not disk.
 
 ## 5. The gate (answered in §9.6 — kept for the reasoning)
 
+> **Status 2026-09-30: the zig pack WON its A/B and is in production.** The
+> fresh Tier-3 rerun read SHIP: net +24 (26/2, p < 0.0001) on
+> Qwen3.8-27B-Uncensored; the champion Qwen3.6-27B improved too (23 → 28/30).
+> Agents on zig tasks now get `agents/packs/zig-0.16.md` as `--context-file`,
+> exactly as measured (`agents/lang/pack_context.py`, `LANG_PACK_CONTEXT`),
+> on both models. Not injected into Open WebUI chats or opencode (not where
+> it was measured). In-sample: the held-out check is still pending.
+
 The Tier-3 zig A/B is on the GPU right now. Its pre-registered ship rule is
 `net ≥ 7 ∧ p < 0.05 ∧ champion guard clean`, and the campaign's **Clause 2
 says stop after this arm regardless.**

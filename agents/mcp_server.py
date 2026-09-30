@@ -312,7 +312,8 @@ def _resolve_agent_base_url(explicit: str = "") -> str:
 
 def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
                       context_budget: int, context: str = "",
-                      base_url: str = "", session_id: str = "") -> list[str]:
+                      base_url: str = "", session_id: str = "",
+                      context_file: str = "") -> list[str]:
     """Argv for a runner.py spawn. --base-url is appended only when the
     resolved URL differs from the runner's default (distributed agents:
     tokens come from a worker box, execution stays on this machine).
@@ -337,10 +338,30 @@ def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
         cmd.extend(["--session-id", session_id])
     if base_url and base_url != _DEFAULT_AGENT_BASE_URL:
         cmd.extend(["--base-url", base_url])
-    if context:
+    if context_file:
+        # runner.py's --context-file REPLACES --context, so a caller context
+        # has already been folded into this file (_pack_context_args).
+        cmd.extend(["--context-file", context_file])
+    elif context:
         cmd.extend(["--context", context])
     cmd.append(task)
     return cmd
+
+
+def _pack_context_args(task: str, workdir: str, context: str) -> tuple[str, dict]:
+    """(context-file path or "", info): the Tier-3 awareness pack for a
+    production agent on a zig task (agents/lang/pack_context.py — the exact
+    file and channel the A/B measured). Fail-soft: this module ships to
+    client laptops, and a missing agents/lang or agents/packs there means no
+    pack, never a failed spawn."""
+    try:
+        from lang import pack_context as _pc     # noqa: PLC0415
+        path, info = _pc.production_context(task, workdir, context)
+        if path:
+            _pc.announce(info, "start_agent")
+        return path or "", info
+    except Exception:                             # noqa: BLE001
+        return "", {}
 
 
 @dataclass
@@ -957,10 +978,13 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     resolved_base_url = _resolve_agent_base_url(base_url)
     remote = resolved_base_url != _DEFAULT_AGENT_BASE_URL
 
+    context_file, pack_info = _pack_context_args(task, workdir, context)
+    pack_label = pack_info.get("label") or ""
     cmd = _build_runner_cmd(
         task=task, log_path=log_path, max_iter=max_iter, workdir=workdir,
         context_budget=context_budget, context=context,
         base_url=resolved_base_url, session_id=agent_id,
+        context_file=context_file,
     )
 
     # Record the spawn (incl. the inference endpoint) as the log's first
@@ -974,6 +998,8 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
                 "task": task,
                 "workdir": workdir,
                 "base_url": resolved_base_url,
+                # Provenance: which awareness pack (lang@sha8) this agent got.
+                **({"pack": pack_label} if pack_label else {}),
                 "timestamp": datetime.now().isoformat(),
             }) + "\n")
     except OSError:
@@ -1018,6 +1044,7 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
         f"Inference: {resolved_base_url}"
         + (" (REMOTE worker — executes locally, thinks remotely)" if remote else " (local)") + "\n"
         f"Max iterations: {max_iter}\n"
+        + (f"Language pack: {pack_label}\n" if pack_label else "")
         + ("Detached: survives a tool-server restart\n" if detach else "")
         + f"Log: {log_path}\n"
         f"\nUse check_agent('{agent_id}') to monitor progress."
