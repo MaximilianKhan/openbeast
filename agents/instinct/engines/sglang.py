@@ -23,11 +23,12 @@ false} -> {"tokens": [int]} — [HW] the request schema (the route exists, F3).
 """
 from __future__ import annotations
 
+import asyncio
 import math
 
 from ..render import Rendered, placeholder_inputs, render
 from . import Caps, EngineError, ScoreRow
-from ._llm import MIS_DELTA, MIS_PROBE_ITEMS, LLMEngine, generic_probe_spec
+from ._llm import MIS_DELTA, MIS_PROBE_ITEMS, LLMEngine, generic_probe_spec, token_ids
 
 
 def parse_scores(resp: dict, n_rows: int, n_labels: int) -> list[list[float]]:
@@ -74,15 +75,7 @@ class SGLangEngine(LLMEngine):
             toks = data.get("tokens", data.get("input_ids"))
         if not isinstance(toks, list):
             raise EngineError("/tokenize: no tokens list")
-        out = []
-        for t in toks:
-            if isinstance(t, dict):
-                out.append(int(t["id"]))
-            elif isinstance(t, int) and not isinstance(t, bool):
-                out.append(t)
-            else:
-                raise EngineError("/tokenize: unexpected token entry")
-        return out
+        return token_ids(toks)
 
     def _body(self, query, items: list[str], ids: list[int]) -> dict:
         body = {"query": query, "items": items, "label_token_ids": ids,
@@ -108,11 +101,24 @@ class SGLangEngine(LLMEngine):
 
     async def _score_rendered(self, rendered: Rendered, label_ids: dict[str, int],
                               timeout_s: float):
-        if rendered.items:
+        if rendered.items and self.exec_forced == "sis" and len(rendered.items) > 1:
+            # SIS FORCED on a MIS server after the equivalence probe failed: a
+            # batched request there IS MIS, so send one item per request, on
+            # exactly the path the probe used as its SIS reference (sis_url
+            # when set). What is ledgered and hashed as "sis" is then SIS.
+            url = self.binding.sis_url or None
+            parts = await asyncio.gather(*[
+                self._request(rendered.query, [it], label_ids, timeout_s, url_override=url)
+                for it in rendered.items])
+            rows, usage = [r for rs, _ in parts for r in rs], None
+        elif rendered.items:
             rows, usage = await self._request(rendered.query, rendered.items, label_ids,
                                               timeout_s)
         else:
-            rows, usage = await self._request("", [rendered.prompt], label_ids, timeout_s)
+            if self.binding.score_query == "prompt":
+                rows, usage = await self._request(rendered.prompt, [""], label_ids, timeout_s)
+            else:
+                rows, usage = await self._request("", [rendered.prompt], label_ids, timeout_s)
         return rows, self.exec, usage
 
     async def _identity(self) -> str | None:

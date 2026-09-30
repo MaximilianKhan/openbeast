@@ -44,7 +44,7 @@ is byte-identical to one without instinct (`tests/test_hydra_instinct_wiring.sh`
 | I4 | Only labels in `[policy.act]` can act. For `router.spawn_intent` that is `inline` only, so instinct can never cause a spawn. | `test_instinct_boundaries.py`, `test_router_instinct.py` |
 | I5 | Every call writes one ledger row, including shadow, fallback and eval-refused calls. | `test_instinct_server.py` |
 | I6 | An engine without probabilities (`rules`) can never enforce, even with forged records. | `test_instinct_boundaries.py` |
-| I7 | Engine URLs on the hydra (`:8095`), beast-gate (`:8443`) or router (`:8088`) port, or at `HYDRA_URL`, are refused. | `test_instinct_spec.py` |
+| I7 | Engine URLs (`url` and `sis_url`) on the hydra (`:8095`), beast-gate (`:8443`) or router (`:8088`) port on any host and under any loopback spelling, or at `HYDRA_URL`, are refused. A URL equal to the primary (`INFERENCE_URL`, default `http://127.0.0.1:8080`) needs `allow_primary = true`, and that value must be a real TOML bool. | `test_instinct_spec.py` |
 | I8 | Era-locked files are untouched. | `test_instinct_boundaries.py` |
 
 ## Contracts
@@ -60,13 +60,35 @@ can't set the mode. It may pass a `ceiling`, and the lower of the two wins.
  "ceiling": "enforce", "deadline_ms": 600, "context": {"caller": "router", "eval": false}}
 ```
 
+The client sets `context.eval = true` itself whenever its process carries the
+eval markers that `evals/run_eval.py` puts in every child's environment
+(`OPENBEAST_EVAL`, `OPENBEAST_TASK_PATHS`). A caller inside an eval unit can't
+opt out.
+
 The response keys are frozen by `tests/test_instinct_contract.py`:
 `contract, decision, decision_version, decision_hash, trace_id, request_id,
 mode, enforce, action, answer{type,label,probabilities,raw_probabilities,calibrated,confidence{p_top,margin,shape},label_mass,labels_truncated,expected_value},
 items, would{label,action}, fallback{used,reason}, engine{id,adapter,model,model_sha256,exec,label_token_ids},
-cascade[{engine,action,reason,ms,label?,p_top?}], latency_ms{queue,engine,total}`.
+cascade[{engine,action,reason,ms,label?,p_top?,probabilities?,label_mass?,mode?,error?}], latency_ms{queue,engine,total}`.
 
 **A caller acts only on `enforce == true`.**
+
+The cascade walks the chain under the deadline. It stops at the first `act`
+whose engine's own lifecycle reaches the request's target mode (the lower of
+the spec's mode and the ceiling). An `act` from an engine that can only shadow
+(for example `linear` without a gate) does not hide a later engine that can
+enforce. If nothing can enforce, the answer is the first `act` (what the
+service *would* have done), else the last result from a probabilistic engine,
+else `rules`. So shadow rows carry the model's distribution, not `rules`'
+one-hot. Every attempted engine's own `probabilities` and `label_mass` are kept
+in its cascade entry. Any exception from an engine, including a malformed
+response, is a `fallback` entry for that engine and never an HTTP 500. An
+unexpected `/tokenize` shape fails that engine's label lock and never stops
+the service.
+
+A calibration record's fitted thresholds can only *raise* the spec's
+`policy.act` value. The spec value is the reviewed floor. A fitted `null`
+means the fit found no feasible threshold, and the label never acts.
 
 Status codes:
 - 400: malformed JSON, an unknown field, or the wrong contract.
@@ -137,6 +159,10 @@ Promotion and demotion:
 - **Promote** (`scripts/instinct.sh promote D --engine E`) only checks. It needs a gate record that has passed and is committed, the spec edited to `mode = "enforce"`, and a SIGHUP. It never edits a file.
 - **Demote** (`scripts/instinct.sh demote D`) writes `.run/instinct/demoted.json` and sends SIGHUP. No commit is needed.
 - **Auto-demotion** happens when the fallback/timeout rate exceeds 5% over the last 100 calls, or when `label_mass` p50 falls more than 0.2 below the calibration reference over the last 200 calls.
+  - A call counts as failed when *any* engine it attempted timed out or errored, even if `rules` then answered, or when the call was shed.
+  - `label_mass` is watched per engine, against that engine's own reference, over every row it scored.
+  - A reload (SIGHUP) keeps auto-demotions. It drops one only when that decision's hashes changed.
+- `probe_interval_s = 0` turns periodic conformance off. An LLM engine then never counts as freshly probed, so it can never enforce.
 
 ## Operating it
 
@@ -152,9 +178,17 @@ scripts/instinct.sh down
 ```
 
 A gate always fails closed on:
-- a missing loadgen report;
+- a missing loadgen report (when one is given, its path and sha256 are recorded in the gate record);
 - `min_n` not met;
-- an LLM engine that doesn't beat `linear` with significance (a significant *loss* never passes).
+- an LLM engine that doesn't beat `linear` with significance (a significant *loss* never passes);
+- a criterion over a composite split (`test+ood+adversarial`) with any empty component;
+- a dataset whose MANIFEST `status` is not `gated`, or a split a criterion reads that is not sha-pinned in MANIFEST `[files]`;
+- an LLM engine gated with `--no-probe`.
+
+The harness scores the population the service serves. Rows whose facts force
+a mechanical label are removed before any engine is scored (`mechanical_excluded`
+in the report). Every other row has its mechanical labels zeroed by the same
+`core.mask_mechanical` the service uses.
 
 ## Seed baseline: `linear` on the seed set
 
@@ -254,8 +288,9 @@ The probes themselves are already implemented in `engines/_llm.py`.
 | `/props` exposes `model_path` / `model_alias` for the identity probe | `engines/llamacpp.py` | binding `model` |
 | `qwen3-nothink/1` equals the Qwen3-0.6B GGUF's own template, and `yes`/`no` are single tokens after `\n\n` (checked by the label lock at attach) | `render.py` | spec `prompt.format` |
 | SGLang `/tokenize` takes `{text, add_special_tokens}` and returns `{tokens:[int]}` | `engines/sglang.py` | `tokenize_path` |
-| SGLang `/v1/score` accepts `query: ""` with the full prompt as the one item | `engines/sglang.py` | — |
-| Single-item requests on an MIS server are a valid SIS reference for the equivalence probe, unless `sis_url` names a separate SIS server | `engines/sglang.py` | `sis_url` |
+| SGLang `/v1/score` accepts `query: ""` with the full prompt as the one item | `engines/sglang.py` | binding `score_query = "prompt"` (the prompt as the query plus one empty item; it enters `decision_hash`) |
+| Single-item requests on an MIS server are a valid SIS reference for the equivalence probe, unless `sis_url` names a separate SIS server. When the probe forces `sis`, rank requests are sent one item per request on that same reference path. | `engines/sglang.py` | `sis_url` (same scheme and host as `url`, because it receives the key) |
+| Before 20 latency samples, the deadline skip uses the worst sample and ignores one outlier once 10 samples exist, so a single timeout doesn't bench an engine until the next probe | `engines/__init__.py` | — |
 | FlashInfer MIS works on sm_120 / sm_121a | R2/R3 | `exec` |
 | The replay-std 0.02 threshold and the +2σ threshold guard band | `engines/_llm.py`, `service.py` | constants |
 | CPU p95 fits the 600 ms router budget; `-t` = physical cores / 2 and `-ctk f16` are sane on the 0.6B | `serve-instinct-scorer.sh` | `INSTINCT_SCORER_THREADS` |

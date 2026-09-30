@@ -23,8 +23,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# shellcheck source=lib/weights.sh
-source "$SCRIPT_DIR/lib/weights.sh"
+# weights.sh is sourced only AFTER --help and the refusals below: it exits
+# when no weights directory exists, and a refusal must never depend on that.
 # shellcheck source=lib/portown.sh
 source "$SCRIPT_DIR/lib/portown.sh"
 
@@ -32,7 +32,6 @@ HOST="127.0.0.1"
 PORT="${INSTINCT_SCORER_PORT:-8082}"
 RUN_DIR="${INSTINCT_RUN_DIR:-$REPO_DIR/.run}"
 KEY_FILE="${INSTINCT_SCORER_KEY_FILE:-$RUN_DIR/instinct-scorer.key}"
-MODEL="${INSTINCT_SCORER_MODEL:-$WEIGHTS_DIR/Qwen3-0.6B-Q8_0.gguf}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   sed -n '2,24p' "$0"
@@ -61,6 +60,11 @@ if ob_port_listening "$PORT"; then
   echo "Error: port $PORT is already held — refusing (pre-bind check)" >&2
   exit 2
 fi
+if [[ -z "${INSTINCT_SCORER_MODEL:-}" ]]; then
+  # shellcheck source=lib/weights.sh
+  source "$SCRIPT_DIR/lib/weights.sh"
+fi
+MODEL="${INSTINCT_SCORER_MODEL:-$WEIGHTS_DIR/Qwen3-0.6B-Q8_0.gguf}"
 [[ -f "$MODEL" ]] || { echo "Error: $MODEL not found — scripts/fetch-weight.sh Qwen3-0.6B-Q8_0.gguf" >&2; exit 1; }
 
 mkdir -p "$RUN_DIR"

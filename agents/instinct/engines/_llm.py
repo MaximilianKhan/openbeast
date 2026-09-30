@@ -40,6 +40,20 @@ REPLAY_STD = 0.02
 MIS_DELTA = 0.05
 
 
+def token_ids(toks: list) -> list[int]:
+    """Token ids from a /tokenize `tokens` list: ints, or {"id": int, ...}.
+    Any other shape is an EngineError — the /tokenize schema is an [HW]
+    unknown on some engines, and an unexpected one must disable the decision
+    on that engine, never raise out of attach/start."""
+    out = []
+    for t in toks:
+        v = t.get("id") if isinstance(t, dict) else t
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise EngineError("/tokenize: unexpected token entry")
+        out.append(v)
+    return out
+
+
 def generic_probe_spec(fmt: str) -> DecisionSpec:
     return parse_spec({
         "id": "instinct.probe", "version": 1, "owner": "agents/instinct",
@@ -174,6 +188,9 @@ class LLMEngine(Engine):
             return LockResult(True, locks)
         except (EngineError, asyncio.TimeoutError, ValueError) as exc:
             return LockResult(False, reason=f"label_lock_failed: {exc}")
+        except Exception as exc:  # noqa: BLE001 - a lock failure disables ONE decision
+            return LockResult(False, reason=f"label_lock_failed: {exc.__class__.__name__}: "
+                                            f"{str(exc)[:120]}")
 
     async def attach(self, specs: list[DecisionSpec]) -> dict[str, LockResult]:
         return {s.id: await self.lock(s) for s in specs}
@@ -270,8 +287,9 @@ class LLMEngine(Engine):
                         return ProbeResult(False, checks, f"known_answer: {s.id} pair {i}")
             forced = await self._mis_equivalence(checks, t_s)
             return ProbeResult(True, checks, None, nondeterministic=nondet, exec_forced=forced)
-        except (EngineError, asyncio.TimeoutError, KeyError, ValueError, TypeError) as exc:
-            return ProbeResult(False, checks, f"probe error: {exc}")
+        except (EngineError, asyncio.TimeoutError, KeyError, ValueError, TypeError,
+                ZeroDivisionError, AttributeError, IndexError) as exc:
+            return ProbeResult(False, checks, f"probe error: {exc.__class__.__name__}: {exc}")
 
     async def _mis_equivalence(self, checks: dict, timeout_s: float) -> str | None:
         return None

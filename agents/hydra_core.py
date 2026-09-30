@@ -344,11 +344,33 @@ def _load_profile(spec: str, engine: str):
     return obprofile.load(spec)
 
 
+def _welltyped(table: dict, types: dict) -> dict:
+    """The keys of `table` whose value has the declared type. A wrong-typed
+    value is already an error; dropping it lets the range checks below run on
+    the default instead of raising TypeError on (say) `down_after = "2"`."""
+    return {k: v for k, v in table.items() if k in types
+            and isinstance(v, types[k]) and not (isinstance(v, bool) and bool not in types[k])}
+
+
 def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
              source: str = "hydra.toml") -> Config:
-    """Validate a parsed hydra.toml. Raises ConfigError listing EVERY error."""
-    env = dict(os.environ if env is None else env)
+    """Validate a parsed hydra.toml. Raises ConfigError listing EVERY error.
+
+    Never anything else: /hydra/reload and --check only understand
+    ConfigError, so a crash here would 500 the reload and leave
+    last_reload_error unset. Anything a check did not anticipate, on input
+    that already failed a type check, is reported as those errors."""
     errors: list[str] = []
+    try:
+        return _validate(raw, env, repo, source, errors)
+    except ConfigError:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError) as e:
+        raise ConfigError(errors or [f"malformed config ({type(e).__name__}: {e})"]) from e
+
+
+def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
+    env = dict(os.environ if env is None else env)
     warnings: list[str] = []
     if not isinstance(raw, dict):
         raise ConfigError(["config is not a table"])
@@ -368,11 +390,14 @@ def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
     _typecheck("hydra.breaker", br, _BREAKER_TYPES, errors)
     ins = h.get("instinct", {}) if isinstance(h.get("instinct", {}), dict) else {}
     _typecheck("hydra.instinct", ins, _INSTINCT_TYPES, errors)
-    hs = {k: v for k, v in h.items() if k not in ("breaker", "instinct") and k in _HYDRA_TYPES}
+    hs = {k: v for k, v in _welltyped(h, _HYDRA_TYPES).items() if k not in ("breaker", "instinct")}
+    ins = _welltyped(ins, _INSTINCT_TYPES)
+    if "engine_urls" in ins and not all(isinstance(u, str) for u in ins["engine_urls"]):
+        errors.append("hydra.instinct.engine_urls: every entry must be a string URL")
+        ins.pop("engine_urls")
     try:
-        breaker = Breaker(**{k: v for k, v in br.items() if k in _BREAKER_TYPES})
-        instinct = InstinctCfg(**{k: (tuple(v) if k == "engine_urls" else v)
-                                  for k, v in ins.items() if k in _INSTINCT_TYPES})
+        breaker = Breaker(**_welltyped(br, _BREAKER_TYPES))
+        instinct = InstinctCfg(**{k: (tuple(v) if k == "engine_urls" else v) for k, v in ins.items()})
         settings = Settings(**hs, breaker=breaker, instinct=instinct)
     except TypeError as e:           # only reachable after a type error above
         errors.append(f"hydra: {e}")
@@ -1047,10 +1072,15 @@ class AffinityLRU:
 
 
 class Admission:
-    """One held in-flight unit. release() is idempotent (edge.py discipline)."""
+    """One held in-flight unit. release() is idempotent (edge.py discipline).
 
-    def __init__(self, fleet: "FleetState", d: str, node: str, trial: bool):
+    `hs` is the deployment's HealthState AT ADMISSION: a reload that drops or
+    renames the deployment mid-request must not turn the bookkeeping of the
+    request already in flight into a KeyError (and a leaked unit)."""
+
+    def __init__(self, fleet: "FleetState", d: str, node: str, trial: bool, hs: "HealthState"):
         self._fleet, self.d, self.node, self.trial, self.done = fleet, d, node, trial, False
+        self.hs = hs
 
     def release(self) -> None:
         if self.done:
@@ -1060,9 +1090,7 @@ class Admission:
         f._inflight[self.d] = max(0, f._inflight.get(self.d, 0) - 1)
         f._node_inflight[self.node] = max(0, f._node_inflight.get(self.node, 0) - 1)
         if self.trial:
-            hs = f.health.get(self.d)
-            if hs is not None:
-                hs.h.trial_inflight = max(0, hs.h.trial_inflight - 1)
+            self.hs.h.trial_inflight = max(0, self.hs.h.trial_inflight - 1)
 
 
 class FleetState:
@@ -1096,13 +1124,33 @@ class FleetState:
         return self._node_inflight.get(n, 0)
 
     def admit(self, d: str, node: str, now: float) -> Admission:
+        """Take an in-flight unit unconditionally (decide() already vetted it)."""
         hs = self.health.get(d)
-        trial = bool(hs and hs.breaker_state(now) == HALF_OPEN)
+        if hs is None:              # dropped by a reload after decide(): count it, judge nothing
+            hs = HealthState(self.cfg.settings)
+        trial = hs.breaker_state(now) == HALF_OPEN
         if trial:
             hs.h.trial_inflight += 1
         self._inflight[d] = self._inflight.get(d, 0) + 1
         self._node_inflight[node] = self._node_inflight.get(node, 0) + 1
-        return Admission(self, d, node, trial)
+        return Admission(self, d, node, trial, hs)
+
+    def try_admit(self, d: str, node: str, now: float) -> tuple[Admission | None, str | None]:
+        """Admit only if the deployment may take a request NOW.
+
+        decide() plans every failover attempt up front; by the time attempt 2
+        runs, attempt 1 has awaited seconds and the world has moved: the
+        target may have gone DOWN, its node may be drained, or another
+        request may already hold its single HALF_OPEN trial (plan §6.5:
+        exactly one). Returns (admission, None) or (None, why)."""
+        if node in self.drained:
+            return None, f"node {node} drained ({self.drained[node]})"
+        hs = self.health.get(d)
+        if hs is not None:
+            why = hs.admit_reason(now)
+            if why:
+                return None, why
+        return self.admit(d, node, now), None
 
     def effective_caps(self, dep: Deployment) -> frozenset:
         verdict = self.conformance.get(dep.id)

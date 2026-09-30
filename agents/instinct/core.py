@@ -34,6 +34,8 @@ def softmax(z: dict[str, float], temperature: float = 1.0) -> dict[str, float]:
     if temperature <= 0:
         raise ValueError("temperature must be > 0")
     m = max(z.values())
+    if not math.isfinite(m):
+        raise ValueError("label scores sum to zero")
     e = {k: (math.exp((v - m) / temperature) if math.isfinite(v) else 0.0) for k, v in z.items()}
     s = sum(e.values())
     return {k: v / s for k, v in e.items()}
@@ -88,6 +90,28 @@ def canary_bucket(request_id: str | None, pct: int) -> bool:
     return (h % 100) < pct
 
 
+def mask_mechanical(spec: DecisionSpec, q: dict[str, float] | None = None,
+                    logits: dict[str, float] | None = None, fact: str | None = None
+                    ) -> tuple[dict[str, float] | None, dict[str, float] | None]:
+    """Zero every mechanical label except `fact` (the one the request's facts
+    force, if any) BEFORE anything else sees the row. Mechanical facts are
+    computed, never judged, so a model's mass on them is not an answer.
+
+    This is the single definition the service AND the eval harness use, so
+    the population that is calibrated and gated is the one that is served.
+    (Zeroing before temperature equals zeroing after and renormalizing:
+    p_i ∝ q_i^(1/T) either way.) If nothing is left the caller gets a
+    ValueError from build_answer — the engine gave no usable answer."""
+    if not spec.mechanical:
+        return q, logits
+    zero = {m for m in spec.mechanical if m != fact}
+    if q is not None:
+        q = {k: (0.0 if k in zero else v) for k, v in q.items()}
+    if logits is not None:
+        logits = {k: (-math.inf if k in zero else v) for k, v in logits.items()}
+    return q, logits
+
+
 @dataclass
 class Answer:
     label: str | None
@@ -129,12 +153,27 @@ def build_answer(spec: DecisionSpec, *, q: dict[str, float] | None = None,
                   list(truncated or []), expected_value(spec, p))
 
 
+def effective_threshold(spec: DecisionSpec, label: str,
+                        thresholds: dict[str, float | None] | None) -> float | None:
+    """max(policy.act[label], fitted[label]); None when the fit said never."""
+    floor = spec.policy.act.get(label)
+    if thresholds and label in thresholds:
+        fitted = thresholds[label]
+        if fitted is None or floor is None:
+            return None
+        return max(floor, fitted)
+    return floor
+
+
 def decide_action(spec: DecisionSpec, ans: Answer, *, thresholds: dict[str, float] | None = None,
                   context_forbidden: bool = False, head_engine: bool = False,
                   ood: bool = False) -> tuple[str, str | None]:
     """(action, reason) for one answer. `thresholds` are the calibration
-    record's fitted thresholds; they override policy.act VALUES but can never
-    add a label — only labels listed in policy.act may act (I4)."""
+    record's fitted thresholds; they can only RAISE the spec's policy.act
+    value (the reviewed floor — a fit on a small calib split must not quietly
+    lower `inline = 0.90` to 0.55), a fitted None means "infeasible, never
+    act", and they can never add a label — only labels in policy.act may act
+    (I4)."""
     pol = spec.policy
     if context_forbidden:
         return "abstain", "eval_context"
@@ -144,9 +183,7 @@ def decide_action(spec: DecisionSpec, ans: Answer, *, thresholds: dict[str, floa
     p_top = ans.confidence["p_top"] if ans.confidence else 0.0
     margin = ans.confidence["margin"] if ans.confidence else 0.0
     if label in pol.act:
-        thr = pol.act[label]
-        if thresholds and label in thresholds:
-            thr = thresholds[label]
+        thr = effective_threshold(spec, label, thresholds)
         if thr is None:
             return "abstain", "below_threshold"
         if not ans.calibrated:

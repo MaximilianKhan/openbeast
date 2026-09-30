@@ -69,10 +69,10 @@ class Sim:
         for n, k in self.keys.items():
             _secret(d / f"{n}.key", k)
         _secret(d / "inbound.key", self.inbound)
-        self.rig = FakeEngine("llama", "qwen38-27b-uncensored-mtp-q5", self.keys["rig"], slots=1,
+        self.rig = FakeEngine("llama", "Qwen3.8 27B Uncensored MTP Q5", self.keys["rig"], slots=1,
                               chunks=12, tok_ms=15)
         self.sparks = FakeEngine("vllm", "qwen3.8-27b-nvfp4", self.keys["sparks"], slots=8, chunks=12, tok_ms=5)
-        self.ti = FakeEngine("llama", "qwen36-35b-a3b-q4", self.keys["ti"], slots=2, chunks=12, tok_ms=5)
+        self.ti = FakeEngine("llama", "Qwen 35B MoE", self.keys["ti"], slots=2, chunks=12, tok_ms=5)
         self.port = port or _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.cfg_path = d / "hydra.toml"

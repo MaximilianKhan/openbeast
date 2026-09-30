@@ -129,22 +129,35 @@ class AutoDemoter:
         self.window, self.rate = window, rate
         self.mass_window, self.mass_drop = mass_window, mass_drop
         self.outcomes: dict[str, deque] = {}
-        self.masses: dict[str, deque] = {}
+        self.masses: dict[tuple[str, str], deque] = {}
 
-    def observe(self, decision: str, *, failed: bool, label_mass: float | None,
-                mass_ref_p50: float | None) -> str | None:
+    def observe(self, decision: str, *, failed: bool, label_mass: float | None = None,
+                mass_ref_p50: float | None = None, engine: str = "") -> str | None:
         o = self.outcomes.setdefault(decision, deque(maxlen=self.window))
         o.append(bool(failed))
         if len(o) == self.window and sum(o) / len(o) > self.rate:
             return self._demote(decision, f"fallback_rate {sum(o)}/{len(o)}")
         if label_mass is not None:
-            m = self.masses.setdefault(decision, deque(maxlen=self.mass_window))
-            m.append(label_mass)
-            if (mass_ref_p50 is not None and len(m) == self.mass_window
-                    and statistics.median(m) < mass_ref_p50 - self.mass_drop):
-                return self._demote(decision, f"label_mass p50 {statistics.median(m):.3f} "
-                                              f"< ref {mass_ref_p50:.3f} - {self.mass_drop}")
+            return self.observe_mass(decision, engine, label_mass, mass_ref_p50)
         return None
+
+    def observe_mass(self, decision: str, engine: str, label_mass: float,
+                     mass_ref_p50: float | None) -> str | None:
+        """label_mass windows are per (decision, engine): each engine is
+        compared with its OWN calibration reference."""
+        m = self.masses.setdefault((decision, engine), deque(maxlen=self.mass_window))
+        m.append(label_mass)
+        if (mass_ref_p50 is not None and len(m) == self.mass_window
+                and statistics.median(m) < mass_ref_p50 - self.mass_drop):
+            return self._demote(decision, f"label_mass p50 {statistics.median(m):.3f} "
+                                          f"< ref {mass_ref_p50:.3f} - {self.mass_drop}"
+                                          + (f" on {engine}" if engine else ""))
+        return None
+
+    def reset(self, decision: str) -> None:
+        self.outcomes.pop(decision, None)
+        for k in [k for k in self.masses if k[0] == decision]:
+            self.masses.pop(k, None)
 
     def _demote(self, decision: str, reason: str) -> str:
         if decision not in self.demotions.auto:

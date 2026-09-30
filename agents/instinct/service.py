@@ -25,7 +25,8 @@ from typing import Any
 
 from . import calibrate
 from .config import REPO_ROOT, ServiceConfig, effective_chain
-from .core import (Answer, build_answer, canary_bucket, decide_action, is_enforced, min_mode)
+from .core import (MODE_ORDER, Answer, build_answer, canary_bucket, decide_action, is_enforced,
+                   mask_mechanical, min_mode)
 from .engines import Engine, EngineError, LockResult, ProbeResult, ScoreReq, build_engine
 from .engines.rules import mechanical_label
 from .ledger import Ledger, excerpt, input_sha256
@@ -67,6 +68,21 @@ class Outcome:
     items: list[dict] | None = None
     exec_used: str | None = None
     engine_ms: float = 0.0
+
+
+def baseline_label(spec: DecisionSpec, baseline: Any) -> str | None:
+    """The label today's behaviour chose, when the caller's baseline names one.
+    The router sends "nohint"/"hint": no hint IS today's pass-through, i.e.
+    `inline` (exactly what the router_hints rules engine answers); a hinted
+    turn runs the legacy generative classify, whose verdict is unknown here
+    (it arrives later through /feedback), so it has no label."""
+    if not isinstance(baseline, str):
+        return None
+    if baseline in spec.label_names:
+        return baseline
+    if spec.rule_set == "router_hints" and baseline == "nohint" and "inline" in spec.label_names:
+        return "inline"
+    return None
 
 
 def new_trace_id() -> str:
@@ -130,16 +146,43 @@ class Instinct:
             chains[did] = chain
         self.specs, self.spec_errors, self.chains = specs, errors, chains
         self.demotions.load()
-        self.demotions.clear_auto()
         for name, eng in self.engines.items():
             relevant = [s for s in specs.values() if name in chains.get(s.id, [])]
-            locks = await eng.attach(relevant) if relevant else {}
+            locks = await self._attach(eng, relevant) if relevant else {}
             self.states[name].locks = locks
             if eng.caps.needs_render:
                 self._write_locks(name, locks)
             if not eng.caps.needs_render:
                 self.states[name].healthy = True
+        before = dict(self.hashes)
         self.refresh_records()
+        self._expire_auto_demotions(before)
+
+    def _expire_auto_demotions(self, before: dict) -> None:
+        """An auto-demotion survives a reload (any `demote` of another decision
+        sends SIGHUP) unless what it judged changed: a decision whose engine
+        hashes differ is a new thing and starts un-demoted."""
+        for did in list(self.demotions.auto):
+            old = {k: v for k, v in before.items() if k[0] == did}
+            new = {k: v for k, v in self.hashes.items() if k[0] == did}
+            if old != new:
+                self.demotions.auto.pop(did, None)
+                self.autodemoter.reset(did)
+
+    @staticmethod
+    async def _attach(eng: Engine, specs: list[DecisionSpec]) -> dict[str, LockResult]:
+        """Engine.attach, contained: whatever an engine does wrong (an
+        unexpected /tokenize shape, a squatter), the result is a failed lock
+        for THIS engine's decisions — never an exception out of start/reload."""
+        try:
+            locks = await eng.attach(specs)
+            if not isinstance(locks, dict):
+                raise TypeError("attach returned no lock map")
+        except Exception as exc:  # noqa: BLE001
+            why = f"label_lock_failed: attach crashed: {exc.__class__.__name__}"
+            return {s.id: LockResult(False, reason=why) for s in specs}
+        return {s.id: locks.get(s.id) or LockResult(False, reason="label_lock_failed: no lock")
+                for s in specs}
 
     def _write_locks(self, engine: str, locks: dict[str, LockResult]) -> None:
         d = Path(self.cfg.state_dir) / "locks"
@@ -216,7 +259,7 @@ class Instinct:
                 eng.exec_forced = forced
                 changed = True
             if res.ok and any(not lk.ok for lk in st.locks.values()):
-                st.locks = await eng.attach(relevant)
+                st.locks = await self._attach(eng, relevant)
                 self._write_locks(name, st.locks)
                 changed = True
         if changed:
@@ -235,7 +278,10 @@ class Instinct:
         if st.last_probe is None:
             return False
         interval = self.cfg.probe_interval_s
-        return interval <= 0 or (self.clock() - st.last_probe) <= 2 * interval
+        # probe_interval_s = 0 turns periodic conformance OFF; then no probe
+        # is ever "fresh" for an LLM engine, so it can never enforce (one
+        # startup probe must not vouch for an engine forever).
+        return interval > 0 and (self.clock() - st.last_probe) <= 2 * interval
 
     def lifecycle(self, did: str, name: str, ceiling: str) -> tuple[str, str | None]:
         spec, eng = self.specs[did], self.engines[name]
@@ -270,14 +316,11 @@ class Instinct:
         thresholds = self._thresholds(spec.id, name, crec) if calibrated else None
 
         def one(row) -> tuple[Answer, str, str | None]:
-            mech_zero = None
-            if spec.mechanical:
-                mech_zero = [m for m in spec.mechanical if m != row.mechanical]
+            q, logits = mask_mechanical(spec, row.q, row.logits, row.mechanical)
             ok_cal = calibrated and not row.defer
             try:
-                ans = build_answer(spec, q=row.q, logits=row.logits, label_mass=row.label_mass,
-                                   truncated=row.truncated, temperature=T, calibrated=ok_cal,
-                                   mechanical_zero=mech_zero)
+                ans = build_answer(spec, q=q, logits=logits, label_mass=row.label_mass,
+                                   truncated=row.truncated, temperature=T, calibrated=ok_cal)
             except ValueError:
                 raise EngineError("engine returned an all-zero label distribution") from None
             ans.mechanical = bool(row.mechanical)
@@ -308,9 +351,24 @@ class Instinct:
         return Outcome(name, None, action, reason, out_items, res.exec_used, res.engine_ms)
 
     async def _cascade(self, spec: DecisionSpec, inputs: dict, items_in: list[dict] | None,
-                       deadline_at: float) -> tuple[Outcome | None, list[dict], str | None]:
+                       deadline_at: float, ceiling: str = "enforce"
+                       ) -> tuple[Outcome | None, list[dict], str | None]:
+        """Walk the chain under the deadline (plan §5.5).
+
+        The walk stops at the first `act` whose engine's lifecycle reaches the
+        request's target mode (min of spec mode and ceiling): an `act` from an
+        engine that could only ever shadow (no gate yet — `linear` as the
+        McNemar baseline, typically) must not hide a later engine that can
+        enforce. With no such act, the answer is the first act (it is what
+        the service WOULD have done), else the last result from a
+        probabilistic engine, else `rules` — so shadow rows carry the model's
+        distribution, not rules' one-hot. Every attempted engine's own view
+        (label, probabilities, label_mass) is kept in its cascade entry.
+        """
         cascade: list[dict] = []
         final: Outcome | None = None
+        results: list[Outcome] = []
+        target = min_mode(spec.policy.mode, ceiling)
         last_err: str | None = None
         chain = list(self.chains[spec.id])
         if spec.mechanical and mechanical_label(spec, inputs):
@@ -362,6 +420,13 @@ class Instinct:
                                 "error": str(exc)[:200]})
                 last_err = "engine_unavailable"
                 continue
+            except Exception as exc:  # noqa: BLE001 - engine trouble is a fallback, never a 500
+                cascade.append({"engine": name, "action": "fallback",
+                                "reason": "engine_unavailable", "ms": round(
+                                    (self.clock() - t0) * 1000, 3),
+                                "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
+                last_err = "engine_unavailable"
+                continue
             entry = {"engine": name, "action": out.action, "reason": out.reason,
                      "ms": round(out.engine_ms, 3)}
             if out.answer is not None and out.answer.confidence:
@@ -369,10 +434,22 @@ class Instinct:
                 # a later engine's)
                 entry["label"] = out.answer.label
                 entry["p_top"] = round(out.answer.confidence["p_top"], 6)
+                if eng.caps.probs:
+                    entry["probabilities"] = {k: round(v, 6) for k, v in
+                                              (out.answer.probabilities or {}).items()}
+                    entry["label_mass"] = out.answer.label_mass
             cascade.append(entry)
-            final = out
+            results.append(out)
             if out.action == "act":
-                break
+                mode, _ = self.lifecycle(spec.id, name, ceiling)
+                entry["mode"] = mode
+                if MODE_ORDER[mode] >= MODE_ORDER[target]:
+                    final = out
+                    break
+        if final is None and results:
+            acts = [o for o in results if o.action == "act"]
+            probs = [o for o in results if self.engines[o.engine].caps.probs]
+            final = acts[0] if acts else (probs[-1] if probs else results[-1])
         return final, cascade, last_err
 
     # ----------------------------------------------------------------- decide
@@ -437,7 +514,8 @@ class Instinct:
         if shadowish:
             self.shadow_inflight += 1
         try:
-            outcome, cascade, err = await self._cascade(spec, inputs, items_in, deadline_at)
+            outcome, cascade, err = await self._cascade(spec, inputs, items_in, deadline_at,
+                                                        ceiling)
         finally:
             sem.release()
             if shadowish:
@@ -517,8 +595,9 @@ class Instinct:
                 deadline_ms, ans: Answer | None) -> None:
         baseline = req.get("baseline")
         agree = None
-        if spec is not None and ans is not None and baseline in spec.label_names:
-            agree = ans.label == baseline
+        blabel = baseline_label(spec, baseline) if spec is not None else None
+        if ans is not None and blabel is not None:
+            agree = ans.label == blabel
         row = {
             "ts": self.wall(), "kind": "decide", "trace_id": resp["trace_id"],
             "request_id": resp["request_id"],
@@ -552,12 +631,27 @@ class Instinct:
         except OSError:
             pass  # a full disk must not turn into a caller-visible error
         if spec is not None:
-            crec = self.calib.get((spec.id, (resp["engine"] or {}).get("id") or ""))
+            self._observe(spec, resp)
+
+    def _observe(self, spec: DecisionSpec, resp: dict) -> None:
+        """Feed auto-demotion (plan §5.7). A call counts as failed when ANY
+        engine it attempted timed out or errored, or it was shed — not only
+        when the whole chain failed: `rules` is last in every chain and
+        always answers, so "final action is fallback" would never fire.
+        label_mass is watched per engine against THAT engine's calibration
+        reference, from every row it scored (not just rows that acted)."""
+        cascade = resp["cascade"] or []
+        failed = any(c.get("action") == "fallback" for c in cascade) or (
+            resp["action"] == "fallback" and resp["fallback"]["reason"] in (
+                "engine_timeout", "engine_unavailable", "overload"))
+        self.autodemoter.observe(spec.id, failed=failed, label_mass=None, mass_ref_p50=None)
+        for c in cascade:
+            m = c.get("label_mass")
+            if not isinstance(m, (int, float)) or isinstance(m, bool):
+                continue
+            crec = self.calib.get((spec.id, c["engine"]))
             ref = ((crec or {}).get("label_mass_ref") or {}).get("p50")
-            self.autodemoter.observe(
-                spec.id, failed=resp["action"] == "fallback" and resp["fallback"]["reason"] in (
-                    "engine_timeout", "engine_unavailable", "deadline", "overload"),
-                label_mass=row["label_mass"], mass_ref_p50=ref)
+            self.autodemoter.observe_mass(spec.id, c["engine"], float(m), ref)
 
     # ------------------------------------------------------------------ route
     async def route(self, req: dict[str, Any]) -> dict[str, Any]:

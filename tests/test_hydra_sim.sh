@@ -96,7 +96,7 @@ bash "$H" reload | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"
 
 out="$(bash "$H" add-node newbox --url "$HYDRA_SIM_TI" --engine llama --key-file "$W/sim/ti.key" \
         --slots 2 --deployment moe@newbox 2>"$W/add.err")"; rc=$?
-[[ $rc -eq 0 ]] && grep -q '^\[nodes.newbox\]' <<< "$out" && grep -q 'upstream = "qwen36-35b-a3b-q4"' <<< "$out" \
+[[ $rc -eq 0 ]] && grep -q '^\[nodes.newbox\]' <<< "$out" && grep -q 'upstream = "Qwen 35B MoE"' <<< "$out" \
   && ok "add-node probes and prints a stanza" || bad "add-node rc=$rc: $out $(cat "$W/add.err")"
 python3 - "$OPENBEAST_HYDRA_CONFIG" "$out" <<'PYEOF' && ok "add-node never edits hydra.toml" || bad "hydra.toml changed"
 import sys

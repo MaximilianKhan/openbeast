@@ -44,6 +44,7 @@ from instinct import core  # noqa: E402
 from instinct.config import LLM_ADAPTERS, load_config  # noqa: E402
 from instinct.engines import EngineError, ScoreReq, build_engine  # noqa: E402
 from instinct.engines import linear as L  # noqa: E402
+from instinct.engines.rules import mechanical_label  # noqa: E402
 from instinct.render import InputError, validate_inputs  # noqa: E402
 from instinct.spec import DecisionSpec, decision_hash, load_spec  # noqa: E402
 
@@ -116,7 +117,12 @@ def git_sha() -> str:
 
 
 class Scorer:
-    """One engine, driven exactly as the service drives it."""
+    """One engine, driven exactly as the service drives it: every row has the
+    mechanical labels zeroed with the same core.mask_mechanical the service
+    uses, so T, thresholds and gate metrics are fitted on the population that
+    is served. Rows whose facts FORCE a mechanical label are removed from the
+    dataset before any scorer sees them (judged_rows): the service never asks
+    a model about them."""
 
     def __init__(self, cfg, spec: DecisionSpec, name: str, *, transport=None):
         if name not in cfg.engines:
@@ -165,19 +171,56 @@ class Scorer:
                     label_ids=self.lock.ids if self.lock else None,
                     deadline_s=self.engine.binding.timeout_ms / 1000))
                 row = res.rows[0]
-                q = row.q if row.q is not None else None
-                if row.logits is not None:
-                    q = core.softmax(row.logits)
+                q, logits = core.mask_mechanical(self.spec, row.q, row.logits, row.mechanical)
+                if logits is not None:
+                    q = core.softmax(logits)
+                if q is not None and not any(v > 0 for v in q.values()):
+                    raise EngineError("engine returned an all-zero label distribution")
                 out.append({"id": r["id"], "y": r["label"], "source": r["source"],
                             "q": q, "label_mass": row.label_mass,
                             "truncated": list(row.truncated), "ood": row.ood,
                             "defer": row.defer, "ms": (time.perf_counter() - t0) * 1000,
                             "error": None})
-            except (EngineError, asyncio.TimeoutError) as exc:
+            except (EngineError, asyncio.TimeoutError, ValueError) as exc:
                 out.append({"id": r["id"], "y": r["label"], "source": r["source"], "q": None,
                             "label_mass": None, "truncated": [], "ood": False, "defer": False,
                             "ms": (time.perf_counter() - t0) * 1000, "error": str(exc)[:200]})
         return out
+
+
+def judged_rows(spec: DecisionSpec, data: dict[str, list[dict]]
+                ) -> tuple[dict[str, list[dict]], dict[str, int]]:
+    """Drop rows whose facts force a mechanical label (vision, long_context):
+    the service answers those with `rules` only and never judges them, so
+    they are not part of the population any engine is calibrated or gated
+    on. One filter for every scorer keeps paired comparisons paired."""
+    if not spec.mechanical:
+        return data, {}
+    out, dropped = {}, {}
+    for split, rows in data.items():
+        keep = [r for r in rows if mechanical_label(spec, r["input"]) is None]
+        out[split] = keep
+        if len(keep) != len(rows):
+            dropped[split] = len(rows) - len(keep)
+    return out, dropped
+
+
+def gate_integrity(spec: DecisionSpec, manifest: dict, subj, a) -> list[dict]:
+    """What a PASSING gate record needs besides good numbers: a frozen,
+    human-labelled dataset (MANIFEST status "gated"), every split a
+    criterion reads pinned by sha256 in MANIFEST [files] (load_dataset
+    already refuses a mismatch; this refuses an ABSENT pin), and — for an
+    LLM engine — a conformance probe on the engine that was gated."""
+    pins = manifest.get("files") or {}
+    used = sorted({p for c in spec.gate.criteria for p in c.split.split("+") if p in SPLITS})
+    out = [{"check": "dataset status is gated", "ok": manifest.get("status") == "gated",
+            "detail": manifest.get("status", "no MANIFEST")},
+           {"check": "gate splits pinned in MANIFEST", "ok": all(p in pins for p in used),
+            "detail": [p for p in used if p not in pins]}]
+    if subj.adapter in LLM_ADAPTERS:
+        out.append({"check": "conformance probe ran", "ok": not a.no_probe and bool(
+            subj.probe and subj.probe.ok), "detail": "--no-probe" if a.no_probe else None})
+    return out
 
 
 def apply_T(samples: list[dict], T: float | None) -> list[dict]:
@@ -223,7 +266,7 @@ def split_metrics(spec: DecisionSpec, rows: list[dict], thresholds: dict | None,
                    for lb in spec.policy.act) or not calibrated:
             abstain += 1
     for lb in spec.policy.act:
-        thr = thresholds.get(lb, spec.policy.act[lb]) if thresholds else spec.policy.act[lb]
+        thr = core.effective_threshold(spec, lb, thresholds)
         st = C.act_stats(spec, rows, lb, thr) if calibrated else {
             "acts": 0, "act_errors": 0, "act_coverage": 0.0, "act_precision": 1.0}
         n_true = sum(1 for r in rows if r["y"] == lb)
@@ -292,6 +335,7 @@ async def main_async(a) -> int:
     spec = load_spec(Path(cfg.decisions_dir) / f"{a.decision}.toml")
     data_dir = Path(a.data_dir) / a.decision
     data, manifest = load_dataset(data_dir, spec)
+    data, mech_dropped = judged_rows(spec, data)
     subj = Scorer(cfg, spec, a.engine)
     report: dict = {"decision": spec.id, "engine": a.engine, "adapter": subj.adapter,
                     "dataset_version": manifest.get("dataset_version", "unversioned"),
@@ -406,13 +450,18 @@ async def main_async(a) -> int:
                     "mcnemar": M.mcnemar_exact(M.correct(mine), M.correct(theirs))}
         await osc.engine.aclose()
     report["comparisons"] = comparisons
+    if mech_dropped:
+        report["mechanical_excluded"] = mech_dropped
 
     if a.gate:
         if not calibrated:
             raise SystemExit("no calibration record for this decision_hash — run --calibrate")
         load = None
+        load_meta = None
         if a.load_report:
-            load = json.loads(Path(a.load_report).read_text())
+            lp = Path(a.load_report)
+            load = json.loads(lp.read_text())
+            load_meta = {"path": str(lp), "sha256": sha256_file(lp)}
         # score splits the gate needs that were not evaluated above
         for crit in spec.gate.criteria:
             for s in crit.split.split("+"):
@@ -426,6 +475,11 @@ async def main_async(a) -> int:
             ok = (note or "").startswith("not_applicable") or (
                 val is not None and not (isinstance(val, float) and math.isnan(val))
                 and C.compare(val, crit.op, crit.value))
+            empty = [p for p in crit.split.split("+") if p in SPLITS and not scaled.get(p)]
+            if empty and crit.split != "load":
+                # "test+ood+adversarial" with no ood rows must not quietly
+                # become "test+adversarial".
+                ok, note = False, f"empty split(s): {','.join(empty)}"
             passed = passed and ok
             crits.append({"metric": crit.metric, "label": crit.label, "split": crit.split,
                           "value": val, "op": crit.op, "threshold": crit.value, "ci95": ci,
@@ -434,17 +488,21 @@ async def main_async(a) -> int:
                  for s, n in spec.gate.min_n.items()}
         min_n_met = all(v["have"] is None or v["have"] >= v["need"] for v in min_n.values())
         passed = passed and min_n_met
+        integrity = gate_integrity(spec, manifest, subj, a)
+        passed = passed and all(i["ok"] for i in integrity)
         calib_sha = C.file_sha256(crec_path)
         grec = {"decision": spec.id, "decision_hash": dhash, "engine": a.engine,
                 "passed": passed, "criteria": crits, "min_n": min_n, "min_n_met": min_n_met,
                 "calib_sha256": calib_sha, "calib_hash": calib_sha,
                 "samples_sha256": samples_sha, "git_sha": report["git_sha"],
                 "dataset_version": report["dataset_version"],
+                "dataset_status": report["dataset_status"],
+                "integrity": integrity, "load_report": load_meta,
                 "created_at": report["created_at"]}
         gpath = C.gate_path(cfg.records_dir, spec.id, dhash)
         C.write_record(gpath, grec)
         report["gate"] = {"path": str(gpath), "passed": passed, "min_n_met": min_n_met,
-                          "criteria": crits}
+                          "criteria": crits, "integrity": integrity}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(a.out_dir) / spec.id / ts
@@ -503,6 +561,8 @@ def render_text(r: dict) -> str:
     if "gate" in r:
         g = r["gate"]
         lines.append(f"GATE passed={g['passed']} min_n_met={g['min_n_met']}")
+        for i in g.get("integrity") or []:
+            lines.append(f"  {'PASS' if i['ok'] else 'FAIL'} {i['check']}  ({i['detail']})")
         for c in g["criteria"]:
             lines.append(f"  {'PASS' if c['pass'] else 'FAIL'} {c['metric']}"
                          f"{'[' + c['label'] + ']' if c['label'] else ''}@{c['split']} "

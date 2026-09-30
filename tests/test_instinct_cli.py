@@ -37,6 +37,18 @@ def env_for(tmp_path, cfgp, port):
     return e
 
 
+def scorer_env(tmp_path, **extra):
+    """The scorer's refusals and --help must not depend on this machine having
+    a weights directory (CI has none): point it at one that does not exist."""
+    e = {k: v for k, v in os.environ.items()
+         if not k.startswith("INSTINCT") and k not in ("INFERENCE_URL",
+                                                       "OPENBEAST_INFERENCE_URL")}
+    e["OPENBEAST_WEIGHTS_DIR"] = str(tmp_path / "no-such-weights")
+    e["INSTINCT_RUN_DIR"] = str(tmp_path)
+    e.update(extra)
+    return e
+
+
 def sh(script, *args, env, timeout=60):
     return subprocess.run(["nice", "-n", "19", "bash", str(script), *args], env=env,
                           capture_output=True, text=True, timeout=timeout)
@@ -102,8 +114,8 @@ def test_scorer_refuses_occupied_port(tmp_path):
     s.bind(("127.0.0.1", 0))
     s.listen(1)
     try:
-        env = {**os.environ, "INSTINCT_SCORER_PORT": str(s.getsockname()[1]),
-               "INSTINCT_RUN_DIR": str(tmp_path), "INFERENCE_URL": "http://127.0.0.1:1"}
+        env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(s.getsockname()[1]),
+                         INFERENCE_URL="http://127.0.0.1:1")
         r = sh(SCORER_SH, env=env)
         assert r.returncode == 2 and "already held" in r.stderr
     finally:
@@ -112,19 +124,29 @@ def test_scorer_refuses_occupied_port(tmp_path):
 
 def test_scorer_refuses_the_primary_url(tmp_path):
     p = free_port()
-    env = {**os.environ, "INSTINCT_SCORER_PORT": str(p), "INSTINCT_RUN_DIR": str(tmp_path),
-           "INFERENCE_URL": f"http://localhost:{p}"}
+    env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(p),
+                     INFERENCE_URL=f"http://localhost:{p}")
     r = sh(SCORER_SH, env=env)
     assert r.returncode == 2 and "primary" in r.stderr
 
 
-def test_scorer_help_documents_the_cpu_contract():
-    r = sh(SCORER_SH, "--help", env=dict(os.environ))
+def test_scorer_help_documents_the_cpu_contract(tmp_path):
+    r = sh(SCORER_SH, "--help", env=scorer_env(tmp_path))
     assert r.returncode == 0
     assert "-ngl 0" in r.stdout or "CPU only" in r.stdout
     text = SCORER_SH.read_text()
     assert 'CUDA_VISIBLE_DEVICES=""' in text and "--api-key" not in text.replace(
         "--api-key` from", "")
+
+
+def test_scorer_without_weights_dir_fails_on_the_model_not_earlier(tmp_path):
+    """Control for the three refusal tests: with a free port and no weights
+    dir, the script gets PAST the refusals and stops at the weights check."""
+    env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(free_port()),
+                     INFERENCE_URL="http://127.0.0.1:1")
+    r = sh(SCORER_SH, env=env)
+    assert r.returncode != 0 and "no-such-weights" in r.stderr
+    assert "already held" not in r.stderr and "primary" not in r.stderr
 
 
 def test_stats_demote_promote_cli(tmp_path):
@@ -148,3 +170,29 @@ def test_stats_demote_promote_cli(tmp_path):
     assert (tmp_path / "decisions" / "router.spawn_intent.toml").read_text() == before
     r = cli("stats")
     assert r.returncode == 0 and "_demotions" in json.loads(r.stdout)
+
+
+def test_label_writes_user_text_0600_and_gitignored(tmp_path, monkeypatch):
+    import builtins
+
+    from instinct import cli as CLI
+    from instinct.config import load_config
+    from instinct.ledger import Ledger
+    cfgp = H.write_config(tmp_path, {}, decisions=["router.spawn_intent"])
+    cfg = load_config(cfgp, env={})
+    Ledger(cfg.ledger_dir).write({"ts": time.time(), "kind": "decide", "trace_id": "ins_a",
+                                  "decision": "router.spawn_intent",
+                                  "input_excerpt": {"user_turn": "private words"},
+                                  "confidence": {"margin": 0.1}})
+    # spawn/inline would take "s" from [s]kip, so keys are numbered: 2 = inline
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "2")
+    assert CLI.main(["--config", str(cfgp), "label", "router.spawn_intent"]) == 0
+    out = cfg.records_dir / "router.spawn_intent" / "shadow-labelled.jsonl"
+    assert "private words" in out.read_text() and '"label": "inline"' in out.read_text()
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
+    r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                        "evals/decisions/router.spawn_intent/shadow-labelled.jsonl"])
+    assert r.returncode == 0
+    r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                        "evals/decisions/router.spawn_intent/test.jsonl"])
+    assert r.returncode == 1   # control: real splits stay tracked

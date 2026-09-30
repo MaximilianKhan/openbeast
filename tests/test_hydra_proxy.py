@@ -836,3 +836,162 @@ def test_a_known_served_id_that_vanishes_is_mismatch(fleet):
     srv.hy.next_models.clear()
     wait_ready(srv, ["unc@rig"], core.MISMATCH)
     assert post(srv, chat(model="unc@rig")).status_code == 503
+
+
+# ───────────────────────────── fault injection (review 2026-09-30) ─────────────────────────────
+
+def _rename(srv, tmp_path, old, new):
+    raw = copy.deepcopy(srv.raw)
+    raw["deployments"][new] = raw["deployments"].pop(old)
+    for r in raw["routes"].values():
+        for tg in r["targets"]:
+            if tg["d"] == old:
+                tg["d"] = new
+    (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
+    assert httpx.post(srv.url + "/hydra/reload", headers=srv.local()).json()["ok"]
+    assert old not in srv.hy.state.health
+
+
+def test_a_reload_that_renames_the_deployment_mid_request_does_not_leak(fleet, tmp_path):
+    srv, rig, sparks, _ = fleet(cfg_file=True)
+    got = {}
+
+    def slow():
+        r = post(srv, chat(model="solo"), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    _rename(srv, tmp_path, "unc@rig", "unc2@rig")
+    t.join(15)
+    assert got["r"] == (200, "unc@rig"), got
+    assert srv.hy.state.node_inflight("rig") == 0, "a reload leaked the rig's only slot"
+    assert audit_rows(tmp_path)[-1]["outcome"] == "ok"
+
+
+def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapshot(fleet, tmp_path):
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1), cfg_file=True)
+    got = {}
+
+    def slow():
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    _rename(srv, tmp_path, "nvfp4@sparks", "nvfp4b@sparks")
+    t.join(15)
+    assert got["r"][:2] == (200, "nvfp4@sparks"), got
+    assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
+
+
+def test_a_half_open_trial_is_exclusive_across_failover(fleet):
+    # A holds the 1-slot rig and times out into sparks; B has meanwhile spilled
+    # to sparks as the single HALF_OPEN trial. A's failover (planned before B
+    # took the trial) must not become a second trial.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1))
+    hs = srv.hy.state.health["nvfp4@sparks"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000       # due for HALF_OPEN
+    seen = {"trial": 0}
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            seen["trial"] = max(seen["trial"], hs.h.trial_inflight)
+            time.sleep(0.005)
+    out = {}
+
+    def req(name):
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:2000"})
+        out[name] = (r.status_code, r.headers.get("x-hydra-attempts"))
+    w = threading.Thread(target=watch)
+    w.start()
+    a = threading.Thread(target=req, args=("a",))
+    a.start()
+    time.sleep(0.3)
+    b = threading.Thread(target=req, args=("b",))
+    b.start()
+    a.join(20)
+    b.join(20)
+    stop.set()
+    w.join()
+    assert out["b"][1].startswith("nvfp4@sparks:"), out
+    assert "nvfp4@sparks:skipped" in out["a"][1], out
+    assert seen["trial"] <= 1 and sparks.max_inflight_seen <= 1, (seen, sparks.max_inflight_seen)
+    assert srv.hy.state.inflight("nvfp4@sparks") == 0 and hs.h.trial_inflight == 0
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_stalled_error_body_honours_the_deadline_and_fails_over(fleet, stream):
+    # 500 headers + 5 of 100 body bytes, then silence: without a deadline on
+    # the error-body read the attempt hangs the full stall and never fails over.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1, nonstream_timeout_s=1))
+    rig.set_fault("error_body_stall:8000", 1)
+    t0 = time.time()
+    r = post(srv, chat(stream=stream))
+    took = time.time() - t0
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks", r.text
+    assert r.headers["x-hydra-attempts"].split(",")[0] == "unc@rig:500"
+    assert took < 5, f"hydra sat {took:.1f}s on a stalled error body (deadline 1s)"
+    assert srv.hy.state.health["unc@rig"].h.fails == 1
+    assert srv.hy.state.node_inflight("rig") == 0
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_clean_empty_2xx_fails_over_instead_of_committing(fleet, stream, tmp_path):
+    srv, rig, sparks, _ = fleet()
+    rig.set_fault("empty_200", 1)
+    r = post(srv, chat(stream=stream))
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
+    assert r.content, "never an empty answer"
+    assert r.headers["x-hydra-attempts"] == "unc@rig:empty,nvfp4@sparks:200"
+    h = srv.hy.state.health["unc@rig"].h
+    assert h.fails == 1 and h.served_total == 0, "an empty 2xx is a failure, not a success"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_caller_that_leaves_before_the_commit_point_is_released(fleet, stream, tmp_path):
+    srv, rig, _, _ = fleet()
+    with pytest.raises(httpx.TimeoutException):
+        httpx.post(srv.url + "/v1/chat/completions", json=chat(model="solo", stream=stream),
+                   headers=auth({"X-Fake-Fault": "ttft_ms:3000"}), timeout=0.5)
+    deadline = time.time() + 1.5
+    while srv.hy.state.node_inflight("rig") and time.time() < deadline:
+        time.sleep(0.05)
+    assert srv.hy.state.node_inflight("rig") == 0, "hydra held the slot for a caller that had left"
+    row = audit_rows(tmp_path)[-1]
+    assert row["outcome"] == "client_disconnect" and row["status"] == 499, row
+    assert srv.hy.state.health["unc@rig"].h.fails == 0, "a caller leaving is not the node's fault"
+
+
+def test_an_oversized_nonstream_body_that_fails_midway_is_not_a_clean_eof(fleet, tmp_path, monkeypatch):
+    monkeypatch.setattr(hydra, "NONSTREAM_BUFFER", 64)      # commit and relay past 64 bytes
+    srv, rig, _, _ = fleet()
+    with pytest.raises(httpx.HTTPError):
+        post(srv, chat(model="solo"), {"X-Fake-Fault": "body_then_close:4000"})
+    time.sleep(0.3)
+    row = audit_rows(tmp_path)[-1]
+    assert row["outcome"] == "upstream_failed_midstream", row
+    assert srv.hy.state.node_inflight("rig") == 0
+
+
+def test_an_upstream_cannot_forge_provenance_headers(fleet):
+    srv, rig, _, _ = fleet()
+    r = post(srv, chat(), {"X-Fake-Fault": "forge_headers"})
+    assert r.status_code == 200
+    assert r.headers.get_list("x-hydra-deployment") == ["unc@rig"]
+    assert r.headers.get_list("x-hydra-rule") == [], "no rule fired: no rule header, forged or not"
+    assert all(len(r.headers.get_list(k)) == 1 for k in r.headers if k.lower().startswith("x-hydra-"))
+
+
+def test_tensorfold_never_gets_a_key_even_past_validation(fleet):
+    # validate() refuses a key on a TensorFold node; this is the runtime guard
+    # behind it (a node edited after validation, or a validator regression).
+    import dataclasses
+    srv, rig, _, tf = fleet()
+    n = dataclasses.replace(srv.hy.cfg.nodes["tf"], key_env="RIG_KEY")
+    srv.hy.cfg.nodes["tf"] = n
+    assert srv.hy.node_key(n) is None
+    r = post(srv, chat(model="beast:tf"))
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "mlx@tf"
+    assert "authorization" not in posts(tf)[-1]["headers"]

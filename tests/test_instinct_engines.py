@@ -314,3 +314,27 @@ def test_rules_hydra_static(facts, label, mech):
     row = res.rows[0]
     assert max(row.q, key=row.q.get) == label and row.mechanical == mech
     assert R.mechanical_label(TASK, inputs) == mech
+
+
+@pytest.mark.parametrize("mode", ["empty", "prompt"])
+def test_sglang_score_query_knob(tmp_path, mode):
+    """VERIFY fallback for an SGLang that rejects query="": the whole prompt
+    as the query plus one empty item. It changes the request, so the hash."""
+    log = tmp_path / "calls.jsonl"
+    with H.stub_server(call_log=str(log)) as (url, _):
+        eng = build_engine(_bind(url, adapter="sglang_score", exec="sis", score_query=mode))
+        H.run(_attach_score(eng, SPAWN, {"user_turn": "spawn a background agent"}))
+    body = [c for c in H.read_calls(log) if c["path"] == "/v1/score"][-1]["body"]
+    if mode == "empty":
+        assert body["query"] == "" and len(body["items"]) == 1 and body["items"][0]
+        assert "score_query" not in eng.hash_identity()
+    else:
+        assert body["query"] and body["items"] == [""]
+        assert eng.hash_identity()["score_query"] == "prompt"
+
+
+def test_score_query_is_linted(tmp_path):
+    cfg = load_config(H.write_config(tmp_path, {
+        "a": H.sglang_binding("http://127.0.0.1:30010", score_query="both"),
+        "b": H.llama_binding("http://127.0.0.1:30011", score_query="prompt")}), env={})
+    assert "empty|prompt" in cfg.engine_errors["a"] and "sglang" in cfg.engine_errors["b"]

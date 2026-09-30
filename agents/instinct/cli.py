@@ -127,7 +127,7 @@ def cmd_label(a) -> int:
     if not labels:
         raise SystemExit(f"unknown decision {a.decision}")
     keys = {lb[0]: lb for lb in labels}
-    if len(keys) != len(labels):
+    if len(keys) != len(labels) or keys.keys() & {"s", "q"}:   # [s]kip / [q]uit win
         keys = {str(i + 1): lb for i, lb in enumerate(labels)}
     n = 0
     user = getpass.getuser()
@@ -151,8 +151,12 @@ def cmd_label(a) -> int:
                "labeller": user, "added_at": str(date.today()),
                "note": "from ledger excerpt" if r.get("input_excerpt") else ""}
         out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "a") as fh:
+        # User text: 0600, and gitignored (.gitignore) — a human moves chosen
+        # rows into a dataset split; nothing here is committed by accident.
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as fh:
             fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        os.chmod(out, 0o600)
         n += 1
     print(f"labelled {n}; file: {out}")
     return 0

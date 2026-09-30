@@ -22,8 +22,12 @@ Invariants this file exists to keep (each has a test in tests/test_hydra_proxy.p
   * An engine's 4xx passes through byte for byte (runner.py compacts on the
     overflow text). A node's 401/403 is never shown as the caller's own.
   * Strict ids (/pin/<d>/…, X-Hydra-Pin, a deployment id) never substitute.
-  * Every response carries X-Hydra-* provenance; every request one audit line,
+  * Every response carries X-Hydra-* provenance, and only hydra writes it (a
+    node's own X-Hydra-* headers are dropped); every request one audit line,
     with no prompt or completion text in it.
+  * Every pre-commit read is bounded by the attempt's deadline (an error
+    body too), every failover attempt is re-vetted at admission, and a caller
+    that leaves before the commit point frees its slot at once.
 """
 from __future__ import annotations
 
@@ -580,7 +584,9 @@ class Hydra:
             return
         for d in deps:
             if d.verify_upstream and d.upstream not in ids:
-                self._transition(d, "mismatch", now, f"{d.upstream!r} not in /v1/models")
+                served = ", ".join(repr(x) for x in sorted(i for i in ids if isinstance(i, str))[:4])
+                self._transition(d, "mismatch", now,
+                                 f"{d.upstream!r} not in /v1/models (it lists {served or 'nothing'})")
             else:
                 self._transition(d, "ok", now)
 
@@ -751,7 +757,16 @@ def _upstream_headers(request: Request, caller: core.Caller, key: str | None, re
 
 
 def _resp_headers(resp: httpx.Response) -> dict:
-    return {k: v for k, v in resp.headers.items() if k.lower() not in _HOP}
+    # X-Hydra-* is hydra's provenance and only hydra writes it: a node that
+    # sends its own X-Hydra-Deployment would otherwise ship next to ours
+    # (different case, both kept) and a client's .get() would read the forgery.
+    return {k: v for k, v in resp.headers.items()
+            if k.lower() not in _HOP and not k.lower().startswith("x-hydra-")}
+
+
+class _UpstreamTruncated(Exception):
+    """Raised out of a non-SSE relay so the server aborts the response
+    instead of ending it cleanly: a truncated JSON body must look broken."""
 
 
 async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, headers: dict,
@@ -762,19 +777,36 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
     t0 = time.monotonic()
     req = client.build_request("POST", f"{c.n.url}{path}", content=payload, headers=headers)
     resp = None
+
+    def left() -> float:
+        return max(0.001, deadline - time.monotonic())
+
+    async def read_error_body() -> bytes:
+        chunks, size = [], 0
+        async for ch in resp.aiter_raw():
+            size += len(ch)
+            if size <= ERROR_BODY_CAP:
+                chunks.append(ch)
+        return b"".join(chunks)
+
     try:
         resp = await asyncio.wait_for(client.send(req, stream=True), timeout=max(0.001, deadline - t0))
         a.resp = resp
         a.status = resp.status_code
         if resp.status_code >= 300:
-            chunks, size = [], 0
-            async for ch in resp.aiter_raw():
-                size += len(ch)
-                if size <= ERROR_BODY_CAP:
-                    chunks.append(ch)
-                if time.monotonic() > deadline:
-                    raise asyncio.TimeoutError
-            a.body = b"".join(chunks)
+            # The whole error body under the SAME deadline: a node that sends
+            # a status line and then stalls must not hold the attempt (and
+            # its slot) past the TTFT deadline and eat the failover budget.
+            try:
+                a.body = await asyncio.wait_for(read_error_body(), timeout=left())
+            except (asyncio.TimeoutError, httpx.HTTPError) as e:
+                # The status already said "error"; without its body it can
+                # not be passed through, so it is a plain failure: fail over.
+                a.kind = "fail"
+                a.headers = {"_why": f"{resp.status_code} with an unreadable body ({type(e).__name__})"}
+                with contextlib.suppress(BaseException):
+                    await resp.aclose()
+                return a
             a.headers = _resp_headers(resp)
             await resp.aclose()
             text = a.body.decode("utf-8", "replace")
@@ -796,16 +828,20 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
         it = resp.aiter_raw()
         if stream:
             try:
-                a.first = await asyncio.wait_for(it.__anext__(), timeout=max(0.001, deadline - time.monotonic()))
+                a.first = await asyncio.wait_for(it.__anext__(), timeout=left())
             except StopAsyncIteration:
-                a.first, a.complete = b"", True
+                a.first = b""
+            if not a.first:
+                # A clean zero-byte 2xx is not an answer: nothing was
+                # committed, so fail over rather than hand the caller "".
+                return await _empty(a, resp)
             a.ttft_s = time.monotonic() - t0
             a.it, a.kind = it, "commit"
             return a
         buf = bytearray()
         while True:
             try:
-                ch = await asyncio.wait_for(it.__anext__(), timeout=max(0.001, deadline - time.monotonic()))
+                ch = await asyncio.wait_for(it.__anext__(), timeout=left())
             except StopAsyncIteration:
                 a.complete = True
                 break
@@ -815,6 +851,8 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
             if len(buf) > NONSTREAM_BUFFER:
                 a.it = it                   # too big to hold: commit and relay the rest
                 break
+        if not buf:
+            return await _empty(a, resp)
         a.first, a.kind = bytes(buf), "commit"
         if a.ttft_s is None:
             a.ttft_s = time.monotonic() - t0
@@ -827,10 +865,48 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
     except httpx.HTTPError as e:
         a.kind, a.status = "fail", "transport"
         a.headers = {"_why": type(e).__name__}
+    except BaseException:
+        # cancelled (the caller left): never strand the upstream connection
+        if resp is not None:
+            with contextlib.suppress(BaseException):
+                await resp.aclose()
+        raise
     if resp is not None:
         with contextlib.suppress(BaseException):
             await resp.aclose()
     return a
+
+
+async def _empty(a: _Attempt, resp: httpx.Response) -> _Attempt:
+    a.kind, a.status, a.it = "fail", "empty", None
+    a.headers = {"_why": f"{resp.status_code} with an empty body"}
+    with contextlib.suppress(BaseException):
+        await resp.aclose()
+    return a
+
+
+async def _until_disconnect(request: Request, coro):
+    """Run `coro`; if the caller hangs up first, cancel it and return None.
+
+    Before the commit point nothing reads the client socket, so without this
+    a caller that gave up keeps a slot (and the engine) busy until the
+    upstream answers — and a non-stream request is then audited as "ok"."""
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+                return None
+    except BaseException:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        raise
 
 
 def _client_class(caller: core.Caller, request: Request) -> str:
@@ -927,13 +1003,26 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         else:
             limit = c.n.nonstream_timeout_s
         deadline = min(now + limit, budget_end)
-        adm = hy.state.admit(c.d.id, c.n.id, now)
-        hs = hy.state.health[c.d.id]
+        # Re-vetted at admission, not only in decide(): the plan is stale by
+        # the time a failover attempt runs (a HALF_OPEN trial taken, a node
+        # gone DOWN or drained). Attempt 0 follows decide() synchronously.
+        adm, why = hy.state.try_admit(c.d.id, c.n.id, now)
+        if adm is None:
+            attempts.append({"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": "skipped",
+                             "ttft_ms": None, "outcome": "skipped", "why": why})
+            continue
+        hs = adm.hs                       # survives a reload that drops the deployment
         try:
-            a = await _attempt(hy, c, path, payload, uh, f.stream, deadline)
+            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline))
         except BaseException:
             adm.release()
             raise
+        if a is None:                     # the caller hung up before the commit point
+            adm.release()
+            attempts.append({"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": "client_gone",
+                             "ttft_ms": None, "outcome": "client_disconnect"})
+            finish(499, "client_disconnect", c.d.id, attempts)
+            return Response(b"", status_code=499, headers=hy.hydra_headers(request_id, route=dec.route))
         now = time.monotonic()
         rec = {"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": a.status,
                "ttft_ms": None if a.ttft_s is None else int(a.ttft_s * 1000), "outcome": a.kind}
@@ -963,6 +1052,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     hdr = hy.hydra_headers(request_id, route=dec.route, rules=dec.trace.rules,
                            cand=last[0] if last else None, attempts=attempts)
     if last is None:
+        if attempts:                      # every planned target became ineligible meanwhile
+            finish(503, "unavailable", attempts=attempts)
+            return hy.error("hydra_unavailable", "no planned deployment could be admitted "
+                            f"({hdr.get('X-Hydra-Attempts', '')})", hdr, retry_after=5)
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
@@ -976,7 +1069,7 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         if a.kind == "timeout":
             finish(504, "timeout", c.d.id, attempts)
             return hy.error("hydra_timeout", f"{c.d.id} produced no first byte in time", hdr)
-        if a.kind == "auth" and all(x["outcome"] == "auth" for x in attempts):
+        if a.kind == "auth" and all(x["outcome"] in ("auth", "skipped") for x in attempts):
             finish(502, "upstream_auth", c.d.id, attempts)
             return hy.error("hydra_upstream_auth", "the node refused hydra's key (AUTH_FAILED); "
                             "see scripts/hydra.sh status", hdr)
@@ -987,12 +1080,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     # ── committed ──
     if f.session_key and dec.route and not dec.strict and route and route.affinity != "none":
         hy.state.affinity.put(f.session_key, c.d.id, time.monotonic())
-    hs = hy.state.health[c.d.id]
+    hs = adm.hs
     if a.ttft_s is not None:
         hy.metrics.observe_ttft(c.d.id, a.ttft_s)
         ms = a.ttft_s * 1000
         hs.h.ttft_ewma_ms = ms if hs.h.ttft_ewma_ms is None else 0.8 * hs.h.ttft_ewma_ms + 0.2 * ms
-    out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}
+    out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}   # no x-hydra-*: _resp_headers
     out_h.update(hdr)
     if a.it is None:
         # non-stream (or a stream that ended at once): the whole body is in hand
@@ -1037,7 +1130,8 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             attempts[-1]["outcome"] = "upstream_failed_midstream"
             _log(f"{c.d.id}: upstream failed mid-stream request_id={request_id}")
             # Loud truncation: an error event and NO [DONE]. Never a replay.
-            yield core.sse_error_event(c.n.id, c.d.id, request_id) if is_sse else b""
+            if is_sse:
+                yield core.sse_error_event(c.n.id, c.d.id, request_id)
         finally:
             with contextlib.suppress(BaseException):
                 await a.resp.aclose()
@@ -1048,6 +1142,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                 close_out("upstream_failed_midstream", int(a.status))
             else:
                 close_out("client_disconnect", int(a.status))
+        if upstream_failed and not is_sse:
+            # No event format to carry the error: abort the response so the
+            # client sees a broken body, never a clean, silently short one.
+            raise _UpstreamTruncated(f"{c.d.id} failed mid-body (request_id={request_id})")
 
     async def sweep():
         # The body iterator may never start (client gone right after headers).

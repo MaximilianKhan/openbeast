@@ -197,6 +197,11 @@ def test_fit_calibrate_gate_end_to_end(tmp_path, capsys):
     mc = next(c for c in g["criteria"] if c["metric"] == "mcnemar_p_vs")
     assert mc["pass"] is True and mc["note"].startswith("not_applicable")
     assert g["min_n_met"] is False                           # 8 rows < 200
+    # an empty component split fails its criterion instead of being dropped
+    ae = next(c for c in g["criteria"] if c["split"] == "test+ood+adversarial")
+    assert ae["pass"] is False and ae["note"] == "empty split(s): ood,adversarial"
+    integ = {i["check"]: i["ok"] for i in g["integrity"]}
+    assert integ == {"dataset status is gated": False, "gate splits pinned in MANIFEST": False}
     rec = json.loads(Path(g["path"]).read_text())
     assert rec["calib_sha256"] == hashlib.sha256(
         Path(rep.get("calibration", {}).get("path") or
@@ -235,3 +240,77 @@ def test_llm_engine_through_the_stub(tmp_path, capsys):
     assert rep["probe"]["ok"] and rep["calibrated"]
     assert "mcnemar" in rep["comparisons"]["rules"]["test"]
     assert len(rep["decision_hash"]) == 64
+
+
+# --- the harness scores the population the service serves (review M4) -----------
+
+TASK_INPUTS = {"prompt_head": "refactor this function", "est_prompt_tokens": 900,
+               "has_images": False, "has_tools": True, "stream": True,
+               "client_class": "ide"}
+
+
+def test_harness_and_service_agree_on_mechanical_masking(tmp_path):
+    from instinct.engines import LockResult, ScoreRes, ScoreRow
+    from instinct.service import Instinct
+    from instinct.config import load_config
+    cfg = load_config(H.write_config(tmp_path, {}, decisions=["hydra.task_class"]), env={})
+    spec = load_spec(H.DECISIONS / "hydra.task_class.toml")
+    q = {"chat": 0.05, "code_agent": 0.75, "long_context": 0.1, "vision": 0.1, "bulk": 0.0}
+
+    async def fixed(req):
+        return ScoreRes(rows=[ScoreRow(q=dict(q), label_mass=1.0)])
+    sc = RUN.Scorer(cfg, spec, "linear")
+    sc.lock = LockResult(True)
+    sc.engine.score = fixed
+    rows = [{"id": "r1", "input": TASK_INPUTS, "label": "code_agent", "source": "handwritten"}]
+    harness_p = RUN.apply_T(H.run(sc.score_rows(rows)), 1.0)[0]["p"]
+
+    inst = Instinct(cfg)
+    H.run(inst.reload())
+    inst.calib[(spec.id, "linear")] = {"T": 1.0, "thresholds": {}}
+    out = H.run(inst._evaluate(inst.specs[spec.id], "linear", H.run(fixed(None)), None))
+    served = out.answer.probabilities
+    assert served["vision"] == 0.0 and served["long_context"] == 0.0
+    assert served["code_agent"] == pytest.approx(0.9375)
+    assert harness_p == pytest.approx(served)
+
+
+def test_mechanical_rows_are_not_part_of_the_judged_population():
+    spec = load_spec(H.DECISIONS / "hydra.task_class.toml")
+    rows = [{"id": "a", "input": dict(TASK_INPUTS), "label": "code_agent"},
+            {"id": "b", "input": dict(TASK_INPUTS, has_images=True), "label": "vision"},
+            {"id": "c", "input": dict(TASK_INPUTS, est_prompt_tokens=90000),
+             "label": "long_context"}]
+    kept, dropped = RUN.judged_rows(spec, {"test": rows, "calib": rows[:1]})
+    assert [r["id"] for r in kept["test"]] == ["a"] and dropped == {"test": 2}
+    assert RUN.judged_rows(SPAWN, {"test": rows}) == ({"test": rows}, {})   # no mechanical
+
+
+def test_fitted_threshold_never_lowers_the_spec_floor():
+    from instinct.core import effective_threshold
+    assert SPAWN.policy.act["inline"] == 0.90
+    assert effective_threshold(SPAWN, "inline", {"inline": 0.55}) == 0.90
+    assert effective_threshold(SPAWN, "inline", {"inline": 0.97}) == 0.97
+    assert effective_threshold(SPAWN, "inline", {"inline": None}) is None
+    assert effective_threshold(SPAWN, "inline", None) == 0.90
+
+
+def test_gate_integrity_needs_a_gated_pinned_set_and_a_probe():
+    import types
+    spec = SPAWN
+    pins = {k: "x" for k in ("test", "ood", "adversarial")}
+    llm = types.SimpleNamespace(adapter="llamacpp_logprobs",
+                                probe=types.SimpleNamespace(ok=True))
+    ok = RUN.gate_integrity(spec, {"status": "gated", "files": pins}, llm,
+                            types.SimpleNamespace(no_probe=False))
+    assert all(i["ok"] for i in ok)                          # control
+    seed = RUN.gate_integrity(spec, {"status": "seed", "files": pins}, llm,
+                              types.SimpleNamespace(no_probe=False))
+    assert [i["ok"] for i in seed] == [False, True, True]
+    unpinned = RUN.gate_integrity(spec, {"status": "gated", "files": {"test": "x"}}, llm,
+                                  types.SimpleNamespace(no_probe=False))
+    assert unpinned[1]["ok"] is False and unpinned[1]["detail"] == ["adversarial", "ood"]
+    noprobe = RUN.gate_integrity(spec, {"status": "gated", "files": pins},
+                                 types.SimpleNamespace(adapter="llamacpp_logprobs", probe=None),
+                                 types.SimpleNamespace(no_probe=True))
+    assert noprobe[2]["ok"] is False

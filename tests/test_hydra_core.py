@@ -103,6 +103,25 @@ def test_example_config_validates(tmp_path, monkeypatch):
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
 
 
+def _served_alias(script: str) -> str:
+    import re
+    m = re.search(r'^\s*-a "([^"]+)"', (REPO / "scripts" / script).read_text(), re.M)
+    assert m, script
+    return m.group(1)
+
+
+def test_example_upstreams_are_the_ids_llama_server_actually_lists():
+    # llama-server lists its -a alias as the /v1/models id (server-context.cpp:
+    # model_name = *params_base.model_alias.begin()). An example upstream that
+    # is a slug instead makes the rig MISMATCH forever once the runbook's
+    # "name the rig deployment explicitly" step is followed.
+    raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
+    deps = raw["deployments"]
+    assert deps["qwen38-unc-q5@rig"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-mtp-q5.sh")
+    assert deps["qwen36-a3b-q4@ti"]["upstream"] == _served_alias("serve-qwen-35b-a3b.sh")
+    assert all(d.get("verify_upstream", True) for d in deps.values())
+
+
 def test_implicit_config_from_env():
     cfg = core.implicit_config({"INFERENCE_URL": "http://127.0.0.1:8080", "INFERENCE_BACKEND": "llama",
                                 "INFERENCE_SLOTS": "2"})
@@ -207,6 +226,36 @@ def test_validation_rejects(name):
     with pytest.raises(core.ConfigError) as e:
         core.validate(_mut(fn), {})
     assert any(needle in x for x in e.value.errors), e.value.errors
+
+
+def _wrong_type_cases():
+    wrong = {int: "2", float: "2", str: [1], bool: "yes", list: 7, dict: 7}
+    tables = [(("hydra",), core._HYDRA_TYPES), (("hydra", "breaker"), core._BREAKER_TYPES),
+              (("hydra", "instinct"), core._INSTINCT_TYPES), (("nodes", "rig"), core._NODE_TYPES),
+              (("deployments", "unc@rig"), core._DEP_TYPES), (("routes", "beast"), core._ROUTE_TYPES)]
+    out = []
+    for where, types in tables:
+        for k, want in types.items():
+            for bad in [wrong[t] for t in want] + ["x", 1.5, [1], {"a": 1}]:
+                if not isinstance(bad, want) or (isinstance(bad, bool) and bool not in want):
+                    out.append((where, k, bad))
+    out += [(("hydra", "instinct"), "engine_urls", [1]), (("routes", "beast"), "targets", [1]),
+            (("routes", "beast"), "targets", [{"d": "unc@rig", "priority": "0"}])]
+    return out
+
+
+@pytest.mark.parametrize("where,key,bad", _wrong_type_cases(), ids=lambda v: repr(v)[:30])
+def test_a_wrong_type_anywhere_is_a_config_error_never_a_crash(where, key, bad):
+    # /hydra/reload and --check only understand ConfigError: a TypeError
+    # would 500 the reload and leave last_reload_error unset.
+    raw = base()
+    t = raw
+    for w in where:
+        t = t.setdefault(w, {})
+    t[key] = bad
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert e.value.errors
 
 
 def test_validation_reports_every_error_at_once():
@@ -725,6 +774,48 @@ def test_half_open_admits_exactly_one_trial():
     adm.release()
     adm.release()                                           # idempotent
     assert hs.admit_reason(now) is None and st.inflight("nvfp4@sparks") == 0
+
+
+def test_try_admit_revets_a_stale_plan():
+    # decide() plans failover up front; admission must re-check (plan §6.5).
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    now = 31.0
+    first, why = st.try_admit("nvfp4@sparks", "sparks", now)
+    assert first is not None and why is None and first.trial
+    second, why = st.try_admit("nvfp4@sparks", "sparks", now)
+    assert second is None and "HALF_OPEN" in why, "exactly one HALF_OPEN trial"
+    first.release()
+    assert st.try_admit("nvfp4@sparks", "sparks", now)[0] is not None
+    st.health["moe@ti"].h.state = core.DOWN
+    assert st.try_admit("moe@ti", "ti", now) == (None, "DOWN")
+    st.drained = {"rig": "lease"}
+    adm, why = st.try_admit("unc@rig", "rig", now)
+    assert adm is None and "drained" in why and st.node_inflight("rig") == 0
+
+
+def test_an_admission_outlives_a_reload_that_drops_its_deployment():
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    adm = st.admit("nvfp4@sparks", "sparks", 31.0)           # the HALF_OPEN trial
+    raw = base()
+    raw["deployments"]["nvfp4b@sparks"] = raw["deployments"].pop("nvfp4@sparks")
+    for r in raw["routes"].values():
+        r["targets"] = [dict(t, d="nvfp4b@sparks") if t["d"] == "nvfp4@sparks" else t for t in r["targets"]]
+    st.adopt(cfg_of(raw))
+    assert "nvfp4@sparks" not in st.health
+    adm.hs.record_success(32.0)                              # no KeyError: the admission kept its state
+    adm.release()
+    assert st.node_inflight("sparks") == 0 and adm.hs.h.trial_inflight == 0
+    orphan = st.admit("nvfp4@sparks", "sparks", 33.0)         # planned before the reload, admitted after
+    orphan.release()
+    assert st.node_inflight("sparks") == 0
 
 
 def test_auth_and_mismatch_transitions():
