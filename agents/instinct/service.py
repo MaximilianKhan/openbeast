@@ -278,7 +278,10 @@ class Instinct:
         if st.last_probe is None:
             return False
         interval = self.cfg.probe_interval_s
-        return interval <= 0 or (self.clock() - st.last_probe) <= 2 * interval
+        # probe_interval_s = 0 turns periodic conformance OFF; then no probe
+        # is ever "fresh" for an LLM engine, so it can never enforce (one
+        # startup probe must not vouch for an engine forever).
+        return interval > 0 and (self.clock() - st.last_probe) <= 2 * interval
 
     def lifecycle(self, did: str, name: str, ceiling: str) -> tuple[str, str | None]:
         spec, eng = self.specs[did], self.engines[name]

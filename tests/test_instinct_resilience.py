@@ -409,3 +409,24 @@ def test_reload_keeps_auto_demotion_until_the_hash_changes(tmp_path):
     assert inst.hashes[(DID, "linear")] is not None
     assert inst.demotions.reason(DID) is None
     H.run(inst.aclose())
+
+
+# --- m5: periodic conformance off means an LLM engine can never enforce ---------
+
+def test_probe_interval_zero_never_counts_as_fresh(tmp_path):
+    async def body(url):
+        cfgp = H.write_config(tmp_path, {"stub": H.llama_binding(url)},
+                              extra_decisions={DID: _spec('["stub", "rules"]', "enforce")},
+                              service={"probe_interval_s": 0})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg)
+        await inst.start()
+        _gate(inst, cfg, "stub")
+        mode = inst.lifecycle(DID, "stub", "enforce")
+        inst.cfg.probe_interval_s = 300            # control: periodic probing on
+        mode_on = inst.lifecycle(DID, "stub", "enforce")
+        await inst.aclose()
+        return mode, mode_on
+    with H.stub_server() as (url, _):
+        mode, mode_on = H.run(body(url))
+    assert mode == ("shadow", "conformance_failed") and mode_on == ("enforce", None)

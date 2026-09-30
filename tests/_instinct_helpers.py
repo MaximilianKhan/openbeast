@@ -58,7 +58,7 @@ def write_config(tmp: Path, engines: dict[str, dict], *, decisions: list[str] | 
     rec.mkdir(parents=True, exist_ok=True)
     svc = {"host": "127.0.0.1", "port": 0, "key_file": str(tmp / "instinct.key"),
            "ledger_dir": str(tmp / "ledger"), "decisions_dir": str(ddir),
-           "records_dir": str(rec), "probe_interval_s": 0,
+           "records_dir": str(rec), "probe_interval_s": 300,
            "require_committed_gate": False}
     svc.update(service or {})
     lines = ["[service]"]
