@@ -171,8 +171,9 @@ echo 'ARTIFACT_OPERATORS=you@example.com'  >> openbeast.conf   # your tailnet lo
 
 `ARTIFACT_OPERATORS` matters more than it looks. Everything the rig publishes
 is owned by the rig, and the first login on that list is the rig's admin: the
-one who can open the rig's private pages from a phone. Leave it out and every
-`publish` warns that the page opens for nobody yet.
+one who can open the rig's private pages from a phone. Leave it out (and
+`CHAT_OPERATORS`, which it falls back to) and every `publish` warns that the
+page opens for nobody yet.
 
 Publish something from the shell:
 
@@ -250,9 +251,12 @@ echo 'CHAT_OPERATORS=you@example.com'  >> openbeast.conf   # your tailnet login
 ./stop.sh && ./start.sh -d
 ./scripts/setup-tailscale.sh --publish-chat                # once; needs sudo
 ./scripts/clients.sh enroll phone --label "My phone" --scope chat
+# phone already enrolled for beast-artifact? enroll refuses a second time;
+# add the scope to the key it has instead:
+#   ./scripts/clients.sh scope phone add chat
 ```
 
-The last command prints a key **once**. Open
+The enroll command prints a key **once**. Open
 `https://<rig>.<tailnet>.ts.net:8445` on the phone, tap 🔑 and paste it
 (reading needs only your tailnet login; steering, stopping and starting need
 the key). Then **Add to Home Screen**: it installs as an app.

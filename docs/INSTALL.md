@@ -613,8 +613,8 @@ never create one (pin, share, tag or delete it only with a device key enrolled
 with `--scope artifact`). Pages the rig publishes — the CLI, campaigns,
 background agents — are owned by the rig itself, and the first
 `ARTIFACT_OPERATORS` entry (or `ARTIFACT_ADMINS`) administers them. **Leave
-`ARTIFACT_OPERATORS` empty and no tailnet login can open a private page the
-rig published, your phone included** — any identified login can still read
+`ARTIFACT_OPERATORS` empty (and `CHAT_OPERATORS`, its fallback) and no tailnet
+login can open a private page the rig published, your phone included** — any identified login can still read
 pages marked `tailnet`, and `artifact.sh publish` warns about it every time.
 Set `ARTIFACT_OPERATORS=you@example.com` before you publish the port.
 `--publish-slot` needs the
