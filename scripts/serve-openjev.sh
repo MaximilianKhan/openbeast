@@ -35,8 +35,10 @@
 # on the stock base — it only shadows until evals/decisions re-validates it on
 # the uncensored one (plan revision 2026-09-30).
 #
-# Env: OPENJEV_IMAGE (required), OPENJEV_CHECKPOINT_DIR (…/package/checkpoint),
-#      OPENJEV_HF_CACHE (an HF hub cache holding the base revision),
+# Env: OPENJEV_IMAGE (required), OPENJEV_CHECKPOINT_DIR (default
+#      $WEIGHTS_DIR/Open-Jev-27B-v1.1/package/checkpoint),
+#      OPENJEV_HF_CACHE (default $WEIGHTS_DIR/hf-cache; an HF hub cache
+#      holding the base revision),
 #      OPENJEV_KEY_FILE (default $RUN_DIR/openjev.key, minted 0600 — copy it
 #      0600 to the rig as .run/openjev.key), OPENJEV_RUN_DIR (default .run),
 #      OPENJEV_DOCKER (docker|podman), OPENJEV_CONTAINER (openbeast-openjev),
@@ -48,6 +50,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/portown.sh
 source "$SCRIPT_DIR/lib/portown.sh"
+# shellcheck source=lib/weights.sh
+source "$SCRIPT_DIR/lib/weights.sh"
 
 PACKAGE_REPO="ZefanCai/Open-Jev-27B-v1.1"
 PACKAGE_REVISION="28cf73067d5b337860bbef3c85b8b82ba8730956"
@@ -119,7 +123,10 @@ cmd_up() {
   esac
   local image="${OPENJEV_IMAGE:-}"
   [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]] || die "OPENJEV_IMAGE must be pinned: <repo>@sha256:<64 hex> (got '${image:-unset}')"
-  local ckpt="${OPENJEV_CHECKPOINT_DIR:-}" hf="${OPENJEV_HF_CACHE:-}"
+  # Defaults live under WEIGHTS_DIR like every other launcher's weights, so
+  # a relocated weights drive works here too.
+  local ckpt="${OPENJEV_CHECKPOINT_DIR:-$WEIGHTS_DIR/Open-Jev-27B-v1.1/package/checkpoint}"
+  local hf="${OPENJEV_HF_CACHE:-$WEIGHTS_DIR/hf-cache}"
   [[ -n "$ckpt" && -d "$ckpt" ]] || die "OPENJEV_CHECKPOINT_DIR is not a directory (the package's package/checkpoint)"
   [[ -n "$hf" && -d "$hf" ]] || die "OPENJEV_HF_CACHE is not a directory (an HF hub cache holding $base_repo@$base_rev)"
   local f
