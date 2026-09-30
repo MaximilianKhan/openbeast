@@ -413,6 +413,16 @@ fi
 # --- 7d. review 2026-09-29 ---
 echo ""
 echo "review 2026-09-29:"
+# (a) The job knows its own session id (chat<->artifact link, F-C5).
+"$CLI" run --title "sid job" -- bash -c 'echo "sid=${OPENBEAST_SESSION_ID:-unset}"' >/dev/null 2>&1
+SID_ID="$(_latest)"
+_await_terminal "$SID_ID" 15
+if grep -q "^sid=$SID_ID\$" "$(_q "$SID_ID" 'rec["transcript"]')"; then
+  pass "the job's environment carries OPENBEAST_SESSION_ID=<its id>"
+else
+  fail "OPENBEAST_SESSION_ID missing from the job env: $(grep '^sid=' "$(_q "$SID_ID" 'rec["transcript"]')")"
+fi
+
 # (b) The supervisor's own verdict replaces a `lost` GUESS a reader persisted
 # while the job ran (a failed ps probe on a busy macOS client, say). Built
 # case: flip the live record to `lost` by hand, then let the job exit 0.

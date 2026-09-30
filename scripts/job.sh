@@ -269,6 +269,9 @@ _supervise() {
   # running, which would delay the ledger write until after the job died.
   trap 'stopped=1; [[ -n "${child:-}" ]] && kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
 
+  # Lets whatever the job runs say which session it belongs to — e.g. an
+  # artifact published from inside a job can link back to it.
+  export OPENBEAST_SESSION_ID="$session_id"
   cd "$workdir" || { OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" failed "workdir gone: $workdir"; exit 1; }
   "$@" >> "$log" 2>&1 &
   child=$!
