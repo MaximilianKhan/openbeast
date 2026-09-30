@@ -836,3 +836,86 @@ def test_a_known_served_id_that_vanishes_is_mismatch(fleet):
     srv.hy.next_models.clear()
     wait_ready(srv, ["unc@rig"], core.MISMATCH)
     assert post(srv, chat(model="unc@rig")).status_code == 503
+
+
+# ───────────────────────────── fault injection (review 2026-09-30) ─────────────────────────────
+
+def _rename(srv, tmp_path, old, new):
+    raw = copy.deepcopy(srv.raw)
+    raw["deployments"][new] = raw["deployments"].pop(old)
+    for r in raw["routes"].values():
+        for tg in r["targets"]:
+            if tg["d"] == old:
+                tg["d"] = new
+    (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
+    assert httpx.post(srv.url + "/hydra/reload", headers=srv.local()).json()["ok"]
+    assert old not in srv.hy.state.health
+
+
+def test_a_reload_that_renames_the_deployment_mid_request_does_not_leak(fleet, tmp_path):
+    srv, rig, sparks, _ = fleet(cfg_file=True)
+    got = {}
+
+    def slow():
+        r = post(srv, chat(model="solo"), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    _rename(srv, tmp_path, "unc@rig", "unc2@rig")
+    t.join(15)
+    assert got["r"] == (200, "unc@rig"), got
+    assert srv.hy.state.node_inflight("rig") == 0, "a reload leaked the rig's only slot"
+    assert audit_rows(tmp_path)[-1]["outcome"] == "ok"
+
+
+def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapshot(fleet, tmp_path):
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1), cfg_file=True)
+    got = {}
+
+    def slow():
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:1500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    _rename(srv, tmp_path, "nvfp4@sparks", "nvfp4b@sparks")
+    t.join(15)
+    assert got["r"][:2] == (200, "nvfp4@sparks"), got
+    assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
+
+
+def test_a_half_open_trial_is_exclusive_across_failover(fleet):
+    # A holds the 1-slot rig and times out into sparks; B has meanwhile spilled
+    # to sparks as the single HALF_OPEN trial. A's failover (planned before B
+    # took the trial) must not become a second trial.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1))
+    hs = srv.hy.state.health["nvfp4@sparks"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000       # due for HALF_OPEN
+    seen = {"trial": 0}
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            seen["trial"] = max(seen["trial"], hs.h.trial_inflight)
+            time.sleep(0.005)
+    out = {}
+
+    def req(name):
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:2000"})
+        out[name] = (r.status_code, r.headers.get("x-hydra-attempts"))
+    w = threading.Thread(target=watch)
+    w.start()
+    a = threading.Thread(target=req, args=("a",))
+    a.start()
+    time.sleep(0.3)
+    b = threading.Thread(target=req, args=("b",))
+    b.start()
+    a.join(20)
+    b.join(20)
+    stop.set()
+    w.join()
+    assert out["b"][1].startswith("nvfp4@sparks:"), out
+    assert "nvfp4@sparks:skipped" in out["a"][1], out
+    assert seen["trial"] <= 1 and sparks.max_inflight_seen <= 1, (seen, sparks.max_inflight_seen)
+    assert srv.hy.state.inflight("nvfp4@sparks") == 0 and hs.h.trial_inflight == 0

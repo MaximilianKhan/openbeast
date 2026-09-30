@@ -757,6 +757,48 @@ def test_half_open_admits_exactly_one_trial():
     assert hs.admit_reason(now) is None and st.inflight("nvfp4@sparks") == 0
 
 
+def test_try_admit_revets_a_stale_plan():
+    # decide() plans failover up front; admission must re-check (plan §6.5).
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    now = 31.0
+    first, why = st.try_admit("nvfp4@sparks", "sparks", now)
+    assert first is not None and why is None and first.trial
+    second, why = st.try_admit("nvfp4@sparks", "sparks", now)
+    assert second is None and "HALF_OPEN" in why, "exactly one HALF_OPEN trial"
+    first.release()
+    assert st.try_admit("nvfp4@sparks", "sparks", now)[0] is not None
+    st.health["moe@ti"].h.state = core.DOWN
+    assert st.try_admit("moe@ti", "ti", now) == (None, "DOWN")
+    st.drained = {"rig": "lease"}
+    adm, why = st.try_admit("unc@rig", "rig", now)
+    assert adm is None and "drained" in why and st.node_inflight("rig") == 0
+
+
+def test_an_admission_outlives_a_reload_that_drops_its_deployment():
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    adm = st.admit("nvfp4@sparks", "sparks", 31.0)           # the HALF_OPEN trial
+    raw = base()
+    raw["deployments"]["nvfp4b@sparks"] = raw["deployments"].pop("nvfp4@sparks")
+    for r in raw["routes"].values():
+        r["targets"] = [dict(t, d="nvfp4b@sparks") if t["d"] == "nvfp4@sparks" else t for t in r["targets"]]
+    st.adopt(cfg_of(raw))
+    assert "nvfp4@sparks" not in st.health
+    adm.hs.record_success(32.0)                              # no KeyError: the admission kept its state
+    adm.release()
+    assert st.node_inflight("sparks") == 0 and adm.hs.h.trial_inflight == 0
+    orphan = st.admit("nvfp4@sparks", "sparks", 33.0)         # planned before the reload, admitted after
+    orphan.release()
+    assert st.node_inflight("sparks") == 0
+
+
 def test_auth_and_mismatch_transitions():
     hs = _hs()
     hs.on_probe("ready", 0)

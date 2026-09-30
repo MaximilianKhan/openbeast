@@ -927,8 +927,15 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         else:
             limit = c.n.nonstream_timeout_s
         deadline = min(now + limit, budget_end)
-        adm = hy.state.admit(c.d.id, c.n.id, now)
-        hs = hy.state.health[c.d.id]
+        # Re-vetted at admission, not only in decide(): the plan is stale by
+        # the time a failover attempt runs (a HALF_OPEN trial taken, a node
+        # gone DOWN or drained). Attempt 0 follows decide() synchronously.
+        adm, why = hy.state.try_admit(c.d.id, c.n.id, now)
+        if adm is None:
+            attempts.append({"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": "skipped",
+                             "ttft_ms": None, "outcome": "skipped", "why": why})
+            continue
+        hs = adm.hs                       # survives a reload that drops the deployment
         try:
             a = await _attempt(hy, c, path, payload, uh, f.stream, deadline)
         except BaseException:
@@ -963,6 +970,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     hdr = hy.hydra_headers(request_id, route=dec.route, rules=dec.trace.rules,
                            cand=last[0] if last else None, attempts=attempts)
     if last is None:
+        if attempts:                      # every planned target became ineligible meanwhile
+            finish(503, "unavailable", attempts=attempts)
+            return hy.error("hydra_unavailable", "no planned deployment could be admitted "
+                            f"({hdr.get('X-Hydra-Attempts', '')})", hdr, retry_after=5)
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
@@ -976,7 +987,7 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         if a.kind == "timeout":
             finish(504, "timeout", c.d.id, attempts)
             return hy.error("hydra_timeout", f"{c.d.id} produced no first byte in time", hdr)
-        if a.kind == "auth" and all(x["outcome"] == "auth" for x in attempts):
+        if a.kind == "auth" and all(x["outcome"] in ("auth", "skipped") for x in attempts):
             finish(502, "upstream_auth", c.d.id, attempts)
             return hy.error("hydra_upstream_auth", "the node refused hydra's key (AUTH_FAILED); "
                             "see scripts/hydra.sh status", hdr)
@@ -987,7 +998,7 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     # ── committed ──
     if f.session_key and dec.route and not dec.strict and route and route.affinity != "none":
         hy.state.affinity.put(f.session_key, c.d.id, time.monotonic())
-    hs = hy.state.health[c.d.id]
+    hs = adm.hs
     if a.ttft_s is not None:
         hy.metrics.observe_ttft(c.d.id, a.ttft_s)
         ms = a.ttft_s * 1000
