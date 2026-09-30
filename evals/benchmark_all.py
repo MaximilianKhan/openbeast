@@ -167,6 +167,10 @@ BENCH_EXCLUDED = {
     "scripts/serve-qwen38-27b-vision-mtp-q5.sh":
         "same as above against qwen38-27b-mtp-q5 (also runs at 224K, not the "
         "twin's 262K, so its numbers would not even be directly comparable).",
+    "scripts/serve-instinct-scorer.sh":
+        "not a chat model: beast-instinct's CPU decision scorer (Qwen3-0.6B, "
+        "answer-boundary logprobs on :8082). Its quality is measured by "
+        "evals/decisions/, never by the agentic suite.",
 }
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
