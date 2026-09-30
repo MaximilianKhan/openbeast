@@ -51,14 +51,18 @@ reading twice.
 
 ```bash
 echo "BEAST_ARTIFACT=true" >> openbeast.conf
+echo "ARTIFACT_OPERATORS=you@example.com" >> openbeast.conf   # your tailnet login
 ./stop.sh && ./start.sh -d
 
 ./scripts/artifact.sh publish page.html --title "Weekly numbers"
 #   → https://beast:8446/a/3f1c9e4a-77b2-4d0e-9a51-0d2e6b8c4411  (v1)
 ```
 
-That URL works on the rig immediately. To reach it from your phone, publish
-the port once:
+`ARTIFACT_OPERATORS` is what lets *you* open the rig's private pages from a
+phone: everything the rig publishes is owned by the rig, and the first login
+on that list administers it. Leave it out and no tailnet login can open a
+private page the rig published — `publish` warns you every time until it is
+set. To reach the page from your phone, publish the port once:
 
 ```bash
 ./scripts/setup-tailscale.sh --publish-artifact      # needs sudo
@@ -99,8 +103,21 @@ Two states, and there is no third:
 
 | `visibility` | Who can open it |
 |---|---|
-| `private` (default) | you — the login that published it |
-| `tailnet` | any login in `ARTIFACT_OPERATORS` |
+| `private` (default) | its owner, and the rig's admins |
+| `tailnet` | any login in `ARTIFACT_OPERATORS` (any identified login when the list is empty) |
+
+**Owners and admins.** A page published through Open WebUI is owned by the
+forwarded email of whoever asked. A page published by the rig itself — the
+CLI, campaign scripts, background agents, OpenCode on the rig — is owned by
+the **rig** principal, one stable owner whatever the allowlist says. *Admins*
+see and manage every page, and the gallery shows them each page's owner: the
+locality token (anything on the rig), plus `ARTIFACT_ADMINS` if set, else the
+**first** `ARTIFACT_OPERATORS` entry. Not every operator — on a multi-user rig
+operators' private pages stay private from each other; list the logins in
+`ARTIFACT_ADMINS` if you want several admins. With no operator configured,
+nobody on the tailnet is an admin: the first login to show up is never
+auto-trusted. Pages from before this model (owner `local`) are re-owned to the
+rig at server start, once, with a row in `index.jsonl` each.
 
 **There is no "public".** Your tailnet is the perimeter; beast-artifact is
 never exposed with `tailscale funnel`, for the same reason nothing else in
@@ -128,25 +145,37 @@ write credential to every uid on the box.
 
 ```bash
 ./scripts/artifact.sh publish <file.html> [options]
-./scripts/artifact.sh list [--json]
+./scripts/artifact.sh list [--json] [--limit N | --all] [--session ID] [--tag T]
 ./scripts/artifact.sh show <id>
 ./scripts/artifact.sh versions <id>
 ./scripts/artifact.sh rollback <id> <n>
 ./scripts/artifact.sh visibility <id> private|tailnet
-./scripts/artifact.sh remove <id> --yes
+./scripts/artifact.sh pin <id>  |  unpin <id>
+./scripts/artifact.sh tag <id> [TAG]...          # replaces the tags; none clears
+./scripts/artifact.sh chown <id> <login|rig>     # admin: hand a page over
+./scripts/artifact.sh prune <id> --keep N --yes  # delete old versions, keep the URL
+./scripts/artifact.sh remove <id> [--version N] --yes
 ```
+
+The CLI acts as the rig, so it can manage every page. `list` shows 25 rows by
+default and says "Showing 25 of N" when there are more. A page is capped at
+200 versions; `prune` (or `remove --version`) makes room at the same URL — the
+current version and the last one are never deleted. When
+`OPENBEAST_SESSION_ID` is set (beast-chat sessions export it), `publish`
+records it as the version's source session; the shell then shows *made by
+session …*, linked to the chat console when `:8445` is published.
 
 `publish` options:
 
 | Option | Effect |
 |---|---|
-| `--title "…"` | gallery + shell title. Omitted → the page's own `<title>` (scanned in the first 8 KB) |
+| `--title "…"` | gallery + shell title. Omitted → the page's own `<title>` (scanned in the first 8 KB, on every version), else the stored title |
 | `--description "…"` | one sentence, shown as the gallery row's subtitle |
-| `--favicon "📊"` | one or two emoji; **fixed for the life of the artifact** — people find a tab by its icon |
+| `--favicon "📊"` | one or two emoji, the tab icon; **fixed for the life of the artifact** — the first one given sticks, later ones are ignored |
 | `--id <uuid>` | publish *into* an existing artifact: same URL, next version |
 | `--label "…"` | a few words naming this version in the picker |
 | `--file published=source` | add a supporting file (repeatable) — `--file app.js=dist/app.js` publishes at `app.js` next to the page |
-| `--visibility tailnet` | publish straight to tailnet-visible (default `private`) |
+| `--visibility tailnet` | publish straight to tailnet-visible (default `private`). **Creation only**: a republish keeps the page's visibility, and `publish` prints the effective one (and a warning if you asked for another) |
 
 Caps, enforced at publish and mirroring what Claude Code's artifacts accept:
 **16 MB** for the page or any text file, **15 MB** per binary file, **255**
@@ -163,16 +192,27 @@ where it was.
 
 ```
 publish_artifact(path, title="", description="", favicon="",
-                 artifact_id="", label="", visibility="private")
+                 artifact_id="", label="", visibility="")
     # no `files=` — supporting files are CLI-only (artifact.sh --file pub=src)
-    → "Published Weekly numbers → https://beast:8446/a/<id> (v3)"
+    → 'Published "Weekly numbers" → https://beast:8446/a/<id> (v3, id <id>, visibility private)'
+    #   plus a NOTE: line when the page will not open where you expect
 
 list_artifacts(limit=25)
     → one line per artifact: title, url, versions, visibility, updated
 ```
 
-- `path` is a file the model already wrote with `write_file`. Write the page
-  first, publish second — the tool does not take inline HTML.
+- `path` is a file the model already wrote with `write_file`, and it must be
+  **inside the caller's workspace** (and not the store's own tree): publishing
+  mints a durable URL on the tailnet, so the tool will not turn an arbitrary
+  file on the rig into one. Write the page first, publish second — the tool
+  does not take inline HTML. The human publishes anything with the CLI.
+- `visibility` applies when the page is first published only; the result
+  always names the page's actual visibility. With no `<title>` in the page and
+  no `title`, the filename names it.
+- Under OpenCode (which starts the tool server with your plain shell
+  environment) the tools read `BEAST_ARTIFACT` from the rig's
+  `openbeast.conf`. On a client machine they answer that artifacts are
+  published on the rig.
 - Passing `artifact_id` from a previous result is how a model *updates* a page
   it published earlier in the same conversation instead of minting a new URL.
 - Both return a string and never raise, like every other tool.
@@ -190,8 +230,9 @@ This maps `tailscale serve --bg --https=8446 http://127.0.0.1:3004` — or, on a
 rig with a specific `BIND_HOST`, that address instead of `127.0.0.1`, because
 the server listens only where it binds — with the same MagicDNS and cert
 pre-checks as every other published port. (Tailnet logins are honoured only
-from a loopback peer, so on such a rig `:8446` serves public pages only; keep
-`BIND_HOST` loopback, the default, for login-gated reads.) OpenBeast now
+from a peer on the rig itself: loopback, or — for a LAN `BIND_HOST` — a
+connection made from that same address, which is what `tailscale serve` on
+the rig does. Any other host presenting the header is anonymous.) OpenBeast now
 publishes several ports, so every `setup-tailscale.sh` setup run (with or
 without a `--publish-*` flag) prints the mount table after configuring serve —
 `:443` WebUI, `:8443` inference, `:8444` slot discovery, `:8445` chat, `:8446`
@@ -220,16 +261,34 @@ login that is not listed. Set it before you publish the port:
 echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf
 ```
 
-**Write access is loopback-only in v1.** Publish, patch, rollback and delete
-all require the proof-of-locality token, which only a process on the rig can
-read. Nothing arriving over the tailnet can create, change or remove an
-artifact — a phone can view and nothing else. Remote publish (a device key
-carrying an `artifact` scope) is a small addition and deliberately not in v1.
+**Publishing is loopback-only.** It requires the proof-of-locality token,
+which only a process on the rig can read. **Managing** a page — pin, tags,
+share/unshare, rollback, delete — can also come from a phone, with two things
+together: your tailnet login (from `tailscale serve`) and a device key
+enrolled with the `artifact` scope:
+
+```bash
+./scripts/clients.sh enroll phone --scope artifact    # prints the key once
+```
+
+Paste the key into the shell's **Manage** sheet (⋯); it stays in that
+browser. The server still checks that your login owns the page or is an admin;
+lifecycle bodies are capped at 64 KB and 60 changes a minute per device.
+Missing, unknown, revoked and unscoped keys all get the same flat 404.
+
+**Retention is opt-in.** `ARTIFACT_RETAIN_DAYS=N` in `openbeast.conf` makes the
+server delete, once a day, every **unpinned** page not updated for N days;
+pinned pages are never touched. Unset or `0` (the default) keeps everything.
+Each deletion is an audit row and a ledger row.
 
 Every request **that reaches the server** writes one line to
-`.run/artifact-audit.jsonl` (mode 0600): `ts, login, route, id, n, outcome,
-ms`, plus `sha256` and `bytes` on a publish. Never page content. That covers
-`scripts/artifact.sh` and every tailnet viewer.
+`.run/artifact-audit.jsonl` (mode 0600): `ts, login, method, route, id, n,
+outcome, ms`. `login` is who the server decided the caller was (null when
+refused); a login header it did not honour is kept as `claimed_login` with the
+socket `peer`; `local: true` marks the rig and `device` a phone's key. A
+publish adds `id`, `n`, `owner`, `sha256` and `bytes`; a PATCH names what
+`changed`. Never page content. That covers `scripts/artifact.sh` and every
+tailnet viewer.
 
 The file is bounded per caller, per 5-minute window: unidentified callers
 get 1000 rows per refusal reason (`DENY_AUDIT_ROWS`), and each tailnet login
@@ -258,7 +317,8 @@ takes its capabilities away rather than auditing it.
 
 1. **`sandbox` on the frame.** The viewer shell embeds the artifact as
    `<iframe src="/raw/…" sandbox="allow-scripts allow-forms allow-modals
-   allow-popups">`. No `allow-same-origin`, which is the whole point: the
+   allow-popups allow-popups-to-escape-sandbox">`. No `allow-same-origin`,
+   which is the whole point: the
    document gets an **opaque origin**, so it has no cookies, no
    `localStorage`, no `IndexedDB`, no same-origin access to anything, and no
    ability to ride your tailnet identity into Open WebUI on `:443`.
@@ -268,9 +328,10 @@ takes its capabilities away rather than auditing it.
 
 ```
 Content-Security-Policy:
-  sandbox allow-scripts allow-forms allow-modals allow-popups;
+  sandbox allow-scripts allow-forms allow-modals allow-popups
+          allow-popups-to-escape-sandbox;
   default-src 'none';
-  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com
+  script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com
              https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com
              https://code.jquery.com;
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
@@ -285,7 +346,15 @@ Cross-Origin-Resource-Policy: same-origin
 
 This is the first CSP in the OpenBeast codebase. A regression test pins the
 exact header string and the exact `sandbox` attribute; if you are changing
-either, that test failing is the feature working.
+either, that test failing is the feature working. `'unsafe-eval'` is there
+because Alpine.js, Vue's in-DOM templates and friends compile at runtime; it
+grants nothing `'unsafe-inline'` does not already grant inside this sandbox.
+`allow-popups-to-escape-sandbox` lets a link the page opens in a new tab be the
+real site rather than a crippled opaque-origin copy — one of our own `/raw/`
+pages opened that way still carries this CSP by header. External links in a
+page open in a new tab (the viewer adds a small click handler at serve time):
+a plain link used to navigate the frame into the shell's `frame-src 'self'`
+and replace the page with "This content is blocked".
 
 ### Why supporting files need a token
 
@@ -309,9 +378,12 @@ the id and version keyed by `.run/artifact-raw.key` (0600, persisted so open
 tabs survive a restart). Relative URLs in the page inherit the token; files
 under that path are served `Cross-Origin-Resource-Policy: cross-origin` with
 `Access-Control-Allow-Origin: *` (module scripts and fonts are CORS-mode
-fetches, and the sandbox's `Origin` is the literal `null`). A hostile page
-cannot learn the token — it cannot read the shell that carries it — and the
-untokenized file route keeps `same-origin`. **The token is not an identity:**
+fetches, and the sandbox's `Origin` is the literal `null`). A third-party
+page cannot learn the token — it cannot read the shell that carries it. The
+framed artifact itself *can* (it is in its own `location.href`), which unlocks
+only that version's files — files it can already load — and it cannot mint a
+token for any other id or version. The untokenized file route keeps
+`same-origin`. **The token is not an identity:**
 every read gate above still applies to the capability path, and a wrong token
 is the same flat 404 as everything else.
 
@@ -322,7 +394,8 @@ is the same flat 404 as everything else.
 | Run its own inline JavaScript | `fetch` / `XHR` / `WebSocket` anywhere — `connect-src 'none'` |
 | Load a script from the four allowlisted CDNs | Load a script from any other host (unpkg, esm.sh, your own server) |
 | Load a stylesheet from `fonts.googleapis.com` and its font files from `fonts.gstatic.com` | Load a stylesheet, image, or media file from any other external host |
-| Show images, audio and video embedded as `data:` URIs | Read or write cookies, `localStorage`, `sessionStorage`, `IndexedDB` |
+| Show images, audio and video embedded as `data:` URIs, or as `--file` supporting files (served with byte ranges, so video seeks and plays on iOS) | Read or write cookies, `localStorage`, `sessionStorage`, `IndexedDB` |
+| Use `eval` / `new Function` (runtime template compilers) | — |
 | Draw inline SVG, canvas, animations | Start a download — `<a download>` and script-driven saves are inert |
 | Open a popup, use `alert`/`confirm`, navigate **itself** to an external URL | Submit a form anywhere, including to itself — `form-action 'none'` |
 | — | Navigate the top window from inside the shell's frame, or frame another page |
@@ -337,8 +410,10 @@ sandbox instead — stricter on storage (there is none), identical on network.
 ### What the service itself does
 
 - The shell and the gallery are **ours**, not model-authored, and carry their
-  own, looser policy (`frame-ancestors 'none'`, a strict `script-src` that
-  admits only their inline block). Keep those two policies separate.
+  own policy (`frame-ancestors 'none'`, and a `script-src` that is exactly the
+  sha256 of each inline block the template ships — no `'self'`, because a
+  model-authored `/raw/…/x.js` is same-origin, and no `'unsafe-inline'`).
+  Keep those two policies separate.
 - The artifact store is `0700` under `$OPENBEAST_FILES_DIR/artifacts/`,
   alongside the per-user file shards rather than inside them. `meta.json` is
   written atomically (mkstemp + rename) so a crash mid-publish cannot leave a
@@ -348,13 +423,16 @@ sandbox instead — stricter on storage (there is none), identical on network.
 - `Tailscale-User-Login` is forgeable by a process already on the rig. That is
   inside the existing loopback trust model, and it only ever buys *reads* —
   writes need the locality token.
-- **The header counts only from a loopback peer.** The server binds
+- **The header counts only from a peer on the rig.** The server binds
   `OPENBEAST_BIND`, so `BIND_HOST=0.0.0.0` or a LAN address puts `:3004`
   off the box — and a LAN host (or a tailnet node dialling `100.x:3004`
   directly) could send `Host: localhost` plus the owner's login and read
-  every private page, allowlist or not. `tailscale serve` dials from
-  `127.0.0.1`, so the published path is unchanged; any other peer that
-  presents the header is anonymous (404). The peer is the real socket peer:
+  every private page, allowlist or not. So the header counts from loopback,
+  or from a peer whose address IS the address the connection was accepted
+  on — only this host can connect from its own address, which is exactly
+  what `tailscale serve` does when `BIND_HOST` is a LAN address. Any other
+  peer that presents the header is anonymous (404), and the rig's own names
+  (`rig`, `local`) are never accepted from a header at all. The peer is the real socket peer:
   uvicorn runs with `proxy_headers=False`, because `tailscale serve` always
   adds `X-Forwarded-For: <tailnet IP>` and uvicorn's default would otherwise
   rewrite the loopback peer to it. Review 2026-09-29.
@@ -370,7 +448,7 @@ sandbox instead — stricter on storage (there is none), identical on network.
   that rebinds the name to `127.0.0.1` becomes **same-origin** with this
   server, and same-origin means it may set request headers — including the
   `Tailscale-User-Login` header above. On a single-user rig the owner string
-  is the constant `local`, so nothing even had to be guessed: the page could
+  was the constant `local`, so nothing even had to be guessed: the page could
   read the gallery and every `private` artifact. Found in the v1.4.0
   adversarial review; the middleware runs before the identity gate, so a
   rebound `Host` cannot even write an audit row. Extra names go in
@@ -457,11 +535,13 @@ the first.
 |---|---|
 | `artifact.sh` says the server is unreachable | `BEAST_ARTIFACT` is not `true`, or the stack was not restarted after setting it. `./start.sh --status` |
 | **404 on everything** from a phone, while the rig works | Your tailnet login is not in `ARTIFACT_OPERATORS`. This is the intended answer for an unlisted login — it is not a bug, and it is not 403 |
+| The gallery on your phone is empty, but `artifact.sh list` is not | No operator is configured, so the rig's private pages open for nobody. Set `ARTIFACT_OPERATORS=you@example.com` and restart; the rig's pages (old `local` ones included) then open for you |
 | 404 on someone else's link | That artifact is `private`. Its owner runs `artifact.sh visibility <id> tailnet` |
 | **502** from `https://beast:8446` | The port is published but nothing is listening — you ran `--publish-artifact` without turning `BEAST_ARTIFACT` on, or the server died. Same trap as `--publish-slot` and the dashboard extension ([BEAST_SLOT.md](BEAST_SLOT.md)) |
 | `artifact <id> is busy` | Another publish holds that page's lock. Locking is **per page**, so every other page and every read is unaffected; the call gives up after `OPENBEAST_ARTIFACT_LOCK_TIMEOUT` (10s) rather than hanging — an environment variable only, **not** an `openbeast.conf` key (`conf.sh` greps a fixed set of keys and does not map this one), so export it in the unit or the shell that starts the stack. Retry. If it persists, a publisher died mid-write — the next publish steps over the half-written version (it is never served, and never deleted: the only copy of a real version is not something a damaged `meta.json` gets to vote on) and continues |
-| `not your artifact` | Pages are owned by whoever published them. Republishing, re-describing, rolling back, re-sharing and deleting are all owner-only. The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
-| A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read |
+| `not your artifact` | Pages are owned by whoever published them. Re-describing, rolling back, re-sharing, pinning and deleting are owner-or-admin; republishing is owner-only. The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
+| A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read. An admin can hand the page to your tailnet login: `artifact.sh chown <id> you@example.com` |
+| **507** on publish | The rig's disk is full. The error names the failing write; nothing half-written is left behind |
 | The page renders blank | Almost always `localStorage` or `fetch` in the page's startup path. Both throw here. Open the browser console — the error is in the frame's context, not the shell's |
 | A chart library never loads | It is not on the allowlist, or the URL is not an exact pinned version on `cdnjs`. Non-allowlisted hosts fail **silently**, with no visible error |
 | The link the model gave you does not open | Through v1.4.0 the URL was built from the OS hostname, which is neither the tailnet name nor a name the certificate covers. It now follows `tailscale serve` (see *Publishing on the tailnet*). A `http://localhost:3004/…` link means the port is not published: run `./scripts/setup-tailscale.sh --publish-artifact` (a browser cannot present an identity to the loopback viewer, so that link is a 404 even on the rig) |
@@ -475,12 +555,12 @@ the first.
 ## Not in v1
 
 Deliberately out: public-internet sharing, share-by-token or expiring links,
-per-artifact origins, browser-side editing, comments, pins, republish
+per-artifact origins, browser-side editing, comments, republish
 notifications, runtime capabilities inside pages (shared storage, viewer
 identity, asking the model), a general download route for arbitrary shard
 files, and `localStorage` inside artifacts.
 
 Queued behind v1: a Markdown publish lane, a `publish-a-page` skill (it
 regenerates `system-prompt-tools.md`, so it rolls the eval cache era and has
-to land at a campaign boundary), remote publish via a device scope, and — once
-beast-chat exists — turning a comment on an artifact into a steer.
+to land at a campaign boundary), remote *publish* (a device key can manage
+pages, not create them), and turning a comment on an artifact into a steer.
