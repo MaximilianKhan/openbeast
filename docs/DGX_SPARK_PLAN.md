@@ -677,6 +677,19 @@ small: 11 sparse-MLA layers × (512 latent + 128 indexer) per token.
    BY-NC-ND and unreviewed).
 
 **Fallback if the TensorFold EXL3 path fails on hardware:** the one-Spark
-exllamav3/TabbyAPI route with a ~2.25 bpw uncensored quant needs a launcher
-and a `BACKEND` value OpenBeast does not have yet (the profile grammar takes
-`vllm | tensorfold`); Hydra already accepts an `engine = "openai"` node for it.
+exllamav3/TabbyAPI route needs a launcher and a `BACKEND` value OpenBeast
+does not have yet (the profile grammar takes `vllm | tensorfold`); Hydra
+already accepts an `engine = "openai"` node for it. The quant must be built
+from the uncensored base (`base_model: orcarouter/GLM-5.3-Flash-Uncensored-FP8`
+on the Hub card): the candidate at the right size is
+`vcruz305/GLM-5.3-Flash-Uncensored-EXL3-K2` (97.7 GB, MIT, not gated, sha
+`d425c9c4969b9931e0f3b0d573aedc393c44ec6b` on 2026-09-30). The other
+~2.25 bpw EXL3 quants on the Hub (r0b0tlab, 0xSero) are built from the STOCK
+model and are out under the uncensored rule.
+
+**Hydra wiring until the hardware run:** the profile leaves `MAX_MODEL_LEN`
+empty, which Hydra's `profile =` form reads as ctx 0 (and an explicit `ctx`
+next to `profile` is a conflict). Keep the node's explicit
+`upstream = "glm-5.3-flash-uncensored"` plus `ctx` until step 6 has measured
+the admitted context and `MAX_MODEL_LEN` is set; only then switch the node to
+`profile = "glm53-flash-unc-exl3-tensorfold"`.
