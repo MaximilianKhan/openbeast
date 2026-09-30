@@ -1,10 +1,15 @@
 #!/bin/bash
-# beast-instinct CPU scorer: Qwen3-0.6B-Q8_0 on llama-server, 127.0.0.1:8082.
+# beast-instinct FALLBACK scorer: Qwen3-0.6B-Q8_0 on llama-server, 127.0.0.1:8082.
 #
-# P1 (plan §5.14 R1). Ships in P0, UNUSED until INSTINCT_SCORER=true is wired
-# into start.sh. CPU only — CUDA_VISIBLE_DEVICES is emptied and -ngl 0, so it
-# takes no VRAM from the primary. The weight is sha-pinned in
-# scripts/weights.registry (9465e63a…, 639,446,688 bytes); serve.sh checks it.
+# Decisions run on a FULL model (plan revision 2026-09-30): the rig's own 27B
+# (the `rig-27b` binding) now, Open-Jev-27B on its own GPU host next. This
+# 0.6B only answers when the 27B is skipped (its slot busy, the deadline, a
+# failed identity probe) — it never outranks a full model. start.sh runs it
+# when INSTINCT_SCORER=true. CPU only — CUDA_VISIBLE_DEVICES is emptied and
+# -ngl 0, so it takes no VRAM from the primary. The weight is pinned in
+# scripts/weights.registry (9465e63a…, 639,446,688 bytes); serve.sh checks its
+# SIZE only, and the identity probe checks the served NAME — neither hashes the
+# file, so the model_sha256 in decision_hash is the registry's claim.
 #
 #   -c 8192 -np 2   serve.sh adds --kv-unified, so BOTH slots see the full
 #                   8192 tokens from ONE pool — never divide by -np.
@@ -34,7 +39,7 @@ RUN_DIR="${INSTINCT_RUN_DIR:-$REPO_DIR/.run}"
 KEY_FILE="${INSTINCT_SCORER_KEY_FILE:-$RUN_DIR/instinct-scorer.key}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '2,24p' "$0"
+  sed -n '2,27p' "$0"
   exit 0
 fi
 
