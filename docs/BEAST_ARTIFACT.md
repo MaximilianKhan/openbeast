@@ -164,6 +164,23 @@ Caps, enforced at publish and mirroring what Claude Code's artifacts accept:
 files and **64 MB** total per version. A rejection names the file and the cap
 it broke.
 
+### Verdicts and the leaderboard: `scripts/publish-verdict.sh`
+
+A campaign stage can publish its verdict to a URL that stays the same across
+reruns:
+
+```bash
+./scripts/publish-verdict.sh tier3-zig "$OUT/verdict.txt"         # .txt → escaped <pre> page
+python3 evals/scoring.py --html "$OUT/board.html" \
+  && ./scripts/publish-verdict.sh leaderboard "$OUT/board.html"
+```
+
+The id is `uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>")`, so each rerun
+adds a version to the same page. Each version is labelled
+`<git short sha> era=<eval era>` unless you pass `--label`. Pages are always
+private. The script never fails its caller: with `BEAST_ARTIFACT` off or the
+server down it prints one stderr line and exits 0.
+
 ## The two tools
 
 `publish_artifact` and `list_artifacts` ship on the **MCP / Open WebUI
