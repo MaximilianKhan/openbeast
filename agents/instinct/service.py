@@ -176,6 +176,11 @@ class Instinct:
             chains[did] = chain
         self.specs, self.spec_errors, self.chains = specs, errors, chains
         self.demotions.load()
+        for did in self.demotions.cleared:
+            # undemoted: a fresh window, or the next call re-demotes it
+            self.autodemoter.reset(did)
+        if self.demotions.cleared:
+            self.demotions.save_auto()
         for name, eng in self.engines.items():
             relevant = [s for s in specs.values() if name in chains.get(s.id, [])]
             locks = await self._attach(eng, relevant) if relevant else {}

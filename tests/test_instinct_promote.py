@@ -133,3 +133,32 @@ def test_auto_demotion_is_visible_named_and_undemotable(tmp_path):
     assert _cli(cfgp, "undemote", DID).returncode == 0
     st = json.loads(_cli(cfgp, "stats").stdout)
     assert st["_auto_demotions"] == {}
+
+
+def test_undemote_survives_a_service_save_before_the_sighup(tmp_path):
+    """Minor (review): the CLI used to rewrite auto-demoted.json itself; any
+    save by the service before the SIGHUP (it is that file's writer) put the
+    demotion back and the undemote was lost. And the rolling window was not
+    reset, so the next call re-demoted. Now: a tombstone + a fresh window,
+    while a demotion made AFTER the undemote still stands."""
+    import time as _t
+    cfgp, _ = H.promote_linear(tmp_path, mode="enforce")
+    cfg = load_config(cfgp, env={})
+    inst = Instinct(cfg, repo_root=tmp_path)
+    H.run(inst.start())
+    inst.autodemoter._demote(DID, "fallback_rate 9/100")
+    for _ in range(99):
+        inst.autodemoter.outcomes.setdefault(DID, __import__("collections").deque(
+            maxlen=inst.autodemoter.window)).append(True)
+    assert _cli(cfgp, "undemote", DID).returncode == 0
+    inst.demotions.save_auto()                 # the service writes before the SIGHUP
+    H.run(inst.reload())                       # the SIGHUP
+    assert inst.demotions.reason(DID) is None
+    assert DID not in inst.autodemoter.outcomes          # fresh window
+    assert json.loads(_cli(cfgp, "stats").stdout)["_auto_demotions"] == {}
+    # a demotion AFTER the undemote is a new fact and survives a reload
+    _t.sleep(0.01)
+    inst.autodemoter._demote(DID, "fallback_rate 7/100")
+    H.run(inst.reload())
+    assert inst.demotions.reason(DID) == "auto:fallback_rate 7/100"
+    H.run(inst.aclose())

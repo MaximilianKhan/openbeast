@@ -103,14 +103,24 @@ class Demotions:
     `scripts/instinct.sh demote`) plus auto-demotions, which PERSIST to
     auto-demoted.json beside it (B-instinct-06): a restart must not re-arm a
     flapping engine. An auto-demotion records the decision's engine hashes;
-    it ends only when one of them changes (a new thing) or on `undemote`."""
+    it ends only when one of them changes (a new thing) or on `undemote`.
+
+    The service is the ONLY writer of auto-demoted.json. `undemote` writes a
+    timestamped tombstone to undemoted.json instead: had the CLI rewritten
+    the auto file, an auto-demotion the service saved between the CLI's
+    write and the SIGHUP would overwrite it and the undemote would be lost.
+    load() drops every auto record at or before its decision's tombstone and
+    lists those decisions in `cleared`, so the service can also reset their
+    rolling windows (else the next call re-demotes)."""
 
     def __init__(self, path: Path, auto_path: Path | None = None):
         self.path = Path(path)
         self.auto_path = Path(auto_path) if auto_path else self.path.with_name(
             "auto-demoted.json")
+        self.undemote_path = self.path.with_name("undemoted.json")
         self.operator: dict[str, dict] = {}
         self.auto: dict[str, dict] = {}
+        self.cleared: set[str] = set()
         self.load()
 
     def load(self) -> None:
@@ -118,8 +128,19 @@ class Demotions:
         file, so re-reading it on SIGHUP picks up an `undemote` and nothing
         else."""
         self.operator = _read_map(self.path)
-        self.auto = {k: v for k, v in _read_map(self.auto_path).items()
-                     if isinstance(v.get("reason"), str)}
+        auto = {k: v for k, v in _read_map(self.auto_path).items()
+                if isinstance(v.get("reason"), str)}
+        self.cleared = set()
+        for did, tomb in _read_map(self.undemote_path).items():
+            at = tomb.get("at")
+            rec = auto.get(did)
+            if rec is None or not isinstance(at, (int, float)):
+                continue
+            rat = rec.get("at")
+            if not isinstance(rat, (int, float)) or rat <= at:
+                auto.pop(did)
+                self.cleared.add(did)
+        self.auto = auto
 
     def add_auto(self, decision: str, rec: dict) -> None:
         self.auto[decision] = rec

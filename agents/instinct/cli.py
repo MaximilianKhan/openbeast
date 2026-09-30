@@ -36,7 +36,7 @@ from pathlib import Path
 from . import calibrate as C
 from .config import REPO_ROOT, load_config
 from .ledger import read_rows
-from .lifecycle import _read_map, gate_record_ok, git_committed
+from .lifecycle import Demotions, _read_map, gate_record_ok, git_committed
 
 
 def _since(s: str | None) -> float:
@@ -100,7 +100,7 @@ def cmd_stats(a) -> int:
     st = stats_from_rows([r for r in rows if r.get("kind", "decide") in ("decide", "route")])
     st["_demotions"] = _read_map(Path(cfg.state_dir) / "demoted.json")
     # auto-demotions persist too (the service writes them): show them
-    st["_auto_demotions"] = _read_map(Path(cfg.state_dir) / "auto-demoted.json")
+    st["_auto_demotions"] = Demotions(Path(cfg.state_dir) / "demoted.json").auto
     print(json.dumps(st, indent=2, sort_keys=True))
     return 0
 
@@ -265,15 +265,19 @@ def cmd_demote(a, undo: bool = False) -> int:
               "record it anyway)", file=sys.stderr)
         return 2
     if undo:
-        # the service re-reads this on SIGHUP; it is the only other writer
-        auto = Path(cfg.state_dir) / "auto-demoted.json"
-        data = _read_map(auto)
-        if data.pop(a.decision, None) is not None:
-            tmp = auto.with_suffix(".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as fh:
-                json.dump(data, fh, indent=2, sort_keys=True)
-            os.replace(tmp, auto)
+        # A tombstone, never a rewrite of auto-demoted.json: the service is
+        # that file's only writer, so a demotion it saves before the SIGHUP
+        # cannot overwrite this undemote (the service drops every auto
+        # record at or before the tombstone on its next load).
+        tomb = Path(cfg.state_dir) / "undemoted.json"
+        tomb.parent.mkdir(parents=True, exist_ok=True)
+        tdata = _read_map(tomb)
+        tdata[a.decision] = {"at": time.time(), "by": getpass.getuser()}
+        tmp = tomb.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(tdata, fh, indent=2, sort_keys=True)
+        os.replace(tmp, tomb)
     p = Path(cfg.state_dir) / "demoted.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
