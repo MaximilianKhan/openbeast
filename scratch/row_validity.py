@@ -31,7 +31,15 @@ zero-token fail, so that shape is only ever the harness's own death record
             low_disk, and the 2026-09-29 run_eval's server_error / env_error,
             which carry a normal exit AND real tokens), or no exit code and
             zero elapsed on a live row. Never the model.
-  timeout — exit -1, the harness wall-timeout sentinel. An honest fail.
+  timeout — exit -1, the harness wall-timeout sentinel. An honest fail when
+            it fails, and a real PASS when the files the agent left behind
+            validate (2026-09-30: two Tier-3 rows had a finished solution on
+            disk before a 20-minute request hang). Either way run_eval
+            records tokens 0 / iterations None for it: the cost was never
+            measured, so a timeout row is never a token sample
+            (tokens_unrecorded()), and audit() lists every one, passed or
+            failed (`timeouts`) — it used to walk only the fails, so a
+            timed-out PASS was invisible and a record could say "0 timeouts".
   killed  — any other negative exit: a signal death (-9 OOM, -15 SIGTERM).
   dead    — a live FAILED row with a normal exit (>= 0) and zero completion
             tokens: the agent never got a single token back. That is what a
@@ -99,6 +107,21 @@ def kind(x):
     if rc is not None and not x.get("passed") and not (x.get("tokens_completion") or 0):
         return "dead"
     return "other"
+
+
+def tokens_unrecorded(x):
+    """True when the row's token/iteration fields are not a measurement: a
+    wall timeout (run_eval hardcodes tokens 0 on TimeoutExpired, whatever
+    the agent spent) or any row with zero or absent completion tokens. Such
+    a row must never enter a token or iteration statistic as a real 0."""
+    return kind(x) == "timeout" or not (x.get("tokens_completion") or 0)
+
+
+def wall_timeouts(d):
+    """{unit id: "PASS" | "FAIL"} for every live row that hit the harness
+    wall timeout (exit -1), whether it passed or not."""
+    return {x["id"]: ("PASS" if x.get("passed") else "FAIL")
+            for x in d.get("tasks") or [] if kind(x) == "timeout"}
 
 
 def eagain(x):
@@ -206,6 +229,7 @@ def audit(d, idx=None, want_n=None):
            or (idx is not None and api_errors(x, idx, run_lo, run_hi))]
     benign = collections.Counter(kind(x) for x in ztok
                                  if kind(x) in ("cached", "timeout", "other"))
+    timeouts = wall_timeouts(d)
     if want_n is None:
         want_n = expected_n(d)
     reasons = []
@@ -225,7 +249,7 @@ def audit(d, idx=None, want_n=None):
     return {"n": len(tasks), "want_n": want_n, "complete": complete,
             "passed": sum(1 for x in tasks if x.get("passed")), "fails": len(fails),
             "killed": killed, "infra": infra, "dead": dead, "eagain": eag, "api": api,
-            "benign": benign, "reasons": reasons, "valid": not reasons,
+            "benign": benign, "timeouts": timeouts, "reasons": reasons, "valid": not reasons,
             "contaminated": sorted(set(infra) | set(dead) | set(eag) | set(api))}
 
 
@@ -290,8 +314,15 @@ def main(argv):
           + f" passed={a['passed']} fails={a['fails']} killed={len(a['killed'])}"
           f" infra={len(a['infra'])} dead={len(a['dead'])} eagain={len(a['eagain'])}"
           f" api={len(a['api']) if idx is not None or a['api'] else 'n/a'}"
+          + f" timeouts={len(a['timeouts'])}"
           + (f" (benign zero-token: {benign})" if benign else "")
           + f" cuda={cuda if cuda is not None else 'n/a'}")
+    if a["timeouts"]:
+        # Not a validity failure (a timed-out PASS validated; a timed-out
+        # FAIL is the model's), but never "0 timeouts" either: tokens read 0.
+        print(f"VALIDITY: {len(a['timeouts'])} wall timeout(s) (exit -1, tokens NOT recorded — "
+              "exclude from every token/iteration statistic): "
+              + _ids([f"{u} [{v}]" for u, v in sorted(a["timeouts"].items())]))
     if reasons:
         label = "ROW INCOMPLETE" if not a["complete"] else "ROW INVALID"
         print(f"VALIDITY: {label} — " + "; ".join(reasons))
