@@ -2,7 +2,8 @@
 
   .run/instinct/decisions-YYYYMMDD.jsonl   one row per call (I5) — shadow,
                                            fallback and eval-refused included
-  .run/instinct/feedback.jsonl             append-only outcomes (join: NEXT)
+  .run/instinct/feedback-YYYYMMDD.jsonl    append-only outcomes (join: NEXT),
+                                           pruned on the same retention_days
 Files are 0600 in a 0700 directory, rotated daily, pruned after
 retention_days. By default a row carries only input_sha256; an excerpt
 (first 160 + last 160 chars) or the full text is written only when the
@@ -84,8 +85,8 @@ class Ledger:
         cutoff = datetime.fromtimestamp(self.clock(), tz=timezone.utc) - timedelta(
             days=self.retention_days)
         removed = []
-        for p in self.dir.glob("decisions-*.jsonl"):
-            stamp = p.name[len("decisions-"):-len(".jsonl")]
+        for p in [*self.dir.glob("decisions-*.jsonl"), *self.dir.glob("feedback-*.jsonl")]:
+            stamp = p.name.split("-", 1)[1][:-len(".jsonl")]
             try:
                 day = datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=timezone.utc)
             except ValueError:
@@ -112,7 +113,11 @@ class Ledger:
     def feedback(self, row: dict) -> None:
         line = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
         with self._lock:
-            _append(self.dir / "feedback.jsonl", line)
+            day = self._day()
+            if day != self._last_prune_day:
+                self._last_prune_day = day
+                self.prune()
+            _append(self.dir / f"feedback-{day}.jsonl", line)
 
     def _observe(self, row: dict) -> None:
         d = row.get("decision", "?")

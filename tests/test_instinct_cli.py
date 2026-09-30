@@ -170,3 +170,29 @@ def test_stats_demote_promote_cli(tmp_path):
     assert (tmp_path / "decisions" / "router.spawn_intent.toml").read_text() == before
     r = cli("stats")
     assert r.returncode == 0 and "_demotions" in json.loads(r.stdout)
+
+
+def test_label_writes_user_text_0600_and_gitignored(tmp_path, monkeypatch):
+    import builtins
+
+    from instinct import cli as CLI
+    from instinct.config import load_config
+    from instinct.ledger import Ledger
+    cfgp = H.write_config(tmp_path, {}, decisions=["router.spawn_intent"])
+    cfg = load_config(cfgp, env={})
+    Ledger(cfg.ledger_dir).write({"ts": time.time(), "kind": "decide", "trace_id": "ins_a",
+                                  "decision": "router.spawn_intent",
+                                  "input_excerpt": {"user_turn": "private words"},
+                                  "confidence": {"margin": 0.1}})
+    # spawn/inline would take "s" from [s]kip, so keys are numbered: 2 = inline
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "2")
+    assert CLI.main(["--config", str(cfgp), "label", "router.spawn_intent"]) == 0
+    out = cfg.records_dir / "router.spawn_intent" / "shadow-labelled.jsonl"
+    assert "private words" in out.read_text() and '"label": "inline"' in out.read_text()
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
+    r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                        "evals/decisions/router.spawn_intent/shadow-labelled.jsonl"])
+    assert r.returncode == 0
+    r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                        "evals/decisions/router.spawn_intent/test.jsonl"])
+    assert r.returncode == 1   # control: real splits stay tracked

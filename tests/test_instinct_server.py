@@ -200,7 +200,9 @@ def test_feedback_is_append_only(tmp_path):
         assert r.json() == {"ok": True}
         assert c.post("/v1/instinct/feedback", headers=AUTH,
                       json={"trace_id": "x", "nope": 1}).status_code == 400
-    rows = (cfg.ledger_dir / "feedback.jsonl").read_text().splitlines()
+    files = list(cfg.ledger_dir.glob("feedback-*.jsonl"))
+    assert len(files) == 1 and oct(files[0].stat().st_mode & 0o777) == "0o600"
+    rows = files[0].read_text().splitlines()
     assert len(rows) == 1 and json.loads(rows[0])["served_pool"] == "spark"
 
 
@@ -231,3 +233,16 @@ def test_service_key_fails_closed(tmp_path):
         read_service_key(kf)
     with pytest.raises(PermissionError):
         create_app(Instinct(load_config(H.write_config(tmp_path, {}), env={})), "")
+
+
+def test_feedback_is_pruned_with_the_ledger(tmp_path):
+    from instinct.ledger import Ledger
+    now = [1_700_000_000.0]
+    led = Ledger(tmp_path / "led", retention_days=2, clock=lambda: now[0])
+    led.feedback({"trace_id": "old"})
+    old = list((tmp_path / "led").glob("feedback-*.jsonl"))
+    assert len(old) == 1
+    now[0] += 5 * 86400
+    led.feedback({"trace_id": "new"})
+    left = list((tmp_path / "led").glob("feedback-*.jsonl"))
+    assert len(left) == 1 and left[0] != old[0]
