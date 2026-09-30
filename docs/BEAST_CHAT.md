@@ -322,6 +322,17 @@ is a header — real when tailscale injects it, forgeable by any process
 already on the box. A forgeable header is enough to *watch*. It is not enough
 to *act*.
 
+"Any process on the box" includes the **host-network containers**: Open
+WebUI and SearXNG run `network_mode: host`, so a compromise of either reaches
+`127.0.0.1:3003` as loopback and can claim any login — without being able to
+read the 0600 token files. To close that, have `chat_server` also listen on a
+Unix socket and honour the login header **only** there:
+`OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600 in a 0700
+directory; `tailscaled` runs as root, so it can still connect) plus
+`OPENBEAST_CHAT_LOGIN_FROM=unix`, and point `tailscale serve` at
+`unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
+a device key like any other caller. The default stays `loopback`.
+
 **Every write failure is the same 404.** No key, an unknown key, a revoked
 key, a key without the `chat` scope: one answer, and it is the answer an
 unlisted login already gets. The earlier split — `401 "device key required"`
@@ -349,19 +360,32 @@ is what every existing device already relies on.
 A lost phone is one `revoke` away from silence, and the registry hot-reloads:
 the next write fails within one request, no restart.
 
-**Readers can be revoked the same way.** The operator allowlist is re-read on
-every check, from `CHAT_OPERATORS` in the environment and from
-`.run/chat-operators` (one login per line, `#` comments) — and an open
-SSE stream re-authorizes on its heartbeat, so removing a login also ends the
-transcript someone already had streaming. Neither needs a stack restart.
+**Readers can be revoked the same way — through `.run/chat-operators`.** The
+allowlist is the union of `CHAT_OPERATORS` and `.run/chat-operators` (one
+login per line, `#` comments). The FILE is re-read on every check, and an open
+SSE stream re-authorizes on its heartbeat, so removing a login there ends even
+a transcript someone already had streaming, with no restart. `CHAT_OPERATORS`
+is different: `conf.sh` exports it into `chat_server`'s environment at start,
+so editing it in `openbeast.conf` changes nothing until `./stop.sh &&
+./start.sh` — and a login still listed there stays authorized whatever the
+file says. For revocation you can do without a restart, keep the list in the
+file.
 
 A caller that presents `.run/chat-local.token` satisfies both tiers at once:
 reading it is proof of being on the box, which is strictly more than a device
 key proves. Everything else needs the two tiers above.
 
 Every request is audited to `.run/chat-audit.jsonl` — `ts, login, device,
-route, session, outcome, ms` — including the ones that were refused, and with
-the login the caller *claimed*, so a denial records who was probing. Message
+verified, peer, route, session, outcome, ms` — including the ones that were
+refused, and with the login the caller *claimed* (clipped to 256 characters),
+so a denial records who was probing; `verified: false` plus the socket `peer`
+is what tells a forged login from your own phone. Unverified denials are
+sampled per peer (`OPENBEAST_CHAT_AUDIT_DENIALS_PER_MIN`, default 60; the rest
+become one `denials_suppressed` row with a count) and the file rotates to
+`.1` past `OPENBEAST_CHAT_AUDIT_MAX_MB` (default 50), so an unauthenticated
+loop cannot fill the disk the ledger lives on. A stop's actual SIGTERM/SIGKILL
+deliveries are rows too (`route: "stop escalation"`), and so is every stream
+close, with the bytes it served. Message
 *text* is never logged, only its sha256 and length, matching the tool-audit
 rule; a spawn additionally records the command's sha256, because the command
 is the one thing the scope system is gating.
@@ -417,6 +441,102 @@ want to.
 tailnet mid-stream while the rig stays perfectly healthy — the single most
 confusing failure mode on this stack (README § Remote access).
 
+## Console features
+
+**Start from the phone.** The **+** button opens a sheet with two tabs.
+*Agent*: a task, an optional model (from beast-slot), max iterations and a
+working directory. *Job*: pick one of the operator's **presets**, or open
+*Custom command* and type one. **Review…** asks the server for a dry run
+(`POST /api/chat/sessions` with `"dry_run": true`, same write gate, nothing
+spawned) and the confirm dialog shows the exact argv it returned — then
+**Start** runs that. Only the per-start values differ: a fresh session id
+and the transcript path named after it. The dry run also returns
+`plan_sha256`; the console sends it back as `confirm_sha256`, and the server
+answers 409 ("review again") if what it would run has changed since — a
+preset edited on disk between Review and Start is refused, not run.
+Starting needs the device key like every other write.
+Agents started this way are steerable (`--session-id … --steer`); jobs run
+under `scripts/job.sh`'s supervisor. Jobs started from the console or the
+API do **not** inherit the stack's secret environment
+(`OPENAI_API_KEY`, `HF_TOKEN`, `GITHUB_TOKEN`/`GH_TOKEN`, and every
+`OPENBEAST_`/`LLAMA_`/`WEBUI_`/`SEARXNG_` variable naming a key, token, secret
+or password) — the same list the bash tool scrubs; agents keep only their
+inference key (`OPENBEAST_API_KEY`, `OPENAI_API_KEY`). The same command started
+with `job.sh run` from a terminal keeps your shell's environment. A job that
+needs a credential should read it from a file (or set it in the preset's
+command).
+
+Presets live in `.run/chat-presets.json`, written by you on the rig. The file
+is a list of one-tap commands, so it is ignored unless it is a regular file
+(not a symlink), owned by the stack's user, mode **0600**:
+
+```json
+{"presets": [
+  {"name": "doctor", "title": "openbeast doctor", "cmd": "./scripts/doctor.sh",
+   "workdir": "~/Documents/openbeast", "description": "health check"},
+  {"name": "scores", "cmd": "python3 evals/scoring.py --show"}
+]}
+```
+
+`name` is `[A-Za-z0-9._-]{1,64}` and unique; `cmd` is a shell command run with
+`bash -lc`; `title`, `workdir` and `description` are optional. The phone
+sends the preset's *name*; the command is resolved on the rig.
+
+**Pause / Resume** (agents only) write the `pause` / `resume` inbox ops the
+runner already honours; the pause lands at the next turn boundary. Jobs
+answer 409 — a shell command has no turn to pause at.
+
+**Export** publishes the transcript as a beast-artifact page: turns, tool
+calls, results (already clipped to 2,000 characters), every byte HTML-escaped
+and run through the bash tool's secret list (secret-named env values;
+`NAME=` / `NAME:` assignments whose name is secret-shaped, quoted JSON keys and
+hyphenated headers included — `X-OpenBeast-Device-Key`, `X-OpenBeast-Local`;
+`--api-key`/`--token`/`--password` flags; `Authorization:` credentials of any
+scheme). The store's title and description are scrubbed too. Redaction is
+pattern-based — read the page before you widen its visibility. It is
+**private**, at a stable id (`uuid5` of the session id), so a re-export is
+version 2 at the same URL, and it is **owned by the tailnet login that
+pressed Export** (forwarded to beast-artifact with the locality token), so
+the link opens on that phone. If beast-artifact has an operator allowlist
+that login must be on it; otherwise, and for an export made on the rig with
+the local token, the page belongs to the rig's default owner (`local` or the
+allowlist's first entry). Needs `BEAST_ARTIFACT=true`; otherwise 409.
+
+**Push notifications** are opt-in. Set `CHAT_NOTIFY_URL` to an ntfy-compatible
+topic URL (`OPENBEAST_CHAT_NOTIFY_URL`), optionally `CHAT_NOTIFY_ON`
+(default `failed,lost,done`) and `CHAT_NOTIFY_TOKEN_FILE` (a file holding a
+bearer token — never argv, never logged). Every ~5 s `chat_server` diffs the
+ledger against `.run/notify-state.json`; a session going from `running` to one
+of those states POSTs **title + state + a deep link, never transcript text**.
+The title is run through the export's secret scrubber, and a job whose title
+is just (part of) its own command — the default for console, API and
+`job.sh run` jobs — sends `job <short id>` instead: the notify server is often
+public ntfy.sh and the text lands on a lock screen.
+Because the snapshot is on disk, a job that ended while the server was down
+still notifies on the next start. Deep links use `CHAT_PUBLIC_URL`
+(`OPENBEAST_CHAT_PUBLIC_URL`), else the `:8445` name `tailscale serve`
+reports. **Test alert** in the key sheet sends one on demand.
+
+**Rig strip.** The list header shows the GPU lease holder (the same pid +
+start-time check as `gpu-lease.sh status`), whether llama-server answers
+`/health`, and how many sessions are running (`GET /api/chat/rig`, read tier).
+
+**Links.** `https://` URLs and artifact pages (`…/a/<uuid>`) in transcript
+text become links (`rel="noopener"`); nothing in a transcript is ever parsed
+as HTML. Spawned agents and jobs, and anything `job.sh run` starts, get
+`OPENBEAST_SESSION_ID` in their environment, so what they publish can point
+back to the session.
+
+**Installable, and honest offline.** `/manifest.webmanifest`, PNG icons (iOS
+ignores an SVG touch icon) and a service worker that caches only the page
+shell — never `/api/*`, never a stream. With the rig unreachable the list
+stays on screen under an "offline — last updated …" banner.
+
+**Big transcripts open at the tail.** A session larger than 128 KB starts at
+its last 128 KB (`/events?tail=`), with a note; **Replay** loads everything.
+Enter sends a message, Shift+Enter is a new line; a message is capped at
+4,000 characters, the most an agent receives whole.
+
 ## Durability: what survives what
 
 **The stream reader is bounded.** A replay from zero — a fresh page load, the
@@ -435,11 +555,11 @@ over it.
 | Event | Effect |
 |---|---|
 | Tool server (`:3001`) restarts | Agents started with `detach` keep running. They stay *listed* through the ledger only if they were started with `--steer`/`--session-id`; otherwise they vanish from `list_agents` with the in-memory map, exactly as before beast-chat existed. Non-detached spawns keep the historical contract: they die with the server. |
-| `chat_server` restarts | Nothing is lost. The ledger is on disk; the phone reopens its stream with `from=<offset>`. |
+| `chat_server` restarts | Nothing is lost. The ledger is on disk; the phone reopens its stream with `from=<offset>`. A console-started job runs under `job.sh`'s supervisor, which records its own `done`/`failed`/`stopped` and does its own TERM→KILL on a stop, so neither depends on the server being alive; an agent writes its own verdict. |
 | Phone sleeps 10 minutes | Reattach resumes at the exact byte. No duplicate events, no gap. |
 | Transcript is rotated or truncated under a live stream | The stream notices mid-poll, emits a `lost` frame, and restarts at 0 rather than skipping content or handing the reader half an event. |
 | Rig reboots | Every session from a previous boot reconciles to `lost` on the next listing. `reconcile` matches pid **and** process start time **and** the boot id (`/proc/sys/kernel/random/boot_id`, stamped at register). The boot id is what makes this row true rather than approximately true: the start time is *ticks since boot*, so across a reboot the other two compare against a different clock and can agree by coincidence — which is also why the signalling path checks it before any `killpg`. A record written before this existed, or on a kernel that will not report a boot id, falls back to the pid+start proof rather than being declared dead. |
-| A session finishes | The record stays for 30 days. `chat_server` sweeps terminal records older than that once per start (`sessions.prune(30, keep_logs=True)`): the index entry, its inbox and its lock go; a `job.sh` job's `.run/sessions/<id>.log` — its only output — is **kept**, and agent transcripts under `agents/logs/` are never touched. Calling `sessions.prune()` yourself (no `keep_logs`) removes the logs too. |
+| A session finishes | The record stays for 30 days. `chat_server` sweeps terminal records older than that once per start (`sessions.prune(30, keep_logs=True)`): the index entry, its inbox and its lock go; a `job.sh` job's `.run/sessions/<id>.log` — its only output — is **kept**, and agent transcripts under `agents/logs/` are not touched by this sweep. Calling `sessions.prune()` yourself (no `keep_logs`) removes the logs too. With the opt-in `AGENT_LOG_RETENTION_DAYS`, the daily logrotate run also deletes old transcripts no record names — in `agents/logs/` and, since 2026-09-29, the `.run/sessions/<id>.log` files this sweep left behind. |
 
 `list_agents` and `check_agent` in the MCP tool server read the ledger first
 and their in-memory map second, so a session that registered itself is
@@ -472,8 +592,8 @@ enroll it again.
 `CHAT_OPERATORS`, or the request reached the server with no identity at all
 (no `Tailscale-User-Login` header and no `.run/chat-local.token`) — a direct
 `curl localhost:3003/api/chat/sessions` does exactly that. Note the console
-page itself is NOT part of this symptom: `/` and `/icon.svg` are ungated
-markup and answer 200 to anyone who can reach the port, so loading the page
+page itself is NOT part of this symptom: `/`, `/icon.svg`, the PNG icons,
+`/manifest.webmanifest` and `/sw.js` are ungated markup and answer 200 to anyone who can reach the port, so loading the page
 tells you nothing about your identity — the session list inside it is what
 404s.
 The 404 is deliberate in both cases; 403 would confirm the service exists.
@@ -493,14 +613,13 @@ recorded pid **and** its start time against the live process — never a state
 a session writes about itself.
 
 Expect it after a rig reboot, an OOM kill, a `kill -9` of the session's
-process group from outside beast-chat, or a power cut — and after nothing
-else, with **one exception worth knowing**: a job started through the console
-(`POST /api/chat/sessions`) is reaped by `chat_server` itself, which files any
-death-by-signal as `stopped`, not `lost` — the same event `job.sh` would call
-`failed`. The record's summary is what distinguishes them: an unsolicited
-kill reads `killed by SIGKILL`, while a stop you asked for reads `SIGKILL
-after stop request`. So on a console-started job, read the summary, not just
-the state word. In particular it is **not** what an operator stop looks like: a job
+process group from outside beast-chat, or a power cut. One more case is a
+known gap: an **agent** stopped by MCP `stop_agent` or a plain `kill <pid>`
+dies on the signal before it can write `stopped`, so it reads `lost` (fixing
+that is a `runner.py` change, held for an eval-era boundary). A job started
+through the console now runs under `job.sh`'s supervisor and follows
+`job.sh`'s rules exactly: a command killed by a signal nobody here sent is
+`failed` with its exit status. In particular `lost` is **not** what an operator stop looks like: a job
 stopped with `job.sh stop` records `stopped` even when it ignored SIGTERM and
 had to be force-killed, and an agent stopped from the console records
 `stopped` after its `done` event. A `lost` job whose log ends mid-command is
