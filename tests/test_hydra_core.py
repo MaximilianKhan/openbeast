@@ -942,6 +942,20 @@ def test_instinct_engine_that_is_also_a_node_is_allowed_with_a_warning():
     assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
 
 
+def test_instinct_urls_match_across_loopback_spellings():
+    # Review minor on B-hydra-5: engine_urls = ["http://localhost:8080/"] did
+    # not match the rig at 127.0.0.1:8080 (no risk-13 warning), and a node at
+    # localhost:8094 slipped past the instinct-service refusal.
+    raw = base()
+    raw["hydra"]["instinct"] = {"engine_urls": ["http://localhost:8080/"]}
+    assert any("nodes.rig.url is also an instinct engine" in w for w in cfg_of(raw).warnings)
+    raw["nodes"]["ins"] = {"url": "http://localhost:8094", "engine": "openai"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
+    assert core._endpoint_key("http://localhost:8095") != core._endpoint_key("http://127.0.0.1:8094")  # port matters
+
+
 def test_routes_that_mix_families_without_a_policy_are_a_config_error():
     # R-hydra-1: the uncensored-only rule was opt-in — an undeclared mix only
     # warned, so `beast` kept spilling to stock. Now hydra refuses the file.

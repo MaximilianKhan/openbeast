@@ -324,6 +324,25 @@ def _norm_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _endpoint_key(url: str) -> str:
+    """Compare two URLs by the endpoint they reach: scheme, host, port.
+    Every loopback spelling (localhost, 127.x, ::1) is one host, so a node at
+    http://localhost:8094/ is still recognised as instinct's 127.0.0.1:8094."""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url.strip())
+        host = (u.hostname or "").lower()
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme, 0)
+    except ValueError:
+        return _norm_url(url)
+    try:
+        if host == "localhost" or ipaddress.ip_address(host).is_loopback:
+            host = "loopback"
+    except ValueError:
+        pass
+    return f"{u.scheme.lower()}://{host}:{port}{u.path.rstrip('/')}"
+
+
 def gate_read_timeout(env: dict) -> float:
     try:
         return float(env.get("OPENBEAST_EDGE_READ_TIMEOUT") or 600)
@@ -505,8 +524,8 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     # instinct, instinct is routed through hydra). An instinct ENGINE that is
     # also an inference node — the rig's own 27B scoring by logprobs — is no
     # loop: instinct calls it directly, never through hydra.
-    instinct_service = _norm_url(instinct.url)
-    instinct_engines = {_norm_url(u) for u in instinct.engine_urls}
+    instinct_service = _endpoint_key(instinct.url)
+    instinct_engines = {_endpoint_key(u) for u in instinct.engine_urls}
     for nid, n in rn.items():
         where = f"nodes.{nid}"
         if not NODE_ID_RE.match(nid):
@@ -543,10 +562,10 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
                             "tailnet or LAN; prefer the tailnet IP or *.ts.net name")
         if allow_public:
             warnings.append(f"{where}: allow_public = true")
-        if url and _norm_url(url) == instinct_service:
+        if url and _endpoint_key(url) == instinct_service:
             errors.append(f"{where}.url is the instinct service URL — never a hydra pool "
                           "(reconciliation §4)")
-        elif url and _norm_url(url) in instinct_engines:
+        elif url and _endpoint_key(url) in instinct_engines:
             warnings.append(f"{where}.url is also an instinct engine (hydra.instinct.engine_urls): "
                             "instinct scores on it directly, so hydra's in-flight count cannot see "
                             "those calls — on a 1-slot node they queue with routed turns (plan "
