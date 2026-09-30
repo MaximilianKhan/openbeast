@@ -9,7 +9,9 @@
 #                           the port (a foreign answer is not ready), a held
 #                           port is not spawned over, positive control
 #   3  healthcheck.sh       a relaunched chat/artifact server's output lands in
-#                           .run/stack.log, and a failed relaunch shows it
+#                           .run/stack.log, and a failed relaunch shows it; a
+#                           green health answered by a process this stack did
+#                           not start is FOREIGN (named, never killed)
 #   4  logrotate            job logs are rotated; orphaned old ones pruned
 #                           under AGENT_LOG_RETENTION_DAYS; ledger swept
 #                           without beast-chat
@@ -286,6 +288,39 @@ if ! has "$_O" "restarting beast-artifact" && [[ ! -s "$SB/.run/stack.log" ]]; t
 else
   fail "healthy control: $(grep -E 'restart' <<< "$_O" | tr '\n' ' ')"
 fi
+RUN_ENV=()
+
+# The steady-state half of integration-ops-6: health answers, but NOT from the
+# process this stack recorded (a sibling worktree's server, or an orphan that
+# made start.sh refuse to spawn). The curl stub says "ok" for both; the ports
+# are real listeners, so the owner check is real.
+PFA="$(free_port)"; PFC="$(free_port)"
+python3 "$T/health.py" "$PFA" & FOREIGN_PID=$!; PIDS="$PIDS $FOREIGN_PID"
+python3 "$T/health.py" "$PFC" & OURS_PID=$!; PIDS="$PIDS $OURS_PID"
+wait_listen "$PFA"; wait_listen "$PFC"
+printf 'SEARXNG_SECRET=x\nBEAST_ARTIFACT=true\nBEAST_CHAT=true\nARTIFACT_PORT=%s\nCHAT_PORT=%s\n' \
+  "$PFA" "$PFC" > "$SB/openbeast.conf"
+echo "$OURS_PID" > "$SB/.run/chat.pid"
+rm -f "$SB/.run/artifact.pid"
+RUN_ENV=(ART_UP=1 CHAT_UP=1)
+_rc=0; _O="$(run_sb "$SB/scripts/healthcheck.sh" --restart)" || _rc=$?
+if has "$_O" "FOREIGN beast-artifact answers, but from pid $FOREIGN_PID" && has "$_O" "recorded: none" \
+   && ! has "$_O" "FOREIGN beast-chat" && [[ $_rc -ne 0 ]] && has "$_O" "services unhealthy" \
+   && kill -0 "$FOREIGN_PID" 2>/dev/null && ! has "$_O" "restarting beast-artifact"; then
+  pass "a foreign server answering health is reported FOREIGN (holder named, exit non-zero) and NOT killed"
+else
+  fail "foreign steady state (rc=$_rc): $(grep -E 'FOREIGN|beast-|unhealthy|healthy' <<< "$_O" | tr '\n' ' ')"
+fi
+echo "$FOREIGN_PID" > "$SB/.run/artifact.pid"
+_rc=0; _O="$(run_sb "$SB/scripts/healthcheck.sh")" || _rc=$?
+if ! has "$_O" "FOREIGN" && has "$_O" "OK   beast-artifact" && has "$_O" "OK   beast-chat console"; then
+  pass "…the recorded pid holding the port is plain OK (control)"
+else
+  fail "own-listener control: $(grep -E 'FOREIGN|beast-' <<< "$_O" | tr '\n' ' ')"
+fi
+kill "$FOREIGN_PID" "$OURS_PID" 2>/dev/null
+rm -f "$SB/.run/artifact.pid" "$SB/.run/chat.pid"
+printf 'SEARXNG_SECRET=x\nBEAST_ARTIFACT=true\nBEAST_CHAT=true\n' > "$SB/openbeast.conf"
 RUN_ENV=()
 
 # ---------------------------------------------------------------------------

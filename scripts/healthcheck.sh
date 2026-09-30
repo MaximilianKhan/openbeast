@@ -113,6 +113,29 @@ _wd_budget_take() { # 0 = a relaunch is allowed (and is now counted)
 HEALTHY=0
 UNHEALTHY=0
 
+# _listener_ours <name> <pidname> <port> — after a GREEN health check: is the
+# process answering the one this stack started (.run/<pidname>.pid)? A
+# sibling worktree's server or an orphan of a killed stack answers health just
+# as well, but it has its own store and locality token, so every write
+# through scripts/artifact.sh (or a phone's chat send) fails while this line
+# said OK (integration-ops-6, steady-state half). Flagged as UNHEALTHY with the
+# holder named; NEVER killed here — it may be a sibling worktree's live
+# server. Silent when the holder cannot be named (no ss/lsof//proc, or another
+# uid's socket): unknown is not foreign.
+_listener_ours() {
+  local name="$1" pidname="$2" port="$3" rec holders
+  holders="$(ob_port_pids "$port" 2>/dev/null | tr '\n' ' ' || true)"; holders="${holders% }"
+  [[ -n "$holders" ]] || return 0
+  rec="$(cat "$REPO_DIR/.run/$pidname.pid" 2>/dev/null || true)"
+  [[ "$rec" =~ ^[0-9]+$ ]] && [[ " $holders " == *" $rec "* ]] && return 0
+  echo "  FOREIGN $name answers, but from pid $holders — a process this stack did not start"
+  echo "       (recorded: ${rec:-none}). Its store and token are not ours, so writes fail."
+  echo "       Not killed (it may be a sibling worktree's). Stop it, then: $0 --restart"
+  HEALTHY=$((HEALTHY - 1))
+  UNHEALTHY=$((UNHEALTHY + 1))
+  return 1
+}
+
 check() {
   # check <name> <url> <match> [bearer-key] — key adds an Authorization
   # header (keyed MCPO instances answer 401 without it, RBAC Phase 2).
@@ -434,6 +457,8 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
         _restart_tail "$_chat_log"
       fi
     fi
+  else
+    _listener_ours "beast-chat console" chat "${CHAT_PORT:-3003}" || true
   fi
 fi
 
@@ -498,6 +523,8 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
         echo "          in process; only viewing the URLs is down)"
       fi
     fi
+  else
+    _listener_ours "beast-artifact" artifact "${ARTIFACT_PORT:-3004}" || true
   fi
 fi
 
