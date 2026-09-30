@@ -379,6 +379,20 @@ def test_forced_sis_uses_the_probe_reference_server(tmp_path):
     assert len([c for c in H.read_calls(log_ref) if c["path"] == "/v1/score"]) == 2
 
 
+# --- m1: one timeout does not bench an engine -----------------------------------
+
+def test_one_outlier_does_not_set_early_p95():
+    eng = build_engine(EngineBinding(name="e", **H.llama_binding("http://127.0.0.1:1",
+                                                                 timeout_ms=1500)))
+    assert eng.p95_ms() == 1500.0            # nothing measured yet
+    for _ in range(12):
+        eng.record_latency(5.0)
+    eng.record_latency(2000.0)               # one timeout
+    assert eng.p95_ms() == 5.0
+    eng.record_latency(2000.0)               # a second one is a pattern
+    assert eng.p95_ms() == 2000.0
+
+
 # --- m7: a reload keeps auto-demotions unless the decision changed ---------------
 
 def test_reload_keeps_auto_demotion_until_the_hash_changes(tmp_path):

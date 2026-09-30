@@ -129,16 +129,22 @@ class Engine:
         self.latencies.append(ms)
 
     def p95_ms(self) -> float:
-        """Rolling p95 once 20 samples exist. Before that: the WORST observed
-        sample (the conformance probe seeds ~12), or timeout_ms when nothing
-        was ever measured. (Plan §5.5 says timeout_ms until 20 samples; taken
-        literally that starves any engine whose timeout exceeds a decision's
-        deadline — it would never be tried, so never measured.)"""
+        """Rolling p95 once 20 samples exist. Before that: the worst observed
+        sample, ignoring ONE outlier once 10 samples exist (the conformance
+        probe seeds ~12), or timeout_ms when fewer than 5 were measured.
+        (Plan §5.5 says timeout_ms until 20 samples; taken literally that
+        starves any engine whose timeout exceeds a decision's deadline — it
+        would never be tried, so never measured.) Tolerating one outlier
+        matters because a timeout records ~the deadline: with plain max, ONE
+        timeout would skip the engine on every call until the next probe."""
         if not self.caps.needs_render:
             return 0.0
-        if len(self.latencies) < 20:
-            return max(self.latencies) if len(self.latencies) >= 5 else float(
-                self.binding.timeout_ms)
+        n = len(self.latencies)
+        if n < 20:
+            if n < 5:
+                return float(self.binding.timeout_ms)
+            xs = sorted(self.latencies)
+            return xs[-2] if n >= 10 else xs[-1]
         xs = sorted(self.latencies)
         return xs[min(len(xs) - 1, int(math.ceil(0.95 * len(xs))) - 1)]
 
