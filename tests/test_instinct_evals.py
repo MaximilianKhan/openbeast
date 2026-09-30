@@ -314,3 +314,28 @@ def test_gate_integrity_needs_a_gated_pinned_set_and_a_probe():
                                  types.SimpleNamespace(adapter="llamacpp_logprobs", probe=None),
                                  types.SimpleNamespace(no_probe=True))
     assert noprobe[2]["ok"] is False
+
+
+# --- the gate's load report must be THIS subject's (B-instinct-04) ------------------
+
+DID = "router.spawn_intent"
+
+
+def _load(**kw):
+    rep = {"decision": DID, "engine": "rig-27b", "decision_hash": "h" * 64,
+           "intended_qps": 0.5, "p95_ms": 120.0,
+           "points": [{"qps": 0.5, "sent": 100, "ok": 100, "errors": 0}]}
+    rep.update(kw)
+    return rep
+
+
+def test_load_report_must_be_this_subjects_and_mostly_succeed():
+    """B-instinct-04: a report for another decision/engine/hash, or one whose
+    p95 covers only the survivors of a 30% error rate, must not pass."""
+    assert RUN.load_report_problem(_load(), DID, "rig-27b", "h" * 64) is None   # control
+    for rep, why in ((_load(engine="stub"), "not router.spawn_intent/rig-27b"),
+                     (_load(decision="hydra.task_class"), "not router.spawn_intent"),
+                     (_load(decision_hash="x" * 64), "another decision_hash"),
+                     (_load(points=[{"qps": 0.5, "sent": 64, "errors": 22}]), "error rate"),
+                     (_load(points=[]), "sent no calls")):
+        assert why in (RUN.load_report_problem(rep, DID, "rig-27b", "h" * 64) or ""), rep
