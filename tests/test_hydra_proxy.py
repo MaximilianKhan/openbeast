@@ -249,7 +249,12 @@ def test_refused_node_fails_over(fleet):
 
 def test_node_401_is_auth_failed_and_never_the_callers_401(fleet):
     srv, rig, sparks, _ = fleet()
-    rig.set_fault("http_401", 1)
+    # A WRONG KEY, not a one-shot 401: it must fail /v1/models too. With a
+    # one-shot fault the node really is healthy again, and hydra's
+    # authenticated /v1/models recheck (which runs every probe while a node
+    # is stuck) rightly clears AUTH_FAILED; on a slow CI runner it did so
+    # before this assertion.
+    rig.set_fault("http_401")
     r = post(srv, chat())
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
     assert srv.hy.state.health["unc@rig"].h.state == core.AUTH_FAILED
