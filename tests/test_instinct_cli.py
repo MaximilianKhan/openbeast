@@ -37,6 +37,18 @@ def env_for(tmp_path, cfgp, port):
     return e
 
 
+def scorer_env(tmp_path, **extra):
+    """The scorer's refusals and --help must not depend on this machine having
+    a weights directory (CI has none): point it at one that does not exist."""
+    e = {k: v for k, v in os.environ.items()
+         if not k.startswith("INSTINCT") and k not in ("INFERENCE_URL",
+                                                       "OPENBEAST_INFERENCE_URL")}
+    e["OPENBEAST_WEIGHTS_DIR"] = str(tmp_path / "no-such-weights")
+    e["INSTINCT_RUN_DIR"] = str(tmp_path)
+    e.update(extra)
+    return e
+
+
 def sh(script, *args, env, timeout=60):
     return subprocess.run(["nice", "-n", "19", "bash", str(script), *args], env=env,
                           capture_output=True, text=True, timeout=timeout)
@@ -102,8 +114,8 @@ def test_scorer_refuses_occupied_port(tmp_path):
     s.bind(("127.0.0.1", 0))
     s.listen(1)
     try:
-        env = {**os.environ, "INSTINCT_SCORER_PORT": str(s.getsockname()[1]),
-               "INSTINCT_RUN_DIR": str(tmp_path), "INFERENCE_URL": "http://127.0.0.1:1"}
+        env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(s.getsockname()[1]),
+                         INFERENCE_URL="http://127.0.0.1:1")
         r = sh(SCORER_SH, env=env)
         assert r.returncode == 2 and "already held" in r.stderr
     finally:
@@ -112,19 +124,29 @@ def test_scorer_refuses_occupied_port(tmp_path):
 
 def test_scorer_refuses_the_primary_url(tmp_path):
     p = free_port()
-    env = {**os.environ, "INSTINCT_SCORER_PORT": str(p), "INSTINCT_RUN_DIR": str(tmp_path),
-           "INFERENCE_URL": f"http://localhost:{p}"}
+    env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(p),
+                     INFERENCE_URL=f"http://localhost:{p}")
     r = sh(SCORER_SH, env=env)
     assert r.returncode == 2 and "primary" in r.stderr
 
 
-def test_scorer_help_documents_the_cpu_contract():
-    r = sh(SCORER_SH, "--help", env=dict(os.environ))
+def test_scorer_help_documents_the_cpu_contract(tmp_path):
+    r = sh(SCORER_SH, "--help", env=scorer_env(tmp_path))
     assert r.returncode == 0
     assert "-ngl 0" in r.stdout or "CPU only" in r.stdout
     text = SCORER_SH.read_text()
     assert 'CUDA_VISIBLE_DEVICES=""' in text and "--api-key" not in text.replace(
         "--api-key` from", "")
+
+
+def test_scorer_without_weights_dir_fails_on_the_model_not_earlier(tmp_path):
+    """Control for the three refusal tests: with a free port and no weights
+    dir, the script gets PAST the refusals and stops at the weights check."""
+    env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(free_port()),
+                     INFERENCE_URL="http://127.0.0.1:1")
+    r = sh(SCORER_SH, env=env)
+    assert r.returncode != 0 and "no-such-weights" in r.stderr
+    assert "already held" not in r.stderr and "primary" not in r.stderr
 
 
 def test_stats_demote_promote_cli(tmp_path):
