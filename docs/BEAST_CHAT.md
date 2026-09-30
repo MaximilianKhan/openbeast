@@ -360,19 +360,32 @@ is what every existing device already relies on.
 A lost phone is one `revoke` away from silence, and the registry hot-reloads:
 the next write fails within one request, no restart.
 
-**Readers can be revoked the same way.** The operator allowlist is re-read on
-every check, from `CHAT_OPERATORS` in the environment and from
-`.run/chat-operators` (one login per line, `#` comments) — and an open
-SSE stream re-authorizes on its heartbeat, so removing a login also ends the
-transcript someone already had streaming. Neither needs a stack restart.
+**Readers can be revoked the same way — through `.run/chat-operators`.** The
+allowlist is the union of `CHAT_OPERATORS` and `.run/chat-operators` (one
+login per line, `#` comments). The FILE is re-read on every check, and an open
+SSE stream re-authorizes on its heartbeat, so removing a login there ends even
+a transcript someone already had streaming, with no restart. `CHAT_OPERATORS`
+is different: `conf.sh` exports it into `chat_server`'s environment at start,
+so editing it in `openbeast.conf` changes nothing until `./stop.sh &&
+./start.sh` — and a login still listed there stays authorized whatever the
+file says. For revocation you can do without a restart, keep the list in the
+file.
 
 A caller that presents `.run/chat-local.token` satisfies both tiers at once:
 reading it is proof of being on the box, which is strictly more than a device
 key proves. Everything else needs the two tiers above.
 
 Every request is audited to `.run/chat-audit.jsonl` — `ts, login, device,
-route, session, outcome, ms` — including the ones that were refused, and with
-the login the caller *claimed*, so a denial records who was probing. Message
+verified, peer, route, session, outcome, ms` — including the ones that were
+refused, and with the login the caller *claimed* (clipped to 256 characters),
+so a denial records who was probing; `verified: false` plus the socket `peer`
+is what tells a forged login from your own phone. Unverified denials are
+sampled per peer (`OPENBEAST_CHAT_AUDIT_DENIALS_PER_MIN`, default 60; the rest
+become one `denials_suppressed` row with a count) and the file rotates to
+`.1` past `OPENBEAST_CHAT_AUDIT_MAX_MB` (default 50), so an unauthenticated
+loop cannot fill the disk the ledger lives on. A stop's actual SIGTERM/SIGKILL
+deliveries are rows too (`route: "stop escalation"`), and so is every stream
+close, with the bytes it served. Message
 *text* is never logged, only its sha256 and length, matching the tool-audit
 rule; a spawn additionally records the command's sha256, because the command
 is the one thing the scope system is gating.
@@ -446,11 +459,11 @@ over it.
 | Event | Effect |
 |---|---|
 | Tool server (`:3001`) restarts | Agents started with `detach` keep running. They stay *listed* through the ledger only if they were started with `--steer`/`--session-id`; otherwise they vanish from `list_agents` with the in-memory map, exactly as before beast-chat existed. Non-detached spawns keep the historical contract: they die with the server. |
-| `chat_server` restarts | Nothing is lost. The ledger is on disk; the phone reopens its stream with `from=<offset>`. |
+| `chat_server` restarts | Nothing is lost. The ledger is on disk; the phone reopens its stream with `from=<offset>`. A console-started job runs under `job.sh`'s supervisor, which records its own `done`/`failed`/`stopped` and does its own TERM→KILL on a stop, so neither depends on the server being alive; an agent writes its own verdict. |
 | Phone sleeps 10 minutes | Reattach resumes at the exact byte. No duplicate events, no gap. |
 | Transcript is rotated or truncated under a live stream | The stream notices mid-poll, emits a `lost` frame, and restarts at 0 rather than skipping content or handing the reader half an event. |
 | Rig reboots | Every session from a previous boot reconciles to `lost` on the next listing. `reconcile` matches pid **and** process start time **and** the boot id (`/proc/sys/kernel/random/boot_id`, stamped at register). The boot id is what makes this row true rather than approximately true: the start time is *ticks since boot*, so across a reboot the other two compare against a different clock and can agree by coincidence — which is also why the signalling path checks it before any `killpg`. A record written before this existed, or on a kernel that will not report a boot id, falls back to the pid+start proof rather than being declared dead. |
-| A session finishes | The record stays for 30 days. `chat_server` sweeps terminal records older than that once per start (`sessions.prune(30, keep_logs=True)`): the index entry, its inbox and its lock go; a `job.sh` job's `.run/sessions/<id>.log` — its only output — is **kept**, and agent transcripts under `agents/logs/` are never touched. Calling `sessions.prune()` yourself (no `keep_logs`) removes the logs too. |
+| A session finishes | The record stays for 30 days. `chat_server` sweeps terminal records older than that once per start (`sessions.prune(30, keep_logs=True)`): the index entry, its inbox and its lock go; a `job.sh` job's `.run/sessions/<id>.log` — its only output — is **kept**, and agent transcripts under `agents/logs/` are not touched by this sweep. Calling `sessions.prune()` yourself (no `keep_logs`) removes the logs too. With the opt-in `AGENT_LOG_RETENTION_DAYS`, the daily logrotate run also deletes old transcripts no record names — in `agents/logs/` and, since 2026-09-29, the `.run/sessions/<id>.log` files this sweep left behind. |
 
 `list_agents` and `check_agent` in the MCP tool server read the ledger first
 and their in-memory map second, so a session that registered itself is
@@ -504,14 +517,13 @@ recorded pid **and** its start time against the live process — never a state
 a session writes about itself.
 
 Expect it after a rig reboot, an OOM kill, a `kill -9` of the session's
-process group from outside beast-chat, or a power cut — and after nothing
-else, with **one exception worth knowing**: a job started through the console
-(`POST /api/chat/sessions`) is reaped by `chat_server` itself, which files any
-death-by-signal as `stopped`, not `lost` — the same event `job.sh` would call
-`failed`. The record's summary is what distinguishes them: an unsolicited
-kill reads `killed by SIGKILL`, while a stop you asked for reads `SIGKILL
-after stop request`. So on a console-started job, read the summary, not just
-the state word. In particular it is **not** what an operator stop looks like: a job
+process group from outside beast-chat, or a power cut. One more case is a
+known gap: an **agent** stopped by MCP `stop_agent` or a plain `kill <pid>`
+dies on the signal before it can write `stopped`, so it reads `lost` (fixing
+that is a `runner.py` change, held for an eval-era boundary). A job started
+through the console now runs under `job.sh`'s supervisor and follows
+`job.sh`'s rules exactly: a command killed by a signal nobody here sent is
+`failed` with its exit status. In particular `lost` is **not** what an operator stop looks like: a job
 stopped with `job.sh stop` records `stopped` even when it ignored SIGTERM and
 had to be force-killed, and an agent stopped from the console records
 `stopped` after its `done` event. A `lost` job whose log ends mid-command is

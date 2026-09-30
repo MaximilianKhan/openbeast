@@ -387,8 +387,11 @@ class OperatorList:
     always reloaded itself that way and the operator list was the one
     credential that did not. Two sources, unioned:
 
-      OPENBEAST_CHAT_OPERATORS   read from the environment at CHECK time
+      OPENBEAST_CHAT_OPERATORS   read from THIS PROCESS's environment at
+                                 check time — which conf.sh fixed at start,
+                                 so an openbeast.conf edit needs a restart
       <run_dir>/chat-operators   one login per line, `#` comments, stat-gated
+                                 (the hot-revocable half)
                                  exactly like clients.json (mtime+size+inode,
                                  because mtime alone misses two writes inside
                                  one filesystem timestamp tick)

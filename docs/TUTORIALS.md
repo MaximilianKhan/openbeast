@@ -224,13 +224,15 @@ Now give it something to watch:
 
 ```bash
 ./scripts/job.sh run --title "long build" -- bash -c 'for i in $(seq 1 60); do echo tick $i; sleep 5; done'
-./agent.sh "list the five largest files under /tmp and explain what they are"
+./agent.sh --steer "list the five largest files under /tmp and explain what they are"
 ```
 
-Both appear in the console within a second. Attach to the agent, type
+Both appear in the console within a second. (`--steer` is what registers an
+agent as a session; without it an `agent.sh` run is invisible to the console
+and has no inbox.) Attach to the agent, type
 *"skip anything under 1 MB"* — it lands at the agent's next turn boundary,
 and the transcript shows `steer` when it does. Stop the job from the phone;
-the ledger records `stopped` and who did it.
+the ledger records `stopped`, and its `meta.stop_requested_by` names who asked.
 
 From the rig, the same ledger:
 
