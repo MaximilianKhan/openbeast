@@ -168,10 +168,123 @@ _image_store_kind() {
 
 # The image refs the stack actually runs, read from compose rather than
 # restated here: a second list would drift from the first.
-_compose_images() {
-  grep -oE '^\s*image:\s*\S+' "$REPO_DIR/docker-compose.yml" \
-    | sed -E 's/^\s*image:\s*//' | sort -u
+#
+# Every compose file whose images this stack can run: the core file, then
+# each extension's fragment (extensions/*/compose.yaml — opt-in services such
+# as ntfy, pinned by digest the same way). A bundle carries them all: it is
+# for a box that cannot pull, and enabling an extension there later must not
+# need a registry.
+# `--enabled` narrows the fragments to the extensions EXTENSIONS turns on
+# (conf.sh resolved it): what ./start.sh will actually ask for, which is the
+# question install's "everything resolves locally" check answers.
+_compose_files() {
+  local f name words=()
+  printf '%s\n' "$REPO_DIR/docker-compose.yml"
+  read -r -a words <<< "${EXTENSIONS:-}" || true
+  for f in "$REPO_DIR"/extensions/*/compose.yaml; do
+    [[ -f "$f" ]] || continue
+    if [[ "${1:-}" == "--enabled" ]]; then
+      name="$(basename "$(dirname "$f")")"
+      [[ " ${words[*]+"${words[*]}"} " == *" $name "* ]] || continue
+    fi
+    printf '%s\n' "$f"
+  done
+  return 0
 }
+_compose_images() {
+  local f
+  while IFS= read -r f; do
+    grep -hoE '^\s*image:\s*\S+' "$f" 2>/dev/null || true
+  done < <(_compose_files "$@") | sed -E 's/^\s*image:\s*//' | sort -u
+}
+
+# _rewrite_image_in <compose-file> <ref> <new-id>
+# THE DIGEST REWRITE for ONE compose file (the core docker-compose.yml, or an
+# extension's compose.yaml fragment — see _compose_files). Returns
+#   0  an `image:` line held <ref> (or the id a previous install rewrote it
+#      to) and now holds <new-id>; the original is kept at <file>.pre-bundle
+#   3  the file already points at exactly <new-id> (a re-run)
+#   1  this file does not run that image
+_rewrite_image_in() {
+  local f="$1" ref="$2" new="$3" prev
+  [[ -f "$f" ]] || return 1
+  # MATCH THE REF **OR** AN ID THIS SERVICE WAS PREVIOUSLY REWRITTEN TO.
+  # After the first install, compose holds `image: sha256:<old id>` and no
+  # longer contains the ref at all — so a SECOND bundle (the sanctioned way to
+  # update images offline) loaded and verified its new image and then left
+  # compose pinned to the PREVIOUS one, silently. ANCHORED to an `image:`
+  # line, never a bare substring (a comment or a second service would be
+  # rewritten by accident). `/` is NOT in the escape class: it is not an ERE
+  # metacharacter, and escaping it made GNU grep warn on every image.
+  prev="$(OB_REF="$ref" "$PY" - "$f.pre-bundle" "$f" <<'PYPREV'
+import os, re, sys
+ref = os.environ["OB_REF"]
+# Which SERVICE held this ref originally? Its NAME tells us which image: line
+# to look at now, even though that line's value has since become an id.
+#
+# By name, never by LINE INDEX. .pre-bundle is written once and never
+# refreshed, so after any edit to compose (a `git pull` that adds a service
+# above this one) the same index is a different service: install rewrote TWO
+# services to one image, printed "every image resolves locally", and exited 0.
+def images_by_service(path):
+    out, svc = {}, None
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line)
+        if m:
+            svc = m.group(1)
+            continue
+        st = line.strip()
+        if svc and st.startswith("image:"):
+            out.setdefault(svc, st[len("image:"):].strip())
+    return out
+orig = images_by_service(sys.argv[1])
+cur = images_by_service(sys.argv[2])
+for svc, image in orig.items():
+    if image == ref and svc in cur:
+        print(cur[svc])
+        break
+PYPREV
+)" || prev=""
+  if grep -qE "^[[:space:]]*image:[[:space:]]*($(printf '%s' "$ref" | sed 's/[][\.*^$(){}?+|]/\\&/g')|$(printf '%s' "${prev:-__none__}" | sed 's/[][\.*^$(){}?+|]/\\&/g'))[[:space:]]*$" "$f"; then
+    [[ -f "$f.pre-bundle" ]] || cp "$f" "$f.pre-bundle"
+    # Replacement via python, on the `image:` line only: an image ref
+    # contains / : @ and sed would need escaping that is easy to get wrong.
+    OB_OLD="$ref" OB_PREV="${prev:-}" OB_NEW="$new" \
+      "$PY" - "$f" <<'PYREW' || return 1
+import os, sys
+p = sys.argv[1]
+old, prev, new = (os.environ["OB_OLD"], os.environ.get("OB_PREV", ""),
+                  os.environ["OB_NEW"])
+# Either the original ref, or the id a previous install rewrote it to. Both
+# are matched ONLY as the whole value of an `image:` line, so a ref mentioned
+# in a comment or in prose is never touched.
+targets = {t for t in (old, prev) if t}
+out, n = [], 0
+for line in open(p, encoding="utf-8").read().splitlines(keepends=True):
+    st = line.strip()
+    if st.startswith("image:") and st[len("image:"):].strip() in targets:
+        out.append(line.replace(st[len("image:"):].strip(), new)); n += 1
+    else:
+        out.append(line)
+if n:
+    open(p, "w", encoding="utf-8").write("".join(out))
+    print(f"  rewrote {n} image reference(s) -> {new[:19]}…")
+else:
+    sys.exit(f"could not find an image: line for {old!r} "
+             f"(previously {prev!r}) — compose was NOT updated")
+PYREW
+    return 0
+  fi
+  if grep -qE "^[[:space:]]*image:[[:space:]]*$(printf '%s' "$new" | sed 's/[][\.*^$(){}?+|]/\\&/g')[[:space:]]*$" "$f"; then
+    return 3
+  fi
+  return 1
+}
+
 
 # _check_signature <dir> <allowed-signers-or-empty> <identity-or-empty>
 # Returns 0 when the bundle is acceptable to proceed with, and PRINTS what it
@@ -749,7 +862,7 @@ $(sed 's/^/         /' <<< "$_links")
     if [[ -d "$DIR/images" ]]; then
       step "container images"
       command -v docker >/dev/null 2>&1 || die "docker is not installed here"
-      _rewrote=0
+      _rewrote=0; _rewrote_files=()
       # MATERIALISE THE LIST FIRST, and check that it succeeded.
       # This used to be `while read ... done < <(python ...)`: a process
       # substitution's exit status is not the loop's, so when the manifest
@@ -863,100 +976,33 @@ for comp in doc.get("components", []):
         fi
         # THE DIGEST REWRITE. compose pins by registry manifest digest, which
         # save/load cannot carry; the image ID is a content digest that
-        # survives it and compose resolves locally. Keep the original file.
-        #
-        # ANCHORED to an `image:` line, not a bare substring search. A literal
-        # replace of the ref anywhere in the file would also rewrite it inside
-        # a comment, and a ref that happens to appear in two services would be
-        # rewritten in both — correct only by accident.
-        # MATCH THE REF **OR** AN ID THIS SERVICE WAS PREVIOUSLY REWRITTEN
-        # TO. After the first install, compose holds `image: sha256:<old id>`
-        # and no longer contains the ref at all — so a SECOND bundle (the
-        # sanctioned way to update images offline) loaded and verified its new
-        # image and then left compose pinned to the PREVIOUS one, silently.
-        # The fix has to work from either starting state, so the search is
-        # ref-or-any-sha256-image-line, and the replacement below rewrites the
-        # line whose current value is either.
-        # (`/` is NOT in the escape class below: it is not an ERE metacharacter,
-        # and escaping it made GNU grep print "stray \ before /" on every
-        # install, for every image.)
-        _prev_id="$(OB_REF="$_ref" "$PY" - "$REPO_DIR/docker-compose.yml.pre-bundle" "$REPO_DIR/docker-compose.yml" <<'PYPREV'
-import os, re, sys
-ref = os.environ["OB_REF"]
-# Which SERVICE held this ref originally? Its NAME tells us which image: line
-# to look at now, even though that line's value has since become an id.
-#
-# By name, never by LINE INDEX. .pre-bundle is written once and never
-# refreshed, so after any edit to compose (a `git pull` that adds a service
-# above this one) the same index is a different service: install rewrote TWO
-# services to one image, printed "every image resolves locally", and exited 0.
-def images_by_service(path):
-    out, svc = {}, None
-    try:
-        lines = open(path, encoding="utf-8").read().splitlines()
-    except OSError:
-        return out
-    for line in lines:
-        m = re.match(r"^  ([A-Za-z0-9._-]+):\s*(#.*)?$", line)
-        if m:
-            svc = m.group(1)
-            continue
-        st = line.strip()
-        if svc and st.startswith("image:"):
-            out.setdefault(svc, st[len("image:"):].strip())
-    return out
-orig = images_by_service(sys.argv[1])
-cur = images_by_service(sys.argv[2])
-for svc, image in orig.items():
-    if image == ref and svc in cur:
-        print(cur[svc])
-        break
-PYPREV
-)" || _prev_id=""
-        if grep -qE "^[[:space:]]*image:[[:space:]]*($(printf '%s' "$_ref" | sed 's/[][\.*^$(){}?+|]/\\&/g')|$(printf '%s' "${_prev_id:-__none__}" | sed 's/[][\.*^$(){}?+|]/\\&/g'))[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
-          [[ -f "$REPO_DIR/docker-compose.yml.pre-bundle" ]] \
-            || cp "$REPO_DIR/docker-compose.yml" "$REPO_DIR/docker-compose.yml.pre-bundle"
-          # Replacement via python, on the `image:` line only: an image ref
-          # contains / : @ and sed would need escaping that is easy to get
-          # subtly wrong.
-          OB_OLD="$_ref" OB_PREV="${_prev_id:-}" OB_NEW="$_use_id" \
-            "$PY" - "$REPO_DIR/docker-compose.yml" <<'PYREW'
-import os, sys
-p = sys.argv[1]
-old, prev, new = (os.environ["OB_OLD"], os.environ.get("OB_PREV", ""),
-                  os.environ["OB_NEW"])
-# Either the original ref, or the id a previous install rewrote it to. Both
-# are matched ONLY as the whole value of an `image:` line, so a ref mentioned
-# in a comment or in prose is never touched.
-targets = {t for t in (old, prev) if t}
-out, n = [], 0
-for line in open(p, encoding="utf-8").read().splitlines(keepends=True):
-    st = line.strip()
-    if st.startswith("image:") and st[len("image:"):].strip() in targets:
-        out.append(line.replace(st[len("image:"):].strip(), new)); n += 1
-    else:
-        out.append(line)
-if n:
-    open(p, "w", encoding="utf-8").write("".join(out))
-    print(f"  rewrote {n} image reference(s) -> {new[:19]}…")
-else:
-    sys.exit(f"could not find an image: line for {old!r} "
-             f"(previously {prev!r}) — compose was NOT updated")
-PYREW
-          _rewrote=1
-        elif grep -qE "^[[:space:]]*image:[[:space:]]*$(printf '%s' "$_use_id" | sed 's/[][\.*^$(){}?+|]/\\&/g')[[:space:]]*$" "$REPO_DIR/docker-compose.yml"; then
-          # Already pointing at exactly this image: a RE-RUN, which is the
-          # recovery path the weights step tells operators to take ("re-run
-          # once there is room"). Dying here called that "image pins differ".
-          ok "compose already uses this image — nothing to rewrite"
-        else
+        # survives it and compose resolves locally. Every compose file the
+        # stack can run is searched — an extension fragment (ntfy) pins its
+        # image the same way, and a bundle carries it so enabling the
+        # extension later needs no registry.
+        _matched=0
+        while IFS= read -r _cf; do
+          _rrc=0; _rewrite_image_in "$_cf" "$_ref" "$_use_id" || _rrc=$?
+          if [[ $_rrc -eq 0 ]]; then
+            _rewrote=1; _matched=1
+            _rewrote_files+=("${_cf#"$REPO_DIR"/}")
+            [[ "$_cf" == "$REPO_DIR/docker-compose.yml" ]] || ok "rewrote ${_cf#"$REPO_DIR"/}"
+          elif [[ $_rrc -eq 3 ]]; then
+            # Already pointing at exactly this image: a RE-RUN, which is the
+            # recovery path the weights step tells operators to take.
+            _matched=1
+            ok "compose already uses this image — nothing to rewrite"
+          fi
+        done < <(_compose_files)
+        if [[ $_matched -eq 0 ]]; then
           # THIS BRANCH DID NOT EXIST, and its absence was silent: the image
           # loaded, nothing in compose was rewritten, NOTHING WAS PRINTED,
           # install ended "done", and start.sh (--pull never when offline)
           # then failed "image not here" with no trail back to this step.
           rm -f "$_imglist"
           die "loaded $_ref, but docker-compose.yml has no \`image:\` line for it
-       (nor for an ID a previous bundle install rewrote it to). The bundle was
+       (nor does any extensions/*/compose.yaml, nor for an ID a previous
+       bundle install rewrote it to). The bundle was
        built from a checkout whose image pins differ from this one's, so the
        stack here would still ask for an image this bundle does not carry.
          this checkout wants:
@@ -971,10 +1017,12 @@ $(_compose_images | sed 's/^/           /')
       # subset (build skips an image the build box lacks). Checked against
       # compose as it NOW stands, and carried to the end rather than fatal
       # here, so a box that still needs its weight gets it on this run.
+      # The core plus the ENABLED extension fragments: a disabled extension
+      # whose image the build box lacked is not something start.sh needs.
       while IFS= read -r _cref; do
         [[ -n "$_cref" ]] || continue
         docker image inspect "$_cref" >/dev/null 2>&1 || _img_missing+=("$_cref")
-      done < <(_compose_images)
+      done < <(_compose_images --enabled)
       if [[ ${#_img_missing[@]} -gt 0 ]]; then
         warn "docker-compose.yml references ${#_img_missing[@]} image(s) that are NOT in
       this box's image store, so ./start.sh cannot bring those services up
@@ -986,10 +1034,11 @@ $(printf '          %s\n' "${_img_missing[@]}")
         ok "every image docker-compose.yml references resolves locally"
       fi
       if [[ $_rewrote -eq 1 ]]; then
-        warn "docker-compose.yml now references images by CONTENT ID instead of
-      registry digest, because save/load cannot carry a registry digest. The
-      original is at docker-compose.yml.pre-bundle — restore it if this box
-      ever gets a network back, so digest pinning resumes."
+        warn "${_rewrote_files[*]} now reference(s) images by CONTENT ID instead of
+      registry digest, because save/load cannot carry a registry digest. Each
+      original is kept beside it as <file>.pre-bundle (docker-compose.yml.pre-bundle
+      for the core) — restore them if this box ever gets a network back, so
+      digest pinning resumes."
       fi
     fi
 

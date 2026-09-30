@@ -129,9 +129,10 @@ flowchart TB
     router["🧭 <b>Agent router</b> · :8088<br/><i>(opt-in; OFF by default —<br/>WebUI then calls llama.cpp direct)</i>"]
     searxng["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
     dash["📊 <b>Dashboard</b> · :3002 <i>(extension)</i><br/>serves /api/slot"]
-    artifact["🎨 <b>beast-artifact</b> · :3004 <i>(opt-in)</i><br/><code>agents/artifact_server.py</code><br/>versioned page store · gallery + viewer<br/>sandboxed opaque-origin render · CSP<br/><i>writes are loopback-only</i>"]
-    chat["📱 <b>beast-chat</b> · :3003 <i>(opt-in)</i><br/><code>agents/chat_server.py</code> + <code>sessions.py</code><br/>session ledger · SSE reattach by offset<br/>say / stop · spawns agents + jobs in their own scope<br/><i>reads: tailnet identity · writes: device key (chat scope)</i>"]
+    artifact["🎨 <b>beast-artifact</b> · :3004 <i>(opt-in)</i><br/><code>agents/artifact_server.py</code><br/>versioned page store · gallery + viewer<br/>sandboxed opaque-origin render · CSP<br/>owner: the rig or a login · admins<br/><i>publish: loopback-only · manage: + artifact-scoped key</i>"]
+    chat["📱 <b>beast-chat</b> · :3003 <i>(opt-in)</i><br/><code>agents/chat_server.py</code> + <code>sessions.py</code><br/>session ledger · SSE reattach by offset<br/>say / pause / stop · export · presets<br/>spawns agents + jobs (own scope under -d)<br/><i>reads: tailnet identity · writes: device key (chat scope)</i>"]
     jobs["🧾 <b>job.sh</b><br/>any long command, registered in the ledger"]
+    ntfy["🔔 <b>ntfy</b> · :3005 <i>(extension)</i><br/>push server · tailnet :8447<br/><i>title + state + link only</i>"]
 
     subgraph LANG["📚 BEAST-LANG — <code>agents/lang/</code> · the installed toolchain is ground truth"]
         corpus["📖 <b>L0 corpus</b><br/><code>lang-library.sh acquire</code>"]
@@ -160,6 +161,8 @@ flowchart TB
     core -.->|"beast-assist error<br/>(opt-in escalation)"| escal
     chat -->|"--session-id --steer"| agentsh
     chat --> jobs
+    chat -.->|"export"| artifact
+    chat -.->|"session ended"| ntfy
 
     classDef fe fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c2733;
     classDef tool fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2a1150;
@@ -172,7 +175,7 @@ flowchart TB
     class its sec;
     class llama inf;
     class gate,router,artifact,chat optin;
-    class searxng,dash,jobs aux;
+    class searxng,dash,jobs,ntfy aux;
     classDef lang fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#431407;
     class corpus,intro,verify,escal lang;
     style LANG fill:#fffbeb,stroke:#ea580c,stroke-width:2px,color:#431407;
@@ -220,14 +223,24 @@ flowchart TB
   Both are opt-in (`BEAST_CHAT`, `BEAST_ARTIFACT`), bind loopback, and are
   published separately (`:8445`, `:8446`). Reads need a tailnet identity that
   their operator list allows (an unlisted login gets 404, never 403). Anything
-  that *changes* state — steering an agent, publishing a page — needs proof of
-  being on the rig (a 0600 locality token no browser can read) or, for chat,
-  an enrolled device key carrying the `chat` scope. Sessions the console
-  starts run in their own memory-capped systemd scope so `./stop.sh` never
-  takes a phone-started job with it; the artifact viewer frames every page in
-  an opaque-origin sandbox and serves its supporting files under a
-  capability path, because an opaque origin is cross-site even to the server
-  that hosts it. [`BEAST_CHAT.md`](BEAST_CHAT.md), [`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
+  that *changes* state needs proof of being on the rig (a 0600 locality token
+  no browser can read) or an enrolled device key with the right scope: `chat`
+  to steer, stop or start a session, `artifact` to manage (never publish) a
+  page. Publishing a page is locality-only. Under `./start.sh -d`, sessions
+  the console starts run in their own memory-capped systemd scope so
+  `./stop.sh` never takes a phone-started job with it; the artifact viewer
+  frames every page in an opaque-origin sandbox and serves its supporting
+  files under a capability path, because an opaque origin is cross-site even
+  to the server that hosts it. The two meet in one place: a console export
+  (and anything a session publishes, via `OPENBEAST_SESSION_ID`) links a page
+  back to its session. [`BEAST_CHAT.md`](BEAST_CHAT.md), [`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
+- **ntfy is an extension, not a service of the stack.** `EXTENSIONS=ntfy`
+  runs a digest-pinned ntfy server on `127.0.0.1:3005` (compose fragment,
+  read-only root, `cap_drop: ALL`); `setup-tailscale.sh --publish-ntfy`
+  mounts it tailnet-only at `:8447` for the phone app. beast-chat is its only
+  publisher, and the topic URL — the credential under ntfy's default access
+  — reaches the chat server's process and nothing else.
+  [`extensions/ntfy/README.md`](../extensions/ntfy/README.md).
 - **beast-lang is a library, not a service.** Nothing in `agents/lang/`
   listens on a port or runs at start. It is consulted from two places: the
   `language_reference` tool (MCP/WebUI surface only, never the runner's
@@ -276,11 +289,13 @@ scripts/                     # Server, ops, and feature CLIs
   fetch-weight.sh            # Download one registry weight, staged + sha256-verified
   verify-weights.sh          # Verify downloaded weights against weights.registry
   weights.registry           # sha256 + size pins for every shipped GGUF
-  setup-tailscale.sh         # Publish to the tailnet (--publish-{searxng,slot,chat,artifact})
-  clients.sh                 # RIG: device enrollment/revocation (beast-gate; chat scope)
+  setup-tailscale.sh         # Publish to the tailnet (--publish-{searxng,slot,chat,artifact,ntfy})
+  clients.sh                 # RIG: device enrollment/revocation (beast-gate; chat + artifact scopes)
   setup-client.sh            # CLIENT: install client mode (macOS/Linux)
   client.sh                  # CLIENT: the openbeast-client CLI
-  artifact.sh                # beast-artifact CLI: publish/list/show/rollback/visibility/remove
+  artifact.sh                # beast-artifact CLI: publish/list/show/versions/rollback/visibility/
+                             #   pin/tag/chown/prune/remove
+  publish-verdict.sh         # A campaign verdict or leaderboard → one stable artifact URL
   job.sh                     # beast-chat: run/list/show/stop a tracked long job
   lang-library.sh            # beast-lang: acquire/check/list/verify/pack/where
   lang-introspect.sh         # beast-lang: probe the installed toolchains
@@ -295,7 +310,8 @@ scripts/                     # Server, ops, and feature CLIs
   ext.sh                     # Extension manager (enable/disable/list optional services)
   ssd-wear.sh                # SMART-based drive wear report
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
-                             #   proc.sh (identity-checked signalling), bundle_manifest.py, pydeps_lock.py,
+                             #   proc.sh (identity-checked signalling), portown.sh (does OUR pid hold the port),
+                             #   bundle_manifest.py, pydeps_lock.py,
                              #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
@@ -322,6 +338,7 @@ agents/                      # Agent framework + servers
 
 extensions/                  # Optional hot-pluggable services (see extensions/README.md)
   dashboard/                 # Status dashboard (GPU/model/services) on :3002
+  ntfy/                      # Self-hosted push server for beast-chat notifications on :3005
 
 searxng/settings.yml         # Custom config: enables JSON format + disables limiter
 
@@ -329,7 +346,9 @@ tests/                       # pytest + standalone shell suites (tests/run_tests
   test_scripts.sh            # Script behaviour under set -e/pipefail, incl. end-to-end healthcheck
   test_offline_fixes.sh      # bundle/pydeps/fetch-weight with stubbed hf/pip/docker/git
   test_job_sh.sh · test_artifact_cli.sh · test_clients.sh · test_ssd_wear.sh
-  test_chat_server.py · test_sessions.py · test_steering.py · test_artifact_*.py
+  test_chat_*.py · test_sessions.py · test_steering.py · test_artifact_*.py
+  test_e2e_chat_artifact.py  # both, end to end, in a phone-sized headless Chromium (skips without one)
+  test_ops_chat_artifact.sh  # start/healthcheck/doctor/logrotate/conf.sh behaviour for both
   test_lang_*.py             # beast-lang: drivers, verifier, escalation, hardening, tool, synthesis
   test_edge.py · test_identity_*.py · test_tools.py · test_diagnostics.py · test_cache.py …
 

@@ -72,6 +72,20 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
 ## Shipped extensions
 
+- **`ntfy`** — a self-hosted ntfy push server for beast-chat's opt-in
+  notifications. `KIND=compose`, digest-pinned
+  `binwiederhier/ntfy:v2.28.0`, bound to `127.0.0.1:${NTFY_PORT:-3005}`,
+  read-only root, `cap_drop: ALL`, `no-new-privileges`, message cache and
+  auth database in volumes. beast-chat posts to it when a session ends
+  (`CHAT_NOTIFY_URL`; title, state and a link, never transcript text).
+  `setup-tailscale.sh --publish-ntfy` mounts it tailnet-only at `:8447` for
+  the phone app, `--unpublish-ntfy` takes it down. That is a whole-port
+  mount, the one exception to the "publish one path" rule below: the phone
+  app needs ntfy's own subscribe routes, and the topic (or, locked down, an
+  ntfy token) is the access check. Its image is carried by `bundle.sh` and
+  bumped by `update.sh --images` like the core images. Setup, lockdown and
+  the iOS relay caveat: [`ntfy/README.md`](ntfy/README.md).
+
 - **`dashboard`** — a lightweight read-only status page (GPU / model / services)
   on top of the tool server's `/metrics` and `doctor`. `KIND=process`, stdlib
   Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`:

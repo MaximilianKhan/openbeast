@@ -550,6 +550,61 @@ if grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/scripts/client-searx
 else
   fail "drifted client pin left alone: $(tr '\n' '|' < "$SBU/scripts/client-searxng.compose.yml")"
 fi
+# EXTENSION FRAGMENTS (the ntfy compose.yaml): pinned by digest like the core,
+# and nothing moved them. --images now re-resolves each fragment's pinned TAG
+# and rewrites its digest, and recreates with the ENABLED fragments merged.
+D_NT="sha256:$(printf 'd%.0s' $(seq 1 64))"
+OLD_NT="reg.example/ntfy:v2.28.0@sha256:$(printf '3%.0s' $(seq 1 64))"
+mkdir -p "$SBU/extensions/ntfy" "$SBU/extensions/idle"
+printf 'KIND=compose\n' > "$SBU/extensions/ntfy/manifest"
+printf 'KIND=compose\n' > "$SBU/extensions/idle/manifest"
+printf 'services:\n  ntfy:\n    # was %s\n    image: %s\n' "$OLD_NT" "$OLD_NT" > "$SBU/extensions/ntfy/compose.yaml"
+printf 'services:\n  idle:\n    image: reg.example/idle:v1\n' > "$SBU/extensions/idle/compose.yaml"
+cat > "$T/binu/docker" <<STUB
+#!/bin/bash
+echo "docker \$*" >> "$T/binu.log"
+case "\$1" in
+  inspect)
+    case "\${@: -1}" in
+      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
+      reg.example/ntfy:v2.28.0)           echo "reg.example/ntfy@$D_NT" ;;
+    esac ;;
+  compose)
+    [[ " \$* " == *" ps "* ]] && echo running-container-id ;;
+esac
+exit 0
+STUB
+: > "$T/binu.log"
+_O="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" OPENBEAST_EXTENSIONS=ntfy bash "$SBU/scripts/update.sh" --images 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && grep -qx "    image: reg.example/ntfy:v2.28.0@$D_NT" "$SBU/extensions/ntfy/compose.yaml" \
+   && grep -qx "    # was $OLD_NT" "$SBU/extensions/ntfy/compose.yaml" \
+   && grep -q "docker pull -q reg.example/ntfy:v2.28.0" "$T/binu.log"; then
+  pass "--images re-resolves an extension fragment's pinned tag and rewrites its digest (image line only)"
+else
+  fail "extension pin after --images (rc=$_rc): $(tr '\n' '|' < "$SBU/extensions/ntfy/compose.yaml") :: $_O"
+fi
+if has "$_O" "reg.example/idle:v1 is not digest-pinned" \
+   && grep -qx '    image: reg.example/idle:v1' "$SBU/extensions/idle/compose.yaml"; then
+  pass "…an unpinned fragment image is named, never silently pulled or rewritten"
+else
+  fail "unpinned fragment: $_O"
+fi
+if grep -q "docker compose -f $SBU/docker-compose.yml -f $SBU/extensions/ntfy/compose.yaml up -d" "$T/binu.log" \
+   && ! grep -q "extensions/idle/compose.yaml up" "$T/binu.log"; then
+  pass "…and running containers are recreated with the ENABLED fragments merged (not the disabled one)"
+else
+  fail "recreate args: $(grep 'compose' "$T/binu.log" | tr '\n' '|')"
+fi
+# A bundle-installed fragment (image: sha256:<id>) is reported, not skipped.
+printf 'services:\n  ntfy:\n    image: sha256:%s\n' "$(printf 'e%.0s' $(seq 1 64))" > "$SBU/extensions/ntfy/compose.yaml"
+_O="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images 2>&1)"
+if has "$_O" "extensions/ntfy/compose.yaml runs a bundle content ID"; then
+  pass "…a fragment a bundle install rewrote to a content ID says how to resume pinning"
+else
+  fail "content-ID fragment: $_O"
+fi
+rm -rf "$SBU/extensions"
 if has "$(sed -n '/OFFLINE=true → skipping the python upgrade/,/wheels/p' "$REPO_DIR/scripts/update.sh")" "COMMIT it"; then
   pass "OFFLINE guidance says to commit the regenerated lock (pydeps refuses a stick-borne one)"
 else
