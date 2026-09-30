@@ -321,3 +321,14 @@ def test_tree_pagination_never_leaves_the_endpoint_origin(tmp_path, remote, monk
         assert len(hfapi.tree("acme/Brand-New", SHA)) == len(remote.repos["acme/Brand-New"]["files"])
     finally:
         other.close()
+
+
+def test_vendored_tensorfold_is_the_commit_the_sparks_install():
+    """model-inspect's TensorFold verdict is only true for the code spark-node.sh pip-installs."""
+    import re
+    tf = json.loads((PYLIB.parent / "data" / "tensorfold.json").read_text())
+    env = (PYLIB.parent / "spark.env.example").read_text()
+    ref = re.search(r"^TENSORFOLD_REF=([0-9a-f]{40})$", env, re.M).group(1)
+    assert tf["_provenance"]["commit"] == ref
+    assert tf["families"]["glm5_next"]["cuda_exl3_variant"] == {
+        "bits": 4, "codebook": "mcg", "scope": "glm53_routed_experts_only"}

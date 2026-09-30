@@ -71,7 +71,7 @@ VLLM_EXTRA_NEVER = [
     "ssl-ca-certs", "allowed-origins", "allow-credentials", "root-path", "data-parallel-address",
 ]
 TF_EXTRA_ALLOW = [
-    "max-tokens", "temperature", "top-p", "top-k", "thinking", "no-thinking", "reasoning-effort",
+    "max-tokens", "temperature", "top-p", "top-k", "min-p", "thinking", "no-thinking", "reasoning-effort",
     "thinking-budget", "no-drafts", "drafter-bits", "mtp-drafts", "mtp-confidence", "lane-kernels",
     "prompt-cache-gib", "checkpoint-slots", "spill-gib", "max-snapshots", "decode-share", "mlx-cache-gib",
     "kv-dtype",
@@ -187,14 +187,18 @@ def _prev(reg: str) -> dict[str, str]:
 TF_CURATED = {
     "qwen3_5": {"tp": [1, 2], "tp2_quant_methods": ["mlx"], "notes": [
         "NVFP4 and EXL3 checkpoints run on ONE GPU; two ranks need the MLX affine checkpoint "
-        "(families/qwen3_5/cuda/engine.py:37)"]},
+        "(families/qwen3_5/cuda/engine.py:36-37)"]},
     "qwen3_5_moe": {"tp": [1], "notes": [
-        "one GPU only, one request at a time (families/qwen3_5_moe/__init__.py:36-38)"]},
+        "one GPU only (families/qwen3_5_moe/__init__.py:35-36); --parallel N decodes N requests together "
+        "(:41)"]},
     "qwen4_exp": {"tp": [1, 2], "tp2_quant_methods": ["mlx"], "notes": [
-        "NVFP4 and EXL3 run on one GPU (families/qwen4_exp/cuda/engine.py:33)",
-        "--parallel >1 is rejected with --tp 2 (families/qwen4_exp/cuda/engine.py:47)"]},
+        "NVFP4 and EXL3 run on one GPU (families/qwen4_exp/cuda/engine.py:32-34)",
+        "--parallel >1 is rejected with --tp 2 (families/qwen4_exp/cuda/engine.py:46-48)"]},
     "glm5_next": {"tp": [2], "notes": [
-        "requires --tp 2: one GPU per machine (families/glm5_next/__init__.py:179-181)"]},
+        "requires --tp 2: one GPU per machine (families/glm5_next/__init__.py:179-181)",
+        "EXL3 is experimental on this family: the reader takes Mia's TR3 layout only, 4-bit mcg-codebook "
+        "routed experts under their unsliced names and BF16 elsewhere (families/glm5_next/__init__.py:21,35-42; "
+        "cuda/weights.py:325-350); a rank-sliced copy (experts.N.proj.rank0.trellis) does not load"]},
     "nemotron_h": {"tp": [1, 2], "notes": [
         "one or two ranks (families/nemotron_h/cuda/app.py:33-34); serial requests"]},
 }
@@ -295,6 +299,10 @@ def vendor_tensorfold(commit: str, src_dir: Path | None) -> dict:
             "cuda_affine_bits": list(get("CUDA_AFFINE_BITS") or ()) or None,
             "cuda_affine_groups": list(get("CUDA_AFFINE_GROUPS") or ()) or None,
             "family_checks_mlx_widths": "check_quantization" in defs,
+            # families/__init__.py require_readable + the family's check(): "any" = every EXL3 codebook and
+            # width (tensorfold.cuda.exl3.format.require_config); a dict = these quantization_config fields must
+            # match exactly (glm5_next); None = no EXL3 on this family, or no config-level variant check
+            "cuda_exl3_variant": get("EXL3_VARIANT") if cuda and "exl3" in qm.get("cuda", ()) else None,
             "tested_checkpoints": list(get("MODELS", ()) or ()),
             "drafter": get("DRAFTER"),
             "source": rel,
@@ -318,7 +326,9 @@ def vendor_tensorfold(commit: str, src_dir: Path | None) -> dict:
                      "(default ('mlx',)) — MLX affine weights must also match CUDA_QUANTIZATION (bits, group) or the "
                      "family's own check_quantization; modelopt/compressed-tensors must be NVFP4/FP8 "
                      "(cuda/nvfp4/format.py require_config). Checkpoints outside MODELS run with an 'untested' note. "
-                     "Source: src/tensorfold/families/__init__.py, src/tensorfold/cli.py:406-445."),
+                     "An EXL3 checkpoint must also match the family's EXL3_VARIANT (cuda_exl3_variant: 'any', or "
+                     "the exact quantization_config fields). "
+                     "Source: src/tensorfold/families/__init__.py:140-172, src/tensorfold/cli.py:410-443."),
             "curated": "tp, tp2_quant_methods and notes are hand-read from the cited lines, not parsed; "
                        "extra_args_allow/never are OpenBeast policy (vendor_lists.py), checked against "
                        "serve_flags parsed from src/tensorfold/cli.py",
