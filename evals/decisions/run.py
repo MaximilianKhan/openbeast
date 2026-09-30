@@ -44,6 +44,7 @@ from instinct import core  # noqa: E402
 from instinct.config import LLM_ADAPTERS, load_config  # noqa: E402
 from instinct.engines import EngineError, ScoreReq, build_engine  # noqa: E402
 from instinct.engines import linear as L  # noqa: E402
+from instinct.engines.rules import mechanical_label  # noqa: E402
 from instinct.render import InputError, validate_inputs  # noqa: E402
 from instinct.spec import DecisionSpec, decision_hash, load_spec  # noqa: E402
 
@@ -116,7 +117,12 @@ def git_sha() -> str:
 
 
 class Scorer:
-    """One engine, driven exactly as the service drives it."""
+    """One engine, driven exactly as the service drives it: every row has the
+    mechanical labels zeroed with the same core.mask_mechanical the service
+    uses, so T, thresholds and gate metrics are fitted on the population that
+    is served. Rows whose facts FORCE a mechanical label are removed from the
+    dataset before any scorer sees them (judged_rows): the service never asks
+    a model about them."""
 
     def __init__(self, cfg, spec: DecisionSpec, name: str, *, transport=None):
         if name not in cfg.engines:
@@ -165,19 +171,38 @@ class Scorer:
                     label_ids=self.lock.ids if self.lock else None,
                     deadline_s=self.engine.binding.timeout_ms / 1000))
                 row = res.rows[0]
-                q = row.q if row.q is not None else None
-                if row.logits is not None:
-                    q = core.softmax(row.logits)
+                q, logits = core.mask_mechanical(self.spec, row.q, row.logits, row.mechanical)
+                if logits is not None:
+                    q = core.softmax(logits)
+                if q is not None and not any(v > 0 for v in q.values()):
+                    raise EngineError("engine returned an all-zero label distribution")
                 out.append({"id": r["id"], "y": r["label"], "source": r["source"],
                             "q": q, "label_mass": row.label_mass,
                             "truncated": list(row.truncated), "ood": row.ood,
                             "defer": row.defer, "ms": (time.perf_counter() - t0) * 1000,
                             "error": None})
-            except (EngineError, asyncio.TimeoutError) as exc:
+            except (EngineError, asyncio.TimeoutError, ValueError) as exc:
                 out.append({"id": r["id"], "y": r["label"], "source": r["source"], "q": None,
                             "label_mass": None, "truncated": [], "ood": False, "defer": False,
                             "ms": (time.perf_counter() - t0) * 1000, "error": str(exc)[:200]})
         return out
+
+
+def judged_rows(spec: DecisionSpec, data: dict[str, list[dict]]
+                ) -> tuple[dict[str, list[dict]], dict[str, int]]:
+    """Drop rows whose facts force a mechanical label (vision, long_context):
+    the service answers those with `rules` only and never judges them, so
+    they are not part of the population any engine is calibrated or gated
+    on. One filter for every scorer keeps paired comparisons paired."""
+    if not spec.mechanical:
+        return data, {}
+    out, dropped = {}, {}
+    for split, rows in data.items():
+        keep = [r for r in rows if mechanical_label(spec, r["input"]) is None]
+        out[split] = keep
+        if len(keep) != len(rows):
+            dropped[split] = len(rows) - len(keep)
+    return out, dropped
 
 
 def apply_T(samples: list[dict], T: float | None) -> list[dict]:
@@ -292,6 +317,7 @@ async def main_async(a) -> int:
     spec = load_spec(Path(cfg.decisions_dir) / f"{a.decision}.toml")
     data_dir = Path(a.data_dir) / a.decision
     data, manifest = load_dataset(data_dir, spec)
+    data, mech_dropped = judged_rows(spec, data)
     subj = Scorer(cfg, spec, a.engine)
     report: dict = {"decision": spec.id, "engine": a.engine, "adapter": subj.adapter,
                     "dataset_version": manifest.get("dataset_version", "unversioned"),
@@ -406,6 +432,8 @@ async def main_async(a) -> int:
                     "mcnemar": M.mcnemar_exact(M.correct(mine), M.correct(theirs))}
         await osc.engine.aclose()
     report["comparisons"] = comparisons
+    if mech_dropped:
+        report["mechanical_excluded"] = mech_dropped
 
     if a.gate:
         if not calibrated:

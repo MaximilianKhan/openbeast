@@ -26,7 +26,7 @@ from typing import Any
 from . import calibrate
 from .config import REPO_ROOT, ServiceConfig, effective_chain
 from .core import (MODE_ORDER, Answer, build_answer, canary_bucket, decide_action, is_enforced,
-                   min_mode)
+                   mask_mechanical, min_mode)
 from .engines import Engine, EngineError, LockResult, ProbeResult, ScoreReq, build_engine
 from .engines.rules import mechanical_label
 from .ledger import Ledger, excerpt, input_sha256
@@ -313,14 +313,11 @@ class Instinct:
         thresholds = self._thresholds(spec.id, name, crec) if calibrated else None
 
         def one(row) -> tuple[Answer, str, str | None]:
-            mech_zero = None
-            if spec.mechanical:
-                mech_zero = [m for m in spec.mechanical if m != row.mechanical]
+            q, logits = mask_mechanical(spec, row.q, row.logits, row.mechanical)
             ok_cal = calibrated and not row.defer
             try:
-                ans = build_answer(spec, q=row.q, logits=row.logits, label_mass=row.label_mass,
-                                   truncated=row.truncated, temperature=T, calibrated=ok_cal,
-                                   mechanical_zero=mech_zero)
+                ans = build_answer(spec, q=q, logits=logits, label_mass=row.label_mass,
+                                   truncated=row.truncated, temperature=T, calibrated=ok_cal)
             except ValueError:
                 raise EngineError("engine returned an all-zero label distribution") from None
             ans.mechanical = bool(row.mechanical)

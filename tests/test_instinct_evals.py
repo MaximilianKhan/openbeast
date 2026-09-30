@@ -235,3 +235,47 @@ def test_llm_engine_through_the_stub(tmp_path, capsys):
     assert rep["probe"]["ok"] and rep["calibrated"]
     assert "mcnemar" in rep["comparisons"]["rules"]["test"]
     assert len(rep["decision_hash"]) == 64
+
+
+# --- the harness scores the population the service serves (review M4) -----------
+
+TASK_INPUTS = {"prompt_head": "refactor this function", "est_prompt_tokens": 900,
+               "has_images": False, "has_tools": True, "stream": True,
+               "client_class": "ide"}
+
+
+def test_harness_and_service_agree_on_mechanical_masking(tmp_path):
+    from instinct.engines import LockResult, ScoreRes, ScoreRow
+    from instinct.service import Instinct
+    from instinct.config import load_config
+    cfg = load_config(H.write_config(tmp_path, {}, decisions=["hydra.task_class"]), env={})
+    spec = load_spec(H.DECISIONS / "hydra.task_class.toml")
+    q = {"chat": 0.05, "code_agent": 0.75, "long_context": 0.1, "vision": 0.1, "bulk": 0.0}
+
+    async def fixed(req):
+        return ScoreRes(rows=[ScoreRow(q=dict(q), label_mass=1.0)])
+    sc = RUN.Scorer(cfg, spec, "linear")
+    sc.lock = LockResult(True)
+    sc.engine.score = fixed
+    rows = [{"id": "r1", "input": TASK_INPUTS, "label": "code_agent", "source": "handwritten"}]
+    harness_p = RUN.apply_T(H.run(sc.score_rows(rows)), 1.0)[0]["p"]
+
+    inst = Instinct(cfg)
+    H.run(inst.reload())
+    inst.calib[(spec.id, "linear")] = {"T": 1.0, "thresholds": {}}
+    out = H.run(inst._evaluate(inst.specs[spec.id], "linear", H.run(fixed(None)), None))
+    served = out.answer.probabilities
+    assert served["vision"] == 0.0 and served["long_context"] == 0.0
+    assert served["code_agent"] == pytest.approx(0.9375)
+    assert harness_p == pytest.approx(served)
+
+
+def test_mechanical_rows_are_not_part_of_the_judged_population():
+    spec = load_spec(H.DECISIONS / "hydra.task_class.toml")
+    rows = [{"id": "a", "input": dict(TASK_INPUTS), "label": "code_agent"},
+            {"id": "b", "input": dict(TASK_INPUTS, has_images=True), "label": "vision"},
+            {"id": "c", "input": dict(TASK_INPUTS, est_prompt_tokens=90000),
+             "label": "long_context"}]
+    kept, dropped = RUN.judged_rows(spec, {"test": rows, "calib": rows[:1]})
+    assert [r["id"] for r in kept["test"]] == ["a"] and dropped == {"test": 2}
+    assert RUN.judged_rows(SPAWN, {"test": rows}) == ({"test": rows}, {})   # no mechanical
