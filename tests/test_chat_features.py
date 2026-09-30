@@ -572,10 +572,19 @@ def artifact_server_listed(tmp_path, monkeypatch):
     the exporter — the rig-default owner a login-less publish would get."""
     yield from _artifact_server(
         tmp_path, monkeypatch,
-        operators="alice@example.com," + LISTED)
+        operators="alice@example.com," + LISTED,
+        admins="root@example.com")
 
 
-def _artifact_server(tmp_path, monkeypatch, operators=None):
+@pytest.fixture()
+def artifact_server_default_admin(tmp_path, monkeypatch):
+    """The allowlist above with NO ARTIFACT_ADMINS: its first entry (alice)
+    is then the artifact admin (F-A1) and sees every page."""
+    yield from _artifact_server(
+        tmp_path, monkeypatch, operators="alice@example.com," + LISTED)
+
+
+def _artifact_server(tmp_path, monkeypatch, operators=None, admins=None):
     port = _free_port()
     run = tmp_path / "art-run"
     files = tmp_path / "art-files"
@@ -587,10 +596,12 @@ def _artifact_server(tmp_path, monkeypatch, operators=None):
                 "OPENBEAST_RUN_DIR": str(run),
                 "OPENBEAST_FILES_DIR": str(files)})
     for k in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS",
-              "OPENBEAST_ARTIFACT_BASE_URL"):
+              "OPENBEAST_ARTIFACT_BASE_URL", "OPENBEAST_ARTIFACT_ADMINS"):
         env.pop(k, None)
     if operators:
         env["OPENBEAST_ARTIFACT_OPERATORS"] = operators
+    if admins:
+        env["OPENBEAST_ARTIFACT_ADMINS"] = admins
     proc = subprocess.Popen(["nice", "-n", "19", sys.executable,
                              os.path.join(AGENTS, "artifact_server.py")],
                             env=env, stdin=subprocess.DEVNULL,
@@ -681,13 +692,28 @@ def test_the_exporter_can_open_the_page_it_was_shown(rig, artifact_server):
 
 def test_the_exporter_owns_the_page_under_an_artifact_allowlist(
         rig, artifact_server_listed):
-    """With an allowlist, a login-less publish is owned by its FIRST entry
-    (alice here). The exporter (listed second) must own it instead."""
+    """With an allowlist, the exporter (listed second) owns the page — not
+    the rig, not the first entry. Since F-A1 the first entry is the default
+    artifact ADMIN and sees every page, so this fixture names another admin
+    to keep alice a plain operator, for whom another's private page is 404."""
     sid = rig.session(kind="agent", state="done", title="build check")
     aid = _export_as_phone(rig, sid)
     port = artifact_server_listed["port"]
     assert _get_page(port, aid, LISTED) == 200
     assert _get_page(port, aid, "alice@example.com") == 404
+
+
+def test_the_default_artifact_admin_sees_an_exported_page(
+        rig, artifact_server_default_admin):
+    """Cross-track rule (integration 2026-09-30): with no ARTIFACT_ADMINS the
+    first operator is the admin, so it opens the exporter's page too — and
+    the exporter still owns it."""
+    sid = rig.session(kind="agent", state="done", title="build check")
+    aid = _export_as_phone(rig, sid)
+    port = artifact_server_default_admin["port"]
+    assert _get_page(port, aid, LISTED) == 200
+    assert _get_page(port, aid, "alice@example.com") == 200
+    assert _get_page(port, aid, "mallory@example.com") == 404   # unlisted
 
 
 def test_only_a_verified_real_login_is_forwarded_as_owner():

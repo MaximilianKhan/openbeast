@@ -2023,8 +2023,8 @@ def export_owner_login(principal: dict, allowed) -> str:
     """The login an export should be OWNED by, or "" for the rig default.
 
     beast-artifact files a locality-token publish under the login header it
-    carries (no allowlist, or a listed login) and otherwise under 'local' /
-    the first allowlist entry. can_view on a private page is owner-only, so
+    carries (no allowlist, or a listed login) and otherwise under the rig
+    principal 'rig'. can_view on a private page is owner-or-admin, so
     publishing without the exporter's login handed the phone that pressed
     Export a link it then got 404 on. Only a VERIFIED tailnet login is
     forwarded: never 'local', never a 'device:<id>' placeholder, never a
