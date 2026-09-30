@@ -1510,15 +1510,23 @@ def set_pinned(artifact_id, pinned, *, owner=None, admin=False) -> dict:
     """Pin or unpin (F-A2). A pinned page leads the gallery and is never
     touched by the retention sweep. Metadata only; owner-gated like every
     other mutator. Deliberately does NOT bump updated_at: pinning is not an
-    edit, and the gallery's order must not jump because someone starred."""
+    edit, and the gallery's order must not jump because someone starred.
+
+    Unpinning stamps `unpinned_at`, which the retention sweep treats as a
+    floor: otherwise a page pinned long ago kept its old updated_at, and
+    the next daily sweep deleted it — every version, irreversibly — right
+    after someone unpinned it to tidy the gallery (review B-artifact-1)."""
     want = bool(pinned)
 
     def apply(meta):
         before = meta.get("pinned") is True
         if want:
             meta["pinned"] = True
+            meta.pop("unpinned_at", None)
         else:
             meta.pop("pinned", None)
+            if before:
+                meta["unpinned_at"] = _now()
         return before, want
     return _set_field(artifact_id, owner, admin, "pin", apply)
 
@@ -1692,6 +1700,10 @@ def sweep_retention(days=None, *, now=None) -> list:
             continue
         # Re-checked on the record itself: the row is a snapshot.
         if not isinstance(meta, dict) or meta.get("pinned") is True:
+            continue
+        # A page unpinned recently gets a full retention period from then.
+        unpinned = _parse_ts(meta.get("unpinned_at"))
+        if unpinned is not None and unpinned.timestamp() >= cutoff:
             continue
         try:
             if remove(row["id"], owner=RIG_OWNER, admin=True,

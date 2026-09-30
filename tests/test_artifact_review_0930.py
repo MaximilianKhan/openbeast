@@ -581,6 +581,24 @@ def test_retention_is_off_by_default_and_never_touches_pinned(env, monkeypatch):
                for x in ledger(env))
 
 
+def test_unpinning_an_old_page_does_not_schedule_its_deletion(env, monkeypatch):
+    """B-artifact-1: unpinning kept the page's old updated_at, so the next
+    daily sweep deleted a page someone had just unpinned to tidy up."""
+    a = store.publish(PAGE, title="january report")
+    store.set_pinned(a["id"], True, admin=True)
+    meta = store.get_meta(a["id"])
+    meta["updated_at"] = "2026-01-01T00:00:00+00:00"
+    store._write_meta(a["id"], meta)
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", "30")
+    store.set_pinned(a["id"], False, admin=True)
+    assert store.get_meta(a["id"])["updated_at"].startswith("2026-01-01")
+    assert store.sweep_retention() == []                  # grace from unpin
+    assert store.get_meta(a["id"])
+    # ...and a full period after the unpin, it goes like any other page
+    later = datetime.now(timezone.utc) + timedelta(days=31)
+    assert store.sweep_retention(now=later) == [a["id"]]
+
+
 def test_the_server_sweep_is_audited(make_client, monkeypatch):
     c = make_client()
     a = publish(c)

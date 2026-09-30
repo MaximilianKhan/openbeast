@@ -471,7 +471,10 @@ an audit row too.
 **Retention is opt-in.** `ARTIFACT_RETAIN_DAYS=N` in `openbeast.conf` (or
 `OPENBEAST_ARTIFACT_RETAIN_DAYS`) makes the server delete, once a day, every
 **unpinned** page not updated for N days. Pinned pages are never touched, and
-neither is a page whose timestamp cannot be read. Unset or `0` (the default)
+neither is a page whose timestamp cannot be read. Unpinning starts a fresh
+N days (the page records `unpinned_at`; its `updated_at` and gallery place do
+not change), so tidying an old pinned page away never deletes it at the next
+sweep. Unset or `0` (the default)
 keeps everything. Each deletion is an audit row and a ledger row with reason
 `retention`. There is no store-wide byte quota.
 
