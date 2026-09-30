@@ -23,6 +23,7 @@ measured against the live server (§14). The default path —
 - [12. Verify-on-hardware list](#12-verify-on-hardware-list)
 - [13. Sources](#13-sources)
 - [14. Onboarding a model you've never seen](#14-onboarding-a-model-youve-never-seen)
+- [15. GLM-5.3-Flash on the Sparks](#15-glm-53-flash-on-the-sparks)
 
 ## 1. What milestone 1 is
 
@@ -147,8 +148,9 @@ which is what `start.sh` does too.
 
 `scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 0|1 --master <rank0 link IP>`
 runs NVIDIA's PyTorch container, pip-installs TensorFold **pinned by commit
-SHA** (`TENSORFOLD_REF`, a full 40-hex commit — v0.3.7 is
-`6b2e4c40064b1e4a05965f61b19ce87b5e0265b3`; tags and branches are refused
+SHA** (`TENSORFOLD_REF`, a full 40-hex commit — v0.5.0 is
+`9cd52ab4daba68ddd09be89be8f23ad43175e821`, the same commit
+`data/tensorfold.json` is vendored from; tags and branches are refused
 because they can move) and execs `tensorfold serve /models/NAME --tp N --rank R
 --no-update-check --drafter none|/models/NAME.drafter [--master IP --master-port 29551]`
 (no phoning GitHub for releases), with `--name --host --port` on rank 0.
@@ -347,7 +349,8 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 
 ## 11. Open decisions for Max
 
-1. **Which model.** vLLM and TensorFold cannot serve the benchmarked
+1. **Which model.** *Decided 2026-09-30: GLM-5.3-Flash, uncensored — see
+   §15 for the variant and the engine.* The original question: vLLM and TensorFold cannot serve the benchmarked
    uncensored GGUF (JonathanColetti Qwen3.8-27B-Uncensored, capability 98.4).
    Options: stock `nvidia/Qwen3.8-27B-NVFP4` (the launcher default — censored,
    unbenchmarked here) or an unvetted uncensored build
@@ -421,10 +424,11 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
   `vllm/model_executor/models/registry.py` (generation / pooling /
   speculative / previously-supported architecture dicts),
   `vllm/model_executor/layers/quantization/__init__.py` `QuantizationMethods`;
-  TensorFold `6b2e4c40064b1e4a05965f61b19ce87b5e0265b3` (v0.3.7) —
-  `src/tensorfold/families/*/__init__.py` (`MODEL_TYPES`, `QUANT_METHODS`,
-  `CUDA_QUANTIZATION`, `MODELS`, `cuda_engine`/`load`), with rank limits
-  hand-read from the cited `raise` lines.
+  TensorFold `9cd52ab4daba68ddd09be89be8f23ad43175e821` (v0.5.0, 2026-09-29;
+  was v0.3.7 `6b2e4c4`) — `src/tensorfold/families/*/__init__.py`
+  (`MODEL_TYPES`, `QUANT_METHODS`, `CUDA_QUANTIZATION`, `EXL3_VARIANT`,
+  `MODELS`, `cuda_engine`/`load`), with rank limits hand-read from the cited
+  `raise` lines.
 - TensorFold: https://github.com/ashhart/TensorFold (v0.3.7 read at HEAD
   6b2e4c4): `RUNBOOK.md`, `docs/recipes/qwen3.8-27b.md`, `docs/api.md`,
   `src/tensorfold/cli.py`, `src/tensorfold/cuda/server.py`, `src/tensorfold/cuda/comm.py`
@@ -572,3 +576,107 @@ Expect the backend row ready and serving `<id>`, and
 `INFERENCE_MODEL='<id>'` passing. "INFERENCE_MODEL is not set" or "is not
 what … lists" means step 6 was skipped, or the Sparks now serve another
 profile.
+
+## 15. GLM-5.3-Flash on the Sparks
+
+**Decision (Max, 2026-09-30):** the Sparks serve "GLM-5.3-Flash by
+orcarouter, or an EXL3 variant", and *all of our models are uncensored* —
+nothing stock is served or routed to. Profile:
+[`scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env`](../scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env).
+Nothing below has run on a GB10. Research notes behind it: the 2026-09-30
+review side-check (model-inspect runs against the local dir and pinned Hub
+repos, HF API metadata only — no weights downloaded).
+
+### The model
+
+| Fact | Value |
+|---|---|
+| Architecture | `Glm5NextForConditionalGeneration`, `model_type` `glm5_next` (text `glm5_next_text`), vision tower |
+| Size | **320B total / 18B active** — 45 layers: 34 KDA linear-attention + 11 DeepSeek-style sparse MLA (kv_lora_rank 512, indexer top-k 2048), mHC hyper-connections, 3 dense MLP layers then MoE (288 routed experts, 8 active, 1 shared), one MTP layer |
+| Context | 1,048,576 native |
+| Sampling | temperature 1.0, top_p 0.95; `reasoning_effort` low / high / max (default max) |
+| Tool / reasoning format | `<tool_call>name<arg_key>…</arg_key><arg_value>…</arg_value></tool_call>`, `<think>`; vLLM parsers `glm47` / `glm47` (official recipe, and `model-inspect` suggests the same) |
+
+### The candidates, and what fits two Sparks
+
+| Variant | Repo @ commit | Size | Uncensored | Fits 2×128 GB? | Engine |
+|---|---|---|---|---|---|
+| **EXL3 TR3 4-bit, uncensored** | `neko-legends/GLM-5.3-Flash-Uncensored-EXL3` @ `07135ec082f8f11f7a71e4244a4e5167a0f96277` (gated: auto) | 175.7 GB | yes (orcarouter FP8 → ShapleyMCG TR3) | **yes, ~95.5 GB/rank** | **TensorFold, TP 2** ← the profile |
+| same, rank-sliced | `cbert33/GLM-5.3-Flash-Uncensored-EXL3-DGX-Sliced` @ `2674c6de…` | 176.0 GB | yes | yes | only its own vLLM 0.29 fork (`cbertucci33/vllm-v29-glm53flash-exl3-dgx`); TensorFold cannot read `experts.N.proj.rank0.trellis` |
+| EXL3 TR3 4-bit, stock | `Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw` @ `9eaebb7c…` (staged in `weights/GLM-5.3-Flash-EXL3-TR3-4bpw`) | 175.6 GB | **no** | yes | TensorFold (its tested checkpoint) — **out under the uncensored rule**; a plumbing smoke at most |
+| orcarouter NVFP4 | `orcarouter/GLM-5.3-Flash-Uncensored-NVFP4` @ `ec0adf4f…` | 205.1 GB | yes | only at ≥ 0.9 utilization (above ~0.85 starves the OS) | stock vLLM **≥ v0.30.0** — compressed-tensors NVFP4 MoE on sm_121 unproven |
+| orcarouter FP8 | `…-Uncensored-FP8` @ `3cec42d6…` | 328.3 GB | yes | **no** | — |
+| stock-exllamav3 EXL3 (`mul1`, all layers) | `MikeRoz/…-Uncensored-{2.51,3.05,4.05}bpw-h6-exl3`, `turboderp/GLM-5.3-Flash-exl3` | 126–165 GB | MikeRoz yes | size yes | exllamav3/TabbyAPI only, and its TP launches every rank on one host (`model/model_tp.py`, master 127.0.0.1) → one Spark → only the ~2.0–2.3 bpw quants (85–98 GB) |
+
+Memory arithmetic is `model-inspect.sh`'s `fit()` at `GPU_MEMORY_UTILIZATION`
+0.8 (102.4 GB per Spark). Its KV estimate is **blank** for this model (it
+counts only `full_attention` layers; GLM's are `linear_attention` /
+`deepseek_sparse_attention`), so it prints "fits (KV size unknown)". The KV is
+small: 11 sparse-MLA layers × (512 latent + 128 indexer) per token.
+
+### Why TensorFold, and why not vLLM or NGC
+
+- **TensorFold reads exactly one EXL3 layout for this family.**
+  `EXL3_VARIANT = {"bits": 4, "codebook": "mcg", "scope":
+  "glm53_routed_experts_only"}` (`families/glm5_next/__init__.py:21` at
+  v0.5.0), checked against `quantization_config` at start
+  (`:35-42`, `ValueError` otherwise), with the experts looked up as
+  `…experts.N.{gate,up,down}_proj.{trellis,suh,svh}` (`cuda/weights.py:325-350`).
+  It needs `--tp 2`, one GPU per machine (`:179-181`). Its recipe labels
+  EXL3 **experimental**: speed, capacity and long context "TBD"; its MLX
+  4-bit path on two Sparks is measured at 31–54 tok/s decode. The server
+  converts GLM's `arg_key`/`arg_value` calls to OpenAI `tool_calls` itself,
+  so a tensorfold profile takes no parser keys.
+- **The uncensored TR3 is the same layout as the tested stock one.** neko's
+  repo is gated and its `config.json` could not be read here, but the Hub
+  reports identical per-dtype element counts for neko and Mia (I16
+  77,913,391,104; BF16 9,669,171,456; F16 228,261,888; F32 295,518; I32
+  37,152), cbert33's lossless re-slice of neko records 150,226 source
+  tensors (Mia's index count), and cbert33's config — "storage layout only"
+  — carries `bits 4 / codebook mcg / scope glm53_routed_experts_only`.
+  **VERIFY** neko's own `config.json` after requesting access.
+- **vLLM cannot load EXL3 at all** — no EXL3 quantization method upstream or
+  at the vendored commit. EXL3-on-vLLM exists only in forks: Mia's
+  `ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor` (AGPL;
+  TR3 on two Sparks, 850K context, ~36–92 tok/s), cbert33's runner, and
+  r0b0tlab's 0.30.0rc1 build with an EXL3 plugin. None is pinned or reviewed
+  here.
+- **Upstream vLLM gained GLM-5.3-Flash in v0.30.0** (PR #53906, merged
+  2026-09-03; absent in v0.28.0/v0.29.0). The only vLLM route to an
+  uncensored build is orcarouter's NVFP4 at ≥ 0.9 utilization — too tight.
+- **NGC is too old.** `spark.env.example` pins `nvcr.io/nvidia/vllm:26.05-py3`;
+  26.08 ships vLLM 0.27.1. No NGC image through 26.08 knows `Glm5Next`. A
+  vLLM profile for this model would need `vllm/vllm-openai:v0.30.0-aarch64`
+  (cu129) or newer, digest-pinned.
+
+### Day one
+
+1. **Pin TensorFold.** `TENSORFOLD_REF=9cd52ab4daba68ddd09be89be8f23ad43175e821`
+   (v0.5.0; `spark.env.example` already says so, and a test holds it equal to
+   the vendored `data/tensorfold.json`). v0.4.0+ changed one default for the
+   Qwen profile too: `--reasoning-effort` now follows the chat template
+   (Qwen3.8: xhigh) instead of `medium`.
+2. **Gate access.** Request access to `neko-legends/GLM-5.3-Flash-Uncensored-EXL3`
+   on the Hub (auto-approved), put the token in a 0600 file, then
+   `HF_TOKEN_FILE=<file> scripts/backends/model-inspect.sh
+   neko-legends/GLM-5.3-Flash-Uncensored-EXL3@07135ec082f8f11f7a71e4244a4e5167a0f96277`
+   → expect `tensorfold SUPPORTED … ranks: 2`. Anything else: stop.
+   Read the ShapleyMCG License 1.0 (attribution required; not MIT).
+3. **Fetch on both Sparks** (≈176 GB each):
+   `scripts/backends/model-fetch.sh --profile glm53-flash-unc-exl3-tensorfold`.
+4. **Launch rank 1 first, then rank 0:**
+   `scripts/backends/tensorfold/spark-node.sh --profile glm53-flash-unc-exl3-tensorfold --rank 1 --master <rank0 link IP>`,
+   then `--rank 0`. First start compiles kernels for sm_121.
+5. **Prove it:** `conformance.sh` (tool round-trip through TensorFold's own
+   GLM tool-call conversion, reasoning split), then `use-model.sh --profile
+   glm53-flash-unc-exl3-tensorfold` on the rig and `doctor.sh`.
+6. **Measure and write down:** decode tok/s single-stream, the context
+   TensorFold admits at start (then set `MAX_MODEL_LEN`), and whether the
+   checkpoint kept its MTP layer (the profile runs `--drafter none`;
+   TensorFold's own GLM drafter `incoai/GLM-5.3-Flash-DFlash2` is CC
+   BY-NC-ND and unreviewed).
+
+**Fallback if the TensorFold EXL3 path fails on hardware:** the one-Spark
+exllamav3/TabbyAPI route with a ~2.25 bpw uncensored quant needs a launcher
+and a `BACKEND` value OpenBeast does not have yet (the profile grammar takes
+`vllm | tensorfold`); Hydra already accepts an `engine = "openai"` node for it.
