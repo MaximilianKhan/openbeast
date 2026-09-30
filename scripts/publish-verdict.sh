@@ -13,8 +13,10 @@
 #            a verdict names the code and the eval era it was measured under.
 #   --title  the page title (default: the file's own <title>, or "Verdict: <slug>").
 #
-# Always PRIVATE, owned by the rig (its admins can open it). Share one with
-# ./scripts/artifact.sh visibility <id> tailnet.
+# PRIVATE on first publish, owned by the rig (its admins can open it). Share
+# one with ./scripts/artifact.sh visibility <id> tailnet; a share survives
+# every later republish (this script never asks for a visibility, so the
+# server keeps the page's own and prints no "visibility unchanged" warning).
 #
 # NEVER FAILS THE CALLER. This runs at the end of hours-long campaign stages
 # under `set -e`: a page viewer that is off or down must cost one stderr line,
@@ -33,7 +35,7 @@ _skip() { echo "publish-verdict: $* — not published" >&2; exit 0; }
 
 slug="${1:-}"; src="${2:-}"
 case "$slug" in
-  -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 [[ -n "$slug" && -n "$src" ]] || _skip "usage: publish-verdict.sh <slug> <file.html|file.txt> [--label L] [--title T]"
 shift 2
@@ -104,7 +106,7 @@ PY
     ;;
 esac
 
-args=(publish "$page" --id "$art_id" --label "$label" --visibility private)
+args=(publish "$page" --id "$art_id" --label "$label")
 [[ -n "$title" ]] && args+=(--title "$title")
 out="$("$SCRIPT_DIR/artifact.sh" "${args[@]}" 2>&1)"
 rc=$?

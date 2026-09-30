@@ -685,9 +685,9 @@ WANT_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbe
 rm -f "$T/art.argv"
 _O="$(pv tier3-zig "$T/verdict.txt")"; _rc=$?
 _argv="$(tr '\n' '|' < "$T/art.argv" 2>/dev/null)"
-if [[ $_rc -eq 0 ]] && has "$_argv" "--id|$WANT_ID|" && has "$_argv" "--visibility|private|" \
+if [[ $_rc -eq 0 ]] && has "$_argv" "--id|$WANT_ID|" && ! has "$_argv" "--visibility" \
    && has "$_argv" "--label|nogit era=era-abc123|" && has "$_O" "Published:"; then
-  pass "uuid5 id, private, label '<sha> era=<era>', artifact.sh's URL passed through"
+  pass "uuid5 id, no visibility asked (a share must survive), label '<sha> era=<era>', URL passed through"
 else
   fail "publish argv: [$_argv] rc=$_rc :: $_O"
 fi
@@ -783,6 +783,16 @@ if "$PY3" -c 'import fastapi, uvicorn' 2>/dev/null; then
     pass "real server: two publishes of one slug are two versions of ONE private artifact, labels kept"
   else
     fail "real round trip: $_O :: $(head -c 600 <<< "$_show") :: $(tail -n 5 "$T/artsrv.log")"
+  fi
+  # Shared, then republished by the next campaign stage: the share holds and
+  # the stage log gets no "visibility unchanged" WARNING (it did on every run).
+  env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/artifact.sh" visibility "$WANT_ID" tailnet >/dev/null 2>&1
+  _O="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/publish-verdict.sh" tier3-zig "$T/verdict.txt" --label third 2>&1)"
+  _show="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/artifact.sh" show "$WANT_ID" --json 2>&1)"
+  if has "$_show" '"tailnet"' && has "$_show" "third" && ! has "$_O" "WARNING" && ! has "$_O" "visibility unchanged"; then
+    pass "real server: a shared verdict stays shared across a republish, with no warning"
+  else
+    fail "republish after share: $_O :: $(head -c 600 <<< "$_show")"
   fi
   kill "$RS_PID" 2>/dev/null
 else
