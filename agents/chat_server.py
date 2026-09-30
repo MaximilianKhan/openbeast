@@ -1792,7 +1792,8 @@ def scrub_secrets(text: str) -> str:
     server's environment, wherever it appears — the names come from the bash
     tool's own list (is_secret_env_name mirrors tools._scrubbed_env);
     (2) any NAME=value / NAME: value whose name is secret-shaped, whatever
-    process printed it; (3) bearer credentials in Authorization headers.
+    process printed it (quoted JSON keys and hyphenated headers too); (3)
+    --api-key/--token/--password flags and Authorization credentials.
     """
     import re
     global _SECRET_ASSIGN_RE
@@ -1802,11 +1803,24 @@ def scrub_secrets(text: str) -> str:
         if is_secret_env_name(name) and value and len(value) >= 6:
             text = text.replace(value, f"[redacted:{name}]")
     if _SECRET_ASSIGN_RE is None:
+        # The NAME may be quoted (a JSON config a tool printed) and may use
+        # hyphens (an HTTP header) — including this stack's own two
+        # credentials, X-OpenBeast-Device-Key and X-OpenBeast-Local.
         _SECRET_ASSIGN_RE = re.compile(
-            r"(?i)\b([A-Z0-9_]*(?:API_?KEY|SECRET|PASSWORD|PASSWD|TOKEN)"
-            r"[A-Z0-9_]*)(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s\"',;]+)")
-    text = _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]",
-                                 text)
+            r"(?i)([\"']?)\b([A-Z0-9_-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD"
+            r"|TOKEN|DEVICE[_-]KEY|OPENBEAST[_-]LOCAL)[A-Z0-9_-]*)\1"
+            r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s\"',;}]+)")
+    text = _SECRET_ASSIGN_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}[redacted]",
+        text)
+    # --api-key VALUE / --token=VALUE / --password VALUE on a command line.
+    text = re.sub(
+        r"(?i)(--[A-Za-z0-9-]*(?:api-?key|token|password|passwd|secret)"
+        r"[A-Za-z0-9-]*)(=|\s+)(\"[^\"]*\"|'[^']*'|[^\s\"']+)",
+        r"\1\2[redacted]", text)
+    # Authorization: <any scheme> <credential> — token, Basic, Bearer…
+    text = re.sub(r"(?i)\b(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*)\s+"
+                  r"[^\s\"',;]{4,}", r"\1 [redacted]", text)
     text = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]",
                   text)
     return text

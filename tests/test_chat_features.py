@@ -445,6 +445,26 @@ def test_rendered_export_is_escaped_and_scrubbed(rig, monkeypatch):
     assert f'content="{sid}"' in page
 
 
+@pytest.mark.parametrize("leak, secret", [
+    ('{"api_key": "sk-abc123def456"}', "sk-abc123def456"),
+    ('curl -H "X-OpenBeast-Device-Key: kdev_abcdef123456"', "kdev_abcdef123456"),
+    ("X-OpenBeast-Local: 0123456789abcdef0123", "0123456789abcdef0123"),
+    ("llama-server --api-key sk-abcdefgh123 -m x", "sk-abcdefgh123"),
+    ("hf download --token=hf_zyxwvut987654", "hf_zyxwvut987654"),
+    ("Authorization: token ghp_abcdef123456", "ghp_abcdef123456"),
+    ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="),
+])
+def test_scrub_catches_quoted_hyphenated_flag_and_scheme_forms(leak, secret):
+    out = chat_server.scrub_secrets(leak)
+    assert secret not in out and "[redacted]" in out
+
+
+def test_scrub_leaves_ordinary_text_alone():
+    for text in ("--max-iter 200 --model qwen", "512 tokens per second",
+                 '{"title": "nightly build"}', "keys are fine: yes"):
+        assert chat_server.scrub_secrets(text) == text
+
+
 def _free_port():
     import socket
     s = socket.socket()
