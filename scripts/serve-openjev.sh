@@ -20,9 +20,12 @@
 # Open-Jev-27B-v1.1 card, rev 28cf7306…) and refuses:
 #   * an unpinned image; a reserved stack port (8080 3000 3001 3003 3004 8082
 #     8088 8090 8094 8095 8443 8444) or a held one; --bind 0.0.0.0;
-#   * a llama-server on this host (the model needs a GPU of its own; set
+#   * a GPU llama-server on this host (the model needs a GPU of its own; set
 #     OPENJEV_ALLOW_SHARED_HOST=1 only on a host whose llama-server is on
-#     another GPU — [HW] the 5090 has no room for both);
+#     another GPU — [HW] the 5090 has no room for both). A CPU-only one —
+#     the rig's instinct 0.6B fallback scorer (INSTINCT_SCORER=true), which
+#     runs with CUDA_VISIBLE_DEVICES="" — does not count; a process whose
+#     environment cannot be read does (fail safe);
 #   * --base stock without --validation-only (all our models are uncensored;
 #     the stock base exists only to A/B the adapter), and stock off loopback.
 # The base: the UNCENSORED Qwen3.8-27B safetensors (JonathanColetti/
@@ -66,9 +69,24 @@ PY="${PYTHON:-python3}"
 
 die() { echo "serve-openjev: $*" >&2; exit 2; }
 
-usage() { sed -n '2,43p' "$0"; }
+usage() { sed -n '2,/^set -euo pipefail/{/^#/p}' "$0"; }
 
 sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+# A llama-server that holds (or may hold) a GPU. The instinct fallback scorer
+# runs CPU-only with CUDA_VISIBLE_DEVICES="" in its environment and does not
+# count; any other one — or one whose environment cannot be read — does.
+gpu_llama_server_running() {
+  local proc="${OPENJEV_PROC_ROOT:-/proc}" pid pids
+  pids="$(pgrep -x llama-server 2>/dev/null || true)"
+  for pid in $pids; do
+    if ! tr '\0' '\n' < "$proc/$pid/environ" 2>/dev/null \
+         | grep -qx 'CUDA_VISIBLE_DEVICES='; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 free_port() {
   "$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
@@ -113,8 +131,8 @@ cmd_up() {
   got_head="$(sha256_of "$ckpt/head.pt")"
   [[ "$got_adapter" == "$ADAPTER_SHA" ]] || die "adapter sha256 $got_adapter != pinned $ADAPTER_SHA"
   [[ "$got_head" == "$HEAD_SHA" ]] || die "head sha256 $got_head != pinned $HEAD_SHA"
-  if [[ "${OPENJEV_ALLOW_SHARED_HOST:-0}" != "1" ]] && pgrep -x llama-server >/dev/null 2>&1; then
-    die "a llama-server runs on this host — Open-Jev-27B needs a GPU of its own (a Spark, or the 5090 once the Sparks serve generation)"
+  if [[ "${OPENJEV_ALLOW_SHARED_HOST:-0}" != "1" ]] && gpu_llama_server_running; then
+    die "a GPU llama-server runs on this host — Open-Jev-27B needs a GPU of its own (a Spark, or the 5090 once the Sparks serve generation)"
   fi
   if [[ $dry -eq 0 ]] && ob_port_listening "$port"; then
     die "port $port is already held — refusing (pre-bind check)"

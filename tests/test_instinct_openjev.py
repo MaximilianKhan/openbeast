@@ -127,14 +127,43 @@ def test_refusals(tmp_path, extra_args, extra_env, why):
     assert r.returncode == 2 and why in r.stderr, r.stderr
 
 
+def _fake_llama_servers(tmp_path, environs: dict[int, bytes | None]):
+    """pgrep reports these pids; each one's /proc/<pid>/environ (None:
+    unreadable) lives under a fake proc root."""
+    proc = tmp_path / "proc"
+    for pid, env in environs.items():
+        (proc / str(pid)).mkdir(parents=True, exist_ok=True)
+        if env is not None:
+            (proc / str(pid) / "environ").write_bytes(env)
+    pg = tmp_path / "bin" / "pgrep"
+    pids = "\\n".join(str(p) for p in environs)
+    pg.write_text('#!/bin/bash\n[[ "$*" == *llama-server* ]] && { printf "' + pids
+                  + '\\n"; exit 0; }\nexit 1\n')
+    return str(proc)
+
+
 def test_refuses_a_host_running_llama_server(tmp_path):
     env = env_for(tmp_path)
-    pg = tmp_path / "bin" / "pgrep"
-    pg.write_text('#!/bin/bash\n[[ "$*" == *llama-server* ]] && exit 0\nexit 1\n')
+    env["OPENJEV_PROC_ROOT"] = _fake_llama_servers(tmp_path, {4242: b"PATH=/usr/bin\0"})
     r = sh("up", "--dry-run", env=env)
     assert r.returncode == 2 and "GPU of its own" in r.stderr
     env["OPENJEV_ALLOW_SHARED_HOST"] = "1"                       # an explicit override
     assert sh("up", "--dry-run", env=env).returncode == 0
+
+
+def test_the_cpu_instinct_scorer_does_not_block_the_freed_5090(tmp_path):
+    """Review minor: the rig's own CPU 0.6B scorer (CUDA_VISIBLE_DEVICES="")
+    used to make the freed-5090 path need OPENJEV_ALLOW_SHARED_HOST=1.
+    An unreadable environment still refuses (fail safe)."""
+    env = env_for(tmp_path)
+    env["OPENJEV_PROC_ROOT"] = _fake_llama_servers(
+        tmp_path, {4243: b"PATH=/usr/bin\0CUDA_VISIBLE_DEVICES=\0HOME=/x\0"})
+    r = sh("up", "--dry-run", env=env)
+    assert r.returncode == 0, r.stderr
+    env["OPENJEV_PROC_ROOT"] = _fake_llama_servers(tmp_path, {4243: b"CUDA_VISIBLE_DEVICES=\0",
+                                                             4244: None})
+    r = sh("up", "--dry-run", env=env)
+    assert r.returncode == 2 and "GPU of its own" in r.stderr
 
 
 def test_stock_base_for_validation_only(tmp_path):
