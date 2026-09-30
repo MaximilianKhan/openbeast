@@ -922,3 +922,18 @@ def test_unknown_served_id_is_never_judged_but_a_known_one_is():
     assert "verify_upstream" not in named["deployments"]["local@rig"]
     assert core.validate(named, {}).deployments["local@rig"].verify_upstream
     assert not core.implicit_config({}).warnings
+
+
+def test_a_stale_models_ok_does_not_clear_a_newer_auth_failure():
+    """A /v1/models check SENT before a request saw a 401 must not re-admit
+    the node when its 200 lands afterwards (it did: a boot-time check cleared
+    a fresh AUTH_FAILED). A check sent after the failure still recovers."""
+    hs = _hs()
+    hs.on_probe("ready", 1.0)
+    hs.on_probe("ready", 2.0)
+    hs.request_state("auth", 5.0, "HTTP 401 on a request")
+    assert hs.h.state == core.AUTH_FAILED
+    hs.on_models("ok", 6.0, started=4.0)          # in flight before the 401
+    assert hs.h.state == core.AUTH_FAILED
+    hs.on_models("ok", 7.0, started=5.5)          # sent after it: real recovery
+    assert hs.h.state == core.READY

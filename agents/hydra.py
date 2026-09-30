@@ -603,6 +603,7 @@ class Hydra:
         key = self.node_key(n)
         if key:
             hdr["Authorization"] = f"Bearer {key}"
+        sent = time.monotonic()
         try:
             r = await self.probe_client.get(f"{n.url}/v1/models", headers=hdr, timeout=5.0)
         except httpx.HTTPError:
@@ -624,14 +625,15 @@ class Hydra:
                 self._transition(d, "mismatch", now,
                                  f"{d.upstream!r} not in /v1/models (it lists {served or 'nothing'})")
             else:
-                self._transition(d, "ok", now)
+                self._transition(d, "ok", now, started=sent)
 
-    def _transition(self, d: core.Deployment, result: str, now: float, detail: str = "") -> None:
+    def _transition(self, d: core.Deployment, result: str, now: float, detail: str = "",
+                    started: float | None = None) -> None:
         hs = self.state.health.get(d.id)
         if hs is None:
             return
         before = hs.h.state
-        after = hs.on_models(result, now, detail)
+        after = hs.on_models(result, now, detail, started=started)
         if before != after:
             _log(f"{d.id}: {before} -> {after} {detail}")
 
