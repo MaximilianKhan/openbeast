@@ -1987,8 +1987,38 @@ class ExportError(Exception):
         self.detail = detail
 
 
-def publish_export(record: dict) -> dict:
-    """Render and publish one session PRIVATE; return the store's answer."""
+def export_owner_login(principal: dict, allowed) -> str:
+    """The login an export should be OWNED by, or "" for the rig default.
+
+    beast-artifact files a locality-token publish under the login header it
+    carries (no allowlist, or a listed login) and otherwise under 'local' /
+    the first allowlist entry. can_view on a private page is owner-only, so
+    publishing without the exporter's login handed the phone that pressed
+    Export a link it then got 404 on. Only a VERIFIED tailnet login is
+    forwarded: never 'local', never a 'device:<id>' placeholder, never a
+    login this server's own operator list refuses, never anything that is
+    not a plain header-safe token.
+    """
+    login = str(principal.get("login") or "").strip()
+    if (not principal.get("verified") or principal.get("local")
+            or not login or login == "local" or login.startswith("device:")):
+        return ""
+    if len(login) > 254 or any(ord(c) <= 32 or ord(c) >= 127 for c in login):
+        return ""
+    try:
+        if not allowed(login):
+            return ""
+    except Exception:
+        return ""
+    return login
+
+
+def publish_export(record: dict, owner_login: str = "") -> dict:
+    """Render and publish one session PRIVATE; return the store's answer.
+
+    `owner_login` (see export_owner_login) rides along as the login header
+    so the page belongs to — and opens for — the operator who exported it.
+    """
     import urllib.error
     import urllib.request
     if (os.environ.get("BEAST_ARTIFACT") or os.environ.get("OPENBEAST_BEAST_ARTIFACT")
@@ -2009,9 +2039,13 @@ def publish_export(record: dict) -> dict:
     page = render_transcript_html(record, exported_at=_now_iso())
     body = {
         "html": page,
-        "title": f"Transcript — {str(record.get('title') or sid)[:150]}",
-        "description": f"beast-chat {record.get('kind') or 'agent'} session "
-                       f"{sid} ({record.get('state')})",
+        # The <h1> is scrubbed by the renderer; the store's title (shown in
+        # the gallery and the tab) must be too — a job's title is its command.
+        "title": scrub_secrets(
+            f"Transcript — {str(record.get('title') or sid)[:150]}"),
+        "description": scrub_secrets(
+            f"beast-chat {record.get('kind') or 'agent'} session "
+            f"{sid} ({record.get('state')})"),
         "artifact_id": export_artifact_id(sid),
         "label": f"session {sid}"[:60],
         "visibility": "private",
@@ -2019,10 +2053,12 @@ def publish_export(record: dict) -> dict:
         # unknown fields, and the page carries it in a <meta> tag regardless.
         "source_session": sid,
     }
+    headers = {"Content-Type": "application/json", "X-OpenBeast-Local": token}
+    if owner_login:
+        headers["Tailscale-User-Login"] = owner_login
     req = urllib.request.Request(
         base + "/api/artifacts", data=json.dumps(body).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json",
-                                "X-OpenBeast-Local": token})
+        method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             out = json.loads(r.read() or b"{}")
@@ -3336,7 +3372,9 @@ def create_app() -> FastAPI:
                 ctx["principal"] = principal
                 rec = load_session(session_id)
                 try:
-                    out = await asyncio.to_thread(publish_export, rec)
+                    out = await asyncio.to_thread(
+                        publish_export, rec,
+                        export_owner_login(principal, operators.allows))
                 except ExportError as e:
                     raise HTTPException(status_code=e.status, detail=e.detail)
                 ctx["extra"] = {"artifact": out.get("id"),

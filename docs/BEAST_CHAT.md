@@ -475,10 +475,19 @@ answer 409 — a shell command has no turn to pause at.
 
 **Export** publishes the transcript as a beast-artifact page: turns, tool
 calls, results (already clipped to 2,000 characters), every byte HTML-escaped
-and run through the bash tool's secret list (secret-named env values, `NAME=`
-/ `NAME:` assignments with secret-shaped names, bearer tokens). It is
+and run through the bash tool's secret list (secret-named env values;
+`NAME=` / `NAME:` assignments whose name is secret-shaped, quoted JSON keys and
+hyphenated headers included — `X-OpenBeast-Device-Key`, `X-OpenBeast-Local`;
+`--api-key`/`--token`/`--password` flags; `Authorization:` credentials of any
+scheme). The store's title and description are scrubbed too. Redaction is
+pattern-based — read the page before you widen its visibility. It is
 **private**, at a stable id (`uuid5` of the session id), so a re-export is
-version 2 at the same URL. Needs `BEAST_ARTIFACT=true`; otherwise 409.
+version 2 at the same URL, and it is **owned by the tailnet login that
+pressed Export** (forwarded to beast-artifact with the locality token), so
+the link opens on that phone. If beast-artifact has an operator allowlist
+that login must be on it; otherwise, and for an export made on the rig with
+the local token, the page belongs to the rig's default owner (`local` or the
+allowlist's first entry). Needs `BEAST_ARTIFACT=true`; otherwise 409.
 
 **Push notifications** are opt-in. Set `CHAT_NOTIFY_URL` to an ntfy-compatible
 topic URL (`OPENBEAST_CHAT_NOTIFY_URL`), optionally `CHAT_NOTIFY_ON`

@@ -33,7 +33,7 @@ for _p in (AGENTS, TESTS):
 
 import chat_server  # noqa: E402
 import sessions  # noqa: E402
-from test_chat_server import Rig, wait_state  # noqa: E402
+from test_chat_server import LISTED, Rig, wait_state  # noqa: E402
 
 
 @pytest.fixture()
@@ -477,6 +477,19 @@ def _free_port():
 @pytest.fixture()
 def artifact_server(tmp_path, monkeypatch):
     """The REAL agents/artifact_server.py, store and token in tmp."""
+    yield from _artifact_server(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def artifact_server_listed(tmp_path, monkeypatch):
+    """The same, with an artifact operator allowlist whose FIRST entry is not
+    the exporter — the rig-default owner a login-less publish would get."""
+    yield from _artifact_server(
+        tmp_path, monkeypatch,
+        operators="alice@example.com," + LISTED)
+
+
+def _artifact_server(tmp_path, monkeypatch, operators=None):
     port = _free_port()
     run = tmp_path / "art-run"
     files = tmp_path / "art-files"
@@ -490,6 +503,8 @@ def artifact_server(tmp_path, monkeypatch):
     for k in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS",
               "OPENBEAST_ARTIFACT_BASE_URL"):
         env.pop(k, None)
+    if operators:
+        env["OPENBEAST_ARTIFACT_OPERATORS"] = operators
     proc = subprocess.Popen(["nice", "-n", "19", sys.executable,
                              os.path.join(AGENTS, "artifact_server.py")],
                             env=env, stdin=subprocess.DEVNULL,
@@ -544,6 +559,74 @@ def test_export_round_trips_through_the_real_artifact_server(
     page = page.decode()
     assert "sk-live-9f8e7d6c5b4a" not in page and "&lt;script&gt;" in page
     assert "<script>alert" not in page
+
+
+def _get_page(port, aid, login):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/a/{aid}",
+                                 headers={"Tailscale-User-Login": login})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def _export_as_phone(rig, sid):
+    key = rig.enroll("phone", "k-phone-export", scopes=["chat"])
+    r = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                        headers={**key, "Tailscale-User-Login": LISTED})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_the_exporter_can_open_the_page_it_was_shown(rig, artifact_server):
+    """No artifact allowlist: the page belongs to the login that pressed
+    Export, not to 'local' — so that login opens it and nobody else does."""
+    sid = rig.session(kind="agent", state="done", title="build check")
+    aid = _export_as_phone(rig, sid)
+    port = artifact_server["port"]
+    assert _get_page(port, aid, LISTED) == 200
+    assert _get_page(port, aid, "alice@example.com") == 404  # negative control
+    import artifact
+    assert artifact.get_meta(aid)["owner"] == LISTED
+
+
+def test_the_exporter_owns_the_page_under_an_artifact_allowlist(
+        rig, artifact_server_listed):
+    """With an allowlist, a login-less publish is owned by its FIRST entry
+    (alice here). The exporter (listed second) must own it instead."""
+    sid = rig.session(kind="agent", state="done", title="build check")
+    aid = _export_as_phone(rig, sid)
+    port = artifact_server_listed["port"]
+    assert _get_page(port, aid, LISTED) == 200
+    assert _get_page(port, aid, "alice@example.com") == 404
+
+
+def test_only_a_verified_real_login_is_forwarded_as_owner():
+    allow_all = lambda login: True  # noqa: E731
+    f = chat_server.export_owner_login
+    ok = {"login": LISTED, "verified": True, "local": False, "device": "phone"}
+    assert f(ok, allow_all) == LISTED
+    assert f(dict(ok, verified=False), allow_all) == ""
+    assert f(dict(ok, local=True, login="local"), allow_all) == ""
+    assert f(dict(ok, login="device:phone"), allow_all) == ""
+    assert f(dict(ok, login="max@example.com\r\nX-OpenBeast-Local: t"),
+             allow_all) == ""
+    assert f(ok, lambda login: False) == ""       # refused by the chat list
+
+
+def test_export_scrubs_the_store_title_too(rig, artifact_server):
+    sid = rig.session(kind="job", state="done",
+                      title="HF_TOKEN=hf_abcdefSECRET123 python dl.py")
+    r = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                        headers=rig.local)
+    assert r.status_code == 200, r.text
+    import artifact
+    meta = artifact.get_meta(r.json()["id"])
+    assert "hf_abcdefSECRET123" not in json.dumps(meta)
+    assert "python dl.py" in meta["title"]          # the rest survives
 
 
 # ---------------------------------------------------------------------------
