@@ -353,6 +353,20 @@ tokens at 4 chars/token, budget 2,000):
   direction was mostly EAGAIN: 6/13 raw, 4/1 clean. The fresh rerun is
   queued after the NPROC and connection-error fixes merge. Record:
   `scratch/tier3-verdict-reaudit-2026-09-29.txt`.
+- **FRESH rerun 2026-09-30 (era `b5596c660b5ab819`, every cell
+  `--no-cache`, 0 infrastructure rows): SHIP — net +24 (26/2, p < 0.0001)**;
+  champion guard clean and positive (23 → 28/30). Record:
+  `scratch/tier3-verdict-fresh-20260930.txt`.
+- **In production since 2026-09-30, both models.** Agents on zig tasks get
+  the measured pack through the measured channel: `agents/lang/pack_context.py`
+  hands the runner `--context-file agents/packs/zig-0.16.md` from
+  `start_agent`/`start_skill_agent`, beast-chat agents, `agent.sh` and
+  `client.sh agent` (switch: `LANG_PACK_CONTEXT=auto|off`). Only the exact
+  measured bytes are served (sha pinned, same drift check as run_eval, which
+  now shares it), never under eval, and never into Open WebUI chats or
+  opencode — the pack was not measured there. **Caveat: in-sample** — the pack
+  was written against these units' failures; the held-out check above is
+  still unrun.
 
 ## 6. Eval integrity, comparability, era policy
 

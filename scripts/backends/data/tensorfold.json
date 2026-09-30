@@ -16,6 +16,7 @@
   "master-port",
   "max-snapshots",
   "max-tokens",
+  "min-p",
   "mlx-cache-gib",
   "mtp-confidence",
   "mtp-drafts",
@@ -50,6 +51,7 @@
   "lane-kernels",
   "max-snapshots",
   "max-tokens",
+  "min-p",
   "mlx-cache-gib",
   "mtp-confidence",
   "mtp-drafts",
@@ -85,9 +87,9 @@
  "_provenance": {
   "engine": "TensorFold",
   "repo": "https://github.com/ashhart/TensorFold",
-  "commit": "6b2e4c40064b1e4a05965f61b19ce87b5e0265b3",
+  "commit": "9cd52ab4daba68ddd09be89be8f23ad43175e821",
   "how": "scripts/backends/pylib/vendor_lists.py tensorfold (ast over src/tensorfold/families/*/__init__.py)",
-  "gate": "TensorFold serves a checkpoint only if config.json's model_type (or text_config.model_type) is claimed by a family package's MODEL_TYPES (families.detect), the family has a cuda_engine (cli._backend), and the checkpoint's quant method is in the family's QUANT_METHODS['cuda'] (default ('mlx',)) \u2014 MLX affine weights must also match CUDA_QUANTIZATION (bits, group) or the family's own check_quantization; modelopt/compressed-tensors must be NVFP4/FP8 (cuda/nvfp4/format.py require_config). Checkpoints outside MODELS run with an 'untested' note. Source: src/tensorfold/families/__init__.py, src/tensorfold/cli.py:406-445.",
+  "gate": "TensorFold serves a checkpoint only if config.json's model_type (or text_config.model_type) is claimed by a family package's MODEL_TYPES (families.detect), the family has a cuda_engine (cli._backend), and the checkpoint's quant method is in the family's QUANT_METHODS['cuda'] (default ('mlx',)) \u2014 MLX affine weights must also match CUDA_QUANTIZATION (bits, group) or the family's own check_quantization; modelopt/compressed-tensors must be NVFP4/FP8 (cuda/nvfp4/format.py require_config). Checkpoints outside MODELS run with an 'untested' note. An EXL3 checkpoint must also match the family's EXL3_VARIANT (cuda_exl3_variant: 'any', or the exact quantization_config fields). Source: src/tensorfold/families/__init__.py:140-172, src/tensorfold/cli.py:410-443.",
   "curated": "tp, tp2_quant_methods and notes are hand-read from the cited lines, not parsed; extra_args_allow/never are OpenBeast policy (vendor_lists.py), checked against serve_flags parsed from src/tensorfold/cli.py"
  },
  "families": {
@@ -104,6 +106,7 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": null,
    "tested_checkpoints": [
     "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
    ],
@@ -123,10 +126,11 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": null,
    "tested_checkpoints": [
     "mlx-community/DeepSeek-V4-Flash-4bit"
    ],
-   "drafter": null,
+   "drafter": "Vontra/DeepSeek-V4-Flash-DSpark-MLX",
    "source": "src/tensorfold/families/deepseek_v4/__init__.py"
   },
   "gemma4": {
@@ -143,6 +147,7 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": null,
    "tested_checkpoints": [
     "mlx-community/gemma-4-26b-a4b-it-4bit"
    ],
@@ -169,6 +174,11 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": {
+    "bits": 4,
+    "codebook": "mcg",
+    "scope": "glm53_routed_experts_only"
+   },
    "tested_checkpoints": [
     "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
     "Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw"
@@ -179,7 +189,8 @@
     2
    ],
    "notes": [
-    "requires --tp 2: one GPU per machine (families/glm5_next/__init__.py:179-181)"
+    "requires --tp 2: one GPU per machine (families/glm5_next/__init__.py:179-181)",
+    "EXL3 is experimental on this family: the reader takes Mia's TR3 layout only, 4-bit mcg-codebook routed experts under their unsliced names and BF16 elsewhere (families/glm5_next/__init__.py:21,35-42; cuda/weights.py:325-350); a rank-sliced copy (experts.N.proj.rank0.trellis) does not load"
    ]
   },
   "nemotron_h": {
@@ -201,6 +212,7 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": null,
    "tested_checkpoints": [
     "Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit"
    ],
@@ -244,6 +256,7 @@
     128
    ],
    "family_checks_mlx_widths": true,
+   "cuda_exl3_variant": "any",
    "tested_checkpoints": [
     "Vontra/Qwen3.8-27B-MLX-4bit",
     "turboderp/Qwen3.8-27B-exl3",
@@ -259,7 +272,7 @@
     "mlx"
    ],
    "notes": [
-    "NVFP4 and EXL3 checkpoints run on ONE GPU; two ranks need the MLX affine checkpoint (families/qwen3_5/cuda/engine.py:37)"
+    "NVFP4 and EXL3 checkpoints run on ONE GPU; two ranks need the MLX affine checkpoint (families/qwen3_5/cuda/engine.py:36-37)"
    ]
   },
   "qwen3_5_moe": {
@@ -280,6 +293,7 @@
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
    "family_checks_mlx_widths": false,
+   "cuda_exl3_variant": null,
    "tested_checkpoints": [
     "Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP"
    ],
@@ -289,7 +303,7 @@
     1
    ],
    "notes": [
-    "one GPU only, one request at a time (families/qwen3_5_moe/__init__.py:36-38)"
+    "one GPU only (families/qwen3_5_moe/__init__.py:35-36); --parallel N decodes N requests together (:41)"
    ]
   },
   "qwen4_exp": {
@@ -312,7 +326,8 @@
    ],
    "cuda_affine_bits": null,
    "cuda_affine_groups": null,
-   "family_checks_mlx_widths": false,
+   "family_checks_mlx_widths": true,
+   "cuda_exl3_variant": "any",
    "tested_checkpoints": [
     "Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP",
     "turboderp/Qwen3.8-Flash-Next-exl3",
@@ -329,8 +344,8 @@
     "mlx"
    ],
    "notes": [
-    "NVFP4 and EXL3 run on one GPU (families/qwen4_exp/cuda/engine.py:33)",
-    "--parallel >1 is rejected with --tp 2 (families/qwen4_exp/cuda/engine.py:47)"
+    "NVFP4 and EXL3 run on one GPU (families/qwen4_exp/cuda/engine.py:32-34)",
+    "--parallel >1 is rejected with --tp 2 (families/qwen4_exp/cuda/engine.py:46-48)"
    ]
   }
  }

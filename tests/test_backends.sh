@@ -776,7 +776,7 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env 
 if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tftest --tp 2 --rank 0 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
    && _has "$_O" "--parallel auto --name local-model --host 100.64.1.2 --port 8000" \
    && _has "$_O" "-v $_K/models/tftest:/models/tftest:ro" && _has "$_O" "-e HF_HUB_OFFLINE=1" \
-   && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@6b2e4c40064b1e4a05965f61b19ce87b5e0265b3" \
+   && _has "$_O" "git+https://github.com/ashhart/TensorFold.git@9cd52ab4daba68ddd09be89be8f23ad43175e821" \
    && _has "$_O" "start rank 1 FIRST" && _has "$_O" "NO API key" \
    && _has "$_O" "-e NCCL_SOCKET_IFNAME=enp1s0f1np1" && _has "$_O" "-e NCCL_IB_HCA=rocep1s0f1"; then
   pass "tensorfold rank 0 --print: the verified local copy (ro), --drafter none, commit-pinned, offline hub, notes"
@@ -809,7 +809,7 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/absent.env" --print
 _sp "$_TN" -- --profile "$_P/vtest.env" --rank 0 --master 1.2.3.4 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "the tensorfold launcher cannot serve it" && pass "the TensorFold launcher refuses a vllm profile" \
   || fail "tensorfold took a vllm profile (rc=$SPRC): $_O"
-for _ref in main v0.3.7 6b2e4c4 6B2E4C40064B1E4A05965F61B19CE87B5E0265B3; do
+for _ref in main v0.5.0 9cd52ab 9CD52AB4DABA68DDD09BE89BE8F23AD43175E821; do
   _sp "$_TN" "TENSORFOLD_REF=$_ref" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env" --print
   if [[ $SPRC -eq 1 ]] && _has "$_O" "is not a commit SHA"; then
     pass "tensorfold refuses TENSORFOLD_REF=$_ref (only a full 40-hex commit SHA)"

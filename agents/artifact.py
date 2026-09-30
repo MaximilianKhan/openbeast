@@ -496,6 +496,44 @@ def _owner_of(meta) -> str:
     return RIG_OWNER if owner == LEGACY_LOCAL_OWNER else owner
 
 
+def version_session(meta, n) -> str:
+    """The beast-chat session that published version `n`, or "".
+
+    meta["source_session"] is the LATEST publisher, overwritten by every
+    republish, so a pinned /a/<id>/v/1 named whichever session made the
+    newest version. Each version entry records its own; only a meta with no
+    per-version provenance at all (hand-edited, legacy) falls back to the
+    page-level field."""
+    if not isinstance(meta, dict):
+        return ""
+    versions = meta.get("versions")
+    versions = versions if isinstance(versions, list) else []
+    stamped = False
+    for v in versions:
+        if not isinstance(v, dict):
+            continue
+        sess = v.get("source_session")
+        stamped = stamped or isinstance(sess, str)
+        if _coerce_int(v.get("n"), -1) == _coerce_int(n, -2):
+            return sess if isinstance(sess, str) and _SESSION_RE.match(sess) else ""
+    if stamped:
+        return ""
+    sess = meta.get("source_session")
+    return sess if isinstance(sess, str) and _SESSION_RE.match(sess) else ""
+
+
+def published_by_session(meta, session: str) -> bool:
+    """True when `session` published ANY version of this page."""
+    if not isinstance(meta, dict) or not session:
+        return False
+    if meta.get("source_session") == session:
+        return True
+    versions = meta.get("versions")
+    return isinstance(versions, list) and any(
+        isinstance(v, dict) and v.get("source_session") == session
+        for v in versions)
+
+
 def _require_owner(meta, owner, admin: bool = False) -> str:
     """The ownership guard every mutator shares (D5/D22).
 
@@ -1144,7 +1182,7 @@ def _rows(*, owner=None, viewer=None, admin=False, session=None,
                     continue        # owner="" asks for the unowned records
             if viewer is not None and not can_view(meta, viewer, admin=admin):
                 continue
-            if want_session and meta.get("source_session") != want_session:
+            if want_session and not published_by_session(meta, want_session):
                 continue
             tags = _tags_of(meta)
             if want_tag and want_tag not in tags:
@@ -1472,15 +1510,23 @@ def set_pinned(artifact_id, pinned, *, owner=None, admin=False) -> dict:
     """Pin or unpin (F-A2). A pinned page leads the gallery and is never
     touched by the retention sweep. Metadata only; owner-gated like every
     other mutator. Deliberately does NOT bump updated_at: pinning is not an
-    edit, and the gallery's order must not jump because someone starred."""
+    edit, and the gallery's order must not jump because someone starred.
+
+    Unpinning stamps `unpinned_at`, which the retention sweep treats as a
+    floor: otherwise a page pinned long ago kept its old updated_at, and
+    the next daily sweep deleted it — every version, irreversibly — right
+    after someone unpinned it to tidy the gallery (review B-artifact-1)."""
     want = bool(pinned)
 
     def apply(meta):
         before = meta.get("pinned") is True
         if want:
             meta["pinned"] = True
+            meta.pop("unpinned_at", None)
         else:
             meta.pop("pinned", None)
+            if before:
+                meta["unpinned_at"] = _now()
         return before, want
     return _set_field(artifact_id, owner, admin, "pin", apply)
 
@@ -1654,6 +1700,10 @@ def sweep_retention(days=None, *, now=None) -> list:
             continue
         # Re-checked on the record itself: the row is a snapshot.
         if not isinstance(meta, dict) or meta.get("pinned") is True:
+            continue
+        # A page unpinned recently gets a full retention period from then.
+        unpinned = _parse_ts(meta.get("unpinned_at"))
+        if unpinned is not None and unpinned.timestamp() >= cutoff:
             continue
         try:
             if remove(row["id"], owner=RIG_OWNER, admin=True,

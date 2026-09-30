@@ -206,11 +206,22 @@ else
   fail "env override ignored: $out"
 fi
 rm -f "$CONF"
-out="$(env -u OPENBEAST_ARTIFACT_PORT "$CLI" list 2>&1 || true)"
-if echo "$out" | grep -q "127.0.0.1:3004"; then
+# The default port is the LIVE server's port on a rig with the stack up, so
+# this case must never dial it (review A-artifact-4: it reached the running
+# beast-artifact, failed on its 404 and wrote a stray audit row). A curl stub
+# records the URL and answers "connection refused".
+STUBBIN="$TMPROOT/stub-curl-bin"
+mkdir -p "$STUBBIN"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" >> "%s/curl.args"\nexit 7\n' \
+  "$TMPROOT" > "$STUBBIN/curl"
+chmod +x "$STUBBIN/curl"
+rm -f "$TMPROOT/curl.args"
+out="$(env -u OPENBEAST_ARTIFACT_PORT PATH="$STUBBIN:$PATH" "$CLI" list 2>&1 || true)"
+if echo "$out" | grep -q "127.0.0.1:3004" \
+   && grep -q '^http://127\.0\.0\.1:3004/' "$TMPROOT/curl.args" 2>/dev/null; then
   pass "falls back to the documented default port 3004"
 else
-  fail "default port is not 3004: $out"
+  fail "default port is not 3004: $out / $(cat "$TMPROOT/curl.args" 2>/dev/null)"
 fi
 printf '# fixture\nARTIFACT_PORT=not-a-port\n' > "$CONF"
 out="$(env -u OPENBEAST_ARTIFACT_PORT "$CLI" list 2>&1 || true)"
