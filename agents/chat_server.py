@@ -3162,7 +3162,14 @@ def create_app() -> FastAPI:
                    "--steer"]
             if model:
                 cmd += ["--model", model]
-            base_url = _body_str(body, "base_url")
+            # The caller's, else the rig's configured agent endpoint — the
+            # same resolution mcp_server.start_agent uses. Without the env
+            # fallback a console agent on a rig with INFERENCE_URL set (a
+            # vLLM / Spark backend, a worker box) called the runner's
+            # localhost:8080 default while MCP-started agents did not.
+            base_url = (_body_str(body, "base_url").strip()
+                        or (os.environ.get("OPENBEAST_AGENT_INFERENCE_URL")
+                            or "").strip())
             if base_url:
                 cmd += ["--base-url", base_url]
             context = _body_str(body, "context")

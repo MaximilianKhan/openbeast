@@ -796,3 +796,26 @@ def test_a_spawned_job_cannot_read_the_notify_url(rig, tmp_path, monkeypatch):
     assert f"OPENBEAST_SESSION_ID={sid}" in text        # the control
     assert "CHAT_NOTIFY" not in text
     assert "secret-topic-abc" not in text
+
+
+def test_a_console_agent_uses_the_rigs_agent_inference_url(rig, monkeypatch):
+    """conf.sh exports OPENBEAST_AGENT_INFERENCE_URL (from INFERENCE_URL or
+    AGENT_INFERENCE_URL); mcp_server.start_agent honours it and the console
+    spawn used to drop it, calling localhost:8080 on a vLLM/worker rig."""
+    monkeypatch.setenv("OPENBEAST_AGENT_INFERENCE_URL", "http://10.0.0.9:8000/v1")
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "agent", "task": "hello", "dry_run": True})
+    assert r.status_code == 200, r.text
+    argv = r.json()["argv"]
+    assert argv[argv.index("--base-url") + 1] == "http://10.0.0.9:8000/v1"
+    # the caller's explicit endpoint still wins
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "agent", "task": "hello", "dry_run": True,
+        "base_url": "http://127.0.0.1:7/v1"})
+    argv = r.json()["argv"]
+    assert argv[argv.index("--base-url") + 1] == "http://127.0.0.1:7/v1"
+    # control: unset → no --base-url (the runner's own default)
+    monkeypatch.delenv("OPENBEAST_AGENT_INFERENCE_URL")
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "agent", "task": "hello", "dry_run": True})
+    assert "--base-url" not in r.json()["argv"]
