@@ -100,7 +100,7 @@ PROVENANCE  WARNING: dirty repo tree at run time in P0a, P0b, P1a, P1b, C0, C1 (
 
 R1 PRIMARY  pooled McNemar: rescues b=26 regressions c=2 net=+24 p=3e-06
     sensitivity, wall-timeout units dropped from their pair: b=25 c=2 net=+23 p=5.6e-06
-R2 CO-PRIMARY (units passed in both arms, n=19; 1 pair(s) excluded — a side's tokens were not recorded):
+R2 CO-PRIMARY (units passed in both arms, n=19):
     completion tokens-to-fix  mean Δ(P1-P0)=-4681  sign-test p=0.064
     iterations-to-fix         mean Δ(P1-P0)=-1.79  sign-test p=0.549
     all-unit completion tokens mean Δ=-4913 (n=59); all-unit prompt tokens (total per unit, not per-request overhead) mean Δ=-2163 median Δ=+23399 (n=59)

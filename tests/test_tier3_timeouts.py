@@ -108,7 +108,7 @@ def test_timeout_row_never_enters_a_token_statistic(tmp_path):
     pr = tier3_verdict.paired(g0, g1)
     assert pr["d_prompt"] == [2000] * 19          # the timeout pair is out
     assert all(d == 0 for d in pr["d_tok_all"]) and len(pr["d_tok_all"]) == 19
-    assert pr["unrecorded"] == 1
+    assert pr["unrecorded"] == 0                   # a rescue is not a both-pass pair
     assert pr["b"] == [UNITS[7]]                   # the PASS still counts in R1
     assert g1["timeouts"] == {UNITS[7]: "PASS"}
 
@@ -146,6 +146,22 @@ def test_heldout_units_are_read_alone_not_pooled(tmp_path):
     suite = tmp_path / "zig-heldout.json"
     suite.write_text(json.dumps({"units": held}))
     assert "b=5 c=0" in _verdict("--p0", p0, "--p1", p1, "--heldout", str(suite))
+
+
+def test_r2_excluded_counts_only_both_pass_pairs(tmp_path):
+    # A timed-out rescue was never in R2's both-pass n; a timed-out both-pass
+    # unit was. Only the latter may be reported as "excluded".
+    p0 = _cell(tmp_path, "P0", set(UNITS[:5]), False)
+    p1r = _cell(tmp_path, "P1r", set(UNITS[:5]) | {UNITS[7]}, True, overrides={UNITS[7]: TIMEOUT})
+    out = _verdict("--p0", p0, "--p1", p1r)
+    assert "R2 CO-PRIMARY (units passed in both arms, n=5):" in out
+    assert "excluded" not in out
+    p1b = _cell(tmp_path, "P1b", set(UNITS[:5]), True, overrides={UNITS[2]: TIMEOUT})
+    g = tier3_verdict.paired(tier3_verdict.load_cell(p0, "zig", None),
+                             tier3_verdict.load_cell(p1b, "zig", None))
+    assert g["unrecorded"] == 1 and len(g["d_tok"]) == 4
+    out2 = _verdict("--p0", p0, "--p1", p1b)
+    assert "n=4; 1 pair(s) excluded" in out2
 
 
 def test_heldout_missing_suite_file_refuses(tmp_path):

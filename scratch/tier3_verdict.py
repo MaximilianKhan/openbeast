@@ -183,7 +183,9 @@ def paired(p0: dict, p1: dict) -> dict:
             "pass0": sum(p0["rows"][i]["passed"] for i in ids),
             "pass1": sum(p1["rows"][i]["passed"] for i in ids),
             "missing_iters": sum(1 for i in both if p0["rows"][i]["iters"] is None or p1["rows"][i]["iters"] is None),
-            "unrecorded": sum(1 for i in ids if p0["rows"][i].get("unrecorded") or p1["rows"][i].get("unrecorded"))}
+            # only both-pass pairs: R2's n is drawn from them, so a rescue or a
+            # fail with an unrecorded side was never "excluded" from it
+            "unrecorded": sum(1 for i in both if p0["rows"][i].get("unrecorded") or p1["rows"][i].get("unrecorded"))}
 
 
 def mean(xs):
