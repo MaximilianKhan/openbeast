@@ -31,6 +31,13 @@ hitting whatever `:8443` mapped to before (raw llama-server after enabling the
 gate; a dead port after disabling it). `./scripts/doctor.sh` flags exactly
 this mismatch — heed it.
 
+**beast-artifact admins after v1.6.0.** With `ARTIFACT_ADMINS` unset, the
+first `ARTIFACT_OPERATORS` login becomes the artifact admin and can read,
+re-share, hand over and delete the other operators' private pages (in v1.6.0
+those stayed owner-only). A rig with more than one operator says so at every
+start, on stderr and in the artifact audit log, until `ARTIFACT_ADMINS` is
+set. Details: [BEAST_ARTIFACT.md](BEAST_ARTIFACT.md#visibility).
+
 Preview what would change without touching anything:
 
 ```bash

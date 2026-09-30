@@ -117,7 +117,15 @@ operators' private pages stay private from each other; list the logins in
 `ARTIFACT_ADMINS` if you want several admins. With no operator configured,
 nobody on the tailnet is an admin: the first login to show up is never
 auto-trusted. Pages from before this model (owner `local`) are re-owned to the
-rig at server start, once, with a row in `index.jsonl` each.
+rig at server start, once, with a row in `index.jsonl` each. Pages the CLI
+published on an allowlisted rig before this model are owned by the first
+operator instead; the rig may still republish into those (and into any
+admin's page) with `artifact.sh publish <f> --id <id>`, without changing
+their owner, and `artifact.sh chown <id> rig` hands one over for good. When
+`ARTIFACT_ADMINS` is unset and more than one operator is listed, every start
+prints a line on stderr and writes an `admin-default` audit row naming the
+implicit admin, since that login can manage the other operators' private
+pages. Set `ARTIFACT_ADMINS` to choose explicitly.
 
 **There is no "public".** Your tailnet is the perimeter; beast-artifact is
 never exposed with `tailscale funnel`, for the same reason nothing else in
@@ -539,7 +547,7 @@ the first.
 | 404 on someone else's link | That artifact is `private`. Its owner runs `artifact.sh visibility <id> tailnet` |
 | **502** from `https://beast:8446` | The port is published but nothing is listening — you ran `--publish-artifact` without turning `BEAST_ARTIFACT` on, or the server died. Same trap as `--publish-slot` and the dashboard extension ([BEAST_SLOT.md](BEAST_SLOT.md)) |
 | `artifact <id> is busy` | Another publish holds that page's lock. Locking is **per page**, so every other page and every read is unaffected; the call gives up after `OPENBEAST_ARTIFACT_LOCK_TIMEOUT` (10s) rather than hanging — an environment variable only, **not** an `openbeast.conf` key (`conf.sh` greps a fixed set of keys and does not map this one), so export it in the unit or the shell that starts the stack. Retry. If it persists, a publisher died mid-write — the next publish steps over the half-written version (it is never served, and never deleted: the only copy of a real version is not something a damaged `meta.json` gets to vote on) and continues |
-| `not your artifact` | Pages are owned by whoever published them. Re-describing, rolling back, re-sharing, pinning and deleting are owner-or-admin; republishing is owner-only. The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
+| `not your artifact` | Pages are owned by whoever published them. Re-describing, rolling back, re-sharing, pinning and deleting are owner-or-admin; republishing is owner-only (plus the rig, into the first operator's or an admin's page). The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
 | A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read. An admin can hand the page to your tailnet login: `artifact.sh chown <id> you@example.com` |
 | **507** on publish | The rig's disk is full. The error names the failing write; nothing half-written is left behind |
 | The page renders blank | Almost always `localStorage` or `fetch` in the page's startup path. Both throw here. Open the browser console — the error is in the frame's context, not the shell's |
