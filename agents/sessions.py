@@ -1002,27 +1002,53 @@ def prune_transcripts(log_dir: str, days: int) -> int:
     retires terminal records after 30 days, so a transcript outlives its index
     entry and is then collected here; a live session's file is never touched.
     Only regular *.jsonl / *.log files directly in `log_dir` are considered.
+
+    The LEDGER's own job logs are swept too, under the same cutoff and the
+    same "nothing names it" rule. scripts/job.sh streams a job's output to
+    `<ledger>/<id>.log`, and the automatic 30-day prune deliberately keeps
+    that log when it retires the record (keep_logs) — so once the record was
+    gone the log was referenced by nothing, visible to nothing, and, because
+    the only caller (scripts/logrotate.sh) passes agents/logs/, collected by
+    nothing either: .run/sessions grew without bound even with this knob set.
     """
     if days <= 0:
         return 0
     referenced = set()
+    ledger = _dir()
     try:
-        names = os.listdir(_dir())
+        names = os.listdir(ledger)
     except OSError:
         names = []
     for name in names:
         if name.endswith(".json") and not name.startswith("."):
-            rec = _read_record(os.path.join(_dir(), name))
+            rec = _read_record(os.path.join(ledger, name))
             if rec and rec.get("transcript"):
                 referenced.add(os.path.realpath(str(rec["transcript"])))
     cutoff = time.time() - days * 86400
+    removed = _prune_files(log_dir, (".jsonl", ".log"), cutoff, referenced)
+    if os.path.realpath(ledger) != os.path.realpath(log_dir):
+        # Only `<id>.log` whose `<id>.json` is gone: a log whose record still
+        # exists belongs to a session the console can still open.
+        removed += _prune_files(
+            ledger, (".log",), cutoff, referenced,
+            keep=lambda n: n.startswith(".") or os.path.exists(
+                os.path.join(ledger, n[:-len(".log")] + ".json")))
+    return removed
+
+
+def _prune_files(directory: str, suffixes: tuple, cutoff: float,
+                 referenced: set, keep=None) -> int:
+    """Unlink regular files in `directory` older than `cutoff` that no
+    record references (and that `keep`, when given, does not protect)."""
     removed = 0
     try:
-        entries = list(os.scandir(log_dir))
+        entries = list(os.scandir(directory))
     except OSError:
         return 0
     for ent in entries:
-        if not ent.name.endswith((".jsonl", ".log")):
+        if not ent.name.endswith(suffixes):
+            continue
+        if keep is not None and keep(ent.name):
             continue
         try:
             if not ent.is_file(follow_symlinks=False):

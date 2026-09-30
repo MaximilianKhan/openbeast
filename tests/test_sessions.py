@@ -1119,3 +1119,28 @@ def test_a_gone_pid_is_still_lost_when_ps_answers(ledger, no_proc,
     rec = {"id": "x", "state": "running", "pid": 424242,
            "meta": {"pid_start": 5}}
     assert sessions.reconcile(rec)["state"] == "lost"
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-09-29: job.sh logs orphaned in the ledger dir are collected
+# (chat-lifecycle-jobsh-logs-never-collected)
+# ---------------------------------------------------------------------------
+
+def test_prune_transcripts_collects_orphaned_ledger_job_logs(ledger, tmp_path):
+    os.makedirs(ledger, exist_ok=True)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    led = tmp_path / "sessions"
+    orphan = _aged(led / "20260101-000000-deadbeef.log", 40)
+    # a log whose record still exists is the console's to show — kept
+    kept_id = "20260101-000000-cafef00d"
+    kept = _aged(led / f"{kept_id}.log", 40)
+    sessions.register(kept_id, kind="job", pid=_dead_pid())
+    fresh = _aged(led / "20260101-000000-0badf00d.log", 1)
+    assert sessions.prune_transcripts(str(logs), 30) == 1
+    assert not orphan.exists()
+    assert kept.exists() and fresh.exists()
+    # Off by default, exactly like the agents/logs sweep.
+    orphan2 = _aged(led / "20260101-000000-feedface.log", 400)
+    assert sessions.prune_transcripts(str(logs), 0) == 0
+    assert orphan2.exists()
