@@ -554,7 +554,7 @@ conf_env() { # conf_env <conf lines…> — prints the OPENBEAST_CHAT_NOTIFY_* /
   printf '%s\n' "SEARXNG_SECRET=x" "$@" > "$SB/openbeast.conf"
   env -i HOME="$SB/home" PATH="/usr/bin:/bin" REPO_DIR="$SB" \
     bash -c 'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; env' \
-    | grep -E '^OPENBEAST_(CHAT_NOTIFY|NTFY)_' | sort
+    | grep -E '^OPENBEAST_(CHAT_NOTIFY|NTFY|CHAT_PUBLIC)_' | sort
 }
 _E="$(conf_env "CHAT_NOTIFY_URL=http://127.0.0.1:3005/t" "CHAT_NOTIFY_ON=failed,done" \
                "CHAT_NOTIFY_TOKEN_FILE=~/ntfy.token" NTFY_PORT=3999)"
@@ -564,6 +564,18 @@ if has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,done" \
   pass "CHAT_NOTIFY_ON / _TOKEN_FILE (~ expanded) and NTFY_PORT are exported"
 else
   fail "conf exports: $(tr '\n' ' ' <<< "$_E")"
+fi
+_E="$(conf_env "CHAT_PUBLIC_URL=https://beast.example.ts.net:8445")"
+if has "$_E" "OPENBEAST_CHAT_PUBLIC_URL=https://beast.example.ts.net:8445"; then
+  pass "CHAT_PUBLIC_URL in openbeast.conf reaches the chat server's env"
+else
+  fail "CHAT_PUBLIC_URL export: $(tr '\n' ' ' <<< "$_E")"
+fi
+_E="$(conf_env)"
+if ! has "$_E" "OPENBEAST_CHAT_PUBLIC_URL="; then
+  pass "…unset: no CHAT_PUBLIC_URL exported, so the console name is detected (control)"
+else
+  fail "CHAT_PUBLIC_URL exported while unset: $(tr '\n' ' ' <<< "$_E")"
 fi
 _E="$(conf_env)"
 if has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,lost,done" \

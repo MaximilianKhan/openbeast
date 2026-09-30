@@ -31,6 +31,7 @@
 #       sessions (docs/BEAST_CHAT.md). Off by default.
 #   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
 #       (env OPENBEAST_CHAT_NOTIFY_*)  default empty / failed,lost,done / empty
+#   CHAT_PUBLIC_URL  (env OPENBEAST_CHAT_PUBLIC_URL) default empty = detect
 #       beast-chat push notifications; NTFY_PORT (default 3005) for the
 #       opt-in ntfy extension.
 #   OFFLINE          (env OPENBEAST_OFFLINE)     default false
@@ -340,6 +341,14 @@ CHAT_NOTIFY_TOKEN_FILE="${OPENBEAST_CHAT_NOTIFY_TOKEN_FILE:-$(_ob_conf_value CHA
 export OPENBEAST_CHAT_NOTIFY_ON="$CHAT_NOTIFY_ON"
 if [[ -n "$CHAT_NOTIFY_TOKEN_FILE" ]]; then
   export OPENBEAST_CHAT_NOTIFY_TOKEN_FILE="$CHAT_NOTIFY_TOKEN_FILE"
+fi
+
+# The console URL a notification's deep link opens (chat_server reads
+# OPENBEAST_CHAT_PUBLIC_URL). Unset = detect the :8445 name from `tailscale
+# serve status`. Not a secret; exported only when set, so unset stays "detect".
+CHAT_PUBLIC_URL="${OPENBEAST_CHAT_PUBLIC_URL:-$(_ob_conf_value CHAT_PUBLIC_URL || true)}"
+if [[ -n "$CHAT_PUBLIC_URL" ]]; then
+  export OPENBEAST_CHAT_PUBLIC_URL="$CHAT_PUBLIC_URL"
 fi
 
 # ob_exec_chat_server <chat_server.py> — exec the chat server with the notify
