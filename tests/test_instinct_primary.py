@@ -319,6 +319,29 @@ def test_probe_is_deferred_while_the_primary_is_busy(tmp_path):
     assert before[0] is True and after == before                # untouched, not failed
 
 
+def test_a_deferred_probe_retries_soon_not_a_full_interval_later(tmp_path):
+    """Agents keeping the -np 1 slot busy must not leave the 27B unprobed
+    for probe_interval_s (300 s) per miss."""
+    from instinct.service import PROBE_BUSY_RETRY_S
+
+    async def body(url, stub):
+        inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)
+        await inst.start()
+        idle = inst.next_probe_delay()
+        stub.faults["busy"] = True
+        await inst.probe_all()
+        busy = inst.next_probe_delay()
+        stub.faults["busy"] = False
+        await inst.probe_all()
+        again = inst.next_probe_delay()
+        await inst.aclose()
+        return idle, busy, again
+    with H.stub_server() as (url, stub):
+        idle, busy, again = H.run(body(url, stub))
+    assert idle == 300 and again == 300
+    assert busy == PROBE_BUSY_RETRY_S < 300
+
+
 def test_key_env_sends_the_stack_key_and_nothing_when_unset(tmp_path, monkeypatch):
     log = tmp_path / "calls.jsonl"
     with H.stub_server(call_log=str(log)) as (url, _):

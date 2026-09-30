@@ -177,7 +177,7 @@ def create_app(inst: Instinct, key: str, *, allowed_hosts: list[str] | None = No
 
         async def _probe_forever():
             while inst.cfg.probe_interval_s > 0:
-                await asyncio.sleep(inst.cfg.probe_interval_s)
+                await asyncio.sleep(inst.next_probe_delay())
                 try:
                     await inst.probe_all()
                 except Exception:  # never let the loop die

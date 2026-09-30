@@ -49,6 +49,11 @@ FALLBACK_REASONS = (
 
 # The caller-side ceiling at or above which a verdict may be acted on (awaited).
 _ACTABLE = MODE_ORDER["canary"]
+# A probe deferred because the primary's slot was busy retries this soon,
+# not a full probe_interval_s later: on a rig whose agents keep the -np 1
+# slot busy, a 300 s cadence could leave the 27B unprobed indefinitely and
+# the 0.6B fallback deciding de facto.
+PROBE_BUSY_RETRY_S = 15
 
 
 class UnknownDecision(LookupError):
@@ -126,6 +131,7 @@ class Instinct:
         self._shadow_sem: asyncio.Semaphore | None = None
         self.shadow_inflight = 0
         self._bg: set[asyncio.Task] = set()   # shadow walks answered early
+        self.probe_deferred = False
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -286,8 +292,13 @@ class Instinct:
     def hashes_of(self, did: str) -> dict[str, str | None]:
         return {name: h for (d, name), h in self.hashes.items() if d == did}
 
+    def next_probe_delay(self) -> float:
+        interval = self.cfg.probe_interval_s
+        return min(interval, PROBE_BUSY_RETRY_S) if self.probe_deferred else interval
+
     async def probe_all(self) -> None:
         changed = False
+        self.probe_deferred = False
         for name, eng in self.engines.items():
             relevant = [s for s in self.specs.values() if name in self.chains.get(s.id, [])]
             if not eng.caps.needs_render:
@@ -302,7 +313,9 @@ class Instinct:
                 # The engine is the primary and its slot is serving a user: the
                 # probe is DEFERRED, never allowed to queue in front of them.
                 # State is untouched; a probe that stays deferred goes stale
-                # and the engine drops to shadow (fail safe).
+                # and the engine drops to shadow (fail safe). The loop retries
+                # it in PROBE_BUSY_RETRY_S, not probe_interval_s.
+                self.probe_deferred = True
                 continue
             except Exception as exc:  # a probe must never take the service down
                 res = ProbeResult(False, {}, f"probe crashed: {exc.__class__.__name__}")
