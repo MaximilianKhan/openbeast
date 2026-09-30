@@ -3,7 +3,9 @@
 Every walkthrough below is copy-pasteable on a rig that has run
 `./bootstrap.sh`. Each says what you should see, and each stops at the point
 where the deeper document takes over. Nothing here is aspirational: every
-command was run against the scripts as they ship in v1.5.0.
+command was run against the scripts as they ship in v1.5.0, and the
+beast-artifact and beast-chat walkthroughs were re-checked against the
+scripts' argument parsers on `main` (2026-09-30).
 
 | Feature | Walkthrough | The full document |
 |---|---|---|
@@ -157,13 +159,20 @@ still pending its A/B — see the plan's §10.
 ## beast-artifact — a URL for a page the model wrote
 
 **What you get:** a report, a table, a dashboard or a small tool arrives as a
-durable, versioned link on your tailnet instead of a wall of chat text.
+durable, versioned link on your tailnet instead of a wall of chat text, and
+you can pin, tag, share and delete it from your phone.
 
 ```bash
-echo 'BEAST_ARTIFACT=true' >> openbeast.conf
+echo 'BEAST_ARTIFACT=true'                 >> openbeast.conf
+echo 'ARTIFACT_OPERATORS=you@example.com'  >> openbeast.conf   # your tailnet login
 ./stop.sh && ./start.sh -d
 ./scripts/setup-tailscale.sh --publish-artifact     # once; needs sudo
 ```
+
+`ARTIFACT_OPERATORS` matters more than it looks. Everything the rig publishes
+is owned by the rig, and the first login on that list is the rig's admin: the
+one who can open the rig's private pages from a phone. Leave it out and every
+`publish` warns that the page opens for nobody yet.
 
 Publish something from the shell:
 
@@ -187,9 +196,34 @@ Open that on your phone (the Tailscale app must be connected). Then:
 ./scripts/artifact.sh publish /tmp/hello.html --id <id> --label "second draft"   # same URL, v2
 ./scripts/artifact.sh versions <id>          # every version, which one is current
 ./scripts/artifact.sh rollback <id> 1        # move the URL back to v1
+./scripts/artifact.sh pin <id>               # pinned pages sort first
+./scripts/artifact.sh tag <id> demo notes    # replaces the tags; the gallery filters by them
 ./scripts/artifact.sh visibility <id> tailnet   # let every tailnet login read it (default: only you)
-./scripts/artifact.sh list
+./scripts/artifact.sh list                   # 25 rows; --all, --tag demo, --json
 ```
+
+**From the phone.** Reading needs only your tailnet login. To manage a page
+there too, enroll the phone with the `artifact` scope (one key can carry
+`chat` as well — `--scope chat --scope artifact`):
+
+```bash
+./scripts/clients.sh enroll phone --label "My phone" --scope artifact   # prints the key once
+```
+
+Open the page, tap **⋯**, paste the key under *Device key*. The Manage sheet
+then pins, tags, shares (with a confirm) and deletes (type the page id to
+confirm). Publishing stays on the rig.
+
+**Housekeeping.** A page holds up to 200 versions:
+
+```bash
+./scripts/artifact.sh prune <id> --keep 5 --yes          # keep the URL, the current and the newest 5
+./scripts/artifact.sh remove <id> --version 2 --yes      # one old version
+./scripts/artifact.sh remove <id> --yes                  # the whole page
+```
+
+`ARTIFACT_RETAIN_DAYS=90` in `openbeast.conf` would delete unpinned pages
+nobody updated for 90 days, once a day. It is off unless you set it.
 
 In chat, it is one sentence — *"write me a page comparing X and Y and
 publish it"* — and the model answers with the link. Supporting files
@@ -198,7 +232,9 @@ published, links are `http://localhost:3004/…` and the tool says so; a
 browser cannot open the loopback viewer (it refuses anonymous callers).
 
 What the page can and cannot do, and why it is treated as hostile:
-[BEAST_ARTIFACT.md § The security posture](BEAST_ARTIFACT.md).
+[BEAST_ARTIFACT.md § The security posture](BEAST_ARTIFACT.md#the-security-posture).
+Who owns what, and upgrading a rig that already has pages:
+[BEAST_ARTIFACT.md § Visibility](BEAST_ARTIFACT.md#visibility).
 
 ---
 
@@ -206,7 +242,7 @@ What the page can and cannot do, and why it is treated as hostile:
 
 **What you get:** every agent and every long job on the rig becomes a
 session with a live transcript you can attach to from a phone, send a message
-to, and stop.
+to, pause, stop, export, and get a notification about when it ends.
 
 ```bash
 echo 'BEAST_CHAT=true'                 >> openbeast.conf
@@ -216,9 +252,10 @@ echo 'CHAT_OPERATORS=you@example.com'  >> openbeast.conf   # your tailnet login
 ./scripts/clients.sh enroll phone --label "My phone" --scope chat
 ```
 
-The last command prints a key **once** — paste it into the console on the
-phone at `https://<rig>.<tailnet>.ts.net:8445` (reading needs only your
-tailnet login; steering and stopping need the key). Add to Home Screen.
+The last command prints a key **once**. Open
+`https://<rig>.<tailnet>.ts.net:8445` on the phone, tap 🔑 and paste it
+(reading needs only your tailnet login; steering, stopping and starting need
+the key). Then **Add to Home Screen**: it installs as an app.
 
 Now give it something to watch:
 
@@ -229,11 +266,45 @@ Now give it something to watch:
 
 Both appear in the console within a second. (`--steer` is what registers an
 agent as a session; without it an `agent.sh` run is invisible to the console
-and has no inbox. The console's **+** button starts steerable agents and
-jobs too.) Attach to the agent, type
-*"skip anything under 1 MB"* — it lands at the agent's next turn boundary,
-and the transcript shows `steer` when it does. Stop the job from the phone;
-the ledger records `stopped`, and its `meta.stop_requested_by` names who asked.
+and has no inbox.) Attach to the agent, type *"skip anything under 1 MB"* —
+it lands at the agent's next turn boundary, and the transcript shows `steer`
+when it does. **Pause** holds it at the next turn; **Resume** lets it go on.
+Stop the job from the phone; the ledger records `stopped`, and its
+`meta.stop_requested_by` names who asked.
+
+**Start from the phone.** Tap **+**. *Agent* takes a task; *Job* takes one of
+your presets or a custom command. **Review…** shows exactly what will run;
+**Start** runs it. Presets are a file you write on the rig:
+
+```bash
+cat > .run/chat-presets.json <<'J'
+{"presets": [
+  {"name": "doctor", "title": "openbeast doctor", "cmd": "./scripts/doctor.sh",
+   "description": "health check"}
+]}
+J
+chmod 600 .run/chat-presets.json      # anything looser and the file is ignored
+```
+
+**Keep a transcript.** With beast-artifact on, **Export** publishes the
+session as a private page owned by your login, secrets scrubbed, and the page links back
+to the session.
+
+**Get told when it ends** (optional). The ntfy extension runs a push server
+on the rig; the phone's ntfy app subscribes to it over the tailnet:
+
+```bash
+./scripts/ext.sh enable ntfy
+echo 'CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>' >> openbeast.conf
+./stop.sh && ./start.sh -d
+./scripts/setup-tailscale.sh --publish-ntfy                # :8447
+```
+
+In the ntfy app, subscribe to that topic on
+`https://<rig>.<tailnet>.ts.net:8447`, then tap **Test alert** in the
+console's 🔑 sheet. A notification is the title, the state and a link, never
+transcript text. On iOS, read the relay caveat in
+[extensions/ntfy/README.md](../extensions/ntfy/README.md) first.
 
 From the rig, the same ledger:
 
@@ -244,10 +315,11 @@ From the rig, the same ledger:
 ./scripts/doctor.sh | grep -i chat    # health row + auth posture
 ```
 
-Sessions started from the console run in their own memory-capped scope, so
-`./stop.sh` never takes them with the stack. What the stream guarantees
-(reattach by byte offset, no gaps, no duplicates) and the auth model:
-[BEAST_CHAT.md](BEAST_CHAT.md).
+Under `./start.sh -d` (as above), sessions started from the console run in
+their own memory-capped systemd scope, so `./stop.sh` never takes them with
+the stack. A foreground `./start.sh` gives them no scope and no cap. What the
+stream guarantees (reattach by byte offset, no gaps, no duplicates) and the
+auth model: [BEAST_CHAT.md](BEAST_CHAT.md).
 
 ---
 
