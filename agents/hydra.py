@@ -24,6 +24,9 @@ Invariants this file exists to keep (each has a test in tests/test_hydra_proxy.p
   * Strict ids (/pin/<d>/…, X-Hydra-Pin, a deployment id) never substitute.
   * Every response carries X-Hydra-* provenance; every request one audit line,
     with no prompt or completion text in it.
+  * Every pre-commit read is bounded by the attempt's deadline (an error
+    body too), every failover attempt is re-vetted at admission, and a caller
+    that leaves before the commit point frees its slot at once.
 """
 from __future__ import annotations
 
@@ -754,6 +757,11 @@ def _resp_headers(resp: httpx.Response) -> dict:
     return {k: v for k, v in resp.headers.items() if k.lower() not in _HOP}
 
 
+class _UpstreamTruncated(Exception):
+    """Raised out of a non-SSE relay so the server aborts the response
+    instead of ending it cleanly: a truncated JSON body must look broken."""
+
+
 async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, headers: dict,
                    stream: bool, deadline: float) -> _Attempt:
     """One upstream try, up to (not past) the commit point."""
@@ -762,19 +770,36 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
     t0 = time.monotonic()
     req = client.build_request("POST", f"{c.n.url}{path}", content=payload, headers=headers)
     resp = None
+
+    def left() -> float:
+        return max(0.001, deadline - time.monotonic())
+
+    async def read_error_body() -> bytes:
+        chunks, size = [], 0
+        async for ch in resp.aiter_raw():
+            size += len(ch)
+            if size <= ERROR_BODY_CAP:
+                chunks.append(ch)
+        return b"".join(chunks)
+
     try:
         resp = await asyncio.wait_for(client.send(req, stream=True), timeout=max(0.001, deadline - t0))
         a.resp = resp
         a.status = resp.status_code
         if resp.status_code >= 300:
-            chunks, size = [], 0
-            async for ch in resp.aiter_raw():
-                size += len(ch)
-                if size <= ERROR_BODY_CAP:
-                    chunks.append(ch)
-                if time.monotonic() > deadline:
-                    raise asyncio.TimeoutError
-            a.body = b"".join(chunks)
+            # The whole error body under the SAME deadline: a node that sends
+            # a status line and then stalls must not hold the attempt (and
+            # its slot) past the TTFT deadline and eat the failover budget.
+            try:
+                a.body = await asyncio.wait_for(read_error_body(), timeout=left())
+            except (asyncio.TimeoutError, httpx.HTTPError) as e:
+                # The status already said "error"; without its body it can
+                # not be passed through, so it is a plain failure: fail over.
+                a.kind = "fail"
+                a.headers = {"_why": f"{resp.status_code} with an unreadable body ({type(e).__name__})"}
+                with contextlib.suppress(BaseException):
+                    await resp.aclose()
+                return a
             a.headers = _resp_headers(resp)
             await resp.aclose()
             text = a.body.decode("utf-8", "replace")
@@ -796,16 +821,20 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
         it = resp.aiter_raw()
         if stream:
             try:
-                a.first = await asyncio.wait_for(it.__anext__(), timeout=max(0.001, deadline - time.monotonic()))
+                a.first = await asyncio.wait_for(it.__anext__(), timeout=left())
             except StopAsyncIteration:
-                a.first, a.complete = b"", True
+                a.first = b""
+            if not a.first:
+                # A clean zero-byte 2xx is not an answer: nothing was
+                # committed, so fail over rather than hand the caller "".
+                return await _empty(a, resp)
             a.ttft_s = time.monotonic() - t0
             a.it, a.kind = it, "commit"
             return a
         buf = bytearray()
         while True:
             try:
-                ch = await asyncio.wait_for(it.__anext__(), timeout=max(0.001, deadline - time.monotonic()))
+                ch = await asyncio.wait_for(it.__anext__(), timeout=left())
             except StopAsyncIteration:
                 a.complete = True
                 break
@@ -815,6 +844,8 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
             if len(buf) > NONSTREAM_BUFFER:
                 a.it = it                   # too big to hold: commit and relay the rest
                 break
+        if not buf:
+            return await _empty(a, resp)
         a.first, a.kind = bytes(buf), "commit"
         if a.ttft_s is None:
             a.ttft_s = time.monotonic() - t0
@@ -827,10 +858,48 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
     except httpx.HTTPError as e:
         a.kind, a.status = "fail", "transport"
         a.headers = {"_why": type(e).__name__}
+    except BaseException:
+        # cancelled (the caller left): never strand the upstream connection
+        if resp is not None:
+            with contextlib.suppress(BaseException):
+                await resp.aclose()
+        raise
     if resp is not None:
         with contextlib.suppress(BaseException):
             await resp.aclose()
     return a
+
+
+async def _empty(a: _Attempt, resp: httpx.Response) -> _Attempt:
+    a.kind, a.status, a.it = "fail", "empty", None
+    a.headers = {"_why": f"{resp.status_code} with an empty body"}
+    with contextlib.suppress(BaseException):
+        await resp.aclose()
+    return a
+
+
+async def _until_disconnect(request: Request, coro):
+    """Run `coro`; if the caller hangs up first, cancel it and return None.
+
+    Before the commit point nothing reads the client socket, so without this
+    a caller that gave up keeps a slot (and the engine) busy until the
+    upstream answers — and a non-stream request is then audited as "ok"."""
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+                return None
+    except BaseException:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        raise
 
 
 def _client_class(caller: core.Caller, request: Request) -> str:
@@ -937,10 +1006,16 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             continue
         hs = adm.hs                       # survives a reload that drops the deployment
         try:
-            a = await _attempt(hy, c, path, payload, uh, f.stream, deadline)
+            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline))
         except BaseException:
             adm.release()
             raise
+        if a is None:                     # the caller hung up before the commit point
+            adm.release()
+            attempts.append({"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": "client_gone",
+                             "ttft_ms": None, "outcome": "client_disconnect"})
+            finish(499, "client_disconnect", c.d.id, attempts)
+            return Response(b"", status_code=499, headers=hy.hydra_headers(request_id, route=dec.route))
         now = time.monotonic()
         rec = {"d": c.d.id, "node": c.n.id, "engine": c.n.engine, "status": a.status,
                "ttft_ms": None if a.ttft_s is None else int(a.ttft_s * 1000), "outcome": a.kind}
@@ -1048,7 +1123,8 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             attempts[-1]["outcome"] = "upstream_failed_midstream"
             _log(f"{c.d.id}: upstream failed mid-stream request_id={request_id}")
             # Loud truncation: an error event and NO [DONE]. Never a replay.
-            yield core.sse_error_event(c.n.id, c.d.id, request_id) if is_sse else b""
+            if is_sse:
+                yield core.sse_error_event(c.n.id, c.d.id, request_id)
         finally:
             with contextlib.suppress(BaseException):
                 await a.resp.aclose()
@@ -1059,6 +1135,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                 close_out("upstream_failed_midstream", int(a.status))
             else:
                 close_out("client_disconnect", int(a.status))
+        if upstream_failed and not is_sse:
+            # No event format to carry the error: abort the response so the
+            # client sees a broken body, never a clean, silently short one.
+            raise _UpstreamTruncated(f"{c.d.id} failed mid-body (request_id={request_id})")
 
     async def sweep():
         # The body iterator may never start (client gone right after headers).

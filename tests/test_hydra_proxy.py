@@ -919,3 +919,57 @@ def test_a_half_open_trial_is_exclusive_across_failover(fleet):
     assert "nvfp4@sparks:skipped" in out["a"][1], out
     assert seen["trial"] <= 1 and sparks.max_inflight_seen <= 1, (seen, sparks.max_inflight_seen)
     assert srv.hy.state.inflight("nvfp4@sparks") == 0 and hs.h.trial_inflight == 0
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_stalled_error_body_honours_the_deadline_and_fails_over(fleet, stream):
+    # 500 headers + 5 of 100 body bytes, then silence: without a deadline on
+    # the error-body read the attempt hangs the full stall and never fails over.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=1, nonstream_timeout_s=1))
+    rig.set_fault("error_body_stall:8000", 1)
+    t0 = time.time()
+    r = post(srv, chat(stream=stream))
+    took = time.time() - t0
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks", r.text
+    assert r.headers["x-hydra-attempts"].split(",")[0] == "unc@rig:500"
+    assert took < 5, f"hydra sat {took:.1f}s on a stalled error body (deadline 1s)"
+    assert srv.hy.state.health["unc@rig"].h.fails == 1
+    assert srv.hy.state.node_inflight("rig") == 0
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_clean_empty_2xx_fails_over_instead_of_committing(fleet, stream, tmp_path):
+    srv, rig, sparks, _ = fleet()
+    rig.set_fault("empty_200", 1)
+    r = post(srv, chat(stream=stream))
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
+    assert r.content, "never an empty answer"
+    assert r.headers["x-hydra-attempts"] == "unc@rig:empty,nvfp4@sparks:200"
+    h = srv.hy.state.health["unc@rig"].h
+    assert h.fails == 1 and h.served_total == 0, "an empty 2xx is a failure, not a success"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_caller_that_leaves_before_the_commit_point_is_released(fleet, stream, tmp_path):
+    srv, rig, _, _ = fleet()
+    with pytest.raises(httpx.TimeoutException):
+        httpx.post(srv.url + "/v1/chat/completions", json=chat(model="solo", stream=stream),
+                   headers=auth({"X-Fake-Fault": "ttft_ms:3000"}), timeout=0.5)
+    deadline = time.time() + 1.5
+    while srv.hy.state.node_inflight("rig") and time.time() < deadline:
+        time.sleep(0.05)
+    assert srv.hy.state.node_inflight("rig") == 0, "hydra held the slot for a caller that had left"
+    row = audit_rows(tmp_path)[-1]
+    assert row["outcome"] == "client_disconnect" and row["status"] == 499, row
+    assert srv.hy.state.health["unc@rig"].h.fails == 0, "a caller leaving is not the node's fault"
+
+
+def test_an_oversized_nonstream_body_that_fails_midway_is_not_a_clean_eof(fleet, tmp_path, monkeypatch):
+    monkeypatch.setattr(hydra, "NONSTREAM_BUFFER", 64)      # commit and relay past 64 bytes
+    srv, rig, _, _ = fleet()
+    with pytest.raises(httpx.HTTPError):
+        post(srv, chat(model="solo"), {"X-Fake-Fault": "body_then_close:4000"})
+    time.sleep(0.3)
+    row = audit_rows(tmp_path)[-1]
+    assert row["outcome"] == "upstream_failed_midstream", row
+    assert srv.hy.state.node_inflight("rig") == 0

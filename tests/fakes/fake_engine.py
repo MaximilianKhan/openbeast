@@ -18,7 +18,9 @@ Faults, per request with `X-Fake-Fault: <mode>[:arg]` or sticky with
   Request faults (POST only; a sticky count is consumed by requests, never
   by probes): http_500 http_503 http_401 http_404_model http_429
   overflow_400 loading_503 ttft_ms:N headers_then_close die_after_chunks:N
-  stall_after_chunks:N:ms
+  stall_after_chunks:N:ms error_body_stall:ms (500 + 5 of 100 body bytes, then
+  a stall) empty_200 (a clean zero-byte 200) body_then_close:N (non-stream:
+  N of 2N declared bytes, then close)
   Node states (sticky until cleared; seen by probes too): loading
   (/health 503 "Loading model" and every POST 503), health_down (/health
   503), wrong_model (/v1/models lists another id), models_401 (/v1/models
@@ -295,6 +297,44 @@ def _handler(eng: FakeEngine):
                                                   "type": "NotFoundError", "code": 404}})
             if mode == "overflow_400":
                 return self._json(400, OVERFLOW[eng.personality])
+            if mode == "error_body_stall":
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b'{"err')
+                self.wfile.flush()
+                self.close_connection = True
+                time.sleep(int(arg or 0) / 1000)
+                return
+            if mode == "empty_200":
+                self.send_response(200)
+                self.close_connection = True
+                if body.get("stream"):
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                self.wfile.flush()
+                return
+            if mode == "body_then_close":
+                n = int(arg or 1)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(2 * n))
+                self.end_headers()
+                self.wfile.write(b"{" + b" " * (n - 1))
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                return
             if mode == "headers_then_close":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream" if body.get("stream") else
