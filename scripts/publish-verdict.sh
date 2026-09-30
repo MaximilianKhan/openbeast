@@ -13,7 +13,7 @@
 #            a verdict names the code and the eval era it was measured under.
 #   --title  the page title (default: the file's own <title>, or "Verdict: <slug>").
 #
-# Always PRIVATE (owner = the rig's operator). Share one explicitly with
+# Always PRIVATE, owned by the rig (its admins can open it). Share one with
 # ./scripts/artifact.sh visibility <id> tailnet.
 #
 # NEVER FAILS THE CALLER. This runs at the end of hours-long campaign stages
