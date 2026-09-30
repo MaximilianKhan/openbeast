@@ -895,6 +895,13 @@ def test_create_session_spawns_a_job_and_registers_it(rig, tmp_path):
     # the product, not the test, moves it off `running`
     assert wait_state(sid, "done"), sessions.get(sid)
     assert sessions.get(sid)["state"] == "done"
+    # The job supervisor writes `done` just BEFORE its process exits; the
+    # reaper drops the child just AFTER reaping it. So "done" can be observed
+    # a moment before the reap (seen on the CI runner). Bounded wait, then
+    # the real claim: reaped, not leaked, not a zombie.
+    deadline = time.monotonic() + 10
+    while sid in chat_server._CHILDREN and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert sid not in chat_server._CHILDREN          # reaped, not leaked
     assert not is_zombie(rec["pid"])
 
