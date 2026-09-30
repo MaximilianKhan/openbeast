@@ -123,8 +123,12 @@ flowchart TB
     subgraph INFPLANE["🧠 INFERENCE PLANE — the ONLY surface published to the tailnet"]
         gate["🛡️ <b>beast-gate</b> · :8090 <i>(opt-in)</i><br/><code>agents/edge.py</code><br/>per-device keys · route allowlist<br/>rate + in-flight caps · audit<br/><i>authenticates the DEVICE</i>"]
         llama["<b>llama.cpp server</b> · :8080<br/>OpenAI-compatible · continuous batching<br/>unified KV · MTP speculative decode<br/>context auto-scaled to VRAM · 24 GB floor"]
+        hydra["🐉 <b>beast-hydra</b> · :8095 <i>(opt-in)</i><br/><code>agents/hydra.py</code><br/>routes on <code>model</code> · health · failover<br/>before the first byte · strict pins"]
         gate --> llama
+        gate -.->|"HYDRA=true"| hydra
+        hydra -.-> llama
     end
+    instinct["🧿 <b>beast-instinct</b> · :8094 <i>(opt-in)</i><br/><code>agents/instinct/</code><br/>calibrated decisions · shadow until gated<br/><i>never a pool, never behind hydra or the gate</i>"]
 
     router["🧭 <b>Agent router</b> · :8088<br/><i>(opt-in; OFF by default —<br/>WebUI then calls llama.cpp direct)</i>"]
     searxng["🔎 <b>SearXNG</b> · :8888<br/>private metasearch"]
@@ -151,6 +155,9 @@ flowchart TB
 
     webui -->|"chat completions"| router
     router -->|"no spawn intent →<br/>pass through"| llama
+    router -.->|"HYDRA=true"| hydra
+    hydra -.->|"instinct-route/1"| instinct
+    router -.->|"ROUTER_INSTINCT"| instinct
     router -.->|"spawn intent →<br/>start_agent"| its
 
     core -->|"web_search"| searxng
@@ -174,7 +181,7 @@ flowchart TB
     class mcp,core tool;
     class its sec;
     class llama inf;
-    class gate,router,artifact,chat optin;
+    class gate,router,artifact,chat,hydra,instinct optin;
     class searxng,dash,jobs,ntfy aux;
     classDef lang fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#431407;
     class corpus,intro,verify,escal lang;
@@ -212,6 +219,18 @@ flowchart TB
   *extension* and `EXTENSIONS` ships empty, which matters because `:8444`
   publishes the dashboard's `/api/slot` — publish it before enabling the
   extension and clients get a 502 (see [`BEAST_SLOT.md`](BEAST_SLOT.md)).
+- **beast-hydra and beast-instinct change the inference path when on.**
+  With `HYDRA=true`, every consumer (WebUI's `MODEL_URL` or the router's
+  upstream, beast-gate, spawned agents) is re-pointed at hydra on
+  `127.0.0.1:8095`, which routes each request on its `model` field across
+  the rig's engine and any tailnet engines in `hydra.toml`. So with hydra on,
+  WebUI → llama-server is really WebUI → (router) → hydra → engine.
+  `INSTINCT=true` runs beast-instinct on `:8094` (and, with
+  `INSTINCT_SCORER=true`, its scorer on `:8082`): hydra and the router may
+  ask it for a decision, act only on a gated `enforce` answer, and work
+  unchanged when it is down. Both are off by default, and with them off the
+  stack is byte-identical to one without them.
+  [`BEAST_HYDRA.md`](BEAST_HYDRA.md), [`BEAST_INSTINCT.md`](BEAST_INSTINCT.md).
 - **Push-diagnostics (opt-in, experiment-gated).** With
   `OPENBEAST_DIAGNOSTICS=1`, every `write_file`/`edit_file` of a source file
   appends the language's real compiler/checker verdict to the tool result —
@@ -326,6 +345,8 @@ agents/                      # Agent framework + servers
   runner.py                  # Autonomous agent loop (10-tool registry; steering inbox as a session)
   router.py                  # Agent-spawn router on :8088 (opt-in)
   edge.py                    # beast-gate on :8090 — identity-aware inference edge (opt-in)
+  hydra.py / hydra_core.py   # beast-hydra on :8095 — routes inference across engines (opt-in)
+  instinct/                  # beast-instinct on :8094 — calibrated routing decisions (opt-in)
   chat_server.py             # beast-chat on :3003 — sessions API + the phone console (opt-in)
   sessions.py                # The session ledger (records, inbox, liveness by pid+start time)
   artifact.py                # beast-artifact store (versions, ownership, visibility)
