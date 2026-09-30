@@ -599,6 +599,26 @@ def test_unpinning_an_old_page_does_not_schedule_its_deletion(env, monkeypatch):
     assert store.sweep_retention(now=later) == [a["id"]]
 
 
+def test_the_example_conf_documents_admins_and_retention(env, monkeypatch):
+    """B-artifact-3: the server tells the operator to "Set ARTIFACT_ADMINS in
+    openbeast.conf", but the example conf had neither key. The documented
+    lines, uncommented, must be ones the store actually reads."""
+    example = open(os.path.join(REPO, "openbeast.conf.example")).read()
+    lines = {}
+    for key in ("ARTIFACT_ADMINS", "ARTIFACT_RETAIN_DAYS"):
+        m = re.search(rf"^#({key}=\S+)$", example, re.M)
+        assert m, f"openbeast.conf.example does not document {key}"
+        lines[key] = m.group(1)
+    conf = env / "openbeast.conf"
+    conf.write_text("ARTIFACT_ADMINS=boss@example.com\n"
+                    "ARTIFACT_RETAIN_DAYS=14\n")
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    assert store.admins() == ["boss@example.com"]
+    assert store.retain_days() == 14
+    conf.write_text("\n".join(lines.values()) + "\n")      # the defaults
+    assert store.retain_days() == 0
+
+
 def test_the_server_sweep_is_audited(make_client, monkeypatch):
     c = make_client()
     a = publish(c)
