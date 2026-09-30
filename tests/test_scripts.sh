@@ -2239,7 +2239,7 @@ else
 fi
 
 # start.sh: cleanup() removes a pidfile only while it still names OUR child.
-_RV_CL="$(sed -n '/^  _rm_own_pidfile() {/,/^  }/p' "$REPO_DIR/start.sh")"
+_RV_CL="$(sed -n '/^_rm_own_pidfile() {/,/^}/p' "$REPO_DIR/start.sh")"
 if [[ -n "$_RV_CL" ]]; then
   echo 4242 > "$_RV/own.pid"; echo 9999 > "$_RV/replaced.pid"
   bash -c "set -euo pipefail; $_RV_CL

@@ -499,6 +499,14 @@ STOPPING=0
 CHAT_OWNED=0
 ARTIFACT_OWNED=0
 
+# _rm_own_pidfile <pidfile> <our-pid> — remove a pidfile (and its .start
+# sidecar) only while it still names OUR child; see the note in cleanup().
+_rm_own_pidfile() {
+  [[ -n "${2:-}" && -f "$1" ]] || return 0
+  [[ "$(cat "$1" 2>/dev/null || true)" == "$2" ]] && rm -f "$1" "${1%.pid}.start"
+  return 0
+}
+
 cleanup() {
   [[ $CLEANED -eq 1 ]] && return 0
   CLEANED=1
@@ -524,7 +532,10 @@ cleanup() {
   fi
   if [[ -n "${HYDRA_PID:-}" ]]; then
     kill "$HYDRA_PID" 2>/dev/null && echo "beast-hydra stopped."
-    rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
+    # only while the file still names OUR hydra: healthcheck.sh --restart
+    # records a replacement in the same file, and deleting that record
+    # would orphan it (the next start then dies on "port already held")
+    _rm_own_pidfile "$RUN_DIR/hydra.pid" "$HYDRA_PID"
   fi
   if [[ -n "${CHAT_PID:-}" ]]; then
     kill "$CHAT_PID" 2>/dev/null && echo "beast-chat console stopped."
@@ -558,11 +569,6 @@ cleanup() {
   # replaces a crashed server and records the replacement's pid in the same
   # file; "we started one once" (CHAT_OWNED) is not "this pid is ours", and
   # deleting the replacement's record recreates the unreapable-orphan state.
-  _rm_own_pidfile() {                # _rm_own_pidfile <pidfile> <our-pid>
-    [[ -n "${2:-}" && -f "$1" ]] || return 0
-    [[ "$(cat "$1" 2>/dev/null || true)" == "$2" ]] && rm -f "$1"
-    return 0
-  }
   [[ ${CHAT_OWNED:-0} -eq 1 ]] && _rm_own_pidfile "$RUN_DIR/chat.pid" "${CHAT_PID:-}"
   [[ ${ARTIFACT_OWNED:-0} -eq 1 ]] && _rm_own_pidfile "$RUN_DIR/artifact.pid" "${ARTIFACT_PID:-}"
   return 0

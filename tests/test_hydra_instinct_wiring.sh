@@ -208,6 +208,36 @@ if [[ "$(_get ENV OPENBEAST_HYDRA_PORT "$_o")" == "8095" && "$(_get ENV OPENBEAS
 else
   fail "bad hydra values: $(cat "$_N/stderr") $(grep HYDRA <<< "$_o" | tr '\n' ' ')"
 fi
+# A conf-FILE HYDRA_DEFAULT_MODEL must reach hydra itself, not only the
+# agents: hydra_core.implicit_raw reads OPENBEAST_HYDRA_DEFAULT_MODEL.
+_o="$(_conf "$_N" $'HYDRA=true\nHYDRA_DEFAULT_MODEL=fleet')"
+_dr="$(env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
+        source "$1/scripts/lib/conf.sh" 2>/dev/null
+        nice -n 19 python3 -c "import os, sys; sys.path.insert(0, sys.argv[1]); import hydra_core as c
+print(c.implicit_raw(dict(os.environ))[\"hydra\"][\"default_route\"])" "$2/agents"' _ "$_N" "$REPO_DIR" 2>/dev/null || true)"
+if [[ "$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")" == "fleet" && "$_dr" == "fleet" ]]; then
+  pass "HYDRA_DEFAULT_MODEL from openbeast.conf reaches hydra (its implicit default_route is 'fleet')"
+else
+  fail "HYDRA_DEFAULT_MODEL=fleet: exported='$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")' default_route='$_dr'"
+fi
+# HYDRA_READY_GRACE is read in (( )): a leading zero must not turn it octal.
+_grace() { env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_HYDRA_READY_GRACE="$1" bash -c \
+             'set -euo pipefail; REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; echo "$HYDRA_READY_GRACE"' _ "$_N"; }
+if [[ "$(_grace 08)" == 8 && "$(_grace 010)" == 10 && "$(_grace 09)" == 9 && "$(_grace 'x')" == 60 \
+      && "$(_grace '')" == 60 && "$(_grace 1234567)" == 60 ]]; then
+  pass "HYDRA_READY_GRACE is base 10 (08 -> 8, 010 -> 10), junk -> 60"
+else
+  fail "HYDRA_READY_GRACE: 08=$(_grace 08) 010=$(_grace 010) x=$(_grace x)"
+fi
+# A shell that once sourced conf.sh with HYDRA=true keeps its exports; with
+# HYDRA now off they must not point anything at a dead hydra.
+_o="$(_conf "$_N" "HYDRA=false" OPENBEAST_CONSUMER_BASE=http://127.0.0.1:8095 \
+        OPENBEAST_HYDRA_URL=http://127.0.0.1:8095 OPENBEAST_HYDRA_CALLER_TOKEN_FILE=/x/hydra-caller.token)"
+if grep -qE '^ENV (OPENBEAST_CONSUMER_BASE|OPENBEAST_HYDRA_URL|OPENBEAST_HYDRA_CALLER_TOKEN_FILE)=' <<< "$_o"; then
+  fail "HYDRA=false kept stale hydra exports: $(grep -E 'CONSUMER|HYDRA' <<< "$_o" | tr '\n' ' ')"
+else
+  pass "HYDRA=false drops stale CONSUMER_BASE / HYDRA_URL / caller-token exports"
+fi
 # vLLM: the served id rides OPENBEAST_HYDRA_UPSTREAM_MODEL, and a child that
 # re-sources conf.sh with the parent's exports (start.sh -d forwards every
 # OPENBEAST_*) must recover it rather than mistake the route for it.
