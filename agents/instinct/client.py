@@ -27,6 +27,13 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 DEFAULT_URL = "http://127.0.0.1:8094"
+# evals/run_eval.py sets these in EVERY eval child's environment (the same
+# markers agents/runner.py reads). A caller inside an eval unit cannot opt out.
+EVAL_MARKERS = ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS")
+
+
+def in_eval_process() -> bool:
+    return any(os.environ.get(m) for m in EVAL_MARKERS)
 DEFAULT_KEY = Path(__file__).resolve().parents[2] / ".run" / "instinct.key"
 BREAKER_FAILS = 5
 BREAKER_OPEN_S = 30.0
@@ -124,8 +131,12 @@ class InstinctClient:
             body["baseline"] = baseline
         if request_id is not None:
             body["request_id"] = request_id
-        if context is not None:
-            body["context"] = context
+        if context is not None or in_eval_process():
+            body["context"] = dict(context or {})
+            if in_eval_process():
+                # Not self-declared: the process environment says so, and a
+                # decision with forbidden_contexts=["eval"] then never acts.
+                body["context"]["eval"] = True
         try:
             data = await self._post("/v1/instinct/decide", body, int(deadline_ms))
             if data is None:

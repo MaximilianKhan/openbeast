@@ -185,3 +185,24 @@ def test_route_and_contracts_fail_open(tmp_path):
     c, _ = client(tmp_path, h)
     assert asyncio.run(c.route({"prompt_head": "x"})) is None
     assert asyncio.run(c.contracts()) == []
+
+
+# --- the eval flag comes from the process environment, not the caller (m8) ------
+
+@pytest.mark.parametrize("marker", ["OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS"])
+def test_eval_child_is_marked_eval_whatever_the_caller_says(tmp_path, monkeypatch, marker):
+    import json as _json
+    for m in ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS"):
+        monkeypatch.delenv(m, raising=False)
+
+    async def h(req):
+        return httpx.Response(200, json=ok_response())
+    c, rec = client(tmp_path, h)
+    decide(c, context={"caller": "router", "eval": False})
+    assert _json.loads(rec.calls[-1].content)["context"]["eval"] is False   # control
+    monkeypatch.setenv(marker, "1")
+    decide(c, context={"caller": "router", "eval": False})
+    body = _json.loads(rec.calls[-1].content)
+    assert body["context"] == {"caller": "router", "eval": True}
+    decide(c)                                  # no context at all -> still marked
+    assert _json.loads(rec.calls[-1].content)["context"] == {"eval": True}
