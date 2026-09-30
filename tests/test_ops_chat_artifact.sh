@@ -533,11 +533,32 @@ else
 fi
 RUN_ENV=(DOCKER_HAVE="$NTFY_REF")
 doctor "EXTENSIONS=ntfy" OFFLINE=true
-if has "$_O" "the ntfy extension's image is present ($NTFY_REF)" && ! has "$_O" "is not on this box"; then
-  pass "…a docker-loaded image (repo:tag, digest dropped) passes (control)"
+if has "$_O" "pins a digest it no longer carries" && has "$_O" "image: sha256:<id>" \
+   && ! has "$_O" "the ntfy extension's image is present"; then
+  pass "…a hand-loaded repo:tag under a line that still pins a digest FAILs (compose cannot resolve it)"
 else
-  fail "offline ext image present: $(row 'offline')"
+  fail "offline ext tag-only: $(row 'offline')"
 fi
+NTFY_PIN="$(grep -oE 'binwiederhier/ntfy:[^[:space:]]+' "$REPO_DIR/extensions/ntfy/compose.yaml" | head -1)"
+RUN_ENV=(DOCKER_HAVE="$NTFY_PIN")
+doctor "EXTENSIONS=ntfy" OFFLINE=true
+if has "$_O" "the ntfy extension's image is present ($NTFY_REF)" && ! has "$_O" "is not on this box" \
+   && ! has "$_O" "no longer carries"; then
+  pass "…the pinned reference itself present passes (control)"
+else
+  fail "offline ext pinned present: $(row 'offline')"
+fi
+cp "$SB/extensions/ntfy/compose.yaml" "$T/ntfy-compose.orig"
+_ID="sha256:$(printf 'a%.0s' $(seq 1 64))"
+sed -i -E "s#image:[[:space:]]*binwiederhier/ntfy:[^[:space:]]+#image: $_ID#" "$SB/extensions/ntfy/compose.yaml"
+RUN_ENV=(DOCKER_HAVE="$_ID")
+doctor "EXTENSIONS=ntfy" OFFLINE=true
+if has "$_O" "the ntfy extension's image is present ($_ID)" && ! has "$_O" "no longer carries"; then
+  pass "…a line rewritten to the loaded sha256:<id> (README / bundle.sh) passes"
+else
+  fail "offline ext rewritten id: $(row 'offline')"
+fi
+cp "$T/ntfy-compose.orig" "$SB/extensions/ntfy/compose.yaml"
 RUN_ENV=()
 doctor "EXTENSIONS=ntfy"
 if ! has "$_O" "extension's image"; then

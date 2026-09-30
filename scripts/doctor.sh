@@ -967,8 +967,13 @@ if ob_offline; then
   # aborts the whole frontend. bundle.sh carries every fragment's image and
   # install points the fragment at the loaded ID; a box installed without a
   # bundle has to move it by hand (extensions/<name>/README.md). Checked by
-  # the line as written (a digest pin or a loaded sha256:<id>), then by
-  # repo:tag.
+  # the line AS WRITTEN, because that is what compose resolves: a
+  # repo:tag@sha256 pin passes only if the pinned reference itself inspects.
+  # `docker save`/`load` drops the registry digest, so a hand-loaded repo:tag
+  # next to a line that still pins a digest is exactly the broken case this
+  # row exists for (it used to pass on the tag). A line with no digest (the
+  # sha256:<id> the README and bundle.sh rewrite to) is checked as is, then
+  # by its tag.
   if command -v docker >/dev/null 2>&1; then
     for _ext in ${EXTENSIONS:-}; do
       _ext_compose="$REPO_DIR/extensions/$_ext/compose.yaml"
@@ -976,8 +981,11 @@ if ob_offline; then
       while IFS= read -r _img; do
         [[ -n "$_img" ]] || continue
         if docker image inspect "$_img" >/dev/null 2>&1 \
-           || docker image inspect "${_img%%@*}" >/dev/null 2>&1; then
+           || { [[ "$_img" != *@sha256:* ]] && docker image inspect "${_img%%@*}" >/dev/null 2>&1; }; then
           pass "offline: the $_ext extension's image is present (${_img%%@*})"
+        elif docker image inspect "${_img%%@*}" >/dev/null 2>&1; then
+          fail "offline: the $_ext extension's image ${_img%%@*} is here, but compose.yaml pins a digest it no longer carries (docker save/load drops it) — compose up --pull never fails, taking WebUI and SearXNG down with it" \
+               "point extensions/$_ext/compose.yaml at the loaded image ID (image: sha256:<id>, extensions/$_ext/README.md), or install via ./scripts/bundle.sh"
         else
           fail "offline: the $_ext extension's image ${_img%%@*} is not on this box — compose up --pull never fails, taking WebUI and SearXNG down with it" \
                "carry it in a bundle (./scripts/bundle.sh build on a connected box, then install here), or by hand: extensions/$_ext/README.md — or ./scripts/ext.sh disable $_ext"
