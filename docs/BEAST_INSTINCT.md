@@ -26,13 +26,13 @@ Two rules hold everywhere:
 | Hermetic stub scorer (llama.cpp + SGLang wire formats, fault injection) | `scripts/instinct/stub_scorer.py` |
 | Reference hydra consumer | `scripts/instinct/mock_hydra.py` |
 | Operator CLI | `scripts/instinct.sh` |
-| CPU scorer launcher (P1, not started by anything yet) | `scripts/serve-instinct-scorer.sh` |
+| CPU scorer launcher (P1; `start.sh` runs it when `INSTINCT_SCORER=true`) | `scripts/serve-instinct-scorer.sh` |
 | Decision-quality harness | `evals/decisions/{run,metrics,loadgen}.py` |
 | Seed dataset (synthetic, not a gate set) | `evals/decisions/router.spawn_intent/` |
 
-Nothing here is on the running stack yet. `start.sh`, `stop.sh`,
-`openbeast.conf`, the doctor, the dashboard and `agents/router.py` are not
-touched. What each of them needs is listed under "Wiring" below.
+All of it is OFF by default. The stack wiring (below) is opt-in through
+`INSTINCT`, `INSTINCT_SCORER` and `ROUTER_INSTINCT`; with them unset the stack
+is byte-identical to one without instinct (`tests/test_hydra_instinct_wiring.sh`).
 
 ## Invariants (each has a test)
 
@@ -180,7 +180,17 @@ test split, because it was tuned on those phrasings, and 0.255 on the
 adversarial split. The McNemar comparison between the two is p = 0.5 on test
 and p < 0.001 on adversarial.
 
-## Wiring (not done in P0; shared files)
+## Wiring (landed with the shared stack wiring; opt-in)
+
+As specified below, with these as-built details: `start.sh` starts the scorer
+then the service after the tool server and before the router, NON-fatally
+(consumers fail open); the router gets `ROUTER_INSTINCT`, `INSTINCT_URL` and
+`INSTINCT_KEY_FILE` (the config's key path) in its own environment only, and
+start.sh notes when `ROUTER_INSTINCT` is on without `INSTINCT=true`;
+`services.instinct` is present in `/api/slot` only while `INSTINCT=true`
+(absent, not `false`, on a default rig, so its `/api/slot` is unchanged);
+`healthcheck.sh --restart` restarts the service through `instinct.sh up`.
+The spec as planned:
 
 **`agents/router.py`** (about 6 lines; `ROUTER_INSTINCT` defaults to off, which leaves the router byte-identical):
 
