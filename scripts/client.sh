@@ -343,8 +343,21 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     # conf.sh (rig-shaped). runner.py resolves OPENBEAST_API_KEY from env.
     [ -x "$VENV/bin/python3" ] || { echo "venv missing — run scripts/setup-client.sh" >&2; exit 1; }
     [ -n "${OPENBEAST_AGENT_INFERENCE_URL:-}" ] || { echo "OPENBEAST_AGENT_INFERENCE_URL not set — run scripts/setup-client.sh" >&2; exit 1; }
+    # Tier-3 awareness pack on zig tasks, same as the rig's agent.sh
+    # (agents/lang/pack_context.py). Tools run HERE, so the pack is this
+    # checkout's agents/packs/ file checked against THIS machine's zig; a
+    # slim checkout without it just gets no pack. bash-3.2-safe (macOS).
+    _args=("$@")
+    if [ -f "$REPO/agents/lang/pack_context.py" ]; then
+      _packed=()
+      while IFS= read -r -d '' _a; do _packed+=("$_a"); done \
+        < <("$VENV/bin/python3" "$REPO/agents/lang/pack_context.py" argv -- ${_args[@]+"${_args[@]}"} || true)
+      if [ "${#_packed[@]}" -gt 0 ] && [ "${#_packed[@]}" -ge "${#_args[@]}" ]; then
+        _args=("${_packed[@]}")
+      fi
+    fi
     exec "$VENV/bin/python3" "$REPO/agents/runner.py" \
-      --base-url "$OPENBEAST_AGENT_INFERENCE_URL" "$@"
+      --base-url "$OPENBEAST_AGENT_INFERENCE_URL" ${_args[@]+"${_args[@]}"}
     ;;
 
   search)

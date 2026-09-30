@@ -1028,6 +1028,20 @@ if [[ -f "$REPO_DIR/agents/lang/packs.py" ]]; then
   fi
 fi
 
+# ── zig awareness pack in production (agents/lang/pack_context.py) ─────────
+# Agents on zig tasks get the Tier-3-measured pack as --context-file. "off" is
+# a choice (LANG_PACK_CONTEXT=off); NOT SERVED means the switch is on but the
+# pack is stale, edited since it was measured, or missing — worth a warning.
+if [[ -f "$REPO_DIR/agents/lang/pack_context.py" ]]; then
+  _pc_line="$(cd "$REPO_DIR" && timeout 30 python3 agents/lang/pack_context.py status 2>/dev/null | head -1 || true)"
+  case "$_pc_line" in
+    "zig pack: auto"*|"zig pack: off"*) pass "$_pc_line" ;;
+    "zig pack: NOT SERVED"*)
+      warn "$_pc_line" "LANG_PACK_CONTEXT in openbeast.conf; docs/LANG_AWARENESS_PLAN.md" ;;
+    *) warn "zig pack: status unavailable (see: python3 agents/lang/pack_context.py status)" ;;
+  esac
+fi
+
 # ── Verdict ─────────────────────────────────────────────────────────────────
 [[ $QUIET -eq 1 ]] || echo ""
 echo "doctor: ${PASS} ok, ${WARN} warning(s), ${FAIL} failure(s)"
