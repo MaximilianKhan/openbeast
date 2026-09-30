@@ -1849,11 +1849,25 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def api_patch(request: Request, artifact_id: str, body: PatchBody,
                   _w: None = Depends(require_manager)):
         try:
-            exists = bool(store.get_meta(artifact_id))
+            current_meta = store.get_meta(artifact_id)
         except store.ArtifactError:
-            exists = False
-        if not exists:
+            current_meta = None
+        if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
+        admin = is_admin(request)
+        who = owner_for(request)
+        # OWNERSHIP BEFORE INPUT VALIDATION. A tailnet login with an
+        # artifact-scoped device key can reach this route, so validating the
+        # body first answered someone else's private page with a 400 ("invalid
+        # tag ...") and a nonexistent id with a 404 — an existence oracle
+        # (D9/D29). A caller who can neither own nor administer the page gets
+        # the same flat 404 as a missing id, before anything it sent is read.
+        # The store mutators below still re-check under their own lock.
+        if not admin:
+            try:
+                store._require_owner(current_meta, who)
+            except store.ArtifactError:
+                raise HTTPException(status_code=404, detail="Not Found")
         # VALIDATE CALLER INPUT BEFORE ANY WRITE. The ordering below limits
         # the damage of a late failure but cannot remove it: a mixed body with
         # a valid `current` and an INVALID visibility VALUE committed the
@@ -1875,8 +1889,6 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 store._check_tags(body.tags)
             except store.ArtifactError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-        admin = is_admin(request)
-        who = owner_for(request)
         if body.owner is not None and not admin:
             # Handing a page to someone else decides who may read it: the
             # rig and admins only. Same flat 404 as any ownership refusal.

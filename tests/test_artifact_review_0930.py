@@ -784,3 +784,34 @@ def test_a_logged_in_non_owner_cannot_republish_an_admins_page(make_client):
     finally:
         store.reset_owner_override(token)
 
+
+@pytest.mark.parametrize("body", [{"tags": ["BAD TAG!!"]},
+                                  {"visibility": "public"},
+                                  {"pinned": True}])
+def test_patch_is_no_existence_oracle_for_a_keyed_non_owner(make_client, body):
+    """D9/D29: with an artifact-scoped key, a PATCH carrying invalid input to
+    someone else's private page answered 400 while a missing id answered 404.
+    Both must be the same flat 404, and nothing may change."""
+    c = make_client(operators="boss@example.com,max@example.com,kid@example.com")
+    k = publish(c, headers=local(c, KID))
+    h = {**MAX, **enroll(c.tmp, "phone", ("artifact",))}
+    theirs = c.patch(f"/api/artifacts/{k['id']}", json=body, headers=h)
+    missing = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
+                      json=body, headers=h)
+    assert (theirs.status_code, theirs.json()) == (404, FLAT_404)
+    assert (missing.status_code, missing.json()) == (404, FLAT_404)
+    meta = store.get_meta(k["id"])
+    assert meta.get("pinned") is not True and meta["visibility"] == "private"
+    assert not meta.get("tags")
+
+
+def test_the_owner_still_gets_a_readable_400_for_a_bad_tag(make_client):
+    c = make_client(operators="boss@example.com,max@example.com")
+    a = publish(c, headers=local(c, MAX))
+    h = {**MAX, **enroll(c.tmp, "phone", ("artifact",))}
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"tags": ["BAD TAG!!"]},
+                headers=h)
+    assert r.status_code == 400 and "tag" in r.json()["detail"]
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "public"},
+                headers=h)
+    assert r.status_code == 400
