@@ -224,10 +224,12 @@ Now give it something to watch:
 
 ```bash
 ./scripts/job.sh run --title "long build" -- bash -c 'for i in $(seq 1 60); do echo tick $i; sleep 5; done'
-./agent.sh "list the five largest files under /tmp and explain what they are"
+./agent.sh --steer "list the five largest files under /tmp and explain what they are"
 ```
 
-Both appear in the console within a second. Attach to the agent, type
+Both appear in the console within a second. (`--steer` is what makes an
+`agent.sh` run a console session; without it the agent runs exactly as it
+always did and the console never sees it. See docs/BEAST_CHAT.md.) Attach to the agent, type
 *"skip anything under 1 MB"* — it lands at the agent's next turn boundary,
 and the transcript shows `steer` when it does. Stop the job from the phone;
 the ledger records `stopped` and who did it.

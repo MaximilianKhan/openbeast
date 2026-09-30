@@ -54,15 +54,26 @@ echo "BEAST_ARTIFACT=true" >> openbeast.conf
 ./stop.sh && ./start.sh -d
 
 ./scripts/artifact.sh publish page.html --title "Weekly numbers"
-#   → https://beast:8446/a/3f1c9e4a-77b2-4d0e-9a51-0d2e6b8c4411  (v1)
+#   → http://localhost:3004/a/3f1c9e4a-77b2-4d0e-9a51-0d2e6b8c4411  (v1)
 ```
 
-That URL works on the rig immediately. To reach it from your phone, publish
-the port once:
+Before the port is published that link is a **loopback** URL, and no browser
+can open it: the viewer refuses a caller that presents no tailnet login, and
+a browser on the rig presents none. The CLI (`artifact.sh list/show`) works
+right away. For a link you can open, set your login as the operator and
+publish the port once:
 
 ```bash
+echo "ARTIFACT_OPERATORS=you@example.com" >> openbeast.conf   # your tailnet login
+./stop.sh && ./start.sh -d
 ./scripts/setup-tailscale.sh --publish-artifact      # needs sudo
 ```
+
+From then on every URL is the tailnet form
+`https://beast.<tailnet>.ts.net:8446/a/<id>`, and it opens on the phone and
+in the rig's own browser. Without `ARTIFACT_OPERATORS`, private pages (the
+default) open for nobody from a phone. `./scripts/doctor.sh` warns about
+that and about a published `:8446` with no server behind it.
 
 In chat, the same thing is one sentence: *"write me a page showing X and
 publish it."* The model calls `publish_artifact` and answers with the link.
