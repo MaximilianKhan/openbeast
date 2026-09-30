@@ -1,6 +1,6 @@
 # TODO
 
-## 🐉 beast-hydra + 🧠 beast-instinct — PLANNED 2026-09-30
+## 🐉 beast-hydra + 🧿 beast-instinct — BUILT (opt-in) 2026-09-30, shipped in v1.7.0; hardware pending
 
 - **beast-hydra** — distributed inference routing across heterogeneous rigs
   (5090 rig + 2× DGX Spark + e.g. a 2×3090 Ti rig; llama.cpp / vLLM /
@@ -13,8 +13,20 @@
 - The two are reconciled (last section of each plan): one classifier
   (instinct's `instinct-route/1`), hydra owns eligibility/capacity/failover,
   instinct never grants anything and nothing is enforced before its quality is
-  measured. MVPs are built to be testable today with stub engines; the
-  "day the nodes come online" runbooks are §7 (hydra) and §5.14 (instinct).
+  measured. Both are built, wired and tested against stub engines (#115,
+  #122, #123); operator docs [`BEAST_HYDRA.md`](BEAST_HYDRA.md) and
+  [`BEAST_INSTINCT.md`](BEAST_INSTINCT.md). The "day the nodes come online"
+  runbooks are §7 (hydra) and §5.14 (instinct).
+- **Max's calls, 2026-09-30:** every model is uncensored, so hydra never
+  routes or spills to a stock one (enforced, #122); the Sparks serve
+  GLM-5.3-Flash uncensored as EXL3 on TensorFold (#120); instinct decides on
+  a full 27B: the rig's 27B now, Open-Jev-27B-v1.1 locally on its own GPU as
+  the target, the 0.6B as fallback only (#123).
+- **Next, on hardware:** enable `HYDRA` on the 5090 (held by Max); measure
+  the 27B scorer's latency on the 1-slot MTP primary and the classify
+  consult's real deadline (the example uses 800 ms); build and digest-pin the
+  Open-Jev image on its host; get access to the gated
+  `neko-legends/GLM-5.3-Flash-Uncensored-EXL3`.
 
 ## 🟩 DGX SPARK INFERENCE — milestone 1 built 2026-09-29, hardware pending
 
@@ -29,13 +41,24 @@
   unchanged.
 - **Next, on hardware:** the runbook's acceptance checklist (§9 E) and the
   verify-on-hardware list (§12).
-- **Max's calls (§11):** which model (stock NVFP4 vs an unvetted uncensored
-  NVFP4/FP8 — the benchmarked GGUF cannot be served), whether 2-box TP is
-  worth it for a 27B vs Flash Next / GLM-5.3-Flash, and where the command
-  center lives.
+- **Max's call (§11), 2026-09-30:** the Sparks serve **GLM-5.3-Flash
+  uncensored** (orcarouter's, as EXL3) on TensorFold TP=2; profile
+  `scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env` (#120).
+  Where the command center lives is still open.
 - **M2:** eval provenance for a remote backend (new era), `opencode.json` /
   raw `:8443` / `run_eval.py` still say `:8080`, HF `repo@revision` pinning,
   GB10 detection + aarch64 lock for an on-Spark stack.
+
+## 🏷 v1.7.0 CUT 2026-09-30
+
+Everything since v1.6.0 (#111 – #125): beast-hydra (router, health, failover,
+the uncensored-only family policy, GLM-5.3-Flash on the Sparks); beast-instinct
+(the decision plane, deciding on a full 27B, the Open-Jev-27B engine); the zig
+awareness pack in production (#117, on the Tier-3 FRESH SHIP, record corrected
+in #119); the beast-chat/artifact review and upgrades (#113, #121); the 09-30
+double pass (75 findings); the resumable Tier-3 harness (#111, #125). Notes:
+[`RELEASE_NOTES_v1.7.0.md`](RELEASE_NOTES_v1.7.0.md). The eval era is
+**unchanged** at `b5596c660b5ab819`, so v1.6.0 and v1.7.0 rows pair.
 
 ## 🏷 v1.6.0 CUT 2026-09-29
 
@@ -79,8 +102,9 @@ README. Notes: [`RELEASE_NOTES_v1.6.0.md`](RELEASE_NOTES_v1.6.0.md). Eval era
      "not yet"; run overnight 09-29→09-30 on Max's go. Remaining, when wanted,
      in the new era: Tier-3 FRESH (`FRESH=1 bash scratch/tier3_zig_ab.sh`,
      ~7 GPU-h, +1.5 h optional held-out zig set); single-slot greedy floor
-     (`bash scratch/greedy_floor.sh --single-slot`, ~20 GPU-h). Until then the
-     pack stays unwired: Tier-3 is UNRESOLVED.
+     (`bash scratch/greedy_floor.sh --single-slot`, ~20 GPU-h). *(Superseded
+     2026-09-30: the FRESH rerun read SHIP and the pack is in production,
+     #117. The held-out set and the floor stay parked on Max's call.)*
   4. **llama.cpp rebuild — DONE differently.** `update.sh --llama` refuses
      under a foreign GPU lease, and now reflink-snapshots `build/bin` and
      rolls it back when a rebuild fails, so a half-built lib/binary mix can

@@ -2,6 +2,11 @@
 
 > **NAMING (locked by Max 2026-09-09): the shipped feature is BEAST-ASSIST** (`BEAST_ASSIST=1`, alias of `OPENBEAST_DIAGNOSTICS=1`); "push-diagnostics" remains the mechanism term in this doc. A/B rounds 1–2 + B-replicate verdict (2026-09-10): direction unanimous, magnitude within churn at n=2, harm excluded → ships default-OFF documented opt-in; Tier 3 is the next zig arm. Full record: research langaware journal.
 
+> **Status 2026-09-30: Tier 3 (the zig awareness pack) read SHIP on a
+> fresh, clean rerun (net +24, p < 0.0001, guard clean) and is in production
+> for agents on zig tasks (#117, `LANG_PACK_CONTEXT=auto|off`). Held-out
+> check unrun. The paragraph below is the original 2026-09-08 status.**
+>
 > **Status: Tier 1 BUILT (PR #37, merge held until the current eval era is
 > banked — §6.2); A/B pending.** Everything else is design. The A/B
 > experiment in §7 gates every build phase and is queued behind the
@@ -335,7 +340,7 @@ tokens at 4 chars/token, budget 2,000):
   Drift-abort at run start: stamped digest sha ≠ bytes, or installed
   `zig version` ≠ pack version ⇒ `SystemExit`. `iterations` is now
   recorded per row (co-primary readout).
-- **Mini-A/B (queued, ~1-1.25 h GPU, Max-triggered):**
+- **Mini-A/B (ran 2026-09-17; rerun fresh 2026-09-30, ~7 GPU-h):**
   `scratch/tier3_zig_ab.sh` — greedy, diag OFF, rb 20480, `--jobs 4`, the 30
   zig units of v5-fast derived at script time; cells P0a/P1a/P0b(--no-cache)/
   P1b(--no-cache) on Qwen3.8-27B-Uncensored Q5 + champion C0/C1 guard.
@@ -350,11 +355,13 @@ tokens at 4 chars/token, budget 2,000):
   replayed. Ten champion C1 rows died on fork/thread EAGAIN. The verdict is
   unresolved, not refuted. Keeping the one row that lost only 2 iterations
   (62_crt_f) gives +11 at p = 0.043. The champion guard's negative
-  direction was mostly EAGAIN: 6/13 raw, 4/1 clean. The fresh rerun is
-  queued after the NPROC and connection-error fixes merge. Record:
+  direction was mostly EAGAIN: 6/13 raw, 4/1 clean. The fresh rerun ran
+  2026-09-30 after the NPROC and connection-error fixes merged (below). Record:
   `scratch/tier3-verdict-reaudit-2026-09-29.txt`.
 - **FRESH rerun 2026-09-30 (era `b5596c660b5ab819`, every cell
-  `--no-cache`, 0 infrastructure rows): SHIP — net +24 (26/2, p < 0.0001)**;
+  `--no-cache`, 0 infrastructure rows; 2 passing rows hit the wall timeout
+  after their solutions were on disk, corrected in #119): SHIP — net +24
+  (26/2, p < 0.0001; net +23 without the timed-out rescue)**;
   champion guard clean and positive (23 → 28/30). Record:
   `scratch/tier3-verdict-fresh-20260930.txt`.
 - **In production since 2026-09-30, both models.** Agents on zig tasks get
@@ -403,7 +410,7 @@ banking an era's results. §3.4 covers same-code toggling.
   `fast_suite` imputed block (a partial-miss replay must not silently
   deflate a score).
 
-## 7. The A/B experiment (QUEUED — the gate)
+## 7. The A/B experiment (the gate — Tier 3 RAN: SHIP 2026-09-30)
 
 **Statistical redesign (review):** the draft's "+0.5 capability" ship bar
 was innumerate — the 13-unit zig deficit is worth ~0.32 capability
