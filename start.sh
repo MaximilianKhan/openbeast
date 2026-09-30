@@ -58,6 +58,9 @@ _pid_pattern() {
     edge)       echo 'edge\.py' ;;
     chat)       echo 'chat_server\.py' ;;
     artifact)   echo 'artifact_server\.py' ;;
+    hydra)      echo 'agents/hydra\.py' ;;
+    instinct)   echo 'instinct\.server' ;;
+    instinct-scorer) echo 'serve-instinct-scorer\.sh|serve\.sh|llama-server' ;;
     *)          echo 'start\.sh|llama|mcpo|openapi_tools|router|edge|chat_server|artifact_server' ;;
   esac
 }
@@ -72,7 +75,13 @@ if [[ $STATUS -eq 1 ]]; then
     source "$SCRIPT_DIR/scripts/lib/backend.sh"
     ob_inference_managed || _st_managed=0
   fi
-  for name in supervisor llama mcpo router edge chat artifact; do
+  _st_names=(supervisor llama mcpo router edge chat artifact)
+  # The opt-in services get a row only when they are on, so a default stack
+  # reports exactly what it always did.
+  [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
+  [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
+  [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
+  for name in "${_st_names[@]}"; do
     if [[ $name == llama && $_st_managed -eq 0 ]]; then
       if ob_backend_ready "$INFERENCE_URL"; then
         echo "  inference: $(ob_backend_label) at $INFERENCE_URL — ready (not managed here)"
@@ -88,6 +97,15 @@ if [[ $STATUS -eq 1 ]]; then
       echo "  $name: not running"
     fi
   done
+  if [[ "${HYDRA:-false}" == "true" ]] && declare -F ob_hydra_ready >/dev/null 2>&1; then
+    if ob_hydra_ready "http://127.0.0.1:${HYDRA_PORT:-8095}"; then
+      echo "  hydra health: ok (default route routable)"
+    elif ob_hydra_answering "http://127.0.0.1:${HYDRA_PORT:-8095}"; then
+      echo "  hydra health: up, NO routable default route — scripts/hydra.sh status"
+    else
+      echo "  hydra health: not answering on :${HYDRA_PORT:-8095}"
+    fi
+  fi
   echo ""
   echo "Service health: ./scripts/healthcheck.sh   Logs: .run/stack.log"
   exit 0
@@ -180,6 +198,36 @@ fi
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 # INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
 LLAMA_BASE="$INFERENCE_URL"
+# Where the stack's own consumers (router, beast-gate) send inference:
+# beast-hydra when HYDRA=true, else exactly LLAMA_BASE. LLAMA_BASE keeps
+# meaning the local engine (readiness, KV warm-up, rollback).
+CONSUMER_BASE="${OPENBEAST_CONSUMER_BASE:-$LLAMA_BASE}"
+
+# beast-hydra: validate its config BEFORE anything is launched (both the
+# daemon launcher and the supervisor pass through here). An invalid config
+# is fatal — never silently bypass hydra, since every consumer now points at
+# it. No hydra.toml = the implicit single-node config, validated the same way.
+HYDRA_CLASSIFY_ROUTE=false
+HYDRA_CHECK_SUMMARY=""
+if [[ "${HYDRA:-false}" == "true" ]]; then
+  _hy_check=(--check)
+  [[ -f "$HYDRA_CONFIG" ]] && _hy_check+=("$HYDRA_CONFIG")
+  if ! _hy_json="$(python3 "$SCRIPT_DIR/agents/hydra.py" "${_hy_check[@]}" --json 2>/dev/null)"; then
+    echo "Error: HYDRA=true but the beast-hydra config does not validate:" >&2
+    python3 "$SCRIPT_DIR/agents/hydra.py" "${_hy_check[@]}" >&2 || true
+    echo "  Fix ${HYDRA_CONFIG} (scripts/hydra.sh check), or set HYDRA=false." >&2
+    exit 1
+  fi
+  # `|| true`: a formatter hiccup must not abort a start whose config passed.
+  read -r HYDRA_CLASSIFY_ROUTE HYDRA_CHECK_SUMMARY < <(printf '%s' "$_hy_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("true" if d.get("classify_route") else "false",
+      "%s node(s), %s route(s), config %s" % (d.get("nodes"), d.get("routes"), d.get("config")))
+' 2>/dev/null) || true
+  [[ "$HYDRA_CLASSIFY_ROUTE" == "true" ]] || HYDRA_CLASSIFY_ROUTE=false
+  unset _hy_json _hy_check
+fi
 # How long a model may take to LOAD before the load counts as failed (the
 # watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
 LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
@@ -296,6 +344,13 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" >/dev/null 2>&1 || EDGE_READY=0
     fi
+    # beast-hydra: every consumer points at it, so "up" needs its process
+    # answering (a 503 "no routable default yet" still counts — the report
+    # below says so; the supervisor gives it HYDRA_READY_GRACE to route).
+    HYDRA_UP=1
+    if [[ "${HYDRA:-false}" == "true" ]]; then
+      ob_hydra_answering "$HYDRA_URL" || HYDRA_UP=0
+    fi
     # ob_llama_ready, not `curl -s`: llama-server answers 503 "Loading
     # model" from the moment it binds, and curl -s exits 0 on a 503 — "Stack
     # is up" printed (and openbeast.service reported started) mid-load.
@@ -309,7 +364,7 @@ if [[ $DAEMON -eq 1 ]]; then
     ob_backend_ready "$LLAMA_BASE" && INFER_READY=1
     if [[ $INFER_READY -eq 1 || $MANAGED -eq 0 ]] \
        && curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 \
-       && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]]; then
+       && [[ $ROUTER_READY -eq 1 ]] && [[ $EDGE_READY -eq 1 ]] && [[ $HYDRA_UP -eq 1 ]]; then
       echo ""
       if [[ $INFER_READY -eq 1 ]]; then
         echo "Stack is up:"
@@ -343,6 +398,16 @@ if [[ $DAEMON -eq 1 ]]; then
       fi
       if [[ "${EDGE_GATE:-false}" == "true" ]]; then
         echo "  beast-gate:    http://localhost:${EDGE_PORT:-8090} (remote clients arrive here)"
+      fi
+      if [[ "${HYDRA:-false}" == "true" ]]; then
+        if ob_hydra_ready "$HYDRA_URL"; then
+          echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — consumers route through it"
+        else
+          echo "  beast-hydra:   $HYDRA_URL — up, but NO routable default route yet (scripts/hydra.sh status)"
+        fi
+      fi
+      if [[ "${INSTINCT:-false}" == "true" ]]; then
+        echo "  beast-instinct: http://127.0.0.1:${INSTINCT_PORT} (scripts/instinct.sh status)"
       fi
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
@@ -443,6 +508,19 @@ cleanup() {
   fi
   if [[ -n "${EDGE_PID:-}" ]]; then
     kill "$EDGE_PID" 2>/dev/null && echo "beast-gate stopped."
+  fi
+  # beast-instinct: the service first (instinct.sh kills by pidfile AND
+  # cmdline), then its CPU scorer — the reverse of the start order.
+  if [[ ${INSTINCT_STARTED:-0} -eq 1 ]]; then
+    "$SCRIPT_DIR/scripts/instinct.sh" down 2>/dev/null || true
+  fi
+  if [[ -n "${INSTINCT_SCORER_PID:-}" ]]; then
+    kill "$INSTINCT_SCORER_PID" 2>/dev/null && echo "beast-instinct CPU scorer stopped."
+    rm -f "$RUN_DIR/instinct-scorer.pid" "$RUN_DIR/instinct-scorer.start"
+  fi
+  if [[ -n "${HYDRA_PID:-}" ]]; then
+    kill "$HYDRA_PID" 2>/dev/null && echo "beast-hydra stopped."
+    rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
   fi
   if [[ -n "${CHAT_PID:-}" ]]; then
     kill "$CHAT_PID" 2>/dev/null && echo "beast-chat console stopped."
@@ -622,9 +700,84 @@ WARM
 # ours, so a server that never answers is reported, never killed or rolled
 # back — and the message names INFERENCE_URL, because that is the only knob
 # on this side.
+# What "inference is ready" means to an unmanaged stack: the engine itself,
+# or — under HYDRA=true, where every consumer goes through it — beast-hydra
+# being able to route its default route (which also covers a fleet whose
+# local engine is down but whose other nodes serve).
+_infer_ready() {
+  if [[ "${HYDRA:-false}" == "true" ]]; then
+    ob_hydra_ready "$HYDRA_URL"
+  else
+    ob_backend_ready "$LLAMA_BASE"
+  fi
+}
+
+# beast-hydra (opt-in, HYDRA=true): the inference router every consumer now
+# talks to (docs/BEAST_HYDRA_PLAN.md §6.7). Launched BEFORE the inference
+# wait so it watches the engine load, and so the unmanaged wait can ask it.
+# Fatal on failure: WebUI, the router, the gate and spawned agents all point
+# at it, so a stack without it has no inference at all.
+launch_hydra() {
+  [[ "${HYDRA:-false}" == "true" ]] || return 0
+  local _i
+  if ob_port_listening "$HYDRA_PORT"; then
+    echo "Error: HYDRA=true but port $HYDRA_PORT is already held — an orphan beast-hydra of a" >&2
+    echo "       killed stack, or a sibling worktree's. Every consumer would talk to a process" >&2
+    echo "       this stack did not start. ./stop.sh, then retry (or set HYDRA_PORT)." >&2
+    exit 1
+  fi
+  # The caller token: 32 random bytes, 0600, minted fresh per start. hydra
+  # trusts forwarded identity headers only next to it (docs §6.8), and the
+  # router / gate read it from OPENBEAST_HYDRA_CALLER_TOKEN_FILE (conf.sh).
+  ( umask 077
+    python3 -c 'import secrets; print(secrets.token_hex(32))' > "$HYDRA_CALLER_TOKEN_FILE.tmp"
+    chmod 600 "$HYDRA_CALLER_TOKEN_FILE.tmp"
+    mv -f "$HYDRA_CALLER_TOKEN_FILE.tmp" "$HYDRA_CALLER_TOKEN_FILE" )
+  ( umask 077; : >> "$RUN_DIR/hydra.log" )
+  echo "Starting beast-hydra on $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-config ok})..."
+  # INFERENCE_* and the key reach it through the ENVIRONMENT (conf.sh exports
+  # them; LLAMA_API_KEY only when set), never argv. OPENBEAST_INFERENCE_MODEL
+  # is the route id under hydra, so the engine's served id rides its own var.
+  OPENBEAST_HYDRA_UPSTREAM_MODEL="${INFERENCE_MODEL:-}" \
+  INFERENCE_SLOTS="${INFERENCE_SLOTS:-}" \
+  OPENBEAST_HYDRA_RUN_DIR="$RUN_DIR" \
+    python3 "$SCRIPT_DIR/agents/hydra.py" >> "$RUN_DIR/hydra.log" 2>&1 &
+  HYDRA_PID=$!
+  ob_pid_record "$RUN_DIR/hydra.pid" "$HYDRA_PID"
+  for _i in $(seq 1 20); do
+    if ! kill -0 "$HYDRA_PID" 2>/dev/null; then
+      echo "Error: beast-hydra exited during startup. Last log lines (.run/hydra.log):" >&2
+      tail -n 15 "$RUN_DIR/hydra.log" >&2 2>/dev/null || true
+      rm -f "$RUN_DIR/hydra.pid"; HYDRA_PID=""
+      exit 1
+    fi
+    ob_hydra_answering "$HYDRA_URL" && { echo "beast-hydra answering on $HYDRA_URL (pid $HYDRA_PID)"; return 0; }
+    sleep 0.5
+  done
+  echo "Error: beast-hydra did not answer /health within 10s (.run/hydra.log)" >&2
+  exit 1
+}
+
+# After the managed engine is ready: give hydra up to HYDRA_READY_GRACE to
+# see it and route. Not fatal — the same stance as the unmanaged inference
+# wait: say so loudly, bring everything else up.
+wait_hydra_routable() {
+  [[ "${HYDRA:-false}" == "true" ]] || return 0
+  local t0=$SECONDS
+  until ob_hydra_ready "$HYDRA_URL"; do
+    if (( SECONDS - t0 >= HYDRA_READY_GRACE )); then
+      echo "WARNING: beast-hydra has NO routable default route after ${HYDRA_READY_GRACE}s (HYDRA_READY_GRACE)." >&2
+      echo "         Chat through it fails until it does. Inspect: scripts/hydra.sh status" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "beast-hydra routing on $HYDRA_URL"
+}
+
 wait_backend_ready() {
   local t0=$SECONDS
-  until ob_backend_ready "$LLAMA_BASE"; do
+  until _infer_ready; do
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
       echo "WARNING: inference backend NOT ready at $LLAMA_BASE after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE)." >&2
       echo "         It is not managed by this stack (INFERENCE_BACKEND=$INFERENCE_BACKEND, INFERENCE_MANAGED=false):" >&2
@@ -679,6 +832,8 @@ if [[ "${FAST_BOOT:-false}" == "true" && "$SERVE_SCRIPT" != "$BOOTSTRAP_SERVE" \
   fi
 fi
 
+launch_hydra
+
 if [[ $MANAGED -eq 0 ]]; then
   echo "Waiting for the $(ob_backend_label) server at $LLAMA_BASE (not managed here — nothing is launched)..."
   if [[ "${MODEL_ROLLBACK:-true}" == "true" ]]; then
@@ -710,6 +865,7 @@ else
 fi
 if [[ $MANAGED -eq 1 ]]; then
   echo "llama.cpp server ready on http://localhost:8080"
+  wait_hydra_routable || true
 fi
 
 # Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
@@ -768,6 +924,56 @@ done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
 echo "Tool server ready on http://localhost:3001"
 
+# beast-instinct (opt-in; docs/BEAST_INSTINCT_PLAN.md §5.9) — the decision
+# plane. Its CPU scorer first (INSTINCT_SCORER=true: Qwen3-0.6B on
+# 127.0.0.1:8082, CPU only, no GPU lease), then the service
+# (INSTINCT=true: 127.0.0.1:INSTINCT_PORT). Deliberately NON-FATAL: every
+# consumer fails OPEN to today's behaviour when instinct is absent, so an
+# instinct that will not start is a warning, never a reason to take the
+# stack down. Started before the router, which may consult it.
+INSTINCT_STARTED=0
+if [[ "${INSTINCT_SCORER:-false}" == "true" ]]; then
+  _isc_port="${INSTINCT_SCORER_PORT:-8082}"
+  if _pid_alive "$RUN_DIR/instinct-scorer.pid" "$(_pid_pattern instinct-scorer)"; then
+    echo "beast-instinct scorer already running (pid $(cat "$RUN_DIR/instinct-scorer.pid")) — leaving it alone."
+  else
+    echo "Starting beast-instinct CPU scorer on http://127.0.0.1:${_isc_port}..."
+    ( umask 077; : >> "$RUN_DIR/instinct-scorer.log" )
+    "$SCRIPT_DIR/scripts/serve-instinct-scorer.sh" >> "$RUN_DIR/instinct-scorer.log" 2>&1 &
+    INSTINCT_SCORER_PID=$!
+    ob_pid_record "$RUN_DIR/instinct-scorer.pid" "$INSTINCT_SCORER_PID"
+    _isc_up=0
+    for _i in $(seq 1 60); do
+      kill -0 "$INSTINCT_SCORER_PID" 2>/dev/null || break
+      ob_llama_ready "http://127.0.0.1:${_isc_port}" && { _isc_up=1; break; }
+      sleep 1
+    done
+    if [[ $_isc_up -eq 1 ]]; then
+      echo "beast-instinct scorer ready on http://127.0.0.1:${_isc_port} (pid $INSTINCT_SCORER_PID)"
+    elif ! kill -0 "$INSTINCT_SCORER_PID" 2>/dev/null; then
+      echo "WARNING: the beast-instinct scorer exited during startup (.run/instinct-scorer.log);" >&2
+      echo "         instinct falls back to its rules/linear engines." >&2
+      tail -n 5 "$RUN_DIR/instinct-scorer.log" >&2 2>/dev/null || true
+      rm -f "$RUN_DIR/instinct-scorer.pid"; INSTINCT_SCORER_PID=""
+    else
+      echo "WARNING: the beast-instinct scorer is not ready after 60s — still loading? (.run/instinct-scorer.log)" >&2
+    fi
+  fi
+fi
+if [[ "${INSTINCT:-false}" == "true" ]]; then
+  echo "Starting beast-instinct on http://127.0.0.1:${INSTINCT_PORT}..."
+  # instinct.sh owns the pre-bind check, the 0600 key and the pidfile. The
+  # config loader lints engine URLs against the primary and hydra (I7).
+  if INSTINCT_CONFIG="$INSTINCT_CONFIG" INSTINCT_PORT="$INSTINCT_PORT" \
+     INSTINCT_RUN_DIR="$RUN_DIR" HYDRA_URL="${HYDRA_URL:-}" \
+       "$SCRIPT_DIR/scripts/instinct.sh" up; then
+    INSTINCT_STARTED=1
+  else
+    echo "WARNING: beast-instinct did not start (.run/instinct.log) — every consumer fails open" >&2
+    echo "         to today's behaviour without it. Retry: scripts/instinct.sh up" >&2
+  fi
+fi
+
 # Agent-spawn router (opt-in, AGENT_ROUTER=true). Sits on ROUTER_PORT in front
 # of llama-server (8080); frontends point at it via OPENBEAST_MODEL_URL. Needs
 # MCPO up (it spawns via MCPO). llama-server stays direct on 8080 so evals and
@@ -778,10 +984,35 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   # the tool server bind BIND_HOST, and a socket bound to a specific LAN or
   # tailnet address refuses 127.0.0.1 — every routed request was a 502 while
   # every health probe (which did follow BIND_HOST) reported green.
+  # Opt-in extras go into the ROUTER's environment only (never exported
+  # stack-wide), and only when on — a default stack launches it exactly as
+  # before (`env` with no assignments just execs python3, same pid):
+  #   ROUTER_INSTINCT       the router's ceiling for router.spawn_intent
+  #                         (+ where the instinct service answers);
+  #   ROUTER_CLASSIFY_MODEL "classify" under HYDRA=true when hydra.toml has
+  #                         that route, so the generative classify can be
+  #                         placed off the one-slot primary. Without the route
+  #                         it stays unset and resolves to the default route.
+  _router_env=()
+  if [[ "${ROUTER_INSTINCT:-off}" != "off" ]]; then
+    _router_env+=(ROUTER_INSTINCT="$ROUTER_INSTINCT" INSTINCT_URL="http://127.0.0.1:${INSTINCT_PORT}")
+    # The key file the service mints (its config's [service].key_file) —
+    # the PATH only; the client reads the 0600 file itself.
+    _ikf="$(PYTHONPATH="$SCRIPT_DIR/agents" INSTINCT_CONFIG="$INSTINCT_CONFIG" \
+            python3 -m instinct.cli cfg 2>/dev/null | sed -n 's/^INSTINCT_KEY_FILE=//p' || true)"
+    [[ -n "$_ikf" ]] && _router_env+=(INSTINCT_KEY_FILE="$_ikf")
+    if [[ "${INSTINCT:-false}" != "true" ]]; then
+      echo "  Note: ROUTER_INSTINCT=$ROUTER_INSTINCT but INSTINCT=false — the router fails open to" >&2
+      echo "        today's path until an instinct service answers (scripts/instinct.sh up)." >&2
+    fi
+  fi
+  if [[ "${HYDRA:-false}" == "true" && "$HYDRA_CLASSIFY_ROUTE" == "true" ]]; then
+    _router_env+=(ROUTER_CLASSIFY_MODEL=classify)
+  fi
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
-  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
+  OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
   OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
-    python3 "$SCRIPT_DIR/agents/router.py" &
+    env ${_router_env[@]+"${_router_env[@]}"} python3 "$SCRIPT_DIR/agents/router.py" &
   ROUTER_PID=$!
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
   ROUTER_UP=0
@@ -803,8 +1034,10 @@ fi
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   echo "Starting beast-gate on http://localhost:${EDGE_PORT}..."
   # Upstream on the probe host for the same reason as the router's above.
+  # Under HYDRA=true the gate's upstream is hydra (CONSUMER_BASE) and it
+  # vouches for the device it authenticated with X-Hydra-Caller.
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
-  OPENBEAST_LLAMA_UPSTREAM="$LLAMA_BASE" \
+  OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
     python3 "$SCRIPT_DIR/agents/edge.py" &
   EDGE_PID=$!
   echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
@@ -1009,6 +1242,12 @@ fi
 echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
 echo "  Open WebUI:    http://localhost:3000"
 echo "  OpenCode:      run 'opencode' in any project directory"
+if [[ "${HYDRA:-false}" == "true" ]]; then
+  echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"
+fi
+if [[ ${INSTINCT_STARTED:-0} -eq 1 ]]; then
+  echo "  beast-instinct: http://127.0.0.1:${INSTINCT_PORT} (router ceiling: ${ROUTER_INSTINCT:-off}) — scripts/instinct.sh status"
+fi
 echo ""
 if [[ $DAEMONIZED -eq 1 ]]; then
   echo "Running detached. Stop with ./stop.sh; status with ./start.sh --status."
@@ -1060,7 +1299,7 @@ if [[ $MANAGED -eq 0 ]]; then
     sleep 30 & IDLE_PID=$!
     wait "$IDLE_PID" || true
     IDLE_PID=""
-    if ob_backend_ready "$LLAMA_BASE"; then
+    if _infer_ready; then
       [[ $_up -eq 0 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
       _up=1
     else

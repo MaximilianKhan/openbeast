@@ -95,6 +95,34 @@ pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent 
 echo "Stopping beast-gate..."
 pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
 
+# beast-instinct, then its CPU scorer (the reverse of the start order), then
+# beast-hydra. Only when they are on, or left a pidfile behind (a stack
+# started with them, stopped after the conf flipped them off) — a default
+# stack's stop is unchanged. instinct.sh kills by pidfile AND cmdline; the
+# scorer by its IDENTITY-checked recorded pid only (it runs the repo's
+# llama-server binary, so a pattern would also match the primary).
+if [[ "${INSTINCT:-false}" == "true" || -f "$RUN_DIR/instinct.pid" ]]; then
+  echo "Stopping beast-instinct..."
+  INSTINCT_RUN_DIR="$RUN_DIR" "$SCRIPT_DIR/scripts/instinct.sh" down 2>/dev/null \
+    || echo "beast-instinct: instinct.sh down failed (see scripts/instinct.sh status)."
+fi
+if [[ "${INSTINCT_SCORER:-false}" == "true" || -f "$RUN_DIR/instinct-scorer.pid" ]]; then
+  echo "Stopping beast-instinct CPU scorer..."
+  if ob_recorded_pid_ours "$RUN_DIR/instinct-scorer.pid" '(^|/)llama-server( |$)|serve-instinct-scorer\.sh|serve\.sh'; then
+    _isc_pid="$(cat "$RUN_DIR/instinct-scorer.pid")"
+    kill "$_isc_pid" 2>/dev/null && echo "beast-instinct scorer stopped (pid $_isc_pid)."
+  else
+    echo "beast-instinct scorer was not running."
+  fi
+  rm -f "$RUN_DIR/instinct-scorer.pid" "$RUN_DIR/instinct-scorer.start"
+fi
+if [[ "${HYDRA:-false}" == "true" || -f "$RUN_DIR/hydra.pid" ]]; then
+  # It never contacts a node on the way down: hydra holds no node state.
+  echo "Stopping beast-hydra..."
+  pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." || echo "beast-hydra was not running."
+  rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
+fi
+
 # RECORDED PID FIRST for the two services that record one. The pattern below
 # is anchored to this repo's path, so it was never going to reap a sibling
 # worktree — but v1.3.0's health-check path already kills these by recorded
