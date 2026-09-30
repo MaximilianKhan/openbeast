@@ -49,6 +49,11 @@ class Rendered:
     items: list[str] = field(default_factory=list)   # rank: per-item text
     label_surface: dict[str, str] = field(default_factory=dict)
     truncated_fields: list[str] = field(default_factory=list)
+    # Non-rank only: the filled, escaped template WITHOUT the format's wrapper,
+    # and the system text — for engines that take (context, question) instead
+    # of one raw prompt (openjev_head).
+    body: str = ""
+    system: str = ""
 
     @property
     def prefixes(self) -> list[str]:
@@ -164,8 +169,10 @@ def render(spec: DecisionSpec, inputs: dict[str, Any], items: list[str] | None =
     header, footer = _wrap(spec.prompt_format, spec.prompt_system, "")
     surfaces = {lb.name: label_surface(spec.prompt_format, lb.text) for lb in spec.labels}
     if spec.type != "rank":
-        return Rendered(spec.prompt_format, prompt=header + fill(spec.prompt_template) + footer,
-                        label_surface=surfaces, truncated_fields=truncated)
+        body = fill(spec.prompt_template)
+        return Rendered(spec.prompt_format, prompt=header + body + footer,
+                        label_surface=surfaces, truncated_fields=truncated,
+                        body=body, system=spec.prompt_system)
     if items is None:
         raise InputError("rank decisions need items")
     before, after = spec.prompt_template.split("{item}", 1)

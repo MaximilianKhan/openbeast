@@ -3,8 +3,13 @@
 Loader rules (plan §5.2):
   * an unknown key in a binding invalidates THAT binding only;
   * a binding whose url is the primary INFERENCE_URL is refused unless it sets
-    allow_primary = true (and then only async_only decisions may use it — the
-    service enforces that half, because it needs the decision registry);
+    allow_primary = true; then only decisions whose policy.primary_use is
+    "async" or "substitute" may use it — the service enforces that half (at
+    chain build AND per call), because it needs the decision registry;
+  * key_env (read the bearer key from an environment variable — the primary's
+    LLAMA_API_KEY) is refused on a non-loopback url and together with
+    key_file; busy_skip (check /slots first) needs allow_primary;
+  * exec = "mis" needs a mis_delimiter (the renderer escapes it in user data);
   * a binding that points at hydra is refused (I7: instinct's engine traffic
     never routes through hydra or beast-gate).
 Env overrides: INSTINCT_CONFIG (path), INSTINCT_PORT, INSTINCT_ENGINE_OVERRIDE
@@ -22,8 +27,8 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / "agents" / "instinct" / "instinct.toml"
-ADAPTERS = ("rules", "linear", "llamacpp_logprobs", "sglang_score")
-LLM_ADAPTERS = ("llamacpp_logprobs", "sglang_score")
+ADAPTERS = ("rules", "linear", "llamacpp_logprobs", "sglang_score", "openjev_head")
+LLM_ADAPTERS = ("llamacpp_logprobs", "sglang_score", "openjev_head")
 
 # Ports that belong to the edge / router / hydra — an engine may never be one,
 # on ANY host (the rig's gate on its tailnet address is still beast-gate).
@@ -60,7 +65,10 @@ _SERVICE_KEYS = {"host", "port", "key_file", "ledger_dir", "log_inputs", "retent
 _BINDING_KEYS = {"adapter", "url", "key_file", "model", "model_sha256", "model_revision",
                  "image_digest", "sglang_commit", "exec", "n_probs", "timeout_ms",
                  "allow_primary", "tokenize_path", "mis_delimiter", "sis_url", "role",
-                 "score_query"}
+                 "score_query", "key_env", "busy_skip", "adapter_revision",
+                 "head_sha256", "loader_digest"}
+# An env var a binding may read its key from: only the stack's own primary key.
+KEY_ENVS = ("LLAMA_API_KEY",)
 
 
 class ConfigError(ValueError):
@@ -90,18 +98,29 @@ class EngineBinding:
     # the one item (the documented "complete prompt" convention); "prompt" is
     # the [HW] fallback — the prompt as query + one empty item.
     score_query: str = "empty"
+    key_env: str = ""            # read the bearer key from this env var (LLAMA_API_KEY)
+    busy_skip: bool = False      # primary only: GET /slots first; a busy slot = skip fast
+    # openjev_head: the LoRA adapter's HF revision, the decision head's sha256
+    # and the pinned loader image digest — all three fix what a score means.
+    adapter_revision: str = ""
+    head_sha256: str = ""
+    loader_digest: str = ""
 
     def hash_identity(self) -> dict:
-        """The engine half of decision_hash."""
+        """The engine half of decision_hash: EVERY field that fixes what a
+        probability means (the weights, the request shape, the engine build).
+        decision_hash hashes the whole dict, so adding a field here is enough."""
         if self.adapter == "rules":
             return {"adapter": "rules", "model_sha256": "rules/1", "exec": None}
         if self.adapter == "linear":
             return {"adapter": "linear", "model_sha256": "linear/1", "exec": None}
         ident = {"adapter": self.adapter, "model_sha256": self.model_sha256,
-                 "model_revision": self.model_revision, "exec": self.exec}
-        if self.score_query != "empty":
-            ident["score_query"] = self.score_query   # a different request is a new hash
-        return ident
+                 "model_revision": self.model_revision, "exec": self.exec,
+                 "score_query": self.score_query, "image_digest": self.image_digest,
+                 "sglang_commit": self.sglang_commit, "mis_delimiter": self.mis_delimiter,
+                 "adapter_revision": self.adapter_revision, "head_sha256": self.head_sha256,
+                 "loader_digest": self.loader_digest}
+        return {k: v for k, v in ident.items() if v not in (None, "")}
 
 
 @dataclass
@@ -184,7 +203,8 @@ def _lint_url(field_name: str, url: str, b: EngineBinding, inference_url: str,
                 "(I7: engine traffic never routes through hydra or beast-gate)")
     if inference_url and same_endpoint(url, inference_url) and not b.allow_primary:
         return (f"{field_name} is the primary INFERENCE_URL; set allow_primary = true and "
-                "mark every decision using it async_only")
+                "give every decision using it policy.primary_use = \"async\" or "
+                "\"substitute\"")
     return None
 
 
@@ -222,9 +242,29 @@ def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "",
             return "exec must be sis|mis"
         if b.exec == "mis" and b.adapter != "sglang_score":
             return "exec=mis is only available on sglang_score"
+        if b.exec == "mis" and len(b.mis_delimiter) < 2:
+            # Plan F4: item text must never carry the delimiter. The renderer
+            # escapes it only when it knows it, so an unknown one is refused.
+            return "exec=mis needs mis_delimiter (the server's MIS delimiter text)"
+        if b.key_env:
+            if b.key_env not in KEY_ENVS:
+                return f"key_env must be one of {KEY_ENVS}"
+            if b.key_file:
+                return "set key_env OR key_file, not both"
+            if not is_local_host(_norm_url(b.url)[1]):
+                return "key_env is loopback-only (the stack key never leaves this host)"
+        if b.busy_skip and not b.allow_primary:
+            return "busy_skip is only for a primary binding (allow_primary = true)"
+        if b.adapter == "openjev_head":
+            if b.exec != "sis":
+                return "openjev_head scores one prompt per call (exec = sis)"
+            if not (b.adapter_revision and b.head_sha256):
+                return ("openjev_head needs adapter_revision and head_sha256 "
+                        "(both are in decision_hash)")
         if not (b.model_sha256 or b.model_revision):
             return "LLM bindings need model_sha256 or model_revision (it is in decision_hash)"
-        for pin in ("model_sha256", "model_revision", "image_digest", "sglang_commit"):
+        for pin in ("model_sha256", "model_revision", "image_digest", "sglang_commit",
+                    "adapter_revision", "head_sha256", "loader_digest"):
             if "<" in getattr(b, pin) or ">" in getattr(b, pin):
                 return f"{pin} is a placeholder — unpinned bindings are refused"
     return None
@@ -297,9 +337,11 @@ def load_config(path: str | Path | None = None, *, env: dict | None = None,
         if unknown:
             cfg.engine_errors[name] = f"unknown key(s) {sorted(unknown)}"
             continue
-        if "allow_primary" in raw and not isinstance(raw["allow_primary"], bool):
+        bad_bool = [k for k in ("allow_primary", "busy_skip")
+                    if k in raw and not isinstance(raw[k], bool)]
+        if bad_bool:
             # bool("no") is True — a string here must never open the primary.
-            cfg.engine_errors[name] = "allow_primary must be a TOML bool (true/false)"
+            cfg.engine_errors[name] = f"{bad_bool[0]} must be a TOML bool (true/false)"
             continue
         try:
             b = EngineBinding(
@@ -317,7 +359,12 @@ def load_config(path: str | Path | None = None, *, env: dict | None = None,
                 mis_delimiter=str(raw.get("mis_delimiter", "")),
                 sis_url=str(raw.get("sis_url", "")),
                 role=str(raw.get("role", "instinct-engine")),
-                score_query=str(raw.get("score_query", "empty")))
+                score_query=str(raw.get("score_query", "empty")),
+                key_env=str(raw.get("key_env", "")),
+                busy_skip=bool(raw.get("busy_skip", False)),
+                adapter_revision=str(raw.get("adapter_revision", "")),
+                head_sha256=str(raw.get("head_sha256", "")),
+                loader_digest=str(raw.get("loader_digest", "")))
         except (TypeError, ValueError) as exc:
             cfg.engine_errors[name] = f"bad value: {exc}"
             continue

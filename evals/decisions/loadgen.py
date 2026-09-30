@@ -116,7 +116,8 @@ async def main_async(a) -> int:
     if decode_task:
         decode = await decode_task
     at = [p["p95_ms"] for p in points if p["qps"] == intended and p["p95_ms"] is not None]
-    report = {"decision": spec.id, "engine": a.engine, "duration_s": a.duration,
+    report = {"decision": spec.id, "engine": a.engine, "decision_hash": scorer.dhash(),
+              "duration_s": a.duration,
               "repeats": a.repeats, "intended_qps": intended, "points": points,
               "p95_ms": max(at) if at else None,
               "p95_spread_ms": [min(at), max(at)] if at else None,

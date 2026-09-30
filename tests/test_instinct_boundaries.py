@@ -135,7 +135,7 @@ def test_i4_through_the_service(tmp_path):
 def test_i6_rules_never_enforce_even_with_forged_records(tmp_path):
     text = H.spec_text("router.spawn_intent").replace(
         'mode             = "shadow"', 'mode             = "enforce"').replace(
-        'chain = ["linear", "rig-cpu", "rules"]', 'chain = ["rules"]')
+        'chain = ["rig-27b", "rig-cpu", "linear", "rules"]', 'chain = ["rules"]')
     cfgp = H.write_config(tmp_path, {}, extra_decisions={"router.spawn_intent": text})
     cfg = load_config(cfgp, env={})
     spec = load_spec(tmp_path / "decisions" / "router.spawn_intent.toml")

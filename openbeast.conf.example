@@ -491,11 +491,16 @@
 # ---------------------------------------------------------------------------
 
 # Opt-in. INSTINCT=true: start.sh runs the instinct service
-# (scripts/instinct.sh up) on 127.0.0.1:INSTINCT_PORT. INSTINCT_SCORER=true:
-# it first runs the CPU scorer (Qwen3-0.6B, 127.0.0.1:8082, CPU only — no
-# VRAM, no GPU lease; fetch it with ./scripts/fetch-weight.sh
-# Qwen3-0.6B-Q8_0.gguf). Every consumer fails OPEN to today's behaviour when
-# instinct is absent, so a failed start is a warning, never fatal.
+# (scripts/instinct.sh up) on 127.0.0.1:INSTINCT_PORT. Decisions run on a FULL
+# model: the primary 27B itself scores router.spawn_intent on hinted turns,
+# replacing the router's generative classify (no extra primary load; a busy
+# slot is skipped, never queued behind). INSTINCT_SCORER=true adds the
+# FALLBACK tier, run first: a CPU scorer (Qwen3-0.6B, 127.0.0.1:8082, no
+# VRAM, no GPU lease; ./scripts/fetch-weight.sh Qwen3-0.6B-Q8_0.gguf) that
+# answers only when the 27B is busy. Open-Jev-27B, the target decision model,
+# runs on its own GPU host (scripts/serve-openjev.sh). Every consumer fails
+# OPEN to today's behaviour when instinct is absent, so a failed start is a
+# warning, never fatal.
 # Env: $OPENBEAST_INSTINCT, $OPENBEAST_INSTINCT_PORT, ...
 #INSTINCT=false
 #INSTINCT_PORT=8094

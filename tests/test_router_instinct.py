@@ -49,13 +49,19 @@ async def decision_site(hook: RouterInstinct, *, admin: bool, user_text: str, cl
     identity gate FIRST -> instinct (skip-only) -> unchanged legacy classify."""
     if user_text and admin:                          # _spawn_allowed(request.headers)
         hinted = bool(ROUTER_HINTS.search(user_text))   # == router._HINTS (boundaries test)
-        if await hook.skip_classify(user_text, hinted):
+        turn = await hook.consult(user_text, hinted)
+        if turn.skip:
             return "passthrough(skipped-classify)"
         if hinted:
             spawn = await classify(user_text)
+            hook.classified(turn, spawn)
             if spawn:
                 return "SPAWN"
     return "passthrough"
+
+
+def decides(calls):
+    return [c for c in calls if c.url.path == "/v1/instinct/decide"]
 
 
 def run_site(hook, **kw):
@@ -96,18 +102,102 @@ def test_default_mode_is_off(monkeypatch):
 def test_shadow_never_changes_behaviour(tmp_path):
     calls = []
     hook = RouterInstinct("shadow", make_client(tmp_path, verdict(True, "act", "inline"),
-                                                calls))
+                                                calls), shadow_unhinted=False)
     cls, seen = legacy_classify(True)
     out = run_site(hook, admin=True, user_text="spawn an agent to port it", classify=cls)
     assert out == "SPAWN" and seen                      # classify still ran
     out = run_site(hook, admin=True, user_text="handle the whole port while I'm out",
                    classify=cls)
-    assert out == "passthrough"                         # non-hinted: shadowed only
-    assert len(calls) == 2
-    import json
-    bodies = [json.loads(c.content) for c in calls]
-    assert all(b["ceiling"] == "shadow" for b in bodies)
-    assert [b["baseline"] for b in bodies] == ["hint", "nohint"]
+    assert out == "passthrough"                         # non-hinted: not scored at all
+    assert len(decides(calls)) == 1
+    b = json.loads(decides(calls)[0].content)
+    assert b["ceiling"] == "shadow" and b["baseline"] == "hint"
+    assert b["request_id"].startswith("rt_")            # canary + feedback join key
+    assert b["return_after"] == "primary"               # R-instinct-1
+
+
+def test_shadow_hinted_turn_latency_is_bounded_by_the_primary(tmp_path):
+    """R-instinct-1, end to end: router hook -> real client -> real service
+    app -> [prim, cpu(slow 400 ms), rules]. The hinted turn waits for the
+    primary engine only; the slow fallback no longer sits in front of the
+    classify (it was ~600 ms per hinted turn)."""
+    import time
+
+    from instinct.config import load_config
+    from instinct.server import create_app
+    from instinct.service import Instinct
+    did = "router.spawn_intent"
+    text = _instinct_helpers.spec_text(did).replace(
+        'chain = ["rig-27b", "rig-cpu", "linear", "rules"]', 'chain = ["prim", "cpu", "rules"]')
+    with _instinct_helpers.stub_server() as (purl, _), \
+            _instinct_helpers.stub_server({"slow": "400"}) as (curl, _):
+        cfgp = _instinct_helpers.write_config(
+            tmp_path, {"prim": _instinct_helpers.llama_binding(purl, allow_primary=True,
+                                                               busy_skip=True),
+                       "cpu": _instinct_helpers.llama_binding(curl)},
+            extra_decisions={did: text})
+        inst = Instinct(load_config(cfgp, env={"INFERENCE_URL": purl}), repo_root=tmp_path)
+        app = create_app(inst, "k" * 40, allowed_hosts=["instinct.test"], probe_loop=False)
+        client = InstinctClient("http://instinct.test", tmp_path / "instinct.key",
+                                transport=httpx.ASGITransport(app=app))
+        hook = RouterInstinct("shadow", client, shadow_unhinted=False)
+
+        async def go():
+            await inst.start()
+            cls, seen = legacy_classify(False)
+            t = time.perf_counter()
+            turn = await hook.consult("spawn a background agent to port the tests", True)
+            dt = (time.perf_counter() - t) * 1000
+            await inst.aclose()          # drains the background walk
+            return turn, dt
+        turn, dt = asyncio.run(go())
+    assert turn.skip is False and turn.trace_id
+    assert dt < 300, f"hinted turn waited {dt:.0f} ms"
+
+
+def test_unhinted_turns_fire_no_decide_by_default(tmp_path, monkeypatch):
+    """The decision's engine is the -np 1 primary: an unhinted turn replaces
+    no classify, so scoring it would only steal the user's slot. Default: no
+    call at all. Opt-in (ROUTER_INSTINCT_SHADOW_UNHINTED) restores the
+    fire-and-forget nohint shadow, which the service keeps off the primary."""
+    monkeypatch.delenv("ROUTER_INSTINCT_SHADOW_UNHINTED", raising=False)
+    for mode in ("shadow", "enforce"):
+        calls = []
+        hook = RouterInstinct(mode, make_client(tmp_path, verdict(True, "act", "inline"),
+                                                calls))
+        cls, seen = legacy_classify(True)
+        for text in ("what is 2+2", "handle the whole port while I'm out"):
+            assert run_site(hook, admin=True, user_text=text, classify=cls) == "passthrough"
+        assert calls == [] and seen == []
+    monkeypatch.setenv("ROUTER_INSTINCT_SHADOW_UNHINTED", "true")
+    calls = []
+    hook = RouterInstinct("shadow", make_client(tmp_path, verdict(True, "act", "inline"),
+                                                calls))
+    cls, _ = legacy_classify(False)
+    run_site(hook, admin=True, user_text="what is 2+2", classify=cls)
+    assert [json.loads(c.content)["baseline"] for c in decides(calls)] == ["nohint"]
+
+
+def test_hinted_shadow_is_awaited_before_the_classify(tmp_path):
+    """The shadow decide on a hinted turn runs to completion BEFORE the
+    classify starts: on a -np 1 primary the two serialize instead of racing
+    the user's turn for the slot (fire-and-forget could land first)."""
+    events = []
+
+    async def slow(req):
+        if req.url.path != "/v1/instinct/decide":
+            return httpx.Response(200, json={"ok": True})
+        events.append("decide-start")
+        await asyncio.sleep(0.05)
+        events.append("decide-end")
+        return httpx.Response(200, json=verdict(False, "act", "inline"))
+    hook = RouterInstinct("shadow", make_client(tmp_path, slow, []))
+
+    async def classify(text):
+        events.append("classify")
+        return False
+    run_site(hook, admin=True, user_text="spawn an agent to port it", classify=classify)
+    assert events == ["decide-start", "decide-end", "classify"]
 
 
 def test_shadow_drops_when_full(tmp_path):
@@ -282,11 +372,12 @@ def test_router_enforce_inline_skips_the_classify(tmp_path, wired):
     r, up, body = wired(hook, "what do background agents do?")
     assert r.status_code == 200 and up.posts == [] and up.sent[0]["content"] == body
     assert len(calls) == 1
-    # negative control: an abstain runs today's classify
+    # negative control: an abstain runs today's classify (and reports it back)
     calls2 = []
     hook2 = RouterInstinct("enforce", make_client(tmp_path, verdict(True, "abstain", "inline"), calls2))
     r, up, _ = wired(hook2, "what do background agents do?")
-    assert len(up.posts) == 1 and len(calls2) == 1
+    assert len(up.posts) == 1
+    assert [c.url.path for c in calls2] == ["/v1/instinct/decide", "/v1/instinct/feedback"]
 
 
 def test_router_identity_gate_runs_before_instinct(tmp_path, wired):
@@ -306,7 +397,23 @@ def test_router_shadow_never_changes_a_turn(tmp_path, wired):
     # the legacy classify still ran and still spawned
     assert [p["url"].rsplit("/", 1)[-1] for p in up.posts] == ["completions", "start_agent"]
     assert "Started a background agent" in r.text
-    assert len(calls) == 1 and json.loads(calls[0].content)["ceiling"] == "shadow"
+    assert [c.url.path for c in calls] == ["/v1/instinct/decide", "/v1/instinct/feedback"]
+    decide, fb = (json.loads(c.content) for c in calls)
+    assert decide["ceiling"] == "shadow" and decide["baseline"] == "hint"
+
+
+def test_router_reports_the_classify_verdict_on_the_decide_trace(tmp_path, wired):
+    """A-instinct-7: the classify's verdict is recorded against the SAME
+    trace_id (and request_id) as the decide, so shadow rows on hinted turns
+    carry the incumbent's answer — the paired data P1's exit needs."""
+    for spawn, label in ((True, "spawn"), (False, "inline")):
+        calls = []
+        hook = RouterInstinct("shadow", make_client(tmp_path, verdict(False, "act", "inline"),
+                                                    calls))
+        wired(hook, "spawn an agent to port the zig tests", spawn=spawn)
+        decide, fb = (json.loads(c.content) for c in calls)
+        assert fb["trace_id"] == "ins_t" and fb["request_id"] == decide["request_id"]
+        assert fb["outcome"] == {"source": "classify", "label": label}
 
 
 def test_router_instinct_dead_fails_open(tmp_path, wired):

@@ -20,7 +20,9 @@ def test_shipped_specs_load():
     s = specs["router.spawn_intent"]
     assert s.policy.act == {"inline": 0.90}          # skip-only (I4)
     assert s.policy.mode == "shadow"
-    assert s.chain == ["linear", "rig-cpu", "rules"]
+    assert s.chain == ["rig-27b", "rig-cpu", "linear", "rules"]   # a FULL model first
+    assert s.policy.primary_use == "substitute"
+    assert s.policy.substitutes == "agents/router.py:_classify"
     t = specs["hydra.task_class"]
     assert t.mechanical == ["vision", "long_context"]
     assert [lb.text for lb in t.labels] == ["A", "B", "C", "D", "E"]
@@ -219,6 +221,9 @@ def test_shipped_config_refuses_unpinned_sglang():
     cfg = load_config(env={})
     assert "rig-sglang" in cfg.engine_errors       # placeholders until R2
     assert cfg.engines["rig-cpu"].model_sha256.startswith("9465e63a")
+    p = cfg.engines["rig-27b"]                     # the primary 27B, substitute-only
+    assert p.allow_primary and p.busy_skip and p.key_env == "LLAMA_API_KEY"
+    assert p.model_sha256.startswith("24780644")   # Qwen3.8-27B-Uncensored-Q5_K_M
     assert cfg.port == 8094 and cfg.host == "127.0.0.1"
 
 
@@ -230,16 +235,18 @@ def test_engine_override(tmp_path):
         _cfg(tmp_path, {}, {"INSTINCT_ENGINE_OVERRIDE": "linear"})
 
 
-def test_allow_primary_binding_only_for_async_decisions(tmp_path):
+def test_allow_primary_binding_only_for_primary_use_decisions(tmp_path):
     env = {"INFERENCE_URL": "http://127.0.0.1:59999"}
+    none = (GOOD.replace('"rig-27b"', '"prim"')
+            .replace('primary_use      = "substitute"', '')
+            .replace('substitutes      = "agents/router.py:_classify"', ''))
     p = H.write_config(tmp_path, {"prim": H.llama_binding("http://127.0.0.1:59999",
                                                           allow_primary=True)},
-                       extra_decisions={"router.spawn_intent": GOOD.replace(
-                           '"rig-cpu"', '"prim"')})
+                       extra_decisions={"router.spawn_intent": none})
     inst = Instinct(load_config(p, env=env))
     H.run(inst.reload())
     assert "prim" not in inst.chains["router.spawn_intent"]
-    assert "async_only" in inst.spec_errors["router.spawn_intent#engines"]
+    assert "primary_use is none" in inst.spec_errors["router.spawn_intent#engines"]
 
 
 def test_load_spec_roundtrip():
