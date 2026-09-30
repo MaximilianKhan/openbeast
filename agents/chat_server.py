@@ -3157,7 +3157,9 @@ def create_app() -> FastAPI:
                     # done/failed/stopped whether or not we are alive, and
                     # does its own TERM-then-KILL on a stop. `display` and
                     # the audit row keep the command as asked.
-                    run = [JOB_SH_PATH, "__supervise", session_id,
+                    # Through /bin/bash rather than the exec bit, which a
+                    # copied or re-cloned tree can lose.
+                    run = ["/bin/bash", JOB_SH_PATH, "__supervise", session_id,
                            transcript, title, workdir, "--"] + cmd
                 else:
                     run = cmd
