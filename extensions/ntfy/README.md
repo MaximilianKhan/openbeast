@@ -6,11 +6,18 @@ database in docker volumes. beast-chat posts to it when a session reaches a
 state you care about. The phone's ntfy app subscribes to the topic over your
 tailnet.
 
-What a notification carries: the session title, its new state, and a link to
-it in the console. It **never** carries transcript text: notification
-services and lock screens leak.
+What a notification carries: the session title (secret-scrubbed; a job whose
+title is its own command sends `job <short id>` instead), its new state, and
+a link to it in the console. It **never** carries transcript text:
+notification services and lock screens leak. The rules, rate limits and
+every key: [docs/BEAST_CHAT.md § Push notifications](../../docs/BEAST_CHAT.md#push-notifications).
 
 ## Setup
+
+**Status:** the compose file is YAML-checked and its image digest matches
+the registry, but the container has not yet been run under this hardening
+(`read_only`, `cap_drop: ALL`) on the reference rig. Enable it at a quiet
+moment and check `./scripts/doctor.sh` before relying on it.
 
 ```bash
 ./scripts/ext.sh enable ntfy
@@ -30,11 +37,15 @@ topic.
 
 ## Closed networks (`OFFLINE=true`)
 
-The ntfy image is **not** in the offline supply chain: `scripts/bundle.sh`
-and `update.sh --images` (and Dependabot) carry only the core
-`docker-compose.yml` images. Enabled extensions join the same
-`docker compose up --pull never` as WebUI and SearXNG, so a missing ntfy image
-stops all three. Move it by hand before enabling ntfy on a closed box:
+The ntfy image travels like the core images: `scripts/bundle.sh build` saves
+every extension fragment's pinned image into the bundle, `bundle.sh install`
+loads it and rewrites this `compose.yaml` to the loaded content ID (keeping a
+`.pre-bundle` copy), and `update.sh --images` re-resolves its pinned tag's
+digest on a connected box. Enabled extensions join the same
+`docker compose up --pull never` as WebUI and SearXNG, so a missing ntfy
+image would stop all three: `./scripts/doctor.sh` FAILs when `OFFLINE=true`,
+the extension is enabled and its image is not on the box. On a box
+installed without a bundle, move the image by hand:
 
 ```bash
 # connected box
@@ -44,8 +55,10 @@ docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0
 docker load -i ntfy.tar
 ```
 
-`./scripts/doctor.sh` FAILs when `OFFLINE=true`, the extension is enabled and
-the image is missing. Bumping the pin is manual too: edit `compose.yaml`.
+A new ntfy *version* is a reviewed edit to the tag in `compose.yaml`;
+`update.sh --images` only follows a respin of the same tag.
+
+## Ports
 
 `NTFY_PORT` (default 3005) moves the loopback port. `setup-tailscale.sh
 --unpublish-ntfy` takes the tailnet mount down, and `./scripts/setup-tailscale.sh
