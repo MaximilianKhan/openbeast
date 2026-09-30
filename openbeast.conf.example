@@ -156,6 +156,31 @@
 # Env: $OPENBEAST_INFERENCE_MODEL.
 #INFERENCE_MODEL=my-model-nvfp4
 
+# ---------------------------------------------------------------------------
+# beast-hydra — route inference across machines  (docs/BEAST_HYDRA_PLAN.md)
+# ---------------------------------------------------------------------------
+
+# Opt-in. When true, start.sh runs agents/hydra.py on 127.0.0.1:HYDRA_PORT
+# (loopback only, always) in front of the inference fleet, and every consumer
+# talks to it instead of INFERENCE_URL: Open WebUI (MODEL_URL, unless the
+# agent router is on — then the router's upstream is hydra), beast-gate,
+# spawned agents (AGENT_INFERENCE_URL, unless you set one), and the model id
+# agents send becomes the route HYDRA_DEFAULT_MODEL. INFERENCE_URL keeps
+# meaning "this rig's engine". An invalid config stops start.sh (it never
+# silently bypasses hydra). With no hydra.toml, hydra runs the implicit
+# single-node config: this rig's engine behind route `beast`.
+# Remote publication requires EDGE_GATE=true (setup-tailscale.sh refuses a
+# raw :8443 under hydra — hydra holds the node keys). Tools: scripts/hydra.sh.
+# Env: $OPENBEAST_HYDRA, $OPENBEAST_HYDRA_PORT, ...
+#HYDRA=false
+#HYDRA_PORT=8095
+# Relative paths resolve against the repo. Start from hydra.toml.example, or
+# `python3 agents/hydra.py --print-default-config > hydra.toml`.
+#HYDRA_CONFIG=hydra.toml
+#HYDRA_DEFAULT_MODEL=beast
+# Seconds start.sh waits (after the local model is ready) for hydra to route.
+#HYDRA_READY_GRACE=60
+
 # Reasoning/thinking control (serve.sh → llama-server). OpenBeast keeps
 # reasoning ON by default with a per-request toggle; these are the GLOBAL
 # escape hatches and override any per-model default:
@@ -441,6 +466,29 @@
 # headers and should keep working).
 # Env override: $OPENBEAST_ROUTER_REQUIRE_IDENTITY. See docs/RBAC_PLAN.md.
 #ROUTER_REQUIRE_IDENTITY=false
+
+# ---------------------------------------------------------------------------
+# beast-instinct — the decision plane  (docs/BEAST_INSTINCT.md)
+# ---------------------------------------------------------------------------
+
+# Opt-in. INSTINCT=true: start.sh runs the instinct service
+# (scripts/instinct.sh up) on 127.0.0.1:INSTINCT_PORT. INSTINCT_SCORER=true:
+# it first runs the CPU scorer (Qwen3-0.6B, 127.0.0.1:8082, CPU only — no
+# VRAM, no GPU lease; fetch it with ./scripts/fetch-weight.sh
+# Qwen3-0.6B-Q8_0.gguf). Every consumer fails OPEN to today's behaviour when
+# instinct is absent, so a failed start is a warning, never fatal.
+# Env: $OPENBEAST_INSTINCT, $OPENBEAST_INSTINCT_PORT, ...
+#INSTINCT=false
+#INSTINCT_PORT=8094
+#INSTINCT_SCORER=false
+#INSTINCT_CONFIG=agents/instinct/instinct.toml
+# The agent router's CEILING for router.spawn_intent: off | shadow | enforce.
+# shadow records what instinct would have done and changes nothing; enforce
+# can only SKIP the router's classify call on a confident "inline" verdict,
+# and only once instinct's own eval gate has promoted the decision — the
+# service decides the effective mode, this caps it. Order on a turn:
+# identity gate -> instinct -> the classify (unchanged). Needs AGENT_ROUTER.
+#ROUTER_INSTINCT=off
 
 # ---------------------------------------------------------------------------
 # Sandboxed execution  (see docs/SANDBOXING.md)

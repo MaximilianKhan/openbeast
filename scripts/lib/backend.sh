@@ -125,6 +125,23 @@ ob_backend_ready() {
   esac
 }
 
+# ob_hydra_ready <hydra-url> — 0 only when beast-hydra can route its default
+# route. hydra answers /health in llama-server's shape on purpose (200
+# {"status":"ok"} when routable, 503 otherwise), so this IS ob_llama_ready;
+# it has its own name for readability and in case the two ever diverge
+# (docs/BEAST_HYDRA_PLAN.md §6.7). No key: /health is open on hydra too.
+ob_hydra_ready() { ob_llama_ready "$1"; }
+
+# ob_hydra_answering <hydra-url> — the process answers /health with ANY HTTP
+# status (a 503 "up, no routable default" included). start.sh waits on this
+# right after launching hydra; healthcheck.sh restarts hydra only when it is
+# false (a restart cannot fix a 503).
+ob_hydra_answering() {
+  local code
+  code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' "${1%/}/health" 2>/dev/null || true)"
+  [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]
+}
+
 # ob_backend_models <base-url> — the served model ids, one per line (empty
 # output = none or unreachable; exit 1 when the request failed). Presents
 # LLAMA_API_KEY when set, through lib/curl_auth.sh (never argv) when that is
