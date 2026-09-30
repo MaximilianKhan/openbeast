@@ -1,9 +1,14 @@
 # beast-artifact — a URL for anything the model renders
 
-**Status: v1 (2026-09-14).** Opt-in (`BEAST_ARTIFACT=true`), loopback server
-on `:3004`, published to the tailnet on `:8446`. Design, decisions and the
-phase list live in [BEAST_ARTIFACT_PLAN.md](BEAST_ARTIFACT_PLAN.md); this
-page is how you use it.
+**Status: shipped in v1.3.0 (2026-09-14); this page describes `main` as of
+2026-09-30.** Since v1.6.0: one owner for everything the rig publishes, admins,
+managing pages from a phone, per-version delete and opt-in retention, links
+back to the beast-chat session that made a page, and a paged, searchable
+gallery. Upgrading a rig that has operators configured? Read
+[UPDATING.md](UPDATING.md) first. Opt-in (`BEAST_ARTIFACT=true`), loopback
+server on `:3004`, published to the tailnet on `:8446`. Design, decisions and
+the phase list live in [BEAST_ARTIFACT_PLAN.md](BEAST_ARTIFACT_PLAN.md); this
+page is how you use it, and wins where the two differ.
 
 ## The concept
 
@@ -31,8 +36,10 @@ PUBLISHERS (all on the rig, all loopback)         VIEWERS (anything on the tailn
                         $OPENBEAST_FILES_DIR/artifacts/<uuid>/
                           meta.json · v1/ · v2/ · v3/   (0700)
 
-  writes: loopback only, proof-of-locality token
-  reads:  tailnet identity, ARTIFACT_OPERATORS allowlist
+  publish: loopback only, proof-of-locality token
+  manage:  the token, OR tailnet login + an `artifact`-scoped device key
+           (pin, tags, share, rollback, delete — never publish)
+  read:    tailnet identity, ARTIFACT_OPERATORS allowlist
 ```
 
 The load-bearing fact: **the page runs in a sandbox with an opaque origin.**
@@ -84,13 +91,18 @@ publish it."* The model calls `publish_artifact` and answers with the link.
 
 | Path | What it serves |
 |---|---|
-| `/` | the gallery — your artifacts, newest first |
+| `/` | the gallery — pinned first, then newest; `?page=N`, `?q=`, `?tag=`, `?session=` (see *The gallery*) |
 | `/a/<id>` | the **viewer shell** at the current version |
 | `/a/<id>/v/<n>` | the shell pinned to version `n` |
 | `/raw/<id>/v/<n>/` | the artifact document itself, sandboxed (this is what the shell frames) |
 | `/raw/<id>/v/<n>/<path>` | a supporting file of that version |
 | `/raw/<id>/v/<n>/~<token>/…` | the same document and files under a **capability path** — what the shell actually frames (see *Why supporting files need a token* below) |
-| `/api/artifacts` | JSON listing; `/api/artifacts/<id>` for one artifact's meta |
+| `GET /api/artifacts` | JSON listing: `limit` (1–200, default 25), `offset`, `q`, `tag`, `session`, `owner`; the answer carries `total` |
+| `GET /api/artifacts/<id>` | one artifact's meta and version list |
+| `PATCH /api/artifacts/<id>` | manage: `current` (rollback), `description`, `pinned`, `tags`, `visibility`, `owner` |
+| `DELETE /api/artifacts/<id>` | delete the page and every version |
+| `DELETE /api/artifacts/<id>/v/<n>` | delete one old version (never the current one, never the last) |
+| `POST /api/artifacts` | publish — the locality token only |
 
 - **The id is a full `uuid4`.** No sortable prefix and no slug: the URL
   should not leak when a thing was made or what it is about.
@@ -100,11 +112,29 @@ publish it."* The model calls `publish_artifact` and answers with the link.
 - **Versions are immutable.** Publishing with the same `--id` writes `v(n+1)`
   and leaves every earlier version byte-identical on disk. Nothing overwrites
   a published version, ever — `rollback` only moves the `current` pointer.
+- **A page holds at most 200 versions.** The 201st publish is refused, and
+  the error points at `artifact.sh prune <id> --keep N --yes`, which deletes
+  old versions and keeps the URL (see *Deleting, pruning and retention*).
 - The shell's version picker lists every version with its optional `--label`;
   choosing one navigates to that pinned URL.
 - **The stored file is exactly what you handed over.** The doctype, charset,
   viewport and a small reset are wrapped around it *at serve time*, so what
   comes back out of `v1/index.html` is what the author wrote.
+
+## The gallery
+
+`/` lists what you may open: 100 rows a page, **pinned pages first**, then
+newest first, with "*first*–*last* of *total*" and newer/older links. Each row
+shows the title, favicon, description, age, visibility, "v*current* of
+*count*", and the page's tags as chips. An admin also sees each page's owner
+when it is not them.
+
+The filter box narrows the rows on the current page as you type. **Enter**
+searches everything on the server (`?q=`, a case-insensitive substring of the
+title, description, id and tags, 100 characters max). `?tag=<tag>` and
+`?session=<id>` filter the same way; a tag chip in the viewer links to its
+filter, and an active filter shows above the list with a *clear* link. A
+filter that matches nothing says so instead of pretending the store is empty.
 
 ## Visibility
 
@@ -115,28 +145,65 @@ Two states, and there is no third:
 | `private` (default) | its owner, and the rig's admins |
 | `tailnet` | any login in `ARTIFACT_OPERATORS` (any identified login when the list is empty) |
 
-**Owners and admins.** A page published through Open WebUI is owned by the
-forwarded email of whoever asked. A page published by the rig itself — the
-CLI, campaign scripts, background agents, OpenCode on the rig — is owned by
-the **rig** principal, one stable owner whatever the allowlist says. *Admins*
-see and manage every page, and the gallery shows them each page's owner: the
-locality token (anything on the rig), plus `ARTIFACT_ADMINS` if set, else the
-**first** `ARTIFACT_OPERATORS` entry. Not every operator — on a multi-user rig
-operators' private pages stay private from each other; list the logins in
-`ARTIFACT_ADMINS` if you want several admins. With no operator configured,
-nobody on the tailnet is an admin: the first login to show up is never
-auto-trusted. Pages from before this model (owner `local`) are re-owned to the
-rig at server start, once, with a row in `index.jsonl` each. Pages the CLI
-published on an allowlisted rig before this model are owned by the first
-operator instead; the rig may still republish into those (and into any
-admin's page) with `artifact.sh publish <f> --id <id>`, without changing
-their owner, and `artifact.sh chown <id> rig` hands one over for good. When
-`ARTIFACT_ADMINS` is unset and more than one operator is listed, every start
-prints a line on stderr and writes an `admin-default` audit row naming the
-implicit admin, since that login can manage the other operators' private
+### Who owns a page
+
+- **Published through Open WebUI:** the forwarded email of whoever asked
+  (identity forwarding must be on; without it the publish is refused rather
+  than attributed to someone else).
+- **Published by the rig itself** — `scripts/artifact.sh`, campaign scripts
+  (`publish-verdict.sh`), background agents, OpenCode on the rig, the tool
+  server when a call carries no identity: the **rig** principal, `rig`. It is
+  one stable owner whatever the allowlist says. No login header can claim
+  `rig` or `local`.
+- **A beast-chat transcript export:** the tailnet login that pressed Export
+  ([BEAST_CHAT.md § Console features](BEAST_CHAT.md#console-features)).
+
+Ownership never changes on republish. An admin changes it explicitly:
+`artifact.sh chown <id> <login|rig>`, or `PATCH {"owner": …}`.
+
+### Who administers
+
+*Admins* see and manage every page (read, share, pin, tag, roll back, chown,
+delete), and the gallery and viewer show them each page's owner. The admins
+are:
+
+1. the **locality token** — anything on the rig, the CLI included;
+2. the logins in `ARTIFACT_ADMINS` (`openbeast.conf` or
+   `OPENBEAST_ARTIFACT_ADMINS`) when it is set;
+3. otherwise the **first** `ARTIFACT_OPERATORS` entry (falling back to
+   `CHAT_OPERATORS`), the rig's own human.
+
+Not every operator. On a multi-user rig, operators' private pages stay
+private from each other; list the logins in `ARTIFACT_ADMINS` if you want
+several admins. With no operator configured, nobody on the tailnet is an
+admin: the first login to show up is never auto-trusted, and every rig
+publish prints a warning with the one-line fix until an operator is set.
+When `ARTIFACT_ADMINS` is unset and more than one operator is listed, every
+start prints a line on stderr and writes an `admin-default` audit row naming
+the implicit admin, since that login can manage the other operators' private
 pages. Set `ARTIFACT_ADMINS` to choose explicitly.
 
-**There is no "public".** Your tailnet is the perimeter; beast-artifact is
+The model's `list_artifacts` tool never gets the admin view, even on the rig:
+it sees the rig's own pages and `tailnet` ones, so another owner's private
+titles never enter a model's context.
+
+### Upgrading: `local` pages and operator-owned pages
+
+- **Owner `local`** (every page a rig with no allowlist published before
+  this model) is re-owned to `rig` at server start: once, idempotent, locked
+  per page, with a `reown` row in `index.jsonl` for each page and one audit
+  summary row. Until that runs, `local` already reads as the rig.
+- **Owned by the first operator** (what the CLI wrote on an allowlisted rig
+  before this model) is left alone, because nothing on disk tells a CLI
+  publish from a browser publish by the same person. The rig may still add a
+  version to those pages, and to any admin's page, with `artifact.sh publish
+  <f> --id <id>`; it never rewrites the owner. It cannot republish into
+  another operator's page. `artifact.sh chown <id> rig` hands one over for
+  good.
+
+### There is no "public"
+
+Your tailnet is the perimeter; beast-artifact is
 never exposed with `tailscale funnel`, for the same reason nothing else in
 OpenBeast is.
 
@@ -174,13 +241,13 @@ write credential to every uid on the box.
 ./scripts/artifact.sh remove <id> [--version N] --yes
 ```
 
-The CLI acts as the rig, so it can manage every page. `list` shows 25 rows by
-default and says "Showing 25 of N" when there are more. A page is capped at
-200 versions; `prune` (or `remove --version`) makes room at the same URL — the
-current version and the last one are never deleted. When
-`OPENBEAST_SESSION_ID` is set (beast-chat sessions export it), `publish`
-records it as the version's source session; the shell then shows *made by
-session …*, linked to the chat console when `:8445` is published.
+The CLI acts as the rig, so it can manage every page (it is an admin). `list`
+shows 25 rows by default and says "Showing 25 of N" when there are more;
+`--all` lists everything, `--session` and `--tag` filter, `--json` gives the
+API's answer. `show <id> [--json]` prints one page's meta. `tag` replaces the
+page's tags with the ones given (none clears them). `chown`, `prune` and
+`remove` are covered below. When `OPENBEAST_SESSION_ID` is set, `publish`
+stamps it as the version's source session (see *Where a page came from*).
 
 `publish` options:
 
@@ -196,8 +263,10 @@ session …*, linked to the chat console when `:8445` is published.
 
 Caps, enforced at publish and mirroring what Claude Code's artifacts accept:
 **16 MB** for the page or any text file, **15 MB** per binary file, **255**
-files and **64 MB** total per version. A rejection names the file and the cap
-it broke.
+files and **64 MB** total per version — and **200 versions** per page. A
+rejection names the file and the cap it broke; a full page names `prune`.
+The same caps hold for `publish_artifact`, which calls the store in process.
+A disk-full publish answers **507** and leaves nothing half-written.
 
 ### Verdicts and the leaderboard: `scripts/publish-verdict.sh`
 
@@ -212,9 +281,15 @@ python3 evals/scoring.py --html "$OUT/board.html" \
 
 The id is `uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>")`, so each rerun
 adds a version to the same page. Each version is labelled
-`<git short sha> era=<eval era>` unless you pass `--label`. Pages are always
-private. The script never fails its caller: with `BEAST_ARTIFACT` off or the
-server down it prints one stderr line and exits 0.
+`<git short sha> era=<eval era>` unless you pass `--label`; `--title` sets the
+title. A `.txt` (or any non-HTML) file is wrapped in a page, HTML-escaped
+inside `<pre>`. Pages are always private and owned by the rig, so they open
+for the rig's admins (set `ARTIFACT_OPERATORS`, or share one with
+`artifact.sh visibility <id> tailnet`). The script never fails its caller:
+with `BEAST_ARTIFACT` off, the server down or a bad argument it prints one
+stderr line and exits 0. `scoring.py --html PATH|-` writes a self-contained
+leaderboard page (no script, no external request, every value escaped). No
+campaign script calls either yet; hooking them in is one line each, as above.
 
 ## The two tools
 
@@ -233,6 +308,7 @@ publish_artifact(path, title="", description="", favicon="",
 
 list_artifacts(limit=25)
     → one line per artifact: title, url, versions, visibility, updated
+    #   never the admin view: other owners' private pages are not listed
 ```
 
 - `path` is a file the model already wrote with `write_file`, and it must be
@@ -249,6 +325,8 @@ list_artifacts(limit=25)
   published on the rig.
 - Passing `artifact_id` from a previous result is how a model *updates* a page
   it published earlier in the same conversation instead of minting a new URL.
+- A publish stamps `OPENBEAST_SESSION_ID` as the source session when the
+  tool server's environment carries one.
 - Both return a string and never raise, like every other tool.
 - Neither is in `GUEST_TOOLS`: a guest-role WebUI account gets **404** for
   them, as it does for every non-web tool ([RBAC_PLAN.md](RBAC_PLAN.md)).
@@ -296,24 +374,8 @@ echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf
 ```
 
 **Publishing is loopback-only.** It requires the proof-of-locality token,
-which only a process on the rig can read. **Managing** a page — pin, tags,
-share/unshare, rollback, delete — can also come from a phone, with two things
-together: your tailnet login (from `tailscale serve`) and a device key
-enrolled with the `artifact` scope:
-
-```bash
-./scripts/clients.sh enroll phone --scope artifact    # prints the key once
-```
-
-Paste the key into the shell's **Manage** sheet (⋯); it stays in that
-browser. The server still checks that your login owns the page or is an admin;
-lifecycle bodies are capped at 64 KB and 60 changes a minute per device.
-Missing, unknown, revoked and unscoped keys all get the same flat 404.
-
-**Retention is opt-in.** `ARTIFACT_RETAIN_DAYS=N` in `openbeast.conf` makes the
-server delete, once a day, every **unpinned** page not updated for N days;
-pinned pages are never touched. Unset or `0` (the default) keeps everything.
-Each deletion is an audit row and a ledger row.
+which only a process on the rig can read. Managing a page from a phone is the
+one remote write, and it has its own section below.
 
 Every request **that reaches the server** writes one line to
 `.run/artifact-audit.jsonl` (mode 0600): `ts, login, method, route, id, n,
@@ -337,10 +399,92 @@ publish through them still appends the store's own ledger,
 `<store>/index.jsonl` (`ts, id, n, owner, bytes, sha256`); a list through them
 leaves no trace at all. If you need every model-side read audited too, route
 the tools through the server instead — that is the only way to get it, and it
-is deliberately not v1.
+is deliberately not built.
 
 beast-artifact does **not** sit behind beast-gate — that gate is the
 *inference* edge, and this is not the inference path.
+
+## Managing pages from a phone
+
+Publishing stays on the rig. **Managing** a page — pin, tags, share/unshare,
+rollback, delete — can also come from a phone, with two things together:
+
+1. your tailnet login, which `tailscale serve` injects (from a peer on the
+   rig; see above), and
+2. a device key enrolled with the **`artifact` scope**:
+
+```bash
+./scripts/clients.sh enroll phone --label "My phone" --scope artifact   # prints the key once
+./scripts/clients.sh scope phone add artifact      # or grant it to a device you already have
+```
+
+In the viewer, the **⋯** button opens the **Manage** sheet. It shows only
+when your login owns the page or is an admin. Paste the key under *Device
+key*; it is kept in that browser's `localStorage` (the shell's origin — the
+sandboxed page cannot read it). The sheet then does:
+
+- **Pin / Unpin.** Pinned pages sort first in the gallery and are never
+  touched by retention.
+- **Tags.** Up to 16 per page, each lowercased, letters, digits, space,
+  `.`, `_`, `-`, 32 characters max. Saving replaces the page's tags.
+- **Share with tailnet / Make private**, with a confirm before sharing.
+- **Delete**, which deletes every version and requires typing the page id.
+
+The same calls are open to any client holding such a key: `PATCH` and both
+`DELETE` routes from the URL table, with the key as `Authorization: Bearer`
+or `X-OpenBeast-Device-Key`. Rules:
+
+- The store still requires **owner or admin**. A keyed login asking about a
+  page it cannot manage gets the same flat 404 as a page that does not exist,
+  checked *before* its request body is validated, so a bad tag on someone
+  else's private page cannot confirm the page exists. Your own page gets the
+  readable 400.
+- Missing, unknown, revoked and unscoped keys all get the same flat 404.
+- Bodies are capped at **64 KB**, and each device at **60 changes a minute**
+  (429 past that).
+- `owner` (chown) is admin-only.
+- Every change is an audit row carrying `device` and what `changed`.
+- `POST /api/artifacts` (publish) stays locality-only: a device key never
+  creates a page.
+
+## Deleting, pruning and retention
+
+```bash
+./scripts/artifact.sh remove <id> --yes              # the page and every version
+./scripts/artifact.sh remove <id> --version 3 --yes  # one old version
+./scripts/artifact.sh prune <id> --keep 20 --yes     # all but the newest 20
+```
+
+A version delete never removes the version `current` points at (roll back
+first) or the last remaining one (remove the page instead), and it only
+removes versions the page's meta names — the store never guesses what is
+debris. `prune` keeps the current version whatever `--keep` says. Every
+deletion is a ledger row in `<store>/index.jsonl`; through the server it is
+an audit row too.
+
+**Retention is opt-in.** `ARTIFACT_RETAIN_DAYS=N` in `openbeast.conf` (or
+`OPENBEAST_ARTIFACT_RETAIN_DAYS`) makes the server delete, once a day, every
+**unpinned** page not updated for N days. Pinned pages are never touched, and
+neither is a page whose timestamp cannot be read. Unset or `0` (the default)
+keeps everything. Each deletion is an audit row and a ledger row with reason
+`retention`. There is no store-wide byte quota.
+
+## Where a page came from: session links
+
+beast-chat exports `OPENBEAST_SESSION_ID` into every agent and job it starts,
+and `scripts/job.sh run` does the same. When a publish sees it —
+`artifact.sh publish`, `publish_artifact`, a transcript export — the session
+id is recorded on the version and as the page's latest `source_session`
+(validated to the ledger's id shape; anything else is dropped, never an
+error).
+
+- The viewer shows **made by session `<id>`**. It is a link to
+  `https://<rig>:8445/#/s/<id>` only when `tailscale serve` publishes the
+  chat console on `:8445` (same detection as the artifact URL); otherwise it
+  is plain text. `CHAT_BASE_URL` in `openbeast.conf` overrides the console's
+  base URL, and `off` or `none` turns the link off.
+- `/?session=<id>`, `GET /api/artifacts?session=<id>` and `artifact.sh list
+  --session <id>` list what one session published.
 
 ## The security posture
 
@@ -493,11 +637,15 @@ sandbox instead — stricter on storage (there is none), identical on network.
   unauthenticated, unrotated append. The row's `login` field is also capped
   at 128 chars: a bounded row *count* with an unbounded row *size* is not a
   bound (an 8 KB header bought an 8 KB row). Both fixed in the v1.4.0 review.
-- A `PATCH` applies its fields in a fixed order — `current`, then
-  `description`, then `visibility` — because the three are independent locked
-  writes with no rollback. `visibility` is the only *widening* one, so it goes
-  last: a mixed body that fails part-way can never leave the artifact shared
-  while telling the caller the request failed.
+- A `PATCH` checks ownership first (a caller who can neither own nor
+  administer the page gets the flat 404 before its body is read), then
+  validates the body, then applies its fields in a fixed order — `current`,
+  `description`, `pinned`, `tags`, `visibility`, `owner` — because they are
+  independent locked writes with no rollback. `current` is the one that can
+  fail after a valid body (no such version), so it goes first; `visibility`
+  (the *widening* write) and `owner` (which changes who can read) go last: a
+  mixed body that fails part-way can never leave the artifact shared while
+  telling the caller the request failed.
 
 ## Writing a page
 
@@ -547,14 +695,14 @@ curl -s http://127.0.0.1:3004/api/artifacts/health
 # and gets the flat 404 — which carries no CSP at all. Without the token this
 # check greps nothing on a perfectly healthy server and cannot tell you
 # anything. Pass it through a 0600 config file, never -H: /proc makes argv
-# world-readable (see "Never pass the token on a command line" above).
+# world-readable (see "The CLI — scripts/artifact.sh" above).
 printf 'header = "X-OpenBeast-Local: %s"\n' "$(cat .run/artifact-local.token)" \
   > /tmp/art.cfg && chmod 600 /tmp/art.cfg
 curl -sD- -o /dev/null -K /tmp/art.cfg \
   http://127.0.0.1:3004/raw/<id>/v/1/ | grep -i 'content-security-policy'
 rm -f /tmp/art.cfg
 
-# writes are loopback-only: from another tailnet device, want 404
+# publishing is loopback-only: from another tailnet device, want 404
 curl -o /dev/null -w '%{http_code}\n' -X POST https://beast:8446/api/artifacts
 ```
 
@@ -572,6 +720,11 @@ the first.
 | The gallery on your phone is empty, but `artifact.sh list` is not | No operator is configured, so the rig's private pages open for nobody. Set `ARTIFACT_OPERATORS=you@example.com` and restart; the rig's pages (old `local` ones included) then open for you |
 | 404 on someone else's link | That artifact is `private`. Its owner runs `artifact.sh visibility <id> tailnet` |
 | **502** from `https://beast:8446` | The port is published but nothing is listening — you ran `--publish-artifact` without turning `BEAST_ARTIFACT` on, or the server died. Same trap as `--publish-slot` and the dashboard extension ([BEAST_SLOT.md](BEAST_SLOT.md)) |
+| A publish is refused at 200 versions | The per-page version cap. `./scripts/artifact.sh prune <id> --keep 20 --yes` frees room and keeps the URL |
+| **429** from the Manage sheet | More than 60 changes a minute from that device key. Wait a minute |
+| The Manage sheet's actions answer 404 | The key is missing, unknown, revoked or lacks the `artifact` scope (`./scripts/clients.sh show phone`), or your login neither owns the page nor is an admin. All of these are the same 404 on purpose |
+| No ⋯ (Manage) button in the viewer | Your login neither owns the page nor administers it. The rig's pages are managed by admins (`ARTIFACT_ADMINS`, else the first operator) |
+| An operator can now open another operator's private page | With `ARTIFACT_ADMINS` unset, the first operator is the admin. Set `ARTIFACT_ADMINS` to the logins you mean (the start-time `admin-default` audit row names the implicit admin) |
 | `artifact <id> is busy` | Another publish holds that page's lock. Locking is **per page**, so every other page and every read is unaffected; the call gives up after `OPENBEAST_ARTIFACT_LOCK_TIMEOUT` (10s) rather than hanging — an environment variable only, **not** an `openbeast.conf` key (`conf.sh` greps a fixed set of keys and does not map this one), so export it in the unit or the shell that starts the stack. Retry. If it persists, a publisher died mid-write — the next publish steps over the half-written version (it is never served, and never deleted: the only copy of a real version is not something a damaged `meta.json` gets to vote on) and continues |
 | `not your artifact` | Pages are owned by whoever published them. Re-describing, rolling back, re-sharing, pinning and deleting are owner-or-admin; republishing is owner-only (plus the rig, into the first operator's or an admin's page). The message is deliberately the same whoever you are, and deliberately says nothing about who the owner is |
 | A page the model published is 404 to you | Your tailnet login and your Open WebUI identity are different names for you. The publisher is recorded from the forwarded email, so the chat UI must have identity forwarding on (`ENABLE_FORWARD_USER_INFO_HEADERS`) — without it the publish is refused rather than attributed to someone else. The Open WebUI id is recorded too, but only as provenance: it never grants a read. An admin can hand the page to your tailnet login: `artifact.sh chown <id> you@example.com` |
@@ -583,10 +736,10 @@ the first.
 | An external image is missing | `img-src` admits `'self'` and `data:` only. Embed it as a `data:` URI |
 | A download button does nothing | `allow-downloads` is deliberately absent. The sandbox is working |
 | The theme toggle reloads the artifact | Expected. The page lives in an opaque origin, so the shell cannot script into it; re-serving with `?theme=` is the only channel, and it only happens on an explicit toggle |
-| The publish is rejected for size | Caps are 16 MB page / 15 MB binary / 255 files / 64 MB per version. Shrink the embedded `data:` URIs first — they are usually the cause |
+| The publish is rejected for size | Caps are 16 MB page / 15 MB binary / 255 files / 64 MB per version. Shrink the embedded `data:` URIs first — they are usually the cause. From the CLI a 404 on publish means the request body was over the server's size gate **or** the `--id` belongs to a page the rig may not republish into; the message names both, and `artifact.sh chown <id> rig` fixes the second |
 | Remote access dies mid-view while localhost is fine | Suspect a full-tunnel VPN, not the stack (README § Remote access) |
 
-## Not in v1
+## Not built
 
 Deliberately out: public-internet sharing, share-by-token or expiring links,
 per-artifact origins, browser-side editing, comments, republish
@@ -594,7 +747,8 @@ notifications, runtime capabilities inside pages (shared storage, viewer
 identity, asking the model), a general download route for arbitrary shard
 files, and `localStorage` inside artifacts.
 
-Queued behind v1: a Markdown publish lane, a `publish-a-page` skill (it
+Not built yet: a Markdown publish lane, a `publish-a-page` skill (it
 regenerates `system-prompt-tools.md`, so it rolls the eval cache era and has
 to land at a campaign boundary), remote *publish* (a device key can manage
-pages, not create them), and turning a comment on an artifact into a steer.
+pages, not create them), a store-wide byte quota, and turning a comment on an
+artifact into a steer.
