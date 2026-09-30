@@ -221,6 +221,44 @@ def _peer_is_loopback(request) -> bool:
     return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
 
 
+def login_source() -> str:
+    """OPENBEAST_CHAT_LOGIN_FROM: 'loopback' (default) or 'unix'."""
+    v = (os.environ.get("OPENBEAST_CHAT_LOGIN_FROM") or "loopback").strip().lower()
+    return "unix" if v == "unix" else "loopback"
+
+
+def _unix_listener(path: str):
+    """Bind the login-bearing Unix socket: 0600 in a 0700 directory.
+
+    tailscaled runs as root, so 0600 costs it nothing; every OTHER local
+    user, and every container, is kept out by the mode — which is the whole
+    point of moving the login header off TCP loopback. A stale socket from
+    a previous run is replaced; anything else at the path is left alone.
+    """
+    import socket
+    import stat as _st
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    try:
+        st = os.lstat(path)
+        if _st.S_ISSOCK(st.st_mode):
+            os.unlink(path)
+        else:
+            raise SystemExit(f"ERROR: {path} exists and is not a socket — "
+                             f"refusing to replace it")
+    except FileNotFoundError:
+        pass
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    try:
+        sock.bind(path)
+    finally:
+        os.umask(old)
+    os.chmod(path, 0o600)
+    sock.listen(128)
+    return sock
+
+
 def _bind_is_loopback(host: str) -> bool:
     """Is a bind address loopback-only? A NAME counts only if it is
     `localhost`; anything that has to be resolved is treated as off-box."""
@@ -1301,6 +1339,7 @@ def create_app() -> FastAPI:
         os.environ.get("OPENBEAST_CHAT_ALLOWED_HOSTS", ""))
 
     registry = DeviceRegistry(os.path.join(run_dir, "clients.json"))
+    login_from = login_source()
     audit_path = os.path.join(run_dir, "chat-audit.jsonl")
     local_token = _mint_local_token(os.path.join(run_dir, "chat-local.token"))
 
@@ -1528,6 +1567,22 @@ def create_app() -> FastAPI:
             return None
         return dev
 
+    def login_header_trusted(request: Request) -> bool:
+        """May this connection assert an identity by Tailscale-User-Login?
+
+        `loopback` (the default): any loopback peer — which includes every
+        process on the box and every host-network container (Open WebUI and
+        SearXNG run network_mode: host), none of which can read the 0600
+        token files but all of which could claim any login and read every
+        transcript (review chat-security-5). `unix`: ONLY a connection that
+        arrived on OPENBEAST_CHAT_SOCKET, the 0600 socket `tailscale serve`
+        (root) proxies to; TCP loopback then needs the locality token or a
+        device key like everyone else.
+        """
+        if login_from == "unix":
+            return getattr(request, "client", None) is None
+        return _peer_is_loopback(request)
+
     def principal_or_none(request: Request):
         """The caller's identity, or None — never raises.
 
@@ -1558,7 +1613,7 @@ def create_app() -> FastAPI:
         # Off-box peers cannot claim a login (see _peer_is_loopback); they
         # still get in with a device key, which is a secret, not a claim.
         login = ((request.headers.get("tailscale-user-login") or "").strip()
-                 if _peer_is_loopback(request) else "")
+                 if login_header_trusted(request) else "")
         if login and operators.allows(login):
             # Unset operator list = single-user default: any identified login
             # reads. Set = allowlist, and anything else falls through to 404.
@@ -2575,6 +2630,20 @@ def main() -> None:
               f"is probably already running. Its locality token has been "
               f"left alone.", file=sys.stderr)
         raise SystemExit(1)
+    sockets = [sock]
+    unix_path = (os.environ.get("OPENBEAST_CHAT_SOCKET") or "").strip()
+    if unix_path:
+        try:
+            sockets.append(_unix_listener(unix_path))
+        except OSError as e:
+            sock.close()
+            print(f"ERROR: cannot bind the login socket {unix_path} ({e})",
+                  file=sys.stderr)
+            raise SystemExit(1)
+    if login_source() == "unix" and not unix_path:
+        print("WARNING: OPENBEAST_CHAT_LOGIN_FROM=unix but OPENBEAST_CHAT_SOCKET "
+              "is unset — no connection can present a tailnet login; only "
+              "device keys and the locality token will work.", file=sys.stderr)
     app = create_app()
     _prune_ledger_soon()
     # Warm the systemd-scope probe off the request path (see scope_prefix).
@@ -2582,7 +2651,7 @@ def main() -> None:
                      daemon=True).start()
     print(f"OpenBeast beast-chat on {host}:{port} "
           f"(sessions: {sessions.SESSIONS_DIR})")
-    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=sockets)
 
 
 if __name__ == "__main__":

@@ -362,7 +362,7 @@ class _RealServer:
     """agents/chat_server.py as a real process on an ephemeral port, with
     every directory in tmp. Killed by its recorded pid, never by pattern."""
 
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, extra_env=None):
         import subprocess
         self.port = _free_port()
         self.run = tmp_path / "srv-run"
@@ -381,6 +381,7 @@ class _RealServer:
             "OPENBEAST_CHAT_POLL_MS": "50",
         })
         env.pop("OPENBEAST_CHAT_NOTIFY_URL", None)
+        env.update(extra_env or {})
         self.proc = subprocess.Popen(
             ["nice", "-n", "19", sys.executable,
              os.path.join(AGENTS, "chat_server.py")],
@@ -528,3 +529,63 @@ def test_tail_larger_than_the_file_replays_everything(rig):
     assert rig.client.get(
         f"/api/chat/sessions/{sid}/events?tail=-1").status_code == 400
 
+
+# ---------------------------------------------------------------------------
+# chat-security-5: the login header can be confined to a 0600 Unix socket
+# ---------------------------------------------------------------------------
+
+def test_login_from_unix_refuses_a_tcp_loopback_login(rig, monkeypatch):
+    monkeypatch.setenv("OPENBEAST_CHAT_LOGIN_FROM", "unix")
+    r = rig.client.get("/api/chat/sessions")      # 127.0.0.1 + login header
+    assert r.status_code == 404
+    # ...while the locality token (a secret, not a claim) still works
+    assert rig.anon.get("/api/chat/sessions",
+                        headers=rig.local).status_code == 200
+
+
+def test_default_mode_still_honours_a_loopback_login(rig):
+    """Negative control: nothing changes unless the operator opts in."""
+    assert rig.client.get("/api/chat/sessions").status_code == 200
+
+
+def _uds_get(path, url, headers):
+    import http.client
+    import socket as _socket
+
+    class UDSConn(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect(path)
+    c = UDSConn("beast.example.ts.net")
+    c.request("GET", url, headers=headers)
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+def test_real_server_takes_logins_only_on_its_unix_socket(tmp_path):
+    import stat as _st
+    sock_path = str(tmp_path / "sockdir" / "chat.sock")
+    srv = _RealServer(tmp_path, {"OPENBEAST_CHAT_SOCKET": sock_path,
+                                 "OPENBEAST_CHAT_LOGIN_FROM": "unix"})
+    try:
+        st = os.stat(sock_path)
+        assert _st.S_ISSOCK(st.st_mode) and (st.st_mode & 0o777) == 0o600
+        login = {"Tailscale-User-Login": "max@example.com",
+                 "Host": "beast.example.ts.net"}
+        code, body = _uds_get(sock_path, "/api/chat/sessions", login)
+        assert code == 200, body
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/chat/sessions",
+            headers={"Tailscale-User-Login": "max@example.com"})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            raise AssertionError("TCP loopback login was accepted")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        srv.kill()
