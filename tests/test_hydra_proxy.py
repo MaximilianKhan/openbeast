@@ -258,6 +258,12 @@ def test_node_401_is_auth_failed_and_never_the_callers_401(fleet):
     r = post(srv, chat())
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
     assert srv.hy.state.health["unc@rig"].h.state == core.AUTH_FAILED
+    # It must HOLD across hydra's authenticated /v1/models rechecks (every
+    # 1 s probe while a node is stuck): a wrong key is not a blip.
+    t_end = time.monotonic() + 2.5
+    while time.monotonic() < t_end:
+        assert srv.hy.state.health["unc@rig"].h.state == core.AUTH_FAILED
+        time.sleep(0.1)
     srv.hy.state.health["unc@rig"].h.state = core.READY
     rig.set_fault("http_401", 1)
     r = post(srv, chat(model="solo"))

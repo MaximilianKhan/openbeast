@@ -247,6 +247,15 @@ def _handler(eng: FakeEngine):
                 return
             if p == "/v1/models":
                 fault = self.headers.get("X-Fake-Fault") or eng.node_state()
+                # A wrong key fails every authenticated /v1 call, not just
+                # chat: a STICKY http_401 (count < 0, i.e. persistent) must
+                # 401 /v1/models too, or hydra's authenticated recheck sees a
+                # healthy node and clears AUTH_FAILED (it did, on the CI
+                # runner). A one-shot http_401 leaves /v1/models alone, and
+                # recovering from it is correct.
+                st = eng.sticky
+                if st and st["mode"] == "http_401" and st["count"] < 0:
+                    fault = "http_401"
                 if fault in ("http_401", "models_401"):
                     return self._json(401, {"error": {"message": "Invalid API Key"}})
                 mid = "some-other-model" if fault == "wrong_model" else eng.model
