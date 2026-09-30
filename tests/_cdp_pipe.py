@@ -20,8 +20,29 @@ import tempfile
 import threading
 import time
 
-CANDIDATES = ("chromium", "chromium-browser", "google-chrome",
-              "google-chrome-stable", "chrome")
+# google-chrome first: on Ubuntu, `chromium` is usually the snap (see
+# _usable_chrome); locally an Arch/Fedora chromium is found next.
+CANDIDATES = ("google-chrome-stable", "google-chrome", "chromium",
+              "chromium-browser", "chrome")
+
+
+def _usable_chrome(path: str) -> bool:
+    """False for snap-packaged Chromium. Snap confinement cannot inherit the
+    extra pipe fds (--remote-debugging-pipe) or write DevToolsActivePort into
+    a /tmp profile, so on Ubuntu runners every browser test died while
+    google-chrome sat installed next to it. Ubuntu's /usr/bin/chromium-browser
+    is a shell wrapper that execs the snap; skip that too."""
+    real = os.path.realpath(path)
+    if real.startswith("/snap/"):
+        return False
+    try:
+        with open(real, "rb") as fh:
+            head = fh.read(4096)
+        if head.startswith(b"#!") and b"snap" in head:
+            return False
+    except OSError:
+        return False
+    return True
 
 
 def find_chrome() -> str | None:
@@ -30,7 +51,7 @@ def find_chrome() -> str | None:
         return env
     for name in CANDIDATES:
         path = shutil.which(name)
-        if path:
+        if path and _usable_chrome(path):
             return path
     return None
 
@@ -66,8 +87,14 @@ class Chrome:
             wrapper += ["nice", "-n", "19"]
         if shutil.which("ionice"):
             wrapper += ["ionice", "-c3"]
+        # bash, not sh: the pipe ends are usually fds >= 10, and dash (Ubuntu's
+        # /bin/sh) rejects multi-digit fds in a redirection ("3<&10: Bad fd
+        # number"), so chrome never got its pipes and every browser test in
+        # CI timed out on Target.createTarget. Arch's /bin/sh is bash, which
+        # is why it only failed there.
+        shell = shutil.which("bash") or "sh"
         self.proc = subprocess.Popen(
-            wrapper + ["sh", "-c", script] + args,
+            wrapper + [shell, "-c", script] + args,
             pass_fds=(cmd_r, out_w), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         os.close(cmd_r)
