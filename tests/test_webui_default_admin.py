@@ -611,3 +611,55 @@ def test_tailscale_mounts_follow_the_bind_host(ts_rig, bind, host):
     assert f"http://{host}:3000/api/config" in {c.get("url") for c in ts_rig.calls()}
     lan = host not in ("127.0.0.1", "[::1]")
     assert ("logins are NOT" in p.stdout) == lan
+
+
+def _serve_mounts(rig):
+    mounts = {}
+    for k, a in _events(rig):
+        if k == "ts" and "serve" in a and "--bg" in a:
+            port = next(x for x in a if x.startswith("--https=")).split("=")[1]
+            mounts[port] = a[-1]
+    return mounts
+
+
+def test_tailscale_publish_ntfy_mounts_loopback(ts_rig):
+    """F-O1: --publish-ntfy mounts :8447 at the ntfy extension, which binds
+    127.0.0.1 whatever BIND_HOST says (its compose fragment) — so the mount
+    dials loopback even on a LAN-bound rig, and it warns while the extension
+    is off or CHAT_NOTIFY_URL is empty. --unpublish-ntfy takes it down."""
+    ts_rig.set_state(auth=True, admin_pw="operator-chose-this")
+    p = ts_rig.run("setup-tailscale.sh", "--publish-ntfy",
+                   env_extra={"OPENBEAST_BIND": "192.168.1.50",
+                              "OPENBEAST_NTFY_PORT": "3999"})
+    assert p.returncode == 0, p.stderr
+    mounts = _serve_mounts(ts_rig)
+    assert mounts["8447"] == "http://127.0.0.1:3999", mounts
+    assert mounts["443"] == "http://192.168.1.50:3000"     # the rest follow BIND_HOST
+    assert "ntfy extension is not in EXTENSIONS" in p.stdout
+    assert "CHAT_NOTIFY_URL is empty" in p.stdout
+    # Control: enabled + configured → neither warning.
+    p = ts_rig.run("setup-tailscale.sh", "--publish-ntfy",
+                   env_extra={"OPENBEAST_EXTENSIONS": "ntfy",
+                              "OPENBEAST_CHAT_NOTIFY_URL": "http://127.0.0.1:3005/t"})
+    assert p.returncode == 0, p.stderr
+    assert "not in EXTENSIONS" not in p.stdout
+    assert "CHAT_NOTIFY_URL is empty" not in p.stdout
+    p = ts_rig.run("setup-tailscale.sh", "--unpublish-ntfy")
+    assert p.returncode == 0, p.stderr
+    assert any(k == "ts" and a[:3] == ["serve", "--https=8447", "off"]
+               for k, a in _events(ts_rig))
+
+
+def test_tailscale_status_lists_the_ntfy_row(ts_rig):
+    stub = TAILSCALE_STUB.replace(
+        'if args[:2] == ["status", "--json"]:',
+        'if args[:2] == ["serve", "status"]:\n'
+        '    print("https://beast.example.ts.net:8447 (tailnet only)\\n'
+        '|-- / proxy http://127.0.0.1:3005")\n'
+        'if args[:2] == ["status", "--json"]:')
+    _write_exec(ts_rig.bin / "tailscale", stub)
+    p = ts_rig.run("setup-tailscale.sh", "--status")
+    assert p.returncode == 0, p.stderr
+    rows = {ln.split()[0]: ln.split()[-1] for ln in p.stdout.splitlines()
+            if ln.strip() and ln.split()[0].isdigit()}
+    assert rows["8447"] == "published" and rows["8446"] == "-", p.stdout

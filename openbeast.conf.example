@@ -385,6 +385,33 @@
 #   ./scripts/clients.sh enroll phone --label "My phone" --scope chat
 #   ./scripts/clients.sh scope phone remove chat     # take it back, no restart
 
+# Push notifications when a session ends. beast-chat POSTs a short message
+# (session title, state and a link to it in the console — never transcript
+# text) to CHAT_NOTIFY_URL, an ntfy-style topic URL. The self-hosted way is
+# the opt-in ntfy extension (extensions/ntfy/README.md):
+#   ./scripts/ext.sh enable ntfy && ./stop.sh && ./start.sh -d
+#   ./scripts/setup-tailscale.sh --publish-ntfy     # the phone app subscribes
+# Empty (the default) = no notifications. CHAT_NOTIFY_ON is a comma-separated
+# list of the session states that notify. CHAT_NOTIFY_TOKEN_FILE names a 0600
+# file holding a bearer token for the endpoint (never put the token itself in
+# this file). The ntfy topic name is guessable-by-default; pick a long one.
+# Env overrides: $OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE.
+#CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>
+#CHAT_NOTIFY_ON=failed,lost,done
+#CHAT_NOTIFY_TOKEN_FILE=~/.config/openbeast/ntfy.token
+# The ntfy extension's own port (loopback; --publish-ntfy mounts it at :8447)
+# and, for iOS instant delivery only, its public base URL + upstream relay —
+# see the iOS caveat in extensions/ntfy/README.md before setting either.
+# NTFY_DEFAULT_ACCESS: read-write (default: anyone who reaches the port may
+# publish/subscribe — loopback plus your tailnet once published) or deny-all
+# once you have added an ntfy user + token (extensions/ntfy/README.md).
+# Env overrides: $OPENBEAST_NTFY_PORT / _BASE_URL / _UPSTREAM_BASE_URL /
+# _DEFAULT_ACCESS.
+#NTFY_PORT=3005
+#NTFY_BASE_URL=https://beast.<tailnet>.ts.net:8447
+#NTFY_UPSTREAM_BASE_URL=
+#NTFY_DEFAULT_ACCESS=read-write
+
 # ---------------------------------------------------------------------------
 # Agent-spawn router  (see docs/RESEARCH_FINDINGS.md §8-11)
 # ---------------------------------------------------------------------------

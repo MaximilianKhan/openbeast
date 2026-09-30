@@ -29,6 +29,10 @@
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
+#   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
+#       (env OPENBEAST_CHAT_NOTIFY_*)  default empty / failed,lost,done / empty
+#       beast-chat push notifications; NTFY_PORT (default 3005) for the
+#       opt-in ntfy extension.
 #   OFFLINE          (env OPENBEAST_OFFLINE)     default false
 #       "This box has no route to the internet and never will." An installed
 #       rig SERVES fine offline already; what OFFLINE changes is that steps
@@ -311,6 +315,37 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
 fi
+# beast-chat push notifications (openbeast.conf.example § beast-chat). The
+# chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. URL and
+# token file are exported only when set — unset means "no notifications", and
+# an exported empty string must not read as "configured". ON always carries a
+# value. The token file is a PATH (a leading ~/ expanded), never the token: an
+# env var is readable in /proc/<pid>/environ by the same uid, and the conf
+# file is the wrong home for a credential that is not the stack's own.
+CHAT_NOTIFY_URL="${OPENBEAST_CHAT_NOTIFY_URL:-$(_ob_conf_value CHAT_NOTIFY_URL || true)}"
+CHAT_NOTIFY_ON="${OPENBEAST_CHAT_NOTIFY_ON:-$(_ob_conf_value CHAT_NOTIFY_ON || echo failed,lost,done)}"
+CHAT_NOTIFY_TOKEN_FILE="${OPENBEAST_CHAT_NOTIFY_TOKEN_FILE:-$(_ob_conf_value CHAT_NOTIFY_TOKEN_FILE || true)}"
+[[ "$CHAT_NOTIFY_TOKEN_FILE" == "~/"* ]] && CHAT_NOTIFY_TOKEN_FILE="$HOME/${CHAT_NOTIFY_TOKEN_FILE#\~/}"
+export OPENBEAST_CHAT_NOTIFY_ON="$CHAT_NOTIFY_ON"
+if [[ -n "$CHAT_NOTIFY_URL" ]]; then
+  export OPENBEAST_CHAT_NOTIFY_URL="$CHAT_NOTIFY_URL"
+fi
+if [[ -n "$CHAT_NOTIFY_TOKEN_FILE" ]]; then
+  export OPENBEAST_CHAT_NOTIFY_TOKEN_FILE="$CHAT_NOTIFY_TOKEN_FILE"
+fi
+# The opt-in ntfy extension (extensions/ntfy): its loopback port, and the two
+# settings only iOS instant delivery needs. Exported for compose
+# interpolation; the fragment defaults every one of them, so an unset value
+# never fails `docker compose` (stop.sh passes every fragment on disk).
+NTFY_PORT="${OPENBEAST_NTFY_PORT:-$(_ob_conf_value NTFY_PORT || echo 3005)}"
+export OPENBEAST_NTFY_PORT="$NTFY_PORT"
+_NTFY_BASE="${OPENBEAST_NTFY_BASE_URL:-$(_ob_conf_value NTFY_BASE_URL || true)}"
+[[ -n "$_NTFY_BASE" ]] && export OPENBEAST_NTFY_BASE_URL="$_NTFY_BASE"
+_NTFY_UP="${OPENBEAST_NTFY_UPSTREAM_BASE_URL:-$(_ob_conf_value NTFY_UPSTREAM_BASE_URL || true)}"
+[[ -n "$_NTFY_UP" ]] && export OPENBEAST_NTFY_UPSTREAM_BASE_URL="$_NTFY_UP"
+_NTFY_ACCESS="${OPENBEAST_NTFY_DEFAULT_ACCESS:-$(_ob_conf_value NTFY_DEFAULT_ACCESS || true)}"
+[[ -n "$_NTFY_ACCESS" ]] && export OPENBEAST_NTFY_DEFAULT_ACCESS="$_NTFY_ACCESS"
+unset _NTFY_BASE _NTFY_UP _NTFY_ACCESS
 # Where a process ON THIS BOX dials the stack's BIND_HOST services
 # (lib/net.sh: wildcard/empty -> 127.0.0.1, :: -> [::1], a specific LAN or
 # tailnet address -> itself, since a socket bound there refuses loopback).

@@ -72,6 +72,12 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
 ## Shipped extensions
 
+- **`ntfy`**: a self-hosted ntfy push server (`KIND=compose`, digest-pinned,
+  `127.0.0.1:${NTFY_PORT:-3005}`, cache in a volume). beast-chat notifies it
+  when a session ends (`CHAT_NOTIFY_URL`). `setup-tailscale.sh --publish-ntfy`
+  mounts it tailnet-only at `:8447` for the phone app. Setup, lockdown and the
+  iOS relay caveat are in [`ntfy/README.md`](ntfy/README.md).
+
 - **`dashboard`** — a lightweight read-only status page (GPU / model / services)
   on top of the tool server's `/metrics` and `doctor`. `KIND=process`, stdlib
   Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`:

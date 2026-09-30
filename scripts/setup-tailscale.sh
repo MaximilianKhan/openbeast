@@ -3,9 +3,10 @@
 #
 #   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
 #                                [--publish-chat] [--publish-artifact]
-#                                [--i-accept-open-webui]
+#                                [--publish-ntfy] [--i-accept-open-webui]
 #   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
 #                               | --unpublish-chat | --unpublish-artifact
+#                               | --unpublish-ntfy
 #   ./scripts/setup-tailscale.sh  --status    # read-only: print the mount table
 #
 # What it does:
@@ -49,6 +50,11 @@
 # signed-in tailnet device can read, and the flag says so out loud when it is.
 # WRITES stay loopback-only either way, so nothing on the phone path can
 # publish or delete. Undo with --unpublish-artifact.
+# --publish-ntfy publishes the ntfy extension at :8447 (→ 127.0.0.1:NTFY_PORT,
+# default 3005) so the phone's ntfy app can subscribe to beast-chat's
+# notifications. Requires `./scripts/ext.sh enable ntfy`. Tailnet-only like
+# everything here; access is whatever NTFY_DEFAULT_ACCESS says (open to the
+# tailnet by default — extensions/ntfy/README.md). Undo with --unpublish-ntfy.
 #
 # The WebUI (:443) is published ONLY behind its login wall. Before mounting
 # it the script persists WEBUI_AUTH=true, checks that the RUNNING WebUI
@@ -79,6 +85,7 @@ PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
 PUBLISH_CHAT=0
 PUBLISH_ARTIFACT=0
+PUBLISH_NTFY=0
 ACCEPT_OPEN_WEBUI=0
 for _arg in "$@"; do
   case "$_arg" in
@@ -106,9 +113,14 @@ for _arg in "$@"; do
       sudo tailscale serve --https=8446 off
       echo "beast-artifact unpublished from the tailnet (:8446 off)."
       exit 0 ;;
+    --publish-ntfy)      PUBLISH_NTFY=1 ;;
+    --unpublish-ntfy)
+      sudo tailscale serve --https=8447 off
+      echo "ntfy unpublished from the tailnet (:8447 off)."
+      exit 0 ;;
     --i-accept-open-webui) ACCEPT_OPEN_WEBUI=1 ;;
     --status)            STATUS_ONLY=1 ;;
-    -h|--help) sed -n '2,74p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -116,7 +128,7 @@ done
 # The mount table: which OpenBeast surface sits on which tailnet port, and
 # whether it is mounted right now. `tailscale serve status` names upstreams,
 # not features. Purely informational — never fails the caller.
-_print_mounts() { # _print_mounts <chat-port> <artifact-port>
+_print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   local serve_now row port what state
   serve_now="$(tailscale serve status 2>/dev/null || true)"
   echo "      Tailnet serve mounts:"
@@ -127,6 +139,7 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port>
     "8444|beast-slot status API (:3002)" \
     "8445|beast-chat console (:$1)" \
     "8446|beast-artifact pages (:$2)" \
+    "8447|ntfy push notifications (:${3:-3005})" \
     "8889|SearXNG for thin clients (:8888)"; do
     port="${row%%|*}"; what="${row#*|}"
     # The default :443 entry prints WITHOUT a port token, so it needs its own
@@ -157,7 +170,8 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   tailscale serve status 2>/dev/null | sed 's/^/      /' || true
   echo ""
   _print_mounts "${OPENBEAST_CHAT_PORT:-$(_conf_get CHAT_PORT 3003)}" \
-                "${OPENBEAST_ARTIFACT_PORT:-$(_conf_get ARTIFACT_PORT 3004)}"
+                "${OPENBEAST_ARTIFACT_PORT:-$(_conf_get ARTIFACT_PORT 3004)}" \
+                "${OPENBEAST_NTFY_PORT:-$(_conf_get NTFY_PORT 3005)}"
   exit 0
 fi
 
@@ -506,7 +520,9 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   if [[ -z "${_ART_OPS// /}" ]]; then
     echo "      NOTE: ARTIFACT_OPERATORS is EMPTY — reads are NOT gated to a"
     echo "            list. Every device signed in to your tailnet can open"
-    echo "            the gallery and every artifact marked 'tailnet'."
+    echo "            the gallery and every artifact marked 'tailnet' — and"
+    echo "            PRIVATE pages (the default) open for NOBODY from a phone,"
+    echo "            you included: the rig publishes them as owner 'local'."
     echo "            Gate it:  echo 'ARTIFACT_OPERATORS=you@example.com' >> openbeast.conf"
     echo "                      ./stop.sh && ./start.sh"
   else
@@ -514,13 +530,31 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   fi
   echo "      Publishing stays loopback-only — a phone can view, never write."
 fi
+if [[ $PUBLISH_NTFY -eq 1 ]]; then
+  # The ntfy extension binds 127.0.0.1 whatever BIND_HOST says (its compose
+  # fragment), so the mount always dials loopback.
+  if [[ " ${EXTENSIONS:-} " != *" ntfy "* ]]; then
+    echo "      WARNING: the ntfy extension is not in EXTENSIONS — :8447 will 502 until:"
+    echo "               ./scripts/ext.sh enable ntfy && ./stop.sh && ./start.sh"
+  fi
+  sudo tailscale serve --bg --https=8447 "http://127.0.0.1:${NTFY_PORT:-3005}"
+  echo "      ntfy published (tailnet-only, :8447 → 127.0.0.1:${NTFY_PORT:-3005})."
+  if [[ "${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write}" != "deny-all" ]]; then
+    echo "      NOTE: ntfy access is ${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write} — every tailnet device can"
+    echo "            subscribe to (and post on) a topic whose name it knows. Use a long"
+    echo "            topic, or lock it down: extensions/ntfy/README.md § Locking it down."
+  fi
+  if [[ -z "${CHAT_NOTIFY_URL:-}" ]]; then
+    echo "      NOTE: CHAT_NOTIFY_URL is empty — beast-chat sends nothing until it is set."
+  fi
+fi
 echo "      Done. Current serve config:"
 tailscale serve status | sed 's/^/      /'
 
 # The rig publishes several ports now: print the mapping the operator
 # actually reasons about (the same table `--status` prints on its own).
 echo ""
-_print_mounts "${CHAT_PORT:-3003}" "${ARTIFACT_PORT:-3004}"
+_print_mounts "${CHAT_PORT:-3003}" "${ARTIFACT_PORT:-3004}" "${NTFY_PORT:-3005}"
 
 # --- 4. Report ---------------------------------------------------------------
 FQDN=$(tailscale status --json | python3 -c "import sys,json; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")
@@ -566,6 +600,13 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
   echo "  Artifacts (beast-artifact):  https://$FQDN:8446/"
   echo "          (gallery + published pages, view-only from the tailnet —"
   echo "           undo with ./scripts/setup-tailscale.sh --unpublish-artifact)"
+fi
+if [[ $PUBLISH_NTFY -eq 1 ]]; then
+  echo ""
+  echo "  Notifications (ntfy):  https://$FQDN:8447"
+  echo "          Subscribe in the ntfy app to the topic in CHAT_NOTIFY_URL."
+  echo "          iPhone: read the iOS caveat in extensions/ntfy/README.md."
+  echo "          Undo with ./scripts/setup-tailscale.sh --unpublish-ntfy"
 fi
 echo ""
 echo "  Full walkthrough + verification checklist: docs/INSTALL.md §7"
