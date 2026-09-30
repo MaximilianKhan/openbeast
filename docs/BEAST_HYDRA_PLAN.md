@@ -1398,3 +1398,82 @@ The two plans were designed in parallel and reconciled before either was built. 
 6. **Build order.** hydra MVP (static policy, capacity spill, strict pins, provenance) and instinct P0 (library + service + `rules`/`linear` tiers + CPU llama.cpp scorer + `router.spawn_intent` in shadow) are built in parallel; the `when.task_class` hook lands in hydra behind the contract probe (`GET /v1/instinct/contract`), shadow-only until instinct's eval gate promotes a decision.
 7. **Eval integrity is shared.** Neither service is ever on an eval unit's path unless the run pins it explicitly; both stamp provenance; instinct decisions that change behaviour are enforced only through a gate record written by the eval harness, never a config toggle.
 
+
+---
+
+## Revision: Max's answers, the uncensored policy, and reconciliation §4 (2026-09-30)
+
+Max answered §10 decisions 1 and 2 on 2026-09-30, and set the direction for beast-instinct's engine. This section binds. Where it differs from anything above (§6.2.1's example, §9 risk 2, §10.1–2, reconciliation §4), it wins. The shipped `hydra.toml.example` and `scripts/hydra-sim.sh` follow it.
+
+### R1. §10 decision 1, answered: never stock
+
+> "No, all of our models are uncensored."
+
+`beast` never spills to a stock model, and neither does any other route. Max made this a fleet rule, so it is enforced as **policy**, not a per-route opt-in:
+
+- **`[hydra] allowed_families = [...]`** is a hard filter inside `_exclude`. It applies to every non-strict candidate: first choice, spill, sticky affinity, failover, the ctx last resort, and after a rule hop.
+  - A route target outside it is a **config error**. A stock model can't be listed in a route by mistake.
+  - A deployment outside it is only reachable by its strict id (a pin). `check` warns about it. Pins stay exempt because naming a deployment is explicit and is how evals measure one.
+  - The proxy re-checks the policy against the *current* config before every failover attempt, so a reload that tightens it mid-request can't let a stale plan call a stock engine.
+- **The `same_family` anchor is explicit.** A route's `family = "..."` sets it, and implies `same_family`. Without it, the anchor is the one family of the top-priority targets. If that group has more than one family, it is an error: the anchor is never inferred from list order. The old anchor was the first-listed target, which made `beast:long` anchor on stock and drop the uncensored rig (review A-hydra-2).
+- **The anchor survives a rule hop.** A `same_family` route keeps its family after a rule sends it to another route. Validation refuses a rule that would send it somewhere with no target of that family (every such request would 503). Before this, a ~130K-token `beast` prompt reached stock through `huge-prompts-go-long` (B-hydra-2).
+- **The ctx last resort chooses only among targets the policy allows** (A-hydra-3). Before, a larger stock context turned the engine's overflow 400 into a hydra 503.
+- `/hydra/status` shows `allowed_families` and each route's `family`.
+
+The §10.1 recommendation ("`false` now, flip later") is withdrawn. So is the capacity argument behind it: spill capacity now comes from the same uncensored weights on a second box (R2), not from a different model.
+
+### R2. §10 decision 2, answered: GLM-5.3-Flash on the Sparks
+
+> The Sparks will serve "GLM-5.3-Flash by orcarouter, or an EXL3 variant."
+
+**Chosen:** GLM-5.3-Flash Uncensored, EXL3 TR3 4bpw (`neko-legends/GLM-5.3-Flash-Uncensored-EXL3`, built from orcarouter's FP8).
+- It runs on **TensorFold TP=2**: one hydra node, rank 0 serving HTTP.
+- Profile name: `glm53-flash-unc-exl3-tensorfold` (GLM track).
+- Deployment `glm53-flash-unc@sparks`, family `glm-5.3-flash-uncensored`.
+
+Why this variant:
+- TensorFold's `glm5_next` reader accepts only 4-bit `mcg` routed-experts-only EXL3. Any other EXL3 raises.
+- At 175.6 GB it fits two Sparks at about 95 GB per rank.
+
+Why not the alternatives:
+- **orcarouter FP8** (328 GB) fits nowhere.
+- **orcarouter NVFP4** (205 GB) fits two Sparks only at `gpu_memory_utilization` ≥ 0.9, which starves the OS. It also needs vLLM ≥ v0.30.0: the NGC 26.05 pin cannot load `Glm5Next`. And compressed-tensors NVFP4 MoE on SM121 is unproven.
+- **Stock exllamav3 EXL3** cannot span two hosts.
+
+What routes GLM:
+- It is a flagship, so §10.2's doctrine still holds: it joins `beast:max` only after a paired new-era eval win.
+- Until then it is reachable by name (`beast:glm`, GLM or nothing) and is first in `beast:long`.
+- `beast` stays on the uncensored Qwen3.8 27B family, even through the long-prompt rule.
+
+**The Ti rig** serves the same uncensored 27B GGUF as the rig, without MTP so that it can run several slots. It is `beast`'s spill target and the first target of `beast:fast` and `classify`. The stock 35B-A3B MoE is gone. It was stock, and with about 3B active parameters it is not the "full model" Max wants decisions made on (MoE lesson: total params ≠ capability).
+
+### R3. Reconciliation §4, revised: an instinct engine may also be a node
+
+Max's direction: beast-instinct decides on a **full** model.
+- The target engine is **Open-Jev-27B-v1.1, run locally**: the Qwen3.8-27B base plus a LoRA and a scalar decision head, with a custom loader. It is never a hosted API. It needs a GPU of its own: the freed 5090 once the Sparks carry generation, or a Spark.
+- Until then, the interim engine is the rig's own 27B scoring by logprobs. It replaces the router's generative classify, which already runs on that same model. The 0.6B CPU scorer becomes the fallback only.
+
+What changes in hydra:
+- **Only the instinct SERVICE URL is refused as a node.** That rule prevents a loop: hydra asks instinct, and instinct is routed back through hydra.
+- An **instinct ENGINE** listed in `hydra.instinct.engine_urls` may also be a node (the rig at `:8080`). instinct calls it directly, never through hydra, so there is no loop. `check` warns (risk 13).
+- A node flagged `role = "instinct-engine"` (a dedicated scorer) is still refused. So are instinct's own `:8094`/`:8082`.
+- `hydra.instinct.deadline_ms` stays 25 by default. A 27B prefill cannot meet it: the instinct brief estimates about 0.2–0.6 s for 512–1,600 tokens on the 5090, unmeasured. So `hydra.task_class` keeps using instinct's fast tiers.
+- **Open question for Max:** either raise that deadline to about 250 ms (the call sits before a generation of several seconds) and give it a 27B on its own GPU (Open-Jev), or keep `linear` online and let the 27B label shadow rows only.
+
+### Risk 13 (new): hydra cannot see instinct's direct calls on a 1-slot node
+
+| Risk | Likelihood / impact | Mitigation |
+|---|---|---|
+| When the rig is both a node and an instinct engine, instinct's scoring calls reach `:8080` without passing through hydra. hydra's in-flight count for the rig misses them. It can plan a routed turn onto a rig it believes is free, and that turn then queues behind a scoring prefill. On `-np 1`, each scoring call also swaps the conversation's slot state out and back (`prompt_save`/`prompt_load`, `--cache-ram` 8 GiB). | Medium / low | Scoring is used only in place of the router's classify, which already hits the rig, so the load is not new. instinct's planned `busy_skip` (instinct track) checks `/slots` and falls to the 0.6B when the rig is busy. X1 (`/metrics` scrape) makes the traffic visible to hydra. Open-Jev on its own GPU removes the overlap. |
+
+### R4. VERIFY on hardware (adds to §7)
+
+1. The TensorFold GLM node:
+   - the served id (`SERVED_MODEL_NAME` → the deployment's `upstream`);
+   - the real context window (the example says 262144; upstream calls EXL3 long context "TBD");
+   - `TENSORFOLD_PARALLEL=auto` = 1 slot;
+   - TTFT and prefill rate for the node's `ttft_timeout_s` and `prefill_tps_floor`;
+   - tool-call conformance (`scripts/hydra.sh conformance glm53-flash-unc@sparks`).
+2. When the `glm53-flash-unc-exl3-tensorfold` profile lands, replace the example's explicit `upstream`/`ctx` with `profile = ...`. They must match or `check` refuses the file.
+3. The Ti: the `-np` its serve script runs (→ `slots`) and whether 262144 fits 48 GB at that slot count.
+4. The rig as instinct engine: the effect of scoring calls on a routed turn's TTFT (risk 13), measured with X1 or the audit's `ttft_ms`.
