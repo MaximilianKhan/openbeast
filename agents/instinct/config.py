@@ -71,18 +71,29 @@ class EngineBinding:
     # the one item (the documented "complete prompt" convention); "prompt" is
     # the [HW] fallback — the prompt as query + one empty item.
     score_query: str = "empty"
+    key_env: str = ""            # read the bearer key from this env var (LLAMA_API_KEY)
+    busy_skip: bool = False      # primary only: GET /slots first; a busy slot = skip fast
+    # openjev_head: the LoRA adapter's HF revision, the decision head's sha256
+    # and the pinned loader image digest — all three fix what a score means.
+    adapter_revision: str = ""
+    head_sha256: str = ""
+    loader_digest: str = ""
 
     def hash_identity(self) -> dict:
-        """The engine half of decision_hash."""
+        """The engine half of decision_hash: EVERY field that fixes what a
+        probability means (the weights, the request shape, the engine build).
+        decision_hash hashes the whole dict, so adding a field here is enough."""
         if self.adapter == "rules":
             return {"adapter": "rules", "model_sha256": "rules/1", "exec": None}
         if self.adapter == "linear":
             return {"adapter": "linear", "model_sha256": "linear/1", "exec": None}
         ident = {"adapter": self.adapter, "model_sha256": self.model_sha256,
-                 "model_revision": self.model_revision, "exec": self.exec}
-        if self.score_query != "empty":
-            ident["score_query"] = self.score_query   # a different request is a new hash
-        return ident
+                 "model_revision": self.model_revision, "exec": self.exec,
+                 "score_query": self.score_query, "image_digest": self.image_digest,
+                 "sglang_commit": self.sglang_commit, "mis_delimiter": self.mis_delimiter,
+                 "adapter_revision": self.adapter_revision, "head_sha256": self.head_sha256,
+                 "loader_digest": self.loader_digest}
+        return {k: v for k, v in ident.items() if v not in (None, "")}
 
 
 @dataclass

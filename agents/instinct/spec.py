@@ -501,8 +501,8 @@ def _canon(obj: Any) -> str:
 def decision_hash(spec: DecisionSpec, engine: dict[str, Any],
                   label_token_ids: dict[str, int] | None) -> str:
     """sha256 over the canonical JSON of everything that fixes a probability's
-    meaning (plan §5.3). `engine` carries adapter, model identity and exec.
-    Thresholds are NOT hashed."""
+    meaning (plan §5.3). `engine` is the binding's hash_identity(): every key
+    that fixes the request and the weights. Thresholds are NOT hashed."""
     payload = {
         "id": spec.id, "version": spec.version, "type": spec.type, "form": spec.form,
         "labels": [[lb.name, lb.text] for lb in spec.labels],
@@ -510,9 +510,10 @@ def decision_hash(spec: DecisionSpec, engine: dict[str, Any],
         "prompt.template": spec.prompt_template,
         "inputs": {k: [v.type, v.max_tokens, v.truncate] for k, v in sorted(spec.inputs.items())},
         "mechanical": sorted(spec.mechanical),
-        "engine.adapter": engine.get("adapter"),
-        "engine.model": engine.get("model_sha256") or engine.get("model_revision"),
-        "engine.exec": engine.get("exec"),
+        # The WHOLE engine identity (adapter, model sha AND revision, exec,
+        # request shape, image digest, engine commit, MIS delimiter): any of
+        # them changes what a probability means, so each is a new hash.
+        "engine": {k: v for k, v in sorted(engine.items()) if v not in (None, "")},
         "label_token_ids": dict(sorted(label_token_ids.items())) if label_token_ids else None,
     }
     return hashlib.sha256(_canon(payload).encode()).hexdigest()
