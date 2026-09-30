@@ -175,6 +175,15 @@ def _have_proc() -> bool:
     return os.path.exists("/proc/self/stat")
 
 
+#: `ps` could not ANSWER (fork failure, a 5 s timeout under load, a missing
+#: or broken binary) — as opposed to answering "no such process". The two
+#: used to be the same None, so one failed probe on a macOS client filed a
+#: live session `lost` for good, and its owner's real verdict was then
+#: refused by finalize(). Unknown is not dead: reporting keeps the state it
+#: had, and signalling (require_start) still fails closed.
+_PROBE_FAILED = ("?", -1)
+
+
 def _ps_stat(pid: int) -> tuple[str, int] | None:
     """The /proc-less fallback: (state char, start time) from `ps`, or None.
 
@@ -185,23 +194,36 @@ def _ps_stat(pid: int) -> tuple[str, int] | None:
     own (no boot frame needed), and `stat`'s first letter carries the zombie
     state the same way /proc does. Both flags exist in BSD and procps ps.
     LC_ALL=C pins the lstart format. A process that is gone prints nothing.
+
+    Returns None ONLY when ps ran and said "no such process" (no output, no
+    complaint). A ps that could not run, timed out, complained on stderr or
+    printed something unparseable returns _PROBE_FAILED: we do not know.
     """
     try:
         pid = int(pid)
+    except (ValueError, TypeError):
+        return None
+    try:
         out = subprocess.run(
             ["ps", "-o", "stat=,lstart=", "-p", str(pid)],
             capture_output=True, text=True, timeout=5,
             env={**os.environ, "LC_ALL": "C", "LANG": "C"})
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-        return None
-    parts = (out.stdout or "").split()
+    except (OSError, subprocess.SubprocessError):
+        return _PROBE_FAILED
+    stdout = (out.stdout or "").strip()
+    if not stdout:
+        # procps and BSD ps both exit 1, silently, for a pid that is gone.
+        # Anything on stderr means ps itself had a problem.
+        err = (getattr(out, "stderr", "") or "").strip()
+        return None if not err else _PROBE_FAILED
+    parts = stdout.split()
     if out.returncode != 0 or len(parts) < 6:
-        return None
+        return _PROBE_FAILED
     try:
         started = time.strptime(" ".join(parts[1:6]), "%a %b %d %H:%M:%S %Y")
         return parts[0][:1], int(time.mktime(started))
     except (ValueError, OverflowError):
-        return None
+        return _PROBE_FAILED
 
 
 def _liveness_probe_available() -> bool:
@@ -245,7 +267,7 @@ def _proc_stat(pid: int) -> tuple[str, int] | None:
 def pid_start_time(pid: int) -> int | None:
     """Process start time (field 22 of /proc/<pid>/stat), or None."""
     got = _proc_stat(pid)
-    return got[1] if got else None
+    return got[1] if got and got is not _PROBE_FAILED else None
 
 
 #: /proc states that mean "this process is over". `Z` is the one that matters:
@@ -282,6 +304,11 @@ def _alive(pid, pid_start, *, require_start: bool = False) -> bool:
     got = _proc_stat(pid)
     if got is None:
         return False
+    if got is _PROBE_FAILED:
+        # We could not look. A status column keeps what it had (a `running`
+        # record stays running rather than being filed `lost` for good); a
+        # path about to deliver a signal has no proof and must refuse.
+        return not require_start
     state, current = got
     if state in _DEAD_STATES:
         return False                     # zombie/dead: the pid is a tombstone

@@ -1060,3 +1060,62 @@ def test_prune_transcripts_never_follows_a_symlink(ledger, tmp_path):
     link.symlink_to(target)
     sessions.prune_transcripts(str(logs), 30)
     assert target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-09-29: an unanswered liveness probe is UNKNOWN, not dead
+# (chat-lifecycle-unknown-liveness-is-dead)
+# ---------------------------------------------------------------------------
+
+class _PsResult:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+
+
+def test_ps_timeout_is_unknown_not_dead(monkeypatch):
+    def timeout(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd="ps", timeout=5)
+    monkeypatch.setattr(sessions.subprocess, "run", timeout)
+    assert sessions._ps_stat(os.getpid()) is sessions._PROBE_FAILED
+
+
+def test_ps_complaining_on_stderr_is_unknown_but_silence_is_dead(monkeypatch):
+    """Negative control: `ps` saying nothing for a gone pid is still DEAD."""
+    replies = iter([
+        _PsResult("", "ps: fork: Resource temporarily unavailable", 1),
+        _PsResult("", "", 1),
+        _PsResult("garbage", "", 0)])
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda *a, **k: next(replies))
+    assert sessions._ps_stat(99) is sessions._PROBE_FAILED
+    assert sessions._ps_stat(99) is None
+    assert sessions._ps_stat(99) is sessions._PROBE_FAILED
+
+
+def test_a_failed_probe_does_not_file_a_live_session_lost(ledger, no_proc,
+                                                          monkeypatch):
+    """One ps failure used to persist `lost` (terminal), and the session's own
+    later `done` was then refused by finalize()."""
+    answers = {"v": ("S", 1234)}
+    monkeypatch.setattr(sessions, "_ps_stat", lambda pid: answers["v"])
+    sid = sessions.new_id("job")
+    sessions.register(sid, kind="job", pid=os.getpid())
+    assert sessions.get(sid)["meta"]["pid_start"] == 1234
+    answers["v"] = sessions._PROBE_FAILED          # ps stops answering
+    assert sessions.get(sid)["state"] == "running", "unknown was filed lost"
+    # Signalling still fails closed: no proof of identity, no signal.
+    assert sessions.is_alive(sessions.get(sid)) is False
+    answers["v"] = ("S", 1234)                     # ps recovers
+    assert sessions.get(sid)["state"] == "running"
+    # And the owner's real verdict lands.
+    assert sessions.finalize(sid, "done", summary="exit 0") is True
+    assert sessions.get(sid)["state"] == "done"
+
+
+def test_a_gone_pid_is_still_lost_when_ps_answers(ledger, no_proc,
+                                                  monkeypatch):
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda *a, **k: _PsResult("", "", 1))
+    rec = {"id": "x", "state": "running", "pid": 424242,
+           "meta": {"pid_start": 5}}
+    assert sessions.reconcile(rec)["state"] == "lost"
