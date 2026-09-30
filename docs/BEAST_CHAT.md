@@ -456,7 +456,15 @@ answers 409 ("review again") if what it would run has changed since — a
 preset edited on disk between Review and Start is refused, not run.
 Starting needs the device key like every other write.
 Agents started this way are steerable (`--session-id … --steer`); jobs run
-under `scripts/job.sh`'s supervisor.
+under `scripts/job.sh`'s supervisor. Jobs started from the console or the
+API do **not** inherit the stack's secret environment
+(`OPENAI_API_KEY`, `HF_TOKEN`, `GITHUB_TOKEN`/`GH_TOKEN`, and every
+`OPENBEAST_`/`LLAMA_`/`WEBUI_`/`SEARXNG_` variable naming a key, token, secret
+or password) — the same list the bash tool scrubs; agents keep only their
+inference key (`OPENBEAST_API_KEY`, `OPENAI_API_KEY`). The same command started
+with `job.sh run` from a terminal keeps your shell's environment. A job that
+needs a credential should read it from a file (or set it in the preset's
+command).
 
 Presets live in `.run/chat-presets.json`, written by you on the rig. The file
 is a list of one-tap commands, so it is ignored unless it is a regular file
