@@ -1114,5 +1114,73 @@ class TestIntrospectionAuth:
         assert body["devices"] == 2 and "upstream" in body
 
 
+class TestHydraCaller:
+    """beast-hydra wiring (docs/BEAST_HYDRA_PLAN.md §6.7): with
+    OPENBEAST_HYDRA_CALLER_TOKEN_FILE set, the gate vouches for the device it
+    authenticated (X-Hydra-Caller) and hands hydra its request id; a client
+    can never present its own caller token; unset = headers unchanged."""
+
+    def _gate(self, tmp_path, monkeypatch, token_file):
+        monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+        monkeypatch.delenv("OPENBEAST_EDGE_ALLOW_ANON", raising=False)
+        monkeypatch.delenv("OPENBEAST_API_KEY", raising=False)
+        if token_file is None:
+            monkeypatch.delenv("OPENBEAST_HYDRA_CALLER_TOKEN_FILE", raising=False)
+        else:
+            monkeypatch.setenv("OPENBEAST_HYDRA_CALLER_TOKEN_FILE", str(token_file))
+        import edge as _edge
+        importlib.reload(_edge)
+        _registry(tmp_path)
+        captured = {}
+        _stub_upstream(_edge, captured)
+        with TestClient(_edge.app) as c:
+            r = c.post("/v1/chat/completions", json={"messages": []},
+                       headers={"Authorization": f"Bearer {DEVICE_KEY}",
+                                "X-Hydra-Caller": "forged-by-the-device",
+                                "X-OpenBeast-Request-Id": "client-chosen"})
+        assert r.status_code == 200
+        hdrs = {k.lower(): v for k, v in captured["headers"].items()}
+        return r, hdrs, captured
+
+    def _token(self, tmp_path, mode=0o600):
+        p = tmp_path / "hydra-caller.token"
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, b"t" * 64 + b"\n")
+        os.close(fd)
+        os.chmod(p, mode)
+        return p
+
+    def test_token_and_request_id_reach_hydra(self, tmp_path, monkeypatch):
+        r, hdrs, _ = self._gate(tmp_path, monkeypatch, self._token(tmp_path))
+        assert hdrs["x-hydra-caller"] == "t" * 64
+        assert hdrs["x-openbeast-request-id"] == r.headers["X-OpenBeast-Request-Id"]
+        assert hdrs["x-openbeast-device"] == "laptop"
+        # exactly one of each, whatever the casing
+        assert [k for k in hdrs if k == "x-hydra-caller"] == ["x-hydra-caller"]
+
+    def test_client_caller_token_is_stripped_without_hydra(self, tmp_path, monkeypatch):
+        _, hdrs, _ = self._gate(tmp_path, monkeypatch, None)
+        assert "x-hydra-caller" not in hdrs
+
+    def test_unconfigured_forwards_what_it_always_did(self, tmp_path, monkeypatch):
+        """HYDRA off: the request-id header is the client's own, untouched,
+        exactly as before this wiring (byte-identical upstream)."""
+        _, hdrs, _ = self._gate(tmp_path, monkeypatch, None)
+        assert hdrs.get("x-openbeast-request-id") == "client-chosen"
+
+    def test_open_token_file_is_never_sent(self, tmp_path, monkeypatch):
+        _, hdrs, _ = self._gate(tmp_path, monkeypatch, self._token(tmp_path, 0o644))
+        assert "x-hydra-caller" not in hdrs
+        # ...while the gate's own request id still goes
+        assert hdrs["x-openbeast-request-id"] != "client-chosen"
+
+    def test_missing_token_file_sends_nothing(self, tmp_path, monkeypatch):
+        _, hdrs, _ = self._gate(tmp_path, monkeypatch, tmp_path / "absent.token")
+        assert "x-hydra-caller" not in hdrs
+
+    def test_spoofable_set_names_the_caller_header(self, edge):
+        assert "x-hydra-caller" in edge._CLIENT_SPOOFABLE
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

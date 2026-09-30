@@ -69,6 +69,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
+from hydra_caller import CallerToken
+
 REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))
 RUN_DIR = os.path.join(REPO_DIR, ".run")
@@ -127,10 +130,18 @@ _HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection"}
 # Identity headers a REMOTE client must never be able to assert for itself.
 # The agent router gates its spawn path on X-OpenWebUI-User-Role, so letting
 # a device set it would be privilege escalation by header.
+# x-hydra-caller: the token that makes beast-hydra trust the two above — a
+# device must never be able to present one of its own.
 _CLIENT_SPOOFABLE = {
     "x-openwebui-user-role", "x-openwebui-user-id", "x-openwebui-user-name",
-    "x-openwebui-user-email", "x-openbeast-device",
+    "x-openwebui-user-email", "x-openbeast-device", "x-hydra-caller",
 }
+
+# beast-hydra (HYDRA=true): the gate vouches for the device it authenticated
+# with X-Hydra-Caller, and hands hydra its request id so the two audits join.
+# Unconfigured (OPENBEAST_HYDRA_CALLER_TOKEN_FILE unset — every stack without
+# hydra) the upstream headers are exactly what they always were.
+_HYDRA_CALLER = CallerToken()
 
 
 def _now() -> str:
@@ -677,7 +688,7 @@ def _sanitize_body(raw: bytes, device: dict,
             _generations(body, path))
 
 
-def _upstream_headers(request: Request, device: dict) -> dict:
+def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _HOP_BY_HOP
                and k.lower() not in _CLIENT_SPOOFABLE}
@@ -700,6 +711,16 @@ def _upstream_headers(request: Request, device: dict) -> dict:
         tag = hashlib.sha256(
             f"{device.get('id','anon')}:{conv}".encode()).hexdigest()[:32]
         headers["X-Conversation-Id"] = tag
+    if _HYDRA_CALLER.configured:
+        # The gate's own id, never a client-chosen one (hydra accepts
+        # ^[A-Za-z0-9_-]{1,64}$; ours is 16 hex).
+        for k in [k for k in headers if k.lower() == "x-openbeast-request-id"]:
+            headers.pop(k)
+        if request_id:
+            headers["X-OpenBeast-Request-Id"] = request_id
+        tok = _HYDRA_CALLER.get()
+        if tok:
+            headers[_HYDRA_CALLER_HEADER] = tok
     return headers
 
 
@@ -903,7 +924,7 @@ async def gate(request: Request):
                 headers={"Retry-After": "5" if refusal == "rate_limited"
                          else "2"})
         released["held"] = gens
-        headers = _upstream_headers(request, device)
+        headers = _upstream_headers(request, device, request_id)
         registry.touch(device_id)
 
         req = client.build_request(request.method, f"{UPSTREAM}{path}",

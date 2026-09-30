@@ -59,6 +59,25 @@ Env:
   OPENBEAST_WEBUI_AUTH       "true" = login wall on -> anonymous turns can't spawn
   OPENBEAST_IDENTITY_JWT_SECRET  signed-identity mode: verify the forwarded
                              JWT (same value WebUI signs with) -> role from it
+  ROUTER_CLASSIFY_MODEL      beast-hydra (HYDRA=true, a `classify` route in
+                             hydra.toml): the classify call names this model
+                             so hydra can place it off the one-slot primary.
+                             Unset = the body carries no model, as always.
+  OPENBEAST_HYDRA_CALLER_TOKEN_FILE  beast-hydra: the 0600 token the router
+                             presents as X-Hydra-Caller on proxied and
+                             classify calls, vouching for the WebUI identity
+                             headers it forwards. Unset = no header added.
+  ROUTER_INSTINCT            off|shadow|enforce (default off): beast-instinct's
+                             router.spawn_intent, consulted AFTER the identity
+                             gate and BEFORE the classify. Shadow never changes
+                             a turn; enforce can only SKIP the classify on a
+                             confident "inline" (agents/instinct/routerhook.py).
+                             Fails open. INSTINCT_URL / INSTINCT_KEY_FILE say
+                             where the service answers.
+
+Order on a spawn-candidate turn (the beast-hydra <-> beast-instinct
+reconciliation, item 3): identity gate -> instinct (skip-only) -> the
+generative classify, unchanged.
 """
 from __future__ import annotations
 
@@ -75,6 +94,10 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
+from hydra_caller import CallerToken
+from instinct.routerhook import RouterInstinct
 
 # Defaults match the WIRED stack topology (router 8088 in front of llama-server
 # 8080) so `python3 agents/router.py` standalone doesn't collide with
@@ -105,6 +128,12 @@ _WEBUI_AUTH = os.environ.get("OPENBEAST_WEBUI_AUTH", "false").strip().lower() ==
 # inside the JWT, every guest turn looked anonymous and spawned with the
 # admin key. Single-user/no-auth setups keep fail-open: WebUI sends no
 # identity there at all.
+# beast-hydra (docs/BEAST_HYDRA_PLAN.md §6.7): both inert unless configured.
+CLASSIFY_MODEL = os.environ.get("ROUTER_CLASSIFY_MODEL", "").strip()
+_HYDRA_CALLER = CallerToken()
+# beast-instinct: reads ROUTER_INSTINCT; "off" (the default, and any unknown
+# value) makes zero instinct calls.
+_INSTINCT = RouterInstinct()
 REQUIRE_IDENTITY = (
     os.environ.get("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "").strip().lower() == "true"
     or _WEBUI_AUTH or bool(JWT_SECRET)
@@ -271,12 +300,18 @@ async def _classify(client, user_text):
         "response_format": {"type": "json_schema",
                             "json_schema": {"name": "route", "schema": _SCHEMA, "strict": True}},
     }
+    if CLASSIFY_MODEL:
+        body["model"] = CLASSIFY_MODEL
+    headers = dict(UPSTREAM_HEADERS)
+    tok = _HYDRA_CALLER.get()
+    if tok:
+        headers[_HYDRA_CALLER_HEADER] = tok
     # Returns (spawn: bool, task: str, workdir: str). spawn reflects the model's
     # raw decision; the caller decides what to do when spawn=true but the task
     # came back too thin (so we surface it instead of silently passing through).
     try:
         r = await client.post(f"{UPSTREAM}/v1/chat/completions", json=body,
-                              headers=UPSTREAM_HEADERS, timeout=60)
+                              headers=headers, timeout=60)
         content = r.json()["choices"][0]["message"].get("content") or ""
         d = json.loads(content)
         if d.get("spawn"):
@@ -345,6 +380,13 @@ async def _proxy_through(request, client, body_bytes):
     if request.url.query:
         upstream_url += f"?{request.url.query}"
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+    if _HYDRA_CALLER.configured:
+        # Ours, never a caller's: the token is what makes hydra trust the
+        # identity headers relayed alongside it.
+        headers = {k: v for k, v in headers.items() if k.lower() != "x-hydra-caller"}
+        tok = _HYDRA_CALLER.get()
+        if tok:
+            headers[_HYDRA_CALLER_HEADER] = tok
     req = client.build_request(request.method, upstream_url, content=body_bytes, headers=headers)
     try:
         resp = await client.send(req, stream=True)
@@ -384,8 +426,16 @@ async def chat_completions(request: Request):
     # Identity gate FIRST (docs/RBAC_PLAN.md Phase 2): non-admin turns skip
     # prefilter + classify entirely — zero added latency, and no path to
     # start_agent regardless of phrasing. See _spawn_allowed for the rules.
-    # Route only genuine user turns that clear the recall prefilter.
-    if user_text and _spawn_allowed(request.headers) and _HINTS.search(user_text):
+    # Then beast-instinct (ROUTER_INSTINCT; off by default = no call at all):
+    # shadow only records, enforce may only SKIP the classify below. Then,
+    # for genuine user turns that clear the recall prefilter, the unchanged
+    # generative classify.
+    hinted = False
+    if user_text and _spawn_allowed(request.headers):
+        hinted = bool(_HINTS.search(user_text))
+        if await _INSTINCT.skip_classify(user_text, hinted):
+            return await _proxy_through(request, client, raw)
+    if hinted:
         spawn, task, workdir = await _classify(client, user_text)
         if spawn and len(task) <= 8:
             # Detected a delegation request but couldn't extract a usable task —

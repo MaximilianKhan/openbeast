@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Router glue for router.spawn_intent (plan §5.9; I1, I3, I4).
 
-agents/router.py itself is shared wiring and is NOT edited in P0; the
-`decision_site` below is the exact wiring docs/BEAST_INSTINCT.md specifies,
-driven through the real RouterInstinct. The last test pins that router.py is
-still byte-for-byte free of instinct until that wiring lands."""
+The `decision_site` below is the wiring docs/BEAST_INSTINCT.md specifies,
+driven through the real RouterInstinct; the `test_router_*` cases at the end
+drive the REAL agents/router.py (wired in H0b) end to end: byte-identical
+with ROUTER_INSTINCT=off, identity gate before instinct, skip-only enforce,
+fail-open."""
 from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import os
 
 import httpx
 import pytest
 
-import _instinct_helpers as H
+import _instinct_helpers  # noqa: F401  (puts agents/ on sys.path)
 from instinct.client import InstinctClient
 from instinct.engines.rules import ROUTER_HINTS
 from instinct.routerhook import RouterInstinct
@@ -176,9 +178,139 @@ def test_non_admin_turn_never_reaches_instinct(tmp_path):
     assert out == "passthrough" and calls == [] and seen == []
 
 
-def test_router_py_is_unwired_today():
-    """ROUTER_INSTINCT is not wired into agents/router.py in P0 (shared
-    wiring file). When it is, this test is replaced by the byte-identity
-    test with ROUTER_INSTINCT=off (plan §5.13)."""
-    src = (H.REPO / "agents" / "router.py").read_text()
-    assert "instinct" not in src.lower()
+# ─── the REAL agents/router.py, wired (plan §5.9 / reconciliation §3) ───
+
+class _Upstream:
+    """The router's httpx client: records the classify POST and every
+    proxied request. classify answers `spawn`."""
+
+    def __init__(self, spawn=False):
+        self.spawn = spawn
+        self.posts, self.sent = [], []
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        self.posts.append({"url": url, "json": json, "headers": dict(headers or {})})
+        spawn = self.spawn
+
+        class R:
+            text = '"started agent 20260930-120000-deadbeef"'
+
+            def json(self_inner):
+                if url.endswith("/start_agent"):
+                    return "started agent 20260930-120000-deadbeef"
+                content = ('{"spawn": true, "task": "port the whole zig suite", "workdir": "."}'
+                           if spawn else '{"spawn": false, "task": "", "workdir": "."}')
+                return {"choices": [{"message": {"content": content}}]}
+        return R()
+
+    def build_request(self, method, url, content=None, headers=None):
+        req = {"method": method, "url": url, "content": content, "headers": dict(headers or {})}
+        self.sent.append(req)
+        return req
+
+    async def send(self, req, stream=False):
+        class Resp:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            async def aiter_raw(self_inner):
+                yield b'{"ok": true}'
+
+            async def aclose(self_inner):
+                pass
+        return Resp()
+
+    async def aclose(self):
+        pass
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """agents/router.py with a recording upstream and a given RouterInstinct."""
+    import router
+    from starlette.testclient import TestClient
+    monkeypatch.setattr(router, "REQUIRE_IDENTITY", False)
+
+    def run(hook, text, *, role="admin", spawn=False):
+        monkeypatch.setattr(router, "_INSTINCT", hook)
+        up = _Upstream(spawn)
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": text}]}).encode()
+        headers = {"Content-Type": "application/json"}
+        if role:
+            headers["X-OpenWebUI-User-Role"] = role
+        with TestClient(router.app) as c:
+            router.app.state.client = up
+            r = c.post("/v1/chat/completions", content=body, headers=headers)
+        asyncio.run(hook.drain())
+        return r, up, body
+    return run
+
+
+def _legacy_classify_body(user_text):
+    import router
+    return {"messages": [{"role": "system", "content": router._CLASSIFIER_SYS},
+                         {"role": "user", "content": user_text}],
+            "temperature": 0, "max_tokens": 400,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "response_format": {"type": "json_schema",
+                                "json_schema": {"name": "route", "schema": router._SCHEMA,
+                                                "strict": True}}}
+
+
+def test_router_off_is_byte_identical(tmp_path, wired):
+    """ROUTER_INSTINCT=off (the default): no instinct call of any kind, even
+    with a live client that would answer 'enforce inline'; the classify body
+    is exactly the legacy one and the proxied bytes are the request's."""
+    import router
+    calls = []
+    hook = RouterInstinct("off", make_client(tmp_path, verdict(True, "act", "inline"), calls))
+    for text in ("spawn an agent to port the zig tests", "what is 2+2",
+                 "handle the whole port while I'm out"):
+        r, up, body = wired(hook, text)
+        assert r.status_code == 200
+        assert up.sent and up.sent[-1]["content"] == body
+        if router._HINTS.search(text):
+            assert [p["json"] for p in up.posts] == [_legacy_classify_body(text)]
+        else:
+            assert up.posts == []
+    assert calls == []
+
+
+def test_router_enforce_inline_skips_the_classify(tmp_path, wired):
+    calls = []
+    hook = RouterInstinct("enforce", make_client(tmp_path, verdict(True, "act", "inline"), calls))
+    r, up, body = wired(hook, "what do background agents do?")
+    assert r.status_code == 200 and up.posts == [] and up.sent[0]["content"] == body
+    assert len(calls) == 1
+    # negative control: an abstain runs today's classify
+    calls2 = []
+    hook2 = RouterInstinct("enforce", make_client(tmp_path, verdict(True, "abstain", "inline"), calls2))
+    r, up, _ = wired(hook2, "what do background agents do?")
+    assert len(up.posts) == 1 and len(calls2) == 1
+
+
+def test_router_identity_gate_runs_before_instinct(tmp_path, wired):
+    """Reconciliation §3: identity gate FIRST — a guest turn never reaches
+    instinct (nor the classify), in any mode."""
+    for mode in ("shadow", "enforce"):
+        calls = []
+        hook = RouterInstinct(mode, make_client(tmp_path, verdict(True, "act", "inline"), calls))
+        r, up, _ = wired(hook, "spawn an agent to port it", role="user")
+        assert r.status_code == 200 and calls == [] and up.posts == []
+
+
+def test_router_shadow_never_changes_a_turn(tmp_path, wired):
+    calls = []
+    hook = RouterInstinct("shadow", make_client(tmp_path, verdict(True, "act", "inline"), calls))
+    r, up, _ = wired(hook, "spawn an agent to port the zig tests", spawn=True)
+    # the legacy classify still ran and still spawned
+    assert [p["url"].rsplit("/", 1)[-1] for p in up.posts] == ["completions", "start_agent"]
+    assert "Started a background agent" in r.text
+    assert len(calls) == 1 and json.loads(calls[0].content)["ceiling"] == "shadow"
+
+
+def test_router_instinct_dead_fails_open(tmp_path, wired):
+    calls = []
+    hook = RouterInstinct("enforce", make_client(tmp_path, httpx.ConnectError("dead"), calls))
+    r, up, _ = wired(hook, "spawn an agent to port the zig tests", spawn=True)
+    assert "Started a background agent" in r.text      # today's path, untouched
