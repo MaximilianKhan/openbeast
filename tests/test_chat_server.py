@@ -843,6 +843,27 @@ def test_stop_on_a_finished_session_is_a_no_op(rig):
     assert not os.path.exists(sessions.inbox_path(sid))
 
 
+def test_create_session_answers_with_provenance_even_if_the_reaper_is_slow(rig, tmp_path, monkeypatch):
+    """The 201 must not race the reaper thread's provenance merge.
+
+    On a slow box (the CI runner) the reaper merged started_by/device/command
+    after the response, so a client reading the session right away saw no
+    started_by. Freeze the reaper's merge entirely: provenance must still be
+    on the record when the 201 arrives."""
+    real = chat_server.start_reaper
+    monkeypatch.setattr(chat_server, "start_reaper",
+                        lambda sid, proc, annotate=None, *a, **k:
+                        real(sid, proc, None, *a, **k))
+    marker = tmp_path / "ran.txt"
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "title": "slow-reaper",
+        "cmd": f"sleep 0.3; echo x > {marker}", "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    rec = sessions.get(r.json()["session"]["id"])
+    assert rec["meta"].get("started_by") and rec["meta"].get("command"), rec["meta"]
+    assert marker_wait(marker)
+
+
 def test_create_session_spawns_a_job_and_registers_it(rig, tmp_path):
     """The whole point of the feature, end to end — and NOBODY hand-writes the
     terminal state.
@@ -1090,8 +1111,9 @@ def test_denials_are_audited(rig):
 def test_stream_open_is_audited_with_its_offset(rig):
     sid = rig.session(kind="agent", state="done")
     drain(rig.client, sid, frm=7)
-    rows = [a for a in rig.audit_rows() if a["route"] == "GET /events"]
-    assert rows[-1]["outcome"] == "stream_open" and rows[-1]["from"] == 7
+    rows = [a for a in rig.audit_rows() if a["route"] == "GET /events"
+            and a["outcome"] == "stream_open"]      # a stream_close follows it
+    assert rows[-1]["from"] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -1127,12 +1149,16 @@ def test_nonzero_exit_becomes_failed(rig, tmp_path):
     assert not is_zombie(rec["pid"])
 
 
-def test_a_signalled_job_becomes_stopped(rig, tmp_path):
-    """Negative returncode = died on a signal = `stopped`, not `failed`."""
+def test_a_job_killed_by_someone_else_is_failed_not_stopped(rig, tmp_path):
+    """An API job runs under job.sh's supervisor (review 2026-09-29,
+    chat-lifecycle-api-job-restart-lost), so it gets job.sh's semantics:
+    `stopped` means an operator stop reached it; a command that dies on a
+    signal nobody here sent (an OOM kill, `kill -9` from a shell) is a
+    `failed` job with its exit status — it used to read as a person's stop."""
     sid = _spawn_job(rig, "kill -9 $$", tmp_path)
-    rec = wait_state(sid, "stopped")
-    assert rec and rec["state"] == "stopped", sessions.get(sid)
-    assert "SIGKILL" in (rec["summary"] or "")
+    rec = wait_state(sid, "failed", "stopped")
+    assert rec and rec["state"] == "failed", sessions.get(sid)
+    assert "137" in (rec["summary"] or "")
     assert not is_zombie(rec["pid"])
 
 
@@ -1270,11 +1296,13 @@ def test_agent_spawn_leaves_the_record_to_the_runner_and_annotates_it(
     assert "--session-id" in rec["meta"]["command"]
 
 
-def test_agent_spawn_that_dies_before_registering_does_not_get_a_record(
+def test_agent_spawn_that_dies_before_registering_is_filed_failed(
         rig, tmp_path, monkeypatch):
-    """We do not own the id, so we do not conjure a record for it. The spawn
-    still answers 201 with the id, and the reaper simply finds nothing to
-    finalize — no half-written row claiming a session that never started."""
+    """Nobody owns the id — the child never registered — so the reaper files
+    it `failed` with the exit status. It used to find nothing to finalize,
+    and a session the API had answered 201 for simply never existed: no list
+    row, no transcript, no error (review 2026-09-29, chat-security-6). Still
+    never a row claiming the session RAN: the summary says it never started."""
     fake = tmp_path / "boom.py"
     fake.write_text("import sys\nsys.exit(3)\n")
     monkeypatch.setattr(chat_server, "RUNNER_PATH", str(fake))
@@ -1285,9 +1313,10 @@ def test_agent_spawn_that_dies_before_registering_does_not_get_a_record(
         "kind": "agent", "task": "t", "workdir": str(tmp_path)})
     assert r.status_code == 201, r.text
     sid = r.json()["session"]["id"]
-    assert r.json()["session"]["state"] == "running"     # provisional view
-    time.sleep(1.0)
-    assert sessions.get(sid) is None
+    rec = wait_state(sid, "failed", timeout=10)
+    assert rec and rec["state"] == "failed", sessions.get(sid)
+    assert "before registering" in rec["summary"]
+    assert "status 3" in rec["summary"]
     assert sid not in chat_server._CHILDREN
 
 
@@ -2147,19 +2176,20 @@ def test_the_lost_frame_rewinds_the_resume_bookkeeping():
 
 
 def test_a_permanently_dead_stream_is_not_painted_as_reconnecting():
-    """EventSource does not retry a non-200, and this handler never looked at
-    readyState — so a stream the /events gate refuses (a caller whose only
-    credential is a device key, which EventSource cannot send) was reported
-    as "reconnecting" forever."""
+    """A refused stream (4xx — the /events gate saying no) is permanent and
+    must read "stream unavailable"; only a dropped connection retries and
+    reads "reconnecting". The console reads the stream with fetch() since the
+    2026-09-29 review (EventSource could not send a device key at all), so the
+    distinction lives in openStream's catch now, not in es.onerror."""
     js = _console_js()
-    i = js.index("es.onerror")
-    handler = js[i:js.index("};", i)]
-    assert "readyState === 2" in handler, handler
-    assert "stream unavailable" in handler, handler
-    # CONNECTING(0) must NOT be treated as permanent: the transient-drop path
-    # is the whole reason the handler is quiet by default
-    assert "readyState === 0" not in handler
-    assert "reconnecting" in handler
+    i = js.index("function openStream(")
+    body = js[i:js.index("function handle(", i)]
+    refused = body[body.index(".catch(function(e){"):body.index("function frame(")]
+    assert "e.status >= 400 && e.status < 500" in refused, refused
+    assert "stream unavailable" in refused, refused
+    # the transient path backs off and resumes from the last offset
+    ended = body[body.index("function ended(){"):]
+    assert "reconnecting" in ended and "openStream(S.offset)" in ended
 
 
 # ---------------------------------------------------------------------------

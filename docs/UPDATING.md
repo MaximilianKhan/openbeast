@@ -43,7 +43,7 @@ Update a single component (flags compose):
 ./scripts/update.sh --llama       # just llama.cpp — the usual reason to update
                                   #   (read docs/LLAMACPP_WATCH.md first: upstream
                                   #   tripwires to re-check after every rebuild)
-./scripts/update.sh --images      # just Open WebUI + SearXNG images (re-pins digests)
+./scripts/update.sh --images      # just the container images: Open WebUI, SearXNG, extension fragments (re-pins digests)
 ./scripts/update.sh --python      # just mcp / openai / fastapi / uvicorn / PyJWT / huggingface_hub
                                   #   — and regenerates agents/requirements.lock to match
 ./scripts/update.sh --opencode    # just OpenCode
@@ -56,6 +56,47 @@ Under `OFFLINE=true` (`openbeast.conf`) every step that needs the network is
 skipped with a message saying what it would have done — no pull, no digest
 bump, no index query — and `--check` reports what is on disk instead of
 comparing against a remote.
+
+## Upgrading past v1.6.0: beast-artifact and beast-chat
+
+Nothing here needs a manual step unless you run more than one operator.
+Restart the stack (`./stop.sh && ./start.sh -d`) and read on.
+
+- **Rig-published pages change owner, once.** Pages owned by `local` (what a
+  rig with no allowlist published) are re-owned to the new `rig` principal
+  when the artifact server starts: idempotent, with an `index.jsonl` row per
+  page. Pages the CLI published on a rig **with** `ARTIFACT_OPERATORS` set
+  are owned by the first operator and stay that way; `artifact.sh publish
+  <f> --id <id>` can still update them in place, and `artifact.sh chown <id>
+  rig` hands one to the rig for good. Details:
+  [BEAST_ARTIFACT.md § Upgrading](BEAST_ARTIFACT.md#upgrading-local-pages-and-operator-owned-pages).
+- **The first operator becomes the artifact admin.** With `ARTIFACT_ADMINS`
+  unset, the first `ARTIFACT_OPERATORS` login (else the first
+  `CHAT_OPERATORS` login) can read, re-share, hand over and delete the other
+  operators' private pages; in v1.6.0 those stayed owner-only. A rig with more
+  than one operator says so at every start, on stderr and as an
+  `admin-default` row in the artifact audit log, until `ARTIFACT_ADMINS` is
+  set. On a single-operator rig nothing changes in practice. Details:
+  [BEAST_ARTIFACT.md § Who administers](BEAST_ARTIFACT.md#who-administers).
+- **No operator configured?** The rig's private pages open for nobody from a
+  phone. Every rig publish now says so, and `doctor` warns. Set
+  `ARTIFACT_OPERATORS=you@example.com` (or `CHAT_OPERATORS`).
+- **Managing pages from a phone is new and opt-in**: enroll a device with
+  `--scope artifact`. Existing keys have no such scope and gain nothing.
+- **Console jobs run under `job.sh`'s supervisor** and no longer inherit the
+  stack's secret environment (`HF_TOKEN`, `GH_TOKEN`, stack keys…). A preset
+  that relied on one must read it from a file. A job killed by a signal
+  nobody in beast-chat sent is now `failed` with its exit status, as under
+  `job.sh run`.
+- **`healthcheck.sh` can now exit non-zero with a `FOREIGN` row** when a
+  process the stack did not start (a sibling worktree's server) answers on
+  `:3003` or `:3004`. It kills nothing.
+- **The daily logrotate run sweeps the session ledger** (terminal records
+  older than 30 days) even with `BEAST_CHAT=false`, and rotates
+  `.run/sessions/*.log`.
+- **Notifications are new and off** until you set `CHAT_NOTIFY_URL`; the
+  `ntfy` extension's image is carried by `bundle.sh` and bumped by
+  `update.sh --images` like the core ones.
 
 ## Clients update themselves
 
@@ -87,6 +128,7 @@ compares the client's understood contract version against the rig's
 | **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server` with the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. **Refuses while another job holds the GPU lease** (`scripts/gpu-lease.sh status`): the binary is the one every campaign cell execs and the eval era does not hash the engine, so a mid-campaign rebuild would split paired cells across two builds — wait, or pass `--ignore-lease`. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
 | **Open WebUI** | Pull the moving `:main` tag, read its new digest, rewrite the `@sha256:` pin in `docker-compose.yml`, recreate. On a box installed from an offline bundle (`image: sha256:<content id>` lines), the service is found in `docker-compose.yml.pre-bundle` and re-pinned to the new registry digest; an image line it cannot pin is warned about, never reported as updated | Images are **digest-pinned** for supply-chain safety — a plain `compose pull` would just re-fetch the pin, so `--images` is the sanctioned bump. Commit the compose digest change after verifying. Your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped |
 | **SearXNG** | Same digest-bump for `searxng/searxng:latest` — **in `docker-compose.yml` only** | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the manual second bump below |
+| **Extension images** (`extensions/*/compose.yaml`, e.g. ntfy) | Each fragment's pinned `<repo>:<tag>` is re-pulled and its `@sha256:` rewritten on the `image:` line — the tag is a deliberate version, so a new version stays a reviewed edit to the fragment. Every fragment on disk is checked, enabled or not; an unpinned or bundle-content-ID line is warned about. Running containers are recreated with the ENABLED fragments merged, as `start.sh` composes them | Commit the fragment's digest change with the core's |
 | **MCP SDK / openai / fastapi / uvicorn / PyJWT** | `pip install --user -U <packages>`, then the **gate**: `agents/mcp_server.py` and `agents/openapi_tools.py` must import cleanly against the new versions or the upgrade is rolled back and no pin is rewritten (a 2026-08-14 mcp 1→2 bump deleted the class the MCP server is built on and took the next boot down). On success the `==` pins in `agents/requirements.txt` are rewritten to what is now installed — major jumps are shouted — and **`agents/requirements.lock` is regenerated** (`pydeps.sh lock`) so the hash-pinned closure moves with the pins. If the lock cannot be regenerated (pypi.org unreachable) it is left intact and reported STALE: bootstrap will then say so and use `requirements.txt`, and CI's `pydeps.sh verify` fails — run `./scripts/pydeps.sh lock` before committing. Commit `requirements.txt` and `requirements.lock` **together** | PEP-668 (Arch/newer Debian) handled automatically with `--break-system-packages` (touches `~/.local` only). A running MCP/tool server keeps the old code until restarted |
 | **huggingface_hub (`hf` CLI)** | same pip upgrade | Not in `requirements.txt` (the CLI moved between majors) but pinned in the lock as an explicit extra |
 | **OpenCode** | `opencode upgrade` | Falls back to telling you the reinstall one-liner if the self-upgrader fails |

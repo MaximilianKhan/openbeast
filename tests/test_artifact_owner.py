@@ -18,8 +18,12 @@ class TestPublisherIdentity(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="artifact_owner_")
         self._env = {k: os.environ.get(k) for k in
                      ("OPENBEAST_FILES_DIR", "OPENBEAST_ARTIFACT_OPERATORS",
-                      "OPENBEAST_CHAT_OPERATORS")}
+                      "OPENBEAST_CHAT_OPERATORS", "OPENBEAST_CONF",
+                      "OPENBEAST_ARTIFACT_ADMINS")}
         os.environ["OPENBEAST_FILES_DIR"] = self.tmp
+        # Hermetic: never read the checkout's own openbeast.conf.
+        os.environ["OPENBEAST_CONF"] = os.path.join(self.tmp, "no.conf")
+        os.environ.pop("OPENBEAST_ARTIFACT_ADMINS", None)
         os.environ["OPENBEAST_ARTIFACT_OPERATORS"] = "max@example.com,other@example.com"
         os.environ.pop("OPENBEAST_CHAT_OPERATORS", None)
         import artifact
@@ -41,7 +45,7 @@ class TestPublisherIdentity(unittest.TestCase):
         (and read it back as them)."""
         a = self.A.publish("<title>T</title><p>x", owner="victim@example.com")
         meta = self.A.get_meta(a["id"])
-        self.assertEqual(meta["owner"], "max@example.com")   # the real caller
+        self.assertEqual(meta["owner"], "rig")               # the real caller
         self.assertFalse(self.A.can_view(meta, "victim@example.com"))
 
     def test_owner_kwarg_matching_the_caller_is_honoured_and_normalized(self):
@@ -117,7 +121,7 @@ class TestPublisherIdentity(unittest.TestCase):
         finally:
             self.A.reset_owner_override(token)
         meta = self.A.get_meta(b["id"])
-        self.assertEqual(meta["owner"], "max@example.com")   # first operator
+        self.assertEqual(meta["owner"], "rig")               # the rig itself
         self.assertIsNone(meta["owner_webui_id"])
         self.assertFalse(self.A.can_view(self.A.get_meta(a["id"]),
                                          ["guest@example.com"]))
@@ -127,14 +131,18 @@ class TestPublisherIdentity(unittest.TestCase):
         self.assertEqual(self.A.get_meta(a["id"])["visibility"], "private")
 
     def test_a_bare_at_sign_in_the_allowlist_is_not_an_operator(self):
-        """R1: default_owner() took the first non-empty comma part, so a
-        mistyped allowlist minted the owner "@" — an identity nobody can
-        present, silently owning every unattributed page on the rig."""
+        """R1: a mistyped allowlist entry must never become an identity. The
+        owner of an unattributed publish is the rig now (F-A1), whatever the
+        list says; what the list decides is who ADMINISTERS the rig — and "@"
+        is nobody."""
         os.environ["OPENBEAST_ARTIFACT_OPERATORS"] = "@, ,max@example.com"
-        self.assertEqual(self.A.default_owner(), "max@example.com")
+        self.assertEqual(self.A.default_owner(), "rig")
+        self.assertEqual(self.A.admins(), ["max@example.com"])
         os.environ["OPENBEAST_ARTIFACT_OPERATORS"] = "@"
         os.environ.pop("OPENBEAST_CHAT_OPERATORS", None)
-        self.assertEqual(self.A.default_owner(), "local")
+        self.assertEqual(self.A.default_owner(), "rig")
+        self.assertEqual(self.A.admins(), [])
+        self.assertFalse(self.A.is_admin("@"))
 
     def test_identity_override_is_recorded(self):
         token = self.A.set_owner_override("guest@example.com")
@@ -144,9 +152,18 @@ class TestPublisherIdentity(unittest.TestCase):
             self.A.reset_owner_override(token)
         self.assertEqual(self.A.get_meta(a["id"])["owner"], "guest@example.com")
 
-    def test_no_identity_falls_back_to_first_operator(self):
+    def test_no_identity_is_the_rig_and_operators_administer_it(self):
+        """F-A1: an unattributed publish belongs to the rig principal, and
+        the configured operators ARE the rig from a browser (admins)."""
         a = self.A.publish("<title>T</title><p>x")
-        self.assertEqual(self.A.get_meta(a["id"])["owner"], "max@example.com")
+        meta = self.A.get_meta(a["id"])
+        self.assertEqual(meta["owner"], "rig")
+        self.assertTrue(self.A.is_admin("max@example.com"))
+        self.assertTrue(self.A.can_view(meta, "max@example.com",
+                                        admin=self.A.is_admin("max@example.com")))
+        # not an admin -> the plain owner rule, which a stranger fails
+        self.assertFalse(self.A.is_admin("stranger@example.com"))
+        self.assertFalse(self.A.can_view(meta, "stranger@example.com"))
 
     def test_private_page_is_invisible_to_another_operator(self):
         token = self.A.set_owner_override("guest@example.com")
@@ -158,24 +175,38 @@ class TestPublisherIdentity(unittest.TestCase):
         self.assertFalse(self.A.can_view(meta, "max@example.com"))
         self.assertTrue(self.A.can_view(meta, "guest@example.com"))
 
-    def test_unconfigured_rig_publishes_as_local(self):
+    def test_unconfigured_rig_publishes_as_the_rig(self):
         """D3: default_owner() never returns None. An ownerless artifact used
         to be readable by every operator forever, so a CLI or campaign publish
-        on a rig with no allowlist silently shared itself."""
+        on a rig with no allowlist silently shared itself. With NO operator
+        configured nobody is auto-trusted: the first tailnet login to show
+        up is not an admin (F-A1), and the publisher is told so."""
         os.environ.pop("OPENBEAST_ARTIFACT_OPERATORS", None)
         os.environ.pop("OPENBEAST_CHAT_OPERATORS", None)
-        self.assertEqual(self.A.default_owner(), "local")
+        self.assertEqual(self.A.default_owner(), "rig")
         a = self.A.publish("<title>T</title><p>x")
         meta = self.A.get_meta(a["id"])
-        self.assertEqual(meta["owner"], "local")
+        self.assertEqual(meta["owner"], "rig")
+        self.assertIn("No operator is configured", a["notice"])
         self.assertFalse(self.A.can_view(meta, None))            # anonymous
+        self.assertFalse(self.A.is_admin("max@example.com"))
         self.assertFalse(self.A.can_view(meta, "max@example.com"))
-        self.assertTrue(self.A.can_view(meta, "local"))
+        self.assertTrue(self.A.can_view(meta, "rig"))
+        self.assertTrue(self.A.can_view(meta, "local"))          # legacy name
 
     def test_chat_operators_are_the_fallback(self):
         os.environ.pop("OPENBEAST_ARTIFACT_OPERATORS", None)
         os.environ["OPENBEAST_CHAT_OPERATORS"] = "chat@example.com"
-        self.assertEqual(self.A.default_owner(), "chat@example.com")
+        self.assertEqual(self.A.default_owner(), "rig")
+        self.assertEqual(self.A.admins(), ["chat@example.com"])
+
+    def test_artifact_admins_narrows_the_admin_set(self):
+        """ARTIFACT_ADMINS keeps operators' private pages private from each
+        other on a multi-user rig: listed operators still READ, only the
+        admins manage everything."""
+        os.environ["OPENBEAST_ARTIFACT_ADMINS"] = "max@example.com"
+        self.assertTrue(self.A.is_admin("max@example.com"))
+        self.assertFalse(self.A.is_admin("other@example.com"))
 
     def test_alias_alone_never_becomes_the_owner(self):
         """An alias is provenance, not identity: passing only a UUID must not
@@ -186,15 +217,15 @@ class TestPublisherIdentity(unittest.TestCase):
         finally:
             self.A.reset_owner_override(token)
         meta = self.A.get_meta(a["id"])
-        self.assertEqual(meta["owner"], "max@example.com")   # first operator
+        self.assertEqual(meta["owner"], "rig")               # the rig itself
         self.assertEqual(meta["owner_webui_id"], "9d1f-uuid")
-        self.assertTrue(self.A.can_view(meta, "max@example.com"))
+        self.assertFalse(self.A.can_view(meta, "9d1f-uuid"))
 
     def test_override_does_not_leak_after_reset(self):
         token = self.A.set_owner_override("guest@example.com")
         self.A.reset_owner_override(token)
         a = self.A.publish("<title>T</title><p>x")
-        self.assertEqual(self.A.get_meta(a["id"])["owner"], "max@example.com")
+        self.assertEqual(self.A.get_meta(a["id"])["owner"], "rig")
 
 
 if __name__ == "__main__":

@@ -58,6 +58,11 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setenv("BEAST_ARTIFACT", "true")
     monkeypatch.delenv("OPENBEAST_BEAST_ARTIFACT", raising=False)
     monkeypatch.setenv("OPENBEAST_ARTIFACT_OPERATORS", "max@example.com")
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_ADMINS", raising=False)
+    monkeypatch.delenv("OPENBEAST_SESSION_ID", raising=False)
+    # Hermetic: never the checkout's own openbeast.conf.
+    monkeypatch.setenv("OPENBEAST_CONF", str(tmp_path / "absent.conf"))
+    monkeypatch.setenv("OPENBEAST_CHAT_BASE_URL", "off")
     # The tool publishes out of the caller's WORKSPACE (tools._base_dir()),
     # which is what write_file writes to — see _read_artifact_page.
     ws = tmp_path / "files"
@@ -449,14 +454,15 @@ def test_an_identified_caller_with_no_email_is_refused(surfaces):
     assert r.status_code == 400, r.text
     assert "ENABLE_FORWARD_USER_INFO_HEADERS" in json.dumps(r.json())
     # the rig itself — no identity headers at all — is NOT the caller this
-    # refusal is about, and still publishes as its own first operator.
+    # refusal is about, and still publishes: as the rig (F-A1), which the
+    # rig's first operator administers from the phone.
     r = tools.post("/write_file", json={"path": "rig.html", "content": PAGE})
     assert r.status_code == 200, r.text
     r = tools.post("/publish_artifact",
                    json={"path": "rig.html", "title": "From the rig"})
     assert r.status_code == 200, r.text
     aid = _id_from(r.json())
-    assert artifact.get_meta(aid)["owner"] == "max@example.com"
+    assert artifact.get_meta(aid)["owner"] == "rig"
     assert web.get(f"/a/{aid}",
                    headers={"Tailscale-User-Login": TAILNET_LOGIN}
                    ).status_code == 200
@@ -590,16 +596,26 @@ def test_two_webui_users_do_not_share_a_page(surfaces):
     than quietly handed the first operator's identity.
     """
     tools, web, _app = surfaces
-    mine = _id_from(_publish_through_the_tool_server(
-        tools, _identity(), title="Mine"))
-    theirs = _id_from(_publish_through_the_tool_server(
-        tools, _identity(email="kid@example.com", user="other-uuid"),
-        title="Theirs"))
-    assert mine != theirs
-    assert artifact.get_meta(theirs)["owner"] == "kid@example.com"
-    me = {"Tailscale-User-Login": TAILNET_LOGIN}
-    assert web.get(f"/a/{mine}", headers=me).status_code == 200
-    assert web.get(f"/a/{theirs}", headers=me).status_code == 404
+    # max is a plain reader here, not the rig's administrator: the admin path
+    # (F-A1) is exactly what would otherwise let max open kid's page.
+    import os as _os
+    _os.environ["OPENBEAST_ARTIFACT_ADMINS"] = "boss@example.com"
+    try:
+        mine = _id_from(_publish_through_the_tool_server(
+            tools, _identity(), title="Mine"))
+        theirs = _id_from(_publish_through_the_tool_server(
+            tools, _identity(email="kid@example.com", user="other-uuid"),
+            title="Theirs"))
+        assert mine != theirs
+        assert artifact.get_meta(theirs)["owner"] == "kid@example.com"
+        me = {"Tailscale-User-Login": TAILNET_LOGIN}
+        assert web.get(f"/a/{mine}", headers=me).status_code == 200
+        assert web.get(f"/a/{theirs}", headers=me).status_code == 404
+    finally:
+        _os.environ.pop("OPENBEAST_ARTIFACT_ADMINS", None)
+    # ...and with max as the administrator (the default: first operator),
+    # the explicit admin path opens it — that is the feature, not a leak.
+    assert web.get(f"/a/{theirs}", headers=me).status_code == 200
 
     # ...and the third account, the one with no forwarded email, becomes
     # NEITHER of them. It used to become the first operator — max — which is

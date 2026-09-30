@@ -62,6 +62,7 @@ import glob
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from datetime import datetime
 
@@ -740,6 +741,90 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     return "\n".join(lines)
 
 
+def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderboard") -> str:
+    """The leaderboard as ONE self-contained HTML page: inline CSS, no script,
+    no external request — so it can be published as a beast-artifact
+    (scripts/publish-verdict.sh leaderboard <file>) and opened on a phone.
+
+    Same partition and order as format_leaderboard (current suite ranked by
+    rank_key, older suites below under their own heading), same columns. Every
+    value is HTML-escaped: model names come from results files on disk."""
+    from html import escape
+
+    def pct(v):
+        return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
+
+    def decode(e):
+        d = e.get("decode_toks_per_sec")
+        if not isinstance(d, (int, float)):
+            return "—"
+        return f"~{d:.0f}" if e.get("decode_estimated") else f"{d:.0f}"
+
+    def wall(e):
+        s = e.get("elapsed_total_seconds") or 0
+        if not s:
+            return "—"
+        h, m = divmod(int(s) // 60, 60)
+        return f"{h}h{m:02d}m" if h else f"{m}m"
+
+    cols = ("#", "Host", "Model", "Suite", "Solve", "Lang", "Score",
+            "tok/s", "Tokens", "Wall", "Pass")
+
+    def row(i, e):
+        cells = (str(i), entry_host_id(e), str(e.get("model", "?")),
+                 str(e.get("suite_version", "?")),
+                 pct(e.get("problem_solving")), pct(e.get("language_breadth")),
+                 pct(e.get("capability")), decode(e),
+                 _fmt_tokens(e.get("tokens_total", 0)), wall(e),
+                 f"{e.get('tasks_passed', '?')}/{e.get('tasks_total', '?')}")
+        return "<tr>" + "".join(
+            f'<td class="{"t" if j in (1, 2) else "n"}">{escape(c)}</td>'
+            for j, c in enumerate(cells)) + "</tr>"
+
+    def table(rows):
+        head = "".join(f"<th>{escape(c)}</th>" for c in cols)
+        body = "\n".join(row(i, e) for i, e in enumerate(rows, 1))
+        return (f'<div class="wrap"><table><thead><tr>{head}</tr></thead>'
+                f"<tbody>\n{body}\n</tbody></table></div>")
+
+    cur = current_suite_version()
+    current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
+    legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
+    parts = []
+    if not entries:
+        parts.append("<p>The leaderboard is empty.</p>")
+    if current_rows:
+        parts.append(f"<h2>Suite {escape(cur)}</h2>" + table(current_rows))
+    if legacy_rows:
+        parts.append(f"<h2>Legacy suites</h2><p>Task sets differ — not comparable "
+                     f"to suite {escape(cur)} rows.</p>" + table(legacy_rows))
+    stamp = escape(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    t = escape(title)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t}</title>
+<style>
+:root{{color-scheme:light dark;--bg:#fff;--fg:#1b1b1b;--mute:#666;--line:#ddd;--head:#f3f3f3}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#141414;--fg:#e6e6e6;--mute:#999;--line:#333;--head:#1f1f1f}}}}
+body{{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}
+h1{{font-size:18px;margin:0 0 4px}} h2{{font-size:15px;margin:20px 0 8px}}
+p{{margin:4px 0;color:var(--mute)}}
+.wrap{{overflow-x:auto}}
+table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}
+th,td{{padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}}
+th{{background:var(--head);text-align:left;font-weight:600}}
+td.n{{text-align:right}}
+</style></head><body>
+<h1>{t}</h1>
+<p>Generated {stamp} by evals/scoring.py --html. Ranked by Score (capability = 0.75·Solve + 0.25·Lang).</p>
+{"".join(parts)}
+<p>Solve = % of base problems solved in ≥1 language. Lang = % of language ports passed among
+solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate).</p>
+</body></html>
+"""
+
+
 def format_host_comparison(entries: list[dict]) -> str:
     """Side-by-side comparison: one row per model, one column per host.
     Cells show accuracy (with pass count and elapsed seconds for context).
@@ -848,7 +933,26 @@ def main():
                         help="Side-by-side comparison: one row per model, one column per host")
     parser.add_argument("--show-host", action="store_true",
                         help="Include host column in the leaderboard table")
+    parser.add_argument("--html", metavar="PATH",
+                        help="Write the leaderboard as a self-contained HTML page to PATH "
+                             "('-' = stdout); publish it with "
+                             "scripts/publish-verdict.sh leaderboard PATH")
     args = parser.parse_args()
+
+    if args.html:
+        entries = load_leaderboard()
+        if args.host:
+            entries = [e for e in entries if entry_host_id(e) == args.host]
+        page = format_leaderboard_html(entries)
+        if args.html == "-":
+            sys.stdout.write(page)
+        else:
+            tmp = args.html + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(page)
+            os.replace(tmp, args.html)
+            print(f"Wrote {args.html} ({len(entries)} entries)")
+        return
 
     if args.score:
         entry = score_results_file(args.score)

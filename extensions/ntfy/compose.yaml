@@ -1,0 +1,56 @@
+# ntfy — self-hosted push notifications for beast-chat (extensions/ntfy/README.md).
+#
+# Merged into `docker compose` by start.sh when EXTENSIONS lists "ntfy", and
+# passed to every `down` by stop.sh whether enabled or not — so every
+# interpolated value below carries a default: an unset one must never fail
+# the core stack's compose call.
+#
+# Hardening follows docker-compose.yml: digest-pinned image, loopback bind
+# (remote access is `setup-tailscale.sh --publish-ntfy`, tailnet-only, never
+# a raw port), every capability dropped, no-new-privileges, read-only root.
+services:
+  ntfy:
+    # Pinned by digest (the multi-arch index of v2.28.0): the tag moves, the
+    # digest does not.
+    image: binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+    container_name: ntfy
+    command: ["serve"]
+    network_mode: host
+    environment:
+      # 127.0.0.1 regardless of BIND_HOST: nothing but beast-chat (on this
+      # box) and tailscale serve (on this box) ever needs to reach it.
+      - NTFY_LISTEN_HTTP=127.0.0.1:${OPENBEAST_NTFY_PORT:-3005}
+      # Message cache in a volume, so a phone that was offline for a while
+      # still receives what it missed on reconnect.
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_CACHE_DURATION=24h
+      # Access control lives in a volume too. Default read-write: anyone who
+      # can reach the port (loopback + your tailnet once published) may
+      # publish and subscribe — the same trust boundary as SearXNG. Set
+      # NTFY_DEFAULT_ACCESS=deny-all and add a user + token to lock it down
+      # (README § Locking it down).
+      - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
+      - NTFY_AUTH_DEFAULT_ACCESS=${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write}
+      # Both empty by default = no traffic leaves the box. Only iOS instant
+      # delivery needs them (README § iOS caveat).
+      - NTFY_BASE_URL=${OPENBEAST_NTFY_BASE_URL:-}
+      - NTFY_UPSTREAM_BASE_URL=${OPENBEAST_NTFY_UPSTREAM_BASE_URL:-}
+      # tailscale serve reverse-proxies every tailnet caller in from
+      # 127.0.0.1; trust its X-Forwarded-For so per-visitor rate limits see
+      # the real device instead of lumping every phone into one visitor.
+      - NTFY_BEHIND_PROXY=true
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ntfy-lib:/var/lib/ntfy
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  ntfy-cache:
+  ntfy-lib:

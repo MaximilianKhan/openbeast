@@ -175,6 +175,15 @@ def _have_proc() -> bool:
     return os.path.exists("/proc/self/stat")
 
 
+#: `ps` could not ANSWER (fork failure, a 5 s timeout under load, a missing
+#: or broken binary) — as opposed to answering "no such process". The two
+#: used to be the same None, so one failed probe on a macOS client filed a
+#: live session `lost` for good, and its owner's real verdict was then
+#: refused by finalize(). Unknown is not dead: reporting keeps the state it
+#: had, and signalling (require_start) still fails closed.
+_PROBE_FAILED = ("?", -1)
+
+
 def _ps_stat(pid: int) -> tuple[str, int] | None:
     """The /proc-less fallback: (state char, start time) from `ps`, or None.
 
@@ -185,23 +194,36 @@ def _ps_stat(pid: int) -> tuple[str, int] | None:
     own (no boot frame needed), and `stat`'s first letter carries the zombie
     state the same way /proc does. Both flags exist in BSD and procps ps.
     LC_ALL=C pins the lstart format. A process that is gone prints nothing.
+
+    Returns None ONLY when ps ran and said "no such process" (no output, no
+    complaint). A ps that could not run, timed out, complained on stderr or
+    printed something unparseable returns _PROBE_FAILED: we do not know.
     """
     try:
         pid = int(pid)
+    except (ValueError, TypeError):
+        return None
+    try:
         out = subprocess.run(
             ["ps", "-o", "stat=,lstart=", "-p", str(pid)],
             capture_output=True, text=True, timeout=5,
             env={**os.environ, "LC_ALL": "C", "LANG": "C"})
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-        return None
-    parts = (out.stdout or "").split()
+    except (OSError, subprocess.SubprocessError):
+        return _PROBE_FAILED
+    stdout = (out.stdout or "").strip()
+    if not stdout:
+        # procps and BSD ps both exit 1, silently, for a pid that is gone.
+        # Anything on stderr means ps itself had a problem.
+        err = (getattr(out, "stderr", "") or "").strip()
+        return None if not err else _PROBE_FAILED
+    parts = stdout.split()
     if out.returncode != 0 or len(parts) < 6:
-        return None
+        return _PROBE_FAILED
     try:
         started = time.strptime(" ".join(parts[1:6]), "%a %b %d %H:%M:%S %Y")
         return parts[0][:1], int(time.mktime(started))
     except (ValueError, OverflowError):
-        return None
+        return _PROBE_FAILED
 
 
 def _liveness_probe_available() -> bool:
@@ -245,7 +267,7 @@ def _proc_stat(pid: int) -> tuple[str, int] | None:
 def pid_start_time(pid: int) -> int | None:
     """Process start time (field 22 of /proc/<pid>/stat), or None."""
     got = _proc_stat(pid)
-    return got[1] if got else None
+    return got[1] if got and got is not _PROBE_FAILED else None
 
 
 #: /proc states that mean "this process is over". `Z` is the one that matters:
@@ -282,6 +304,11 @@ def _alive(pid, pid_start, *, require_start: bool = False) -> bool:
     got = _proc_stat(pid)
     if got is None:
         return False
+    if got is _PROBE_FAILED:
+        # We could not look. A status column keeps what it had (a `running`
+        # record stays running rather than being filed `lost` for good); a
+        # path about to deliver a signal has no proof and must refuse.
+        return not require_start
     state, current = got
     if state in _DEAD_STATES:
         return False                     # zombie/dead: the pid is a tombstone
@@ -975,27 +1002,53 @@ def prune_transcripts(log_dir: str, days: int) -> int:
     retires terminal records after 30 days, so a transcript outlives its index
     entry and is then collected here; a live session's file is never touched.
     Only regular *.jsonl / *.log files directly in `log_dir` are considered.
+
+    The LEDGER's own job logs are swept too, under the same cutoff and the
+    same "nothing names it" rule. scripts/job.sh streams a job's output to
+    `<ledger>/<id>.log`, and the automatic 30-day prune deliberately keeps
+    that log when it retires the record (keep_logs) — so once the record was
+    gone the log was referenced by nothing, visible to nothing, and, because
+    the only caller (scripts/logrotate.sh) passes agents/logs/, collected by
+    nothing either: .run/sessions grew without bound even with this knob set.
     """
     if days <= 0:
         return 0
     referenced = set()
+    ledger = _dir()
     try:
-        names = os.listdir(_dir())
+        names = os.listdir(ledger)
     except OSError:
         names = []
     for name in names:
         if name.endswith(".json") and not name.startswith("."):
-            rec = _read_record(os.path.join(_dir(), name))
+            rec = _read_record(os.path.join(ledger, name))
             if rec and rec.get("transcript"):
                 referenced.add(os.path.realpath(str(rec["transcript"])))
     cutoff = time.time() - days * 86400
+    removed = _prune_files(log_dir, (".jsonl", ".log"), cutoff, referenced)
+    if os.path.realpath(ledger) != os.path.realpath(log_dir):
+        # Only `<id>.log` whose `<id>.json` is gone: a log whose record still
+        # exists belongs to a session the console can still open.
+        removed += _prune_files(
+            ledger, (".log",), cutoff, referenced,
+            keep=lambda n: n.startswith(".") or os.path.exists(
+                os.path.join(ledger, n[:-len(".log")] + ".json")))
+    return removed
+
+
+def _prune_files(directory: str, suffixes: tuple, cutoff: float,
+                 referenced: set, keep=None) -> int:
+    """Unlink regular files in `directory` older than `cutoff` that no
+    record references (and that `keep`, when given, does not protect)."""
     removed = 0
     try:
-        entries = list(os.scandir(log_dir))
+        entries = list(os.scandir(directory))
     except OSError:
         return 0
     for ent in entries:
-        if not ent.name.endswith((".jsonl", ".log")):
+        if not ent.name.endswith(suffixes):
+            continue
+        if keep is not None and keep(ent.name):
             continue
         try:
             if not ent.is_file(follow_symlinks=False):

@@ -26,6 +26,27 @@ source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
+source "$SCRIPT_DIR/lib/portown.sh"   # ob_pid_owns_port: "healthy" must mean OUR process
+
+# Where a helper server relaunched below writes its output. It used to be
+# >/dev/null: a replacement that crashed on a bad conf, a taken port or an
+# import error failed every 5 minutes and nothing recorded why
+# (integration-ops-8). .run/stack.log is where start.sh's own instances
+# write, and scripts/logrotate-openbeast.conf already rotates it. Prints the
+# path after appending a dated marker line naming the service.
+_restart_log() { # _restart_log <service>
+  local f="$REPO_DIR/.run/stack.log"
+  mkdir -p "$REPO_DIR/.run"
+  (umask 077; : >> "$f")
+  printf '%s healthcheck --restart: relaunching %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >> "$f"
+  printf '%s\n' "$f"
+}
+# The tail of that log, indented, after a failed relaunch — the watchdog's
+# journal then carries the reason, not just the verdict.
+_restart_tail() { # _restart_tail <log>
+  echo "         its output (last lines of ${1#"$REPO_DIR"/}):"
+  tail -n 5 "$1" 2>/dev/null | sed 's/^/           | /'
+}
 
 # Where the services actually answer (same mapping start.sh uses): loopback
 # for loopback/wildcard binds, the address itself otherwise. llama-server,
@@ -91,6 +112,29 @@ _wd_budget_take() { # 0 = a relaunch is allowed (and is now counted)
 
 HEALTHY=0
 UNHEALTHY=0
+
+# _listener_ours <name> <pidname> <port> — after a GREEN health check: is the
+# process answering the one this stack started (.run/<pidname>.pid)? A
+# sibling worktree's server or an orphan of a killed stack answers health just
+# as well, but it has its own store and locality token, so every write
+# through scripts/artifact.sh (or a phone's chat send) fails while this line
+# said OK (integration-ops-6, steady-state half). Flagged as UNHEALTHY with the
+# holder named; NEVER killed here — it may be a sibling worktree's live
+# server. Silent when the holder cannot be named (no ss/lsof//proc, or another
+# uid's socket): unknown is not foreign.
+_listener_ours() {
+  local name="$1" pidname="$2" port="$3" rec holders
+  holders="$(ob_port_pids "$port" 2>/dev/null | tr '\n' ' ' || true)"; holders="${holders% }"
+  [[ -n "$holders" ]] || return 0
+  rec="$(cat "$REPO_DIR/.run/$pidname.pid" 2>/dev/null || true)"
+  [[ "$rec" =~ ^[0-9]+$ ]] && [[ " $holders " == *" $rec "* ]] && return 0
+  echo "  FOREIGN $name answers, but from pid $holders — a process this stack did not start"
+  echo "       (recorded: ${rec:-none}). Its store and token are not ours, so writes fail."
+  echo "       Not killed (it may be a sibling worktree's). Stop it, then: $0 --restart"
+  HEALTHY=$((HEALTHY - 1))
+  UNHEALTHY=$((UNHEALTHY + 1))
+  return 1
+}
 
 check() {
   # check <name> <url> <match> [bearer-key] — key adds an Authorization
@@ -347,9 +391,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       # and the supervisor is left holding a stale pid.
       # Upstream where llama-server answers (BIND_HOST), as start.sh does:
       # a specific-address bind refuses 127.0.0.1.
+      _edge_log="$(_restart_log beast-gate)"
       OPENBEAST_REPO_DIR="$REPO_DIR" \
         OPENBEAST_LLAMA_UPSTREAM="$INFERENCE_URL" \
-        python3 "$REPO_DIR/agents/edge.py" >/dev/null 2>&1 &
+        python3 "$REPO_DIR/agents/edge.py" >>"$_edge_log" 2>&1 &
       mkdir -p "$REPO_DIR/.run"
       echo "$!" > "$REPO_DIR/.run/edge.pid"
       sleep 3
@@ -381,7 +426,8 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
         pkill -f "$(_ob_ere "$REPO_DIR/agents/chat_server.py")" 2>/dev/null || true
       fi
       sleep 1
-      python3 "$REPO_DIR/agents/chat_server.py" >/dev/null 2>&1 &
+      _chat_log="$(_restart_log beast-chat)"
+      ob_exec_chat_server "$REPO_DIR/agents/chat_server.py" >>"$_chat_log" 2>&1 &
       CHAT_NEW_PID=$!
       # Record the pid immediately, same reasoning as the llama/mcpo paths:
       # a slow-but-alive start must not leave a stale pid on record.
@@ -390,17 +436,29 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       CHAT_OK=0
       for _i in $(seq 1 15); do
         if curl -s --max-time 2 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -q '"status":"ok"'; then
-          CHAT_OK=1
-          break
+          # Answering is not enough: an orphan still holding the port answers
+          # while our replacement dies on the bind (integration-ops-6).
+          _own=0; ob_pid_owns_port "$CHAT_NEW_PID" "${CHAT_PORT:-3003}" || _own=$?
+          if [[ $_own -eq 2 ]]; then sleep 1; kill -0 "$CHAT_NEW_PID" 2>/dev/null || _own=1; fi
+          if [[ $_own -ne 1 ]]; then CHAT_OK=1; break; fi
         fi
+        kill -0 "$CHAT_NEW_PID" 2>/dev/null || break
         sleep 1
       done
       if [[ $CHAT_OK -eq 1 ]]; then
         echo "       → restarted (pid $CHAT_NEW_PID)"
       else
-        echo "       → restart FAILED: beast-chat not serving after 15s"
+        if kill -0 "$CHAT_NEW_PID" 2>/dev/null; then
+          echo "       → restart FAILED: beast-chat not serving after 15s"
+        else
+          echo "       → restart FAILED: the relaunched beast-chat exited"
+          rm -f "$REPO_DIR/.run/chat.pid"
+        fi
+        _restart_tail "$_chat_log"
       fi
     fi
+  else
+    _listener_ours "beast-chat console" chat "${CHAT_PORT:-3003}" || true
   fi
 fi
 
@@ -434,27 +492,39 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
         pkill -f "$(_ob_ere "$REPO_DIR/agents/artifact_server.py")" 2>/dev/null || true
         sleep 1
       fi
+      _art_log="$(_restart_log beast-artifact)"
       OPENBEAST_REPO_DIR="$REPO_DIR" \
         OPENBEAST_ARTIFACT_PORT="${ARTIFACT_PORT:-3004}" \
-        python3 "$REPO_DIR/agents/artifact_server.py" >/dev/null 2>&1 &
+        python3 "$REPO_DIR/agents/artifact_server.py" >>"$_art_log" 2>&1 &
+      ART_NEW_PID=$!
       mkdir -p "$REPO_DIR/.run"
-      echo "$!" > "$REPO_DIR/.run/artifact.pid"
+      echo "$ART_NEW_PID" > "$REPO_DIR/.run/artifact.pid"
       ARTIFACT_OK=0
       for _i in $(seq 1 15); do
         if curl -s --max-time 2 "$ARTIFACT_HEALTH" 2>/dev/null | grep -qi ok; then
-          ARTIFACT_OK=1
-          break
+          _own=0; ob_pid_owns_port "$ART_NEW_PID" "${ARTIFACT_PORT:-3004}" || _own=$?
+          if [[ $_own -eq 2 ]]; then sleep 1; kill -0 "$ART_NEW_PID" 2>/dev/null || _own=1; fi
+          if [[ $_own -ne 1 ]]; then ARTIFACT_OK=1; break; fi
         fi
+        kill -0 "$ART_NEW_PID" 2>/dev/null || break
         sleep 1
       done
       if [[ $ARTIFACT_OK -eq 1 ]]; then
-        echo "       → restarted"
+        echo "       → restarted (pid $ART_NEW_PID)"
       else
-        echo "       → restart FAILED: beast-artifact not serving after 15s"
+        if kill -0 "$ART_NEW_PID" 2>/dev/null; then
+          echo "       → restart FAILED: beast-artifact not serving after 15s"
+        else
+          echo "       → restart FAILED: the relaunched beast-artifact exited"
+          rm -f "$REPO_DIR/.run/artifact.pid"
+        fi
+        _restart_tail "$_art_log"
         echo "         (publishing still works — the tools use the store"
         echo "          in process; only viewing the URLs is down)"
       fi
     fi
+  else
+    _listener_ours "beast-artifact" artifact "${ARTIFACT_PORT:-3004}" || true
   fi
 fi
 

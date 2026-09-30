@@ -30,6 +30,10 @@ cd "$REPO_DIR"
 # hardware.sh provides the shared backend → cmake-flags mapping.
 source "$REPO_DIR/scripts/lib/conf.sh"
 source "$REPO_DIR/scripts/lib/hardware.sh"
+# Enabled compose fragments, for recreating the stack the way start.sh
+# composes it (update_images). Guarded: a partial checkout still updates.
+# shellcheck source=/dev/null
+[[ -f "$REPO_DIR/scripts/lib/extensions.sh" ]] && source "$REPO_DIR/scripts/lib/extensions.sh"
 
 c_bold=$'\033[1m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 step() { echo; echo "${c_bold}==> $*${c_rst}"; }
@@ -226,9 +230,9 @@ update_llama() {
   warn "a running llama-server keeps the OLD binary until restarted"
 }
 
-# ---- container images: Open WebUI + SearXNG --------------------------------
+# ---- container images: Open WebUI + SearXNG + extension fragments ----------
 update_images() {
-  step "Container images (Open WebUI + SearXNG)"
+  step "Container images (Open WebUI + SearXNG + extensions)"
   command -v docker >/dev/null 2>&1 || { warn "docker not found — skipping images"; return 0; }
   if [[ $CHECK_ONLY -eq 1 ]]; then
     docker images --format '  {{.Repository}}:{{.Tag}}  {{.ID}}  created {{.CreatedSince}}' \
@@ -350,12 +354,66 @@ PYREPIN
       fi
     fi
   done
-  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml + scripts/client-searxng.compose.yml) after verifying the stack"
+  # EXTENSION FRAGMENTS (extensions/*/compose.yaml — ntfy, …) pin their
+  # images by digest too, and nothing used to move them: the list above is
+  # the core stack's. Their tag is a deliberate VERSION (ntfy:v2.28.0), so the
+  # bump re-resolves THAT tag — a rebuilt tag (a security respin) moves the
+  # digest; a new version stays a reviewed edit to the fragment. Every
+  # fragment on disk, enabled or not: a pin nobody refreshes rots the same.
+  local _cf _line _pin _tag _edigest _enew
+  for _cf in "$REPO_DIR"/extensions/*/compose.yaml; do
+    [[ -f "$_cf" ]] || continue
+    while IFS= read -r _line; do
+      _pin="$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//' <<< "$_line")"
+      if [[ "$_pin" == sha256:* ]]; then
+        warn "${_cf#"$REPO_DIR"/} runs a bundle content ID ($_pin), not a registry pin —
+       restore ${_cf#"$REPO_DIR"/}.pre-bundle, then re-run --images to resume digest pinning."
+        unpinned=1
+        continue
+      fi
+      if [[ "$_pin" != *@sha256:* ]]; then
+        warn "${_cf#"$REPO_DIR"/}: $_pin is not digest-pinned — pin it (image: <repo>:<tag>@sha256:…)"
+        unpinned=1
+        continue
+      fi
+      _tag="${_pin%@sha256:*}"
+      docker pull -q "$_tag" >/dev/null 2>&1 || { warn "pull failed: $_tag"; continue; }
+      _edigest=$(docker inspect --format '{{index .RepoDigests 0}}' "$_tag" 2>/dev/null | sed 's/.*@//')
+      [[ -n "$_edigest" ]] || { warn "no digest for $_tag"; continue; }
+      _enew="${_tag}@${_edigest}"
+      if [[ "$_pin" != "$_enew" ]]; then
+        # On the `image:` line whose value IS the pin, never a comment that
+        # quotes it (sed's "s|pin|new|" also rewrote a `# was <pin>` note).
+        OB_OLD="$_pin" OB_NEW="$_enew" python3 - "$_cf" <<'PYPIN'
+import os, sys
+p, old, new = sys.argv[1], os.environ["OB_OLD"], os.environ["OB_NEW"]
+out = []
+for line in open(p, encoding="utf-8").read().splitlines(keepends=True):
+    st = line.strip()
+    if st.startswith("image:") and st[len("image:"):].split("#")[0].strip() == old:
+        line = line.replace(old, new, 1)
+    out.append(line)
+open(p, "w", encoding="utf-8").writelines(out)
+PYPIN
+        ok "pinned $_tag -> ${_edigest:0:19}… (${_cf#"$REPO_DIR"/})"
+        bumped=1
+      else
+        ok "$_tag already at latest digest (${_cf#"$REPO_DIR"/})"
+      fi
+    done < <(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]]' "$_cf" || true)
+  done
+  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml, extensions/*/compose.yaml, scripts/client-searxng.compose.yml) after verifying the stack"
   # Recreate only containers actually running; a stopped stack stays stopped.
+  # With the ENABLED extension fragments, the way start.sh composes the stack
+  # — or a bumped extension image would never be recreated.
+  local _compose_args=(-f "$REPO_DIR/docker-compose.yml") _xa
+  if declare -F ob_ext_compose_args >/dev/null; then
+    while IFS= read -r _xa; do [[ -n "$_xa" ]] && _compose_args+=("$_xa"); done < <(ob_ext_compose_args)
+  fi
   local _running=""
-  _running="$(docker compose ps --status running --quiet 2>/dev/null || true)"
+  _running="$(docker compose "${_compose_args[@]}" ps --status running --quiet 2>/dev/null || true)"
   if [[ -n "$_running" ]]; then
-    docker compose up -d
+    docker compose "${_compose_args[@]}" up -d
     if [[ $unpinned -eq 1 ]]; then
       warn "running containers recreated — but the image(s) warned about above are STILL the old ones"
     else

@@ -57,6 +57,7 @@ bundle/
 # scripts/bundle.sh install keeps the original compose file beside the one it
 # rewrites to local image IDs — restore from it, never commit it.
 docker-compose.yml.pre-bundle
+extensions/*/compose.yaml.pre-bundle
 
 # scratch/: the campaign tooling and verdict records ARE tracked (they produced
 # the numbers in docs/RESULTS.md and resume the campaign). What is not: its

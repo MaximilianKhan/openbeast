@@ -893,6 +893,69 @@ for _k in containerd classic; do
   fi
 done
 
+# EXTENSION FRAGMENTS (extensions/*/compose.yaml — the ntfy push server):
+# pinned by digest like the core, and the bundle used to read the core file
+# only, so an offline box could never enable ntfy. Build now carries every
+# fragment's image, and install rewrites the fragment that runs it.
+REF_NT="reg.example/ntfy:v2.28.0@sha256:$(printf '4%.0s' {1..64})"
+ID_NT="sha256:$(printf 'f%.0s' {1..64})"
+mkdir -p "$SBB/extensions/ntfy"
+printf 'services:\n  ntfy:\n    image: %s\n' "$REF_NT" > "$SBB/extensions/ntfy/compose.yaml"
+reset_box "$CONTAINERD"
+printf '%s\t%s\n%s\t%s\n' "$REF_WEB" "$ID_REC" "$REF_NT" "$ID_NT" >> "$T/state/ids"
+_out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SBB/scripts/bundle.sh" build "$T/usb/out-ext" --no-source 2>&1)"; _rc=$?
+_refs="$("$REAL_PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join(sorted(i["ref"] for c in d["components"] if c["kind"]=="images" for i in c["images"])))' "$T/usb/out-ext/MANIFEST.json" 2>&1)"
+if [[ $_rc -eq 0 && "$_refs" == *"$REF_NT"* && "$_refs" == *"$REF_WEB"* ]]; then
+  pass "build carries an extension fragment's digest-pinned image beside the core's"
+else
+  fail "extension image in the bundle (rc=$_rc refs='$_refs'): $_out"
+fi
+rm -rf "$SBB/extensions" "$T/usb/out-ext"
+# Install: the fragment that runs the image is rewritten (and backed up); the
+# core compose, which does not run it, is left alone.
+mk_bundle "$B" containerd "$REF_NT" "$ID_NT"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_NT" "$ID_NT" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_NT" > "$T/state/load_says"
+printf '%s\t%s\n' "$REF_WEB" "$ID_REC" >> "$T/state/ids"     # the core is present
+mkdir -p "$SB/extensions/ntfy" "$SB/extensions/idle"
+printf 'services:\n  ntfy:\n    # pinned: %s\n    image: %s\n' "$REF_NT" "$REF_NT" > "$SB/extensions/ntfy/compose.yaml"
+# A DISABLED extension whose image this box lacks: not start.sh's problem.
+printf 'services:\n  idle:\n    image: reg.example/idle@sha256:%s\n' "$(printf '5%.0s' {1..64})" > "$SB/extensions/idle/compose.yaml"
+install_bundle "$B"
+if [[ $_rc -eq 0 ]] && has "$_out" "every image docker-compose.yml references resolves locally" \
+   && has "$_out" "extensions/ntfy/compose.yaml now reference(s) images by CONTENT ID"; then
+  pass "…a disabled extension's absent image is not reported missing; the rewrite warning names the fragment"
+else
+  fail "disabled-extension missing check (rc=$_rc): $_out"
+fi
+if [[ $_rc -eq 0 ]] && grep -qx "    image: $ID_NT" "$SB/extensions/ntfy/compose.yaml" \
+   && grep -qx "    # pinned: $REF_NT" "$SB/extensions/ntfy/compose.yaml" \
+   && grep -qx "    image: $REF_NT" "$SB/extensions/ntfy/compose.yaml.pre-bundle" \
+   && [[ "$(compose_web)" == "$REF_WEB" && ! -e "$SB/docker-compose.yml.pre-bundle" ]]; then
+  pass "install rewrites the extension fragment that runs the image (backup kept); the core compose is untouched"
+else
+  fail "extension install (rc=$_rc): $(tr '\n' '|' < "$SB/extensions/ntfy/compose.yaml") :: $_out"
+fi
+# ...but an ENABLED extension whose image is absent is (the control).
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" OPENBEAST_EXTENSIONS=idle "$SB/scripts/bundle.sh" install "$B" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 ]] && has "$_out" "reg.example/idle@sha256:"; then
+  pass "…an ENABLED extension's absent image is reported missing (control)"
+else
+  fail "enabled-extension missing check (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: with no fragment running it, the same image is the LOUD
+# "no image: line" refusal, as for any image this checkout does not run.
+rm -rf "$SB/extensions"
+mk_bundle "$B" containerd "$REF_NT" "$ID_NT"; reset_box "$CONTAINERD"
+printf '%s\t%s\n' "$ID_NT" "$ID_NT" > "$T/state/load_adds"
+echo "Loaded image ID: $ID_NT" > "$T/state/load_says"
+install_bundle "$B"
+if [[ $_rc -ne 0 ]] && has "$_out" "has no \`image:\` line for it"; then
+  pass "negative control: without the fragment, an extension image is refused as unmatched"
+else
+  fail "no-fragment control (rc=$_rc): $_out"
+fi
+
 # ===========================================================================
 echo ""
 echo "9. relative <dir> arguments resolve against the CALLER's cwd:"
