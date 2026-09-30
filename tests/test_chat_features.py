@@ -748,3 +748,51 @@ def test_rig_status_stale_lease_and_down_llama(rig, tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_CHAT_GPU_LEASE", str(tmp_path / "none"))
     rig._app = None
     assert rig.client.get("/api/chat/rig").json()["gpu"] == {"state": "free"}
+
+
+# ---------------------------------------------------------------------------
+# Integration seam (2026-09-30): the notify secret stays in chat_server
+# ---------------------------------------------------------------------------
+
+_NOTIFY_ENV = {
+    "OPENBEAST_CHAT_NOTIFY_URL": "http://127.0.0.1:3005/secret-topic-abc",
+    "OPENBEAST_CHAT_NOTIFY_TOKEN_FILE": "/tmp/ntfy.token",
+    "OPENBEAST_CHAT_NOTIFY_ON": "failed,done",
+    "CHAT_NOTIFY_URL": "http://127.0.0.1:3005/secret-topic-abc",
+}
+
+
+def test_child_env_never_carries_the_notify_settings(monkeypatch):
+    """The topic URL is the credential under ntfy's default access and its
+    name matches none of KEY/SECRET/PASSWORD/TOKEN — the shared scrub keeps
+    it. `keep` and `extra` cannot re-admit it either."""
+    for k, v in _NOTIFY_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("OPENBEAST_KEEP_ME", "yes")          # negative control
+    env = chat_server.child_env(
+        {"OPENBEAST_SESSION_ID": "s1",
+         "OPENBEAST_CHAT_NOTIFY_URL": "http://x/extra"},
+        keep=("OPENBEAST_CHAT_NOTIFY_URL", "OPENBEAST_API_KEY"))
+    for k in _NOTIFY_ENV:
+        assert k not in env, k
+    assert "secret-topic-abc" not in json.dumps(env)
+    assert env["OPENBEAST_SESSION_ID"] == "s1"
+    assert env["OPENBEAST_KEEP_ME"] == "yes"
+
+
+def test_a_spawned_job_cannot_read_the_notify_url(rig, tmp_path, monkeypatch):
+    """End to end through the real spawn path (job.sh __supervise): the job's
+    own environment has its session id and none of the notify settings."""
+    for k, v in _NOTIFY_ENV.items():
+        monkeypatch.setenv(k, v)
+    dump = tmp_path / "env.txt"
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "title": "env", "cmd": f"env > {dump}",
+        "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    sid = r.json()["session"]["id"]
+    assert wait_state(sid, "done"), sessions.get(sid)
+    text = dump.read_text()
+    assert f"OPENBEAST_SESSION_ID={sid}" in text        # the control
+    assert "CHAT_NOTIFY" not in text
+    assert "secret-topic-abc" not in text

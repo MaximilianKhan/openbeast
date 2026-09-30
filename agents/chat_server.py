@@ -1031,6 +1031,13 @@ def is_secret_env_name(name: str) -> bool:
                                    and any(t in up for t in _SECRET_MARKS))
 
 
+def is_notify_env_name(name: str) -> bool:
+    """OPENBEAST_CHAT_NOTIFY_* / CHAT_NOTIFY_* and any *NOTIFY_URL* / *NOTIFY_TOKEN*."""
+    up = str(name).upper()
+    return (up.startswith(("OPENBEAST_CHAT_NOTIFY_", "CHAT_NOTIFY_"))
+            or "NOTIFY_URL" in up or "NOTIFY_TOKEN" in up)
+
+
 def child_env(extra: dict | None = None, keep: tuple = ()) -> dict:
     """This process's environment minus the stack's secrets.
 
@@ -1044,10 +1051,20 @@ def child_env(extra: dict | None = None, keep: tuple = ()) -> dict:
     except Exception:
         env = {k: v for k, v in os.environ.items()
                if not is_secret_env_name(k)}
+    # The notify settings are this server's alone. The topic URL IS the
+    # credential under ntfy's default read-write access, and its name matches
+    # none of the KEY/SECRET/PASSWORD/TOKEN markers, so the shared scrub above
+    # keeps it: a spawned agent's model-authored `env` (or a job) could read
+    # it and post to, or subscribe to, the operator's phone. Drop the whole
+    # family, whatever `keep` says.
+    for name in list(env):
+        if is_notify_env_name(name):
+            env.pop(name)
     for name in keep:
-        if name in os.environ:
+        if name in os.environ and not is_notify_env_name(name):
             env[name] = os.environ[name]
-    env.update(extra or {})
+    env.update({k: v for k, v in (extra or {}).items()
+                if not is_notify_env_name(k)})
     return env
 
 
