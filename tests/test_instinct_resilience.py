@@ -18,6 +18,7 @@ from instinct.config import EngineBinding, load_config
 from instinct.engines import EngineError, LockResult, build_engine
 from instinct.engines._llm import token_ids
 from instinct.engines.llamacpp import parse_top_logprobs
+from instinct.render import Rendered
 from instinct.service import Instinct
 
 DID = "router.spawn_intent"
@@ -338,6 +339,44 @@ def test_label_mass_collapse_is_seen_on_rows_that_abstain(tmp_path):
         inst, r = H.run(body(url))
     assert r["cascade"][0]["reason"] == "low_label_mass"
     assert "label_mass" in (inst.demotions.reason(DID) or "")
+
+
+# --- M6: forced SIS is SIS on the wire ------------------------------------------
+
+async def _score_close(eng, rendered):
+    try:
+        return await eng._score_rendered(rendered, {"yes": 1001, "no": 1002}, 2.0)
+    finally:
+        await eng.aclose()
+
+
+def _sg(url, **kw):
+    return build_engine(EngineBinding(name="sg", **H.sglang_binding(url, **kw)))
+
+
+@pytest.mark.parametrize("forced,requests,items_each", [(None, 1, 3), ("sis", 3, 1)])
+def test_forced_sis_sends_one_item_per_request(tmp_path, forced, requests, items_each):
+    log = tmp_path / "calls.jsonl"
+    with H.stub_server(call_log=str(log)) as (url, _):
+        eng = _sg(url)
+        eng.exec_forced = forced
+        r = Rendered("rank", query="Is it true?\n", items=["a wet", "b cold", "c hot"])
+        rows, exec_used, _ = H.run(_score_close(eng, r))
+    calls = [c for c in H.read_calls(log) if c["path"] == "/v1/score"]
+    assert len(rows) == 3 and len(calls) == requests
+    assert all(len(c["body"]["items"]) == items_each for c in calls)
+    assert exec_used == (forced or "mis")
+
+
+def test_forced_sis_uses_the_probe_reference_server(tmp_path):
+    log_main, log_ref = tmp_path / "main.jsonl", tmp_path / "ref.jsonl"
+    with H.stub_server(call_log=str(log_main)) as (url, _), \
+            H.stub_server(call_log=str(log_ref)) as (ref, _):
+        eng = _sg(url, sis_url=ref)
+        eng.exec_forced = "sis"
+        H.run(_score_close(eng, Rendered("rank", query="q\n", items=["a", "b"])))
+    assert not [c for c in H.read_calls(log_main) if c["path"] == "/v1/score"]
+    assert len([c for c in H.read_calls(log_ref) if c["path"] == "/v1/score"]) == 2
 
 
 # --- m7: a reload keeps auto-demotions unless the decision changed ---------------

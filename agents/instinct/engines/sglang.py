@@ -23,6 +23,7 @@ false} -> {"tokens": [int]} — [HW] the request schema (the route exists, F3).
 """
 from __future__ import annotations
 
+import asyncio
 import math
 
 from ..render import Rendered, placeholder_inputs, render
@@ -100,7 +101,17 @@ class SGLangEngine(LLMEngine):
 
     async def _score_rendered(self, rendered: Rendered, label_ids: dict[str, int],
                               timeout_s: float):
-        if rendered.items:
+        if rendered.items and self.exec_forced == "sis" and len(rendered.items) > 1:
+            # SIS FORCED on a MIS server after the equivalence probe failed: a
+            # batched request there IS MIS, so send one item per request, on
+            # exactly the path the probe used as its SIS reference (sis_url
+            # when set). What is ledgered and hashed as "sis" is then SIS.
+            url = self.binding.sis_url or None
+            parts = await asyncio.gather(*[
+                self._request(rendered.query, [it], label_ids, timeout_s, url_override=url)
+                for it in rendered.items])
+            rows, usage = [r for rs, _ in parts for r in rs], None
+        elif rendered.items:
             rows, usage = await self._request(rendered.query, rendered.items, label_ids,
                                               timeout_s)
         else:
