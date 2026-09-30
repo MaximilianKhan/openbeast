@@ -782,9 +782,11 @@ if ob_offline; then
   fi
   # Compose-kind extensions (ntfy, …) are merged into the SAME `docker compose
   # up --pull never` as WebUI and SearXNG, so one missing extension image
-  # aborts the whole frontend. bundle.sh and update.sh --images carry only the
-  # core docker-compose.yml's images: an extension image has to be moved by
-  # hand. Checked by digest, then by repo:tag (docker load drops the digest).
+  # aborts the whole frontend. bundle.sh carries every fragment's image and
+  # install points the fragment at the loaded ID; a box installed without a
+  # bundle has to move it by hand (extensions/<name>/README.md). Checked by
+  # the line as written (a digest pin or a loaded sha256:<id>), then by
+  # repo:tag.
   if command -v docker >/dev/null 2>&1; then
     for _ext in ${EXTENSIONS:-}; do
       _ext_compose="$REPO_DIR/extensions/$_ext/compose.yaml"
@@ -796,7 +798,7 @@ if ob_offline; then
           pass "offline: the $_ext extension's image is present (${_img%%@*})"
         else
           fail "offline: the $_ext extension's image ${_img%%@*} is not on this box — compose up --pull never fails, taking WebUI and SearXNG down with it" \
-               "on a connected box: docker pull $_img && docker save -o $_ext.tar ${_img%%@*}; here: docker load -i $_ext.tar (bundle.sh does not carry extension images) — or ./scripts/ext.sh disable $_ext"
+               "carry it in a bundle (./scripts/bundle.sh build on a connected box, then install here), or by hand: extensions/$_ext/README.md — or ./scripts/ext.sh disable $_ext"
         fi
       done < <(grep -oE '^[[:space:]]*image:[[:space:]]*[^[:space:]]+' "$_ext_compose" \
                  | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | sort -u)

@@ -45,14 +45,20 @@ digest on a connected box. Enabled extensions join the same
 `docker compose up --pull never` as WebUI and SearXNG, so a missing ntfy
 image would stop all three: `./scripts/doctor.sh` FAILs when `OFFLINE=true`,
 the extension is enabled and its image is not on the box. On a box
-installed without a bundle, move the image by hand:
+installed without a bundle, move the image by hand. `docker save`/`load`
+drops the registry digest `compose.yaml` pins, so after the load the pinned
+line can never resolve: point it at the loaded image's ID, the same rewrite
+`bundle.sh install` makes.
 
 ```bash
 # connected box
 docker pull binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
-docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0
+docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
 # closed box
-docker load -i ntfy.tar
+docker load -i ntfy.tar          # prints "Loaded image: …" or "Loaded image ID: sha256:…"
+docker image inspect -f '{{.Id}}' <what load printed>
+cp extensions/ntfy/compose.yaml extensions/ntfy/compose.yaml.pre-bundle
+# then, in extensions/ntfy/compose.yaml:  image: sha256:<that id>
 ```
 
 A new ntfy *version* is a reviewed edit to the tag in `compose.yaml`;
