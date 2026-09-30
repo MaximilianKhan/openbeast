@@ -399,6 +399,25 @@
 # Env override: $OPENBEAST_LANG_PACKS.  Inspect: ./scripts/lang-library.sh pack
 #LANG_PACKS=auto
 
+# The zig awareness pack for AGENTS on zig tasks. The Tier-3 A/B measured
+# agents/packs/zig-0.16.md handed to the agent runner as --context-file on
+# zig tasks: net +24 (26 rescues / 2 regressions, p < 0.0001) on
+# Qwen3.8-27B-Uncensored, and the champion Qwen3.6-27B improved too (23 -> 28
+# of 30). In-sample: a held-out check is still pending.
+#
+#   auto   (default) every agent started by start_agent / start_skill_agent,
+#          the beast-chat console/API, agent.sh or `client.sh agent` gets the
+#          pack when its task names zig (zig, build.zig, .zig) or, when the
+#          task names no language, its workdir holds build.zig / *.zig.
+#   off    no agent gets it.
+#
+# Only the exact measured pack is injected, and only when it matches the
+# installed zig. Never under eval (run_eval --packs decides there), never over
+# an explicit --context-file, and never into Open WebUI chats or opencode —
+# the pack was not measured there. LANG_PACKS without zig also disables it.
+# Env override: $OPENBEAST_LANG_PACK_CONTEXT.  Inspect: ./scripts/doctor.sh
+#LANG_PACK_CONTEXT=auto
+
 #CHAT_PORT=3003
 
 # READ allowlist: comma-separated tailnet logins, matched against the
