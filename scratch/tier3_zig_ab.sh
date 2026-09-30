@@ -73,6 +73,15 @@ SKIP_C0="${SKIP_C0:-0}"
 FRESH="${FRESH:-0}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 MANIFEST="${MANIFEST:-$REPO/scratch/tier3_cells-$STAMP.txt}"
+# CHUNKED RUNS (2026-09-29): the GPU comes back in 1-2 h windows, and a cell
+# is ~70-95 min. MANIFEST=<an existing manifest> RESUMES it: cells already
+# recorded there are skipped, and the run is refused unless the pack, model,
+# champion, jobs, units, fresh flag and eval ERA all match its header (a
+# verdict never pairs across eras). Touch $STOP_FILE to stop at the next CELL
+# BOUNDARY — never mid-cell; the file is consumed and the run exits 0.
+# DRY_RUN=1 walks the cell logic without touching the GPU (for tests).
+STOP_FILE="${STOP_FILE:-$REPO/.run/tier3.stop}"
+DRY_RUN="${DRY_RUN:-0}"
 
 export OPENBEAST_REASONING_BUDGET=20480
 export BEAST_ASSIST=0 OPENBEAST_DIAGNOSTICS=0       # packs-only isolation (see DESIGN)
@@ -97,17 +106,37 @@ EOF
 if [ -n "$EXTRA_UNITS" ]; then ZIG_UNITS="$ZIG_UNITS,$EXTRA_UNITS"; fi
 N_UNITS="$(echo "$ZIG_UNITS" | tr ',' '\n' | wc -l)"
 
-{
-  echo "# tier3 zig mini-A/B cells — $STAMP"
-  echo "# pack sha8=$PACK_SHA8 model=$MODEL champion=$CHAMPION jobs=$JOBS units=$N_UNITS fresh=$FRESH"
-  echo "# units=$ZIG_UNITS"
-} | tee "$MANIFEST"
+ERA="$(python3 -c 'import sys; sys.path.insert(0, "evals"); import cache; print(cache.context_hash())')"
+HDR2="# pack sha8=$PACK_SHA8 model=$MODEL champion=$CHAMPION jobs=$JOBS units=$N_UNITS fresh=$FRESH era=$ERA"
+HDR3="# units=$ZIG_UNITS"
+if [ -s "$MANIFEST" ]; then
+  # Resume: the header must describe exactly this run.
+  if [ "$(sed -n 2p "$MANIFEST")" != "$HDR2" ] || [ "$(sed -n 3p "$MANIFEST")" != "$HDR3" ]; then
+    echo "RESUME REFUSED: $MANIFEST was made for a different run:" >&2
+    echo "  it says:  $(sed -n 2p "$MANIFEST")" >&2
+    echo "  this is:  $HDR2" >&2
+    echo "  (or the unit list differs). Start a new manifest instead." >&2
+    exit 2
+  fi
+  echo "Resuming $MANIFEST — done: $(grep -oE '^(P0a|P1a|P0b|P1b|C0|C1) ' "$MANIFEST" | tr -d ' ' | tr '\n' ' ')"
+else
+  mkdir -p "$(dirname "$MANIFEST")"
+  { echo "# tier3 zig mini-A/B cells — $STAMP"; echo "$HDR2"; echo "$HDR3"; } | tee "$MANIFEST"
+fi
 
 newest_result() { ls -t evals/results/eval-*.json | head -1; }
 
 run_cell() {
   # run_cell <cell> <model-slug> <packs:0|1> [extra benchmark_all args...]
   local cell="$1" slug="$2" packs="$3"; shift 3
+  if grep -q "^$cell " "$MANIFEST"; then echo "  skip $cell: already in the manifest"; return 0; fi
+  if [ -e "$STOP_FILE" ]; then
+    rm -f "$STOP_FILE"
+    echo; echo "STOPPED at the cell boundary before $cell (stop file). Resume with:"
+    echo "  MANIFEST=$MANIFEST FRESH=$FRESH bash scratch/tier3_zig_ab.sh"
+    exit 0
+  fi
+  if [ "$DRY_RUN" = "1" ]; then echo "$cell DRYRUN-$cell" | tee -a "$MANIFEST"; return 0; fi
   local before; before="$(newest_result || true)"
   echo; echo "########## CELL $cell — $slug — packs=$packs $*"; echo
   if [ "$packs" = "1" ]; then
@@ -143,4 +172,5 @@ if [ "$SKIP_C0" != "1" ]; then run_cell C0 "$CHAMPION" 0 ${A_ARGS[@]+"${A_ARGS[@
 run_cell C1 "$CHAMPION" 1 ${A_ARGS[@]+"${A_ARGS[@]}"}
 
 echo; echo "All cells done. Manifest: $MANIFEST"; echo
+[ "$DRY_RUN" = "1" ] && exit 0
 python3 scratch/tier3_verdict.py --manifest "$MANIFEST"
