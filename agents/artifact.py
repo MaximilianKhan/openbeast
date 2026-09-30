@@ -520,6 +520,30 @@ def _require_owner(meta, owner, admin: bool = False) -> str:
     return who
 
 
+def _rig_may_republish(meta, who) -> bool:
+    """The one widening of the republish guard: the RIG principal (the CLI,
+    OpenCode stdio, a campaign — anything on this box with no identity) may
+    add a version to a page owned by the rig's own human.
+
+    Before F-A1 a CLI publish on a rig with ARTIFACT_OPERATORS set was owned
+    by operators[0], and `artifact.sh publish <f> --id <id>` updated it in
+    place. migrate_legacy_owners() only re-owns the literal "local", because
+    an operators[0] page may equally have been published by that human from
+    a browser and nothing on disk tells the two apart reliably — so without
+    this, every such page stopped accepting the documented update-in-place
+    publish after the upgrade (404).
+
+    Narrow on purpose: the first operator (the old CLI owner) and configured
+    admins (who may already act as the rig), never another operator's page.
+    The owner is not rewritten — republish never changes who owns a page."""
+    if _norm_login(who) != RIG_OWNER:
+        return False
+    known = _owner_of(meta)
+    if not known or known == RIG_OWNER:
+        return False
+    return known in set(admins()) | set(operators()[:1])
+
+
 def _check_file_path(path: str) -> str:
     """Normalize a published path or raise.
 
@@ -879,7 +903,8 @@ def publish(html, *, title=None, description=None, favicon=None,
             # told the principal that cannot also be used to claim one —
             # a real change, not a patch, and not one to make at the end of
             # three rounds of churn in this file.
-            _require_owner(meta, resolved_owner)
+            _require_owner(meta, resolved_owner,
+                           admin=_rig_may_republish(meta, resolved_owner))
             # Backfill provenance, never rewrite it: the alias identifies the
             # creator, and a later publisher must not overwrite whose it was.
             if alias and not _norm_login(meta.get("owner_webui_id")):

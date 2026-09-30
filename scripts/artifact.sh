@@ -259,8 +259,11 @@ print(str(d)[:500])' 2>/dev/null || true)"
     if [[ "$what" == "publish" ]]; then
       # correctness-07: the size gate refuses BEFORE the body is read, with
       # the same flat 404 as everything else.
-      echo "       A request body over the server's size gate reports 404 too" >&2
-      echo "       (supporting files travel base64-encoded inside JSON)." >&2
+      echo "       A 404 on publish means one of two things:" >&2
+      echo "       - the request body is over the server's size gate" >&2
+      echo "         (supporting files travel base64-encoded inside JSON), or" >&2
+      echo "       - with --id, the page is owned by another login; the rig or" >&2
+      echo "         an admin can hand it over: ./scripts/artifact.sh chown <id> rig" >&2
     else
       echo "       A private artifact owned by someone else reports 404 too." >&2
     fi

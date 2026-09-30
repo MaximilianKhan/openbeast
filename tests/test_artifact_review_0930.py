@@ -723,3 +723,64 @@ def test_the_workspace_refusal_does_not_misstate_the_privacy_model(env,
     assert out.startswith("Error: refusing to publish")
     assert "anyone with the link" not in out
     assert "on your tailnet" in out
+
+
+# --- fixup: upgrade path for operators[0]-owned pages, PATCH oracle ---------
+
+def test_the_rig_republishes_into_a_page_its_first_operator_owned(make_client):
+    """Before F-A1 a CLI publish on a rig with ARTIFACT_OPERATORS set was
+    owned by operators[0]; after the upgrade every CLI publish is the rig, and
+    `artifact.sh publish <f> --id <id>` into those pages answered 404. The
+    rig may add a version to the first operator's (or an admin's) page — and
+    the owner is not rewritten."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    a = publish(c, headers=local(c, MAX))                # what main's CLI wrote
+    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    r = c.post("/api/artifacts", json={"html": PAGE + "v2",
+                                       "artifact_id": a["id"]},
+               headers=local(c))
+    assert r.status_code == 201, r.text
+    meta = store.get_meta(a["id"])
+    assert meta["owner"] == "max@example.com"
+    assert len(meta["versions"]) == 2
+    # the same through the store, with no identity at all (OpenCode stdio)
+    store.publish(PAGE + "v3", artifact_id=a["id"])
+    assert len(store.get_meta(a["id"])["versions"]) == 3
+    # NEGATIVE CONTROL: another operator's page stays owner-only.
+    k = publish(c, headers=local(c, KID))
+    r = c.post("/api/artifacts", json={"html": PAGE, "artifact_id": k["id"]},
+               headers=local(c))
+    assert r.status_code == 404 and r.json() == FLAT_404
+    with pytest.raises(store.ArtifactError):
+        store.publish(PAGE, artifact_id=k["id"])
+    assert len(store.get_meta(k["id"])["versions"]) == 1
+
+
+def test_the_rig_republishes_into_a_configured_admins_page(make_client,
+                                                            monkeypatch):
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "kid@example.com")
+    c = make_client(operators="max@example.com,kid@example.com,x@example.com")
+    k = publish(c, headers=local(c, KID))
+    store.publish(PAGE + "v2", artifact_id=k["id"])
+    assert len(store.get_meta(k["id"])["versions"]) == 2
+    x = publish(c, headers=local(c, {"Tailscale-User-Login": "x@example.com"}))
+    with pytest.raises(store.ArtifactError):
+        store.publish(PAGE, artifact_id=x["id"])
+
+
+def test_a_logged_in_non_owner_cannot_republish_an_admins_page(make_client):
+    """The widening is for the RIG principal only: a second operator
+    publishing through the store with their own identity is still refused."""
+    make_client(operators="max@example.com,kid@example.com")
+    token = store.set_owner_override("max@example.com")
+    try:
+        aid = store.publish(PAGE)["id"]
+    finally:
+        store.reset_owner_override(token)
+    token = store.set_owner_override("kid@example.com")
+    try:
+        with pytest.raises(store.ArtifactError):
+            store.publish(PAGE, artifact_id=aid)
+    finally:
+        store.reset_owner_override(token)
+

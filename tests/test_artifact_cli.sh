@@ -395,6 +395,23 @@ else
   fail "read did not use --config, or leaked the token into argv: $(cat "$STUB_ARGV")"
 fi
 unset STUB_PS
+
+# --- 13. a publish 404 names BOTH causes ---
+# The size gate and the ownership guard answer the same flat 404. Telling the
+# operator only "your body is too big" sent them the wrong way on a rig whose
+# pre-upgrade pages are owned by a login, not by the rig.
+echo ""
+echo "publish 404 explanation:"
+rc=0
+OUT="$(STUB_EXIT=0 STUB_CODE=404 STUB_RESPONSE='{"detail":"Not Found"}' \
+  PATH="$STUBDIR:$PATH" "$CLI" publish "$PAGE" --id "a1b2c3d4-5e6f" 2>&1)" || rc=$?
+if [[ $rc -eq 3 ]] && echo "$OUT" | grep -q "size gate" \
+   && echo "$OUT" | grep -q "owned by another login" \
+   && echo "$OUT" | grep -q "artifact.sh chown <id> rig"; then
+  pass "a publish 404 names the size gate AND ownership, with the chown fix"
+else
+  fail "a publish 404 did not name both causes (exit $rc): $OUT"
+fi
 rm -f "$SANDBOX/.run/artifact-local.token"
 
 # --- Summary ---
