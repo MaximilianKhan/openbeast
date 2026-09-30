@@ -104,6 +104,11 @@ jobs:
       - name: Inference backend tests (vLLM / TensorFold, unmanaged)
         run: bash tests/test_backends.sh
 
+      # The Tier-3 campaign harness in a stub repo: the benchmark, era,
+      # engine and verdict are stubs, so no GPU or server is touched.
+      - name: Tier-3 campaign harness tests
+        run: bash tests/test_tier3_harness.sh
+
       # beast-hydra: hydra_core's readiness rule vs lib/backend.sh on shared
       # fixtures, and the simulated fleet (fake engines + a real hydra on
       # ephemeral loopback ports) driving every scripts/hydra.sh command.
