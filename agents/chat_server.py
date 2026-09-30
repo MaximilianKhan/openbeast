@@ -2142,9 +2142,18 @@ def render_transcript_html(record: dict, *, exported_at: str = "") -> str:
             f"</head><body>{head}{''.join(parts)}</body></html>")
 
 
-def export_artifact_id(session_id: str) -> str:
-    """Stable per session: re-exporting adds a version at the same URL."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"openbeast:chat-export:{session_id}"))
+def export_artifact_id(session_id: str, owner: str = "") -> str:
+    """Stable per session: re-exporting adds a version at the same URL.
+
+    `owner` names the per-principal fallback id publish_export uses when the
+    session's shared id already belongs to a different principal (the rig vs
+    a phone login) — beast-artifact refuses a republish into another
+    owner's page, so that export gets a page of its own instead of a
+    permanent 404."""
+    key = f"openbeast:chat-export:{session_id}"
+    if owner:
+        key += f":owner:{owner}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
 def artifact_endpoint() -> tuple[str, str]:
@@ -2167,6 +2176,7 @@ class ExportError(Exception):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.http = None       # the artifact server's own status, if it answered
 
 
 def export_owner_login(principal: dict, allowed) -> str:
@@ -2238,22 +2248,48 @@ def publish_export(record: dict, owner_login: str = "") -> dict:
     headers = {"Content-Type": "application/json", "X-OpenBeast-Local": token}
     if owner_login:
         headers["Tailscale-User-Login"] = owner_login
-    req = urllib.request.Request(
-        base + "/api/artifacts", data=json.dumps(body).encode("utf-8"),
-        method="POST", headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            out = json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
+
+    def post(doc: dict) -> dict:
+        req = urllib.request.Request(
+            base + "/api/artifacts", data=json.dumps(doc).encode("utf-8"),
+            method="POST", headers=headers)
         try:
-            detail = json.loads(e.read() or b"{}").get("detail")
-        except Exception:
-            detail = None
-        raise ExportError(502, f"beast-artifact refused the export "
-                               f"(HTTP {e.code}{': ' + str(detail) if detail else ''})")
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise ExportError(409, f"beast-artifact is not answering on {base} "
-                               f"({type(e).__name__}) — is it running?")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read() or b"{}").get("detail")
+            except Exception:
+                detail = None
+            err = ExportError(502, f"beast-artifact refused the export "
+                                   f"(HTTP {e.code}"
+                                   f"{': ' + str(detail) if detail else ''})")
+            err.http = e.code
+            raise err
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ExportError(409, f"beast-artifact is not answering on {base} "
+                                   f"({type(e).__name__}) — is it running?")
+
+    try:
+        out = post(body)
+    except ExportError as e:
+        # The shared id belongs to whoever exported first: the rig (local
+        # token, device key only) or a tailnet login. beast-artifact answers
+        # another owner's page with its flat 404, which left the second
+        # principal a permanent "HTTP 404". Publish to a page of its own.
+        if e.http != 404:
+            raise
+        body["artifact_id"] = export_artifact_id(sid, owner_login or "rig")
+        try:
+            out = post(body)
+        except ExportError as e2:
+            if e2.http == 404:
+                raise ExportError(502, "beast-artifact refused the export: "
+                                       "this transcript was first exported by "
+                                       "a different owner (the rig or another "
+                                       "tailnet login), and a separate page "
+                                       "for you was refused too") from None
+            raise
     if not isinstance(out, dict) or not out.get("url"):
         raise ExportError(502, "beast-artifact answered without a URL")
     out["bytes_html"] = len(page.encode("utf-8"))

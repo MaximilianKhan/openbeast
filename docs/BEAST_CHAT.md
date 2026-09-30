@@ -560,8 +560,11 @@ that pressed Export** (forwarded to beast-artifact with the locality token),
 so the link opens on that phone. If beast-artifact has an operator allowlist,
 that login must be on it. Otherwise, and for an export made on the rig with
 the local token, the page belongs to the rig (`rig`) and opens for the rig's
-admins. Needs `BEAST_ARTIFACT=true` and a running artifact server; otherwise
-409 with the reason.
+admins. The stable id belongs to whoever exported first; an export by the
+other kind of principal (the rig after a phone login, or the reverse) gets a
+stable page of its own (`uuid5` of the session and that owner) instead of
+beast-artifact's 404. Needs `BEAST_ARTIFACT=true` and a running artifact
+server; otherwise 409 with the reason.
 
 ### Push notifications
 

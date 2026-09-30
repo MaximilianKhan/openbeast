@@ -827,6 +827,30 @@ def test_the_default_artifact_admin_sees_an_exported_page(
     assert _get_page(port, aid, "mallory@example.com") == 404   # unlisted
 
 
+def test_a_second_principal_can_still_export_a_session(rig, artifact_server):
+    """B-chat-4: the shared id belongs to whoever exported first; the other
+    principal got a permanent 'HTTP 404'. It now gets a page of its own, and
+    each principal's re-export stays a new version of ITS page."""
+    import artifact
+    sid = rig.session(kind="agent", state="done", title="build check")
+    phone_aid = _export_as_phone(rig, sid)                 # phone first
+    assert phone_aid == chat_server.export_artifact_id(sid)
+    r = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                        headers=rig.local)                 # then the rig
+    assert r.status_code == 200, r.text
+    rig_aid = r.json()["id"]
+    assert rig_aid == chat_server.export_artifact_id(sid, "rig") != phone_aid
+    assert artifact.get_meta(rig_aid)["owner"] == "rig"
+    assert artifact.get_meta(phone_aid)["owner"] == LISTED
+    r2 = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                         headers=rig.local)
+    assert (r2.json()["id"], r2.json()["version"]) == (rig_aid, 2)
+    key = rig.enroll("phone2", "k-phone-export2", scopes=["chat"])
+    r3 = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                         headers={**key, "Tailscale-User-Login": LISTED})
+    assert (r3.json()["id"], r3.json()["version"]) == (phone_aid, 2)
+
+
 def test_only_a_verified_real_login_is_forwarded_as_owner():
     allow_all = lambda login: True  # noqa: E731
     f = chat_server.export_owner_login
