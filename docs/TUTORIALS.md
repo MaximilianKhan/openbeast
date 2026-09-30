@@ -229,7 +229,8 @@ Now give it something to watch:
 
 Both appear in the console within a second. (`--steer` is what registers an
 agent as a session; without it an `agent.sh` run is invisible to the console
-and has no inbox.) Attach to the agent, type
+and has no inbox. The console's **+** button starts steerable agents and
+jobs too.) Attach to the agent, type
 *"skip anything under 1 MB"* — it lands at the agent's next turn boundary,
 and the transcript shows `steer` when it does. Stop the job from the phone;
 the ledger records `stopped`, and its `meta.stop_requested_by` names who asked.

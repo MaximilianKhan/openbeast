@@ -2155,19 +2155,20 @@ def test_the_lost_frame_rewinds_the_resume_bookkeeping():
 
 
 def test_a_permanently_dead_stream_is_not_painted_as_reconnecting():
-    """EventSource does not retry a non-200, and this handler never looked at
-    readyState — so a stream the /events gate refuses (a caller whose only
-    credential is a device key, which EventSource cannot send) was reported
-    as "reconnecting" forever."""
+    """A refused stream (4xx — the /events gate saying no) is permanent and
+    must read "stream unavailable"; only a dropped connection retries and
+    reads "reconnecting". The console reads the stream with fetch() since the
+    2026-09-29 review (EventSource could not send a device key at all), so the
+    distinction lives in openStream's catch now, not in es.onerror."""
     js = _console_js()
-    i = js.index("es.onerror")
-    handler = js[i:js.index("};", i)]
-    assert "readyState === 2" in handler, handler
-    assert "stream unavailable" in handler, handler
-    # CONNECTING(0) must NOT be treated as permanent: the transient-drop path
-    # is the whole reason the handler is quiet by default
-    assert "readyState === 0" not in handler
-    assert "reconnecting" in handler
+    i = js.index("function openStream(")
+    body = js[i:js.index("function handle(", i)]
+    refused = body[body.index(".catch(function(e){"):body.index("function frame(")]
+    assert "e.status >= 400 && e.status < 500" in refused, refused
+    assert "stream unavailable" in refused, refused
+    # the transient path backs off and resumes from the last offset
+    ended = body[body.index("function ended(){"):]
+    assert "reconnecting" in ended and "openStream(S.offset)" in ended
 
 
 # ---------------------------------------------------------------------------

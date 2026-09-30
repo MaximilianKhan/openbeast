@@ -299,6 +299,54 @@ footer{
   border:1px solid var(--border);background:var(--surface-2);color:var(--muted);flex:0 0 auto}
 #conn.live{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
 #conn.off{background:var(--err-soft);color:var(--err);border-color:var(--err)}
+
+/* [hidden] must win over every display rule above. `.icobtn{display:flex}`
+   is author CSS and beat the UA's [hidden]{display:none}, so Back, Stop and
+   Replay showed on the list and on finished sessions (review chat-browser-2). */
+[hidden]{display:none !important}
+
+/* rig status strip */
+.rig{display:flex;gap:6px;flex-wrap:wrap;font-size:11.5px}
+.rig .stat{background:var(--surface-2)}
+.rig .up{color:var(--ok);border-color:var(--ok)}
+.rig .down{color:var(--err);border-color:var(--err)}
+.rig .held{color:var(--warn);border-color:var(--warn)}
+/* offline banner */
+.offline{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);
+  border-radius:var(--r-sm);padding:6px 10px;font-size:12.5px;font-weight:600}
+/* links inside transcript text */
+.ev a,.log a{color:var(--info);text-decoration:underline;overflow-wrap:anywhere}
+.ev a.art,.log a.art{color:var(--accent);font-weight:650}
+/* new-session sheet */
+.sheet .panel{max-height:92vh;overflow-y:auto}
+.tabs{display:flex;gap:6px;margin:0 0 12px}
+.tabs .chip[aria-selected="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.sheet textarea,.sheet select{
+  width:100%;background:var(--surface-2);border:1px solid var(--border-strong);
+  border-radius:var(--r-sm);padding:10px 12px;font-size:16px;margin-bottom:14px;
+}
+.sheet textarea{min-height:92px;resize:vertical;font-family:var(--font)}
+.sheet textarea.mono{font-family:var(--mono)}
+.sheet .row{display:flex;gap:8px}
+.sheet .row > div{flex:1;min-width:0}
+.sheet details{margin:0 0 12px}
+.sheet summary{cursor:pointer;font-size:13px;font-weight:650;color:var(--text-2);margin-bottom:8px}
+.presets{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.preset{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border:1px solid var(--border);
+  border-radius:var(--r-sm);cursor:pointer;background:var(--surface-2)}
+.preset[aria-checked="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.preset .pn{font-weight:650;font-size:14px}
+.preset .pc{font-family:var(--mono);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
+.argv{background:var(--code-bg);border:1px solid var(--border);border-radius:var(--r-sm);
+  font-family:var(--mono);font-size:12px;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere;
+  max-height:40vh;overflow-y:auto;margin:0 0 12px}
+.warnline{font-size:12.5px;color:var(--warn);margin:0 0 12px}
+.count{font-size:11px;color:var(--muted);text-align:right;margin:4px 0 0}
+.count.over{color:var(--err);font-weight:650}
+.fab{font-size:22px;font-weight:600}
+.acts2{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.acts2::-webkit-scrollbar{display:none}
+.btn.sm{min-height:34px;padding:0 12px;font-size:13px;flex:0 0 auto}
 </style>
 </head>
 <body>
@@ -308,11 +356,21 @@ footer{
     <button class="icobtn" id="back" hidden aria-label="Back to sessions">&#8592;</button>
     <h1 id="title">beast-chat<span class="sub" id="subtitle">sessions on this rig</span></h1>
     <span id="conn" hidden>idle</span>
-    <button class="icobtn" id="stopBtn" hidden aria-label="Stop this session" title="Stop">&#9632;</button>
-    <button class="icobtn" id="replayBtn" hidden aria-label="Replay from the start" title="Replay from the start">&#8635;</button>
+    <button class="icobtn fab" id="newBtn" aria-label="Start a new session" title="New session">+</button>
     <button class="icobtn" id="themeBtn" aria-label="Toggle colour theme" title="Theme">&#9681;</button>
-    <button class="icobtn" id="keyBtn" aria-label="Device key" title="Device key">&#128273;</button>
+    <button class="icobtn" id="keyBtn" aria-label="Device key and settings" title="Device key">&#128273;</button>
   </div>
+  <!-- Session actions get their own row: on a 390px phone, six icon buttons
+       beside the title squeezed the title and the state out of view. -->
+  <div class="acts2" id="sessActs" hidden>
+    <button class="btn sm" id="pauseBtn" hidden aria-label="Pause this agent">&#10074;&#10074; Pause</button>
+    <button class="btn sm" id="resumeBtn" hidden aria-label="Resume this agent">&#9654; Resume</button>
+    <button class="btn sm danger" id="stopBtn" hidden aria-label="Stop this session">&#9632; Stop</button>
+    <button class="btn sm" id="exportBtn" hidden aria-label="Export transcript as an artifact">&#8679; Export</button>
+    <button class="btn sm" id="replayBtn" hidden aria-label="Replay from the start">&#8635; Replay</button>
+  </div>
+  <div class="rig" id="rig" hidden></div>
+  <div class="offline" id="offline" hidden role="status"></div>
   <div class="chips" id="filters"></div>
 </header>
 
@@ -321,20 +379,21 @@ footer{
 <footer id="foot" hidden>
   <div class="composer">
     <label class="sr" for="msg">Message to this agent</label>
-    <textarea id="msg" rows="1" placeholder="Say something to this agent&#8230;" enterkeyhint="send"></textarea>
+    <textarea id="msg" rows="1" maxlength="4000" placeholder="Say something to this agent&#8230;" enterkeyhint="send"></textarea>
     <button class="send" id="sendBtn" aria-label="Send">&#8593;</button>
   </div>
-  <div class="hint" id="hint">Messages are queued &#8212; they land at the agent&#8217;s next turn.</div>
+  <div class="hint" id="hint">Enter sends, Shift+Enter is a new line. Messages land at the agent&#8217;s next turn.</div>
 </footer>
 
 <div class="sheet" id="keySheet" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="ksT">
     <h2 id="ksT">Device key</h2>
-    <p>Sending and stopping need an enrolled device key with the <code>chat</code> scope.
-       Reading needs a tailnet login or the same key. Stored only in this browser.</p>
+    <p>Starting, sending, pausing, stopping and exporting need an enrolled device key with the
+       <code>chat</code> scope. Reading needs a tailnet login or the same key. Stored only in this browser.</p>
     <label for="keyIn">Key</label>
     <input id="keyIn" type="password" autocomplete="off" spellcheck="false" placeholder="paste the key from clients.sh enroll">
     <div class="acts">
+      <button class="btn" id="notifyTest" title="Send a test push notification">Test alert</button>
       <button class="btn" id="keyClear">Clear</button>
       <button class="btn" id="keyCancel">Cancel</button>
       <button class="btn primary" id="keySave">Save</button>
@@ -342,7 +401,125 @@ footer{
   </div>
 </div>
 
+<div class="sheet" id="newSheet" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="nsT">
+    <h2 id="nsT">New session</h2>
+    <div class="tabs" role="tablist">
+      <button class="chip" type="button" role="tab" id="tabAgent" aria-selected="true">Agent</button>
+      <button class="chip" type="button" role="tab" id="tabJob" aria-selected="false">Job</button>
+    </div>
+    <div id="paneAgent">
+      <label for="nsTask">Task</label>
+      <textarea id="nsTask" placeholder="What should the agent do?"></textarea>
+      <div class="row">
+        <div><label for="nsModel">Model</label><select id="nsModel"><option value="">server default</option></select></div>
+        <div><label for="nsIter">Max iterations</label><input id="nsIter" type="number" min="1" max="1000" value="200" inputmode="numeric"></div>
+      </div>
+      <label for="nsWorkdir">Working directory (optional)</label>
+      <input id="nsWorkdir" autocomplete="off" spellcheck="false" placeholder="default: the repo">
+      <p class="warnline">The agent runs <code>bash</code> on the rig with your permissions, against the rig&#8217;s llama-server.</p>
+    </div>
+    <div id="paneJob" hidden>
+      <div class="presets" id="nsPresets" role="radiogroup" aria-label="Presets"></div>
+      <details id="nsCustom">
+        <summary>Custom command</summary>
+        <label for="nsCmd">Shell command</label>
+        <textarea id="nsCmd" class="mono" placeholder="bash scratch/campaign.sh"></textarea>
+        <div class="row">
+          <div><label for="nsTitle">Title (optional)</label><input id="nsTitle" autocomplete="off"></div>
+          <div><label for="nsJobWd">Working directory</label><input id="nsJobWd" autocomplete="off" spellcheck="false" placeholder="default: the repo"></div>
+        </div>
+      </details>
+    </div>
+    <div class="acts">
+      <button class="btn" id="nsCancel" type="button">Cancel</button>
+      <button class="btn primary" id="nsReview" type="button">Review&#8230;</button>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="confirmSheet" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="csT">
+    <h2 id="csT">Start this?</h2>
+    <p id="csWhat">This exact command will run on the rig:</p>
+    <pre class="argv" id="csArgv"></pre>
+    <p id="csWd"></p>
+    <div class="acts">
+      <button class="btn" id="csCancel" type="button">Back</button>
+      <button class="btn primary" id="csGo" type="button">Start</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" hidden role="status" aria-live="polite"></div>
+
+<script id="bc-pure">
+"use strict";
+// Pure helpers — no DOM, no globals — so tests can run them outside a page.
+var BCPure = (function(){
+  // Incremental SSE parser. The stream is read with fetch(), not
+  // EventSource: EventSource cannot send X-OpenBeast-Device-Key, so a viewer
+  // whose only credential is a saved key got a 404 stream and no transcript
+  // (review chat-security-3 / chat-browser-10), and it dispatches a frame
+  // NAMED "error" to onerror, which painted a live stream "reconnecting"
+  // after any runner error event (review chat-security-4).
+  function sseParser(){
+    var buf = "";
+    return { push: function(chunk){
+      buf += chunk;
+      var out = [], i;
+      buf = buf.replace(/\r\n/g, "\n");
+      while((i = buf.indexOf("\n\n")) >= 0){
+        var block = buf.slice(0, i); buf = buf.slice(i + 2);
+        var ev = { id: null, event: "message", data: [] }, any = false;
+        block.split("\n").forEach(function(line){
+          if(!line || line.charAt(0) === ":") return;
+          var c = line.indexOf(":");
+          var f = c < 0 ? line : line.slice(0, c);
+          var v = c < 0 ? "" : line.slice(c + 1).replace(/^ /, "");
+          if(f === "id"){ ev.id = v; any = true; }
+          else if(f === "event"){ ev.event = v; any = true; }
+          else if(f === "data"){ ev.data.push(v); any = true; }
+        });
+        if(any && ev.data.length){ ev.data = ev.data.join("\n"); out.push(ev); }
+      }
+      return out;
+    }};
+  }
+  // Split text into plain runs and links. Only https:// URLs, plus http://
+  // links to an artifact page (/a/<uuid>) — never javascript:, data:, or
+  // anything the browser would treat as markup. Callers build text nodes
+  // and <a> elements from this; transcript text never reaches innerHTML.
+  var URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
+  var ART_RE = /^https?:\/\/[^\/\s]+\/a\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/v\/\d+)?\/?$/i;
+  function linkTokens(text){
+    text = String(text == null ? "" : text);
+    var out = [], last = 0, m;
+    URL_RE.lastIndex = 0;
+    while((m = URL_RE.exec(text))){
+      var url = m[0].replace(/[.,;:!?)\]}]+$/, "");
+      var art = ART_RE.test(url);
+      if(url.slice(0, 8).toLowerCase() !== "https://" && !art) continue;
+      if(m.index > last) out.push({ t: "text", v: text.slice(last, m.index) });
+      out.push({ t: "link", v: url, href: url, art: art });
+      last = m.index + url.length;
+      URL_RE.lastIndex = last;
+    }
+    if(last < text.length) out.push({ t: "text", v: text.slice(last) });
+    return out;
+  }
+  // Who sent a steer. `me` is this viewer's login; the runner logs the op's
+  // `from`, which chat_server writes as "<login>" or "<login> (<device>)".
+  function steerLabel(from, me){
+    from = String(from || "");
+    if(!from) return "operator → agent";
+    if(me && (from === me || from.indexOf(me + " (") === 0)) return "you → agent";
+    return from + " → agent";
+  }
+  return { sseParser: sseParser, linkTokens: linkTokens, steerLabel: steerLabel };
+})();
+if(typeof module !== "undefined" && module.exports){ module.exports = BCPure; }
+</script>
 
 <script>
 "use strict";
@@ -354,6 +531,8 @@ function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 
 var OFF = function(id){ return "bc.off." + id; };
 var KEY = "bc.devkey", THEME = "bc.theme", FILTER = "bc.filter";
+var MAX_MSG = 4000;            // what an agent receives whole (server: 413 above)
+var TAIL_BYTES = 128 * 1024;   // a fresh open of a big transcript starts here
 
 // --- tiny helpers -------------------------------------------------------
 var $ = function(s){ return document.querySelector(s); };
@@ -374,6 +553,20 @@ function toast(msg, ms){
   var t = $("#toast"); t.textContent = msg; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.hidden = true; }, ms || 2600);
 }
+// Text with links: text nodes and <a> elements only (F-C5). Nothing from a
+// transcript is ever parsed as HTML.
+function linked(node, text){
+  BCPure.linkTokens(text).forEach(function(tok){
+    if(tok.t === "text"){ node.appendChild(document.createTextNode(tok.v)); return; }
+    var a = document.createElement("a");
+    a.href = tok.href; a.textContent = tok.v;
+    a.target = "_blank"; a.rel = "noopener noreferrer";
+    if(tok.art) a.className = "art";
+    node.appendChild(a);
+  });
+  return node;
+}
+function textEl(tag, cls, text){ return linked(el(tag, cls), esc(text)); }
 
 // --- theme --------------------------------------------------------------
 function applyTheme(){
@@ -390,10 +583,12 @@ $("#themeBtn").addEventListener("click", function(){
 });
 applyTheme();
 
-// --- device key sheet ---------------------------------------------------
+// --- sheets -------------------------------------------------------------
+function openSheetEl(s){ s.hidden = false; }
+function closeSheetEl(s){ s.hidden = true; }
 var sheet = $("#keySheet");
-function openSheet(){ $("#keyIn").value = lsGet(KEY, ""); sheet.hidden = false; $("#keyIn").focus(); }
-function closeSheet(){ sheet.hidden = true; }
+function openSheet(){ $("#keyIn").value = lsGet(KEY, ""); openSheetEl(sheet); $("#keyIn").focus(); }
+function closeSheet(){ closeSheetEl(sheet); }
 $("#keyBtn").addEventListener("click", openSheet);
 $("#keyCancel").addEventListener("click", closeSheet);
 $("#keyClear").addEventListener("click", function(){ lsDel(KEY); closeSheet(); toast("device key cleared"); });
@@ -402,27 +597,44 @@ $("#keySave").addEventListener("click", function(){
   if(v) lsSet(KEY, v); else lsDel(KEY);
   closeSheet(); toast(v ? "device key saved" : "device key cleared");
 });
-sheet.addEventListener("click", function(e){ if(e.target === sheet) closeSheet(); });
-document.addEventListener("keydown", function(e){ if(e.key === "Escape" && !sheet.hidden) closeSheet(); });
+$("#notifyTest").addEventListener("click", function(){
+  api("/api/chat/notify/test", { method: "POST", body: "{}" })
+    .then(function(){ toast("test notification sent", 3000); })
+    .catch(function(e){ toast(writeError(e), 4200); });
+});
+["#keySheet", "#newSheet", "#confirmSheet"].forEach(function(sel){
+  var s = $(sel);
+  s.addEventListener("click", function(e){ if(e.target === s) closeSheetEl(s); });
+});
+document.addEventListener("keydown", function(e){
+  if(e.key !== "Escape") return;
+  ["#confirmSheet", "#newSheet", "#keySheet"].some(function(sel){
+    var s = $(sel); if(!s.hidden){ closeSheetEl(s); return true; } return false;
+  });
+});
 
 // --- API ----------------------------------------------------------------
-function api(path, opts){
-  opts = opts || {};
-  var headers = opts.headers || {};
+function authHeaders(h){
+  h = h || {};
   var k = lsGet(KEY, "");
   // Reads carry it too. `tailscale serve` injects Tailscale-User-Login on the
   // published deployment; a browser pointed straight at loopback has no such
-  // header, and identity is now required on every route.
-  if(k) headers["X-OpenBeast-Device-Key"] = k;
+  // header, and identity is required on every route.
+  if(k) h["X-OpenBeast-Device-Key"] = k;
+  return h;
+}
+function api(path, opts){
+  opts = opts || {};
+  var headers = authHeaders(opts.headers || {});
   if(opts.body) headers["Content-Type"] = "application/json";
-  return fetch(path, { method: opts.method || "GET", headers: headers, body: opts.body })
+  return fetch(path, { method: opts.method || "GET", headers: headers, body: opts.body, cache: "no-store" })
     .then(function(r){
       return r.text().then(function(txt){
         var data = null;
         try{ data = txt ? JSON.parse(txt) : null; }catch(e){}
         if(!r.ok){
           var e2 = new Error((data && (data.detail || data.message)) || ("HTTP " + r.status));
-          e2.status = r.status; throw e2;
+          e2.status = r.status; e2.detail = data && data.detail; throw e2;
         }
         return data;
       });
@@ -434,20 +646,59 @@ function writeError(err){
   if(err.status === 401) return "no device key — tap the key icon to add one";
   if(err.status === 404) return "no device key, or this device cannot write here — tap the key icon";
   if(err.status === 429) return "slow down — write rate limit hit";
-  if(err.status === 409) return "session already finished";
+  // 409 and 413 carry the server's own reason ("job sessions have no
+  // inbox", "message too long — …"); a fixed "already finished" told a
+  // user sending to a LIVE job that it had ended (review chat-browser-4).
+  if(err.detail) return String(err.detail);
   return err.message || "failed";
 }
 
 // --- state --------------------------------------------------------------
 var S = {
   view: "list", id: null, rec: null, kind: "agent",
-  es: null, offset: 0, rendered: {}, filter: lsGet(FILTER, ""),
-  stick: true, logBox: null, nodes: 0, terminal: false, poll: null
+  stream: null, offset: 0, filter: lsGet(FILTER, ""),
+  stick: true, logBox: null, nodes: 0, logNodes: 0, terminal: false, poll: null,
+  me: "", paused: false, retry: 0, retryTimer: null, lastSaved: 0,
+  listAt: 0, rigPoll: null
 };
 var MAX_NODES = 600;
 var KNOWN = ["hello","end","lost","log","unknown","start","spawn","iteration",
              "assistant","tool_call","compaction","steer","paused","error",
              "context_overflow_unrecoverable","done","max_iterations"];
+
+// Who am I? Used only to label my own steers "you". Best effort.
+api("/api/chat/health").then(function(d){ S.me = (d && d.login) || ""; }).catch(function(){});
+
+// --- offline banner + service worker (F-C3) -----------------------------
+function setOffline(on){
+  var b = $("#offline");
+  if(!on){ b.hidden = true; return; }
+  var when = S.listAt ? new Date(S.listAt).toLocaleTimeString() + " (" + ago(new Date(S.listAt).toISOString()) + " ago)" : "never";
+  b.textContent = "offline — the rig is not answering; last updated " + when;
+  b.hidden = false;
+}
+window.addEventListener("online", function(){ setOffline(false); if(S.view === "list") loadList(); });
+window.addEventListener("offline", function(){ setOffline(true); });
+if("serviceWorker" in navigator){
+  try{ navigator.serviceWorker.register("/sw.js").catch(function(){}); }catch(e){}
+}
+
+// --- rig status strip (F-C7) --------------------------------------------
+function loadRig(){
+  api("/api/chat/rig").then(function(d){
+    var box = $("#rig"); box.textContent = "";
+    if(!d){ box.hidden = true; return; }
+    var g = d.gpu || {};
+    var gtxt = g.state === "held" ? ("GPU: " + clamp(g.label || "held", 40)) : "GPU: free";
+    var gs = el("span", "stat" + (g.state === "held" ? " held" : ""), gtxt);
+    if(g.since) gs.title = "since " + g.since;
+    box.appendChild(gs);
+    var l = d.llama || {};
+    box.appendChild(el("span", "stat " + (l.up ? "up" : "down"), "llama: " + (l.up ? "up" : "down")));
+    box.appendChild(el("span", "stat", (d.running >= 0 ? d.running : "?") + " running"));
+    box.hidden = false;
+  }).catch(function(){ $("#rig").hidden = true; });
+}
 
 // --- rendering: session list -------------------------------------------
 var STATES = ["", "running", "done", "failed", "stopped", "lost"];
@@ -472,13 +723,14 @@ function pill(state){
 function loadList(){
   var q = S.filter ? ("?state=" + encodeURIComponent(S.filter)) : "";
   api("/api/chat/sessions" + q).then(function(d){
+    S.listAt = Date.now(); setOffline(false);
     if(S.view !== "list") return;
     var v = $("#view"); v.textContent = "";
     var rows = (d && d.sessions) || [];
     if(!rows.length){
       var e = el("div", "empty");
       e.appendChild(el("span", "big", "◎"));
-      e.appendChild(document.createTextNode(S.filter ? ("no " + S.filter + " sessions") : "no sessions yet"));
+      e.appendChild(document.createTextNode(S.filter ? ("no " + S.filter + " sessions") : "no sessions yet — tap + to start one"));
       v.appendChild(e); return;
     }
     var list = el("div", "list");
@@ -499,6 +751,13 @@ function loadList(){
     });
     v.appendChild(list);
   }).catch(function(e){
+    if(S.view !== "list") return;
+    if(!e.status){
+      // A network failure, not a refusal: keep the last list on screen and
+      // say how old it is, instead of blanking the phone (F-C3).
+      setOffline(true);
+      if(S.listAt) return;
+    }
     var v = $("#view"); v.textContent = "";
     var b = el("div", "empty"); b.appendChild(el("span", "big", "⚠"));
     b.appendChild(document.createTextNode(e.status === 404 ? "not available for this login" : ("could not load sessions: " + e.message)));
@@ -526,12 +785,20 @@ function eventNode(type, d){
   var n;
   if(type === "assistant"){
     n = head(el("div", "ev e-assistant"), "assistant", d.offset);
-    n.appendChild(el("div", "body", esc(d.content)));
+    n.appendChild(textEl("div", "body", d.content));
     return n;
   }
   if(type === "steer"){
-    n = head(el("div", "ev e-steer"), "you → agent", d.offset);
-    n.appendChild(el("div", "body", esc(d.text || d.content || d.message)));
+    var who = BCPure.steerLabel(d.from, S.me);
+    if(d.op && d.op !== "say"){
+      // stop / pause / resume carry no text: a note, not an empty bubble.
+      if(d.op === "pause") S.paused = true;
+      if(d.op === "resume") S.paused = false;
+      updateFlowButtons();
+      return el("div", "note", (d.op || "?") + " requested by " + who.replace(/ → agent$/, ""));
+    }
+    n = head(el("div", "ev e-steer"), who, d.offset);
+    n.appendChild(textEl("div", "body", d.text || d.content || d.message));
     return n;
   }
   if(type === "tool_call"){
@@ -541,8 +808,7 @@ function eventNode(type, d){
     sum.appendChild(el("span", "name", esc(d.name)));
     sum.appendChild(el("span", "args", argSummary(d.args)));
     det.appendChild(sum);
-    var pre = el("pre", "res", esc(d.result));
-    det.appendChild(pre);
+    det.appendChild(textEl("pre", "res", d.result));
     if(d.result_truncated) det.appendChild(el("span", "trunc", "result truncated at 2000 chars"));
     n.appendChild(det);
     return n;
@@ -551,6 +817,7 @@ function eventNode(type, d){
     return el("div", "divider", "iteration " + (d.number || "?"));
   }
   if(type === "paused"){
+    S.paused = true; updateFlowButtons();
     return el("div", "note n-warn",
       "paused at iteration " + (d.iteration || "?") + " — waiting for resume or stop");
   }
@@ -561,18 +828,18 @@ function eventNode(type, d){
   }
   if(type === "start" || type === "spawn"){
     n = head(el("div", "ev e-assistant"), "task", d.offset);
-    n.appendChild(el("div", "body", esc(d.task)));
+    n.appendChild(textEl("div", "body", d.task));
     return n;
   }
   if(type === "error" || type === "context_overflow_unrecoverable"){
     n = head(el("div", "ev e-error"), type === "error" ? "error" : "context overflow", d.offset);
-    n.appendChild(el("div", "body", esc(d.error || d.reason || d.message || JSON.stringify(d))));
+    n.appendChild(textEl("div", "body", d.error || d.reason || d.message || JSON.stringify(d)));
     return n;
   }
   if(type === "done" || type === "max_iterations"){
     n = head(el("div", "ev " + (type === "done" ? "e-done" : "e-error")),
              type === "done" ? "complete" : "max iterations reached", d.offset);
-    if(d.summary) n.appendChild(el("div", "body", esc(d.summary)));
+    if(d.summary) n.appendChild(textEl("div", "body", d.summary));
     var st = el("div", "stats");
     if(d.iterations) st.appendChild(el("span", "stat", d.iterations + " iterations"));
     if(d.tokens_total) st.appendChild(el("span", "stat", d.tokens_total.toLocaleString() + " tokens"));
@@ -589,9 +856,23 @@ function eventNode(type, d){
   return n;
 }
 
+function streamBox(){
+  if(S.kind === "job"){
+    if(!S.logBox){ S.logBox = el("pre", "log"); S.logBox.id = "stream"; $("#view").appendChild(S.logBox); }
+    return S.logBox;
+  }
+  var s = document.getElementById("stream");
+  if(!s){ s = el("div", "stream"); s.id = "stream"; $("#view").appendChild(s); }
+  return s;
+}
 function push(node){
-  var v = $("#view");
-  var stream = $("#stream") || (function(){ var s = el("div", "stream"); s.id = "stream"; v.appendChild(s); return s; })();
+  var stream = streamBox();
+  if(S.kind === "job"){
+    // A note in a job view joins the log box without the agent-view trim,
+    // which used to cut a job log to ~500 lines when its summary arrived.
+    stream.appendChild(node); S.logNodes++;
+    scroll(); return;
+  }
   stream.appendChild(node);
   S.nodes++;
   if(S.nodes > MAX_NODES){
@@ -604,19 +885,32 @@ function push(node){
   scroll();
 }
 function pushLog(line){
-  var v = $("#view");
-  if(!S.logBox){ S.logBox = el("pre", "log"); S.logBox.id = "stream"; v.appendChild(S.logBox); }
-  S.logBox.appendChild(el("div", null, line === "" ? " " : line));
-  S.nodes++;
-  if(S.nodes > MAX_NODES * 4){
-    while(S.nodes > MAX_NODES * 3 && S.logBox.firstChild){ S.logBox.removeChild(S.logBox.firstChild); S.nodes--; }
+  var box = streamBox();
+  box.appendChild(textEl("div", null, line === "" ? " " : line));
+  S.logNodes++;
+  if(S.logNodes > MAX_NODES * 4){
+    while(S.logNodes > MAX_NODES * 3 && box.firstChild){ box.removeChild(box.firstChild); S.logNodes--; }
+    if(!box.firstChild || !box.firstChild.classList || !box.firstChild.classList.contains("note")){
+      box.insertBefore(el("div", "note n-warn", "older lines trimmed — tap ↻ to replay from the start"), box.firstChild);
+      S.logNodes++;
+    }
   }
   scroll();
 }
+// ONE layout per animation frame, however many events arrived in it. Writing
+// scrollTop = scrollHeight after every append forced a synchronous layout per
+// line: a 1 MB / 10k-line log took ~80 s and froze the page, Stop button
+// included (review chat-lifecycle-console-scroll-thrash).
+var scrollQueued = false;
 function scroll(){
-  if(!S.stick) return;
-  var m = $("#view");
-  m.scrollTop = m.scrollHeight;
+  if(!S.stick || scrollQueued) return;
+  scrollQueued = true;
+  requestAnimationFrame(function(){
+    scrollQueued = false;
+    if(!S.stick) return;
+    var m = $("#view");
+    m.scrollTop = m.scrollHeight;
+  });
 }
 $("#view").addEventListener("scroll", function(){
   var m = $("#view");
@@ -628,60 +922,92 @@ function setConn(txt, cls){
   var c = $("#conn"); c.hidden = false; c.textContent = txt;
   c.className = cls || "";
 }
-function closeStream(){
-  if(S.es){ try{ S.es.close(); }catch(e){} S.es = null; }
+function saveOffset(force){
+  // At most once a second (and on hide): a localStorage write per frame was
+  // the other half of the per-event cost.
+  var now = Date.now();
+  if(!S.id || (!force && now - S.lastSaved < 1000)) return;
+  S.lastSaved = now; lsSet(OFF(S.id), String(S.offset));
 }
-function openStream(from){
+function closeStream(){
+  if(S.retryTimer){ clearTimeout(S.retryTimer); S.retryTimer = null; }
+  if(S.stream){ try{ S.stream.abort(); }catch(e){} S.stream = null; }
+}
+function openStream(from, opts){
+  opts = opts || {};
   closeStream();
   S.offset = from;
-  var url = "/api/chat/sessions/" + encodeURIComponent(S.id) + "/events?from=" + from;
-  var es = new EventSource(url);
-  S.es = es;
-  setConn("connecting", "");
-  es.onopen = function(){ setConn("live", "live"); };
-  es.onerror = function(){
-    // EventSource reconnects on its own and replays Last-Event-ID, which the
-    // server honours as `from` — so a dropped radio resumes with no work here.
-    if(S.terminal){ closeStream(); setConn("closed", ""); return; }
-    // [51] ...but a NON-200 is not retried at all, and this handler never
-    // looked at readyState, so a permanently failed stream (the /events gate
-    // refusing a caller whose only credential is a device key, which
-    // EventSource cannot send) was painted "reconnecting" forever. CLOSED(2)
-    // is exactly the permanent case; a transient drop with a retry pending
-    // is CONNECTING(0), so the radio-blip path above is undisturbed.
-    if(es.readyState === 2){
-      closeStream(); setConn("stream unavailable", ""); return;
-    }
-    setConn("reconnecting", "off");
-  };
-  KNOWN.forEach(function(name){
-    es.addEventListener(name, function(m){
-      var d; try{ d = JSON.parse(m.data); }catch(e){ return; }
-      if(m.lastEventId){
-        var n = parseInt(m.lastEventId, 10);
-        if(!isNaN(n) && n > S.offset){ S.offset = n; lsSet(OFF(S.id), String(n)); }
+  var id = S.id;
+  var url = "/api/chat/sessions/" + encodeURIComponent(id) + "/events?" +
+            (opts.tail ? ("tail=" + opts.tail) : ("from=" + from));
+  var ctl = new AbortController();
+  S.stream = ctl;
+  setConn(S.retry ? "reconnecting" : "connecting", S.retry ? "off" : "");
+  var parser = BCPure.sseParser();
+  var decoder = new TextDecoder();
+  fetch(url, { headers: authHeaders({ "Accept": "text/event-stream" }), signal: ctl.signal, cache: "no-store" })
+    .then(function(r){
+      if(!r.ok){
+        var e = new Error("HTTP " + r.status); e.status = r.status; throw e;
       }
-      handle(name, d);
+      if(S.stream !== ctl) return;
+      S.retry = 0;
+      setConn("live", "live");
+      var reader = r.body.getReader();
+      function pump(){
+        return reader.read().then(function(res){
+          if(S.stream !== ctl) return;
+          if(res.done){ return ended(); }
+          parser.push(decoder.decode(res.value, { stream: true })).forEach(frame);
+          return pump();
+        });
+      }
+      return pump();
+    })
+    .catch(function(e){
+      if(S.stream !== ctl || (e && e.name === "AbortError")) return;
+      if(e && e.status && e.status >= 400 && e.status < 500){
+        // A refusal (404: not for this credential) is permanent; retrying
+        // would only hammer the audit log.
+        S.stream = null; setConn("stream unavailable", ""); return;
+      }
+      ended();
     });
-  });
+  function frame(f){
+    if(KNOWN.indexOf(f.event) < 0) return;
+    var d; try{ d = JSON.parse(f.data); }catch(e){ return; }
+    if(f.id){
+      var n = parseInt(f.id, 10);
+      if(!isNaN(n) && n > S.offset){ S.offset = n; saveOffset(false); }
+    }
+    handle(f.event, d);
+  }
+  function ended(){
+    if(S.stream !== ctl) return;
+    S.stream = null;
+    if(S.terminal){ setConn("closed", ""); return; }
+    // The radio dropped or the server restarted: resume from the last offset,
+    // backing off, which is what EventSource's Last-Event-ID used to do.
+    S.retry = Math.min((S.retry || 0) + 1, 6);
+    setConn("reconnecting", "off");
+    S.retryTimer = setTimeout(function(){ if(S.id === id && !S.terminal) openStream(S.offset); },
+                              Math.min(1000 * Math.pow(2, S.retry - 1), 15000));
+  }
 }
 function handle(name, d){
   if(name === "hello"){
-    S.kind = d.kind || "agent";
-    if(d.from === 0){ resetStream(); }
+    S.kind = d.kind || S.kind || "agent";
+    if(d.from === 0 || d.skipped){ resetStream(); }
+    if(d.skipped){
+      push(el("div", "note", "showing the last " + Math.round((d.size - d.skipped) / 1024) +
+        " KB of " + Math.round(d.size / 1024) + " KB — tap ↻ to replay everything"));
+    }
     if(d.state) updateState(d.state);
     return;
   }
   if(name === "lost"){
-    // [46] The SERVER has rewound to offset 0, so our forward offset is now
-    // a lie. `lost` frames deliberately carry no `id:`, so the monotonic
-    // guard above never lowers S.offset by itself — it would instead reject
-    // every id of the replayed transcript, freezing S.offset and
-    // localStorage at the stale value for the rest of the page's life. A
-    // later same-page resume (visibilitychange, or re-entering the session)
-    // would then ask `from=<stale>` and be served a silent blank. Rewind
-    // here: the server emits `lost` before every rewind it does, at open and
-    // mid-loop, so this one site covers both.
+    // [46] The SERVER has rewound to offset 0: our forward offset is now a
+    // lie. `lost` frames carry no id, so rewind here explicitly.
     S.offset = 0; lsDel(OFF(S.id));
     resetStream();
     push(el("div", "note n-warn", "transcript restarted — replaying from the beginning"));
@@ -693,7 +1019,7 @@ function handle(name, d){
       // may well still be running, we simply may not watch it any more.
       closeStream(); setConn("closed", "");
       push(el("div", "note n-warn", "stream closed — access revoked"));
-      composerEnabled(false);
+      composerEnabled(false, "You can no longer read this session.");
       return;
     }
     S.terminal = true;
@@ -701,36 +1027,62 @@ function handle(name, d){
     push(el("div", "note", "stream closed — " + (d.state || "finished")));
     if(d.summary){
       var f = head(el("div", "ev e-done"), "summary", d.offset);
-      f.appendChild(el("div", "body", esc(d.summary)));
+      f.appendChild(textEl("div", "body", d.summary));
       push(f);
     }
+    saveOffset(true);
     closeStream(); setConn("closed", "");
-    composerEnabled(false);
     return;
   }
   if(name === "log"){ pushLog(d.line); return; }
+  if(name === "steer" && (!d.op || d.op === "say")) reconcilePending(d.text || d.content || "");
   push(eventNode(d.type || name, d));
 }
 function resetStream(){
   var old = document.getElementById("stream");
   if(old && old.parentNode) old.parentNode.removeChild(old);
-  S.logBox = null; S.nodes = 0; S.stick = true;
+  S.logBox = null; S.nodes = 0; S.logNodes = 0; S.stick = true;
+}
+// The local echo of a sent message is PENDING until the runner consumes it;
+// its own steer event then replaces the echo instead of repeating it
+// (review chat-browser-7).
+function reconcilePending(text){
+  var list = document.querySelectorAll("#stream .e-pending");
+  for(var i = 0; i < list.length; i++){
+    if(list[i].getAttribute("data-text") === String(text).trim()){
+      list[i].parentNode.removeChild(list[i]); S.nodes = Math.max(0, S.nodes - 1); return;
+    }
+  }
 }
 
 // --- session view -------------------------------------------------------
 function updateState(state){
   S.terminal = ["done","failed","stopped","lost"].indexOf(state) >= 0;
+  S.state = state;
   var sub = $("#subtitle");
   sub.textContent = (S.kind || "agent") + " · " + (state || "?");
   $("#stopBtn").hidden = S.terminal;
-  composerEnabled(!S.terminal);
+  $("#exportBtn").hidden = false;
+  if(S.kind !== "agent"){
+    composerEnabled(false, S.terminal ? "This job has finished."
+      : "Jobs have no inbox — Stop is the only action.");
+  } else {
+    composerEnabled(!S.terminal, S.terminal ? "This session has finished. Nothing is listening on its inbox." : null);
+  }
+  updateFlowButtons();
 }
-function composerEnabled(on){
+function updateFlowButtons(){
+  var live = S.view === "session" && S.kind === "agent" && !S.terminal;
+  $("#pauseBtn").hidden = !live || S.paused;
+  $("#resumeBtn").hidden = !live || !S.paused;
+}
+function composerEnabled(on, why){
   $("#msg").disabled = !on;
   $("#sendBtn").disabled = !on;
+  $("#foot").hidden = S.view !== "session";
   $("#hint").textContent = on
-    ? "Messages are queued — they land at the agent’s next turn."
-    : "This session has finished. Nothing is listening on its inbox.";
+    ? "Enter sends, Shift+Enter is a new line. Messages land at the agent’s next turn."
+    : (why || "Nothing is listening on this session’s inbox.");
 }
 function renderStatus(st){
   var v = $("#view");
@@ -749,30 +1101,36 @@ function renderStatus(st){
 }
 
 function openSession(id){
-  S.view = "session"; S.id = id; S.terminal = false; S.stick = true;
-  $("#back").hidden = false; $("#replayBtn").hidden = false;
-  $("#foot").hidden = false;
+  // Every open from the list is a FRESH paint. The list view replaced #view,
+  // so resuming from a stored offset showed the old cards plus only the new
+  // events — and for a job, appended lines to a detached <pre> while the pill
+  // said "live" (review chat-browser-1). Resume-by-offset stays for
+  // visibilitychange, where the DOM really is intact.
+  closeStream();
+  S.view = "session"; S.id = id; S.terminal = false; S.stick = true; S.paused = false;
+  S.retry = 0; S.rec = null;
+  $("#back").hidden = false; $("#replayBtn").hidden = false; $("#newBtn").hidden = true;
+  $("#sessActs").hidden = false; $("#themeBtn").hidden = true;
+  $("#foot").hidden = false; $("#exportBtn").hidden = true;
+  $("#rig").hidden = true;
   renderFilters();
-  var fresh = !S.rendered[id];
-  if(fresh){ $("#view").textContent = ""; S.logBox = null; S.nodes = 0; }
-  S.rendered[id] = true;
+  $("#view").textContent = ""; S.logBox = null; S.nodes = 0; S.logNodes = 0;
+  composerEnabled(false, "connecting…");
 
   api("/api/chat/sessions/" + encodeURIComponent(id)).then(function(d){
+    if(S.id !== id) return;
     var rec = d.session || {};
     S.rec = rec; S.kind = rec.kind || "agent";
     $("#title").firstChild.nodeValue = clamp(rec.title || id, 60);
     updateState(rec.state);
     renderStatus(d.status || {});
-    // A fresh page load has nothing on screen, so replay from 0 to rebuild
-    // the view. A return to a session we already painted (tab backgrounded,
-    // radio dropped) resumes from the stored offset — nothing duplicated.
-    var from = 0;
-    if(!fresh){
-      var stored = parseInt(lsGet(OFF(id), "0"), 10);
-      if(!isNaN(stored) && stored > 0) from = stored;
-    }
-    openStream(from);
+    var size = (d.status && d.status.transcript_bytes) || 0;
+    // A big transcript opens at its tail: the view keeps ~2,400 nodes, so
+    // replaying megabytes to show the last few thousand lines was wasted.
+    if(size > TAIL_BYTES) openStream(0, { tail: TAIL_BYTES });
+    else openStream(0);
   }).catch(function(e){
+    if(S.id !== id) return;
     $("#view").textContent = "";
     var b = el("div", "empty"); b.appendChild(el("span", "big", "⚠"));
     b.appendChild(document.createTextNode(e.status === 404 ? "no such session" : e.message));
@@ -783,31 +1141,40 @@ function openSession(id){
 // --- composer -----------------------------------------------------------
 var ta = $("#msg");
 function autosize(){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 132) + "px"; }
-ta.addEventListener("input", autosize);
+function counter(){
+  var n = ta.value.trim().length;
+  var h = $("#hint");
+  if(n > MAX_MSG * 0.8){ h.textContent = n + " / " + MAX_MSG + " characters"; h.className = "hint count" + (n > MAX_MSG ? " over" : ""); }
+  else if(h.className !== "hint"){ h.className = "hint"; composerEnabled(!ta.disabled); }
+}
+ta.addEventListener("input", function(){ autosize(); counter(); });
 ta.addEventListener("keydown", function(e){
-  if(e.key === "Enter" && (e.metaKey || e.ctrlKey)){ e.preventDefault(); send(); }
+  // Enter sends (a phone's "Send" key IS Enter, and it used to insert a
+  // newline — review chat-browser-8); Shift+Enter keeps a newline. IME
+  // composition is left alone.
+  if(e.key === "Enter" && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
 $("#sendBtn").addEventListener("click", send);
 function send(){
   var text = ta.value.trim();
-  if(!text || !S.id) return;
+  if(!text || !S.id || ta.disabled) return;
+  if(text.length > MAX_MSG){ toast("too long — an agent receives at most " + MAX_MSG + " characters per message", 3800); return; }
   $("#sendBtn").disabled = true;
   api("/api/chat/sessions/" + encodeURIComponent(S.id) + "/send",
       { method: "POST", body: JSON.stringify({ text: text }) })
     .then(function(d){
-      ta.value = ""; autosize();
-      // Optimistic local echo, explicitly marked PENDING. The agent only
-      // reads its inbox between turns, so "sent" would be a lie while it is
-      // 90 seconds deep in a tool call.
-      var n = head(el("div", "ev e-pending"), "you → agent", null);
+      ta.value = ""; autosize(); counter();
+      // Optimistic local echo, explicitly marked PENDING until the agent's
+      // own steer event for it arrives and replaces it.
+      var n = head(el("div", "ev e-pending"), "you → agent (queued)", null);
+      n.setAttribute("data-text", text);
       n.appendChild(el("div", "body", text));
       n.appendChild(el("div", "queued", (d && d.detail) || "queued — lands at the next turn"));
       push(n);
       toast((d && d.detail) || "queued — lands at the next turn");
     })
     .catch(function(e){ toast(writeError(e), 3800); })
-    .then(function(){ $("#sendBtn").disabled = S.terminal; },
-          function(){ $("#sendBtn").disabled = S.terminal; });
+    .then(function(){ $("#sendBtn").disabled = ta.disabled; });
 }
 $("#stopBtn").addEventListener("click", function(){
   if(!S.id) return;
@@ -816,11 +1183,141 @@ $("#stopBtn").addEventListener("click", function(){
     .then(function(d){ toast((d && d.detail) || "stop requested", 4200); })
     .catch(function(e){ toast(writeError(e), 3800); });
 });
+function flow(op){
+  if(!S.id) return;
+  api("/api/chat/sessions/" + encodeURIComponent(S.id) + "/" + op, { method: "POST", body: "{}" })
+    .then(function(d){ toast((d && d.detail) || (op + " queued"), 3200); })
+    .catch(function(e){ toast(writeError(e), 3800); });
+}
+$("#pauseBtn").addEventListener("click", function(){ flow("pause"); });
+$("#resumeBtn").addEventListener("click", function(){ flow("resume"); });
+$("#exportBtn").addEventListener("click", function(){
+  if(!S.id) return;
+  $("#exportBtn").disabled = true;
+  api("/api/chat/sessions/" + encodeURIComponent(S.id) + "/export", { method: "POST", body: "{}" })
+    .then(function(d){
+      var n = el("div", "note");
+      n.appendChild(document.createTextNode("exported (private) → "));
+      var url = String((d && d.url) || "");
+      if(/^https?:\/\//i.test(url)){
+        var a = document.createElement("a"); a.href = url; a.textContent = url;
+        a.className = "art"; a.target = "_blank"; a.rel = "noopener noreferrer";
+        n.appendChild(a);
+      } else {
+        n.appendChild(document.createTextNode(url || "(no URL returned)"));
+      }
+      push(n); toast("transcript exported", 2600);
+    })
+    .catch(function(e){ toast(writeError(e), 5200); })
+    .then(function(){ $("#exportBtn").disabled = false; });
+});
 $("#replayBtn").addEventListener("click", function(){
   if(!S.id) return;
   lsDel(OFF(S.id)); resetStream(); S.terminal = false; openStream(0); toast("replaying from the start", 1500);
 });
 $("#back").addEventListener("click", function(){ location.hash = "#/"; });
+
+// --- new-session sheet (F-C1) -------------------------------------------
+var NS = { tab: "agent", preset: "", plan: null, body: null };
+function nsTab(t){
+  NS.tab = t;
+  $("#tabAgent").setAttribute("aria-selected", String(t === "agent"));
+  $("#tabJob").setAttribute("aria-selected", String(t === "job"));
+  $("#paneAgent").hidden = t !== "agent";
+  $("#paneJob").hidden = t !== "job";
+}
+$("#tabAgent").addEventListener("click", function(){ nsTab("agent"); });
+$("#tabJob").addEventListener("click", function(){ nsTab("job"); });
+function renderPresets(rows, problem){
+  var box = $("#nsPresets"); box.textContent = "";
+  if(problem) box.appendChild(el("p", "warnline", "presets ignored: " + problem));
+  if(!rows.length){
+    box.appendChild(el("p", "hint", "No presets. Put some in .run/chat-presets.json on the rig (mode 0600) — or use a custom command."));
+    $("#nsCustom").open = true;
+    return;
+  }
+  rows.forEach(function(p){
+    var b = el("div", "preset"); b.setAttribute("role", "radio"); b.tabIndex = 0;
+    b.setAttribute("aria-checked", String(NS.preset === p.name));
+    var t = el("div");
+    t.appendChild(el("div", "pn", p.title || p.name));
+    t.appendChild(el("div", "pc", p.cmd));
+    if(p.description) t.appendChild(el("div", "hint", p.description));
+    b.appendChild(t);
+    function pick(){ NS.preset = NS.preset === p.name ? "" : p.name; renderPresets(rows, problem); }
+    b.addEventListener("click", pick);
+    b.addEventListener("keydown", function(e){ if(e.key === "Enter" || e.key === " "){ e.preventDefault(); pick(); } });
+    box.appendChild(b);
+  });
+}
+function openNew(){
+  if(!lsGet(KEY, "")) toast("starting needs a device key — tap the key icon first", 4200);
+  NS.preset = ""; nsTab(NS.tab);
+  openSheetEl($("#newSheet"));
+  api("/api/chat/models").then(function(d){
+    var sel = $("#nsModel"), keep = sel.value;
+    while(sel.options.length > 1) sel.remove(1);
+    ((d && d.models) || []).forEach(function(m){ var o = el("option", null, m); o.value = m; sel.appendChild(o); });
+    sel.value = keep;
+  }).catch(function(){});
+  api("/api/chat/presets").then(function(d){ renderPresets((d && d.presets) || [], d && d.problem); })
+    .catch(function(){ renderPresets([], ""); });
+}
+function nsBody(){
+  if(NS.tab === "agent"){
+    var task = $("#nsTask").value.trim();
+    if(!task) throw new Error("give the agent a task");
+    var b = { kind: "agent", task: task };
+    var m = $("#nsModel").value; if(m) b.model = m;
+    var it = parseInt($("#nsIter").value, 10); if(!isNaN(it)) b.max_iter = it;
+    var wd = $("#nsWorkdir").value.trim(); if(wd) b.workdir = wd;
+    return b;
+  }
+  var cmd = $("#nsCmd").value.trim();
+  if(NS.preset && cmd) throw new Error("pick a preset OR type a command, not both");
+  if(NS.preset) return { kind: "job", preset: NS.preset };
+  if(!cmd) throw new Error("pick a preset or type a command");
+  var jb = { kind: "job", cmd: cmd };
+  var ti = $("#nsTitle").value.trim(); if(ti) jb.title = ti;
+  var jw = $("#nsJobWd").value.trim(); if(jw) jb.workdir = jw;
+  return jb;
+}
+$("#newBtn").addEventListener("click", openNew);
+$("#nsCancel").addEventListener("click", function(){ closeSheetEl($("#newSheet")); });
+$("#nsReview").addEventListener("click", function(){
+  var body;
+  try{ body = nsBody(); }catch(e){ toast(e.message, 3000); return; }
+  var dry = {}; for(var k in body) dry[k] = body[k]; dry.dry_run = true;
+  // The confirm dialog shows what the SERVER says will run — the argv it
+  // computed — never a client-side guess at it.
+  api("/api/chat/sessions", { method: "POST", body: JSON.stringify(dry) })
+    .then(function(d){
+      NS.body = body; NS.plan = d;
+      var argv = (d && d.argv) || [];
+      $("#csArgv").textContent = argv.map(function(a){ return /^[A-Za-z0-9_\/.:=@%+,-]+$/.test(a) ? a : "'" + String(a).replace(/'/g, "'\\''") + "'"; }).join(" ");
+      $("#csWhat").textContent = d.kind === "job"
+        ? "This exact command will run on the rig (under scripts/job.sh's supervisor):"
+        : "This exact agent command will run on the rig:";
+      $("#csWd").textContent = "in " + (d.workdir || "?") + (d.title ? (" · titled “" + d.title + "”") : "");
+      openSheetEl($("#confirmSheet"));
+    })
+    .catch(function(e){ toast(writeError(e), 4200); });
+});
+$("#csCancel").addEventListener("click", function(){ closeSheetEl($("#confirmSheet")); });
+$("#csGo").addEventListener("click", function(){
+  if(!NS.body) return;
+  $("#csGo").disabled = true;
+  api("/api/chat/sessions", { method: "POST", body: JSON.stringify(NS.body) })
+    .then(function(d){
+      closeSheetEl($("#confirmSheet")); closeSheetEl($("#newSheet"));
+      $("#nsTask").value = ""; $("#nsCmd").value = "";
+      var id = d && d.session && d.session.id;
+      toast("started", 1500);
+      if(id) location.hash = "#/s/" + encodeURIComponent(id);
+    })
+    .catch(function(e){ toast(writeError(e), 4200); })
+    .then(function(){ $("#csGo").disabled = false; });
+});
 
 // --- routing ------------------------------------------------------------
 function route(){
@@ -828,15 +1325,19 @@ function route(){
   var m = h.match(/^\/s\/(.+)$/);
   closeStream();
   if(S.poll){ clearInterval(S.poll); S.poll = null; }
+  if(S.rigPoll){ clearInterval(S.rigPoll); S.rigPoll = null; }
   if(m){ openSession(decodeURIComponent(m[1])); return; }
-  S.view = "list"; S.id = null;
+  S.view = "list"; S.id = null; S.logBox = null; S.nodes = 0; S.logNodes = 0;
   $("#back").hidden = true; $("#stopBtn").hidden = true; $("#replayBtn").hidden = true;
+  $("#pauseBtn").hidden = true; $("#resumeBtn").hidden = true; $("#exportBtn").hidden = true;
+  $("#newBtn").hidden = false; $("#sessActs").hidden = true; $("#themeBtn").hidden = false;
   $("#conn").hidden = true; $("#foot").hidden = true;
   $("#title").firstChild.nodeValue = "beast-chat";
   $("#subtitle").textContent = "sessions on this rig";
   renderFilters();
-  loadList();
+  loadList(); loadRig();
   S.poll = setInterval(function(){ if(S.view === "list" && !document.hidden) loadList(); }, 5000);
+  S.rigPoll = setInterval(function(){ if(S.view === "list" && !document.hidden) loadRig(); }, 15000);
 }
 window.addEventListener("hashchange", route);
 
@@ -844,13 +1345,12 @@ window.addEventListener("hashchange", route);
 // on hide (so we are not the reason the radio stays up) and resume from the
 // stored offset on show — which is the entire point of byte offsets.
 document.addEventListener("visibilitychange", function(){
-  if(document.hidden){ closeStream(); setConn("paused", ""); return; }
+  if(document.hidden){ saveOffset(true); closeStream(); setConn("paused", ""); return; }
   if(S.view === "session" && S.id && !S.terminal){
-    var stored = parseInt(lsGet(OFF(S.id), "0"), 10);
-    openStream(isNaN(stored) ? 0 : stored);
-  } else if(S.view === "list"){ loadList(); }
+    openStream(S.offset || 0);
+  } else if(S.view === "list"){ loadList(); loadRig(); }
 });
-window.addEventListener("pagehide", closeStream);
+window.addEventListener("pagehide", function(){ saveOffset(true); closeStream(); });
 
 route();
 })();

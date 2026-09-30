@@ -441,6 +441,76 @@ want to.
 tailnet mid-stream while the rig stays perfectly healthy — the single most
 confusing failure mode on this stack (README § Remote access).
 
+## Console features
+
+**Start from the phone.** The **+** button opens a sheet with two tabs.
+*Agent*: a task, an optional model (from beast-slot), max iterations and a
+working directory. *Job*: pick one of the operator's **presets**, or open
+*Custom command* and type one. **Review…** asks the server for a dry run
+(`POST /api/chat/sessions` with `"dry_run": true`, same write gate, nothing
+spawned) and the confirm dialog shows the exact argv it returned — then
+**Start** runs that. Starting needs the device key like every other write.
+Agents started this way are steerable (`--session-id … --steer`); jobs run
+under `scripts/job.sh`'s supervisor.
+
+Presets live in `.run/chat-presets.json`, written by you on the rig. The file
+is a list of one-tap commands, so it is ignored unless it is a regular file
+(not a symlink), owned by the stack's user, mode **0600**:
+
+```json
+{"presets": [
+  {"name": "doctor", "title": "openbeast doctor", "cmd": "./scripts/doctor.sh",
+   "workdir": "~/Documents/openbeast", "description": "health check"},
+  {"name": "scores", "cmd": "python3 evals/scoring.py --show"}
+]}
+```
+
+`name` is `[A-Za-z0-9._-]{1,64}` and unique; `cmd` is a shell command run with
+`bash -lc`; `title`, `workdir` and `description` are optional. The phone
+sends the preset's *name*; the command is resolved on the rig.
+
+**Pause / Resume** (agents only) write the `pause` / `resume` inbox ops the
+runner already honours; the pause lands at the next turn boundary. Jobs
+answer 409 — a shell command has no turn to pause at.
+
+**Export** publishes the transcript as a beast-artifact page: turns, tool
+calls, results (already clipped to 2,000 characters), every byte HTML-escaped
+and run through the bash tool's secret list (secret-named env values, `NAME=`
+/ `NAME:` assignments with secret-shaped names, bearer tokens). It is
+**private**, at a stable id (`uuid5` of the session id), so a re-export is
+version 2 at the same URL. Needs `BEAST_ARTIFACT=true`; otherwise 409.
+
+**Push notifications** are opt-in. Set `CHAT_NOTIFY_URL` to an ntfy-compatible
+topic URL (`OPENBEAST_CHAT_NOTIFY_URL`), optionally `CHAT_NOTIFY_ON`
+(default `failed,lost,done`) and `CHAT_NOTIFY_TOKEN_FILE` (a file holding a
+bearer token — never argv, never logged). Every ~5 s `chat_server` diffs the
+ledger against `.run/notify-state.json`; a session going from `running` to one
+of those states POSTs **title + state + a deep link, never transcript text**.
+Because the snapshot is on disk, a job that ended while the server was down
+still notifies on the next start. Deep links use `CHAT_PUBLIC_URL`
+(`OPENBEAST_CHAT_PUBLIC_URL`), else the `:8445` name `tailscale serve`
+reports. **Test alert** in the key sheet sends one on demand.
+
+**Rig strip.** The list header shows the GPU lease holder (the same pid +
+start-time check as `gpu-lease.sh status`), whether llama-server answers
+`/health`, and how many sessions are running (`GET /api/chat/rig`, read tier).
+
+**Links.** `https://` URLs and artifact pages (`…/a/<uuid>`) in transcript
+text become links (`rel="noopener"`); nothing in a transcript is ever parsed
+as HTML. Spawned agents and jobs, and anything `job.sh run` starts, get
+`OPENBEAST_SESSION_ID` in their environment, so what they publish can point
+back to the session.
+
+**Installable, and honest offline.** `/manifest.webmanifest`, PNG icons (iOS
+ignores an SVG touch icon) and a service worker that caches only the page
+shell — never `/api/*`, never a stream. With the rig unreachable the list
+stays on screen under an "offline — last updated …" banner.
+
+**Big transcripts open at the tail.** A session larger than 128 KB starts at
+its last 128 KB (`/events?tail=`), with a note; **Replay** loads everything.
+Enter sends a message, Shift+Enter is a new line; a message is capped at
+4,000 characters, the most an agent receives whole.
+
 ## Durability: what survives what
 
 **The stream reader is bounded.** A replay from zero — a fresh page load, the
@@ -496,8 +566,8 @@ enroll it again.
 `CHAT_OPERATORS`, or the request reached the server with no identity at all
 (no `Tailscale-User-Login` header and no `.run/chat-local.token`) — a direct
 `curl localhost:3003/api/chat/sessions` does exactly that. Note the console
-page itself is NOT part of this symptom: `/` and `/icon.svg` are ungated
-markup and answer 200 to anyone who can reach the port, so loading the page
+page itself is NOT part of this symptom: `/`, `/icon.svg`, the PNG icons,
+`/manifest.webmanifest` and `/sw.js` are ungated markup and answer 200 to anyone who can reach the port, so loading the page
 tells you nothing about your identity — the session list inside it is what
 404s.
 The 404 is deliberate in both cases; 403 would confirm the service exists.
