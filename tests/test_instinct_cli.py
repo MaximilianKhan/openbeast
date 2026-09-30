@@ -82,9 +82,11 @@ def test_up_status_down_pidfile_hygiene(tmp_path):
         d = sh(INSTINCT_SH, "down", env=env)
     assert d.returncode == 0 and "stopped" in d.stdout
     assert not (tmp_path / "run" / "instinct.pid").exists()
-    time.sleep(0.2)
+    deadline = time.time() + 5                    # a fixed 0.2 s lost to a loaded runner
     with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+        while time.time() < deadline:
+            os.kill(pid, 0)
+            time.sleep(0.05)
     assert "not running" in sh(INSTINCT_SH, "down", env=env).stdout
 
 
