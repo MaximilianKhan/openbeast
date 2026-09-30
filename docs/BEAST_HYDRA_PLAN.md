@@ -487,11 +487,11 @@ targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]
 require = ["vision"]
 
 [routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
-description = "Grammar-constrained spawn classifier — keep it off the 1-slot 5090"
+description = "Grammar-constrained spawn classifier — a routing DECISION, so a full 27B"
+# Decisions go to a full, uncensored dense 27B-class model, never a small or
+# ~3B-active MoE (hydra.toml.example; pinned in tests/test_hydra_core.py).
 targets = [
-  { d = "qwen36-a3b-q4@ti",    priority = 0 },
-  { d = "qwen38-nvfp4@sparks", priority = 1 },
-  { d = "qwen38-unc-q5@rig",   priority = 2 },
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
 ]
 require      = ["json_schema"]
 affinity     = "none"
