@@ -344,11 +344,33 @@ def _load_profile(spec: str, engine: str):
     return obprofile.load(spec)
 
 
+def _welltyped(table: dict, types: dict) -> dict:
+    """The keys of `table` whose value has the declared type. A wrong-typed
+    value is already an error; dropping it lets the range checks below run on
+    the default instead of raising TypeError on (say) `down_after = "2"`."""
+    return {k: v for k, v in table.items() if k in types
+            and isinstance(v, types[k]) and not (isinstance(v, bool) and bool not in types[k])}
+
+
 def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
              source: str = "hydra.toml") -> Config:
-    """Validate a parsed hydra.toml. Raises ConfigError listing EVERY error."""
-    env = dict(os.environ if env is None else env)
+    """Validate a parsed hydra.toml. Raises ConfigError listing EVERY error.
+
+    Never anything else: /hydra/reload and --check only understand
+    ConfigError, so a crash here would 500 the reload and leave
+    last_reload_error unset. Anything a check did not anticipate, on input
+    that already failed a type check, is reported as those errors."""
     errors: list[str] = []
+    try:
+        return _validate(raw, env, repo, source, errors)
+    except ConfigError:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError) as e:
+        raise ConfigError(errors or [f"malformed config ({type(e).__name__}: {e})"]) from e
+
+
+def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
+    env = dict(os.environ if env is None else env)
     warnings: list[str] = []
     if not isinstance(raw, dict):
         raise ConfigError(["config is not a table"])
@@ -368,11 +390,14 @@ def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
     _typecheck("hydra.breaker", br, _BREAKER_TYPES, errors)
     ins = h.get("instinct", {}) if isinstance(h.get("instinct", {}), dict) else {}
     _typecheck("hydra.instinct", ins, _INSTINCT_TYPES, errors)
-    hs = {k: v for k, v in h.items() if k not in ("breaker", "instinct") and k in _HYDRA_TYPES}
+    hs = {k: v for k, v in _welltyped(h, _HYDRA_TYPES).items() if k not in ("breaker", "instinct")}
+    ins = _welltyped(ins, _INSTINCT_TYPES)
+    if "engine_urls" in ins and not all(isinstance(u, str) for u in ins["engine_urls"]):
+        errors.append("hydra.instinct.engine_urls: every entry must be a string URL")
+        ins.pop("engine_urls")
     try:
-        breaker = Breaker(**{k: v for k, v in br.items() if k in _BREAKER_TYPES})
-        instinct = InstinctCfg(**{k: (tuple(v) if k == "engine_urls" else v)
-                                  for k, v in ins.items() if k in _INSTINCT_TYPES})
+        breaker = Breaker(**_welltyped(br, _BREAKER_TYPES))
+        instinct = InstinctCfg(**{k: (tuple(v) if k == "engine_urls" else v) for k, v in ins.items()})
         settings = Settings(**hs, breaker=breaker, instinct=instinct)
     except TypeError as e:           # only reachable after a type error above
         errors.append(f"hydra: {e}")

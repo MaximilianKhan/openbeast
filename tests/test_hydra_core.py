@@ -209,6 +209,36 @@ def test_validation_rejects(name):
     assert any(needle in x for x in e.value.errors), e.value.errors
 
 
+def _wrong_type_cases():
+    wrong = {int: "2", float: "2", str: [1], bool: "yes", list: 7, dict: 7}
+    tables = [(("hydra",), core._HYDRA_TYPES), (("hydra", "breaker"), core._BREAKER_TYPES),
+              (("hydra", "instinct"), core._INSTINCT_TYPES), (("nodes", "rig"), core._NODE_TYPES),
+              (("deployments", "unc@rig"), core._DEP_TYPES), (("routes", "beast"), core._ROUTE_TYPES)]
+    out = []
+    for where, types in tables:
+        for k, want in types.items():
+            for bad in [wrong[t] for t in want] + ["x", 1.5, [1], {"a": 1}]:
+                if not isinstance(bad, want) or (isinstance(bad, bool) and bool not in want):
+                    out.append((where, k, bad))
+    out += [(("hydra", "instinct"), "engine_urls", [1]), (("routes", "beast"), "targets", [1]),
+            (("routes", "beast"), "targets", [{"d": "unc@rig", "priority": "0"}])]
+    return out
+
+
+@pytest.mark.parametrize("where,key,bad", _wrong_type_cases(), ids=lambda v: repr(v)[:30])
+def test_a_wrong_type_anywhere_is_a_config_error_never_a_crash(where, key, bad):
+    # /hydra/reload and --check only understand ConfigError: a TypeError
+    # would 500 the reload and leave last_reload_error unset.
+    raw = base()
+    t = raw
+    for w in where:
+        t = t.setdefault(w, {})
+    t[key] = bad
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert e.value.errors
+
+
 def test_validation_reports_every_error_at_once():
     raw = _mut(lambda r: (r.update(extra=1), r["nodes"]["rig"].update(port=1)))
     with pytest.raises(core.ConfigError) as e:
