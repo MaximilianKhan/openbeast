@@ -292,3 +292,67 @@ def test_rules_answers_when_no_model_answered(tmp_path):
         return r
     r = H.run(body())
     assert r["engine"]["id"] == "rules" and r["answer"]["label"] == "inline"
+
+
+# --- M3: auto-demotion sees failures rules rescued, and every row's mass --------
+
+def test_rescued_engine_failures_auto_demote(tmp_path):
+    async def body(url):
+        cfgp = H.write_config(tmp_path, {"stub": H.llama_binding(url)},
+                              extra_decisions={DID: _spec('["stub", "rules"]', "enforce")})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg)
+        await inst.start()
+        _gate(inst, cfg, "stub")
+        _wrap(inst, "stub", url,
+              lambda n: httpx.Response(500, json={}) if n % 5 == 0 else None)
+        enforced = []
+        for _ in range(120):
+            enforced.append((await _decide(inst, "what is the capital of france"))["enforce"])
+        await inst.aclose()
+        return inst, enforced
+    with H.stub_server() as (url, _):
+        inst, enforced = H.run(body(url))
+    assert inst.demotions.reason(DID) and "fallback_rate" in inst.demotions.reason(DID)
+    assert any(enforced[:90]) and not any(enforced[-10:])
+
+
+def test_label_mass_collapse_is_seen_on_rows_that_abstain(tmp_path):
+    """low mass rows abstain (low_label_mass) — they must still be counted."""
+    async def body(url):
+        cfgp = H.write_config(tmp_path, {"stub": H.llama_binding(url)},
+                              extra_decisions={DID: _spec('["stub", "rules"]', "enforce")})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg)
+        await inst.start()   # the probe fails on low mass; force the engine up
+        inst.states["stub"].healthy = True
+        for _ in range(12):
+            inst.engines["stub"].record_latency(1.0)
+        _gate(inst, cfg, "stub", label_mass_ref=0.97)
+        inst.autodemoter.mass_window = 20
+        for _ in range(20):
+            r = await _decide(inst, "what is the capital of france")
+        await inst.aclose()
+        return inst, r
+    with H.stub_server({"low-mass": True}) as (url, _):
+        inst, r = H.run(body(url))
+    assert r["cascade"][0]["reason"] == "low_label_mass"
+    assert "label_mass" in (inst.demotions.reason(DID) or "")
+
+
+# --- m7: a reload keeps auto-demotions unless the decision changed ---------------
+
+def test_reload_keeps_auto_demotion_until_the_hash_changes(tmp_path):
+    cfgp, _ = H.promote_linear(tmp_path)
+    inst = Instinct(load_config(cfgp, env={}), repo_root=tmp_path)
+    H.run(inst.start())
+    inst.demotions.auto[DID] = {"reason": "fallback_rate 9/100", "at": 0}
+    H.run(inst.reload())                       # e.g. SIGHUP from another decision's demote
+    assert inst.demotions.reason(DID) == "auto:fallback_rate 9/100"
+    spec = tmp_path / "decisions" / f"{DID}.toml"
+    spec.write_text(spec.read_text().replace("version     = 1", "version     = 2", 1)
+                    .replace("version = 1", "version = 2", 1))
+    H.run(inst.reload())
+    assert inst.hashes[(DID, "linear")] is not None
+    assert inst.demotions.reason(DID) is None
+    H.run(inst.aclose())

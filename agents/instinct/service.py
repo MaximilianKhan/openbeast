@@ -146,7 +146,6 @@ class Instinct:
             chains[did] = chain
         self.specs, self.spec_errors, self.chains = specs, errors, chains
         self.demotions.load()
-        self.demotions.clear_auto()
         for name, eng in self.engines.items():
             relevant = [s for s in specs.values() if name in chains.get(s.id, [])]
             locks = await self._attach(eng, relevant) if relevant else {}
@@ -155,7 +154,20 @@ class Instinct:
                 self._write_locks(name, locks)
             if not eng.caps.needs_render:
                 self.states[name].healthy = True
+        before = dict(self.hashes)
         self.refresh_records()
+        self._expire_auto_demotions(before)
+
+    def _expire_auto_demotions(self, before: dict) -> None:
+        """An auto-demotion survives a reload (any `demote` of another decision
+        sends SIGHUP) unless what it judged changed: a decision whose engine
+        hashes differ is a new thing and starts un-demoted."""
+        for did in list(self.demotions.auto):
+            old = {k: v for k, v in before.items() if k[0] == did}
+            new = {k: v for k, v in self.hashes.items() if k[0] == did}
+            if old != new:
+                self.demotions.auto.pop(did, None)
+                self.autodemoter.reset(did)
 
     @staticmethod
     async def _attach(eng: Engine, specs: list[DecisionSpec]) -> dict[str, LockResult]:
@@ -619,12 +631,27 @@ class Instinct:
         except OSError:
             pass  # a full disk must not turn into a caller-visible error
         if spec is not None:
-            crec = self.calib.get((spec.id, (resp["engine"] or {}).get("id") or ""))
+            self._observe(spec, resp)
+
+    def _observe(self, spec: DecisionSpec, resp: dict) -> None:
+        """Feed auto-demotion (plan §5.7). A call counts as failed when ANY
+        engine it attempted timed out or errored, or it was shed — not only
+        when the whole chain failed: `rules` is last in every chain and
+        always answers, so "final action is fallback" would never fire.
+        label_mass is watched per engine against THAT engine's calibration
+        reference, from every row it scored (not just rows that acted)."""
+        cascade = resp["cascade"] or []
+        failed = any(c.get("action") == "fallback" for c in cascade) or (
+            resp["action"] == "fallback" and resp["fallback"]["reason"] in (
+                "engine_timeout", "engine_unavailable", "overload"))
+        self.autodemoter.observe(spec.id, failed=failed, label_mass=None, mass_ref_p50=None)
+        for c in cascade:
+            m = c.get("label_mass")
+            if not isinstance(m, (int, float)) or isinstance(m, bool):
+                continue
+            crec = self.calib.get((spec.id, c["engine"]))
             ref = ((crec or {}).get("label_mass_ref") or {}).get("p50")
-            self.autodemoter.observe(
-                spec.id, failed=resp["action"] == "fallback" and resp["fallback"]["reason"] in (
-                    "engine_timeout", "engine_unavailable", "deadline", "overload"),
-                label_mass=row["label_mass"], mass_ref_p50=ref)
+            self.autodemoter.observe_mass(spec.id, c["engine"], float(m), ref)
 
     # ------------------------------------------------------------------ route
     async def route(self, req: dict[str, Any]) -> dict[str, Any]:
