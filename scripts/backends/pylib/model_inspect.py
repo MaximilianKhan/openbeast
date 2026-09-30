@@ -242,10 +242,17 @@ def quantization(cfg: dict, hf_quant: dict, quantize_cfg: dict) -> dict:
     elif method == "bitsandbytes":
         scheme = "bitsandbytes " + ("4-bit" if q.get("load_in_4bit") else "8-bit" if q.get("load_in_8bit") else "?")
     elif method == "exl3":
-        scheme = f"EXL3 {q.get('bits', '?')} bpw"
+        scheme = f"EXL3 {q.get('bits', '?')} bpw" + (f", {q['codebook']} codebook" if q.get("codebook") else "") \
+            + (f", scope {q['scope']}" if q.get("scope") else "")
+    detail = {"quant_algo": algo or None, "formats": sorted(x for x in formats if x), "weight_bits": wbits}
+    if method == "exl3":
+        # the fields an engine's EXL3 variant check reads (TensorFold glm5_next: bits, codebook, scope)
+        detail["exl3"] = {k: q.get(k) for k in ("bits", "codebook", "scope", "head_bits", "version")}
     return {"method": method, "scheme": scheme, "bits": q.get("bits") or (wbits[0] if wbits else None),
-            "vllm": method, "tensorfold": method, "detail": {"quant_algo": algo or None, "formats": sorted(
-                x for x in formats if x), "weight_bits": wbits}}
+            "vllm": method, "tensorfold": method, "detail": detail}
+
+
+RANK_SLICED_RE = re.compile(r"\.rank\d+\.(trellis|suh|svh|mcg)$")
 
 
 # Logical values per stored element, when packing is the only explanation.
@@ -269,6 +276,7 @@ def weights(src: Source, q: dict, max_headers: int = 128) -> dict:
     header_bytes = 0
     headers_read = 0
     header_error = None
+    sliced = False
     if st and len(st) <= max_headers:
         try:
             for f in st:
@@ -277,6 +285,7 @@ def weights(src: Source, q: dict, max_headers: int = 128) -> dict:
                 for name, t in h.items():
                     if name == "__metadata__" or not isinstance(t, dict):
                         continue
+                    sliced = sliced or bool(RANK_SLICED_RE.search(name))
                     n = math.prod(t.get("shape") or [1])
                     by_dtype[t.get("dtype", "?")] = by_dtype.get(t.get("dtype", "?"), 0) + n
                     header_bytes += int(n * DTYPE_BYTES.get(t.get("dtype", ""), 2))
@@ -285,12 +294,17 @@ def weights(src: Source, q: dict, max_headers: int = 128) -> dict:
     stored = sum(by_dtype.values())
     logical = sum(n * _packing(q.get("method"), d, q.get("bits")) for d, n in by_dtype.items())
     index = _load_json(src, "model.safetensors.index.json")
+    wmap = index.get("weight_map") if isinstance(index.get("weight_map"), dict) else {}
     return {
         "safetensors_files": len(st),
         "file_bytes": total_bytes,
         # header-derived bytes equal file bytes for a real checkpoint; either is the weight footprint
         "weight_bytes": total_bytes or header_bytes,
         "index_total_size": (index.get("metadata") or {}).get("total_size"),
+        # EXL3 tensors stored per tensor-parallel rank (experts.N.proj.rank0.trellis): a runner-specific
+        # layout (cbert33's "rank-sliced" TP2 copies) that readers of the plain names cannot load
+        # (from the shard headers; the index too, when it is under hfapi's 16 MB read cap)
+        "rank_sliced": sliced or any(RANK_SLICED_RE.search(k) for k in wmap),
         "stored_elements_by_dtype": by_dtype,
         "stored_elements": stored,
         "logical_params_estimate": logical,
@@ -617,7 +631,16 @@ def vllm_support(archs: list[str], q: dict, trust_remote_code: bool, auto_map: b
     return {"engine": "vllm", "status": status, "notes": notes, "vendored_commit": commit}
 
 
-def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = None) -> dict:
+def _exl3_norm(v):
+    """TensorFold compares bits as int(v) (families/glm5_next/__init__.py:39): 4.0 and "4" are 4."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return v
+
+
+def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = None, *,
+                       rank_sliced: bool = False) -> dict:
     t = _data("tensorfold")
     commit = (t.get("_provenance") or {}).get("commit", "?")
     mt = str(cfg.get("model_type") or (cfg.get("text_config") or {}).get("model_type") or "")
@@ -649,6 +672,20 @@ def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = N
                                               or d.get("group_size") not in (fam.get("cuda_affine_groups") or [])):
             status = "unsupported"
             notes.append(f"CUDA reads MLX affine bits {fam['cuda_affine_bits']} in groups {fam['cuda_affine_groups']}")
+    elif qm == "exl3":
+        want = fam.get("cuda_exl3_variant")
+        if isinstance(want, dict):
+            found = (q.get("detail") or {}).get("exl3") or {}
+            got = {k: found.get(k) for k in want}
+            if {k: (_exl3_norm(v) if k == "bits" else v) for k, v in got.items()} != want:
+                status = "unsupported"
+                notes.append("the CUDA engine reads EXL3 only as " + ", ".join(f"{k} {v}" for k, v in want.items())
+                             + "; this checkpoint has " + ", ".join(f"{k} {v}" for k, v in got.items())
+                             + " (TensorFold refuses it at start)")
+        if status == "supported" and rank_sliced:
+            status = "unsupported"
+            notes.append("rank-sliced EXL3 (experts.N.proj.rank0.trellis …): TensorFold reads the plain tensor "
+                         "names, so this runner-specific layout does not load — use the unsliced original")
     elif qm in ("modelopt", "compressed-tensors"):
         bits = set((q.get("detail") or {}).get("weight_bits") or [])
         if bits - {4, 8}:
@@ -719,7 +756,8 @@ def inspect(src: Source, util: float = 0.80) -> dict:
         "chat_template": tpl, "auto_map": auto_map, "vision": bool(cfg.get("vision_config")),
         "suggestions": {"tool_call_parser": tool_s, "reasoning_parser": reas_s},
         "engines": {"vllm": vllm_support(archs, q, False, auto_map),
-                    "tensorfold": tensorfold_support(cfg, q, src.label)},
+                    "tensorfold": tensorfold_support(
+                        cfg, q, src.label, rank_sliced=bool(w.get("rank_sliced")))},
         "warnings": warnings,
     }
 

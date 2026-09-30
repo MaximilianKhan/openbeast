@@ -323,6 +323,62 @@ def test_tree_pagination_never_leaves_the_endpoint_origin(tmp_path, remote, monk
         other.close()
 
 
+# --------------------------------------------------------------------------- GLM-5.3-Flash EXL3 on TensorFold
+# TensorFold's glm5_next CUDA engine reads ONE EXL3 layout (EXL3_VARIANT = bits 4, codebook mcg, scope
+# glm53_routed_experts_only, experts under their plain names) and raises for anything else; the inspector
+# used to call every EXL3 GLM checkpoint "SUPPORTED" and drafted profiles that die at launch.
+
+TR3 = {"quant_method": "exl3", "bits": 4, "codebook": "mcg", "scope": "glm53_routed_experts_only",
+       "head_bits": 16, "version": "0.0.43"}
+MIA = "Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw"
+
+
+def glm(qc: dict) -> dict:
+    return {"architectures": ["Glm5NextForConditionalGeneration"], "model_type": "glm5_next",
+            "quantization_config": qc,
+            "text_config": {"model_type": "glm5_next_text", "num_hidden_layers": 4, "hidden_size": 64,
+                            "n_routed_experts": 8, "num_experts_per_tok": 2}}
+
+
+def expert_tensors(infix: str = "") -> dict:
+    p = "model.language_model.layers.3.mlp.experts.0.down_proj."
+    return {p + infix + x: ("BF16", [4, 4]) for x in ("trellis", "suh", "svh", "mcg")}
+
+
+def test_tensorfold_glm_exl3_tr3_layout_is_supported_on_two_ranks(tmp_path):
+    tf = run_inspect(make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, expert_tensors()))["engines"]["tensorfold"]
+    assert tf["status"] == "supported" and tf["family"] == "glm5_next" and tf["ranks"] == [2]
+
+
+@pytest.mark.parametrize("qc", [
+    {"quant_method": "exl3", "bits": 4.05, "head_bits": 6, "codebook": "mul1"},    # MikeRoz / turboderp
+    {"quant_method": "exl3", "bits": 2.25},                                          # r0b0tlab sm121
+    dict(TR3, scope="all_linear"),
+    dict(TR3, bits=3),
+])
+def test_tensorfold_glm_refuses_exl3_it_cannot_read(tmp_path, qc):
+    r = run_inspect(make_ckpt(tmp_path / "g", glm(qc), QWEN_TEMPLATE))
+    tf = r["engines"]["tensorfold"]
+    assert tf["status"] == "unsupported", tf
+    assert any("reads EXL3 only as bits 4, codebook mcg, scope glm53_routed_experts_only" in n for n in tf["notes"])
+
+
+def test_tensorfold_glm_refuses_a_rank_sliced_exl3_copy(tmp_path):
+    # cbert33's DGX-Sliced copy: the right quantization_config, but experts stored as .rank0./.rank1. tensors
+    d = make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, {**expert_tensors("rank0."), **expert_tensors("rank1.")})
+    tf = run_inspect(d)["engines"]["tensorfold"]
+    assert tf["status"] == "unsupported" and any("rank-sliced" in n for n in tf["notes"])
+
+
+def test_tensorfold_other_exl3_families_take_any_variant(tmp_path):
+    cfg = {"architectures": ["Qwen3_5ForConditionalGeneration"], "model_type": "qwen3_5",
+           "quantization_config": {"quant_method": "exl3", "bits": 3.05, "codebook": "mul1"},
+           "text_config": {"model_type": "qwen3_5_text", "num_hidden_layers": 4, "num_attention_heads": 4,
+                           "num_key_value_heads": 2, "head_dim": 8}}
+    tf = run_inspect(make_ckpt(tmp_path / "q", cfg, QWEN_TEMPLATE))["engines"]["tensorfold"]
+    assert tf["status"] == "supported" and tf["ranks"] == [1]       # EXL3_VARIANT "any", one GPU
+
+
 def test_vendored_tensorfold_is_the_commit_the_sparks_install():
     """model-inspect's TensorFold verdict is only true for the code spark-node.sh pip-installs."""
     import re
