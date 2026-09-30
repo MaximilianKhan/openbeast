@@ -148,6 +148,12 @@ def test_lifecycle_verbs(rig):
     # prune: dry run refuses, --yes keeps the newest N and the current one
     p = rig("prune", aid, "--keep", "1", check=False)
     assert p.returncode == 2 and "v1 v2 v3" not in p.stderr
+    # --keep 2 with v1 current: the newest two AND the current one stay. A
+    # --keep that never reached the renderer kept only the current version.
+    rig("rollback", aid, "1")
+    rig("prune", aid, "--keep", "2", "--yes")
+    assert [v["n"] for v in rig.store.get_meta(aid)["versions"]] == [1, 3, 4]
+    rig("rollback", aid, "4")
     rig("prune", aid, "--keep", "1", "--yes")
     assert [v["n"] for v in rig.store.get_meta(aid)["versions"]] == [4]
     # remove one version: refused for the current one

@@ -829,7 +829,7 @@ json.dump({"owner": os.environ["OB_OWNER"]}, open(os.environ["OB_OUT"], "w"))'
     _check_id "$art_id" "prune"
     code="$(_api GET "/api/artifacts/$(_urlenc "$art_id")")" || exit $?
     _check "$code" "prune"
-    victims="$(OB_EXTRA="$keep" _render versions-to-prune)"
+    victims="$(_render versions-to-prune "$keep")"
     if [[ -z "$victims" ]]; then
       echo "Nothing to prune: $art_id keeps its newest $keep version(s) and the current one."
       exit 0
