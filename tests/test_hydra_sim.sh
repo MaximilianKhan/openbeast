@@ -1,6 +1,6 @@
 #!/bin/bash
 # End to end: scripts/hydra-sim.sh (fake fleet + a real agents/hydra.py) runs
-# the five plan scenarios, then a held sim is driven through every
+# the six plan scenarios, then a held sim is driven through every
 # scripts/hydra.sh command. Real processes on ephemeral 127.0.0.1 ports; no
 # GPU, no docker, never :8080. Skips when loopback ports cannot be bound.
 # Everything started here is stopped here, by pid.
@@ -34,7 +34,7 @@ echo "=== hydra-sim.sh --scenarios ==="
 out="$(timeout 240 bash "$REPO_DIR/scripts/hydra-sim.sh" --scenarios 2>&1)"; rc=$?
 echo "$out" | sed 's/^/    /'
 [[ $rc -eq 0 ]] && ok "all scenarios passed" || bad "scenarios exit $rc"
-for i in 1 2 3 4 5; do
+for i in 1 2 3 4 5 6; do
   grep -q "^PASS $i " <<< "$out" && ok "scenario $i" || bad "scenario $i did not pass"
 done
 
@@ -75,13 +75,13 @@ python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["route"]=="beas
 bash "$H" drain rig >/dev/null && grep -q "DRAINED(manual)" <<< "$(bash "$H" status)" \
   && ok "drain" || bad "drain"
 out="$(bash "$H" explain '{"model":"beast","messages":[]}')"
-python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["attempts"][0]["d"]=="qwen38-nvfp4@sparks", d' "$out" \
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["attempts"][0]["d"]=="qwen38-unc-q5@ti" and all("nvfp4" not in a["d"] for a in d["attempts"]), d' "$out" \
   && ok "drained rig is skipped" || bad "explain after drain: $out"
 bash "$H" undrain rig >/dev/null && ! grep -q "DRAINED" <<< "$(bash "$H" status)" \
   && ok "undrain" || bad "undrain"
 
 out="$(bash "$H" pin-smoke all 2>&1)"; rc=$?
-[[ $rc -eq 0 ]] && [[ "$(grep -c ' ok$' <<< "$out")" -eq 6 ]] && ok "pin-smoke all (3 deployments x 2)" \
+[[ $rc -eq 0 ]] && [[ "$(grep -c ' ok$' <<< "$out")" -eq 8 ]] && ok "pin-smoke all (4 deployments x 2)" \
   || bad "pin-smoke rc=$rc: $out"
 out="$(HYDRA_KEY_FILE="$W/nope" bash "$H" pin-smoke all 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && ok "pin-smoke refuses an unreadable key file" || bad "pin-smoke with a bad key file passed"
@@ -95,8 +95,8 @@ bash "$H" reload | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"
   && ok "reload" || bad "reload"
 
 out="$(bash "$H" add-node newbox --url "$HYDRA_SIM_TI" --engine llama --key-file "$W/sim/ti.key" \
-        --slots 2 --deployment moe@newbox 2>"$W/add.err")"; rc=$?
-[[ $rc -eq 0 ]] && grep -q '^\[nodes.newbox\]' <<< "$out" && grep -q 'upstream = "Qwen 35B MoE"' <<< "$out" \
+        --slots 2 --deployment unc@newbox 2>"$W/add.err")"; rc=$?
+[[ $rc -eq 0 ]] && grep -q '^\[nodes.newbox\]' <<< "$out" && grep -q 'upstream = "Qwen3.8 27B Uncensored Q5"' <<< "$out" \
   && ok "add-node probes and prints a stanza" || bad "add-node rc=$rc: $out $(cat "$W/add.err")"
 python3 - "$OPENBEAST_HYDRA_CONFIG" "$out" <<'PYEOF' && ok "add-node never edits hydra.toml" || bad "hydra.toml changed"
 import sys
@@ -108,9 +108,10 @@ out="$(bash "$H" add-node tf --url "$HYDRA_SIM_TI" --engine tensorfold --key-fil
 [[ $rc -ne 0 ]] && grep -q "never give it a key" <<< "$out" && ok "add-node refuses a key for TensorFold" \
   || bad "add-node tf key: $out"
 
-timeout 180 bash "$H" conformance qwen38-nvfp4@sparks >"$W/conf.out" 2>&1
-rep="$OPENBEAST_HYDRA_RUN_DIR/conformance/qwen38-nvfp4@sparks/latest.json"
-python3 - "$rep" "$HYDRA_SIM_SPARKS" <<'PYEOF' && ok "conformance report lands per deployment, keyed, for the node" || { bad "conformance"; tail -5 "$W/conf.out"; }
+# the keyed vLLM decoy: conformance is admin mechanics on any deployment, not routing
+timeout 180 bash "$H" conformance qwen38-nvfp4@stock >"$W/conf.out" 2>&1
+rep="$OPENBEAST_HYDRA_RUN_DIR/conformance/qwen38-nvfp4@stock/latest.json"
+python3 - "$rep" "$HYDRA_SIM_STOCK" <<'PYEOF' && ok "conformance report lands per deployment, keyed, for the node" || { bad "conformance"; tail -5 "$W/conf.out"; }
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["url"] == sys.argv[2], d["url"]

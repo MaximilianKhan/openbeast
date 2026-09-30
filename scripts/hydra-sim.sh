@@ -1,9 +1,11 @@
 #!/bin/bash
-# beast-hydra simulator: three fake engines (llama rig 1 slot, vLLM "sparks"
-# 8 slots, llama "ti" 2 slots) plus a real agents/hydra.py, all on ephemeral
-# 127.0.0.1 ports with a generated hydra.toml and 0600 keys in a temp dir.
+# beast-hydra simulator: four fake engines (llama "rig" 1 slot and llama "ti"
+# 2 slots serving the uncensored 27B, TensorFold "sparks" serving GLM-5.3-Flash
+# Uncensored, and a vLLM "stock" decoy no route may reach) plus a real
+# agents/hydra.py, all on ephemeral 127.0.0.1 ports with a generated
+# hydra.toml and 0600 keys in a temp dir.
 #
-#   scripts/hydra-sim.sh                  # run the five plan scenarios (exit 0 = all pass)
+#   scripts/hydra-sim.sh                  # run the six plan scenarios (exit 0 = all pass)
 #   scripts/hydra-sim.sh --hold           # keep it up; prints the env for hydra.sh / a client
 #   scripts/hydra-sim.sh --hold --env-file F   # also write that env to F once ready
 #

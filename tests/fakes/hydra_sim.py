@@ -5,18 +5,28 @@
     scripts/hydra-sim.sh --hold             # keep the fleet up; point WebUI / beast-chat / hydra.sh at it
 
 Two processes in total, by design (it has to run beside a live GPU
-campaign): this one holds the three fake engines (rig = llama, 1 slot;
-sparks = vLLM, 8 slots; ti = llama, 2 slots) on ephemeral loopback ports and
-drives the scenarios; the other is `agents/hydra.py` on an ephemeral port,
-started with a generated hydra.toml and 0600 key files in a temp dir, and
-terminated by pid on exit. No GPU, no real engine, no network.
+campaign): this one holds the four fake engines on ephemeral loopback ports
+and drives the scenarios; the other is `agents/hydra.py` on an ephemeral
+port, started with a generated hydra.toml and 0600 key files in a temp dir,
+and terminated by pid on exit. No GPU, no real engine, no network.
 
-Scenarios (docs/BEAST_HYDRA_PLAN.md §6.11):
-  1 capacity spill   `beast` while the 1-slot rig is held by a slow stream -> sparks
-  2 node death       kill sparks: `beast:fast` falls to its next target, /health stays 200
-  3 mid-stream kill  error event, no [DONE], no replay
-  4 dead pin         a pin to the dead deployment -> 503 hydra_pinned_unavailable
-  5 long prompt      a ~150K-token prompt to `beast` -> rule huge-prompts-go-long -> beast:long
+The fleet mirrors hydra.toml.example under Max's 2026-09-30 policy ("all of
+our models are uncensored"; hydra.allowed_families):
+  rig     llama, 1 slot   the uncensored Qwen3.8 27B (MTP)          `beast` first
+  ti      llama, 2 slots  the same uncensored 27B, no MTP            `beast` spill
+  sparks  TensorFold      GLM-5.3-Flash Uncensored                   beast:long first
+  stock   vLLM, 8 slots   stock Qwen3.8 NVFP4 — a DECOY: READY, idle, keyed, in
+                          no route, outside the policy. No scenario may reach it.
+
+Scenarios (docs/BEAST_HYDRA_PLAN.md §6.11 + the 2026-09-30 revision):
+  1 capacity spill   `beast` while the 1-slot rig is held -> the Ti (same family, never stock)
+  2 mid-stream kill  error event, no [DONE], no replay
+  3 long prompt      ~150K tokens: `beast` -> beast:long keeps its family (rig);
+                     `beast:fast` -> beast:long -> GLM on the Sparks
+  4 no stock ever    rig held AND the Ti drained: `beast` queues on the rig, it
+                     never spills to the idle stock decoy or to GLM
+  5 node death       kill the Ti: `beast:fast` falls to the rig, /health stays 200
+  6 dead pin         a pin to the dead Ti -> 503 hydra_pinned_unavailable
 """
 from __future__ import annotations
 
@@ -64,15 +74,16 @@ class Sim:
         self.dir = d
         self.run = d / "run"
         self.run.mkdir(parents=True, exist_ok=True)
-        self.keys = {n: secrets.token_hex(16) for n in ("rig", "sparks", "ti")}
+        self.keys = {n: secrets.token_hex(16) for n in ("rig", "ti", "stock")}
         self.inbound = secrets.token_hex(16)
         for n, k in self.keys.items():
             _secret(d / f"{n}.key", k)
         _secret(d / "inbound.key", self.inbound)
         self.rig = FakeEngine("llama", "Qwen3.8 27B Uncensored MTP Q5", self.keys["rig"], slots=1,
                               chunks=12, tok_ms=15)
-        self.sparks = FakeEngine("vllm", "qwen3.8-27b-nvfp4", self.keys["sparks"], slots=8, chunks=12, tok_ms=5)
-        self.ti = FakeEngine("llama", "Qwen 35B MoE", self.keys["ti"], slots=2, chunks=12, tok_ms=5)
+        self.ti = FakeEngine("llama", "Qwen3.8 27B Uncensored Q5", self.keys["ti"], slots=2, chunks=12, tok_ms=5)
+        self.sparks = FakeEngine("tensorfold", "glm-5.3-flash-uncensored", None, slots=1, chunks=12, tok_ms=5)
+        self.stock = FakeEngine("vllm", "qwen3.8-27b-nvfp4", self.keys["stock"], slots=8, chunks=12, tok_ms=5)
         self.port = port or _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.cfg_path = d / "hydra.toml"
@@ -81,40 +92,46 @@ class Sim:
 
     def raw(self) -> dict:
         def node(e: FakeEngine, name: str, slots: int) -> dict:
-            return {"url": e.url, "engine": e.personality, "slots": slots, "key_file": str(self.dir / f"{name}.key"),
-                    "ttft_timeout_s": 10, "idle_timeout_s": 2, "nonstream_timeout_s": 20}
+            n = {"url": e.url, "engine": e.personality, "slots": slots,
+                 "ttft_timeout_s": 10, "idle_timeout_s": 2, "nonstream_timeout_s": 20}
+            if e.personality != "tensorfold":             # TensorFold never gets a key
+                n["key_file"] = str(self.dir / f"{name}.key")
+            return n
+        unc, glm = "qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"
         return {
             "schema": 1,
             "hydra": {"probe_interval_s": 1, "probe_down_interval_s": 1, "models_interval_s": 10,
                       "down_after": 1, "up_after": 1, "pre_commit_budget_s": 30,
                       "audit": str(self.run / "hydra-audit.jsonl"),
                       "breaker": {"fail_threshold": 2, "open_s": 30, "success_threshold": 1},
-                      "instinct": {"enabled": False}},
-            "nodes": {"rig": node(self.rig, "rig", 1), "sparks": node(self.sparks, "sparks", 8),
-                      "ti": node(self.ti, "ti", 2)},
+                      "instinct": {"enabled": False},
+                      "allowed_families": [unc, glm]},
+            "nodes": {"rig": node(self.rig, "rig", 1), "ti": node(self.ti, "ti", 2),
+                      "sparks": node(self.sparks, "sparks", 1), "stock": node(self.stock, "stock", 8)},
             "deployments": {
-                "qwen38-unc-q5@rig": {"node": "rig", "upstream": self.rig.model, "ctx": 262144,
-                                      "family": "qwen3.8-27b-uncensored",
+                "qwen38-unc-q5@rig": {"node": "rig", "upstream": self.rig.model, "ctx": 262144, "family": unc,
                                       "caps": ["tools", "json_schema", "grammar", "reasoning_budget", "vision",
                                                "id_slot"]},
-                "qwen38-nvfp4@sparks": {"node": "sparks", "upstream": self.sparks.model, "ctx": 262144,
-                                        "family": "qwen3.8-27b", "conformance": "off",
-                                        "caps": ["tools", "json_schema", "reasoning_budget"]},
-                "qwen36-a3b-q4@ti": {"node": "ti", "upstream": self.ti.model, "ctx": 131072,
-                                     "family": "qwen3.6-35b-a3b", "conformance": "off",
+                "qwen38-unc-q5@ti": {"node": "ti", "upstream": self.ti.model, "ctx": 262144, "family": unc,
+                                     "conformance": "off",
                                      "caps": ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]},
+                "glm53-flash-unc@sparks": {"node": "sparks", "upstream": self.sparks.model, "ctx": 262144,
+                                           "family": glm, "conformance": "off", "caps": ["tools"]},
+                # the decoy: in no route, outside allowed_families -> pinnable only
+                "qwen38-nvfp4@stock": {"node": "stock", "upstream": self.stock.model, "ctx": 262144,
+                                       "family": "qwen3.8-27b", "conformance": "off",
+                                       "caps": ["tools", "json_schema", "reasoning_budget"]},
             },
             "routes": {
-                "beast": {"description": "rig first, spill to the Sparks",
+                "beast": {"description": "the uncensored 27B: rig first, spill to the same weights on the Ti",
                           "targets": [{"d": "qwen38-unc-q5@rig", "priority": 0},
-                                      {"d": "qwen38-nvfp4@sparks", "priority": 1}],
-                          "affinity": "session", "aliases": ["qwen-27b-q5", "default", "local"]},
-                "beast:fast": {"targets": [{"d": "qwen38-nvfp4@sparks", "priority": 0},
-                                           {"d": "qwen36-a3b-q4@ti", "priority": 1},
-                                           {"d": "qwen38-unc-q5@rig", "priority": 2}]},
-                "beast:long": {"targets": [{"d": "qwen38-nvfp4@sparks", "priority": 0, "weight": 2.0},
-                                           {"d": "qwen38-unc-q5@rig", "priority": 0}], "min_ctx": 200000},
-                "classify": {"targets": [{"d": "qwen36-a3b-q4@ti"}, {"d": "qwen38-nvfp4@sparks", "priority": 1}],
+                                      {"d": "qwen38-unc-q5@ti", "priority": 1}],
+                          "family": unc, "affinity": "session", "aliases": ["qwen-27b-q5", "default", "local"]},
+                "beast:fast": {"targets": [{"d": "qwen38-unc-q5@ti", "priority": 0},
+                                           {"d": "qwen38-unc-q5@rig", "priority": 1}]},
+                "beast:long": {"targets": [{"d": "glm53-flash-unc@sparks", "priority": 0, "weight": 2.0},
+                                           {"d": "qwen38-unc-q5@rig", "priority": 1}], "min_ctx": 200000},
+                "classify": {"targets": [{"d": "qwen38-unc-q5@ti"}, {"d": "qwen38-unc-q5@rig", "priority": 1}],
                              "require": ["json_schema"], "affinity": "none", "max_attempts": 2,
                              "listed": False},
             },
@@ -168,8 +185,15 @@ class Sim:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
-        for e in (self.rig, self.sparks, self.ti):
+        for e in (self.rig, self.ti, self.sparks, self.stock):
             e.stop()
+
+    def admin(self, method: str, path: str) -> httpx.Response:
+        tok = (self.run / "hydra-local.token").read_text().strip()
+        return httpx.request(method, self.url + path, headers={"X-OpenBeast-Local": tok}, timeout=5)
+
+    def chats_to(self, e: FakeEngine) -> int:
+        return len([x for x in e.requests if x["method"] == "POST"])
 
     def h(self, **extra) -> dict:
         return {"Authorization": f"Bearer {self.inbound}", **extra}
@@ -183,9 +207,7 @@ def _msg(text: str, model: str = "beast", **kw) -> dict:
     return {"model": model, "messages": [{"role": "user", "content": text}], **kw}
 
 
-def scenario_spill(sim: Sim) -> str:
-    held = {}
-
+def _hold_rig(sim: Sim, held: dict) -> threading.Thread:
     def hold():
         with httpx.stream("POST", sim.url + "/v1/chat/completions", headers=sim.h(), timeout=60,
                           json=_msg("hold the rig", stream=True)) as r:
@@ -196,15 +218,28 @@ def scenario_spill(sim: Sim) -> str:
     deadline = time.time() + 5
     while sim.rig.inflight < 1 and time.time() < deadline:
         time.sleep(0.01)
+    return t
+
+
+def _no_stock(sim: Sim) -> None:
+    assert sim.chats_to(sim.stock) == 0, "a chat reached the stock decoy"
+    assert sim.status()["deployments"]["qwen38-nvfp4@stock"]["state"] == "READY", "the decoy must be available"
+
+
+def scenario_spill(sim: Sim) -> str:
+    held: dict = {}
+    t = _hold_rig(sim, held)
     r = sim.chat(_msg("second conversation"))
     t.join(30)
     assert held.get("dep") == "qwen38-unc-q5@rig", held
-    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "qwen38-nvfp4@sparks", r.headers
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "qwen38-unc-q5@ti", r.headers
+    _no_stock(sim)
     return f"rig held by a stream; the second `beast` chat landed on {r.headers['x-hydra-deployment']}"
 
 
 def scenario_midstream(sim: Sim) -> str:
-    before = len([x for x in sim.sparks.requests if x["method"] == "POST"])
+    others = (sim.ti, sim.sparks, sim.stock)
+    before = [sim.chats_to(e) for e in others]
     sim.rig.set_fault("die_after_chunks:3", 1)
     r = httpx.post(sim.url + "/pin/qwen38-unc-q5@rig/v1/chat/completions", headers=sim.h(), timeout=60,
                    json=_msg("mid-stream", stream=True))
@@ -212,48 +247,72 @@ def scenario_midstream(sim: Sim) -> str:
     assert "[DONE]" not in ev, "a truncated stream must never look finished"
     err = json.loads(ev[-1])["error"]
     assert err["code"] == "upstream_failed_midstream", err
-    assert len([x for x in sim.sparks.requests if x["method"] == "POST"]) == before, "no replay"
+    assert [sim.chats_to(e) for e in others] == before, "no replay"
     return f"error event {err['type']}/{err['code']} after {len(ev) - 1} chunks, no [DONE], no replay"
 
 
 def scenario_long(sim: Sim) -> str:
-    r = sim.chat(_msg("x " * 225_000, max_tokens=64))       # ~150K tokens at 3 chars/token
+    big = "x " * 225_000                                     # ~150K tokens at 3 chars/token
+    r = sim.chat(_msg(big, max_tokens=64))
     assert r.status_code == 200, r.text[:300]
     assert r.headers["x-hydra-route"] == "beast:long", r.headers
     assert "huge-prompts-go-long" in r.headers.get("x-hydra-rule", "")
-    return f"rule huge-prompts-go-long -> beast:long -> {r.headers['x-hydra-deployment']}"
+    assert r.headers["x-hydra-deployment"] == "qwen38-unc-q5@rig", "`beast` must keep its family through a rule"
+    f = sim.chat(_msg(big, model="beast:fast", max_tokens=64))
+    assert f.status_code == 200 and f.headers["x-hydra-deployment"] == "glm53-flash-unc@sparks", f.headers
+    _no_stock(sim)
+    return ("rule huge-prompts-go-long -> beast:long: `beast` -> qwen38-unc-q5@rig (family kept), "
+            f"`beast:fast` -> {f.headers['x-hydra-deployment']}")
+
+
+def scenario_no_stock(sim: Sim) -> str:
+    assert sim.admin("POST", "/hydra/drain/ti").status_code == 200
+    glm_before = sim.chats_to(sim.sparks)
+    try:
+        held: dict = {}
+        t = _hold_rig(sim, held)
+        r = sim.chat(_msg("rig busy, ti drained"))
+        t.join(30)
+    finally:
+        sim.admin("POST", "/hydra/undrain/ti")
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "qwen38-unc-q5@rig", r.headers
+    assert sim.chats_to(sim.sparks) == glm_before, "`beast` spilled off its family onto GLM"
+    _no_stock(sim)
+    return "rig held + Ti drained: `beast` queued on the rig; the idle stock decoy and GLM got nothing"
 
 
 def scenario_node_death(sim: Sim) -> str:
-    sim.sparks.stop()
+    sim.ti.stop()
     deps = []
     for i in range(3):
         r = sim.chat(_msg(f"fast {i}", model="beast:fast"))
         assert r.status_code == 200, r.text
         deps.append(r.headers["x-hydra-deployment"])
-    assert set(deps) == {"qwen36-a3b-q4@ti"}, deps
-    s = sim.wait(lambda s: s["deployments"]["qwen38-nvfp4@sparks"]["breaker"] == "OPEN"
-                 or s["deployments"]["qwen38-nvfp4@sparks"]["state"] == "DOWN", 10)
+    assert set(deps) == {"qwen38-unc-q5@rig"}, deps
+    s = sim.wait(lambda s: s["deployments"]["qwen38-unc-q5@ti"]["breaker"] == "OPEN"
+                 or s["deployments"]["qwen38-unc-q5@ti"]["state"] == "DOWN", 10)
     assert httpx.get(sim.url + "/health", timeout=5).status_code == 200
-    sp = s["deployments"]["qwen38-nvfp4@sparks"]
-    return f"sparks killed: state {sp['state']}, breaker {sp['breaker']}; beast:fast -> ti; /health 200"
+    _no_stock(sim)
+    ti = s["deployments"]["qwen38-unc-q5@ti"]
+    return f"ti killed: state {ti['state']}, breaker {ti['breaker']}; beast:fast -> rig; /health 200"
 
 
 def scenario_dead_pin(sim: Sim) -> str:
-    sim.wait(lambda s: s["deployments"]["qwen38-nvfp4@sparks"]["state"] == "DOWN", 10)
-    r = sim.chat(_msg("pinned", model="qwen38-nvfp4@sparks"))
+    sim.wait(lambda s: s["deployments"]["qwen38-unc-q5@ti"]["state"] == "DOWN", 10)
+    r = sim.chat(_msg("pinned", model="qwen38-unc-q5@ti"))
     assert r.status_code == 503 and r.json()["error"]["type"] == "hydra_pinned_unavailable", r.text
+    _no_stock(sim)
     return "pin to the dead deployment -> 503 hydra_pinned_unavailable (no substitute)"
 
 
 SCENARIOS = [("capacity spill", scenario_spill), ("mid-stream kill", scenario_midstream),
-             ("long prompt rule", scenario_long), ("node death", scenario_node_death),
-             ("dead pin", scenario_dead_pin)]
+             ("long prompt rule", scenario_long), ("no stock ever", scenario_no_stock),
+             ("node death", scenario_node_death), ("dead pin", scenario_dead_pin)]
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scenarios", action="store_true", help="run the five scenarios and exit")
+    ap.add_argument("--scenarios", action="store_true", help="run the six scenarios and exit")
     ap.add_argument("--hold", action="store_true", help="keep the simulated fleet running")
     ap.add_argument("--dir", help="work dir (default: a new temp dir, removed unless --keep)")
     ap.add_argument("--port", type=int, help="hydra port (default: ephemeral)")
@@ -285,7 +344,8 @@ def main(argv=None) -> int:
         if a.hold:
             lines = {"HYDRA_URL": sim.url, "OPENBEAST_HYDRA_URL": sim.url, "OPENBEAST_HYDRA_RUN_DIR": str(sim.run),
                      "OPENBEAST_HYDRA_CONFIG": str(sim.cfg_path), "HYDRA_KEY_FILE": str(d / "inbound.key"),
-                     "HYDRA_SIM_RIG": sim.rig.url, "HYDRA_SIM_SPARKS": sim.sparks.url, "HYDRA_SIM_TI": sim.ti.url}
+                     "HYDRA_SIM_RIG": sim.rig.url, "HYDRA_SIM_SPARKS": sim.sparks.url, "HYDRA_SIM_TI": sim.ti.url,
+                     "HYDRA_SIM_STOCK": sim.stock.url}
             text = "".join(f"{k}={v}\n" for k, v in lines.items())
             if a.env_file:
                 Path(a.env_file).write_text(text)
