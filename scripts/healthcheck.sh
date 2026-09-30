@@ -404,7 +404,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       fi
       sleep 1
       _chat_log="$(_restart_log beast-chat)"
-      python3 "$REPO_DIR/agents/chat_server.py" >>"$_chat_log" 2>&1 &
+      ob_exec_chat_server "$REPO_DIR/agents/chat_server.py" >>"$_chat_log" 2>&1 &
       CHAT_NEW_PID=$!
       # Record the pid immediately, same reasoning as the llama/mcpo paths:
       # a slow-but-alive start must not leave a stale pid on record.

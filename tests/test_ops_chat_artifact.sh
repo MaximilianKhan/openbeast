@@ -15,7 +15,8 @@
 #                           without beast-chat
 #   5  doctor.sh            :8446 parity with :8445, empty allowlist, bind
 #                           caveats, notification rows, :8447
-#   6  lib/conf.sh          CHAT_NOTIFY_* exported under the chat server's names
+#   6  lib/conf.sh          CHAT_NOTIFY_* keys; the topic URL (a bearer
+#                           secret) reaches the chat server's env ONLY
 #   7  publish-verdict.sh   stable uuid5 id, sha+era label, .txt wrapped and
 #                           escaped, never fails the caller; one real publish
 #                           against a real artifact server when its deps exist
@@ -471,7 +472,7 @@ RUN_ENV=()
 
 # ---------------------------------------------------------------------------
 echo ""
-echo "6. lib/conf.sh — notification keys under the chat server's env names:"
+echo "6. lib/conf.sh — notification keys; the topic URL stays out of every env but the chat server's:"
 conf_env() { # conf_env <conf lines…> — prints the OPENBEAST_CHAT_NOTIFY_* / NTFY env
   printf '%s\n' "SEARXNG_SECRET=x" "$@" > "$SB/openbeast.conf"
   env -i HOME="$SB/home" PATH="/usr/bin:/bin" REPO_DIR="$SB" \
@@ -480,20 +481,93 @@ conf_env() { # conf_env <conf lines…> — prints the OPENBEAST_CHAT_NOTIFY_* /
 }
 _E="$(conf_env "CHAT_NOTIFY_URL=http://127.0.0.1:3005/t" "CHAT_NOTIFY_ON=failed,done" \
                "CHAT_NOTIFY_TOKEN_FILE=~/ntfy.token" NTFY_PORT=3999)"
-if has "$_E" "OPENBEAST_CHAT_NOTIFY_URL=http://127.0.0.1:3005/t" \
-   && has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,done" \
+if has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,done" \
    && has "$_E" "OPENBEAST_CHAT_NOTIFY_TOKEN_FILE=$SB/home/ntfy.token" \
    && has "$_E" "OPENBEAST_NTFY_PORT=3999"; then
-  pass "CHAT_NOTIFY_URL / _ON / _TOKEN_FILE (~ expanded) and NTFY_PORT are exported"
+  pass "CHAT_NOTIFY_ON / _TOKEN_FILE (~ expanded) and NTFY_PORT are exported"
 else
   fail "conf exports: $(tr '\n' ' ' <<< "$_E")"
 fi
 _E="$(conf_env)"
-if has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,lost,done" && ! has "$_E" "OPENBEAST_CHAT_NOTIFY_URL=" \
+if has "$_E" "OPENBEAST_CHAT_NOTIFY_ON=failed,lost,done" \
    && ! has "$_E" "OPENBEAST_CHAT_NOTIFY_TOKEN_FILE=" && has "$_E" "OPENBEAST_NTFY_PORT=3005"; then
-  pass "…unset: no URL/token file exported (not an empty 'configured'), ON defaults to failed,lost,done"
+  pass "…unset: no token file exported (not an empty 'configured'), ON defaults to failed,lost,done"
 else
   fail "conf defaults: $(tr '\n' ' ' <<< "$_E")"
+fi
+
+# The ntfy topic URL is a bearer secret with an innocent name (review
+# 2026-09-30, major): exported, it rode `./start.sh -d`'s systemd-run --setenv
+# onto argv + the unit env, and reached every model-authored bash command via
+# tools._scrubbed_env. It must reach the chat server's process and NOTHING else.
+TOPIC_URL="http://127.0.0.1:3005/openbeast-s3cr3t-topic"
+# start.sh's -d setenv loop, lifted verbatim.
+_setenv="$(sed -n '/^    SETENV_ARGS=()$/,/^    done < <(compgen -e/p' "$REPO_DIR/start.sh")"
+[[ -n "$_setenv" ]] || fail "could not lift start.sh's SETENV loop"
+printf '%s\n' \
+  'import os, sys' \
+  'open(sys.argv[0] + ".env", "w").write(os.environ.get("OPENBEAST_CHAT_NOTIFY_URL", "<unset>"))' \
+  'p = "/proc/self/cmdline"' \
+  'open(sys.argv[0] + ".argv", "w").write(open(p).read().replace("\0", " ") if os.path.exists(p) else " ".join(sys.argv))' \
+  > "$T/notify_stub.py"
+cat > "$T/notify_probe.sh" <<EOF
+source "\$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1
+$_setenv
+echo "SETENV: \${SETENV_ARGS[*]}"
+echo "SHELLVAR: \$CHAT_NOTIFY_URL"
+echo "ENV:"; env
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
+try:
+    import tools
+    print("SCRUBBED:", tools._scrubbed_env())
+except Exception as e:
+    print("SCRUBBED-UNAVAILABLE:", type(e).__name__)' "\$AGENTS"
+ob_exec_chat_server "\$STUB" & wait \$!
+EOF
+for _src in conf envoverride; do
+  if [[ $_src == envoverride ]]; then
+    printf '%s\n' "SEARXNG_SECRET=x" > "$SB/openbeast.conf"
+    _pre=(OPENBEAST_CHAT_NOTIFY_URL="$TOPIC_URL")
+  else
+    printf '%s\n' "SEARXNG_SECRET=x" "CHAT_NOTIFY_URL=$TOPIC_URL" > "$SB/openbeast.conf"
+    _pre=()
+  fi
+  rm -f "$T/notify_stub.py.env" "$T/notify_stub.py.argv"
+  _O="$(env -i HOME="$SB/home" PATH="/usr/bin:/bin" REPO_DIR="$SB" OPENBEAST_BIND=127.0.0.1 \
+          ${_pre[@]+"${_pre[@]}"} AGENTS="$REPO_DIR/agents" STUB="$T/notify_stub.py" \
+          bash "$T/notify_probe.sh" 2>&1)"
+  _leaks="$(grep -v '^SHELLVAR:' <<< "$_O" | grep -c 's3cr3t' || true)"
+  if [[ "$_leaks" == 0 ]] && has "$_O" "SHELLVAR: $TOPIC_URL" \
+     && has "$_O" "--setenv=OPENBEAST_BIND=127.0.0.1"; then
+    pass "[$_src] the notify URL is in no exported env, no -d --setenv, no scrubbed tool env (control: BIND forwarded)"
+  else
+    fail "[$_src] notify URL leaked ($_leaks): $(grep 's3cr3t\|SETENV' <<< "$_O" | head -c 600)"
+  fi
+  has "$_O" "SCRUBBED-UNAVAILABLE" && echo "  NOTE: tools.py not importable here — the plain env check covers that leg"
+  if [[ "$(cat "$T/notify_stub.py.env" 2>/dev/null)" == "$TOPIC_URL" ]] \
+     && ! grep -q 's3cr3t' "$T/notify_stub.py.argv" 2>/dev/null; then
+    pass "[$_src] …and ob_exec_chat_server hands it to the chat server's env, not its argv"
+  else
+    fail "[$_src] chat server env=$(cat "$T/notify_stub.py.env" 2>/dev/null) argv=$(cat "$T/notify_stub.py.argv" 2>/dev/null)"
+  fi
+done
+# Control: no URL configured → the chat server sees none (not an empty string).
+printf '%s\n' "SEARXNG_SECRET=x" > "$SB/openbeast.conf"
+rm -f "$T/notify_stub.py.env"
+env -i HOME="$SB/home" PATH="/usr/bin:/bin" REPO_DIR="$SB" STUB="$T/notify_stub.py" \
+  bash -c 'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_exec_chat_server "$STUB" & wait $!' >/dev/null 2>&1
+if [[ "$(cat "$T/notify_stub.py.env" 2>/dev/null)" == "<unset>" ]]; then
+  pass "…no URL configured: the chat server's env has none (control)"
+else
+  fail "unconfigured notify env: $(cat "$T/notify_stub.py.env" 2>/dev/null)"
+fi
+# Both launchers go through the helper — no bare `python3 …chat_server.py`.
+if grep -q 'ob_exec_chat_server "\$SCRIPT_DIR/agents/chat_server.py"' "$REPO_DIR/start.sh" \
+   && grep -q 'ob_exec_chat_server "\$REPO_DIR/agents/chat_server.py"' "$REPO_DIR/scripts/healthcheck.sh" \
+   && ! grep -qE '^[^#]*python3 "\$(SCRIPT_DIR|REPO_DIR)/agents/chat_server.py"' "$REPO_DIR/start.sh" "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "start.sh and healthcheck.sh both launch beast-chat through ob_exec_chat_server"
+else
+  fail "a chat_server launcher bypasses ob_exec_chat_server"
 fi
 
 # ---------------------------------------------------------------------------

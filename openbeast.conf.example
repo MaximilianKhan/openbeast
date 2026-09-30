@@ -394,8 +394,12 @@
 # Empty (the default) = no notifications. CHAT_NOTIFY_ON is a comma-separated
 # list of the session states that notify. CHAT_NOTIFY_TOKEN_FILE names a 0600
 # file holding a bearer token for the endpoint (never put the token itself in
-# this file). The ntfy topic name is guessable-by-default; pick a long one.
-# Env overrides: $OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE.
+# this file). With ntfy's default read-write access the topic name IS the
+# credential: pick a long random one, and treat the URL as a secret. The stack
+# never exports it; only the chat server's own process receives it (so it is
+# not in `./start.sh -d`'s unit env, nor in any model-run command's env).
+# Env overrides: $OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE — but with -d
+# set the URL here, like every other secret: the daemon does not inherit it.
 #CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>
 #CHAT_NOTIFY_ON=failed,lost,done
 #CHAT_NOTIFY_TOKEN_FILE=~/.config/openbeast/ntfy.token

@@ -246,9 +246,12 @@ if [[ $DAEMON -eq 1 ]]; then
     # not travel this way. The daemonized start.sh re-sources conf.sh, which
     # reads them from openbeast.conf (mode 600) directly — secret overrides
     # therefore belong in openbeast.conf, not per-shell env, when using -d.
+    # *NOTIFY_URL* too: an ntfy topic URL is a bearer secret with an innocent
+    # name (conf.sh already unexported it; this is the second lock).
     SETENV_ARGS=()
     while IFS= read -r _var; do
-      if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* && "$_var" != *SECRET* ]]; then
+      if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* && "$_var" != *SECRET* \
+            && "$_var" != *NOTIFY_URL* ]]; then
         SETENV_ARGS+=(--setenv="${_var}=${!_var}")
       fi
     done < <(compgen -e | grep '^OPENBEAST_' || true)
@@ -858,7 +861,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       _rc=0
       _spawn_ready beast-chat chat "${CHAT_PORT:-3003}" \
         "http://$_chat_host:${CHAT_PORT:-3003}/api/chat/health" \
-        python3 "$SCRIPT_DIR/agents/chat_server.py" || _rc=$?
+        ob_exec_chat_server "$SCRIPT_DIR/agents/chat_server.py" || _rc=$?
       CHAT_PID="$SPAWN_PID"
       [[ -n "$CHAT_PID" ]] && CHAT_OWNED=1
       if [[ $_rc -eq 0 ]]; then

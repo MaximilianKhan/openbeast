@@ -316,23 +316,44 @@ if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
 fi
 # beast-chat push notifications (openbeast.conf.example § beast-chat). The
-# chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. URL and
-# token file are exported only when set — unset means "no notifications", and
-# an exported empty string must not read as "configured". ON always carries a
-# value. The token file is a PATH (a leading ~/ expanded), never the token: an
-# env var is readable in /proc/<pid>/environ by the same uid, and the conf
-# file is the wrong home for a credential that is not the stack's own.
-CHAT_NOTIFY_URL="${OPENBEAST_CHAT_NOTIFY_URL:-$(_ob_conf_value CHAT_NOTIFY_URL || true)}"
+# chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. ON always
+# carries a value; the token file is a PATH (a leading ~/ expanded), never the
+# token, and is exported only when set.
+#
+# The URL is NOT exported. With ntfy's default read-write access the topic in
+# it IS the credential, and the name matches none of the secret filters
+# (*KEY*/*SECRET*/*PASSWORD*/*TOKEN*): exported here it rode `./start.sh -d`'s
+# `systemd-run --setenv=` onto argv and into the unit environment, and reached
+# every model-authored bash command through tools._scrubbed_env (review
+# 2026-09-30). It stays a plain shell variable; ob_exec_chat_server hands it to
+# the chat server's process ALONE. An env override is honoured once, then
+# removed from the environment so nothing this shell starts inherits it.
+if [[ -n "${OPENBEAST_CHAT_NOTIFY_URL:-}" ]]; then
+  _OB_NOTIFY_URL_ENV="$OPENBEAST_CHAT_NOTIFY_URL"
+fi
+unset OPENBEAST_CHAT_NOTIFY_URL
+export -n CHAT_NOTIFY_URL 2>/dev/null || true
+CHAT_NOTIFY_URL="${_OB_NOTIFY_URL_ENV:-$(_ob_conf_value CHAT_NOTIFY_URL || true)}"
 CHAT_NOTIFY_ON="${OPENBEAST_CHAT_NOTIFY_ON:-$(_ob_conf_value CHAT_NOTIFY_ON || echo failed,lost,done)}"
 CHAT_NOTIFY_TOKEN_FILE="${OPENBEAST_CHAT_NOTIFY_TOKEN_FILE:-$(_ob_conf_value CHAT_NOTIFY_TOKEN_FILE || true)}"
 [[ "$CHAT_NOTIFY_TOKEN_FILE" == "~/"* ]] && CHAT_NOTIFY_TOKEN_FILE="$HOME/${CHAT_NOTIFY_TOKEN_FILE#\~/}"
 export OPENBEAST_CHAT_NOTIFY_ON="$CHAT_NOTIFY_ON"
-if [[ -n "$CHAT_NOTIFY_URL" ]]; then
-  export OPENBEAST_CHAT_NOTIFY_URL="$CHAT_NOTIFY_URL"
-fi
 if [[ -n "$CHAT_NOTIFY_TOKEN_FILE" ]]; then
   export OPENBEAST_CHAT_NOTIFY_TOKEN_FILE="$CHAT_NOTIFY_TOKEN_FILE"
 fi
+
+# ob_exec_chat_server <chat_server.py> — exec the chat server with the notify
+# URL in ITS environment only. Run it as a background job (`… &`): the export
+# lands in that subshell and exec replaces it, so the URL never appears on an
+# argv and never enters the caller's environment. start.sh and healthcheck.sh
+# both launch the console through here.
+ob_exec_chat_server() {
+  if [[ -n "${CHAT_NOTIFY_URL:-}" ]]; then
+    export OPENBEAST_CHAT_NOTIFY_URL="$CHAT_NOTIFY_URL"
+  fi
+  exec python3 "$1"
+}
+
 # The opt-in ntfy extension (extensions/ntfy): its loopback port, and the two
 # settings only iOS instant delivery needs. Exported for compose
 # interpolation; the fragment defaults every one of them, so an unset value

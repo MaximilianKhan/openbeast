@@ -15,7 +15,8 @@ services and lock screens leak.
 ```bash
 ./scripts/ext.sh enable ntfy
 # openbeast.conf — pick a long topic name; with the default open access the
-# topic name is what keeps other tailnet devices off your feed.
+# topic name is what keeps other tailnet devices off your feed. The stack
+# treats the URL as a secret: only beast-chat's process receives it.
 #   CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>
 #   CHAT_NOTIFY_ON=failed,lost,done          # the default
 ./stop.sh && ./start.sh -d
