@@ -435,10 +435,13 @@ class Instinct:
         engine that could only ever shadow (no gate yet — `linear` as the
         McNemar baseline, typically) must not hide a later engine that can
         enforce. With no such act, the answer is the first act (it is what
-        the service WOULD have done), else the last result from a
-        probabilistic engine, else `rules` — so shadow rows carry the model's
-        distribution, not rules' one-hot. Every attempted engine's own view
-        (label, probabilities, label_mass) is kept in its cascade entry.
+        the service WOULD have done), else the FIRST result from a
+        probabilistic engine — chain order is tier order, so a row nobody
+        acted on is credited to the highest tier that answered (the 27B, not
+        its 0.6B fallback or `linear`; R-instinct-2) — else `rules`, so
+        shadow rows carry the model's distribution, not rules' one-hot.
+        Every attempted engine's own view (label, probabilities, label_mass)
+        is kept in its cascade entry.
 
         When the target can act (canary/enforce) the walk stops at that
         answer. Below that (shadow/off) nothing is acted on, so the walk goes
@@ -547,11 +550,20 @@ class Instinct:
                     final = out
                     if not walk_all:
                         break
-        if final is None and results:
-            acts = [o for o in results if o.action == "act"]
-            probs = [o for o in results if self.engines[o.engine].caps.probs]
-            final = acts[0] if acts else (probs[-1] if probs else results[-1])
+        if final is None:
+            final = self._pick_final(results)
         return final, cascade, last_err
+
+    def _pick_final(self, results: list[Outcome]) -> Outcome | None:
+        """No act reached the target: the first act, else the FIRST
+        probabilistic result (chain order = tier order), else the last."""
+        if not results:
+            return None
+        acts = [o for o in results if o.action == "act"]
+        if acts:
+            return acts[0]
+        probs = [o for o in results if self.engines[o.engine].caps.probs]
+        return probs[0] if probs else results[-1]
 
     # ----------------------------------------------------------------- decide
     def _validate_items(self, spec: DecisionSpec, items: Any) -> list[dict] | None:

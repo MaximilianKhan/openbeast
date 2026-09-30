@@ -179,6 +179,55 @@ def test_busy_primary_falls_through_fast_without_polluting_p95(tmp_path):
     assert list(inst.autodemoter.outcomes[DID]) == [False]       # not an engine fault
 
 
+# ─── R-instinct-1/2: the shadow cost and who a no-act row is credited to ───────
+
+def _two_tier(tmp_path, purl, curl, chain='["prim", "cpu", "rules"]', mode="shadow"):
+    text = GOOD.replace('chain = ["rig-27b", "rig-cpu", "linear", "rules"]', f"chain = {chain}")
+    text = text.replace('mode             = "shadow"', f'mode             = "{mode}"')
+    b = H.llama_binding(purl, allow_primary=True, busy_skip=True)
+    c = H.llama_binding(curl)
+    p = H.write_config(tmp_path, {"prim": b, "cpu": c}, extra_decisions={DID: text})
+    return load_config(p, env={"INFERENCE_URL": purl})
+
+
+def test_no_act_row_is_credited_to_the_highest_tier(tmp_path):
+    """R-instinct-2: nobody acts (the 27B is uncalibrated, so it abstains):
+    the row's engine/label/hash is the 27B's — the first probabilistic
+    engine in chain order — never the 0.6B fallback or linear behind it."""
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl), repo_root=tmp_path)
+        await inst.start()
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="shadow", baseline="hint")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    acted = [c for c in r["cascade"] if c["action"] == "act"]
+    assert acted == []
+    assert r["engine"]["id"] == "prim"
+    assert r["answer"]["label"] == r["cascade"][0]["label"]
+
+
+def test_shipped_chain_credits_rig_27b_when_nobody_acts():
+    """The same rule against the SHIPPED chain order."""
+    from instinct.service import Instinct as _I
+    spec = load_spec(H.DECISIONS / f"{DID}.toml")
+    assert spec.chain[0] == "rig-27b"
+
+    class _E:
+        def __init__(self, probs):
+            self.caps = type("C", (), {"probs": probs})()
+
+    class _O:
+        def __init__(self, engine):
+            self.engine, self.action = engine, "abstain"
+    fake = _I.__new__(_I)
+    fake.engines = {n: _E(n != "rules") for n in spec.chain}
+    picked = _I._pick_final(fake, [_O(n) for n in spec.chain])
+    assert picked.engine == "rig-27b"
+
+
 def test_probe_is_deferred_while_the_primary_is_busy(tmp_path):
     async def body(url, stub):
         inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)

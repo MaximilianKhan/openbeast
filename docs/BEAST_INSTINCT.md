@@ -82,8 +82,9 @@ whose engine's own lifecycle reaches the request's target mode (the lower of
 the spec's mode and the ceiling). An `act` from an engine that can only shadow
 (for example `linear` without a gate) does not hide a later engine that can
 enforce. If nothing can enforce, the answer is the first `act` (what the
-service *would* have done), else the last result from a probabilistic engine,
-else `rules`. When the target can act (canary/enforce) the walk stops at the
+service *would* have done), else the **first** result from a probabilistic
+engine — chain order is tier order, so a row nobody acted on is credited to
+the 27B, not to its 0.6B fallback or `linear` — else `rules`. When the target can act (canary/enforce) the walk stops at the
 answer; below that (shadow/off) it goes on through the whole chain, so shadow
 data measures every engine, including on rows an earlier engine was confident
 about. Every attempted engine's own `probabilities`, `label_mass` and the
