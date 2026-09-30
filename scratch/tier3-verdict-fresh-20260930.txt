@@ -1,0 +1,30 @@
+Tier-3 zig-0.16 awareness pack — FRESH rerun, 2026-09-29 21:04 → 2026-09-30 05:11
+Era b5596c660b5ab819 (post-#102 harness: server deaths and fork/thread EAGAIN are never banked as FAILs).
+Every cell run --no-cache (FRESH=1) under the GPU lease; manifest scratch/tier3_cells-fresh-20260929.txt.
+All six cells clean: 0 timeouts, 0 infrastructure rows (server_error / env_error / setup_failed / server_unhealthy).
+Same-config churn P0a vs P0b: 9/30 (~30%, as measured on 09-17) — why the verdict pools two replicates.
+This supersedes scratch/tier3-verdict.txt (09-17, contaminated) and the 09-29 re-audit's "unresolved".
+
+========================================================================
+Tier-3 zig-0.16 awareness pack — zig-only mini-A/B verdict
+========================================================================
+treated model: Qwen3.8 27B Uncensored Q5_K_M   replicates: 2   pack: {'zig': '5cdf4b64'}
+VALIDITY    contaminated rows dropped from their pair
+  pair 0: units=30 P0 pass=10 P1 pass=24 rescues=14 regressions=0 (cached rows: P0 0, P1 0)
+  pair 1: units=30 P0 pass=11 P1 pass=21 rescues=12 regressions=2 (cached rows: P0 0, P1 0)
+
+R1 PRIMARY  pooled McNemar: rescues b=26 regressions c=2 net=+24 p=0.0000
+R2 CO-PRIMARY (units passed in both arms, n=19):
+    completion tokens-to-fix  mean Δ(P1-P0)=-4681  sign-test p=0.064
+    iterations-to-fix         mean Δ(P1-P0)=-1.79  sign-test p=0.549
+    all-unit completion tokens mean Δ=-5041 (n=60); prompt-token overhead mean Δ=-5189/unit
+R3 GUARD    champion Qwen 27B Q5_K_XL: units=30 C0 pass=23 C1 pass=28 rescues=7 regressions=2 net=+5 p=0.180 → CLEAN
+R4 AUDIT    P1-only passes per pair (review for pack-parroting):
+    pair 0: 115_fft_f, 11_bst_f, 122_gemm_blocked_e, 123_nbody_f, 127_aes_keysched_f, 148_convex_hull_f, 159_ntt_convolution_f, 20_priority_queue_f, 36_black_scholes_f, 51_toposort_f, 61_extgcd_f, 62_crt_f, 65_miller_rabin_f, 92_popcount_f
+    pair 1: 100_constant_time_compare_f, 115_fft_f, 11_bst_f, 123_nbody_f, 148_convex_hull_f, 20_priority_queue_f, 54_astar_f, 61_extgcd_f, 63_det_f, 71_reverse_list_f, 74_palindrome_f, 92_popcount_f
+    rescued in EVERY replicate: 115_fft_f, 11_bst_f, 123_nbody_f, 148_convex_hull_f, 20_priority_queue_f, 61_extgcd_f, 92_popcount_f
+    pair 1 regressions: 19_three_way_quicksort_f, 36_black_scholes_f
+
+------------------------------------------------------------------------
+VERDICT: SHIP — Clause 1 (net>=7, p<0.05, guard clean): net=+24 p=0.0000 guard=clean
+Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).
