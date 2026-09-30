@@ -2056,6 +2056,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
                "event": "migrate-owner", "from": LOCAL_LOGIN,
                "to": RIG_LOGIN, "count": len(reowned),
                "ids": reowned[:50]})
+    # The default admin is the FIRST operator (ARTIFACT_ADMINS unset). On a
+    # rig with several operators that is a widening over v1.6.0, where each
+    # operator's private pages were owner-only: the first operator can now
+    # read, re-share, chown and delete the others'. Deliberate — but an
+    # upgrade must not do it silently, so every start says so, once, on
+    # stderr and in the audit log, until ARTIFACT_ADMINS is set.
+    ops = store.operators()
+    if len(ops) > 1 and not store._logins(store.conf_value("ARTIFACT_ADMINS")):
+        note = (f"artifact: ARTIFACT_ADMINS is unset, so the first operator "
+                f"({ops[0]}) administers every page, including the private "
+                f"pages of the other {len(ops) - 1} operator(s). Set "
+                f"ARTIFACT_ADMINS in openbeast.conf to choose explicitly.")
+        print(note, file=sys.stderr, flush=True)
+        audit({"ts": _now(), "login": RIG_LOGIN, "local": True,
+               "event": "admin-default", "admin": ops[0],
+               "operators": len(ops)})
 
     def sweep() -> list:
         """One pass of the opt-in retention sweep (F-A2). Audited per page.

@@ -815,3 +815,22 @@ def test_the_owner_still_gets_a_readable_400_for_a_bad_tag(make_client):
     r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "public"},
                 headers=h)
     assert r.status_code == 400
+
+
+def test_the_implicit_admin_over_other_operators_is_announced(make_client,
+                                                              monkeypatch,
+                                                              capsys):
+    """With ARTIFACT_ADMINS unset the first operator administers the other
+    operators' private pages — a widening over v1.6.0 that must not happen
+    silently at upgrade."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    err = capsys.readouterr().err
+    assert "ARTIFACT_ADMINS is unset" in err and "max@example.com" in err
+    rows = [r for r in audit_rows(c.tmp) if r.get("event") == "admin-default"]
+    assert rows and rows[-1]["admin"] == "max@example.com"
+    # negative controls: one operator, or an explicit admin list, says nothing
+    make_client(operators="max@example.com")
+    assert "ARTIFACT_ADMINS" not in capsys.readouterr().err
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "max@example.com")
+    make_client(operators="max@example.com,kid@example.com")
+    assert "ARTIFACT_ADMINS" not in capsys.readouterr().err
