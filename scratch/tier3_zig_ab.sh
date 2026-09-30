@@ -78,8 +78,18 @@ MANIFEST="${MANIFEST:-$REPO/scratch/tier3_cells-$STAMP.txt}"
 # recorded there are skipped, and the run is refused unless the pack, model,
 # champion, jobs, units, fresh flag and eval ERA all match its header (a
 # verdict never pairs across eras). Touch $STOP_FILE to stop at the next CELL
-# BOUNDARY — never mid-cell; the file is consumed and the run exits 0.
-# DRY_RUN=1 walks the cell logic without touching the GPU (for tests).
+# BOUNDARY — never mid-cell; the file is consumed and the run exits 0. A stop
+# file that is already there when a run STARTS is stale (touched during an
+# earlier run's last cell): it is removed with a notice, never obeyed, and a
+# run that completes consumes any stop file too.
+# DRY_RUN=1 walks the cell logic without touching the GPU (for tests). It never
+# writes $MANIFEST: it works on a throwaway copy and leaves the stop file alone.
+# HARNESS HYGIENE (2026-09-30 double pass): one run per manifest (flock on
+# $MANIFEST.lock); the era and the engine are re-checked before EVERY cell and
+# a drift refuses (a verdict must not pair a cell across a git pull or a
+# llama.cpp rebuild); the header records the engine, the weight pins and
+# SKIP_C0 ("# runtime" line), and each results file must name this cell's
+# model and exactly these units.
 STOP_FILE="${STOP_FILE:-$REPO/.run/tier3.stop}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -106,35 +116,131 @@ EOF
 if [ -n "$EXTRA_UNITS" ]; then ZIG_UNITS="$ZIG_UNITS,$EXTRA_UNITS"; fi
 N_UNITS="$(echo "$ZIG_UNITS" | tr ',' '\n' | wc -l)"
 
-ERA="$(python3 -c 'import sys; sys.path.insert(0, "evals"); import cache; print(cache.context_hash())')"
+era_now() { python3 -c 'import sys; sys.path.insert(0, "evals"); import cache; print(cache.context_hash())'; }
+# The llama-server binary's own build/commit (what produced the rows), the
+# same identity run_eval stamps into every results file.
+engine_now() {
+  python3 -c 'import sys; sys.path.insert(0, "evals"); import run_eval
+i = run_eval.capture_inference_engine_info()
+print(i.get("build", "?") + "/" + i.get("commit", i.get("version_raw", "?")).replace(" ", "_"))'
+}
+# "<weights file>@<sha8 of its registry pin>" for a benchmark_all slug.
+weights_pin() {
+  python3 - "$1" <<'EOF'
+import re, sys
+slug = sys.argv[1]
+m = re.search(r'"slug":\s*"%s",.*?"serve":\s*"([^"]+)"' % re.escape(slug),
+              open("evals/benchmark_all.py").read(), re.S)
+if not m:
+    print("unknown"); sys.exit(0)
+try:
+    w = re.search(r'\$WEIGHTS_DIR/([A-Za-z0-9._-]+\.gguf)', open(m.group(1)).read())
+except OSError:
+    w = None
+if not w:
+    print("unknown"); sys.exit(0)
+pin = "unpinned"
+for ln in open("scripts/weights.registry"):
+    f = ln.rstrip("\n").split("\t")
+    if len(f) > 2 and f[2] == w.group(1):
+        pin = f[0][:8]
+print(f"{w.group(1)}@{pin}")
+EOF
+}
+
+ERA="$(era_now)"
+ENGINE="$(engine_now)"
 HDR2="# pack sha8=$PACK_SHA8 model=$MODEL champion=$CHAMPION jobs=$JOBS units=$N_UNITS fresh=$FRESH era=$ERA"
 HDR3="# units=$ZIG_UNITS"
+HDR4="# runtime engine=$ENGINE weights=$(weights_pin "$MODEL"),$(weights_pin "$CHAMPION") skip_c0=$SKIP_C0"
+
+# One run per manifest. Two resumes of one manifest ran every cell twice and
+# could each record the other's results file.
+if [ "$DRY_RUN" != "1" ]; then
+  mkdir -p "$(dirname "$MANIFEST")"
+  exec 9>"$MANIFEST.lock"
+  if ! flock -n 9; then
+    echo "REFUSED: another tier3 run holds $MANIFEST.lock — one run per manifest." >&2
+    exit 2
+  fi
+fi
+
+# DRY_RUN never writes the real manifest: it walks a throwaway copy. (A dry
+# run once appended DRYRUN-<cell> rows to a real manifest; the next real
+# resume skipped those cells and the verdict died on a missing file.)
+REAL_MANIFEST="$MANIFEST"
+if [ "$DRY_RUN" = "1" ]; then
+  MANIFEST="$(mktemp "${TMPDIR:-/tmp}/tier3-dryrun.XXXXXX")"
+  if [ -s "$REAL_MANIFEST" ]; then cp "$REAL_MANIFEST" "$MANIFEST"; fi
+  echo "DRY RUN: working on a copy ($MANIFEST); $REAL_MANIFEST is not modified."
+fi
+
+# The cells this manifest really ran (a legacy DRYRUN-* row is not a cell).
+done_cells() { awk '$1 ~ /^(P0a|P1a|P0b|P1b|C0|C1)$/ && $2 !~ /^DRYRUN-/ {print $1}' "$MANIFEST"; }
+
 if [ -s "$MANIFEST" ]; then
   # Resume: the header must describe exactly this run.
   if [ "$(sed -n 2p "$MANIFEST")" != "$HDR2" ] || [ "$(sed -n 3p "$MANIFEST")" != "$HDR3" ]; then
-    echo "RESUME REFUSED: $MANIFEST was made for a different run:" >&2
+    echo "RESUME REFUSED: $REAL_MANIFEST was made for a different run:" >&2
     echo "  it says:  $(sed -n 2p "$MANIFEST")" >&2
     echo "  this is:  $HDR2" >&2
     echo "  (or the unit list differs). Start a new manifest instead." >&2
     exit 2
   fi
-  echo "Resuming $MANIFEST — done: $(grep -oE '^(P0a|P1a|P0b|P1b|C0|C1) ' "$MANIFEST" | tr -d ' ' | tr '\n' ' ')"
+  old4="$(grep -m1 '^# runtime ' "$MANIFEST" || true)"
+  if [ -z "$old4" ]; then
+    echo "WARNING: $REAL_MANIFEST predates the '# runtime' header — its engine, weights" >&2
+    echo "  and SKIP_C0 were never recorded, so this resume cannot check them." >&2
+  elif [ "$old4" != "$HDR4" ]; then
+    echo "RESUME REFUSED: the engine, weights or SKIP_C0 differ from $REAL_MANIFEST:" >&2
+    echo "  it says:  $old4" >&2
+    echo "  this is:  $HDR4" >&2
+    exit 2
+  fi
+  if grep -qE '^(P0a|P1a|P0b|P1b|C0|C1) DRYRUN-' "$MANIFEST"; then
+    echo "WARNING: $REAL_MANIFEST holds DRYRUN-* rows from an old dry run; they are not cells and will run." >&2
+  fi
+  echo "Resuming $REAL_MANIFEST — done: $(done_cells | tr '\n' ' ')"
 else
   mkdir -p "$(dirname "$MANIFEST")"
-  { echo "# tier3 zig mini-A/B cells — $STAMP"; echo "$HDR2"; echo "$HDR3"; } | tee "$MANIFEST"
+  { echo "# tier3 zig mini-A/B cells — $STAMP"; echo "$HDR2"; echo "$HDR3"; echo "$HDR4"; } | tee "$MANIFEST"
 fi
 
-newest_result() { ls -t evals/results/eval-*.json | head -1; }
+# A stop file present at START is stale: nobody can have meant to stop a run
+# that had not begun. Obeying it made the next campaign exit 0 having run
+# nothing, and a wrapper read that as success.
+if [ -e "$STOP_FILE" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "(dry run) a stale stop file exists ($STOP_FILE); a real run would remove it."
+  else
+    echo "NOTICE: removing a stale stop file from an earlier run ($STOP_FILE)."
+    echo "  Touch it again to stop THIS run at a cell boundary."
+    rm -f "$STOP_FILE"
+  fi
+fi
+
+newest_result() { ls -t evals/results/eval-*.json 2>/dev/null | head -1 || true; }
 
 run_cell() {
   # run_cell <cell> <model-slug> <packs:0|1> [extra benchmark_all args...]
   local cell="$1" slug="$2" packs="$3"; shift 3
-  if grep -q "^$cell " "$MANIFEST"; then echo "  skip $cell: already in the manifest"; return 0; fi
-  if [ -e "$STOP_FILE" ]; then
+  if done_cells | grep -qx "$cell"; then echo "  skip $cell: already in the manifest"; return 0; fi
+  if [ "$DRY_RUN" != "1" ] && [ -e "$STOP_FILE" ]; then
     rm -f "$STOP_FILE"
     echo; echo "STOPPED at the cell boundary before $cell (stop file). Resume with:"
-    echo "  MANIFEST=$MANIFEST FRESH=$FRESH bash scratch/tier3_zig_ab.sh"
+    echo "  MANIFEST=$REAL_MANIFEST FRESH=$FRESH bash scratch/tier3_zig_ab.sh"
     exit 0
+  fi
+  # A git pull or a llama.cpp rebuild between cells would pair this cell with
+  # the others across eras; the header only saw the state at chunk start.
+  local era engine
+  era="$(era_now)"; engine="$(engine_now)"
+  if [ "$era" != "$ERA" ] || [ "$engine" != "$ENGINE" ]; then
+    echo "REFUSED before $cell: the run drifted since it started" >&2
+    echo "  era    $ERA -> $era" >&2
+    echo "  engine $ENGINE -> $engine" >&2
+    echo "  A verdict never pairs cells across eras. Start a new manifest." >&2
+    exit 2
   fi
   if [ "$DRY_RUN" = "1" ]; then echo "$cell DRYRUN-$cell" | tee -a "$MANIFEST"; return 0; fi
   local before; before="$(newest_result || true)"
@@ -149,9 +255,17 @@ run_cell() {
   local after; after="$(newest_result)"
   if [ "$after" = "$before" ]; then echo "cell $cell produced no results file" >&2; exit 1; fi
   # provenance sanity: the file must say what the cell says
-  python3 - "$after" "$packs" "$PACK_SHA8" <<'EOF'
-import json, sys
+  python3 - "$after" "$packs" "$PACK_SHA8" "$slug" "$ZIG_UNITS" <<'EOF'
+import json, re, sys
 r = json.load(open(sys.argv[1])); h = r["harness"]
+slug, units = sys.argv[4], sys.argv[5].split(",")
+m = re.search(r'"slug":\s*"%s",\s*"name":\s*"([^"]+)"' % re.escape(slug),
+              open("evals/benchmark_all.py").read())
+assert m, f"{slug} is not in benchmark_all MODELS"
+assert r.get("model") == m.group(1), \
+    f"results model={r.get('model')!r}, cell model={m.group(1)!r}: not this cell's file"
+got = sorted(t["id"] for t in r.get("tasks", []))
+assert got == sorted(units), f"results units differ from this run's {len(units)} (got {len(got)})"
 want = {"zig": sys.argv[3]} if sys.argv[2] == "1" else {}
 assert h.get("packs", {}) == want, f"harness.packs={h.get('packs')} want {want}"
 assert h.get("greedy") is True, "cell did not run greedy"
@@ -171,6 +285,8 @@ run_cell P1b "$MODEL" 1 --no-cache
 if [ "$SKIP_C0" != "1" ]; then run_cell C0 "$CHAMPION" 0 ${A_ARGS[@]+"${A_ARGS[@]}"}; fi
 run_cell C1 "$CHAMPION" 1 ${A_ARGS[@]+"${A_ARGS[@]}"}
 
-echo; echo "All cells done. Manifest: $MANIFEST"; echo
-[ "$DRY_RUN" = "1" ] && exit 0
+echo; echo "All cells done. Manifest: $REAL_MANIFEST"; echo
+if [ "$DRY_RUN" = "1" ]; then rm -f "$MANIFEST"; exit 0; fi
+# A stop requested during the last cell has nothing left to stop.
+if [ -e "$STOP_FILE" ]; then rm -f "$STOP_FILE"; echo "(consumed a stop file touched during the last cell)"; fi
 python3 scratch/tier3_verdict.py --manifest "$MANIFEST"
