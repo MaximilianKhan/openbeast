@@ -468,6 +468,30 @@ def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]
     return out, offset + start
 
 
+def tail_start(path: str, tail: int) -> int:
+    """Byte offset of the first WHOLE line within the last `tail` bytes.
+
+    0 when the transcript is no bigger than that. The byte before the
+    window decides: if it is a newline the window starts on a line; if not,
+    skip forward past the next one. A window with no newline at all (one
+    enormous line) starts at 0 — the reader's long-line escape handles it.
+    """
+    size = _file_size(path)
+    if tail <= 0 or size <= tail:
+        return 0
+    pos = size - tail
+    try:
+        with open(path, "rb") as f:
+            f.seek(pos - 1)
+            chunk = f.read(min(STREAM_MAX_LINE, size - pos + 1))
+    except OSError:
+        return 0
+    nl = chunk.find(b"\n")
+    if nl < 0:
+        return 0
+    return pos + nl                     # (pos - 1) + nl + 1
+
+
 def parse_agent_event(text: str, offset: int, seq: int) -> tuple[str, dict]:
     """One JSONL transcript line -> (sse event name, payload)."""
     try:
@@ -1727,6 +1751,7 @@ def create_app() -> FastAPI:
         # non-empty on a reconnect (a freshly constructed EventSource has no
         # last event id), so it is always the more current of the two.
         raw_from = request.headers.get("last-event-id")
+        resumed = raw_from not in (None, "")
         if raw_from in (None, ""):
             raw_from = request.query_params.get("from")
         try:
@@ -1735,6 +1760,27 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="'from' must be an integer")
         if start < 0:
             raise HTTPException(status_code=400, detail="'from' must be >= 0")
+        # `tail=N`: start near the END — the last ~N bytes, realigned to a
+        # line boundary so the first frame is a whole event. A fresh open used
+        # to replay the whole transcript from byte 0, one frame per line, into
+        # a view that keeps only the last ~2,400 nodes: a 1 MB campaign log
+        # froze a phone for 80 s to show what it then threw away (review
+        # chat-lifecycle-console-scroll-thrash / chat-browser-11). A reconnect
+        # (Last-Event-ID) and an explicit from= both beat it.
+        raw_tail = request.query_params.get("tail")
+        tail_skipped = 0
+        if raw_tail not in (None, "") and not resumed and \
+                request.query_params.get("from") in (None, ""):
+            try:
+                tail = int(raw_tail)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="'tail' must be an integer")
+            if tail < 0:
+                raise HTTPException(status_code=400,
+                                    detail="'tail' must be >= 0")
+            start = tail_start(rec.get("transcript") or "", tail)
+            tail_skipped = start
 
         audit(principal, "GET /events", session_id, "stream_open",
               int((time.monotonic() - t0) * 1000), {"from": start})
@@ -1743,7 +1789,7 @@ def create_app() -> FastAPI:
             gauges["sse_open"] += 1
 
         return StreamingResponse(
-            _stream(request, rec, start, principal),
+            _stream(request, rec, start, principal, tail_skipped),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -1769,7 +1815,7 @@ def create_app() -> FastAPI:
         return (st.st_dev, st.st_ino)
 
     async def _stream(request: Request, record: dict, start: int,
-                      principal: dict):
+                      principal: dict, tail_skipped: int = 0):
         session_id = record["id"]
         kind = record.get("kind") or "agent"
         path = record.get("transcript") or ""
@@ -1807,6 +1853,9 @@ def create_app() -> FastAPI:
                 "state": record.get("state"), "title": record.get("title"),
                 "model": record.get("model"), "from": offset, "size": size,
                 "transcript": path, "poll_ms": int(poll * 1000),
+                # >0 when tail= started us past the beginning: the console
+                # says "showing the end — replay for everything".
+                "skipped": tail_skipped if offset == tail_skipped else 0,
                 "server_time": _now_iso(),
             }, offset)
             last_out = time.monotonic()

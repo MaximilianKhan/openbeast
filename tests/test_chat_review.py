@@ -27,7 +27,7 @@ import chat_server  # noqa: E402
 import sessions  # noqa: E402
 # The shared fixture (temp ledger + run dir + client factory). Imported by
 # name so pytest does not collect test_chat_server's tests a second time.
-from test_chat_server import Rig, drain, wait_state  # noqa: E402,F401
+from test_chat_server import Rig, drain, parse_sse, wait_state  # noqa: E402,F401
 
 
 @pytest.fixture()
@@ -481,4 +481,50 @@ def test_secret_name_rule_matches_the_bash_tool(monkeypatch):
     kept = tools._scrubbed_env()
     for n in names:
         assert chat_server.is_secret_env_name(n) == (n not in kept), n
+
+
+# ---------------------------------------------------------------------------
+# chat-lifecycle-console-scroll-thrash / chat-browser-11 (server half): a
+# fresh open can start at the tail instead of replaying megabytes
+# ---------------------------------------------------------------------------
+
+def _big_job(rig, n=5000):
+    lines = [f"line {i:06d} " + "x" * 40 for i in range(n)]
+    return rig.session(kind="job", state="done", lines=lines)
+
+
+def test_tail_starts_on_a_whole_line_near_the_end(rig):
+    sid = _big_job(rig)
+    r = rig.client.get(f"/api/chat/sessions/{sid}/events?tail=1000")
+    assert r.status_code == 200
+    frames = parse_sse(r.text)
+    hello = frames[0]["data"]
+    logs = [f["data"]["line"] for f in frames if f["event"] == "log"]
+    assert hello["skipped"] > 0 and hello["from"] == hello["skipped"]
+    assert 10 <= len(logs) <= 25, len(logs)
+    assert logs[-1].startswith("line 004999")
+    assert all(x.startswith("line ") and len(x) == len(logs[-1]) for x in logs)
+    assert frames[-1]["event"] == "end"
+
+
+def test_tail_is_ignored_for_a_resume_or_an_explicit_from(rig):
+    """Negative controls: a reconnect and from= keep their exact semantics."""
+    sid = _big_job(rig, n=200)
+    full = parse_sse(rig.client.get(
+        f"/api/chat/sessions/{sid}/events?from=0&tail=100").text)
+    assert len([f for f in full if f["event"] == "log"]) == 200
+    assert full[0]["data"]["skipped"] == 0
+    r = rig.client.get(f"/api/chat/sessions/{sid}/events?tail=100",
+                       headers={"Last-Event-ID": "0"})
+    got = parse_sse(r.text)
+    assert len([f for f in got if f["event"] == "log"]) == 200
+
+
+def test_tail_larger_than_the_file_replays_everything(rig):
+    sid = _big_job(rig, n=50)
+    got = parse_sse(rig.client.get(
+        f"/api/chat/sessions/{sid}/events?tail=99999999").text)
+    assert len([f for f in got if f["event"] == "log"]) == 50
+    assert rig.client.get(
+        f"/api/chat/sessions/{sid}/events?tail=-1").status_code == 400
 
