@@ -51,6 +51,7 @@ line in `openbeast.conf`.
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
+| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate. Tested against simulated fleets, not yet on the Sparks | `main` |
 
 Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
 capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
@@ -811,6 +812,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 |---|---|
 | [BEAST_CHAT.md](docs/BEAST_CHAT.md) | The session console: ledger, SSE reattach, steering, jobs, auth |
 | [BEAST_ARTIFACT.md](docs/BEAST_ARTIFACT.md) | Publishing pages: URL and version model, visibility, the sandbox and CSP posture, authoring rules |
+| [BEAST_HYDRA.md](docs/BEAST_HYDRA.md) | Routing inference across engines: what `HYDRA=true` re-points, `hydra.toml`, `hydra.sh`, env knobs |
+| [BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md) | Calibrated routing decisions: contracts, invariants, lifecycle, what answers today |
 | [BEAST_LANG_PLAN.md](docs/BEAST_LANG_PLAN.md) | The offline language library: layers, verifier, escalation, synthesis, status |
 | [LANG_AWARENESS_PLAN.md](docs/LANG_AWARENESS_PLAN.md) | beast-assist: push-diagnostics and awareness packs, with the A/B results |
 | [BEAST_CAMPAIGN_PLAN.md](docs/BEAST_CAMPAIGN_PLAN.md) | The GPU lease and the eval era |

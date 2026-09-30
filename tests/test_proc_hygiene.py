@@ -61,6 +61,18 @@ def _alive(pid: int) -> bool:
         return True
 
 
+def _gone(pid: int, timeout: float = 5.0) -> bool:
+    """True once pid is gone. A SIGKILLed grandchild is a zombie until its
+    new parent reaps it; a fixed 0.5 s sleep lost that race on a loaded box.
+    A grandchild the timeout really missed (sleep 300) still fails."""
+    deadline = time.time() + timeout
+    while _alive(pid):
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def _grandchild_cmd(pidfile: str) -> str:
     # sh -c '<this>' spawns python3 as a grandchild that records its pid
     # and then sleeps far past the timeout.
@@ -78,10 +90,9 @@ def test_bash_tool_reaps_grandchild():
     elapsed = time.time() - t0
     check("bash() reports the timeout", "timed out" in out, f"got: {out[:80]}")
     check("bash() returns promptly (no pipe hang)", elapsed < 10, f"{elapsed:.1f}s")
-    time.sleep(0.5)
     with open(pidfile) as f:
         pid = int(f.read().strip())
-    check("bash() timeout killed the grandchild", not _alive(pid), f"pid {pid} survived")
+    check("bash() timeout killed the grandchild", _gone(pid), f"pid {pid} survived")
     os.unlink(pidfile)
 
 
@@ -97,10 +108,9 @@ def test_run_reaped_reaps_grandchild():
     elapsed = time.time() - t0
     check("_run_reaped raises on timeout", timed_out)
     check("_run_reaped returns promptly (no pipe hang)", elapsed < 10, f"{elapsed:.1f}s")
-    time.sleep(0.5)
     with open(pidfile) as f:
         pid = int(f.read().strip())
-    check("_run_reaped timeout killed the grandchild", not _alive(pid), f"pid {pid} survived")
+    check("_run_reaped timeout killed the grandchild", _gone(pid), f"pid {pid} survived")
     os.unlink(pidfile)
 
 

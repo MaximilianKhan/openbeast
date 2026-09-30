@@ -159,6 +159,49 @@ def wait_ready(srv, deps, state=core.READY, timeout=8):
     raise AssertionError({d: srv.hy.state.health[d].h.state for d in deps})
 
 
+def pause_probes(srv, timeout=8):
+    """Stop hydra's 1 s prober and wait until no tick is still in flight.
+
+    A state that a REQUEST sets (LOADING from a 503, MISMATCH from a model
+    404) is transient by design: the next /health or /v1/models probe of a
+    node that is fine again clears it. Asserting it while the prober runs is a
+    race a slow CI runner loses. probe_loop awaits each tick in turn, so once
+    the no-op below has been called, the last real tick (and the models
+    check it awaited) has finished and nothing can move health behind the
+    test's back."""
+    called = threading.Event()
+
+    async def idle(force: bool = False) -> None:
+        called.set()
+    srv.hy.probe_tick = idle
+    assert called.wait(timeout), "hydra's probe loop never came back around"
+
+
+def wait_admitted(srv, node, n=1, timeout=8) -> None:
+    """Wait until hydra holds n in-flight units on node. A fixed sleep before
+    the next step (a reload, a second caller) assumed the first request was
+    already admitted; on a loaded runner it was not, and the step raced it."""
+    deadline = time.time() + timeout
+    while srv.hy.state.node_inflight(node) < n:
+        assert time.time() < deadline, f"no request was admitted to {node}"
+        time.sleep(0.01)
+
+
+def wait_audit(tmp, pred, timeout=5) -> dict:
+    """The newest audit row matching pred, polled with a deadline.
+
+    finish() writes the row on hydra's loop thread; for a caller that left
+    (and for a relay's finally) nothing orders that write before the test's
+    read, so a bare audit_rows(tmp)[-1] can see an empty file."""
+    deadline = time.time() + timeout
+    while True:
+        rows = [r for r in audit_rows(tmp) if pred(r)]
+        if rows:
+            return rows[-1]
+        assert time.time() < deadline, ("no matching audit row", audit_rows(tmp))
+        time.sleep(0.02)
+
+
 def auth(extra=None) -> dict:
     h = {"Authorization": f"Bearer {INBOUND}"}
     h.update(extra or {})
@@ -228,6 +271,7 @@ def test_non_stream_and_embeddings(fleet):
 @pytest.mark.parametrize("fault", ["http_500", "http_503", "headers_then_close", "http_429", "loading_503"])
 def test_precommit_failover(fleet, fault, tmp_path):
     srv, rig, sparks, _ = fleet()
+    pause_probes(srv)                 # LOADING is transient: the next probe would clear it
     rig.set_fault(fault, 1)
     r = post(srv, chat(stream=True))
     assert r.status_code == 200, r.text
@@ -275,6 +319,7 @@ def test_node_401_is_auth_failed_and_never_the_callers_401(fleet):
 
 def test_model_404_is_mismatch_and_fails_over(fleet):
     srv, rig, sparks, _ = fleet()
+    pause_probes(srv)                 # a one-shot 404: the next /v1/models recheck clears MISMATCH
     sparks.set_fault("http_404_model", 1)
     r = post(srv, chat(model="beast:fast"))
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "unc@rig"
@@ -342,9 +387,8 @@ def test_midstream_failure_is_loud_and_never_replayed(fleet, fault, tmp_path):
     assert err["type"] == "hydra_upstream_error" and err["code"] == "upstream_failed_midstream"
     assert err["hydra_deployment"] == "unc@rig"
     assert not posts(sparks), "never a replay"
-    time.sleep(0.2)
+    row = wait_audit(tmp_path, lambda x: x["outcome"] != "ok")
     assert srv.hy.state.health["unc@rig"].h.fail_total == 1
-    row = audit_rows(tmp_path)[-1]
     assert row["outcome"] == "upstream_failed_midstream" and row["deployment"] == "unc@rig"
     assert srv.hy.state.inflight("unc@rig") == 0
 
@@ -482,8 +526,7 @@ def test_provenance_headers_and_audit(fleet, tmp_path):
     assert (h["x-hydra-route"], h["x-hydra-deployment"], h["x-hydra-node"], h["x-hydra-engine"],
             h["x-hydra-upstream-model"]) == ("beast", "unc@rig", "rig", "llama", "qwen-unc")
     assert h["x-hydra-attempts"] == "unc@rig:200" and h["x-hydra-config"] == srv.hy.cfg.hash
-    time.sleep(0.2)
-    row = audit_rows(tmp_path)[-1]
+    row = wait_audit(tmp_path, lambda x: x["request_id"] == h["x-hydra-request-id"])
     assert AUDIT_KEYS <= set(row), AUDIT_KEYS - set(row)
     assert row["outcome"] == "ok" and row["status"] == 200 and row["body_edits"] == ["model"]
     assert row["usage"]["completion_tokens"] == 5
@@ -512,6 +555,23 @@ def test_body_cap(fleet, monkeypatch):
     srv, _, _, _ = fleet()
     monkeypatch.setattr(hydra, "MAX_BODY_BYTES", 1000)
     assert post(srv, chat(content="x" * 5000)).status_code == 413
+
+
+def test_body_cap_holds_without_a_content_length(fleet, monkeypatch):
+    """A chunked upload (or one that lies about its length) is capped while
+    it streams in, not only by the header check: nothing is buffered past the
+    cap and nothing reaches an engine."""
+    srv, rig, sparks, _ = fleet()
+    monkeypatch.setattr(hydra, "MAX_BODY_BYTES", 1000)
+    before = [len(posts(e)) for e in (rig, sparks)]
+
+    def gen():
+        blob = json.dumps(chat(content="x" * 5000)).encode()
+        for i in range(0, len(blob), 256):
+            yield blob[i:i + 256]
+    r = httpx.post(srv.url + "/v1/chat/completions", content=gen(), headers=auth(), timeout=30)
+    assert r.status_code == 413 and "too large" in r.text
+    assert [len(posts(e)) for e in (rig, sparks)] == before, "a capped body must never go upstream"
 
 
 # ───────────────────────────── catalog + health ─────────────────────────────
@@ -647,7 +707,7 @@ def test_inflight_request_finishes_on_the_old_snapshot(fleet, tmp_path):
             got["body"] = r.read()
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.3)
+    wait_admitted(srv, "rig")
     raw = copy.deepcopy(srv.raw)
     raw["routes"]["beast"]["targets"] = [{"d": "nvfp4@sparks"}]
     (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
@@ -669,7 +729,7 @@ def test_spill_under_concurrency(fleet):
             r.read()
     a = threading.Thread(target=one)
     a.start()
-    time.sleep(0.25)
+    wait_admitted(srv, "rig")
     b = threading.Thread(target=one)
     b.start()
     a.join(20)
@@ -905,6 +965,38 @@ def test_feedback_rejection_is_counted_not_silent(tmp_path, real_instinct):
     assert ic.feedback_result == {"ok": 1, "http_400": 1} and ic.feedback_warned
 
 
+def test_feedback_backpressure_drops_rather_than_queues(tmp_path):
+    """At most 32 feedback posts in flight; the rest are dropped at once, never
+    queued behind a slow instinct (plan §5.11: feedback must not cost hydra)."""
+    import asyncio
+    ic = hydra.InstinctClient(core.InstinctCfg(url="http://127.0.0.1:9", key_file=str(_key(tmp_path))), REPO)
+    seen = []
+
+    async def go():
+        gate = asyncio.Event()
+
+        async def slow_post(url, **kw):
+            seen.append(url)
+            await gate.wait()
+            return httpx.Response(200, json={"ok": True})
+        ic.client.post = slow_post
+        body = hydra.InstinctClient.feedback_body("ins_x", "req-1", served_pool="unc@rig",
+                                                  ttft_ms=1.0, outcome="ok")
+        tasks = [asyncio.create_task(ic.feedback(body)) for _ in range(40)]
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(seen) == 32 and ic.pending == 32, (len(seen), ic.pending)
+        dropped = [t.result() for t in tasks if t.done()]
+        assert dropped == [False] * 8, "the overflow must return at once, not wait its turn"
+        gate.set()
+        res = await asyncio.gather(*tasks)
+        await ic.aclose()
+        return res
+    res = asyncio.run(go())
+    assert res.count(True) == 32 and res.count(False) == 8 and len(seen) == 32
+    assert ic.pending == 0 and ic.feedback_result == {"ok": 32}
+
+
 def test_instinct_act_and_enforce_is_applied(fleet, tmp_path):
     ins = FakeInstinct("ins-key", _answer(enforce=True))
     try:
@@ -1003,7 +1095,7 @@ def test_a_reload_that_renames_the_deployment_mid_request_does_not_leak(fleet, t
         got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"))
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.4)
+    wait_admitted(srv, "rig")
     _rename(srv, tmp_path, "unc@rig", "unc2@rig")
     t.join(15)
     assert got["r"] == (200, "unc@rig"), got
@@ -1020,7 +1112,7 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
         got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.4)
+    wait_admitted(srv, "rig")
     _rename(srv, tmp_path, "nvfp4@sparks", "nvfp4b@sparks")
     t.join(15)
     assert got["r"][:2] == (200, "nvfp4@sparks"), got
@@ -1079,7 +1171,7 @@ def test_a_half_open_trial_is_exclusive_across_failover(fleet):
     w.start()
     a = threading.Thread(target=req, args=("a",))
     a.start()
-    time.sleep(0.3)
+    wait_admitted(srv, "rig")
     b = threading.Thread(target=req, args=("b",))
     b.start()
     a.join(20)
@@ -1133,7 +1225,8 @@ def test_a_caller_that_leaves_before_the_commit_point_is_released(fleet, stream,
     while (rig.inflight or not rig.disconnects) and time.time() < deadline + 1:
         time.sleep(0.05)
     assert rig.disconnects >= 1 and not rig.inflight, "the ENGINE must see the hang-up (plan §6.6)"
-    row = audit_rows(tmp_path)[-1]
+    # release() runs before finish() writes the row: wait for the row itself
+    row = wait_audit(tmp_path, lambda x: x["status"] == 499)
     assert row["outcome"] == "client_disconnect" and row["status"] == 499, row
     assert srv.hy.state.health["unc@rig"].h.fails == 0, "a caller leaving is not the node's fault"
 
@@ -1143,8 +1236,7 @@ def test_an_oversized_nonstream_body_that_fails_midway_is_not_a_clean_eof(fleet,
     srv, rig, _, _ = fleet()
     with pytest.raises(httpx.HTTPError):
         post(srv, chat(model="solo"), {"X-Fake-Fault": "body_then_close:4000"})
-    time.sleep(0.3)
-    row = audit_rows(tmp_path)[-1]
+    row = wait_audit(tmp_path, lambda x: x["outcome"] != "ok")
     assert row["outcome"] == "upstream_failed_midstream", row
     assert srv.hy.state.node_inflight("rig") == 0
 

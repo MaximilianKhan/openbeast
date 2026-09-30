@@ -137,6 +137,17 @@ task_class{label,probabilities,calibrated,mechanical,decision_hash}, pool_fit, r
 - A model can never answer them; their probability is zeroed.
 - By I6, a mechanical answer never enforces. Hydra applies those facts itself.
 
+**What answers `/route` today: no model.** Both hydra decisions chain through
+`rig-sglang`, whose pins in `instinct.toml` are placeholders on purpose, so
+the loader refuses it (`GET /v1/instinct/decisions` lists both under
+`#engines`). On a real rig `hydra.pool_fit` is `rules` only and
+`hydra.task_class` is `linear`, then `rules`. Neither can enforce: `rules` is
+barred by I6, and `linear` has no passing gate. Every answer is shadow until
+a model engine is pinned and gated. Max's decision (2026-09-30) is that these
+decisions go to a full model, not the 0.6B: Open-Jev-27B-v1.1 (run locally,
+on its own GPU once one is free), and until then the rig's own 27B, scored by
+logprobs. The 0.6B bindings stay as a fallback only.
+
 ### Hydra's obligations
 
 These are the only coupling between hydra and instinct:
@@ -222,13 +233,16 @@ reviewed floor `inline = 0.90`, so 0.90 is what acts):
 - test is 15 battery rows lifted from existing repo tests;
 - adversarial is 47 synthetic rows.
 
-| split | n | acc [Wilson 95%] | NLL | Brier | ECE* | act[inline] @ thr 0.90 |
+| split | n | acc [Wilson 95%] | NLL | Brier | ECE* | act[inline] @ thr 0.90† |
 |---|---|---|---|---|---|---|
 | calib (in-sample thresholds) | 40 | 0.875 [0.739, 0.945] | 0.195 | 0.128 | 0.053 | 11 acts, 0 errors, coverage 0.55 |
 | test (battery) | 15 | 0.867 [0.621, 0.963] | 0.250 | 0.187 | 0.051 | 6 acts, 0 errors, coverage 0.60 |
-| adversarial | 47 | 0.723 [0.582, 0.831] | 0.892 | 0.487 | 0.216 | 17 acts, **3 errors**, coverage 0.39 |
+| adversarial | 47 | 0.723 [0.582, 0.831] | 0.892 | 0.487 | 0.216 | 17 acts, **3 errors**, coverage 0.39 (precision 0.82) |
 
 \* ECE is indicative only: n < 150, 5 bins.
+† The fit on calib gives 0.705, but a fitted threshold can only raise the
+spec's `policy.act` (`inline = 0.90`), so 0.90 is what the engine uses. An
+earlier version of this table showed the acts at 0.705.
 
 On the adversarial split, `linear` would skip three real (implicit) spawns.
 That is exactly what the `act_errors[inline] == 0` gate exists to block, so

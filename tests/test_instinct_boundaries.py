@@ -12,6 +12,7 @@ I8 era-locked files unchanged
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -203,9 +204,42 @@ def test_i1_duplicate_or_excess_items_rejected(tmp_path):
 
 # --- I8 --------------------------------------------------------------------------
 
-def _git(*args):
-    return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True,
+def _git(*args, repo=None):
+    return subprocess.run(["git", "-C", str(repo or REPO), *args], capture_output=True, text=True,
                           timeout=30)
+
+
+def _i8_offending(repo, env) -> list[str] | None:
+    """Era-locked files that an instinct commit on this branch touches.
+
+    The base is OPENBEAST_I8_BASE when set (CI exports the PR base, fetched
+    deep enough for a merge-base), else origin/main, else main. None means
+    no base resolved: fine on a local detached checkout, but in CI (or with
+    an explicit base that does not resolve) it FAILS. CI's checkout is
+    shallow and has neither ref, so this check used to pass vacuously."""
+    want = (env.get("OPENBEAST_I8_BASE") or "").strip()
+    if want == "none":
+        return None
+    for base in ([want] if want else ["origin/main", "main"]):
+        mb = _git("merge-base", "HEAD", base, repo=repo)
+        if mb.returncode != 0:
+            continue
+        rng = f"{mb.stdout.strip()}..HEAD"
+        changed = _git("diff", "--name-only", mb.stdout.strip(), "HEAD", "--", *ERA_LOCKED,
+                       repo=repo).stdout.split()
+        instinct_commits = set(_git("log", "--format=%H", rng, "--", "agents/instinct",
+                                    repo=repo).stdout.split())
+        # only meaningful on a branch that carries instinct work
+        return [f for f in changed
+                if set(_git("log", "--format=%H", rng, "--", f, repo=repo).stdout.split())
+                & instinct_commits]
+    if want:
+        raise AssertionError(f"OPENBEAST_I8_BASE={want!r} has no merge-base with HEAD "
+                             "(fetch more history, or set it to 'none')")
+    if env.get("CI") == "true":
+        raise AssertionError("I8 in CI needs a branch base: export OPENBEAST_I8_BASE "
+                             "(the PR base sha, fetched) or OPENBEAST_I8_BASE=none")
+    return None
 
 
 def test_i8_era_locked_files_untouched():
@@ -213,19 +247,39 @@ def test_i8_era_locked_files_untouched():
         pytest.skip("not a git checkout")
     dirty = _git("status", "--porcelain", "--", *ERA_LOCKED).stdout.strip()
     assert dirty == "", f"era-locked files modified in the working tree: {dirty}"
-    for base in ("origin/main", "main"):
-        mb = _git("merge-base", "HEAD", base)
-        if mb.returncode == 0:
-            changed = _git("diff", "--name-only", mb.stdout.strip(), "HEAD", "--",
-                           *ERA_LOCKED).stdout.split()
-            instinct_commits = _git("log", "--format=%H", f"{mb.stdout.strip()}..HEAD", "--",
-                                    "agents/instinct").stdout.split()
-            if instinct_commits:
-                # only meaningful on a branch that carries instinct work
-                offending = [f for f in changed if _git(
-                    "log", "--format=%H", f"{mb.stdout.strip()}..HEAD", "--", f
-                ).stdout.split() and set(_git("log", "--format=%H",
-                                              f"{mb.stdout.strip()}..HEAD", "--", f
-                                              ).stdout.split()) & set(instinct_commits)]
-                assert offending == [], f"an instinct commit touches era-locked {offending}"
-            break
+    offending = _i8_offending(REPO, os.environ)
+    assert not offending, f"an instinct commit touches era-locked {offending}"
+
+
+def test_i8_guard_needs_a_base_in_ci(tmp_path):
+    """Built case: a shallow-CI-like repo (no origin/main, no main) whose
+    branch has an instinct commit that edits agents/tools.py."""
+    r = tmp_path / "r"
+    r.mkdir()
+
+    def g(*a):
+        out = _git(*a, repo=r)
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+    g("init", "-q", "-b", "trunk")
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    g("config", "commit.gpgsign", "false")
+    (r / "agents" / "instinct").mkdir(parents=True)
+    (r / "agents" / "tools.py").write_text("x = 1\n")
+    (r / "agents" / "instinct" / "__init__.py").write_text("")
+    g("add", "-A")
+    g("commit", "-qm", "base")
+    base = g("rev-parse", "HEAD")
+    (r / "agents" / "tools.py").write_text("x = 2\n")
+    (r / "agents" / "instinct" / "__init__.py").write_text("# touch\n")
+    g("commit", "-qam", "instinct: touch tools")
+    assert _i8_offending(r, {}) is None                       # local, no base: nothing to diff
+    with pytest.raises(AssertionError, match="needs a branch base"):
+        _i8_offending(r, {"CI": "true"})                      # CI never passes vacuously
+    assert _i8_offending(r, {"CI": "true", "OPENBEAST_I8_BASE": base}) == ["agents/tools.py"]
+    with pytest.raises(AssertionError, match="no merge-base"):
+        _i8_offending(r, {"OPENBEAST_I8_BASE": "0" * 40})
+    assert _i8_offending(r, {"CI": "true", "OPENBEAST_I8_BASE": "none"}) is None
+    g("branch", "main", base)                                  # control: the local fallback
+    assert _i8_offending(r, {}) == ["agents/tools.py"]

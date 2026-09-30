@@ -196,6 +196,10 @@ require = ["vision"]
 
 [routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
 description = "Grammar-constrained spawn classifier — a full 27B, kept off the 1-slot 5090"
+# Decisions go to a full model, never a small or 3B-active one (the 35B-A3B
+# MoE here is ~3B active; the MoE lesson: judge by active compute), and never
+# to a stock one. Add another deployment only if it is an uncensored dense
+# 27B-class model (tests/test_hydra_core.py pins this).
 targets = [
   { d = "qwen38-unc-q5@ti",  priority = 0 },
   { d = "qwen38-unc-q5@rig", priority = 1 },
