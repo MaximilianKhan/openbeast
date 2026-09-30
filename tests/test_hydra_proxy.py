@@ -982,3 +982,16 @@ def test_an_upstream_cannot_forge_provenance_headers(fleet):
     assert r.headers.get_list("x-hydra-deployment") == ["unc@rig"]
     assert r.headers.get_list("x-hydra-rule") == [], "no rule fired: no rule header, forged or not"
     assert all(len(r.headers.get_list(k)) == 1 for k in r.headers if k.lower().startswith("x-hydra-"))
+
+
+def test_tensorfold_never_gets_a_key_even_past_validation(fleet):
+    # validate() refuses a key on a TensorFold node; this is the runtime guard
+    # behind it (a node edited after validation, or a validator regression).
+    import dataclasses
+    srv, rig, _, tf = fleet()
+    n = dataclasses.replace(srv.hy.cfg.nodes["tf"], key_env="RIG_KEY")
+    srv.hy.cfg.nodes["tf"] = n
+    assert srv.hy.node_key(n) is None
+    r = post(srv, chat(model="beast:tf"))
+    assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "mlx@tf"
+    assert "authorization" not in posts(tf)[-1]["headers"]
