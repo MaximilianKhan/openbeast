@@ -779,6 +779,28 @@ if ob_offline; then
     warn "offline, but a REBUILD would need: ${_off_missing[*]}" \
          "serving is unaffected; stage them on a connected box (./scripts/bundle.sh build ./bundle)"
   fi
+  # Compose-kind extensions (ntfy, …) are merged into the SAME `docker compose
+  # up --pull never` as WebUI and SearXNG, so one missing extension image
+  # aborts the whole frontend. bundle.sh and update.sh --images carry only the
+  # core docker-compose.yml's images: an extension image has to be moved by
+  # hand. Checked by digest, then by repo:tag (docker load drops the digest).
+  if command -v docker >/dev/null 2>&1; then
+    for _ext in ${EXTENSIONS:-}; do
+      _ext_compose="$REPO_DIR/extensions/$_ext/compose.yaml"
+      [[ -f "$_ext_compose" ]] || continue
+      while IFS= read -r _img; do
+        [[ -n "$_img" ]] || continue
+        if docker image inspect "$_img" >/dev/null 2>&1 \
+           || docker image inspect "${_img%%@*}" >/dev/null 2>&1; then
+          pass "offline: the $_ext extension's image is present (${_img%%@*})"
+        else
+          fail "offline: the $_ext extension's image ${_img%%@*} is not on this box — compose up --pull never fails, taking WebUI and SearXNG down with it" \
+               "on a connected box: docker pull $_img && docker save -o $_ext.tar ${_img%%@*}; here: docker load -i $_ext.tar (bundle.sh does not carry extension images) — or ./scripts/ext.sh disable $_ext"
+        fi
+      done < <(grep -oE '^[[:space:]]*image:[[:space:]]*[^[:space:]]+' "$_ext_compose" \
+                 | sed -E 's/^[[:space:]]*image:[[:space:]]*//' | sort -u)
+    done
+  fi
 fi
 
 # ── beast-lang: what this rig can tell a model about a language ────────────

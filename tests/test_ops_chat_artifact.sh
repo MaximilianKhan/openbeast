@@ -16,7 +16,8 @@
 #                           under AGENT_LOG_RETENTION_DAYS; ledger swept
 #                           without beast-chat
 #   5  doctor.sh            :8446 parity with :8445, empty allowlist, bind
-#                           caveats, notification rows, :8447
+#                           caveats, notification rows, :8447, an OFFLINE
+#                           rig's missing extension image
 #   6  lib/conf.sh          CHAT_NOTIFY_* keys; the topic URL (a bearer
 #                           secret) reaches the chat server's env ONLY
 #   7  publish-verdict.sh   stable uuid5 id, sha+era label, .txt wrapped and
@@ -504,6 +505,38 @@ else
   fail ":8447 live: $(row '8447')"
 fi
 RUN_ENV=()
+# OFFLINE + a compose-kind extension: its image rides no bundle, and a missing
+# one aborts the whole `compose up --pull never` (WebUI + SearXNG with it).
+mkdir -p "$SB/extensions"; cp -R "$REPO_DIR/extensions/ntfy" "$SB/extensions/"
+cp "$SB/bin/docker" "$T/docker.orig"
+cat > "$SB/bin/docker" <<'STUB'
+#!/bin/bash
+[[ "$1 $2" == "image inspect" && -n "${DOCKER_HAVE:-}" && "$3" == "$DOCKER_HAVE" ]] && exit 0
+exit 1
+STUB
+chmod +x "$SB/bin/docker"
+NTFY_REF="$(grep -oE 'binwiederhier/ntfy:[^@[:space:]]+' "$REPO_DIR/extensions/ntfy/compose.yaml" | head -1)"
+doctor "EXTENSIONS=ntfy" OFFLINE=true
+if has "$_O" "the ntfy extension's image $NTFY_REF is not on this box" && has "$_O" "ext.sh disable ntfy"; then
+  pass "OFFLINE with the ntfy extension on and its image absent FAILs (it would abort the frontend up)"
+else
+  fail "offline ext image absent: $(row 'offline')"
+fi
+RUN_ENV=(DOCKER_HAVE="$NTFY_REF")
+doctor "EXTENSIONS=ntfy" OFFLINE=true
+if has "$_O" "the ntfy extension's image is present ($NTFY_REF)" && ! has "$_O" "is not on this box"; then
+  pass "…a docker-loaded image (repo:tag, digest dropped) passes (control)"
+else
+  fail "offline ext image present: $(row 'offline')"
+fi
+RUN_ENV=()
+doctor "EXTENSIONS=ntfy"
+if ! has "$_O" "extension's image"; then
+  pass "…and a connected rig gets no image row (control)"
+else
+  fail "online ext image row: $(row 'image')"
+fi
+cp "$T/docker.orig" "$SB/bin/docker"
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -28,6 +28,25 @@ Then, in the ntfy app on the phone (Android, iOS or desktop), add a
 subscription on the server `https://<rig>.<tailnet>.ts.net:8447` to the same
 topic.
 
+## Closed networks (`OFFLINE=true`)
+
+The ntfy image is **not** in the offline supply chain: `scripts/bundle.sh`
+and `update.sh --images` (and Dependabot) carry only the core
+`docker-compose.yml` images. Enabled extensions join the same
+`docker compose up --pull never` as WebUI and SearXNG, so a missing ntfy image
+stops all three. Move it by hand before enabling ntfy on a closed box:
+
+```bash
+# connected box
+docker pull binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0
+# closed box
+docker load -i ntfy.tar
+```
+
+`./scripts/doctor.sh` FAILs when `OFFLINE=true`, the extension is enabled and
+the image is missing. Bumping the pin is manual too: edit `compose.yaml`.
+
 `NTFY_PORT` (default 3005) moves the loopback port. `setup-tailscale.sh
 --unpublish-ntfy` takes the tailnet mount down, and `./scripts/setup-tailscale.sh
 --status` lists it.
