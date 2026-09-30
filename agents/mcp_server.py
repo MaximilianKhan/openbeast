@@ -344,7 +344,9 @@ def _build_runner_cmd(task: str, log_path: str, max_iter: int, workdir: str,
         cmd.extend(["--context-file", context_file])
     elif context:
         cmd.extend(["--context", context])
-    cmd.append(task)
+    # `--` so a task that starts with "-" (--task-file=…, --help) is the
+    # task, never runner flags — chat_server.plan_session does the same.
+    cmd += ["--", task]
     return cmd
 
 

@@ -237,6 +237,25 @@ def test_artifact_admins_names_the_admins(make_client, monkeypatch):
     assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 404
 
 
+def test_an_admin_off_the_operator_list_is_still_an_operator(make_client,
+                                                              monkeypatch,
+                                                              capsys):
+    """A-artifact-2: ARTIFACT_ADMINS "see and manage every page", but an
+    admin not also on ARTIFACT_OPERATORS got the flat 404 everywhere."""
+    boss = {"Tailscale-User-Login": "boss@example.com"}
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "boss@example.com")
+    c = make_client(operators="max@example.com")
+    a = publish(c)                                   # rig-owned
+    assert c.get("/", headers=boss).status_code == 200
+    assert c.get(f"/a/{a['id']}", headers=boss).status_code == 200
+    # the documented replacement of the first-operator default is announced
+    assert "does not name the first operator (max@example.com)" in \
+        capsys.readouterr().err
+    # negative control: a login on neither list stays anonymous
+    stranger = {"Tailscale-User-Login": "eve@example.com"}
+    assert c.get("/", headers=stranger).status_code == 404
+
+
 # --- security-1 / integration-ops-4: a LAN bind address ----------------------
 
 def test_a_lan_bind_trusts_tailscale_serve_on_the_same_host(make_client,
@@ -562,6 +581,58 @@ def test_retention_is_off_by_default_and_never_touches_pinned(env, monkeypatch):
                for x in ledger(env))
 
 
+def test_unpinning_an_old_page_does_not_schedule_its_deletion(env, monkeypatch):
+    """B-artifact-1: unpinning kept the page's old updated_at, so the next
+    daily sweep deleted a page someone had just unpinned to tidy up."""
+    a = store.publish(PAGE, title="january report")
+    store.set_pinned(a["id"], True, admin=True)
+    meta = store.get_meta(a["id"])
+    meta["updated_at"] = "2026-01-01T00:00:00+00:00"
+    store._write_meta(a["id"], meta)
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", "30")
+    store.set_pinned(a["id"], False, admin=True)
+    assert store.get_meta(a["id"])["updated_at"].startswith("2026-01-01")
+    assert store.sweep_retention() == []                  # grace from unpin
+    assert store.get_meta(a["id"])
+    # ...and a full period after the unpin, it goes like any other page
+    later = datetime.now(timezone.utc) + timedelta(days=31)
+    assert store.sweep_retention(now=later) == [a["id"]]
+
+
+def test_the_example_conf_documents_admins_and_retention(env, monkeypatch):
+    """B-artifact-3: the server tells the operator to "Set ARTIFACT_ADMINS in
+    openbeast.conf", but the example conf had neither key. The documented
+    lines, uncommented, must be ones the store actually reads."""
+    example = open(os.path.join(REPO, "openbeast.conf.example")).read()
+    lines = {}
+    for key in ("ARTIFACT_ADMINS", "ARTIFACT_RETAIN_DAYS"):
+        m = re.search(rf"^#({key}=\S+)$", example, re.M)
+        assert m, f"openbeast.conf.example does not document {key}"
+        lines[key] = m.group(1)
+    conf = env / "openbeast.conf"
+    conf.write_text("ARTIFACT_ADMINS=boss@example.com\n"
+                    "ARTIFACT_RETAIN_DAYS=14\n")
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    assert store.admins() == ["boss@example.com"]
+    assert store.retain_days() == 14
+    conf.write_text("\n".join(lines.values()) + "\n")      # the defaults
+    assert store.retain_days() == 0
+
+
+def test_a_bad_gallery_page_number_opens_page_one(make_client):
+    """B-artifact-4: ?page=abc showed an operator a raw 422 JSON body."""
+    c = make_client(operators="max@example.com")
+    publish(c, title="only page")
+    for bad in ("abc", "2x", "", "-3", "9" * 5000):
+        r = c.get(f"/?page={bad}", headers=MAX)
+        assert r.status_code == 200, (bad, r.text[:200])
+        assert "text/html" in r.headers["content-type"]
+        assert page_rows(r.text) == 1
+    # a stranger still gets the flat 404, not the gallery
+    r = c.get("/?page=abc", headers={"Tailscale-User-Login": "eve@example.com"})
+    assert r.status_code == 404
+
+
 def test_the_server_sweep_is_audited(make_client, monkeypatch):
     c = make_client()
     a = publish(c)
@@ -664,6 +735,29 @@ def test_source_session_is_stamped_linked_and_filterable(make_client,
     assert [r["id"] for r in rows] == [a["id"]]
     g = c.get("/?session=agent-20260930-abc123", headers=local(c)).text
     assert page_rows(g) == 1
+
+
+def test_session_provenance_is_per_version(make_client):
+    """A-artifact-1: a later session's republish overwrote the page-level
+    session, so the first session's filter lost the page and the pinned v1
+    viewer named a session that did not make v1."""
+    c = make_client()
+    a = publish(c, source_session="chat-A")
+    publish(c, artifact_id=a["id"], source_session="chat-B")
+    for sess in ("chat-A", "chat-B"):
+        rows = c.get(f"/api/artifacts?session={sess}",
+                     headers=local(c)).json()["artifacts"]
+        assert [r["id"] for r in rows] == [a["id"]], sess
+    assert c.get("/api/artifacts?session=chat-C",
+                 headers=local(c)).json()["artifacts"] == []
+    v1 = c.get(f"/a/{a['id']}/v/1", headers=local(c)).text
+    v2 = c.get(f"/a/{a['id']}/v/2", headers=local(c)).text
+    assert "made by session chat-A" in v1 and "chat-B" not in v1
+    assert "made by session chat-B" in v2
+    # a version published outside any session names none
+    publish(c, artifact_id=a["id"])
+    v3 = c.get(f"/a/{a['id']}/v/3", headers=local(c)).text
+    assert "made by session chat-" not in v3
 
 
 def test_the_tool_stamps_the_session_and_falls_back_to_the_filename(
@@ -834,3 +928,21 @@ def test_the_implicit_admin_over_other_operators_is_announced(make_client,
     monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "max@example.com")
     make_client(operators="max@example.com,kid@example.com")
     assert "ARTIFACT_ADMINS" not in capsys.readouterr().err
+
+
+def test_delete_version_is_no_existence_oracle(make_client):
+    """A-artifact-3 / B-artifact-2: DELETE /v/<n> answered a missing id with
+    400 "no such artifact" and someone else's page with the flat 404, so a
+    keyed operator could tell which (custom, guessable) ids exist."""
+    c = make_client(operators="boss@example.com,max@example.com,kid@example.com")
+    mine = publish(c, headers=local(c, MAX), artifact_id="my-report")
+    publish(c, headers=local(c, MAX), artifact_id="my-report")      # v2
+    kid = {**KID, **enroll(c.tmp, "kidphone", ("artifact",))}
+    theirs = c.delete(f"/api/artifacts/{mine['id']}/v/1", headers=kid)
+    missing = c.delete("/api/artifacts/not-a-page/v/1", headers=kid)
+    assert (theirs.status_code, theirs.json()) == (404, FLAT_404)
+    assert (missing.status_code, missing.json()) == (404, FLAT_404)
+    # control: the owner still deletes an old version of their own page
+    maxkey = {**MAX, **enroll(c.tmp, "maxphone", ("artifact",))}
+    r = c.delete(f"/api/artifacts/{mine['id']}/v/1", headers=maxkey)
+    assert r.status_code == 200 and r.json()["removed_version"] == 1
