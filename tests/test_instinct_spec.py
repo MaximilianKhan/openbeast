@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 import _instinct_helpers as H
-from instinct.config import ConfigError, effective_chain, load_config
+from instinct.config import ConfigError, effective_chain, is_local_host, load_config
 from instinct.service import Instinct
 from instinct.spec import SpecError, load_registry, load_spec, parse_constraint
 
@@ -108,6 +108,61 @@ def test_engine_never_routes_through_hydra_gate_or_router(tmp_path, url):
     """I7: instinct's engine traffic never goes through hydra or beast-gate."""
     cfg = _cfg(tmp_path, {"x": H.llama_binding(url)})
     assert "x" in cfg.engine_errors and "I7" in cfg.engine_errors["x"]
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.2:8443", "http://[::ffff:127.0.0.1]:8095", "http://127.1:8095",
+    "http://localhost.:8443", "http://0x7f.1:8088", "http://2130706433:8095",
+    "http://100.64.0.7:8443",          # the rig's gate on its tailnet address is still the gate
+])
+def test_forbidden_ports_cannot_be_reached_by_another_spelling(tmp_path, url):
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)})
+    assert "x" in cfg.engine_errors and "I7" in cfg.engine_errors["x"]
+
+
+@pytest.mark.parametrize("host,local", [
+    ("127.0.0.1", True), ("127.9.9.9", True), ("127.1", True), ("localhost.", True),
+    ("::1", True), ("::ffff:127.0.0.1", True), ("0.0.0.0", True), ("a.localhost", True),
+    ("10.0.0.5", False), ("example.com", False), ("::ffff:10.0.0.1", False)])
+def test_is_local_host(host, local):
+    assert is_local_host(host) is local
+
+
+def test_primary_is_linted_without_any_env(tmp_path):
+    """instinct.sh never sources conf.sh: the :8080 default must still hold."""
+    for url in ("http://127.0.0.1:8080", "http://localhost:8080", "http://127.1:8080"):
+        cfg = _cfg(tmp_path, {"p": H.llama_binding(url)}, env={})
+        assert "INFERENCE_URL" in cfg.engine_errors.get("p", ""), url
+    cfg = _cfg(tmp_path, {"p": H.llama_binding("http://127.0.0.1:8082")}, env={})
+    assert "p" in cfg.engines   # control: the scorer port is fine
+
+
+@pytest.mark.parametrize("val", ["no", "false", 0, 1])
+def test_allow_primary_must_be_a_real_bool(tmp_path, val):
+    env = {"INFERENCE_URL": "http://127.0.0.1:59999"}
+    cfg = _cfg(tmp_path, {"p": H.llama_binding("http://127.0.0.1:59999", allow_primary=val)},
+               env)
+    assert "p" not in cfg.engines and "bool" in cfg.engine_errors["p"]
+
+
+def test_sis_url_is_linted_and_pinned_to_the_engine_host(tmp_path):
+    ok = H.sglang_binding("http://127.0.0.1:30010", sis_url="http://localhost:30011")
+    cfg = _cfg(tmp_path, {"s": ok})
+    assert "s" in cfg.engines   # control: same host, another port
+    for bad, why in (("http://evil.example:30011", "same scheme and host"),
+                     ("http://127.0.0.1:8443", "I7"),
+                     ("http://127.0.0.1:8080", "INFERENCE_URL"),
+                     ("ftp://127.0.0.1:30011", "http(s)")):
+        cfg = _cfg(tmp_path, {"s": H.sglang_binding("http://127.0.0.1:30010", sis_url=bad)})
+        assert why in cfg.engine_errors.get("s", ""), bad
+
+
+def test_sis_url_never_receives_the_key_off_host(tmp_path):
+    """End to end: the only binding that could send the bearer key to a third
+    party is refused before an engine is ever built."""
+    cfg = _cfg(tmp_path, {"s": H.sglang_binding("http://127.0.0.1:30010",
+                                                sis_url="http://evil.example/")})
+    assert "s" not in cfg.engines
 
 
 def test_hydra_url_env_refused(tmp_path):
