@@ -62,4 +62,18 @@ if [[ -n "${OPENBEAST_AGENT_INFERENCE_URL:-}" ]]; then
   fi
 fi
 
+# Tier-3 awareness pack (agents/lang/pack_context.py): a zig task gets
+# agents/packs/zig-0.16.md as --context-file — the exact file and channel the
+# A/B measured. The helper hands back the argv NUL-separated; an explicit
+# --context-file of yours wins, LANG_PACK_CONTEXT=off disables it, and any
+# helper failure leaves the argv exactly as you typed it.
+if [[ -f "$REPO_DIR/agents/lang/pack_context.py" ]]; then
+  _packed=()
+  while IFS= read -r -d '' _a; do _packed+=("$_a"); done \
+    < <(python3 "$REPO_DIR/agents/lang/pack_context.py" argv -- ${ARGS[@]+"${ARGS[@]}"} || true)
+  if (( ${#_packed[@]} > 0 && ${#_packed[@]} >= ${#ARGS[@]} )); then
+    ARGS=("${_packed[@]}")
+  fi
+fi
+
 exec python3 "$REPO_DIR/agents/runner.py" ${ARGS[@]+"${ARGS[@]}"}

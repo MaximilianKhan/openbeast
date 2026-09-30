@@ -425,6 +425,25 @@ def test_a_named_title_is_scrubbed_but_still_sent(rig, stub):
     assert any("deploy with" in b for b in bodies)
 
 
+def test_a_custom_notify_on_word_survives_in_the_alert(rig, stub,
+                                                      monkeypatch):
+    """CHAT_NOTIFY_ON=failed is config, not a secret: the alert body must
+    still say 'failed', not '[redacted:OPENBEAST_CHAT_NOTIFY_ON]'."""
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", "failed")
+    monkeypatch.setitem(chat_server._LITERALS_CACHE, "at", -1e9)
+    s = stub()
+    agent = sessions.new_id("agent")
+    sessions.register(agent, kind="agent", pid=os.getpid(), pgid=os.getpid(),
+                      title="fix the failed build")
+    n = _notifier(rig, s.url + "/t", on=("failed",))
+    n.tick()
+    sessions.finalize(agent, "failed")
+    assert n.tick() == [agent]
+    body = s.calls[-1]["body"].decode()
+    assert "fix the failed build" in body and "redacted" not in body
+    chat_server._LITERALS_CACHE["at"] = -1e9
+
+
 def test_notify_on_filters_states(rig, stub):
     s = stub()
     sid = rig.session(kind="job", state="running")
@@ -455,6 +474,39 @@ def test_a_burst_is_capped_with_one_summary(rig, stub):
     assert len(n.tick()) == 10
     assert len(s.calls) == 11
     assert "3 more" in s.calls[-1]["body"].decode()
+
+
+def test_a_failed_send_is_retried_next_tick(rig, stub):
+    """A-chat-2: the ntfy endpoint being briefly down must not lose the
+    failed-job alert — the snapshot keeps it pending until it is delivered."""
+    results = [False, True]
+    sent = []
+
+    def poster(body, headers):
+        ok = results.pop(0) if results else True
+        sent.append((body, ok))
+        return ok
+
+    sid = rig.session(kind="job", state="running", title="nightly")
+    n = _notifier(rig, "http://127.0.0.1:9/t", poster=poster)
+    assert n.tick() == []
+    sessions.finalize(sid, "failed")
+    assert n.tick() == []                     # endpoint down
+    assert n.tick() == [sid]                  # retried once it is back
+    assert [ok for _, ok in sent] == [False, True]
+    assert n.tick() == [] and len(sent) == 2  # and only once after that
+
+
+def test_an_undelivered_alert_is_given_up_after_the_max_age(rig, monkeypatch):
+    sent = []
+    sid = rig.session(kind="job", state="running")
+    n = _notifier(rig, "http://127.0.0.1:9/t",
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    sessions.finalize(sid, "failed")
+    late = time.time() + chat_server.NOTIFY_RETRY_MAX_AGE + 60
+    assert n.tick(now=late) == [] and len(sent) == 1
+    assert n.tick(now=late + 1) == [] and len(sent) == 1
 
 
 def test_a_failed_post_never_logs_the_token(rig, tmp_path, capsys):
@@ -547,8 +599,102 @@ def test_scrub_catches_quoted_hyphenated_flag_and_scheme_forms(leak, secret):
 
 def test_scrub_leaves_ordinary_text_alone():
     for text in ("--max-iter 200 --model qwen", "512 tokens per second",
-                 '{"title": "nightly build"}', "keys are fine: yes"):
+                 '{"title": "nightly build"}', "keys are fine: yes",
+                 "see https://example.com/a:b@c no creds", "task-runner ok",
+                 "pip install scikit-learn", "desk-lamp-controller: on"):
         assert chat_server.scrub_secrets(text) == text
+
+
+@pytest.fixture()
+def fresh_literals(monkeypatch, tmp_path):
+    """No cached rig literals, an empty run dir, and the cache reset after."""
+    for var in ("OPENBEAST_RUN_DIR", "OPENBEAST_CHAT_RUN_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / "run"))
+    (tmp_path / "run").mkdir()
+    monkeypatch.setitem(chat_server._LITERALS_CACHE, "at", -1e9)
+    yield tmp_path / "run"
+    chat_server._LITERALS_CACHE["at"] = -1e9
+
+
+@pytest.mark.parametrize("leak, secret", [
+    ("origin https://max:ghp_OTHERTOKEN1234567890abcd@github.com/x.git (fetch)",
+     "ghp_OTHERTOKEN1234567890abcd"),
+    ("DATABASE postgres://user:hunter2pass@db/x", "hunter2pass"),
+    ("curl -u admin:hunter2secret https://x", "hunter2secret"),
+    ("token was sk-proj-abcdefghijklmnopqrstuvwxyz0123 ok",
+     "sk-proj-abcdefghijklmnopqrstuvwxyz0123"),
+    ("hf_AbCdEfGhIjKlMnOpQrStUvWx is the key", "hf_AbCdEfGhIjKlMnOpQrStUvWx"),
+    ("aws AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n"
+     "QUJDREVGR0hJSktMTU5PUA==\n-----END OPENSSH PRIVATE KEY-----\n",
+     "b3BlbnNzaC1rZXktdjEAAAAA"),
+])
+def test_scrub_catches_url_creds_pem_and_prefixed_tokens(leak, secret,
+                                                          fresh_literals):
+    """B-chat-3: shapes the export used to publish verbatim."""
+    out = chat_server.scrub_secrets(leak)
+    assert secret not in out and "redacted" in out
+
+
+def test_scrub_redacts_the_rig_tokens_and_the_notify_topic(fresh_literals,
+                                                           monkeypatch,
+                                                           tmp_path):
+    """B-chat-3: the locality token, the raw-origin key and the ntfy topic
+    have no secret-shaped NAME next to them — they are redacted by value."""
+    run = fresh_literals
+    (run / "chat-local.token").write_text("4d096154684c44ee81d6fe98f2352a78\n")
+    (run / "artifact-raw.key").write_text("rawkey-0123456789abcdef\n")
+    tok = tmp_path / "ntfy.token"
+    tok.write_text("tk_ntfyTOKENvalue99\n")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL",
+                       "http://127.0.0.1:38715/mytopic-SECRET-TOPIC")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_TOKEN_FILE", str(tok))
+    text = ("localtoken 4d096154684c44ee81d6fe98f2352a78\n"
+            "raw rawkey-0123456789abcdef\n"
+            "topic http://127.0.0.1:38715/mytopic-SECRET-TOPIC\n"
+            "ntfy subscribe mytopic-SECRET-TOPIC\n"
+            "ntfy tk_ntfyTOKENvalue99\n")
+    out = chat_server.scrub_secrets(text)
+    for secret in ("4d096154684c44ee81d6fe98f2352a78", "rawkey-0123456789abcdef",
+                   "mytopic-SECRET-TOPIC", "tk_ntfyTOKENvalue99"):
+        assert secret not in out
+    assert out.count("[redacted") == 5
+
+
+@pytest.mark.parametrize("value", ["failed", "stopped", "failed,lost,done"])
+def test_scrub_keeps_ordinary_words_named_in_notify_on(value, fresh_literals,
+                                                       monkeypatch):
+    """CHAT_NOTIFY_ON is config, not a secret: a custom state list must not
+    redact that word everywhere in exports and phone alerts."""
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", value)
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_PERIOD_S", "5")
+    text = f"build failed: 3 tests stopped after 5 s ({value})"
+    assert chat_server.scrub_secrets(text) == text
+    labels = [label for label, _ in chat_server._rig_literals()]
+    assert "OPENBEAST_CHAT_NOTIFY_ON" not in labels
+    assert "OPENBEAST_CHAT_NOTIFY_PERIOD_S" not in labels
+
+
+@pytest.mark.parametrize("blob", [
+    "-" * 40000,
+    "a-" * 20000,
+    "Ab_9-" * 40000,                                     # 200 KB base64url
+    "x" * 100000 + "=" + "y" * 100000,
+    "--" + "a-" * 20000 + " value",
+])
+def test_scrub_is_linear_on_hostile_runs(blob, fresh_literals):
+    """B-chat-1: these each took 30+ s (quadratic) and froze the event loop
+    long enough for the healthcheck to restart the server mid-export."""
+    started = time.monotonic()
+    chat_server.scrub_secrets(blob)
+    assert time.monotonic() - started < 1.5
+
+
+def test_scrub_still_redacts_after_a_benign_assignment(fresh_literals):
+    """The name/value pass is one left-to-right scan: a value it skips must
+    not hide a secret assignment inside it."""
+    out = chat_server.scrub_secrets("x=API_KEY=sk_abcdef123 y=1")
+    assert "sk_abcdef123" not in out and "y=1" in out
 
 
 def _free_port():
@@ -714,6 +860,30 @@ def test_the_default_artifact_admin_sees_an_exported_page(
     assert _get_page(port, aid, LISTED) == 200
     assert _get_page(port, aid, "alice@example.com") == 200
     assert _get_page(port, aid, "mallory@example.com") == 404   # unlisted
+
+
+def test_a_second_principal_can_still_export_a_session(rig, artifact_server):
+    """B-chat-4: the shared id belongs to whoever exported first; the other
+    principal got a permanent 'HTTP 404'. It now gets a page of its own, and
+    each principal's re-export stays a new version of ITS page."""
+    import artifact
+    sid = rig.session(kind="agent", state="done", title="build check")
+    phone_aid = _export_as_phone(rig, sid)                 # phone first
+    assert phone_aid == chat_server.export_artifact_id(sid)
+    r = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                        headers=rig.local)                 # then the rig
+    assert r.status_code == 200, r.text
+    rig_aid = r.json()["id"]
+    assert rig_aid == chat_server.export_artifact_id(sid, "rig") != phone_aid
+    assert artifact.get_meta(rig_aid)["owner"] == "rig"
+    assert artifact.get_meta(phone_aid)["owner"] == LISTED
+    r2 = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                         headers=rig.local)
+    assert (r2.json()["id"], r2.json()["version"]) == (rig_aid, 2)
+    key = rig.enroll("phone2", "k-phone-export2", scopes=["chat"])
+    r3 = rig.client.post(f"/api/chat/sessions/{sid}/export", json={},
+                         headers={**key, "Tailscale-User-Login": LISTED})
+    assert (r3.json()["id"], r3.json()["version"]) == (phone_aid, 2)
 
 
 def test_only_a_verified_real_login_is_forwarded_as_owner():

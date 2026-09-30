@@ -124,6 +124,16 @@ def test_shipped_profiles_and_template():
         obprofile.load(str(f))
 
 
+def test_glm53_flash_profile_is_the_uncensored_tr3_on_two_sparks():
+    # Max 2026-09-30: the Sparks serve GLM-5.3-Flash, and every OpenBeast model is uncensored. The staged
+    # weights/GLM-5.3-Flash-EXL3-TR3-4bpw (Mia / brandonmusic) is the STOCK model: never the profile's source.
+    p = obprofile.load(str(PYLIB.parent / "models" / "glm53-flash-unc-exl3-tensorfold.env"), "tensorfold")
+    assert p.source == "neko-legends/GLM-5.3-Flash-Uncensored-EXL3" and "Uncensored" in p.source
+    assert p.get("REVISION") == "07135ec082f8f11f7a71e4244a4e5167a0f96277"
+    assert p.get("TENSOR_PARALLEL_SIZE") == "2"                       # glm5_next refuses anything but --tp 2
+    assert not p.get("DRAFTER_SOURCE")
+
+
 # --------------------------------------------------------------------------- EXTRA_ARGS policy
 # vLLM's FlexibleArgumentParser maps "_" to "-" and argparse accepts any
 # unambiguous prefix: every spelling below reaches the engine as the refused

@@ -94,6 +94,17 @@ def _conf_value(key: str, missing=""):
     return missing
 
 
+def allow_list_raw() -> str:
+    """The LANG_PACKS setting as written (env beats conf; absent = "auto").
+    Split out so a caller that only needs "is <lang> allowed" (the production
+    pack context, agents/lang/pack_context.py) does not pay for resolving
+    `auto` against every installed toolchain."""
+    if "OPENBEAST_LANG_PACKS" in os.environ:
+        return os.environ["OPENBEAST_LANG_PACKS"].strip()
+    conf = _conf_value("LANG_PACKS", missing=None)
+    return "auto" if conf is None else conf.strip()
+
+
 def allow_list() -> tuple[str, list[str]]:
     """(raw setting, resolved languages). Env beats conf; `auto` is default.
 
@@ -102,11 +113,7 @@ def allow_list() -> tuple[str, list[str]]:
     with an `or` chain conflated the two and silently activated every language
     on a rig where someone had deliberately emptied the key.
     """
-    if "OPENBEAST_LANG_PACKS" in os.environ:
-        raw = os.environ["OPENBEAST_LANG_PACKS"].strip()
-    else:
-        conf = _conf_value("LANG_PACKS", missing=None)
-        raw = "auto" if conf is None else conf.strip()
+    raw = allow_list_raw()
     if raw.lower() in ("off", "false", "none", "0", ""):
         return raw, []
     if raw.lower() == "auto":
