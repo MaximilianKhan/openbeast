@@ -646,7 +646,7 @@ iframe{flex:1;border:0;width:100%;background:#fff}
  referrerpolicy="no-referrer"></iframe>
 <script>
 document.getElementById('v').addEventListener('change', function (e) {
-  var m = /^\/a\/([^/]+)/.exec(location.pathname);
+  var m = /^\\/a\\/([^/]+)/.exec(location.pathname);
   if (m) { location.href = '/a/' + m[1] + '/v/' + encodeURIComponent(e.target.value); }
 });
 </script>

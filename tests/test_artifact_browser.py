@@ -57,6 +57,13 @@ function report(tag){
                       q: location.search}, '*');
 }
 window.addEventListener('load', function(){ report('load'); });
+// The scheme a sandboxed (out-of-process) frame sees follows the parent
+// iframe's color-scheme, which can land AFTER 'load'; media queries are live,
+// so report again when it settles instead of trusting the first paint.
+try {
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',
+    function(){ report('scheme'); });
+} catch (e) {}
 </script>
 """
 
@@ -169,13 +176,21 @@ def test_the_theme_toggle_reaches_the_frame_on_a_dark_device(live):
     aid = live["pub"](PROBE, files={"dot.png": DOT})
     page = live["browser"].new_page(scheme="dark")
     page.goto(f"{live['base']}/a/{aid}")
-    first = _wait_msg(page, lambda m: m.get("tag") == "load")
-    assert first and first["bg"] == "rgb(16, 20, 24)", first
+    first = _wait_msg(page, lambda m: m.get("tag") in ("load", "scheme")
+                      and m.get("bg") == "rgb(16, 20, 24)")
+    assert first, "the framed page never reported dark on a dark device"
     page.eval("document.getElementById('theme').click()")
-    light = _wait_msg(page, lambda m: m.get("tag") == "load"
-                      and "theme=light" in (m.get("q") or ""))
-    assert light, "the frame was not re-served with the chosen theme"
-    assert light["bg"] == "rgb(255, 255, 255)", light
+    served = _wait_msg(page, lambda m: m.get("tag") == "load"
+                       and "theme=light" in (m.get("q") or ""))
+    assert served, "the frame was not re-served with the chosen theme"
+    # Wait for the scheme to SETTLE light rather than asserting on the first
+    # load report (it can precede the parent's color-scheme; 1 in 4 flaked).
+    # On the old code the frame stays dark, so this never arrives.
+    light = _wait_msg(page, lambda m: m.get("tag") in ("load", "scheme")
+                      and "theme=light" in (m.get("q") or "")
+                      and m.get("bg") == "rgb(255, 255, 255)")
+    assert light, ("the frame never turned light: "
+                   f"{[m for m in page.messages() if isinstance(m, dict)]}")
 
 
 def test_an_external_link_does_not_blank_the_artifact(live, monkeypatch):
