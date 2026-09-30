@@ -31,13 +31,6 @@ hitting whatever `:8443` mapped to before (raw llama-server after enabling the
 gate; a dead port after disabling it). `./scripts/doctor.sh` flags exactly
 this mismatch — heed it.
 
-**beast-artifact admins after v1.6.0.** With `ARTIFACT_ADMINS` unset, the
-first `ARTIFACT_OPERATORS` login becomes the artifact admin and can read,
-re-share, hand over and delete the other operators' private pages (in v1.6.0
-those stayed owner-only). A rig with more than one operator says so at every
-start, on stderr and in the artifact audit log, until `ARTIFACT_ADMINS` is
-set. Details: [BEAST_ARTIFACT.md](BEAST_ARTIFACT.md#visibility).
-
 Preview what would change without touching anything:
 
 ```bash
@@ -63,6 +56,47 @@ Under `OFFLINE=true` (`openbeast.conf`) every step that needs the network is
 skipped with a message saying what it would have done — no pull, no digest
 bump, no index query — and `--check` reports what is on disk instead of
 comparing against a remote.
+
+## Upgrading past v1.6.0: beast-artifact and beast-chat
+
+Nothing here needs a manual step unless you run more than one operator.
+Restart the stack (`./stop.sh && ./start.sh -d`) and read on.
+
+- **Rig-published pages change owner, once.** Pages owned by `local` (what a
+  rig with no allowlist published) are re-owned to the new `rig` principal
+  when the artifact server starts: idempotent, with an `index.jsonl` row per
+  page. Pages the CLI published on a rig **with** `ARTIFACT_OPERATORS` set
+  are owned by the first operator and stay that way; `artifact.sh publish
+  <f> --id <id>` can still update them in place, and `artifact.sh chown <id>
+  rig` hands one to the rig for good. Details:
+  [BEAST_ARTIFACT.md § Upgrading](BEAST_ARTIFACT.md#upgrading-local-pages-and-operator-owned-pages).
+- **The first operator becomes the artifact admin.** With `ARTIFACT_ADMINS`
+  unset, the first `ARTIFACT_OPERATORS` login (else the first
+  `CHAT_OPERATORS` login) can read, re-share, hand over and delete the other
+  operators' private pages; in v1.6.0 those stayed owner-only. A rig with more
+  than one operator says so at every start, on stderr and as an
+  `admin-default` row in the artifact audit log, until `ARTIFACT_ADMINS` is
+  set. On a single-operator rig nothing changes in practice. Details:
+  [BEAST_ARTIFACT.md § Who administers](BEAST_ARTIFACT.md#who-administers).
+- **No operator configured?** The rig's private pages open for nobody from a
+  phone. Every rig publish now says so, and `doctor` warns. Set
+  `ARTIFACT_OPERATORS=you@example.com` (or `CHAT_OPERATORS`).
+- **Managing pages from a phone is new and opt-in**: enroll a device with
+  `--scope artifact`. Existing keys have no such scope and gain nothing.
+- **Console jobs run under `job.sh`'s supervisor** and no longer inherit the
+  stack's secret environment (`HF_TOKEN`, `GH_TOKEN`, stack keys…). A preset
+  that relied on one must read it from a file. A job killed by a signal
+  nobody in beast-chat sent is now `failed` with its exit status, as under
+  `job.sh run`.
+- **`healthcheck.sh` can now exit non-zero with a `FOREIGN` row** when a
+  process the stack did not start (a sibling worktree's server) answers on
+  `:3003` or `:3004`. It kills nothing.
+- **The daily logrotate run sweeps the session ledger** (terminal records
+  older than 30 days) even with `BEAST_CHAT=false`, and rotates
+  `.run/sessions/*.log`.
+- **Notifications are new and off** until you set `CHAT_NOTIFY_URL`; the
+  `ntfy` extension's image is carried by `bundle.sh` and bumped by
+  `update.sh --images` like the core ones.
 
 ## Clients update themselves
 
