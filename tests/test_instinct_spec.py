@@ -20,7 +20,9 @@ def test_shipped_specs_load():
     s = specs["router.spawn_intent"]
     assert s.policy.act == {"inline": 0.90}          # skip-only (I4)
     assert s.policy.mode == "shadow"
-    assert s.chain == ["linear", "rig-cpu", "rules"]
+    assert s.chain == ["rig-27b", "rig-cpu", "linear", "rules"]   # a FULL model first
+    assert s.policy.primary_use == "substitute"
+    assert s.policy.substitutes == "agents/router.py:_classify"
     t = specs["hydra.task_class"]
     assert t.mechanical == ["vision", "long_context"]
     assert [lb.text for lb in t.labels] == ["A", "B", "C", "D", "E"]
@@ -110,6 +112,36 @@ def test_engine_never_routes_through_hydra_gate_or_router(tmp_path, url):
     assert "x" in cfg.engine_errors and "I7" in cfg.engine_errors["x"]
 
 
+def test_the_gate_on_its_own_port_is_refused(tmp_path):
+    """beast-gate listens on EDGE_PORT (8090); :8443 is only its tailnet
+    front. An engine at 127.0.0.1:8090 went through the gate's audit and
+    caps and passed the lint."""
+    cfg = _cfg(tmp_path, {"x": H.llama_binding("http://127.0.0.1:8090")}, env={})
+    assert "x" in cfg.engine_errors and "beast-gate" in cfg.engine_errors["x"]
+
+
+@pytest.mark.parametrize("key,port,who", [
+    ("OPENBEAST_EDGE_PORT", 8191, "beast-gate"), ("EDGE_PORT", 8192, "beast-gate"),
+    ("OPENBEAST_ROUTER_PORT", 8098, "agent router"), ("ROUTER_PORT", 8099, "agent router"),
+    ("HYDRA_PORT", 8196, "hydra"), ("OPENBEAST_HYDRA_PORT", 8197, "hydra")])
+def test_a_moved_gate_router_or_hydra_port_is_still_refused(tmp_path, key, port, who):
+    url = f"http://127.0.0.1:{port}"
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)}, env={key: str(port)})
+    assert "x" in cfg.engine_errors and who in cfg.engine_errors["x"], cfg.engine_errors
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)}, env={})
+    assert "x" in cfg.engines                                     # control: nothing lives there
+
+
+def test_start_hands_instinct_the_live_router_and_gate_ports():
+    """conf.sh's ROUTER_PORT is a plain shell variable (never exported), so
+    unless start.sh passes it, a moved router port never reaches the lint."""
+    src = (H.REPO / "start.sh").read_text()
+    launch = src[src.index('Starting beast-instinct'):]
+    launch = launch[:launch.index('instinct.sh" up')]
+    assert 'OPENBEAST_ROUTER_PORT="${ROUTER_PORT' in launch
+    assert 'OPENBEAST_EDGE_PORT="${EDGE_PORT' in launch
+
+
 @pytest.mark.parametrize("url", [
     "http://127.0.0.2:8443", "http://[::ffff:127.0.0.1]:8095", "http://127.1:8095",
     "http://localhost.:8443", "http://0x7f.1:8088", "http://2130706433:8095",
@@ -189,6 +221,9 @@ def test_shipped_config_refuses_unpinned_sglang():
     cfg = load_config(env={})
     assert "rig-sglang" in cfg.engine_errors       # placeholders until R2
     assert cfg.engines["rig-cpu"].model_sha256.startswith("9465e63a")
+    p = cfg.engines["rig-27b"]                     # the primary 27B, substitute-only
+    assert p.allow_primary and p.busy_skip and p.key_env == "LLAMA_API_KEY"
+    assert p.model_sha256.startswith("24780644")   # Qwen3.8-27B-Uncensored-Q5_K_M
     assert cfg.port == 8094 and cfg.host == "127.0.0.1"
 
 
@@ -200,16 +235,18 @@ def test_engine_override(tmp_path):
         _cfg(tmp_path, {}, {"INSTINCT_ENGINE_OVERRIDE": "linear"})
 
 
-def test_allow_primary_binding_only_for_async_decisions(tmp_path):
+def test_allow_primary_binding_only_for_primary_use_decisions(tmp_path):
     env = {"INFERENCE_URL": "http://127.0.0.1:59999"}
+    none = (GOOD.replace('"rig-27b"', '"prim"')
+            .replace('primary_use      = "substitute"', '')
+            .replace('substitutes      = "agents/router.py:_classify"', ''))
     p = H.write_config(tmp_path, {"prim": H.llama_binding("http://127.0.0.1:59999",
                                                           allow_primary=True)},
-                       extra_decisions={"router.spawn_intent": GOOD.replace(
-                           '"rig-cpu"', '"prim"')})
+                       extra_decisions={"router.spawn_intent": none})
     inst = Instinct(load_config(p, env=env))
     H.run(inst.reload())
     assert "prim" not in inst.chains["router.spawn_intent"]
-    assert "async_only" in inst.spec_errors["router.spawn_intent#engines"]
+    assert "primary_use is none" in inst.spec_errors["router.spawn_intent#engines"]
 
 
 def test_load_spec_roundtrip():

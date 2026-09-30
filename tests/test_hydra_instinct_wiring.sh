@@ -11,7 +11,9 @@
 #   2. when WIRING_BASELINE_REF names a git ref from before the wiring
 #      (e.g. WIRING_BASELINE_REF=integ/chat-artifact-2026-09-30), conf.sh,
 #      stop.sh and healthcheck.sh from that ref and from the worktree are run
-#      side by side under `set -euo pipefail` and their outputs diffed;
+#      side by side under `set -euo pipefail` and their outputs diffed
+#      (CI pins v1.6.0 so the proof keeps running now the wiring is on main;
+#      _BASELINE_ALLOW names the few unrelated exports added since);
 #   3. stop.sh / healthcheck.sh with hydra off print no hydra/instinct line.
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no network, no
@@ -151,12 +153,23 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   echo ""
   echo "conf.sh — byte-identical to $WIRING_BASELINE_REF (set -euo pipefail, ${#SCENARIOS[@]} scenarios + env overrides):"
   _B="$_T/base"; _conf_box "$_B" "$WIRING_BASELINE_REF"
+  # Exports added since the pinned pre-wiring baseline (CI pins v1.6.0) for
+  # reasons that have nothing to do with hydra/instinct. Each entry is one
+  # exact variable, never a family, so a leaked HYDRA/INSTINCT/CONSUMER line
+  # can never hide behind it:
+  #   OPENBEAST_CHAT_NOTIFY_ON, OPENBEAST_NTFY_PORT — beast-chat notify (#113)
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)='
+  if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
+    _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
+  fi
   _cmp() { # _cmp <label> <conf-text> [VAR=value ...]
     local label="$1" text="$2" a b
     shift 2
     # The two sandboxes differ only in their own path: normalise it away.
     a="$(_conf "$_B" "$text" "$@"; cat "$_B/stderr")"; a="${a//$_B/<BOX>}"
     b="$(_conf "$_N" "$text" "$@"; cat "$_N/stderr")"; b="${b//$_N/<BOX>}"
+    a="$(grep -Ev "$_BASELINE_ALLOW" <<< "$a" || true)"
+    b="$(grep -Ev "$_BASELINE_ALLOW" <<< "$b" || true)"
     if [[ "$a" == "$b" ]]; then
       pass "$label: identical exported env, derived values and warnings"
     else
@@ -238,6 +251,65 @@ if grep -qE '^ENV (OPENBEAST_CONSUMER_BASE|OPENBEAST_HYDRA_URL|OPENBEAST_HYDRA_C
 else
   pass "HYDRA=false drops stale CONSUMER_BASE / HYDRA_URL / caller-token exports"
 fi
+# The same shell sources conf.sh twice (the owner's "source conf.sh before
+# docker compose", then ./start.sh -d later): HYDRA/INSTINCT flipped off, or
+# HYDRA_PORT moved, in openbeast.conf in between. The first source's own
+# OPENBEAST_HYDRA=true export used to read back as an operator override and
+# keep hydra on. A value the operator exports himself still wins.
+_resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
+  env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
+    printf "SEARXNG_SECRET=stub\n%s\n" "$2" > "$1/openbeast.conf"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null
+    printf "SEARXNG_SECRET=stub\n%s\n" "$3" > "$1/openbeast.conf"
+    eval "$4"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null
+    echo "H=$HYDRA I=$INSTINCT URL=${HYDRA_URL:-} CB=${OPENBEAST_CONSUMER_BASE-unset}" \
+         "OH=${OPENBEAST_HYDRA-unset} OI=${OPENBEAST_INSTINCT-unset} OIP=${OPENBEAST_INSTINCT_PORT-unset}" \
+         "IM=${OPENBEAST_INFERENCE_MODEL-unset} UP=${OPENBEAST_HYDRA_UPSTREAM_MODEL-unset}" \
+         "D=$(compgen -e | grep -c "^OPENBEAST_DERIVED_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
+}
+_V=$'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL=m1'
+_r="$(_resource $'HYDRA=true\nINSTINCT=true\n'"$_V" $'HYDRA=false\nINSTINCT=false\n'"$_V")"
+[[ "$_r" == "H=false I=false URL= CB=unset OH=unset OI=unset OIP=unset IM=m1 UP=unset D=0" ]] \
+  && pass "re-sourced after HYDRA/INSTINCT flip off: both off, no stale export, served id back" \
+  || fail "flip off in one shell: $_r"
+_r="$(_resource $'HYDRA=true\nHYDRA_PORT=9001' $'HYDRA=true\nHYDRA_PORT=9002')"
+[[ "$_r" == "H=true I=false URL=http://127.0.0.1:9002 "* ]] \
+  && pass "re-sourced after HYDRA_PORT moved: the conf's new port wins" || fail "port move: $_r"
+_r="$(_resource $'HYDRA=true\nINSTINCT=true' $'HYDRA=true\nINSTINCT=true' 'export OPENBEAST_HYDRA=false')"
+[[ "$_r" == "H=false I=true "* ]] \
+  && pass "…an operator's own OPENBEAST_HYDRA=false in that shell still wins (control)" \
+  || fail "operator override lost: $_r"
+_r="$(env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_HYDRA=true bash -c 'set -euo pipefail; REPO_DIR="$1"
+  printf "SEARXNG_SECRET=stub\nHYDRA=false\n" > "$1/openbeast.conf"
+  source "$1/scripts/lib/conf.sh" 2>/dev/null; source "$1/scripts/lib/conf.sh" 2>/dev/null; echo "$HYDRA"' _ "$_N")"
+[[ "$_r" == "true" ]] && pass "…and an env override set before the first source survives a re-source" \
+  || fail "env override lost across a re-source: $_r"
+
+# The operator's OWN env id (not the conf's): hydra on overwrites it with the
+# route and kept no record, so flipping hydra off in that shell left agents
+# sending `beast` to a bare vLLM, which 404s unknown ids.
+_opm() { # _opm <shell run between the two sources>
+  env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_INFERENCE_MODEL=opm bash -c 'set -euo pipefail; REPO_DIR="$1"
+    _v=$'"'"'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000'"'"'
+    printf "SEARXNG_SECRET=stub\nHYDRA=true\n%s\n" "$_v" > "$1/openbeast.conf"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null; a="$OPENBEAST_INFERENCE_MODEL/$OPENBEAST_HYDRA_UPSTREAM_MODEL"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null; a="$a $OPENBEAST_INFERENCE_MODEL/$OPENBEAST_HYDRA_UPSTREAM_MODEL"
+    printf "SEARXNG_SECRET=stub\nHYDRA=false\n%s\n" "$_v" > "$1/openbeast.conf"
+    eval "$2"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null
+    echo "$a H=$HYDRA IM=${OPENBEAST_INFERENCE_MODEL-unset} UP=${OPENBEAST_HYDRA_UPSTREAM_MODEL-unset}" \
+         "S=${OPENBEAST_HYDRA_OPERATOR_MODEL-unset}"' _ "$_N" "${1:-}"
+}
+_r="$(_opm)"
+[[ "$_r" == "beast/opm beast/opm H=false IM=opm UP=unset S=unset" ]] \
+  && pass "hydra flipped off in one shell: the operator's own env id comes back, not the route" \
+  || fail "operator id after flip off: $_r"
+_r="$(_opm 'export OPENBEAST_INFERENCE_MODEL=newer')"
+[[ "$_r" == *" H=false IM=newer UP=unset S=unset" ]] \
+  && pass "…but an id he exported since is his and is kept (control)" \
+  || fail "operator's newer id lost: $_r"
+
 # vLLM: the served id rides OPENBEAST_HYDRA_UPSTREAM_MODEL, and a child that
 # re-sources conf.sh with the parent's exports (start.sh -d forwards every
 # OPENBEAST_*) must recover it rather than mistake the route for it.

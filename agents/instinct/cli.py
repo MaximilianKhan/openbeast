@@ -7,10 +7,15 @@
     python3 -m instinct.cli demote D [--reason R]    # runtime override (+ SIGHUP by caller)
     python3 -m instinct.cli undemote D
 
-Promotion needs three things (plan §5.7): a gate record for the exact
-decision_hash with passed:true, committed; the spec edited to mode="enforce";
-and a SIGHUP/restart. `promote` verifies and prints the diff — it never edits
-a file. `demote` needs no commit: going DOWN is always allowed.
+Promotion needs (plan §5.7): a calibration record and a gate record for the
+exact decision_hash — the gate computed against THAT calibration, passed,
+committed; the gate.shadow soak (min_decisions ledger rows scored by this
+engine+hash over at least min_days); a conformance probe that passes; no
+demotion; the spec edited to mode="enforce"; and a SIGHUP/restart. `promote`
+applies the SAME rules the service does (lifecycle.gate_record_ok) and prints
+the diff — it never edits a file. `demote` needs no commit: going DOWN is
+always allowed, but it refuses a decision id the registry does not know
+(a typo in an emergency must not report success); --force overrides.
 """
 from __future__ import annotations
 
@@ -31,7 +36,7 @@ from pathlib import Path
 from . import calibrate as C
 from .config import REPO_ROOT, load_config
 from .ledger import read_rows
-from .lifecycle import git_committed
+from .lifecycle import Demotions, _read_map, gate_record_ok, git_committed
 
 
 def _since(s: str | None) -> float:
@@ -93,8 +98,9 @@ def cmd_stats(a) -> int:
     cfg = load_config(a.config)
     rows = list(read_rows(cfg.ledger_dir, _since(a.since), a.decision))
     st = stats_from_rows([r for r in rows if r.get("kind", "decide") in ("decide", "route")])
-    dem = Path(cfg.state_dir) / "demoted.json"
-    st["_demotions"] = json.loads(dem.read_text()) if dem.exists() else {}
+    st["_demotions"] = _read_map(Path(cfg.state_dir) / "demoted.json")
+    # auto-demotions persist too (the service writes them): show them
+    st["_auto_demotions"] = Demotions(Path(cfg.state_dir) / "demoted.json").auto
     print(json.dumps(st, indent=2, sort_keys=True))
     return 0
 
@@ -162,31 +168,74 @@ def cmd_label(a) -> int:
     return 0
 
 
-def promote_check(cfg, decision: str, engine: str, repo: Path = REPO_ROOT) -> tuple[bool, list]:
-    """(ok, [(check, ok, detail)]). Pure checks; edits nothing."""
+def shadow_soak(cfg, decision: str, engine: str, h16: str | None) -> tuple[int, float]:
+    """(rows, days spanned) of ledger rows in which `engine` actually SCORED
+    this decision under hash `h16` — the gate.shadow soak a promotion needs."""
+    ts = []
+    for r in read_rows(cfg.ledger_dir, 0.0, decision):
+        if r.get("kind", "decide") not in ("decide", "route"):
+            continue
+        for c in r.get("cascade") or []:
+            if (c.get("engine") == engine and c.get("hash") == h16
+                    and c.get("action") not in ("skipped", "fallback")):
+                if isinstance(r.get("ts"), (int, float)):
+                    ts.append(float(r["ts"]))
+                break
+    return len(ts), ((max(ts) - min(ts)) / 86400.0 if ts else 0.0)
+
+
+async def _promote_checks(cfg, decision: str, engine: str, repo: Path) -> tuple[bool, list]:
     from .service import Instinct
     inst = Instinct(cfg, repo_root=repo)
-    asyncio.run(inst.reload())
-    checks = []
-    spec = inst.specs.get(decision)
-    if spec is None:
-        return False, [("decision loads", False, inst.spec_errors.get(decision, "unknown"))]
-    h = inst.hashes.get((decision, engine))
-    checks.append(("engine in chain + label lock", h is not None,
-                   f"hash {h[:16] if h else None}"))
-    gpath = C.gate_path(cfg.records_dir, decision, h) if h else None
-    grec = C.load_record(gpath, h) if h else None
-    checks.append(("gate record for this hash passed", bool(grec and grec.get("passed")),
-                   str(gpath)))
-    checks.append(("gate record committed", bool(gpath and git_committed(gpath, repo)),
-                   "git ls-files + clean"))
-    spec_path = Path(spec.path)
-    checks.append(("spec mode == enforce", spec.policy.mode == "enforce", spec.policy.mode))
-    diff = subprocess.run(["git", "-C", str(repo), "diff", "HEAD", "--", str(spec_path)],
-                          capture_output=True, text=True).stdout
-    checks.append(("spec change visible in a diff/PR", True, diff.strip() or "(committed)"))
-    asyncio.run(inst.aclose())
-    return all(ok for _, ok, _ in checks), checks
+    try:
+        await inst.reload()
+        spec = inst.specs.get(decision)
+        if spec is None:
+            return False, [("decision loads", False, inst.spec_errors.get(decision, "unknown"))]
+        checks = []
+        h = inst.hashes.get((decision, engine))
+        checks.append(("engine in chain + label lock", h is not None,
+                       f"hash {h[:16] if h else None}"))
+        crec = inst.calib.get((decision, engine))
+        cpath = C.calib_path(cfg.records_dir, decision, h) if h else None
+        checks.append(("calibration record for this hash", crec is not None, str(cpath)))
+        gpath = C.gate_path(cfg.records_dir, decision, h) if h else None
+        grec = C.load_record(gpath, h) if h else None
+        # The service's own rule: passed, this hash, computed against THIS
+        # calibration (a recalibration after the gate voids it).
+        checks.append(("gate record passed, for this hash AND this calibration",
+                       bool(h and gate_record_ok(grec, h, crec)), str(gpath)))
+        checks.append(("gate record committed", bool(gpath and git_committed(gpath, repo)),
+                       "git ls-files + clean"))
+        need_n, need_d = spec.gate.shadow_min_decisions, spec.gate.shadow_min_days
+        n, days = shadow_soak(cfg, decision, engine, h[:16] if h else None)
+        checks.append((f"shadow soak >= {need_n} decisions over >= {need_d} days",
+                       n >= need_n and days >= need_d, f"{n} decisions over {days:.1f} days"))
+        await inst.probe_all()
+        st = inst.states.get(engine)
+        probe = st.probe if st else None
+        checks.append(("engine conformance probe passes",
+                       bool(st and (st.healthy if probe is None else probe.ok)),
+                       (probe.reason or "ok") if probe else "in-process"))
+        dem = inst.demotions.reason(decision)
+        checks.append(("not demoted", dem is None, dem or "-"))
+        checks.append(("spec mode == enforce", spec.policy.mode == "enforce", spec.policy.mode))
+        return all(ok for _, ok, _ in checks), checks
+    finally:
+        await inst.aclose()
+
+
+def promote_check(cfg, decision: str, engine: str, repo: Path = REPO_ROOT) -> tuple[bool, list]:
+    """(ok, [(check, ok, detail)]). Pure checks; edits nothing. ONE event loop
+    for reload, probe and close: an engine's HTTP client is bound to the loop
+    that made it (two asyncio.run calls crashed on any live LLM engine)."""
+    return asyncio.run(_promote_checks(cfg, decision, engine, Path(repo)))
+
+
+def spec_diff(cfg, decision: str, repo: Path = REPO_ROOT) -> str:
+    p = Path(cfg.decisions_dir) / f"{decision}.toml"
+    return subprocess.run(["git", "-C", str(repo), "diff", "HEAD", "--", str(p)],
+                          capture_output=True, text=True).stdout.strip()
 
 
 def cmd_promote(a) -> int:
@@ -194,13 +243,41 @@ def cmd_promote(a) -> int:
     ok, checks = promote_check(cfg, a.decision, a.engine)
     for name, good, detail in checks:
         print(f"{'OK  ' if good else 'FAIL'} {name}: {detail}")
+    print("spec diff (review it in the PR):\n" + (spec_diff(cfg, a.decision) or "(committed)"))
     print("promotion READY: commit, then SIGHUP/restart the service" if ok
           else "promotion NOT ready — nothing was changed")
     return 0 if ok else 1
 
 
+def known_decisions(cfg) -> set[str]:
+    """Every decision id the registry names — valid or not (a broken spec can
+    still be demoted: it is the one you are likely firefighting)."""
+    from .spec import load_registry
+    specs, errors = load_registry(cfg.decisions_dir)
+    return set(specs) | {k for k in errors if "#" not in k and not k.startswith("<")}
+
+
 def cmd_demote(a, undo: bool = False) -> int:
     cfg = load_config(a.config)
+    if not undo and not getattr(a, "force", False) and a.decision not in known_decisions(cfg):
+        print(f"instinct: unknown decision {a.decision!r} — nothing demoted "
+              f"(known: {', '.join(sorted(known_decisions(cfg))) or 'none'}; --force to "
+              "record it anyway)", file=sys.stderr)
+        return 2
+    if undo:
+        # A tombstone, never a rewrite of auto-demoted.json: the service is
+        # that file's only writer, so a demotion it saves before the SIGHUP
+        # cannot overwrite this undemote (the service drops every auto
+        # record at or before the tombstone on its next load).
+        tomb = Path(cfg.state_dir) / "undemoted.json"
+        tomb.parent.mkdir(parents=True, exist_ok=True)
+        tdata = _read_map(tomb)
+        tdata[a.decision] = {"at": time.time(), "by": getpass.getuser()}
+        tmp = tomb.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(tdata, fh, indent=2, sort_keys=True)
+        os.replace(tmp, tomb)
     p = Path(cfg.state_dir) / "demoted.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -241,6 +318,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("demote")
     s.add_argument("decision")
     s.add_argument("--reason")
+    s.add_argument("--force", action="store_true", help="record an id the registry lacks")
     s = sub.add_parser("undemote")
     s.add_argument("decision")
     a = ap.parse_args(argv)

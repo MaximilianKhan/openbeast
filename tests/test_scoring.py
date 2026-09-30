@@ -120,5 +120,52 @@ class TestSolveBreadth(unittest.TestCase):
             self.assertIn(k, entry)
 
 
+def _cli(monkeypatch, tmp_path, *argv):
+    import scoring
+    monkeypatch.setattr(scoring, "RESULTS_DIR", str(tmp_path / "results"))
+    monkeypatch.setattr(scoring, "LEADERBOARD_PATH", str(tmp_path / "leaderboard.json"))
+    monkeypatch.setattr(sys, "argv", ["scoring.py", *argv])
+    scoring.main()
+
+
+def test_rebuild_then_html_renders_the_rebuilt_board(monkeypatch, tmp_path, capsys):
+    """`--rebuild --html` used to return before the rebuild and publish the
+    stale leaderboard.json without a word."""
+    import json
+    (tmp_path / "results").mkdir()
+    (tmp_path / "leaderboard.json").write_text(json.dumps({"entries": [
+        {"model": "STALE-ROW", "suite_version": "v4", "tasks_total": 291}]}))
+    out = tmp_path / "board.html"
+    _cli(monkeypatch, tmp_path, "--rebuild", "--html", str(out))
+    said = capsys.readouterr().out
+    assert "Rebuilt leaderboard" in said and "(0 entries)" in said, said
+    assert "STALE-ROW" not in out.read_text()
+
+
+def test_html_to_a_missing_directory_is_one_error_line(monkeypatch, tmp_path):
+    import pytest
+    with pytest.raises(SystemExit) as ex:
+        _cli(monkeypatch, tmp_path, "--html", str(tmp_path / "nope" / "b.html"))
+    assert "cannot write" in str(ex.value) and "nope" in str(ex.value)
+    assert not (tmp_path / "nope").exists()
+
+
+def test_rebuild_html_to_stdout_is_only_the_page(monkeypatch, tmp_path, capsys):
+    """`--rebuild --html -` printed "Rebuilt leaderboard…" ahead of the page,
+    so a piped board began with a line of text."""
+    (tmp_path / "results").mkdir()
+    _cli(monkeypatch, tmp_path, "--rebuild", "--html", "-")
+    got = capsys.readouterr()
+    assert got.out.lstrip().lower().startswith("<!doctype html"), got.out[:80]
+    assert "Rebuilt leaderboard" in got.err
+
+
+def test_html_still_wins_over_score(monkeypatch, tmp_path, capsys):
+    (tmp_path / "results").mkdir()
+    out = tmp_path / "board.html"
+    _cli(monkeypatch, tmp_path, "--score", str(tmp_path / "absent.json"), "--html", str(out))
+    assert out.exists() and "Wrote" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     unittest.main()

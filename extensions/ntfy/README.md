@@ -44,7 +44,9 @@ loads it and rewrites this `compose.yaml` to the loaded content ID (keeping a
 digest on a connected box. Enabled extensions join the same
 `docker compose up --pull never` as WebUI and SearXNG, so a missing ntfy
 image would stop all three: `./scripts/doctor.sh` FAILs when `OFFLINE=true`,
-the extension is enabled and its image is not on the box. On a box
+the extension is enabled and the image line as written does not resolve
+(a loaded `repo:tag` under a line that still pins `@sha256:` FAILs too:
+compose would not find it). On a box
 installed without a bundle, move the image by hand. `docker save`/`load`
 drops the registry digest `compose.yaml` pins, so after the load the pinned
 line can never resolve: point it at the loaded image's ID, the same rewrite

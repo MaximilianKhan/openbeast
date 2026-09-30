@@ -1263,7 +1263,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
         if raw in store.RESERVED_LOGINS:
             raw = ""
         if operators:
-            if raw and raw in operator_set:
+            # An ARTIFACT_ADMINS login is an operator too: the docs promise it
+            # "sees and manages every page", and an admin left off the read
+            # allowlist got the flat 404 on everything (review A-artifact-2).
+            if raw and (raw in operator_set or store.is_admin(raw)):
                 return Principal(login=raw, local=local, operator=True,
                                  admin=local or store.is_admin(raw))
             if local:
@@ -1484,9 +1487,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
         except Exception:
             return ""
 
-    def _session_link(meta) -> str:
-        sess = meta.get("source_session") if isinstance(meta, dict) else None
-        if not isinstance(sess, str) or not store._SESSION_RE.match(sess):
+    def _session_link(meta, version) -> str:
+        sess = store.version_session(meta, version)
+        if not sess:
             return ""
         chat = _chat_base()
         label = f"made by session {_esc(sess)}"
@@ -1526,12 +1529,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
             f'</a></li>')
 
     @app.get("/", response_class=HTMLResponse)
-    def gallery(request: Request, page: int = 1, q: str = "",
+    def gallery(request: Request, page: str = "1", q: str = "",
                 session: str = "", tag: str = ""):
         viewer = viewer_of(request)
         admin = is_admin(request)
+        # `page` is a str on purpose: typed as int, FastAPI answered a
+        # hand-edited ?page=2x with a raw 422 JSON body before this fallback
+        # could run (review B-artifact-4).
         try:
-            page = max(1, int(page))
+            page = max(1, int(str(page).strip()))
         except (TypeError, ValueError):
             page = 1
         q = str(q or "").strip()[:100]
@@ -1610,7 +1616,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             "VISIBILITY": _esc(meta.get("visibility") or "private"),
             "SANDBOX": IFRAME_SANDBOX,
             "FAVICON_HREF": _esc(_favicon_href(meta.get("favicon"))),
-            "SESSION_LINK": _session_link(meta),
+            # The session that made THIS version, not the latest one.
+            "SESSION_LINK": _session_link(meta, version),
             "OWNER": _esc(owner if admin and owner != viewer else ""),
             "PINNED": "1" if meta.get("pinned") is True else "",
             "TAGS": _esc(",".join(store._tags_of(meta))),
@@ -1983,6 +1990,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
                            _w: None = Depends(require_manager)):
         """Delete one OLD version (F-A2): room under the 200-version cap
         without giving up the URL. Never the current one, never the last."""
+        # Same flat 404 for "no such id" and "not yours", checked before the
+        # store runs (as api_patch does): the store's "no such artifact" went
+        # out as a 400 to a keyed tailnet caller while someone else's page
+        # was a 404 — an existence oracle for guessable custom ids (D9/D29).
+        try:
+            current_meta = store.get_meta(artifact_id)
+        except store.ArtifactError:
+            current_meta = None
+        if not current_meta:
+            raise HTTPException(status_code=404, detail="Not Found")
+        admin = is_admin(request)
+        if not admin:
+            try:
+                store._require_owner(current_meta, owner_for(request))
+            except store.ArtifactError:
+                raise HTTPException(status_code=404, detail="Not Found")
         try:
             meta = store.remove_version(artifact_id, n,
                                         owner=owner_for(request),
@@ -2072,6 +2095,15 @@ def create_app(local_token: str | None = None) -> FastAPI:
         audit({"ts": _now(), "login": RIG_LOGIN, "local": True,
                "event": "admin-default", "admin": ops[0],
                "operators": len(ops)})
+
+    admins_set = store._logins(store.conf_value("ARTIFACT_ADMINS"))
+    if ops and admins_set and ops[0] not in admins_set:
+        # Documented, but easy to trip over: naming ARTIFACT_ADMINS replaces
+        # the first-operator default rather than adding to it.
+        print(f"artifact: ARTIFACT_ADMINS is set and does not name the first "
+              f"operator ({ops[0]}), so that login no longer sees rig-owned "
+              f"pages (CLI, campaign and OpenCode publishes). Add it to "
+              f"ARTIFACT_ADMINS if it should.", file=sys.stderr, flush=True)
 
     def sweep() -> list:
         """One pass of the opt-in retention sweep (F-A2). Audited per page.

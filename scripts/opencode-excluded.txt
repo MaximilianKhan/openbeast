@@ -27,3 +27,4 @@ qwopus-27b-v2-q5	weights not on the reference rig (deleted to reclaim disk); Jac
 qwopus-27b-v2-mtp-q5	same family, weights absent
 gemma-4-31b-q5	weights not on the reference rig (deleted to reclaim disk); unsloth gemma-4-31B-it — re-download per docs/INSTALL.md to restore
 instinct-scorer	not a chat model: beast-instinct's CPU decision scorer (Qwen3-0.6B on :8082, raw /completion logprobs only) — never a model a client should pick
+openjev	not a chat model: beast-instinct's Open-Jev-27B decision engine (scalar decision head, POST /v1/systemone, on a dedicated host) — never a model a client should pick

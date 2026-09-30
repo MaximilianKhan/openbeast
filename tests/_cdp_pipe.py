@@ -45,10 +45,24 @@ def _usable_chrome(path: str) -> bool:
     return True
 
 
+def _above_stdio(fd: int, floor: int = 10) -> int:
+    """`fd` moved to a descriptor >= floor (the original is closed), so it
+    can never collide with the 3/4 the wrapper redirects onto."""
+    if fd >= floor:
+        return fd
+    import fcntl
+    high = fcntl.fcntl(fd, fcntl.F_DUPFD, floor)
+    os.close(fd)
+    return high
+
+
 def find_chrome() -> str | None:
-    env = os.environ.get("CHROME_BIN", "").strip()
-    if env and os.path.exists(env):
-        return env
+    """CHROME_BIN or OPENBEAST_TEST_CHROME (either, for every browser suite),
+    else the first usable binary on PATH; None when there is none."""
+    for var in ("CHROME_BIN", "OPENBEAST_TEST_CHROME"):
+        env = os.environ.get(var, "").strip()
+        if env and os.access(env, os.X_OK):
+            return env
     for name in CANDIDATES:
         path = shutil.which(name)
         if path and _usable_chrome(path):
@@ -64,6 +78,11 @@ class Chrome:
         self.udd = tempfile.mkdtemp(prefix="ob-cdp-")
         cmd_r, self._cmd_w = os.pipe()          # we write, chrome reads fd 3
         self._out_r, out_w = os.pipe()          # chrome writes fd 4, we read
+        # The child's ends must not BE fds 3/4 already: in a process with few
+        # open fds (a bare `python3 -c`) os.pipe() returns 3 and 4, and the
+        # wrapper's trailing `3<&-` then closed the fd it had just set up, so
+        # chrome said "Remote debugging pipe file descriptors are not open".
+        cmd_r, out_w = _above_stdio(cmd_r), _above_stdio(out_w)
         args = [self.binary, "--headless=new", "--remote-debugging-pipe",
                 f"--user-data-dir={self.udd}", "--no-first-run",
                 "--no-default-browser-check", "--disable-gpu",

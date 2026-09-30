@@ -97,7 +97,7 @@ fi
 sp_need TENSORFOLD_IMAGE "NVIDIA's PyTorch container (spark.env)"
 sp_need TENSORFOLD_REF "the TensorFold commit to install, as a full 40-hex SHA"
 if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
-  sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.3.7 = 6b2e4c40064b1e4a05965f61b19ce87b5e0265b3)"
+  sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.5.0 = 9cd52ab4daba68ddd09be89be8f23ad43175e821)"
 fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"

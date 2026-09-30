@@ -143,6 +143,11 @@ and `/api/status` stay rig-local:
 }
 ```
 
+`services` may carry more keys than these four; a client should ignore the
+ones it does not know. With `INSTINCT=true` the dashboard adds
+`"instinct": true|false` (beast-instinct's `/health` on `:8094`); the key is
+absent when instinct is off.
+
 **`auth` tells a client what it will actually need to present**, and has four
 values. Treat any *unknown* value as "authentication required, kind
 unspecified" rather than switching exhaustively — the set can grow:

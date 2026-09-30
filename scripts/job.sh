@@ -315,8 +315,15 @@ _supervise() {
     OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" done "exit 0"
     echo "--- job $session_id DONE (exit 0) $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
   else
-    OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" failed "exit $rc"
-    echo "--- job $session_id FAILED (exit $rc) $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
+    # 137 = SIGKILL that nobody here sent. Under chat_server's memory-capped
+    # scope (OOMPolicy=continue) that is almost always the kernel OOM killer,
+    # so say so: "exit 137" alone reads like an operator action.
+    local why="exit $rc"
+    if [[ $rc -eq 137 ]]; then
+      why="exit 137 (SIGKILL: out of memory?)"
+    fi
+    OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" failed "$why"
+    echo "--- job $session_id FAILED ($why) $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
   fi
   exit "$rc"
 }

@@ -10,7 +10,7 @@ the 09-17 review. So this drives Chromium over the DevTools pipe
 server behind a `tailscale serve` stand-in (tests/_artifact_live.py).
 
 SKIPS cleanly when no chromium/chrome binary is found (CI's ubuntu runner has
-google-chrome; set CHROME_BIN to point elsewhere). The same fixes are pinned
+google-chrome; set CHROME_BIN or OPENBEAST_TEST_CHROME to point elsewhere). The same fixes are pinned
 at the DOM/unit level in tests/test_artifact_review_0930.py, which always
 runs.
 

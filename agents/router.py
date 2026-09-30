@@ -73,6 +73,8 @@ Env:
                              gate and BEFORE the classify. Shadow never changes
                              a turn; enforce can only SKIP the classify on a
                              confident "inline" (agents/instinct/routerhook.py).
+                             Only hinted turns are scored (the decision runs on
+                             this same primary 27B, replacing the classify).
                              Fails open. INSTINCT_URL / INSTINCT_KEY_FILE say
                              where the service answers.
 
@@ -432,12 +434,17 @@ async def chat_completions(request: Request):
     # for genuine user turns that clear the recall prefilter, the unchanged
     # generative classify.
     hinted = False
+    turn = None
     if user_text and _spawn_allowed(request.headers):
         hinted = bool(_HINTS.search(user_text))
-        if await _INSTINCT.skip_classify(user_text, hinted):
+        # Hinted turns only (routerhook): the decision's engine is this
+        # primary, and its one slot belongs to the user's turn.
+        turn = await _INSTINCT.consult(user_text, hinted)
+        if turn.skip:
             return await _proxy_through(request, client, raw)
     if hinted:
         spawn, task, workdir = await _classify(client, user_text)
+        _INSTINCT.classified(turn, spawn)   # paired baseline; fire-and-forget
         if spawn and len(task) <= 8:
             # Detected a delegation request but couldn't extract a usable task —
             # surface it rather than silently letting the model answer inline.

@@ -89,6 +89,26 @@ mint_key() {
   echo "instinct: minted $kf (0600)"
 }
 
+# The PRIMARY's bearer key, for the rig-27b binding (key_env = LLAMA_API_KEY).
+# Resolved the way scripts/lib/conf.sh resolves it — env OPENBEAST_API_KEY,
+# else openbeast.conf's LLAMA_API_KEY (last assignment wins, trimmed, quotes
+# dropped) — plus an already-exported LLAMA_API_KEY (start.sh's case). conf.sh
+# itself is NOT sourced: it may write openbeast.conf (SEARXNG_SECRET). The key
+# reaches the service through its ENVIRONMENT only, never argv or a log line.
+primary_key() {
+  local v="${OPENBEAST_API_KEY:-${LLAMA_API_KEY:-}}" conf="$REPO_DIR/openbeast.conf" line
+  if [[ -z "$v" && -f "$conf" ]]; then
+    line="$(grep -E '^[[:space:]]*LLAMA_API_KEY[[:space:]]*=' "$conf" | tail -n1 || true)"
+    line="${line#*=}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#\"}"; line="${line%\"}"
+    line="${line#\'}"; line="${line%\'}"
+    v="$line"
+  fi
+  printf '%s' "$v"
+}
+
 api() {  # <method> <path> [curl args…]
   local method="$1" path="$2" key
   shift 2
@@ -109,7 +129,13 @@ cmd_up() {
     die "port $INSTINCT_PORT is already held — refusing to start (pre-bind check)"
   fi
   ( umask 077; : >> "$LOGFILE" )
-  nohup "$PY" -m instinct.server >>"$LOGFILE" 2>&1 < /dev/null &
+  local pkey
+  pkey="$(primary_key)"
+  if [[ -n "$pkey" ]]; then
+    LLAMA_API_KEY="$pkey" nohup "$PY" -m instinct.server >>"$LOGFILE" 2>&1 < /dev/null &
+  else
+    env -u LLAMA_API_KEY nohup "$PY" -m instinct.server >>"$LOGFILE" 2>&1 < /dev/null &
+  fi
   local pid=$!
   echo "$pid" > "$PIDFILE"
   local i
@@ -214,7 +240,7 @@ main() {
     calibrate) cmd_run_py --calibrate "$@" ;;
     gate) cmd_run_py --gate "$@" ;;
     promote) "$PY" -m instinct.cli promote "$@" ;;
-    demote) "$PY" -m instinct.cli demote "$@"; hup ;;
+    demote) "$PY" -m instinct.cli demote "$@" && hup ;;
     undemote) "$PY" -m instinct.cli undemote "$@"; hup ;;
     label) "$PY" -m instinct.cli label "$@" ;;
     stats) "$PY" -m instinct.cli stats "$@" ;;

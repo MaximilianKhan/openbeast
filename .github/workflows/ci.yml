@@ -20,9 +20,29 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ~15.5 min used after #113/#115 (9.4 at v1.6.0): a slow runner must
+    # fail on a named test, never be cancelled as a timeout.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # I8 (tests/test_instinct_boundaries.py): an instinct commit must not
+      # touch an era-locked file. The checkout is depth 1 with no origin/main,
+      # so the branch diff had no base and the guard passed vacuously; the
+      # test now FAILS in CI without one. Deepen HEAD (a PR's merge commit,
+      # or the pushed commit) enough for a merge-base with the PR base, or
+      # with the pre-push head on a push.
+      - name: Era-lock guard base (I8)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            git fetch --no-tags --depth=200 origin "$BASE_SHA" "$GITHUB_SHA"
+            echo "OPENBEAST_I8_BASE=$BASE_SHA" >> "$GITHUB_ENV"
+          else
+            echo "no base (manual run or a new branch): I8 checks the working tree only"
+            echo "OPENBEAST_I8_BASE=none" >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -119,23 +139,29 @@ jobs:
 
       # The shared stack wiring for beast-hydra + beast-instinct: conf.sh
       # derivations, start/stop/healthcheck in a stub sandbox. curl reaches
-      # only the suite's own fake servers. On the PR that INTRODUCES the
-      # wiring (its base has no HYDRA key) the off-mode byte-identity proof
-      # also runs side by side against that base, fetched explicitly — the
-      # default checkout is shallow and has no origin/main, which is how an
-      # earlier `git merge-base` spelling skipped it without a word.
+      # only the suite's own fake servers. The off-mode byte-identity proof
+      # runs side by side against a pre-wiring baseline (pinned below; the PR
+      # base itself when it predates the wiring), fetched explicitly: the
+      # default checkout is shallow and has no origin/main and no tags, which
+      # is how an earlier `git merge-base` spelling skipped it without a word.
       - name: beast-hydra / beast-instinct stack wiring tests
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          ref=""
+          # Now the wiring is on main a PR base carries it, so the proof is
+          # pinned to v1.6.0 (the last release before it) and keeps running;
+          # the test allowlists the few unrelated exports added since.
+          ref=v1.6.0
+          git fetch --no-tags --depth=1 origin "+refs/tags/$ref:refs/tags/$ref"
           if [[ -n "$BASE_SHA" ]]; then
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            # The I8 step already deepened the base: re-fetching it at depth 1
+            # would make it a shallow root again and widen I8's BASE..HEAD.
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
             if ! git show "$BASE_SHA:scripts/lib/conf.sh" | grep -q 'HYDRA_READY_GRACE'; then
               ref="$BASE_SHA"
             fi
           fi
-          WIRING_BASELINE_REF="$ref" bash tests/test_hydra_instinct_wiring.sh
+          WIRING_BASELINE_REQUIRED=1 WIRING_BASELINE_REF="$ref" bash tests/test_hydra_instinct_wiring.sh
 
       # opencode session clearing: a stub opencode (python + sqlite) with
       # 1.18's delete cascade; a stub pgrep decides "is opencode running".
@@ -155,8 +181,8 @@ jobs:
         run: python -m pytest tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
 
       # beast-hydra (proxy, routing core) and beast-instinct (decision math,
-      # engines, service, contract, router hook). Also in the full run below;
-      # named here so a failure is attributable.
+      # engines, service, contract, router hook). Named here so a failure is
+      # attributable; the full run below skips these files.
       - name: beast-hydra / beast-instinct tests
         run: python -m pytest tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
 
@@ -167,10 +193,22 @@ jobs:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: python -m pytest tests/test_tools.py -q
 
+      # Everything the named pytest steps above already ran is left out here
+      # (~2 min of the job was running twice). Keep this list in step with
+      # them: a file named above and not ignored here just runs twice; one
+      # ignored here and not named above would never run, which
+      # tests/test_ci_workflow.py checks.
       - name: Full pytest suite
         env:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
-        run: python -m pytest tests/ -q
+        run: >-
+          python -m pytest tests/ -q
+          --ignore=tests/test_model_profiles.py --ignore=tests/test_model_inspect.py
+          --ignore=tests/test_model_fetch.py --ignore=tests/test_conformance.py
+          --ignore=tests/test_use_model.py
+          --ignore=tests/test_hydra_core.py --ignore=tests/test_hydra_proxy.py
+          --ignore-glob='tests/test_instinct_*.py' --ignore=tests/test_router_instinct.py
+          --ignore=tests/test_tools.py
 
       # Docs must cite the generated suite counts — kills the hand-written
       # "313 / 323 / 223 units" drift class at the PR gate.

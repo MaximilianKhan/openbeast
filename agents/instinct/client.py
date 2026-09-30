@@ -118,7 +118,8 @@ class InstinctClient:
     async def decide(self, decision: str, inputs: dict, *, items: list | None = None,
                      baseline: str | None = None, ceiling: str = "enforce",
                      deadline_ms: int = 600, request_id: str | None = None,
-                     context: dict | None = None) -> Verdict:
+                     context: dict | None = None,
+                     return_after: str | None = None) -> Verdict:
         if self._breaker_open():
             return _fallback("client_breaker_open")
         if _read_key(self.key_file) is None:
@@ -131,6 +132,8 @@ class InstinctClient:
             body["baseline"] = baseline
         if request_id is not None:
             body["request_id"] = request_id
+        if return_after is not None:
+            body["return_after"] = return_after
         if context is not None or in_eval_process():
             body["context"] = dict(context or {})
             if in_eval_process():

@@ -247,6 +247,18 @@ else
   fail "stderr did not reach the log"
 fi
 
+echo ""
+echo "run (killed by SIGKILL, as the OOM killer does):"
+"$CLI" run --title "oom job" -- bash -c 'kill -KILL $$' >/dev/null 2>&1
+OOM_ID="$(_latest)"
+_await_terminal "$OOM_ID" 15
+if [[ "$(_q "$OOM_ID" 'rec["state"]')" == "failed" \
+      && "$(_q "$OOM_ID" 'rec["summary"]')" == *"out of memory"* ]]; then
+  pass "a SIGKILLed job is 'failed' and its summary names the likely OOM"
+else
+  fail "SIGKILL gave $(_q "$OOM_ID" 'rec["state"]') / $(_q "$OOM_ID" 'repr(rec.get("summary"))')"
+fi
+
 # --- 6. Surviving the launching shell ---
 echo ""
 echo "detachment:"

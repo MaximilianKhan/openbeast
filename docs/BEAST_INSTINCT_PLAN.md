@@ -1,6 +1,6 @@
 # beast-instinct: plan
 
-**Status:** PLAN, 2026-09-30. Nothing is built yet. The baseline is main @ 9fe5de9 (branch `integ/chat-artifact-2026-09-30`) with llama.cpp b10865-1-g8e126574f.
+**Status:** PLAN, 2026-09-30; P0 built and wired since (opt-in). **Read the "Revision 2026-09-30 (evening)" section first: decisions now run on a full 27B model.** The baseline is main @ 9fe5de9 (branch `integ/chat-artifact-2026-09-30`) with llama.cpp b10865-1-g8e126574f.
 
 **Sources:** three independent architecture proposals (minimal, platform, intelligence-maximizing), a research report on the LMSYS post "Scaling JEV-like Decision Models with SGLang" (2026-09-25), a map of decision points in OpenBeast, and a read-only check of the repo and the SGLang source made while writing this plan.
 
@@ -10,6 +10,91 @@
 - `[DOC]` verified from upstream docs.
 - `[HW]` must be verified on hardware before anyone relies on it.
 - `[MEM]` from memory or a vendor claim; not verified.
+
+---
+
+## Revision 2026-09-30 (evening): decisions run on a FULL model
+
+**Max's decision, binding:** beast-instinct routes its decisions into a full
+27B model, not a small one — *"let's just use JEV"*, meaning **Open-Jev-27B-v1.1
+run locally** (ZefanCai/Open-Jev-27B-v1.1 @ `28cf7306`: Qwen3.8-27B backbone +
+r8/α16 LoRA + an FP32 scalar decision head, its own loader). TypeSafe's hosted
+Jev API stays rejected: cloud is forbidden. All our served models are
+uncensored. Where this section differs from the text below (§0 item 5, §4's
+"small model" and "primary 27B" rows, F11's scorer choice, the P1 runbook), it
+wins.
+
+**The tiers, as built** (`agents/instinct/instinct.toml`, docs/BEAST_INSTINCT.md
+"Engine tiers"):
+
+1. **Decision model: Open-Jev-27B.** Needs a GPU of its own (~54 GB BF16 plus
+   its torch/peft loader): a Spark, or the rig's 5090 once the Sparks serve
+   generation. `scripts/serve-openjev.sh` runs it in a pinned container behind
+   an authenticating gate; the `openjev_head` adapter calls it. Not enabled
+   until that host exists.
+2. **Interim: the rig's own 27B**, zero-shot through answer-boundary logprobs
+   (`rig-27b`, `llamacpp_logprobs` against `INFERENCE_URL`). It is only called
+   on hinted turns (where the router classifies on that same model anyway),
+   checks `/slots` first and falls through in ~1 ms when the slot is busy.
+   **Cost, stated plainly (R-instinct-1):** it skips the classify only on an
+   enforced confident `inline`; in shadow and on every other verdict it is one
+   EXTRA primary prefill per hinted turn, awaited before the classify (≤ 600
+   ms). The router waits for the primary engine only (`return_after:
+   "primary"`); the fallbacks are measured in the background.
+3. **Fallback only: Qwen3-0.6B on CPU** (`rig-cpu`). It answers when the 27B is
+   skipped (busy, deadline, identity) and never outranks it.
+
+**The rule change that makes (2) legal.** `async_only` becomes
+`policy.primary_use = none | async | substitute` (`async_only = true` is a
+one-version alias). `substitute` must name the call it replaces
+(`substitutes = "agents/router.py:_classify"`), and the service enforces it per
+call: the primary is scored only for a request whose caller would make the
+substituted call anyway (`baseline = "hint"`). The §4 row "Primary 27B logprob
+scoring — last resort; async-only" assumed any primary call ADDS load; for a
+substitute it does not. The unhinted-turn shadow (which did add load, ahead of
+the user's own turn on the `-np 1` slot) is gone by default.
+
+**Why a 27B, stated honestly.** The LMSYS post ("Scaling JEV-like Decision
+Models with SGLang", 2026-09-25) is a *serving* study: it benchmarks
+Qwen3-0.6B, Qwen3.5-4B and Qwen3-8B on one H200 and says its numbers "do not
+establish equivalent decision quality". It shows scorer SIZE is nearly free
+under MIS at that scale — 18.7 ms (0.6B) vs 20.6 ms (8B) at 16 candidates —
+but it tested nothing at 27B, and says MIS is not consistently faster at low
+load. So the post does not argue for the 0.6B the original plan chose (that
+was this plan's reading, §4), and it does not prove a 27B is cheap on our rig
+either. The case for the 27B is decision QUALITY: the 0.6B-class and `linear`
+tiers are weak exactly where it matters (`linear` makes 3 act errors on the
+adversarial split), while the same 27B went 16/16 on the router's spawn
+battery. Our cost estimate, unmeasured: ~5.4e10 FLOP per token, so a 512-token
+spawn_intent prompt is ~180 ms on the 5090 and a 1,600-token one ~580 ms —
+inside the 600 ms deadline at typical lengths (VERIFY M1-M3 below). No 27B can
+meet hydra's 25 ms deadlines; those decisions stay on `linear`/`rules` (open
+question 10 in §8).
+
+**Open-Jev on our weights.** The adapter was trained on the STOCK
+`Qwen/Qwen3.8-27B` @ `1d4bf0f2`. Abliteration edited `o_proj` — one of the
+LoRA's targets — and the residual stream the head reads, so on the uncensored
+base it is unvalidated. The launcher serves the uncensored base
+(JonathanColetti/Qwen3.8-27B-Uncensored @ `5bb7aa90`) by default and the stock
+base only with `--validation-only`, for the A/B:
+
+- (a) Run the adapter on both bases over the Open-Jev test/OOD sets and our
+  `evals/decisions` seed set. Pass if accuracy differs by <= 1 pt, ECE <= 0.08
+  and per-row agreement >= 97%.
+- (b) If it fails, re-train an r8 LoRA + head on the uncensored base with the
+  Open-Jev recipe and data (148,639 rows, redistributable); the launcher and
+  binding take the new sha256s.
+- Either way it only shadows until a gate record exists for its exact
+  `decision_hash` (the hash covers adapter revision, head sha256 and loader
+  digest), like every engine.
+
+**Measurements to run on hardware** (Max triggers; none were run): M1 idle
+prefill cost of `rig-27b` vs the generative classify on the same rows; M2 the
+slot-swap cost (`--cache-ram`) at 8k/32k/100k-token conversations; M3 loadgen
+with `--with-primary-decode` (p95, `engine_busy` fraction, primary tok/s); M4
+`run.py --engine rig-27b --calibrate` then `--gate --compare rules,linear,rig-cpu`
+(seed only — real gating needs human-labelled shadow rows); M5 label locks and
+replay std with the MTP and non-MTP serve scripts (expected identical).
 
 ---
 
@@ -28,6 +113,7 @@
    - Hydra owns eligibility, load, the final pick and the fallback.
    - Neither side imports the other, and hydra has to work with instinct absent.
 5. **Hardware path:**
+   - *(Superseded by the 2026-09-30 evening revision: the rig's 27B is the interim engine, Open-Jev-27B the target, and the 0.6B the fallback.)*
    - Today: a CPU llama-server serving `Qwen3-0.6B-Q8_0.gguf`, already pinned in `scripts/weights.registry` (line 30) `[REPO]`, which uses no VRAM.
    - Once the Sparks carry the primary, **the rig's 5090 is free** (DGX_SPARK_PLAN §3: "The GPU on the rig is free") `[REPO]`. That makes it the natural dedicated SGLang MIS scorer. None of the three proposals noticed this.
 
@@ -259,7 +345,7 @@ Value and complexity are rated H/M/L.
 |---|---|---|
 | Status quo: regex `_HINTS` plus generative JSON classify on the primary | **Baseline (`rules` engine)** | It is what every candidate must beat. It costs the single MTP slot. |
 | ROUTER_SIDECAR_PLAN: generative JSON classify on a CPU 0.8B | Absorbed | Instinct scores instead of generating. The sidecar remains the place `{task, workdir}` extraction moves to (stage 3). |
-| Answer-boundary label scoring (the post's method) on a small model | **Chosen (core)** | One prefill, a full distribution, `label_mass`, and it can be calibrated. |
+| Answer-boundary label scoring (the post's method) on a small model | **Chosen (core)** — the METHOD stands; the small model is superseded (Revision 2026-09-30: a 27B) | One prefill, a full distribution, `label_mass`, and it can be calibrated. |
 | Hashed n-gram logistic regression (`linear`) | **Chosen (tier 0 + baseline)** | About 0.1 ms, pure Python, the honest bar. It meets hydra's 20–25 ms. |
 | Embedding kNN / semantic-router as tier 0 | Deferred (NEXT/FUTURE) | Needs a separate `--embedding` llama-server process. `linear` covers tier 0 without one. |
 | Instinct as a library inside each caller only | Rejected | Hydra is out of process. Calibration, locks, lifecycle and the ledger have to be single-sourced. A stale copy could enforce a demoted decision. |
@@ -269,8 +355,8 @@ Value and complexity are rated H/M/L.
 | SGLang as a 4th `INFERENCE_BACKEND` for the primary | Out of scope | Instinct needs only a scoring endpoint. A separate hydra and backend question. |
 | SGLang `/v1/decisions` as the canonical contract | Rejected as canonical; optional adapter | Server-owned wording, refused on MIS servers, main-only, and the Qwen3.8 added-token hazard. Instinct owns the wording so it stays portable across engines. |
 | Jev hosted API (TypeSafe) | Rejected | Cloud; violates local-only. Vendor-graded ground truth. |
-| Open-Jev-27B head | FUTURE research | Custom loader. Same backbone as our default, which is attractive. |
-| Primary 27B logprob scoring | Last resort; **async-only decisions** | Competes for the MTP slot, which is the exact penalty we're removing. The launcher refuses `url == INFERENCE_URL` without `--allow-primary`. |
+| Open-Jev-27B head | **TARGET decision model** (Revision 2026-09-30) | Custom loader, run locally on its own GPU host (`scripts/serve-openjev.sh`). Same backbone as our default; trained on the stock base, so it re-validates on the uncensored one first. |
+| Primary 27B logprob scoring | **Interim default for `substitute` decisions** (Revision 2026-09-30); async-only otherwise | It competes for the MTP slot only when it ADDS a call. As a substitute for the router's generative classify on the same slot it adds none; `/slots` busy-skip keeps it out of a user's way. |
 | Qwen3.5-0.8B hybrid as the P1 scorer | Rejected for P1 | Not pinned (F11). On llama.cpp, prefix reuse for hybrid-GDN checkpoints needs a recurrent-state rollback. The 0.6B is pinned and classic. |
 | llama.cpp `n_probs` top-K (temperature −1) | **Chosen for P1** with a missing-label guard | `[DOC]` pre-sampler softmax. Missing labels are floored and flagged. |
 | llama.cpp GBNF over the labels plus `post_sampling_probs` | P1 **measurement** | Possibly an exact label distribution, but loses `label_mass`. `[HW]` |
@@ -321,7 +407,7 @@ agents/instinct/decisions/hydra.task_class.toml
 agents/instinct/decisions/hydra.pool_fit.toml          (mode="off" until P3)
 scripts/instinct/stub_scorer.py      stdlib ThreadingHTTPServer: llama.cpp + SGLang wire formats, fault modes, call log
 scripts/instinct.sh                  up|down|status|stub|probe|calibrate|eval|gate|promote|demote|label|stats|report
-scripts/serve-instinct-scorer.sh     CPU Qwen3-0.6B-Q8_0 via serve.sh on 127.0.0.1:8082 (P1; ships in P0, unused)
+scripts/serve-instinct-scorer.sh     CPU Qwen3-0.6B-Q8_0 via serve.sh on 127.0.0.1:8082 (the FALLBACK tier; start.sh runs it when INSTINCT_SCORER=true)
 evals/decisions/run.py               eval + calibrate + gate writer
 evals/decisions/metrics.py           acc, macro-F1, NLL, Brier, ECE, AURC, Wilson, McNemar exact, bootstrap
 evals/decisions/loadgen.py           open-loop Poisson load generator
@@ -421,7 +507,7 @@ key_file = ".run/instinct-spark.key"
 
 Loader rules:
 - Unknown keys are an error for that binding.
-- A binding whose `url` equals `INFERENCE_URL` is refused unless `allow_primary = true` and every decision using it is `async_only = true`.
+- A binding whose `url` equals `INFERENCE_URL` is refused unless `allow_primary = true`, and only decisions with `policy.primary_use = "async"` or `"substitute"` may use it (Revision 2026-09-30; checked at chain build and per call).
 - A binding whose URL resolves to a hydra endpoint is refused (I7 lint).
 
 ### 5.3 Decision spec format (`agents/instinct/decisions/<id>.toml`)
@@ -450,7 +536,8 @@ Loader rules:
 | `policy.cost` | table `"true>pred"` → float | | For threshold fitting |
 | `policy.hard_constraints` | array of str | | Gate expressions that must hold at the fitted thresholds |
 | `policy.deadline_ms` | int | ✓ | Server cap; caller budget is `min(caller, this)` |
-| `policy.async_only` | bool | | Callers must not await it |
+| `policy.primary_use` | `none`\|`async`\|`substitute` | `none` | How a primary-bound engine may serve this decision (Revision 2026-09-30). `async_only = true` is a one-version alias of `async` |
+| `policy.substitutes` | string | | Required with `substitute`: the primary call this decision replaces, e.g. `agents/router.py:_classify` |
 | `forbidden_contexts` | array | | Default `["eval"]`: refuses to act when `context.eval` is true |
 | `privacy.log_inputs` | `hash\|excerpt\|full` | | Overrides the service default |
 | `gate.criteria` | array of `{metric, split, op, value, label?}` | ✓ | Evaluated by `run.py --gate`; fixed metric vocabulary, no `eval()` |
@@ -831,7 +918,7 @@ Other routes:
 | `POST /v1/instinct/score` | Debug only, off unless `INSTINCT_DEBUG_SCORE=true`: engine-neutral `{engine, query, items, labels}` → raw rows; no policy, no enforce; ledger `kind:"raw"` |
 
 **Client** (`agents/instinct/client.py`):
-- `async decide(decision, inputs, *, items=None, baseline=None, ceiling="enforce", deadline_ms, request_id=None, context=None) -> Verdict`, plus a sync twin.
+- `async decide(decision, inputs, *, items=None, baseline=None, ceiling="enforce", deadline_ms, request_id=None, context=None, return_after=None) -> Verdict`, plus a sync twin.
 - `Verdict = (enforce: bool, label: str|None, items: list|None, action, reason, trace_id)`.
 - The HTTP timeout is `deadline_ms + 10`.
 - Circuit breaker: after 5 consecutive failures it opens for 30 s and returns `Verdict(enforce=False, reason="client_breaker_open")` immediately.
@@ -1056,6 +1143,7 @@ python3 -m pytest tests/test_instinct_*.py tests/test_router_instinct.py -q
 7. **Instinct key on loopback.** This plan requires a bearer key even on 127.0.0.1, which guards against loopback peers on a shared host. Confirm you're fine with the extra key file. Router and hydra read it from `.run/`.
 8. **Hydra's intended QPS and deadline.** `instinct-route/1` assumes about 25 ms. The hydra design should confirm this so the loadgen targets are real.
 9. **Licenses to read before adoption:** Qwen3Guard (unstated in its README), and the Qwen3.5-4B family if it is used as a scorer.
+10. **Hydra's decisions and a 27B (Revision 2026-09-30).** `hydra.task_class` / `pool_fit` have 25 ms deadlines no 27B prefill meets. Either raise them to ~250 ms (the call sits in front of a multi-second generation) and give them the 27B SGLang box in P3, or keep `linear` online and let the 27B only label shadow rows (`primary_use = "async"`). Today they stay on `linear`/`rules`.
 
 ---
 

@@ -183,6 +183,12 @@ start prints a line on stderr and writes an `admin-default` audit row naming
 the implicit admin, since that login can manage the other operators' private
 pages. Set `ARTIFACT_ADMINS` to choose explicitly.
 
+An `ARTIFACT_ADMINS` login does not also need to be on `ARTIFACT_OPERATORS`:
+being an admin makes it an operator. Setting `ARTIFACT_ADMINS` *replaces*
+the first-operator default rather than adding to it, so if the first
+operator is not named there it stops seeing the rig's own pages; every
+start says so on stderr.
+
 The model's `list_artifacts` tool never gets the admin view, even on the rig:
 it sees the rig's own pages and `tailnet` ones, so another owner's private
 titles never enter a model's context.
@@ -465,7 +471,10 @@ an audit row too.
 **Retention is opt-in.** `ARTIFACT_RETAIN_DAYS=N` in `openbeast.conf` (or
 `OPENBEAST_ARTIFACT_RETAIN_DAYS`) makes the server delete, once a day, every
 **unpinned** page not updated for N days. Pinned pages are never touched, and
-neither is a page whose timestamp cannot be read. Unset or `0` (the default)
+neither is a page whose timestamp cannot be read. Unpinning starts a fresh
+N days (the page records `unpinned_at`; its `updated_at` and gallery place do
+not change), so tidying an old pinned page away never deletes it at the next
+sweep. Unset or `0` (the default)
 keeps everything. Each deletion is an audit row and a ledger row with reason
 `retention`. There is no store-wide byte quota.
 
@@ -478,13 +487,17 @@ id is recorded on the version and as the page's latest `source_session`
 (validated to the ledger's id shape; anything else is dropped, never an
 error).
 
-- The viewer shows **made by session `<id>`**. It is a link to
+- The viewer shows **made by session `<id>`** for the version on screen —
+  a pinned `/a/<id>/v/<n>` names the session that made version `n`, not the
+  latest publisher, and a version published outside any session names none.
+  It is a link to
   `https://<rig>:8445/#/s/<id>` only when `tailscale serve` publishes the
   chat console on `:8445` (same detection as the artifact URL); otherwise it
   is plain text. `CHAT_BASE_URL` in `openbeast.conf` overrides the console's
   base URL, and `off` or `none` turns the link off.
 - `/?session=<id>`, `GET /api/artifacts?session=<id>` and `artifact.sh list
-  --session <id>` list what one session published.
+  --session <id>` list every page that session published any version of,
+  including pages a later session has republished since.
 
 ## The security posture
 

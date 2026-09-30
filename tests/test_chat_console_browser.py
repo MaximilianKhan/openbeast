@@ -7,7 +7,7 @@ on an ephemeral port, with its ledger, run dir and transcripts in tmp. The
 browser is driven over CDP with tests/chat_cdp.py (stdlib only).
 
 SKIPS cleanly when no chromium / google-chrome binary is installed (set
-OPENBEAST_TEST_CHROME to point at one). CI's ubuntu image has google-chrome.
+CHROME_BIN or OPENBEAST_TEST_CHROME to point at one). CI's ubuntu image has google-chrome.
 
 Run: python3 -m pytest tests/test_chat_console_browser.py -q
 """

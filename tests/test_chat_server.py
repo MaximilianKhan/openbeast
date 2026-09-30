@@ -411,6 +411,24 @@ def test_listing_and_filtering(rig):
     assert c.get("/api/chat/sessions?state=nonsense").status_code == 400
 
 
+def test_the_list_previews_an_agent_s_text_not_its_raw_jsonl(rig):
+    """Review B-chat-6: an agent card previewed `{"type": "assistant", …`."""
+    a = rig.session(kind="agent", state="done", lines=[
+        {"type": "assistant", "content": "step 30  seen the\nlogs"}])
+    m = rig.session(kind="agent", state="done", lines=[
+        {"type": "max_iterations", "iterations": 30}])
+    t = rig.session(kind="agent", state="done", lines=[
+        {"type": "tool_call", "name": "bash", "args": {}, "result": ""}])
+    j = rig.session(kind="job", state="done", lines=['{"raw": "json"}'])
+    rows = {r["id"]: r["last_line"] for r in
+            rig.client.get("/api/chat/sessions").json()["sessions"]}
+    assert rows[a] == "step 30 seen the logs"
+    assert rows[m] == "stopped at the iteration cap (30)"
+    assert rows[t] == "tool: bash"
+    assert rows[j] == '{"raw": "json"}'          # a job's output is its own
+    assert not any(v.startswith('{"type"') for v in rows.values())
+
+
 def test_session_detail_derives_status(rig):
     sid = rig.session(kind="agent", state="done")
     d = rig.client.get(f"/api/chat/sessions/{sid}").json()
@@ -2417,6 +2435,34 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     # control: 0 disables the cap, and only the cap
     monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "0")
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
+
+
+def test_a_scope_oom_kills_only_the_offender(tmp_path, monkeypatch):
+    """B-chat-2: a user scope's default OOMPolicy=stop SIGTERMs the whole
+    scope after the kernel kills the biggest process — job.sh filed the OOM
+    as "stopped by operator" and one bash tool call over the cap killed a
+    whole agent. The scope must carry OOMPolicy=continue, and a systemd that
+    rejects it must still get a (capped) scope without it."""
+    bindir, log = _stub_systemd_run(tmp_path, 0)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: True)
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "25")
+    prefix = chat_server._probe_scope()
+    assert "OOMPolicy=continue" in prefix
+    assert prefix.index("OOMPolicy=continue") < prefix.index("--")
+    assert "OOMPolicy=continue" in log.read_text(), "the PROBE must test it"
+
+    # an older systemd that refuses the property: fall back without it
+    stub = bindir / "systemd-run"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> {log}\n"
+        "[[ \"$*\" == *OOMPolicy* ]] && exit 1\n"
+        "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done; shift\n"
+        "exec \"$@\"\n")
+    prefix = chat_server._probe_scope()
+    assert prefix and "OOMPolicy=continue" not in prefix
+    assert [a for a in prefix if a.startswith("MemoryMax=")]
 
 
 def _stub_systemctl(bindir, tmp_path, rc):

@@ -18,6 +18,16 @@ that were present (a lower bound when one is missing).
 
 Rank sends N concurrent requests sharing a prefix (cache_prompt reuses the
 prefix KV); exec_used = "sis".
+
+On the PRIMARY (allow_primary + busy_skip — the rig-27b binding) every call
+first asks GET /slots: a slot with is_processing means a user's turn or an
+agent owns the only (-np 1) slot, and the call raises EngineBusy at once
+rather than queueing behind it. /slots is on by default in llama-server
+(serve.sh never passes --no-slots). A /slots that times out counts as busy;
+one the server does not offer (404/501) lets the call proceed under its
+deadline — slow, never wrong. [HW] the /slots latency while decoding.
+MTP does not touch the answer token's probabilities: n_predict 1 stops
+before any draft ([DOC] server-context.cpp at the pinned tree; [HW] M5).
 """
 from __future__ import annotations
 
@@ -26,7 +36,7 @@ import math
 import os
 
 from ..render import Rendered
-from . import Caps, EngineError, ScoreRow
+from . import Caps, EngineBusy, EngineError, ScoreRow
 from ._llm import LLMEngine, token_ids
 
 
@@ -115,6 +125,25 @@ class LlamaCppEngine(LLMEngine):
         rows = await asyncio.gather(*[self._one(p, label_ids, timeout_s)
                                       for p in rendered.prefixes])
         return list(rows), "sis", None
+
+    async def ensure_idle(self, timeout_s: float = 0.05) -> None:
+        if not self.binding.busy_skip:
+            return
+        try:
+            slots = await self._get("/slots", max(0.001, timeout_s))
+        except asyncio.TimeoutError:
+            raise EngineBusy(f"{self.id}: /slots did not answer in {timeout_s * 1000:.0f} ms")
+        except EngineError as exc:
+            if "HTTP 404" in str(exc) or "HTTP 501" in str(exc):
+                return   # no /slots on this server: proceed under the deadline
+            raise
+        if not isinstance(slots, list):
+            raise EngineError(f"{self.id}: /slots is not a list")
+        for sl in slots:
+            if not isinstance(sl, dict):
+                raise EngineError(f"{self.id}: malformed /slots entry")
+            if sl.get("is_processing") is True or sl.get("state") not in (None, 0):
+                raise EngineBusy(f"{self.id}: slot {sl.get('id')} is processing")
 
     async def _identity(self) -> str | None:
         props = await self._get("/props")
