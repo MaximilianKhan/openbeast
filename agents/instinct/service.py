@@ -25,7 +25,8 @@ from typing import Any
 
 from . import calibrate
 from .config import REPO_ROOT, ServiceConfig, effective_chain
-from .core import (Answer, build_answer, canary_bucket, decide_action, is_enforced, min_mode)
+from .core import (MODE_ORDER, Answer, build_answer, canary_bucket, decide_action, is_enforced,
+                   min_mode)
 from .engines import Engine, EngineError, LockResult, ProbeResult, ScoreReq, build_engine
 from .engines.rules import mechanical_label
 from .ledger import Ledger, excerpt, input_sha256
@@ -67,6 +68,21 @@ class Outcome:
     items: list[dict] | None = None
     exec_used: str | None = None
     engine_ms: float = 0.0
+
+
+def baseline_label(spec: DecisionSpec, baseline: Any) -> str | None:
+    """The label today's behaviour chose, when the caller's baseline names one.
+    The router sends "nohint"/"hint": no hint IS today's pass-through, i.e.
+    `inline` (exactly what the router_hints rules engine answers); a hinted
+    turn runs the legacy generative classify, whose verdict is unknown here
+    (it arrives later through /feedback), so it has no label."""
+    if not isinstance(baseline, str):
+        return None
+    if baseline in spec.label_names:
+        return baseline
+    if spec.rule_set == "router_hints" and baseline == "nohint" and "inline" in spec.label_names:
+        return "inline"
+    return None
 
 
 def new_trace_id() -> str:
@@ -323,9 +339,24 @@ class Instinct:
         return Outcome(name, None, action, reason, out_items, res.exec_used, res.engine_ms)
 
     async def _cascade(self, spec: DecisionSpec, inputs: dict, items_in: list[dict] | None,
-                       deadline_at: float) -> tuple[Outcome | None, list[dict], str | None]:
+                       deadline_at: float, ceiling: str = "enforce"
+                       ) -> tuple[Outcome | None, list[dict], str | None]:
+        """Walk the chain under the deadline (plan §5.5).
+
+        The walk stops at the first `act` whose engine's lifecycle reaches the
+        request's target mode (min of spec mode and ceiling): an `act` from an
+        engine that could only ever shadow (no gate yet — `linear` as the
+        McNemar baseline, typically) must not hide a later engine that can
+        enforce. With no such act, the answer is the first act (it is what
+        the service WOULD have done), else the last result from a
+        probabilistic engine, else `rules` — so shadow rows carry the model's
+        distribution, not rules' one-hot. Every attempted engine's own view
+        (label, probabilities, label_mass) is kept in its cascade entry.
+        """
         cascade: list[dict] = []
         final: Outcome | None = None
+        results: list[Outcome] = []
+        target = min_mode(spec.policy.mode, ceiling)
         last_err: str | None = None
         chain = list(self.chains[spec.id])
         if spec.mechanical and mechanical_label(spec, inputs):
@@ -391,10 +422,22 @@ class Instinct:
                 # a later engine's)
                 entry["label"] = out.answer.label
                 entry["p_top"] = round(out.answer.confidence["p_top"], 6)
+                if eng.caps.probs:
+                    entry["probabilities"] = {k: round(v, 6) for k, v in
+                                              (out.answer.probabilities or {}).items()}
+                    entry["label_mass"] = out.answer.label_mass
             cascade.append(entry)
-            final = out
+            results.append(out)
             if out.action == "act":
-                break
+                mode, _ = self.lifecycle(spec.id, name, ceiling)
+                entry["mode"] = mode
+                if MODE_ORDER[mode] >= MODE_ORDER[target]:
+                    final = out
+                    break
+        if final is None and results:
+            acts = [o for o in results if o.action == "act"]
+            probs = [o for o in results if self.engines[o.engine].caps.probs]
+            final = acts[0] if acts else (probs[-1] if probs else results[-1])
         return final, cascade, last_err
 
     # ----------------------------------------------------------------- decide
@@ -459,7 +502,8 @@ class Instinct:
         if shadowish:
             self.shadow_inflight += 1
         try:
-            outcome, cascade, err = await self._cascade(spec, inputs, items_in, deadline_at)
+            outcome, cascade, err = await self._cascade(spec, inputs, items_in, deadline_at,
+                                                        ceiling)
         finally:
             sem.release()
             if shadowish:
@@ -539,8 +583,9 @@ class Instinct:
                 deadline_ms, ans: Answer | None) -> None:
         baseline = req.get("baseline")
         agree = None
-        if spec is not None and ans is not None and baseline in spec.label_names:
-            agree = ans.label == baseline
+        blabel = baseline_label(spec, baseline) if spec is not None else None
+        if ans is not None and blabel is not None:
+            agree = ans.label == blabel
         row = {
             "ts": self.wall(), "kind": "decide", "trace_id": resp["trace_id"],
             "request_id": resp["request_id"],

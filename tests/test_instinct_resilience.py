@@ -198,3 +198,97 @@ def test_attach_that_raises_is_a_failed_lock(tmp_path, monkeypatch):
     assert isinstance(lk, LockResult) and not lk.ok and "KeyError" in lk.reason
     assert DID in inst.specs
     H.run(inst.aclose())
+
+
+# --- M1: an act that cannot be enforced does not end the cascade ----------------
+
+def test_shadow_only_act_does_not_hide_a_gated_engine(tmp_path):
+    async def body(url):
+        cfgp, _ = H.promote_linear(tmp_path, gate_passed=False,
+                                   chain='["linear", "stub", "rules"]',
+                                   extra_engines={"stub": H.llama_binding(url)},
+                                   thresholds={"inline": 0.5})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg, repo_root=tmp_path)
+        await inst.start()
+        _gate(inst, cfg, "stub")
+        assert inst.lifecycle(DID, "linear", "enforce") == ("shadow", "no_gate")
+        assert inst.lifecycle(DID, "stub", "enforce") == ("enforce", None)
+        r = await _decide(inst, "what is 17 times 23")
+        # control: under a shadow ceiling the first act is decisive again
+        rs = await _decide(inst, "what is 17 times 23", ceiling="shadow")
+        await inst.aclose()
+        return r, rs
+    with H.stub_server() as (url, _):
+        r, rs = H.run(body(url))
+    assert [(c["engine"], c["action"]) for c in r["cascade"]] == [("linear", "act"),
+                                                                  ("stub", "act")]
+    assert r["cascade"][0]["mode"] == "shadow"
+    assert r["enforce"] is True and r["engine"]["id"] == "stub"
+    assert [c["engine"] for c in rs["cascade"]] == ["linear"] and rs["enforce"] is False
+
+
+def test_unenforceable_act_is_still_the_would_answer(tmp_path):
+    """No engine can enforce: the answer is the first act (what the service
+    WOULD do), not a later abstain."""
+    async def body(url):
+        cfgp, _ = H.promote_linear(tmp_path, gate_passed=False,
+                                   chain='["linear", "stub", "rules"]',
+                                   extra_engines={"stub": H.llama_binding(url)},
+                                   thresholds={"inline": 0.5})
+        inst = Instinct(load_config(cfgp, env={}), repo_root=tmp_path)
+        await inst.start()
+        r = await _decide(inst, "what is 17 times 23")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (url, _):
+        r = H.run(body(url))
+    assert r["enforce"] is False and r["engine"]["id"] == "linear"
+    assert r["would"]["action"] == "act" and r["fallback"]["reason"] == "no_gate"
+
+
+# --- M2: shadow rows carry the model's distribution ------------------------------
+
+def test_shadow_row_carries_the_llm_distribution_not_rules_one_hot(tmp_path):
+    async def body(url):
+        inst = Instinct(cfg)
+        await inst.start()
+        r = await _decide(inst, "spawn a background agent to port the tests and report back",
+                          ceiling="shadow", baseline="hint")
+        rn = await _decide(inst, "what is two plus two", ceiling="shadow", baseline="nohint")
+        await inst.aclose()
+        return r, rn
+    with H.stub_server() as (url, _):
+        cfgp = H.write_config(tmp_path, {"stub": H.llama_binding(url)},
+                              extra_decisions={DID: _spec('["stub", "rules"]')})
+        cfg = load_config(cfgp, env={})
+        r, rn = H.run(body(url))
+    assert r["engine"]["id"] == "stub"
+    probs = r["answer"]["probabilities"]
+    assert 0.0 < probs["spawn"] < 1.0 and 0.0 < probs["inline"] < 1.0
+    assert r["answer"]["label_mass"] == pytest.approx(0.97, abs=1e-6)
+    entry = r["cascade"][0]
+    assert entry["engine"] == "stub" and entry["label_mass"] == pytest.approx(0.97, abs=1e-6)
+    assert set(entry["probabilities"]) == {"spawn", "inline"}
+    rows = [__import__("json").loads(line) for p in Path(cfg.ledger_dir).glob("decisions-*")
+            for line in open(p)]
+    by_trace = {row["trace_id"]: row for row in rows}
+    assert by_trace[r["trace_id"]]["label_mass"] == pytest.approx(0.97, abs=1e-6)
+    # "nohint" is today's pass-through = inline, so agreement is measurable;
+    # a hinted turn's legacy verdict is unknown here, so it stays null.
+    assert by_trace[rn["trace_id"]]["agree"] is (rn["answer"]["label"] == "inline")
+    assert by_trace[r["trace_id"]]["agree"] is None
+
+
+def test_rules_answers_when_no_model_answered(tmp_path):
+    cfgp = H.write_config(tmp_path, {"stub": H.llama_binding("http://127.0.0.1:1")},
+                          extra_decisions={DID: _spec('["stub", "rules"]')})
+    inst = Instinct(load_config(cfgp, env={}))
+
+    async def body():
+        await inst.start()
+        r = await _decide(inst, "hello")
+        await inst.aclose()
+        return r
+    r = H.run(body())
+    assert r["engine"]["id"] == "rules" and r["answer"]["label"] == "inline"
