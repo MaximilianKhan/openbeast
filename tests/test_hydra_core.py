@@ -207,10 +207,7 @@ REJECT = {
     "instinct_engine_role": (lambda r: r["nodes"]["ti"].update(role="instinct-engine"),
                              "refuses to route to an instinct engine"),
     "node_is_instinct_url": (lambda r: r["nodes"].update(ins={"url": "http://127.0.0.1:8094", "engine": "openai"}),
-                             "is an instinct URL"),
-    "node_is_instinct_engine_url": (lambda r: (r["hydra"].update(instinct={"engine_urls": ["http://127.0.0.1:8082"]}),
-                                               r["nodes"].update(sc={"url": "http://127.0.0.1:8082",
-                                                                     "engine": "llama"})), "is an instinct URL"),
+                             "is the instinct service URL"),
     "instinct_url_not_loopback": (lambda r: r["hydra"].update(instinct={"url": "http://10.0.0.1:8094"}),
                                   "must be a loopback"),
     "bad_engine": (lambda r: r["nodes"]["rig"].update(engine="ollama"), "engine must be one of"),
@@ -874,6 +871,21 @@ def test_rule_warnings_prefer_that_cannot_apply_and_a_model_scoped_route_rule():
     assert not any("redirects EVERY route" in w for w in cfg.warnings)
     phone = core.Caller(trusted=True, device="phone")
     assert decide(cfg, ready_state(cfg), {"model": "beast:max", "messages": []}, caller=phone).route == "beast:max"
+
+
+def test_instinct_engine_that_is_also_a_node_is_allowed_with_a_warning():
+    # Revision 2026-09-30: the rig's own 27B may be an instinct engine (logprob
+    # scoring) AND the rig node. No loop: instinct calls it directly. Only the
+    # instinct SERVICE url is refused.
+    raw = base()
+    raw["hydra"]["instinct"] = {"engine_urls": ["http://127.0.0.1:8080/"]}
+    cfg = cfg_of(raw)
+    assert "rig" in cfg.nodes
+    assert any("nodes.rig.url is also an instinct engine" in w for w in cfg.warnings)
+    raw["nodes"]["ins"] = {"url": "http://127.0.0.1:8094/", "engine": "openai"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
 
 
 def test_no_policy_warns_when_routes_mix_families():

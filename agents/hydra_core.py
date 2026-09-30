@@ -500,7 +500,13 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     if not isinstance(rn, dict) or not rn:
         errors.append("nodes: at least one [nodes.<id>] is required")
         rn = {}
-    instinct_urls = {_norm_url(instinct.url)} | {_norm_url(u) for u in instinct.engine_urls}
+    # Reconciliation §4 as revised 2026-09-30 (plan "Revision"): only the
+    # instinct SERVICE is never a pool (that would be a loop: hydra asks
+    # instinct, instinct is routed through hydra). An instinct ENGINE that is
+    # also an inference node — the rig's own 27B scoring by logprobs — is no
+    # loop: instinct calls it directly, never through hydra.
+    instinct_service = _norm_url(instinct.url)
+    instinct_engines = {_norm_url(u) for u in instinct.engine_urls}
     for nid, n in rn.items():
         where = f"nodes.{nid}"
         if not NODE_ID_RE.match(nid):
@@ -537,8 +543,14 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
                             "tailnet or LAN; prefer the tailnet IP or *.ts.net name")
         if allow_public:
             warnings.append(f"{where}: allow_public = true")
-        if url and _norm_url(url) in instinct_urls:
-            errors.append(f"{where}.url is an instinct URL — never a hydra pool (reconciliation §4)")
+        if url and _norm_url(url) == instinct_service:
+            errors.append(f"{where}.url is the instinct service URL — never a hydra pool "
+                          "(reconciliation §4)")
+        elif url and _norm_url(url) in instinct_engines:
+            warnings.append(f"{where}.url is also an instinct engine (hydra.instinct.engine_urls): "
+                            "instinct scores on it directly, so hydra's in-flight count cannot see "
+                            "those calls — on a 1-slot node they queue with routed turns (plan "
+                            "Revision 2026-09-30, risk 13)")
         loopback = cls == "loopback"
         if n.get("key_env") and n.get("key_file"):
             errors.append(f"{where}: set key_env OR key_file, not both")
