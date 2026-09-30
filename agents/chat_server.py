@@ -973,16 +973,32 @@ def _probe_scope() -> list[str]:
         # No swap escape hatch either: a job thrashing swap takes the box's
         # responsiveness with it just as surely as one that fills RAM.
         prefix += ["-p", f"MemoryMax={cap}", "-p", "MemorySwapMax=0"]
-    prefix.append("--")
+    # A user scope's default OOMPolicy is `stop`: when the kernel OOM-kills
+    # the biggest process, systemd SIGTERMs the rest of the scope — job.sh's
+    # supervisor took that as an operator Stop (the verdict read "stopped by
+    # operator"), and one bash tool call over the cap tore down a whole agent.
+    # `continue` confines the kill to the process that blew the cap, so the
+    # supervisor sees exit 137 and records it.
+    oom = ["-p", "OOMPolicy=continue"]
+
     # The probe carries the SAME properties the real spawn will, so a systemd
-    # too old for one of them falls back to a plain spawn instead of failing
+    # too old for one of them falls back — first without OOMPolicy (older
+    # scopes do not know it), then to a plain spawn — instead of failing
     # every job.
-    try:
-        ok = subprocess.run(prefix + ["true"], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        ok = False
+    def _probe(argv):
+        try:
+            return subprocess.run(argv + ["true"], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL,
+                                  timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    ok = False
+    for candidate in (prefix + oom + ["--"], prefix + ["--"]):
+        if _probe(candidate):
+            prefix, ok = candidate, True
+            break
     if not ok:
         # Once, and out loud: a user bus that is slow at boot silently
         # disabled this for the life of the process.
@@ -1578,6 +1594,10 @@ def _iso_epoch(value) -> float | None:
         return None
 
 
+# How long an undelivered end-of-session alert keeps being retried.
+NOTIFY_RETRY_MAX_AGE = 24 * 3600.0
+
+
 class Notifier:
     """Tells the operator's phone when a session ENDS — opt-in, off by default.
 
@@ -1758,7 +1778,16 @@ class Notifier:
             mono = time.monotonic()
             for rec in due:
                 sid = rec["id"]
+                ended = _iso_epoch(rec.get("ended_at")) or now
+                # A send that fails (ntfy restarting, relay down) or is held
+                # back by min_interval must be tried again next tick — so the
+                # snapshot keeps it `running` until it is delivered. Give up
+                # after NOTIFY_RETRY_MAX_AGE so a dead endpoint cannot keep
+                # a stale alert pending forever.
+                retry = now - ended < NOTIFY_RETRY_MAX_AGE
                 if mono - self._last_sent.get(sid, -1e9) < self.min_interval:
+                    if retry:
+                        current[sid] = "running"
                     continue
                 if len(fired) >= self.burst:
                     overflow += 1
@@ -1766,6 +1795,8 @@ class Notifier:
                 self._last_sent[sid] = mono
                 if self.notify_session(rec):
                     fired.append(sid)
+                elif retry:
+                    current[sid] = "running"
             if overflow:
                 self.send(title="beast-chat: more sessions ended",
                           body=f"{overflow} more session(s) ended — open the "
@@ -1830,47 +1861,167 @@ def chat_public_url(port: int) -> str:
 EXPORT_MAX_BYTES = 8 * 1024 * 1024
 _EXPORT_TEXT_MAX = 20000
 
-_SECRET_ASSIGN_RE = None
+import re as _re
+
+# Every pattern below is LINEAR in its input (review B-chat-1). The old ones
+# opened with an unbounded `[A-Z0-9_-]*` at every word boundary, so one long
+# base64url blob or run of dashes cost O(n^2) — tens of seconds holding the
+# GIL, the event loop and every SSE stream with it, long enough for the
+# healthcheck to restart the server mid-export. A NAME may now only START
+# where a name-run starts (the lookbehind), so each run is scanned once, and
+# whether it is secret-shaped is decided on the matched name afterwards.
+_NAME_SEP_RE = _re.compile(
+    r"([\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\1(\s*[=:]\s*)")
+_FLAG_SEP_RE = _re.compile(r"(?<![A-Za-z0-9-])(--[A-Za-z0-9-]+)(=|\s+)")
+_SECRET_NAME_RE = _re.compile(
+    r"(?i)API[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|DEVICE[_-]KEY"
+    r"|OPENBEAST[_-]LOCAL")
+_SECRET_FLAG_RE = _re.compile(r"(?i)api-?key|token|password|passwd|secret")
+_ASSIGN_VALUE_RE = _re.compile(r"\"[^\"]*\"|'[^']*'|[^\s\"',;}]+")
+_FLAG_VALUE_RE = _re.compile(r"\"[^\"]*\"|'[^']*'|[^\s\"']+")
+# user:password@ in any URL (remotes, postgres://, redis://, proxies).
+_URL_CRED_RE = _re.compile(
+    r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,20}://[^\s/@:]{1,256}:)"
+    r"[^\s/@]{1,256}@")
+# curl -u user:password / --user user:password
+_CURL_USER_RE = _re.compile(
+    r"(?<!\S)(-u|--user)(\s+|=)([^\s:]{1,256}):[^\s]{1,256}")
+_PEM_RE = _re.compile(
+    r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"
+    r"(?:(?!-----END)[\s\S]){0,20000}"
+    r"(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----)?")
+# Well-known credential prefixes, wherever they stand on their own.
+_PREFIXED_TOKEN_RE = _re.compile(
+    r"(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|hf_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})(?![A-Za-z0-9_-])")
+
+#: Files in .run/ whose CONTENT is a rig credential (the locality tokens,
+#: the raw-origin key) — their values are redacted wherever they appear.
+_RUN_SECRET_SUFFIXES = (".token", ".key")
+_LITERALS_CACHE = {"at": -1e9, "value": ()}
+
+
+def _redact_named(text: str, sep_re, name_ok, value_re, name_group: int) -> str:
+    """Replace the VALUE after every `name<sep>` whose name is secret-shaped.
+    One left-to-right pass: a value that was redacted is never rescanned."""
+    out, cursor = [], 0
+    for m in sep_re.finditer(text):
+        if m.start() < cursor:
+            continue
+        if not name_ok.search(m.group(name_group)):
+            continue
+        v = value_re.match(text, m.end())
+        if not v:
+            continue
+        out.append(text[cursor:m.end()])
+        out.append("[redacted]")
+        cursor = v.end()
+    if not out:
+        return text
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _rig_literals() -> tuple:
+    """(label, value) for rig secrets that have no secret-shaped NAME in the
+    text: the notify topic URL/token (CHAT_NOTIFY_* is not KEY/TOKEN-named)
+    and the .run/ locality tokens and raw-origin key. Cached for 30 s."""
+    now = time.monotonic()
+    if now - _LITERALS_CACHE["at"] < 30:
+        return _LITERALS_CACHE["value"]
+    found = []
+    for name, value in os.environ.items():
+        if not (is_notify_env_name(name) and value and value.strip()):
+            continue
+        value = value.strip()
+        up = name.upper()
+        # Only the URL and the token are secrets. CHAT_NOTIFY_ON / _PERIOD_S
+        # hold ordinary words and numbers ("failed", "5") — redacting them
+        # by value would blank every such word in exports and alerts.
+        if not (up.endswith("NOTIFY_URL") or "NOTIFY_TOKEN" in up):
+            continue
+        if up.endswith("NOTIFY_TOKEN_FILE"):
+            try:
+                with open(os.path.expanduser(value)) as f:
+                    found.append(("notify-token", f.read(4096).strip()))
+            except OSError:
+                pass
+            continue
+        found.append((name, value))
+        if up.endswith("NOTIFY_URL") and "//" in value:
+            path = value.split("//", 1)[1].split("?", 1)[0].rstrip("/")
+            if "/" in path:
+                found.append(("notify-topic", path.rsplit("/", 1)[-1]))
+    runs = []
+    for var in ("OPENBEAST_CHAT_RUN_DIR", "OPENBEAST_RUN_DIR"):
+        run = (os.environ.get(var) or "").strip() or RUN_DIR
+        if run not in runs:
+            runs.append(run)
+    entries = []
+    for run in runs:
+        try:
+            entries += [os.path.join(run, e) for e in sorted(os.listdir(run))]
+        except OSError:
+            pass
+    for path in entries:
+        entry = os.path.basename(path)
+        if not entry.endswith(_RUN_SECRET_SUFFIXES):
+            continue
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) > 4096:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                found.append((entry, f.read().strip()))
+        except OSError:
+            pass
+    # Longest first, so a URL is redacted whole before its topic is.
+    value = tuple(sorted(((label, v) for label, v in found if len(v) >= 6),
+                         key=lambda lv: -len(lv[1])))
+    _LITERALS_CACHE.update(at=now, value=value)
+    return value
 
 
 def scrub_secrets(text: str) -> str:
     """Redact what the bash tool would never have shown the model.
 
-    Three passes: (1) the VALUE of every secret-named variable in this
-    server's environment, wherever it appears — the names come from the bash
-    tool's own list (is_secret_env_name mirrors tools._scrubbed_env);
-    (2) any NAME=value / NAME: value whose name is secret-shaped, whatever
-    process printed it (quoted JSON keys and hyphenated headers too); (3)
-    --api-key/--token/--password flags and Authorization credentials.
+    Passes: (1) the VALUE of every secret-named variable in this server's
+    environment, wherever it appears — the names come from the bash tool's
+    own list (is_secret_env_name mirrors tools._scrubbed_env) — plus the
+    rig's own unnamed secrets (notify topic, .run/ tokens and key); (2) any
+    NAME=value / NAME: value whose name is secret-shaped, whatever process
+    printed it (quoted JSON keys and hyphenated headers too); (3)
+    --api-key/--token/--password flags and Authorization credentials;
+    (4) URL user:password@, curl -u, PEM private keys and well-known token
+    prefixes (ghp_, github_pat_, hf_, sk-, xox?-, glpat-, AKIA).
+    Every pattern is linear in the input — see _NAME_SEP_RE.
     """
-    import re
-    global _SECRET_ASSIGN_RE
     if not text:
         return text
     for name, value in os.environ.items():
         if is_secret_env_name(name) and value and len(value) >= 6:
             text = text.replace(value, f"[redacted:{name}]")
-    if _SECRET_ASSIGN_RE is None:
-        # The NAME may be quoted (a JSON config a tool printed) and may use
-        # hyphens (an HTTP header) — including this stack's own two
-        # credentials, X-OpenBeast-Device-Key and X-OpenBeast-Local.
-        _SECRET_ASSIGN_RE = re.compile(
-            r"(?i)([\"']?)\b([A-Z0-9_-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD"
-            r"|TOKEN|DEVICE[_-]KEY|OPENBEAST[_-]LOCAL)[A-Z0-9_-]*)\1"
-            r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s\"',;}]+)")
-    text = _SECRET_ASSIGN_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}[redacted]",
-        text)
+    for label, value in _rig_literals():
+        if value in text:
+            text = text.replace(value, f"[redacted:{label}]")
+    text = _PEM_RE.sub("[redacted private key]", text)
+    # The NAME may be quoted (a JSON config a tool printed) and may use
+    # hyphens (an HTTP header) — including this stack's own two
+    # credentials, X-OpenBeast-Device-Key and X-OpenBeast-Local.
+    text = _redact_named(text, _NAME_SEP_RE, _SECRET_NAME_RE,
+                         _ASSIGN_VALUE_RE, 2)
     # --api-key VALUE / --token=VALUE / --password VALUE on a command line.
-    text = re.sub(
-        r"(?i)(--[A-Za-z0-9-]*(?:api-?key|token|password|passwd|secret)"
-        r"[A-Za-z0-9-]*)(=|\s+)(\"[^\"]*\"|'[^']*'|[^\s\"']+)",
-        r"\1\2[redacted]", text)
+    text = _redact_named(text, _FLAG_SEP_RE, _SECRET_FLAG_RE,
+                         _FLAG_VALUE_RE, 1)
+    text = _URL_CRED_RE.sub(r"\1[redacted]@", text)
+    text = _CURL_USER_RE.sub(r"\1\2\3:[redacted]", text)
+    text = _PREFIXED_TOKEN_RE.sub("[redacted]", text)
     # Authorization: <any scheme> <credential> — token, Basic, Bearer…
-    text = re.sub(r"(?i)\b(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*)\s+"
-                  r"[^\s\"',;]{4,}", r"\1 [redacted]", text)
-    text = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]",
-                  text)
+    text = _re.sub(r"(?i)\b(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*)\s+"
+                   r"[^\s\"',;]{4,}", r"\1 [redacted]", text)
+    text = _re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]",
+                   text)
     return text
 
 
@@ -2008,9 +2159,18 @@ def render_transcript_html(record: dict, *, exported_at: str = "") -> str:
             f"</head><body>{head}{''.join(parts)}</body></html>")
 
 
-def export_artifact_id(session_id: str) -> str:
-    """Stable per session: re-exporting adds a version at the same URL."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"openbeast:chat-export:{session_id}"))
+def export_artifact_id(session_id: str, owner: str = "") -> str:
+    """Stable per session: re-exporting adds a version at the same URL.
+
+    `owner` names the per-principal fallback id publish_export uses when the
+    session's shared id already belongs to a different principal (the rig vs
+    a phone login) — beast-artifact refuses a republish into another
+    owner's page, so that export gets a page of its own instead of a
+    permanent 404."""
+    key = f"openbeast:chat-export:{session_id}"
+    if owner:
+        key += f":owner:{owner}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
 def artifact_endpoint() -> tuple[str, str]:
@@ -2033,6 +2193,7 @@ class ExportError(Exception):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.http = None       # the artifact server's own status, if it answered
 
 
 def export_owner_login(principal: dict, allowed) -> str:
@@ -2104,22 +2265,48 @@ def publish_export(record: dict, owner_login: str = "") -> dict:
     headers = {"Content-Type": "application/json", "X-OpenBeast-Local": token}
     if owner_login:
         headers["Tailscale-User-Login"] = owner_login
-    req = urllib.request.Request(
-        base + "/api/artifacts", data=json.dumps(body).encode("utf-8"),
-        method="POST", headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            out = json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
+
+    def post(doc: dict) -> dict:
+        req = urllib.request.Request(
+            base + "/api/artifacts", data=json.dumps(doc).encode("utf-8"),
+            method="POST", headers=headers)
         try:
-            detail = json.loads(e.read() or b"{}").get("detail")
-        except Exception:
-            detail = None
-        raise ExportError(502, f"beast-artifact refused the export "
-                               f"(HTTP {e.code}{': ' + str(detail) if detail else ''})")
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise ExportError(409, f"beast-artifact is not answering on {base} "
-                               f"({type(e).__name__}) — is it running?")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read() or b"{}").get("detail")
+            except Exception:
+                detail = None
+            err = ExportError(502, f"beast-artifact refused the export "
+                                   f"(HTTP {e.code}"
+                                   f"{': ' + str(detail) if detail else ''})")
+            err.http = e.code
+            raise err
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ExportError(409, f"beast-artifact is not answering on {base} "
+                                   f"({type(e).__name__}) — is it running?")
+
+    try:
+        out = post(body)
+    except ExportError as e:
+        # The shared id belongs to whoever exported first: the rig (local
+        # token, device key only) or a tailnet login. beast-artifact answers
+        # another owner's page with its flat 404, which left the second
+        # principal a permanent "HTTP 404". Publish to a page of its own.
+        if e.http != 404:
+            raise
+        body["artifact_id"] = export_artifact_id(sid, owner_login or "rig")
+        try:
+            out = post(body)
+        except ExportError as e2:
+            if e2.http == 404:
+                raise ExportError(502, "beast-artifact refused the export: "
+                                       "this transcript was first exported by "
+                                       "a different owner (the rig or another "
+                                       "tailnet login), and a separate page "
+                                       "for you was refused too") from None
+            raise
     if not isinstance(out, dict) or not out.get("url"):
         raise ExportError(502, "beast-artifact answered without a URL")
     out["bytes_html"] = len(page.encode("utf-8"))
@@ -2672,7 +2859,8 @@ def create_app() -> FastAPI:
                 out.append({
                     **rec,
                     "transcript_bytes": _file_size(path),
-                    "last_line": _tail_line(path),
+                    "last_line": _preview_line(_tail_line(path),
+                                               rec.get("kind")),
                 })
             return {"sessions": out, "count": len(out),
                     "states": list(sessions.STATES)}
@@ -3714,6 +3902,36 @@ def _inbox_path(session_id: str) -> str | None:
         return sessions.inbox_path(session_id)
     except Exception:
         return None
+
+
+def _preview_line(line: str, kind) -> str:
+    """The list card's one-line preview. An agent's transcript is runner
+    JSONL, so its raw last line read `{"type": "assistant", "content": …` on
+    the phone; show the event's text (or its type) instead. Jobs are plain
+    text and pass through."""
+    if kind != "agent" or not line.startswith("{"):
+        return line
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return line          # a clipped tail line — better raw than nothing
+    if not isinstance(ev, dict):
+        return line
+    etype = str(ev.get("type") or "")
+    for field in ("content", "summary", "error", "task", "message"):
+        value = ev.get(field)
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            if etype in ("error", "done"):
+                text = f"{etype}: {text}"
+            return text[:500]
+    if etype == "tool_call" and ev.get("name"):
+        return f"tool: {ev['name']}"
+    if etype == "max_iterations":
+        return f"stopped at the iteration cap ({ev.get('iterations')})"
+    if etype == "iteration" and ev.get("number") is not None:
+        return f"step {ev['number']}"
+    return f"[{etype}]" if etype else line
 
 
 def _tail_line(path: str, window: int = 8192) -> str:

@@ -543,7 +543,12 @@ as a beast-artifact page: turns, tool calls and results (already clipped to
 secret list — secret-named env values; `NAME=` / `NAME:` assignments whose
 name is secret-shaped, quoted JSON keys and hyphenated headers included
 (`X-OpenBeast-Device-Key`, `X-OpenBeast-Local`); `--api-key` / `--token` /
-`--password` flags; `Authorization:` credentials of any scheme. The page's
+`--password` flags; `Authorization:` credentials of any scheme; a URL's
+`user:password@`, `curl -u`, PEM private-key blocks and well-known token
+prefixes (`ghp_`, `github_pat_`, `hf_`, `sk-`, `xox?-`, `glpat-`, `AKIA`); and,
+by value, the rig's own unnamed secrets — the notify topic URL and token and
+the `.run/` locality tokens and raw-origin key. Every pattern is linear, so a
+huge log line cannot stall the server while it exports. The page's
 title and description are scrubbed too. Redaction is pattern-based and
 errs toward over-redacting (`prompt_tokens: 512` shows as `[redacted]`); read
 the page before you widen its visibility.
@@ -555,8 +560,11 @@ that pressed Export** (forwarded to beast-artifact with the locality token),
 so the link opens on that phone. If beast-artifact has an operator allowlist,
 that login must be on it. Otherwise, and for an export made on the rig with
 the local token, the page belongs to the rig (`rig`) and opens for the rig's
-admins. Needs `BEAST_ARTIFACT=true` and a running artifact server; otherwise
-409 with the reason.
+admins. The stable id belongs to whoever exported first; an export by the
+other kind of principal (the rig after a phone login, or the reverse) gets a
+stable page of its own (`uuid5` of the session and that owner) instead of
+beast-artifact's 404. Needs `BEAST_ARTIFACT=true` and a running artifact
+server; otherwise 409 with the reason.
 
 ### Push notifications
 
@@ -607,7 +615,9 @@ Delivery is bounded. A session notifies at most once a minute, and one diff
 sends at most 10; past that it sends one "N more sessions ended" summary.
 Every ~5 s the ledger is compared with `.run/notify-state.json` (0600), so a
 job that ended while the server was down still notifies on the next start. A
-failing endpoint costs one stderr line per five minutes.
+failing endpoint costs one stderr line per five minutes, and an alert it
+could not take is retried on later passes (at most once a minute) until it is
+delivered or 24 hours have passed since the session ended.
 **Test alert** in the 🔑 sheet sends one on demand (`POST
 /api/chat/notify/test`, write gate; 409 when notifications are off).
 
@@ -768,7 +778,12 @@ also bounds them *together*: every scope goes into
 `openbeast-chat-jobs.slice`, which carries that cap as an aggregate (a
 runtime drop-in, set with `systemctl --user set-property --runtime`), so two
 runaway jobs cannot add up to the box. If the slice cannot be capped, the
-scopes stay where they were and each keeps its own cap. The pid,
+scopes stay where they were and each keeps its own cap. Each scope also
+carries `OOMPolicy=continue` (dropped on a systemd too old for it): an OOM
+kills only the process that blew the cap, so a job is recorded `failed`
+with `exit 137 (SIGKILL: out of memory?)` rather than as an operator stop,
+and one bash tool call over the cap fails that call instead of tearing
+down the whole agent. The pid,
 the ledger record and Stop are unchanged (a scope execs the command in place).
 **Under a foreground `./start.sh`, or where `systemd-run --user` cannot reach
 a user manager, there is no scope and no memory cap on the job**: it runs in
