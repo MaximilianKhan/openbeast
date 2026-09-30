@@ -164,6 +164,127 @@ def test_stream_close_is_audited_with_bytes_read(rig):
 
 
 # ---------------------------------------------------------------------------
+# A stand-in runner: registers itself exactly like agents/runner.py does
+# (--session-id, title = task[:200]) and dumps what it was handed.
+# ---------------------------------------------------------------------------
+
+FAKE_RUNNER = r'''
+import json, os, sys, time
+sys.path.insert(0, os.environ["FAKE_AGENTS"])
+import sessions
+argv = sys.argv[1:]
+with open(os.environ["FAKE_RUNNER_OUT"], "w") as f:
+    json.dump({"argv": argv, "env": dict(os.environ)}, f)
+sid = argv[argv.index("--session-id") + 1]
+task = argv[-1]
+sessions.register(sid, kind="agent", title=task[:200], pid=os.getpid(),
+                  transcript=argv[argv.index("--log-file") + 1])
+time.sleep(float(os.environ.get("FAKE_RUNNER_SLEEP", "0.3")))
+sessions.finalize(sid, "done", summary="fake runner")
+'''
+
+
+@pytest.fixture()
+def fake_runner(tmp_path, monkeypatch):
+    script = tmp_path / "fake_runner.py"
+    script.write_text(FAKE_RUNNER)
+    out = tmp_path / "runner-seen.json"
+    monkeypatch.setattr(chat_server, "RUNNER_PATH", str(script))
+    monkeypatch.setenv("FAKE_AGENTS", AGENTS)
+    monkeypatch.setenv("FAKE_RUNNER_OUT", str(out))
+
+    def seen(timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if out.exists() and out.stat().st_size:
+                try:
+                    return json.loads(out.read_text())
+                except ValueError:
+                    pass
+            time.sleep(0.05)
+        raise AssertionError("the fake runner never ran")
+    return seen
+
+
+def _start(rig, **body):
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()["session"]["id"]
+
+
+# ---------------------------------------------------------------------------
+# chat-security-6: a task is never parsed as a runner flag
+# ---------------------------------------------------------------------------
+
+def test_a_task_that_looks_like_a_flag_stays_the_task(rig, fake_runner,
+                                                      tmp_path):
+    import argparse
+    sid = _start(rig, kind="agent", task="--task-file=/etc/hostname",
+                 workdir=str(tmp_path))
+    argv = fake_runner()["argv"]
+    assert argv[-2:] == ["--", "--task-file=/etc/hostname"]
+    # The runner's own parser shape (task nargs='*', --task-file): the value
+    # must land in `task`, not in the option it imitates.
+    p = argparse.ArgumentParser()
+    p.add_argument("task", nargs="*")
+    p.add_argument("--task-file", "-f")
+    p.add_argument("--session-id")
+    p.add_argument("--steer", action="store_true")
+    p.add_argument("--log-file")
+    p.add_argument("--workdir")
+    p.add_argument("--max-iter")
+    ns = p.parse_args(argv)
+    assert ns.task == ["--task-file=/etc/hostname"] and ns.task_file is None
+    assert wait_state(sid, "done")
+
+
+def test_a_runner_that_never_registers_is_filed_failed(rig, tmp_path,
+                                                       monkeypatch):
+    fake = tmp_path / "boom.py"
+    fake.write_text("import sys\nsys.stdout.write('usage: ...')\nsys.exit(0)\n")
+    monkeypatch.setattr(chat_server, "RUNNER_PATH", str(fake))
+    real = chat_server.reap_session
+
+    def fast(session_id, proc, **kw):
+        kw["annotate_timeout"] = 0.3
+        return real(session_id, proc, **kw)
+    monkeypatch.setattr(chat_server, "reap_session", fast)
+    sid = _start(rig, kind="agent", task="-h", workdir=str(tmp_path))
+    rec = wait_state(sid, "failed", timeout=10)
+    # exit 0 without ever registering is NOT done: nothing ran.
+    assert rec and rec["state"] == "failed", sessions.get(sid)
+    assert "before registering" in rec["summary"]
+
+
+# ---------------------------------------------------------------------------
+# chat-browser-9: a caller's title reaches the ledger
+# ---------------------------------------------------------------------------
+
+def test_a_given_title_reaches_the_ledger(rig, fake_runner, tmp_path,
+                                          monkeypatch):
+    monkeypatch.setenv("FAKE_RUNNER_SLEEP", "2")
+    sid = _start(rig, kind="agent", task="Count turns forever (stub model).",
+                 title="stub agent A (API)", workdir=str(tmp_path))
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if (sessions.get(sid) or {}).get("title") == "stub agent A (API)":
+            break
+        time.sleep(0.05)
+    assert sessions.get(sid)["title"] == "stub agent A (API)"
+
+
+def test_without_a_title_the_task_names_the_session(rig, fake_runner,
+                                                    tmp_path):
+    """Negative control: nothing is merged over the runner's own title."""
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "agent", "task": "plain task", "workdir": str(tmp_path)})
+    assert r.json()["session"]["title"] == "plain task"
+    sid = r.json()["session"]["id"]
+    assert wait_state(sid, "done")
+    assert sessions.get(sid)["title"] == "plain task"
+
+
+# ---------------------------------------------------------------------------
 # chat-browser-5 / chat-security-7: steers and stops are attributed
 # ---------------------------------------------------------------------------
 
@@ -191,3 +312,173 @@ def test_stop_records_who_asked_on_the_record(rig, monkeypatch):
     assert meta["stop_requested_device"] == "phone"
     assert _ops(sid)[-1]["op"] == "stop"
     assert _ops(sid)[-1]["from"] == "max@example.com (phone)"
+
+
+# ---------------------------------------------------------------------------
+# chat-security-9: spawned sessions do not inherit the stack's secrets
+# ---------------------------------------------------------------------------
+
+def test_a_job_does_not_see_the_stack_secrets(rig, tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", "SUPERSECRET_JWT")
+    monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "ADMINKEY123")
+    monkeypatch.setenv("OPENBEAST_HARMLESS_SETTING", "visible-ok")
+    sid = _start(rig, kind="job", cmd="env", workdir=str(tmp_path))
+    rec = wait_state(sid, "done", "failed")
+    assert rec and rec["state"] == "done", rec
+    out = open(rec["transcript"]).read()
+    assert "SUPERSECRET_JWT" not in out and "ADMINKEY123" not in out
+    # Negative control: the env is not simply empty.
+    assert "OPENBEAST_HARMLESS_SETTING=visible-ok" in out
+    # F-C5: the job knows its session.
+    assert f"OPENBEAST_SESSION_ID={sid}" in out
+
+
+def test_an_agent_keeps_only_its_inference_key(rig, fake_runner, tmp_path,
+                                               monkeypatch):
+    monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", "SUPERSECRET_JWT")
+    monkeypatch.setenv("OPENBEAST_API_KEY", "inference-key")
+    sid = _start(rig, kind="agent", task="t", workdir=str(tmp_path))
+    env = fake_runner()["env"]
+    assert "OPENBEAST_IDENTITY_JWT_SECRET" not in env
+    assert env.get("OPENBEAST_API_KEY") == "inference-key"
+    assert env.get("OPENBEAST_SESSION_ID") == sid
+
+
+# ---------------------------------------------------------------------------
+# chat-lifecycle-api-job-restart-lost: an API job outlives the server that
+# started it, and still records the truth
+# ---------------------------------------------------------------------------
+
+def _free_port() -> int:
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class _RealServer:
+    """agents/chat_server.py as a real process on an ephemeral port, with
+    every directory in tmp. Killed by its recorded pid, never by pattern."""
+
+    def __init__(self, tmp_path):
+        import subprocess
+        self.port = _free_port()
+        self.run = tmp_path / "srv-run"
+        self.sdir = tmp_path / "srv-sessions"
+        self.logs = tmp_path / "srv-logs"
+        for d in (self.run, self.sdir, self.logs):
+            d.mkdir(exist_ok=True)
+        env = dict(os.environ)
+        env.update({
+            "OPENBEAST_CHAT_PORT": str(self.port),
+            "OPENBEAST_CHAT_BIND": "127.0.0.1",
+            "OPENBEAST_CHAT_RUN_DIR": str(self.run),
+            "OPENBEAST_SESSIONS_DIR": str(self.sdir),
+            "OPENBEAST_CHAT_LOG_DIR": str(self.logs),
+            "OPENBEAST_CHAT_SCOPE": "off",
+            "OPENBEAST_CHAT_POLL_MS": "50",
+        })
+        env.pop("OPENBEAST_CHAT_NOTIFY_URL", None)
+        self.proc = subprocess.Popen(
+            ["nice", "-n", "19", sys.executable,
+             os.path.join(AGENTS, "chat_server.py")],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                self.token = (self.run / "chat-local.token").read_text().strip()
+                if self.request("GET", "/api/chat/health")[0] == 200:
+                    return
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.1)
+        self.kill()
+        raise AssertionError("chat_server did not come up")
+
+    def request(self, method, path, body=None):
+        import urllib.error
+        import urllib.request
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
+            headers={"X-OpenBeast-Local": getattr(self, "token", ""),
+                     "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    def kill(self):
+        if self.proc.poll() is None:
+            self.proc.kill()        # SIGKILL: no shutdown hooks, like a crash
+        self.proc.wait(timeout=10)
+
+
+def _raw_state(sdir, sid):
+    try:
+        return json.load(open(os.path.join(sdir, f"{sid}.json"))).get("state")
+    except (OSError, ValueError):
+        return None
+
+
+def test_an_api_job_that_outlives_the_server_still_records_done(
+        tmp_path, monkeypatch):
+    srv = _RealServer(tmp_path)
+    pgids = []
+    try:
+        code, d = srv.request("POST", "/api/chat/sessions", {
+            "kind": "job", "cmd": "sleep 2; echo finished-ok",
+            "workdir": str(tmp_path)})
+        assert code == 201, d
+        sid = d["session"]["id"]
+        assert _raw_state(srv.sdir, sid) == "running"
+        pgids.append(json.load(open(srv.sdir / f"{sid}.json"))["pgid"])
+        # Stop one, too, and kill the server before it can escalate.
+        code, d2 = srv.request("POST", "/api/chat/sessions", {
+            "kind": "job", "cmd": "sleep 60", "workdir": str(tmp_path)})
+        assert code == 201
+        stop_id = d2["session"]["id"]
+        pgids.append(json.load(open(srv.sdir / f"{stop_id}.json"))["pgid"])
+        code, _ = srv.request("POST", f"/api/chat/sessions/{stop_id}/stop", {})
+        assert code == 200
+        srv.kill()                                   # the "restart"
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if (_raw_state(srv.sdir, sid) != "running"
+                    and _raw_state(srv.sdir, stop_id) != "running"):
+                break
+            time.sleep(0.1)
+        assert _raw_state(srv.sdir, sid) == "done", \
+            "an exit-0 job that outlived the server was not recorded done"
+        assert _raw_state(srv.sdir, stop_id) == "stopped"
+        log = open(json.load(open(srv.sdir / f"{sid}.json"))["transcript"]).read()
+        assert "finished-ok" in log
+    finally:
+        srv.kill()
+        import signal as _sig
+        for pg in pgids:
+            try:
+                if int(pg) > 1:
+                    os.killpg(int(pg), _sig.SIGKILL)
+            except (OSError, ValueError, TypeError):
+                pass
+
+
+def test_secret_name_rule_matches_the_bash_tool(monkeypatch):
+    """chat_server's fallback copy must agree with tools._scrubbed_env."""
+    import tools
+    names = ["OPENBEAST_API_KEY", "OPENBEAST_IDENTITY_JWT_SECRET",
+             "WEBUI_ADMIN_PASSWORD", "LLAMA_API_KEY", "SEARXNG_SECRET",
+             "OPENAI_API_KEY", "HF_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+             "ANTHROPIC_API_KEY", "OPENBEAST_CHAT_PORT", "HOME", "PATH",
+             "MY_TOKEN", "OPENBEAST_SESSION_TOKEN", "LLAMA_PORT"]
+    for n in names:
+        monkeypatch.setenv(n, "v")
+    kept = tools._scrubbed_env()
+    for n in names:
+        assert chat_server.is_secret_env_name(n) == (n not in kept), n
+

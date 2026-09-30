@@ -117,9 +117,17 @@ REPO_DIR = os.path.dirname(_HERE)
 RUN_DIR = os.path.join(REPO_DIR, ".run")
 CONSOLE_PATH = os.path.join(_HERE, "chat_ui", "console.html")
 RUNNER_PATH = os.path.join(_HERE, "runner.py")
+# API jobs run under the same supervisor `job.sh run` uses (see create_session).
+JOB_SH_PATH = os.path.join(REPO_DIR, "scripts", "job.sh")
 # Where transcripts are archived. Matches agents/runner.py
 # DEFAULT_LOG_DIR and mcp_server._LOG_DIR — one archive, not three.
 LOG_DIR = os.path.join(_HERE, "logs")
+
+
+def _log_dir() -> str:
+    """LOG_DIR, unless OPENBEAST_CHAT_LOG_DIR moves it (a test server run as
+    a separate process must never write into the repo's agents/logs/)."""
+    return (os.environ.get("OPENBEAST_CHAT_LOG_DIR") or "").strip() or LOG_DIR
 
 DEFAULT_PORT = 3003
 TERMINAL_STATES = frozenset(s for s in sessions.STATES if s != "running")
@@ -148,6 +156,9 @@ MAX_MESSAGE_BYTES = 32 * 1024
 # delete anything" arrived without its last line and without any marker the
 # model could see. A message the agent cannot receive whole is now refused.
 MAX_MESSAGE_CHARS = sessions.OP_MAX_TEXT
+# How long POST /api/chat/sessions waits for the child to register itself
+# before answering with a provisional record.
+REGISTER_WAIT_S = 5.0
 # Longest caller-controlled string (a claimed login, a device id) an audit row
 # will carry. The login header alone can be ~16 KB (the h11 header limit).
 AUDIT_FIELD_MAX = 256
@@ -845,6 +856,9 @@ def _job_mem_max_bytes() -> int:
 def _probe_scope() -> list[str]:
     import shutil
     exe = shutil.which("systemd-run")
+    if (os.environ.get("OPENBEAST_CHAT_SCOPE") or "").strip().lower() in (
+            "off", "0", "false", "no"):
+        return []            # tests, and hosts where transient scopes misbehave
     if not exe or not _in_service_cgroup():
         return []
     prefix = [exe, "--user", "--scope", "--quiet", "--collect"]
@@ -908,6 +922,51 @@ def scope_prefix() -> list[str]:
         return list(_SCOPE_PREFIX)
 
 
+# ---------------------------------------------------------------------------
+# What a spawned session may inherit (review chat-security-9)
+# ---------------------------------------------------------------------------
+# start.sh exports the stack's configuration — conf.sh's OPENBEAST_*KEY /
+# SECRET / PASSWORD / TOKEN, the identity-JWT signing secret among them — and
+# a console-started job inherited all of it, so any job that printed its
+# environment (set -x, a crash handler, `env` while debugging) published those
+# secrets to every READER of its transcript, a lower tier than the writer who
+# started it. The bash tool strips exactly these names for model-authored
+# commands; spawned sessions get the same list.
+
+#: Mirrors agents/tools.py _scrubbed_env (era-locked, so read, not edited).
+#: Used only if that import fails; tests pin the two to the same answers.
+_SECRET_EXACT = frozenset({"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN",
+                           "GITHUB_TOKEN", "GH_TOKEN"})
+_SECRET_PREFIXES = ("OPENBEAST_", "WEBUI_", "LLAMA_", "SEARXNG_")
+_SECRET_MARKS = ("KEY", "SECRET", "PASSWORD", "TOKEN")
+
+
+def is_secret_env_name(name: str) -> bool:
+    up = str(name).upper()
+    return up in _SECRET_EXACT or (up.startswith(_SECRET_PREFIXES)
+                                   and any(t in up for t in _SECRET_MARKS))
+
+
+def child_env(extra: dict | None = None, keep: tuple = ()) -> dict:
+    """This process's environment minus the stack's secrets.
+
+    `keep` re-admits named variables the child genuinely needs (the runner's
+    inference key — it scrubs its own tools' env again before running
+    anything the model wrote). `extra` is added last.
+    """
+    try:
+        from tools import _scrubbed_env     # the bash tool's own list
+        env = _scrubbed_env()
+    except Exception:
+        env = {k: v for k, v in os.environ.items()
+               if not is_secret_env_name(k)}
+    for name in keep:
+        if name in os.environ:
+            env[name] = os.environ[name]
+    env.update(extra or {})
+    return env
+
+
 def terminal_state_for(returncode: int) -> str:
     """Exit status -> ledger state. 0 done, >0 failed, <0 (signalled) stopped."""
     rc = _int_or_zero(returncode)
@@ -931,7 +990,8 @@ def exit_summary(returncode: int) -> str:
 
 def annotate_when_registered(session_id: str, meta: dict, *,
                              timeout: float = 15.0, poll: float = 0.05,
-                             proc: subprocess.Popen | None = None) -> bool:
+                             proc: subprocess.Popen | None = None,
+                             fields: dict | None = None) -> bool:
     """Merge our provenance into a record the CHILD owns (E4).
 
     We must not register() an id the runner registers for itself: register is
@@ -940,6 +1000,11 @@ def annotate_when_registered(session_id: str, meta: dict, *,
     runner's consumed-message cursor, which replays the operator's last
     instruction to a resumed agent. So wait for the owner's record to appear
     and touch() ours in, which merges.
+
+    `fields` are top-level keys merged the same way — the caller's `title`:
+    the runner registers itself titled with its task, so a title given to
+    POST /api/chat/sessions was echoed in the 201 and then never reached the
+    ledger (review chat-browser-9).
     """
     deadline = time.monotonic() + max(0.0, timeout)
     grace = None
@@ -954,9 +1019,11 @@ def annotate_when_registered(session_id: str, meta: dict, *,
                 # Belt to create_session's strip: this merge lands OVER the
                 # runner's own record, so a server-owned key here would
                 # replace the runner's real pid_start/boot_id/cursor.
+                extra = {k: v for k, v in (fields or {}).items()
+                         if k in ("title",) and v}
                 sessions.touch(session_id, meta={
                     k: v for k, v in (meta or {}).items()
-                    if k not in RESERVED_META})
+                    if k not in RESERVED_META}, **extra)
             return True
         now = time.monotonic()
         if now >= deadline:
@@ -973,7 +1040,8 @@ def annotate_when_registered(session_id: str, meta: dict, *,
 
 def reap_session(session_id: str, proc: subprocess.Popen, *,
                  annotate: dict | None = None, annotate_timeout: float = 15.0,
-                 poll: float = 0.05) -> str | None:
+                 poll: float = 0.05, fields: dict | None = None,
+                 fallback: dict | None = None) -> str | None:
     """Wait on our child, then record the truth. Blocking; see start_reaper.
 
     Finalizes ONLY from `running`/`lost`: an agent runner writes its own
@@ -981,11 +1049,18 @@ def reap_session(session_id: str, proc: subprocess.Popen, *,
     exits 0), and the exit status must not overwrite a verdict its owner
     already made. `lost` is the reconciler's guess and is exactly what we are
     here to replace with the exit status.
+
+    `fallback` is the record to file when the child exits WITHOUT ever
+    registering (a runner that died on bad input, an import error): the API
+    had already answered 201 with a `running` record, and the session then
+    simply never existed — no list row, no transcript, no error anywhere
+    (review chat-security-6). It lands as `failed` with the exit status.
     """
+    registered = True
     if annotate is not None:
-        annotate_when_registered(session_id, annotate,
-                                 timeout=annotate_timeout, poll=poll,
-                                 proc=proc)
+        registered = annotate_when_registered(
+            session_id, annotate, timeout=annotate_timeout, poll=poll,
+            proc=proc, fields=fields)
     try:
         returncode = proc.wait()
     except Exception:
@@ -997,6 +1072,20 @@ def reap_session(session_id: str, proc: subprocess.Popen, *,
         return None
     state = terminal_state_for(returncode)
     rec = read_record_raw(session_id)
+    if rec is None and not registered and fallback:
+        with contextlib.suppress(Exception):
+            fb = dict(fallback)
+            sessions.register(
+                session_id, kind=fb.get("kind") or "agent",
+                title=fb.get("title") or "", pid=proc.pid, pgid=proc.pid,
+                workdir=fb.get("workdir"), model=fb.get("model"),
+                transcript=fb.get("transcript"), meta=fb.get("meta") or {})
+            sessions.finalize(
+                session_id, "failed" if state == "done" else state,
+                summary=(f"exited before registering in the ledger "
+                         f"({exit_summary(returncode)}) — the command never "
+                         f"started as a session"))
+        return "failed" if state == "done" else state
     if rec is not None and rec.get("state") not in ("running", "lost"):
         return rec.get("state")          # its owner already decided
     record_terminal_state(session_id, state, exit_summary(returncode))
@@ -1005,13 +1094,16 @@ def reap_session(session_id: str, proc: subprocess.Popen, *,
 
 def start_reaper(session_id: str, proc: subprocess.Popen,
                  annotate: dict | None = None,
-                 annotate_timeout: float = 15.0) -> threading.Thread:
+                 annotate_timeout: float = 15.0, *,
+                 fields: dict | None = None,
+                 fallback: dict | None = None) -> threading.Thread:
     """One daemon thread per spawned child: reaps it and finalizes the ledger."""
     with _CHILDREN_LOCK:
         _CHILDREN[session_id] = proc
     t = threading.Thread(
         target=reap_session, args=(session_id, proc),
-        kwargs={"annotate": annotate, "annotate_timeout": annotate_timeout},
+        kwargs={"annotate": annotate, "annotate_timeout": annotate_timeout,
+                "fields": fields, "fallback": fallback},
         name=f"chat-reap-{session_id}", daemon=True)
     t.start()
     return t
@@ -1971,6 +2063,98 @@ def create_app() -> FastAPI:
                                f"after {int(max(1.0, kill_after - term_after))}s"),
                 }
 
+    def plan_session(body: dict) -> dict:
+        """Validate a create request and work out EXACTLY what would run.
+
+        Shared by the real spawn and by `dry_run`, so the argv the console's
+        confirm dialog echoes is the argv that executes, byte for byte.
+        """
+        kind = _body_str(body, "kind", "agent").strip().lower()
+        if kind not in ("agent", "job"):
+            raise HTTPException(status_code=400,
+                                detail="kind must be 'agent' or 'job'")
+        workdir = os.path.abspath(os.path.expanduser(
+            _body_str(body, "workdir") or REPO_DIR))
+        if not os.path.isdir(workdir):
+            raise HTTPException(status_code=400,
+                                detail=f"workdir does not exist: {workdir}")
+        meta_in = body.get("meta")
+        if meta_in is not None and not isinstance(meta_in, dict):
+            raise HTTPException(status_code=400,
+                                detail="'meta' must be an object")
+        session_id = sessions.new_id(kind)
+        # Transcripts live in agents/logs/, NOT under SESSIONS_DIR. Two
+        # reasons, both load-bearing: sessions.prune() deletes a session's
+        # whole directory, so a transcript stored there would be destroyed
+        # with the index that points at it; and mcp_server.start_agent
+        # already writes agent-<id>.jsonl here, so check_agent/tail_agent and
+        # this console read the same files instead of two divergent archives.
+        if kind == "agent":
+            transcript = os.path.join(_log_dir(), f"agent-{session_id}.jsonl")
+        else:
+            transcript = os.path.join(_log_dir(), f"job-{session_id}.log")
+
+        given_title = _body_str(body, "title").strip()
+        if kind == "agent":
+            task = _body_str(body, "task").strip()
+            if not task:
+                raise HTTPException(status_code=400,
+                                    detail="agent sessions need a task")
+            # The runner titles its own record task[:200]; say the same
+            # thing in the 201 unless the caller named it (then the reaper
+            # merges that name into the ledger — review chat-browser-9).
+            title = given_title or task[:200]
+            model = _body_str(body, "model")
+            max_iter = _body_int(body, "max_iter", 200, lo=1, hi=1000)
+            cmd = [sys.executable, RUNNER_PATH,
+                   "--log-file", transcript,
+                   "--workdir", workdir,
+                   "--max-iter", str(max_iter),
+                   # The steering opt-in is EXPLICIT ARGV and nothing else
+                   # (the env opt-in is gone, and it leaked into measured eval
+                   # units through inherited environments). --session-id
+                   # also pins the id the runner registers ITSELF under,
+                   # which is what keeps this server from owning that record.
+                   "--session-id", session_id,
+                   "--steer"]
+            if model:
+                cmd += ["--model", model]
+            base_url = _body_str(body, "base_url")
+            if base_url:
+                cmd += ["--base-url", base_url]
+            context = _body_str(body, "context")
+            if context:
+                cmd += ["--context", context]
+            # `--` ends the runner's options. The task is a nargs='*'
+            # positional, so without it a task that starts with '-' was
+            # parsed as a FLAG: '--help' printed usage and exited before
+            # registering, '--task-file=/etc/x' ran a file as the task —
+            # and the API had already answered 201 (review chat-security-6).
+            cmd += ["--", task]
+        else:
+            shell_cmd = (_body_str(body, "cmd")
+                         or _body_str(body, "command")).strip()
+            if not shell_cmd:
+                raise HTTPException(status_code=400,
+                                    detail="job sessions need a cmd")
+            title = given_title or shell_cmd[:80]
+            model = ""
+            max_iter = None
+            # Equivalent in power to the stack's existing `bash` tool, and
+            # gated by the same class of credential (an enrolled device key,
+            # or proof of being on the box).
+            cmd = ["/bin/bash", "-lc", shell_cmd]
+        # The WHOLE argv (clipped by the writers below), not the first six
+        # words: the flags that decide what an agent may do — --session-id,
+        # --steer, --max-iter, --model — all sort after the sixth token.
+        display = (" ".join(shlex.quote(c) for c in cmd) if kind == "agent"
+                   else cmd[2])
+        return {"kind": kind, "session_id": session_id, "workdir": workdir,
+                "transcript": transcript, "title": title,
+                "given_title": given_title, "model": model or None,
+                "max_iter": max_iter, "cmd": cmd, "argv": list(cmd),
+                "display": display, "meta_in": meta_in}
+
     @app.post("/api/chat/sessions")
     async def create_session(request: Request):
         with audited("POST /api/chat/sessions", request=request) as ctx:
@@ -1980,130 +2164,70 @@ def create_app() -> FastAPI:
                 principal = write_gate(request, principal)
                 ctx["principal"] = principal
                 body = await _json_body(request)
-                kind = _body_str(body, "kind", "agent").strip().lower()
-                if kind not in ("agent", "job"):
-                    raise HTTPException(status_code=400,
-                                        detail="kind must be 'agent' or 'job'")
-                workdir = os.path.abspath(os.path.expanduser(
-                    _body_str(body, "workdir") or REPO_DIR))
-                if not os.path.isdir(workdir):
-                    raise HTTPException(status_code=400,
-                                        detail=f"workdir does not exist: {workdir}")
-                meta_in = body.get("meta")
-                if meta_in is not None and not isinstance(meta_in, dict):
-                    raise HTTPException(status_code=400,
-                                        detail="'meta' must be an object")
-                session_id = sessions.new_id(kind)
-                # Transcripts live in agents/logs/, NOT under SESSIONS_DIR.
-                # Two reasons, both load-bearing: sessions.prune() deletes a
-                # session's whole directory, so a transcript stored there
-                # would be destroyed with the index that points at it; and
-                # mcp_server.start_agent already writes agent-<id>.jsonl
-                # here, so check_agent/tail_agent and this console read the
-                # same files instead of two divergent archives.
+                plan = plan_session(body)
+                kind = plan["kind"]
+                session_id = plan["session_id"]
+                workdir = plan["workdir"]
+                transcript = plan["transcript"]
+                title = plan["title"]
+                model = plan["model"]
+                cmd = plan["cmd"]
+                display = plan["display"]
+                meta_in = plan["meta_in"]
                 # 0700 when we are the one creating it (an existing
                 # directory's mode is the operator's call, not ours).
-                os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-                if kind == "agent":
-                    transcript = os.path.join(LOG_DIR, f"agent-{session_id}.jsonl")
-                else:
-                    transcript = os.path.join(LOG_DIR, f"job-{session_id}.log")
+                os.makedirs(_log_dir(), mode=0o700, exist_ok=True)
 
-                if kind == "agent":
-                    task = _body_str(body, "task").strip()
-                    if not task:
-                        raise HTTPException(status_code=400,
-                                            detail="agent sessions need a task")
-                    title = (_body_str(body, "title") or task[:80]).strip()
-                    model = _body_str(body, "model")
-                    max_iter = _body_int(body, "max_iter", 200, lo=1, hi=1000)
-                    cmd = [sys.executable, RUNNER_PATH,
-                           "--log-file", transcript,
-                           "--workdir", workdir,
-                           "--max-iter", str(max_iter),
-                           # The steering opt-in is EXPLICIT ARGV and nothing
-                           # else (the env opt-in is gone, and it leaked into
-                           # measured eval units through inherited
-                           # environments). --session-id also pins the id the
-                           # runner registers ITSELF under, which is what
-                           # keeps this server from owning that record.
-                           "--session-id", session_id,
-                           "--steer"]
-                    if model:
-                        cmd += ["--model", model]
-                    base_url = _body_str(body, "base_url")
-                    if base_url:
-                        cmd += ["--base-url", base_url]
-                    context = _body_str(body, "context")
-                    if context:
-                        cmd += ["--context", context]
-                    cmd.append(task)
-                    # The WHOLE argv (clipped by the writers below), not the
-                    # first six words: the flags that decide what this agent
-                    # may do — --session-id, --steer, --max-iter, --model —
-                    # all sort after the sixth token.
-                    display = " ".join(shlex.quote(c) for c in cmd)
+                # The session's own id, for anything it runs (an artifact it
+                # publishes can link back here — F-C5), and a scrubbed env.
+                env_extra = {"OPENBEAST_SESSION_ID": session_id}
+                if kind == "job":
+                    # [review chat-lifecycle-api-job-restart-lost] An API job
+                    # runs under job.sh's SUPERVISOR, not bare. Bare, this
+                    # server was its only ledger writer — the Popen and the
+                    # reaper live in memory — so a job that outlived a
+                    # chat_server restart (the watchdog, update.sh, a crash)
+                    # finished with exit 0 and was filed `lost`, and a stop's
+                    # pending SIGKILL died with the escalation thread. The
+                    # supervisor registers the job itself, writes
+                    # done/failed/stopped whether or not we are alive, and
+                    # does its own TERM-then-KILL on a stop. `display` and
+                    # the audit row keep the command as asked.
+                    run = [JOB_SH_PATH, "__supervise", session_id,
+                           transcript, title, workdir, "--"] + cmd
                 else:
-                    shell_cmd = (_body_str(body, "cmd")
-                                 or _body_str(body, "command")).strip()
-                    if not shell_cmd:
-                        raise HTTPException(status_code=400,
-                                            detail="job sessions need a cmd")
-                    title = (_body_str(body, "title") or shell_cmd[:80]).strip()
-                    model = ""
-                    # Equivalent in power to the stack's existing `bash` tool,
-                    # and gated by the same class of credential (an enrolled
-                    # device key, or proof of being on the box).
-                    cmd = ["/bin/bash", "-lc", shell_cmd]
-                    display = shell_cmd
-
+                    run = cmd
                 try:
                     # Fresh session => pgid == pid, so stop/escalation can
-                    # signal this job's group — the supervisor and every child
-                    # that has not detached into its OWN session — rather than
-                    # orphaning them. Not literally "the whole tree": a
-                    # descendant that calls setsid (evals/run_eval.py does,
-                    # deliberately, so a task timeout can kill one agent group)
-                    # is outside this group and must reap itself on SIGTERM.
-                    # Out of the stack's unit (see scope_prefix). `display`,
-                    # the audit row and the ledger keep the command as asked.
+                    # signal this session's group — the supervisor and every
+                    # child that has not detached into its OWN session —
+                    # rather than orphaning them. Not literally "the whole
+                    # tree": a descendant that calls setsid (evals/run_eval.py
+                    # does, deliberately, so a task timeout can kill one agent
+                    # group) is outside this group and must reap itself on
+                    # SIGTERM. Out of the stack's unit (see scope_prefix).
                     # to_thread: the FIRST call probes systemd-run (up to
                     # 10 s on a box with a broken user bus), and this handler
                     # runs ON the event loop — blocking here stalls every SSE
                     # stream and /api/chat/health, which the watchdog reads
                     # as "down". main() also warms it at start.
-                    cmd = await asyncio.to_thread(scope_prefix) + cmd
+                    run = await asyncio.to_thread(scope_prefix) + run
+                    # 0600 FIRST: the runner and the supervisor both append
+                    # with the umask, and a transcript holds tool output, file
+                    # contents and fetched pages. An append-open keeps it.
+                    _create_private(transcript)
                     if kind == "agent":
-                        # The runner appends with a plain open(), which takes
-                        # the umask: every console-streamed agent transcript
-                        # (tool output, file contents, fetched pages) landed
-                        # 0644 while job transcripts were 0600. Create it
-                        # 0600 FIRST; an append-open keeps an existing mode.
-                        _create_private(transcript)
-                        proc = subprocess.Popen(
-                            cmd, cwd=workdir, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
+                        # The runner needs its inference key; nothing else
+                        # secret. It scrubs its own tools' env again.
+                        env = child_env(env_extra,
+                                        keep=("OPENBEAST_API_KEY",
+                                              "OPENAI_API_KEY"))
                     else:
-                        # 0600, matching scripts/job.sh. A plain open() took
-                        # the umask and left every job transcript on the box
-                        # world-readable — command output is exactly as
-                        # sensitive as the transcript it is quoted into.
-                        fd = os.open(transcript,
-                                     os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                                     0o600)
-                        try:
-                            os.fchmod(fd, 0o600)
-                        except OSError:
-                            pass
-                        log = os.fdopen(fd, "ab", buffering=0)
-                        try:
-                            proc = subprocess.Popen(
-                                cmd, cwd=workdir, stdout=log,
-                                stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True)
-                        finally:
-                            log.close()
+                        env = child_env(env_extra)
+                    proc = subprocess.Popen(
+                        run, cwd=workdir, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True, env=env)
                 except Exception as e:
                     raise HTTPException(status_code=500,
                                         detail=f"spawn failed: {e}")
@@ -2126,31 +2250,33 @@ def create_app() -> FastAPI:
                              "device": principal.get("device"),
                              "command": display[:500]})
 
-                if kind == "job":
-                    # Nothing else writes this record: an API job bypasses
-                    # scripts/job.sh entirely, so this server IS its ledger
-                    # writer — and its reaper.
-                    rec = sessions.register(
-                        session_id, kind=kind, title=title, pid=proc.pid,
-                        pgid=proc.pid, workdir=workdir, model=model or None,
-                        transcript=transcript, meta=meta)
-                    start_reaper(session_id, proc)
-                else:
-                    # E4 — ONE WRITER PER RECORD. The runner registers this id
-                    # itself (we passed it --session-id); register()ing it here
-                    # too is a full overwrite racing a full overwrite, which
-                    # loses started_by/device/command at random AND resets the
-                    # runner's consumed-message cursor, replaying the
-                    # operator's last instruction into a resumed agent. Wait
-                    # for its record, then merge ours in with touch().
-                    start_reaper(session_id, proc, annotate=meta)
-                    rec = sessions.get(session_id) or {
-                        "id": session_id, "kind": kind, "title": title,
-                        "pid": proc.pid, "pgid": proc.pid, "state": "running",
-                        "workdir": workdir, "model": model or None,
-                        "transcript": transcript,
-                        "inbox": _inbox_path(session_id), "meta": meta,
-                    }
+                # E4 — ONE WRITER PER RECORD. The child registers this id
+                # itself: the runner (we passed --session-id) or the job
+                # supervisor. register()ing it here too is a full overwrite
+                # racing a full overwrite, which loses started_by/device/
+                # command at random AND resets a runner's consumed-message
+                # cursor. Wait for its record, then merge ours in.
+                fallback = {"kind": kind, "title": title, "workdir": workdir,
+                            "model": model, "transcript": transcript,
+                            "meta": meta}
+                start_reaper(session_id, proc, annotate=meta,
+                             fields={"title": plan["given_title"]},
+                             fallback=fallback)
+                # Answer once the child's own record exists (bounded), so a
+                # console that routes straight to #/s/<id> finds it — the
+                # same promise `job.sh run` makes before it prints an id.
+                deadline = time.monotonic() + REGISTER_WAIT_S
+                while (time.monotonic() < deadline
+                       and read_record_raw(session_id) is None
+                       and proc.poll() is None):
+                    await asyncio.sleep(0.05)
+                rec = sessions.get(session_id) or {
+                    "id": session_id, "kind": kind, "title": title,
+                    "pid": proc.pid, "pgid": proc.pid, "state": "running",
+                    "workdir": workdir, "model": model,
+                    "transcript": transcript,
+                    "inbox": _inbox_path(session_id), "meta": meta,
+                }
                 ctx["session"] = session_id
                 # The command is the one action the scope system gates, so it
                 # is the one thing this row must carry. Hash + workdir too:

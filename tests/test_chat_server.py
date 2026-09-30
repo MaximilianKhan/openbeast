@@ -1128,12 +1128,16 @@ def test_nonzero_exit_becomes_failed(rig, tmp_path):
     assert not is_zombie(rec["pid"])
 
 
-def test_a_signalled_job_becomes_stopped(rig, tmp_path):
-    """Negative returncode = died on a signal = `stopped`, not `failed`."""
+def test_a_job_killed_by_someone_else_is_failed_not_stopped(rig, tmp_path):
+    """An API job runs under job.sh's supervisor (review 2026-09-29,
+    chat-lifecycle-api-job-restart-lost), so it gets job.sh's semantics:
+    `stopped` means an operator stop reached it; a command that dies on a
+    signal nobody here sent (an OOM kill, `kill -9` from a shell) is a
+    `failed` job with its exit status — it used to read as a person's stop."""
     sid = _spawn_job(rig, "kill -9 $$", tmp_path)
-    rec = wait_state(sid, "stopped")
-    assert rec and rec["state"] == "stopped", sessions.get(sid)
-    assert "SIGKILL" in (rec["summary"] or "")
+    rec = wait_state(sid, "failed", "stopped")
+    assert rec and rec["state"] == "failed", sessions.get(sid)
+    assert "137" in (rec["summary"] or "")
     assert not is_zombie(rec["pid"])
 
 
@@ -1271,11 +1275,13 @@ def test_agent_spawn_leaves_the_record_to_the_runner_and_annotates_it(
     assert "--session-id" in rec["meta"]["command"]
 
 
-def test_agent_spawn_that_dies_before_registering_does_not_get_a_record(
+def test_agent_spawn_that_dies_before_registering_is_filed_failed(
         rig, tmp_path, monkeypatch):
-    """We do not own the id, so we do not conjure a record for it. The spawn
-    still answers 201 with the id, and the reaper simply finds nothing to
-    finalize — no half-written row claiming a session that never started."""
+    """Nobody owns the id — the child never registered — so the reaper files
+    it `failed` with the exit status. It used to find nothing to finalize,
+    and a session the API had answered 201 for simply never existed: no list
+    row, no transcript, no error (review 2026-09-29, chat-security-6). Still
+    never a row claiming the session RAN: the summary says it never started."""
     fake = tmp_path / "boom.py"
     fake.write_text("import sys\nsys.exit(3)\n")
     monkeypatch.setattr(chat_server, "RUNNER_PATH", str(fake))
@@ -1286,9 +1292,10 @@ def test_agent_spawn_that_dies_before_registering_does_not_get_a_record(
         "kind": "agent", "task": "t", "workdir": str(tmp_path)})
     assert r.status_code == 201, r.text
     sid = r.json()["session"]["id"]
-    assert r.json()["session"]["state"] == "running"     # provisional view
-    time.sleep(1.0)
-    assert sessions.get(sid) is None
+    rec = wait_state(sid, "failed", timeout=10)
+    assert rec and rec["state"] == "failed", sessions.get(sid)
+    assert "before registering" in rec["summary"]
+    assert "status 3" in rec["summary"]
     assert sid not in chat_server._CHILDREN
 
 
