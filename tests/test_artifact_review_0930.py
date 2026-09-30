@@ -876,3 +876,21 @@ def test_the_implicit_admin_over_other_operators_is_announced(make_client,
     monkeypatch.setenv("OPENBEAST_ARTIFACT_ADMINS", "max@example.com")
     make_client(operators="max@example.com,kid@example.com")
     assert "ARTIFACT_ADMINS" not in capsys.readouterr().err
+
+
+def test_delete_version_is_no_existence_oracle(make_client):
+    """A-artifact-3 / B-artifact-2: DELETE /v/<n> answered a missing id with
+    400 "no such artifact" and someone else's page with the flat 404, so a
+    keyed operator could tell which (custom, guessable) ids exist."""
+    c = make_client(operators="boss@example.com,max@example.com,kid@example.com")
+    mine = publish(c, headers=local(c, MAX), artifact_id="my-report")
+    publish(c, headers=local(c, MAX), artifact_id="my-report")      # v2
+    kid = {**KID, **enroll(c.tmp, "kidphone", ("artifact",))}
+    theirs = c.delete(f"/api/artifacts/{mine['id']}/v/1", headers=kid)
+    missing = c.delete("/api/artifacts/not-a-page/v/1", headers=kid)
+    assert (theirs.status_code, theirs.json()) == (404, FLAT_404)
+    assert (missing.status_code, missing.json()) == (404, FLAT_404)
+    # control: the owner still deletes an old version of their own page
+    maxkey = {**MAX, **enroll(c.tmp, "maxphone", ("artifact",))}
+    r = c.delete(f"/api/artifacts/{mine['id']}/v/1", headers=maxkey)
+    assert r.status_code == 200 and r.json()["removed_version"] == 1

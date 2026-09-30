@@ -1987,6 +1987,22 @@ def create_app(local_token: str | None = None) -> FastAPI:
                            _w: None = Depends(require_manager)):
         """Delete one OLD version (F-A2): room under the 200-version cap
         without giving up the URL. Never the current one, never the last."""
+        # Same flat 404 for "no such id" and "not yours", checked before the
+        # store runs (as api_patch does): the store's "no such artifact" went
+        # out as a 400 to a keyed tailnet caller while someone else's page
+        # was a 404 — an existence oracle for guessable custom ids (D9/D29).
+        try:
+            current_meta = store.get_meta(artifact_id)
+        except store.ArtifactError:
+            current_meta = None
+        if not current_meta:
+            raise HTTPException(status_code=404, detail="Not Found")
+        admin = is_admin(request)
+        if not admin:
+            try:
+                store._require_owner(current_meta, owner_for(request))
+            except store.ArtifactError:
+                raise HTTPException(status_code=404, detail="Not Found")
         try:
             meta = store.remove_version(artifact_id, n,
                                         owner=owner_for(request),
