@@ -243,6 +243,9 @@ class Metrics:
         out.append("# TYPE hydra_probe_seconds gauge")
         for n, s in sorted(self.probe_s.items()):
             out.append(f'hydra_probe_seconds{{node="{_esc(n)}"}} {s:.6f}')
+        out.append("# TYPE hydra_instinct_feedback_total counter")
+        for res, n in sorted(hy.instinct.feedback_result.items()):
+            out.append(f'hydra_instinct_feedback_total{{result="{_esc(res)}"}} {n}')
         out.append("# TYPE hydra_config_info gauge")
         out.append(f'hydra_config_info{{hash="{hy.cfg.hash}"}} 1')
         return "\n".join(out) + "\n"
@@ -268,6 +271,8 @@ class InstinctClient:
         self.fails = 0
         self.open_until = 0.0
         self.pending = 0
+        self.feedback_result: collections.Counter = collections.Counter()
+        self.feedback_warned = False
 
     def reconfigure(self, cfg: core.InstinctCfg, base: Path) -> None:
         if cfg != self.cfg:
@@ -339,18 +344,49 @@ class InstinctClient:
                 "reason": doc.get("reason"), "ms": round((time.monotonic() - t0) * 1000, 1),
                 "applied": bool(action == "act" and enforce and label)}
 
-    async def feedback(self, trace_id: str, outcome: dict) -> None:
-        if not self.cfg.feedback or not trace_id or self.pending >= 32:
-            return
+    @staticmethod
+    def feedback_body(trace_id: str, request_id: str | None, *, served_pool: str | None,
+                      ttft_ms: float | None, outcome: str) -> dict:
+        """The instinct FeedbackReq shape (instinct/server.py; plan §5.10, §5.11 item 7).
+
+        instinct's request models are strict (extra=forbid): served_pool,
+        ttft_ms and error are TOP-LEVEL, and ``outcome`` is only
+        {source, label?, signal?, weight?}. Anything else is a 400.
+        """
+        body = {"trace_id": str(trace_id)[:64],
+                "outcome": {"source": "hydra", "label": str(outcome)[:64]}}
+        if request_id:
+            body["request_id"] = str(request_id)[:128]
+        if served_pool:
+            body["served_pool"] = str(served_pool)[:128]
+        if ttft_ms is not None:
+            body["ttft_ms"] = float(ttft_ms)
+        if outcome != "ok":
+            body["error"] = str(outcome)[:512]
+        return body
+
+    async def feedback(self, body: dict) -> bool:
+        if not self.cfg.feedback or not body.get("trace_id") or self.pending >= 32:
+            return False
         h = self._headers()
         if h is None:
-            return
+            self.feedback_result["no_key"] += 1
+            return False
         self.pending += 1
         try:
-            await self.client.post(f"{self.cfg.url}/v1/instinct/feedback",
-                                   json={"trace_id": trace_id, "outcome": outcome}, headers=h, timeout=1.0)
+            r = await self.client.post(f"{self.cfg.url}/v1/instinct/feedback",
+                                       json=body, headers=h, timeout=1.0)
+            ok = r.status_code == 200
+            self.feedback_result["ok" if ok else f"http_{r.status_code}"] += 1
+            if not ok and not self.feedback_warned:
+                # once, not per request: a contract drift must be loud, never a log flood
+                self.feedback_warned = True
+                print(f"hydra: instinct rejected feedback ({r.status_code}): {r.text[:200]}",
+                      file=sys.stderr)
+            return ok
         except httpx.HTTPError:
-            pass
+            self.feedback_result["transport"] += 1
+            return False
         finally:
             self.pending -= 1
 
@@ -973,11 +1009,11 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         hy.metrics.requests[(dec.route or "-", deployment or "-", outcome)] += 1
         if ins and ins.get("trace_id") and cfg.settings.instinct.feedback:
             ttft = next((a.get("ttft_ms") for a in reversed(attempts or []) if a.get("ttft_ms") is not None), None)
-            fb = {"source": "hydra", "served_pool": deployment, "ttft_ms": ttft, "status": status,
-                  "outcome": outcome, "error": None if outcome == "ok" else outcome, "route": dec.route}
+            fb = InstinctClient.feedback_body(ins["trace_id"], request_id, served_pool=deployment,
+                                              ttft_ms=ttft, outcome=outcome)
             with contextlib.suppress(RuntimeError):
                 # keep a reference: the loop holds tasks weakly
-                t = asyncio.get_running_loop().create_task(hy.instinct.feedback(ins["trace_id"], fb))
+                t = asyncio.get_running_loop().create_task(hy.instinct.feedback(fb))
                 hy.background.add(t)
                 t.add_done_callback(hy.background.discard)
 

@@ -785,10 +785,106 @@ def test_instinct_shadow_is_logged_not_applied(fleet, tmp_path):
         while not ins.feedback and time.time() < deadline:
             time.sleep(0.05)
         fb = ins.feedback[-1]
-        assert fb["trace_id"] == "ins_T1" and fb["outcome"]["served_pool"] == "unc@rig"
-        assert fb["outcome"]["outcome"] == "ok" and fb["outcome"]["source"] == "hydra"
+        # instinct's FeedbackReq is strict: served_pool/ttft_ms/error are top-level and
+        # outcome is only {source, label?, signal?, weight?} (plan §5.10, §5.11 item 7)
+        assert fb["trace_id"] == "ins_T1" and fb["served_pool"] == "unc@rig"
+        assert fb["outcome"] == {"source": "hydra", "label": "ok"} and "error" not in fb
+        assert set(fb) <= {"trace_id", "request_id", "outcome", "served_pool", "ttft_ms", "error"}
+        assert fb["request_id"] == audit_rows(tmp_path)[-1]["request_id"]
     finally:
         ins.close()
+
+
+_TASK_ROWS = [
+    ("fix the bug in this function and run the tests", True, "agent", "code_agent"),
+    ("refactor the parser module, compile, test", True, "agent", "code_agent"),
+    ("please fix the failing test in utils", True, "agent", "code_agent"),
+    ("hello, how are you today?", False, "interactive", "chat"),
+    ("what is the capital of france", False, "interactive", "chat"),
+    ("tell me a joke about cats", False, "interactive", "chat"),
+    ("classify these 500 rows", False, "batch", "bulk"),
+    ("summarize each document in this batch", False, "batch", "bulk"),
+]
+
+
+@pytest.fixture
+def real_instinct(tmp_path):
+    """The REAL instinct service (agents/instinct/server.py) on an ephemeral
+    loopback port — a hand-written fake accepts any body, the real one's
+    request models are strict, and only the real one catches contract drift."""
+    import _instinct_helpers as H
+    from instinct.config import load_config
+    from instinct.server import create_app
+    from instinct.service import Instinct
+    rows = [{"input": {"prompt_head": t, "est_prompt_tokens": 500, "has_images": False,
+                       "has_tools": tools, "stream": True, "client_class": cc}, "label": y}
+            for t, tools, cc, y in _TASK_ROWS]
+    home = tmp_path / "instinct"
+    home.mkdir()
+    cfgp, _ = H.promote_linear(home, "hydra.task_class", rows=rows, chain='["linear", "rules"]',
+                               mode="shadow")
+    inst = Instinct(load_config(cfgp, env={}), repo_root=home)
+    key = (home / "instinct.key").read_text().strip()
+    app = create_app(inst, key, allowed_hosts=["127.0.0.1"], probe_loop=False)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(16)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="on"))
+    th = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    th.start()
+    deadline = time.time() + 10
+    while not server.started:
+        assert time.time() < deadline, "instinct did not start"
+        time.sleep(0.02)
+    yield f"http://127.0.0.1:{sock.getsockname()[1]}", home / "instinct.key", home / "ledger"
+    server.should_exit = True
+    th.join(timeout=10)
+
+
+def _feedback_rows(ledger: Path) -> list[dict]:
+    return [json.loads(line) for p in sorted(ledger.glob("feedback-*.jsonl"))
+            for line in p.read_text().splitlines() if line.strip()]
+
+
+def test_feedback_is_accepted_by_the_real_instinct(fleet, tmp_path, real_instinct):
+    """Reconciliation §5 'feedback from day one': hydra -> real instinct, end to end."""
+    url, key_file, ledger = real_instinct
+    srv, _, _, _ = fleet(_with_instinct(url, key_file))
+    r = post(srv, chat(content="fix the bug in this function and run the tests"))
+    assert r.status_code == 200
+    row = audit_rows(tmp_path)[-1]
+    assert row["instinct"] and row["instinct"]["trace_id"], row["instinct"]
+    deadline = time.time() + 5
+    while not _feedback_rows(ledger) and time.time() < deadline:
+        time.sleep(0.05)
+    fb = _feedback_rows(ledger)
+    assert len(fb) == 1, (fb, srv.hy.instinct.feedback_result)
+    assert fb[0]["trace_id"] == row["instinct"]["trace_id"]
+    assert fb[0]["served_pool"] == "unc@rig" and fb[0]["outcome"] == {"source": "hydra", "label": "ok"}
+    assert srv.hy.instinct.feedback_result == {"ok": 1}
+    m = httpx.get(srv.url + "/hydra/metrics", headers=srv.local()).text
+    assert 'hydra_instinct_feedback_total{result="ok"} 1' in m
+
+
+def test_feedback_rejection_is_counted_not_silent(tmp_path, real_instinct):
+    """A non-200 from instinct is a failure hydra counts and says once — never 'sent'."""
+    import asyncio
+    url, key_file, _ = real_instinct
+    ic = hydra.InstinctClient(core.InstinctCfg(url=url, key_file=str(key_file)), REPO)
+
+    async def go():
+        try:
+            good = hydra.InstinctClient.feedback_body("ins_x", "req-1", served_pool="unc@rig",
+                                                      ttft_ms=12.5, outcome="upstream_failed")
+            assert good["error"] == "upstream_failed"
+            ok = await ic.feedback(good)
+            bad = await ic.feedback({"trace_id": "ins_y", "outcome": {"source": "hydra", "status": 200}})
+            return ok, bad
+        finally:
+            await ic.aclose()
+    ok, bad = asyncio.run(go())
+    assert ok is True and bad is False
+    assert ic.feedback_result == {"ok": 1, "http_400": 1} and ic.feedback_warned
 
 
 def test_instinct_act_and_enforce_is_applied(fleet, tmp_path):
