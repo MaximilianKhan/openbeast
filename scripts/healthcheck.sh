@@ -379,6 +379,109 @@ if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   fi
 fi
 
+# beast-hydra (opt-in) — the inference router every consumer talks to under
+# HYDRA=true (docs/BEAST_HYDRA_PLAN.md §6.7). Three outcomes:
+#   200  OK — its default route is routable;
+#   503  up, but NO routable default (nodes down or loading): a WARN, never a
+#        restart — a new process would see the same fleet;
+#   none within 3 s: DOWN, and only then does --restart relaunch it.
+if [[ "${HYDRA:-false}" == "true" ]]; then
+  _hy_url="${HYDRA_URL:-http://127.0.0.1:${HYDRA_PORT:-8095}}"
+  _hy_code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' "$_hy_url/health" 2>/dev/null || true)"
+  if ob_hydra_ready "$_hy_url"; then
+    echo "  OK   beast-hydra ($_hy_url)"
+    HEALTHY=$((HEALTHY + 1))
+  elif [[ "$_hy_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+    if [[ ${LOADING:-0} -eq 1 ]]; then
+      echo "  LOAD beast-hydra — up, waiting for the loading model (not counted)"
+    else
+      echo "  WARN beast-hydra — up (HTTP $_hy_code) but NO routable default route; not restarted"
+      echo "       (a restart cannot fix it: scripts/hydra.sh status names the down nodes)"
+      UNHEALTHY=$((UNHEALTHY + 1))
+    fi
+  else
+    echo "  DOWN beast-hydra ($_hy_url) — every consumer's inference goes through it"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → restarting beast-hydra..."
+      # By RECORDED PID, identity-checked; the path-anchored pattern is the
+      # fallback for an instance started outside start.sh.
+      _hy_pid="$(cat "$REPO_DIR/.run/hydra.pid" 2>/dev/null || true)"
+      if ob_pid_matches "$_hy_pid" "$(_ob_ere "$REPO_DIR/agents/hydra.py")"; then
+        kill "$_hy_pid" 2>/dev/null || true
+      else
+        pkill -f "$(_ob_ere "$REPO_DIR/agents/hydra.py")" 2>/dev/null || true
+      fi
+      sleep 1
+      mkdir -p "$REPO_DIR/.run"
+      # Keep the caller token the running router / gate already hold; mint
+      # one only when it is missing (start.sh mints it fresh per start).
+      if [[ -n "${HYDRA_CALLER_TOKEN_FILE:-}" && ! -s "$HYDRA_CALLER_TOKEN_FILE" ]]; then
+        ( umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > "$HYDRA_CALLER_TOKEN_FILE" )
+      fi
+      _hy_log="$(_restart_log beast-hydra)"
+      OPENBEAST_HYDRA_RUN_DIR="$REPO_DIR/.run" \
+        INFERENCE_SLOTS="${INFERENCE_SLOTS:-}" \
+        python3 "$REPO_DIR/agents/hydra.py" >>"$_hy_log" 2>&1 &
+      _HY_NEW=$!
+      ob_pid_record "$REPO_DIR/.run/hydra.pid" "$_HY_NEW"
+      _hy_ok=0
+      for _i in $(seq 1 15); do
+        ob_hydra_answering "$_hy_url" && { _hy_ok=1; break; }
+        kill -0 "$_HY_NEW" 2>/dev/null || break
+        sleep 1
+      done
+      if [[ $_hy_ok -eq 1 ]]; then
+        echo "       → restarted (pid $_HY_NEW)"
+      else
+        echo "       → restart FAILED: beast-hydra not answering"
+        _restart_tail "$_hy_log"
+      fi
+    fi
+  fi
+  # Per-deployment table from /hydra/status. Admin routes need the per-start
+  # local token (0600, .run/hydra-local.token) — through ob_curl_hdr, never
+  # argv. Informational: never changes the verdict above.
+  _hy_tok="$(cat "$REPO_DIR/.run/hydra-local.token" 2>/dev/null || true)"
+  if [[ -n "$_hy_tok" ]]; then
+    read -r -d '' _HY_TABLE_FMT <<'PY' || true
+import json, sys
+try:
+    s = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+nodes = s.get("nodes") or {}
+for d, v in (s.get("deployments") or {}).items():
+    drain = (nodes.get(v.get("node") or "") or {}).get("drained") or "-"
+    print("       %-28s %-11s %s/%s  breaker:%-9s drain:%s"
+          % (d, v.get("state", "?"), v.get("inflight", "?"), v.get("slots", "?"),
+             v.get("breaker", "?"), drain))
+PY
+    ob_curl_hdr "X-OpenBeast-Local: $_hy_tok" -s -m 3 "$_hy_url/hydra/status" 2>/dev/null \
+      | python3 -c "$_HY_TABLE_FMT" 2>/dev/null || true
+  fi
+fi
+
+# beast-instinct (opt-in) — the decision plane. Every consumer fails OPEN
+# without it, so DOWN is reported and (under --restart) restarted through
+# scripts/instinct.sh, which owns the pre-bind check, key and pidfile.
+if [[ "${INSTINCT:-false}" == "true" ]]; then
+  if ! check "beast-instinct" "http://127.0.0.1:${INSTINCT_PORT:-8094}/health" "ok"; then
+    if $RESTART; then
+      echo "       → restarting beast-instinct..."
+      _in_log="$(_restart_log beast-instinct)"
+      if INSTINCT_CONFIG="${INSTINCT_CONFIG:-}" INSTINCT_PORT="${INSTINCT_PORT:-8094}" \
+         INSTINCT_RUN_DIR="$REPO_DIR/.run" HYDRA_URL="${HYDRA_URL:-}" \
+           "$SCRIPT_DIR/instinct.sh" up >>"$_in_log" 2>&1; then
+        echo "       → restarted"
+      else
+        echo "       → restart FAILED"
+        _restart_tail "$_in_log"
+      fi
+    fi
+  fi
+fi
+
 # beast-gate (opt-in) — the inference edge remote clients arrive through.
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   if ! check "beast-gate" "http://${HEALTH_HOST:-127.0.0.1}:${EDGE_PORT:-8090}/gate/health" "beast-gate"; then
@@ -390,10 +493,14 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       # ./start.sh --status reports the gate down after a watchdog restart,
       # and the supervisor is left holding a stale pid.
       # Upstream where llama-server answers (BIND_HOST), as start.sh does:
-      # a specific-address bind refuses 127.0.0.1.
+      # a specific-address bind refuses 127.0.0.1. Under HYDRA=true that is
+      # hydra (conf.sh's CONSUMER_BASE, never an inherited export) — this line used to name
+      # INFERENCE_URL, so a watchdog-relaunched gate quietly bypassed hydra.
+      # The caller-token path rides OPENBEAST_HYDRA_CALLER_TOKEN_FILE, which
+      # conf.sh exports under HYDRA=true.
       _edge_log="$(_restart_log beast-gate)"
       OPENBEAST_REPO_DIR="$REPO_DIR" \
-        OPENBEAST_LLAMA_UPSTREAM="$INFERENCE_URL" \
+        OPENBEAST_LLAMA_UPSTREAM="${CONSUMER_BASE:-$INFERENCE_URL}" \
         python3 "$REPO_DIR/agents/edge.py" >>"$_edge_log" 2>&1 &
       mkdir -p "$REPO_DIR/.run"
       echo "$!" > "$REPO_DIR/.run/edge.pid"

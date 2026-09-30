@@ -271,6 +271,18 @@ source "$(dirname "$0")/lib/conf.sh"
 # shellcheck source=/dev/null
 source "$(dirname "$0")/lib/net.sh"   # ob_probe_host (conf.sh sources it too)
 
+# beast-hydra holds the fleet's node keys and trusts identity only through
+# the gate (docs/BEAST_HYDRA_PLAN.md §6.7, §10 decision 4): publishing a raw
+# inference port under HYDRA=true would put an un-gated door in front of it.
+# Refuse BEFORE anything is mounted. hydra's own :HYDRA_PORT is never
+# published by this script, gate or no gate.
+if [[ "${HYDRA:-false}" == "true" && "${EDGE_GATE:-false}" != "true" ]]; then
+  echo "Error: hydra holds node keys: enable EDGE_GATE=true to publish inference." >&2
+  echo "       (HYDRA=true refuses a raw :8443 → :8080 mount. Set EDGE_GATE=true in" >&2
+  echo "       openbeast.conf, ./stop.sh && ./start.sh -d, then re-run this script.)" >&2
+  exit 1
+fi
+
 # Where each mount must point: the address its service BINDS, dialled the
 # way a local client dials it (wildcard -> loopback, IPv6 bracketed, a
 # specific LAN/tailnet address as itself — a socket bound there refuses

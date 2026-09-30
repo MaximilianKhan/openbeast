@@ -398,5 +398,125 @@ class TestUpstreamAuth(unittest.TestCase):
         self.assertNotIn("OPENBEAST_BIND", run_line[0])
 
 
+class _Recorder:
+    """Stands in for the router's httpx.AsyncClient: records the classify
+    POST and every proxied request; answers classify with spawn=false."""
+
+    def __init__(self):
+        self.posts = []
+        self.sent = []
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        self.posts.append({"url": url, "json": json, "headers": dict(headers or {})})
+
+        class R:
+            def json(self_inner):
+                return {"choices": [{"message": {"content": '{"spawn": false, "task": "", "workdir": "."}'}}]}
+        return R()
+
+    def build_request(self, method, url, content=None, headers=None):
+        req = {"method": method, "url": url, "content": content, "headers": dict(headers or {})}
+        self.sent.append(req)
+        return req
+
+    async def send(self, req, stream=False):
+        class Resp:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            async def aiter_raw(self_inner):
+                yield b'{"ok": true}'
+
+            async def aclose(self_inner):
+                pass
+        return Resp()
+
+    async def aclose(self):
+        pass
+
+
+class TestHydraWiring(unittest.TestCase):
+    """beast-hydra (docs/BEAST_HYDRA_PLAN.md §6.7): ROUTER_CLASSIFY_MODEL and
+    the X-Hydra-Caller token — each inert when unconfigured (byte-identical)
+    and exactly as specified when configured."""
+
+    def setUp(self):
+        import tempfile
+        from hydra_caller import CallerToken
+        self._saved = (router.CLASSIFY_MODEL, router._HYDRA_CALLER)
+        self.tmp = tempfile.mkdtemp()
+        self.tok_path = os.path.join(self.tmp, "hydra-caller.token")
+        fd = os.open(self.tok_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, b"c" * 64 + b"\n")
+        os.close(fd)
+        self.CallerToken = CallerToken
+
+    def tearDown(self):
+        import shutil
+        router.CLASSIFY_MODEL, router._HYDRA_CALLER = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _classify(self):
+        rec = _Recorder()
+        asyncio.run(router._classify(rec, "spawn an agent to do x"))
+        return rec.posts[0]
+
+    def test_classify_has_no_model_by_default(self):
+        router.CLASSIFY_MODEL, router._HYDRA_CALLER = "", self.CallerToken("")
+        post = self._classify()
+        self.assertNotIn("model", post["json"])
+        self.assertEqual(post["headers"], dict(router.UPSTREAM_HEADERS))
+
+    def test_classify_carries_the_model_when_set(self):
+        router.CLASSIFY_MODEL = "classify"
+        self.assertEqual(self._classify()["json"]["model"], "classify")
+
+    def test_env_sets_the_classify_model(self):
+        import importlib
+        os.environ["ROUTER_CLASSIFY_MODEL"] = "classify"
+        try:
+            importlib.reload(router)
+            self.assertEqual(router.CLASSIFY_MODEL, "classify")
+        finally:
+            os.environ.pop("ROUTER_CLASSIFY_MODEL", None)
+            importlib.reload(router)
+        self.assertEqual(router.CLASSIFY_MODEL, "")
+
+    def test_caller_token_on_classify(self):
+        router._HYDRA_CALLER = self.CallerToken(self.tok_path)
+        self.assertEqual(self._classify()["headers"]["X-Hydra-Caller"], "c" * 64)
+
+    def _proxy(self, headers):
+        from starlette.testclient import TestClient
+        rec = _Recorder()
+        with TestClient(router.app) as c:
+            router.app.state.client = rec
+            r = c.post("/v1/models-probe", content=b'{"a":1}', headers=headers)
+        self.assertEqual(r.status_code, 200)
+        return rec.sent[0]
+
+    def test_caller_token_replaces_a_callers_on_proxied_requests(self):
+        router._HYDRA_CALLER = self.CallerToken(self.tok_path)
+        sent = self._proxy({"X-Hydra-Caller": "forged", "X-OpenWebUI-User-Role": "admin"})
+        vals = [v for k, v in sent["headers"].items() if k.lower() == "x-hydra-caller"]
+        self.assertEqual(vals, ["c" * 64])
+        self.assertEqual(sent["headers"].get("x-openwebui-user-role"), "admin")
+
+    def test_unconfigured_proxy_adds_nothing(self):
+        router._HYDRA_CALLER = self.CallerToken("")
+        sent = self._proxy({"X-Test": "1"})
+        self.assertFalse([k for k in sent["headers"] if k.lower() == "x-hydra-caller"])
+        self.assertEqual(sent["content"], b'{"a":1}')
+
+    def test_world_readable_token_is_never_sent(self):
+        """Fail closed: a token other local users can read proves nothing."""
+        os.chmod(self.tok_path, 0o644)
+        router._HYDRA_CALLER = self.CallerToken(self.tok_path)
+        self.assertNotIn("X-Hydra-Caller", self._classify()["headers"])
+        os.chmod(self.tok_path, 0o600)                  # negative control
+        router._HYDRA_CALLER = self.CallerToken(self.tok_path)
+        self.assertIn("X-Hydra-Caller", self._classify()["headers"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,3 +66,10 @@ extensions/*/compose.yaml.pre-bundle
 scratch/logs/
 scratch/**/*.pre-*
 llamacpp-clean/
+
+# beast-hydra routing config: names tailnet hosts (hydra.toml.example is tracked)
+/hydra.toml
+
+# instinct: shadow rows labelled from the ledger carry user text (0600);
+# a human moves chosen rows into a dataset split — never commit this file.
+evals/decisions/*/shadow-labelled.jsonl

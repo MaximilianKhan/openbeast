@@ -505,6 +505,145 @@ fi
 if [[ -n "$INFERENCE_SLOTS" ]]; then
   export OPENBEAST_INFERENCE_SLOTS="$INFERENCE_SLOTS"
 fi
+# ── beast-hydra + beast-instinct (docs/BEAST_HYDRA_PLAN.md §6.7,
+#    docs/BEAST_INSTINCT_PLAN.md §5.2/§5.9) ─────────────────────────────────
+# Both are OPT-IN. With HYDRA and INSTINCT off (the default) this block
+# changes nothing below it and exports nothing: every derived value and the
+# exported environment are byte-identical to a stack without it
+# (tests/test_hydra_instinct_wiring.sh sources both versions and diffs them).
+#   HYDRA               (env OPENBEAST_HYDRA)               default false
+#       start.sh runs agents/hydra.py on 127.0.0.1:HYDRA_PORT in front of the
+#       inference fleet, and every consumer (WebUI, router, beast-gate,
+#       spawned agents) talks to it instead of INFERENCE_URL.
+#   HYDRA_PORT          (env OPENBEAST_HYDRA_PORT)          default 8095
+#   HYDRA_CONFIG        (env OPENBEAST_HYDRA_CONFIG)        default $REPO_DIR/hydra.toml
+#       Relative paths resolve against the repo. Absent = the implicit
+#       single-node config (this rig's engine behind route `beast`).
+#   HYDRA_DEFAULT_MODEL (env OPENBEAST_HYDRA_DEFAULT_MODEL) default beast
+#       The id agents send (exported as OPENBEAST_INFERENCE_MODEL under hydra).
+#   HYDRA_READY_GRACE   (env OPENBEAST_HYDRA_READY_GRACE)   default 60
+#   INSTINCT            (env OPENBEAST_INSTINCT)            default false
+#   INSTINCT_PORT       (env OPENBEAST_INSTINCT_PORT)       default 8094
+#   INSTINCT_SCORER     (env OPENBEAST_INSTINCT_SCORER)     default false
+#   INSTINCT_CONFIG     (env OPENBEAST_INSTINCT_CONFIG)     default agents/instinct/instinct.toml
+#   ROUTER_INSTINCT     (env OPENBEAST_ROUTER_INSTINCT)     default off
+#       off|shadow|enforce: the agent router's CEILING for router.spawn_intent
+#       (the service still decides the effective mode). Never exported:
+#       start.sh hands it to the router process alone.
+# _ob_port <raw> <default> <KEY> — a 1..65535 integer, else the default (warned).
+_ob_port() {
+  local v="${1%%[[:space:]#]*}"
+  if [[ -z "$v" ]]; then printf '%s\n' "$2"; return 0; fi
+  if [[ "$v" =~ ^[0-9]{1,5}$ ]] && (( 10#$v >= 1 && 10#$v <= 65535 )); then
+    printf '%s\n' "$((10#$v))"
+  else
+    echo "WARNING: $3='$1' is not a port (1-65535) — using $2." >&2
+    printf '%s\n' "$2"
+  fi
+}
+# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
+# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
+_ob_repo_path() {
+  local p="${1%%[[:space:]]#*}"
+  p="${p%"${p##*[![:space:]]}"}"
+  [[ -n "$p" ]] || p="$2"
+  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
+  case "$p" in
+    "~")   p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *)  p="$REPO_DIR/$p" ;;
+  esac
+  printf '%s\n' "$p"
+}
+HYDRA="$(_ob_bool "${OPENBEAST_HYDRA:-$(_ob_conf_value HYDRA || true)}" false HYDRA)"
+HYDRA_PORT="$(_ob_port "${OPENBEAST_HYDRA_PORT:-$(_ob_conf_value HYDRA_PORT || true)}" 8095 HYDRA_PORT)"
+HYDRA_CONFIG="$(_ob_repo_path "${OPENBEAST_HYDRA_CONFIG:-$(_ob_conf_value HYDRA_CONFIG || true)}" hydra.toml)"
+HYDRA_DEFAULT_MODEL="${OPENBEAST_HYDRA_DEFAULT_MODEL:-$(_ob_conf_value HYDRA_DEFAULT_MODEL || true)}"
+HYDRA_DEFAULT_MODEL="${HYDRA_DEFAULT_MODEL%%[[:space:]#]*}"
+if [[ -z "$HYDRA_DEFAULT_MODEL" ]]; then
+  HYDRA_DEFAULT_MODEL=beast
+elif [[ ! "$HYDRA_DEFAULT_MODEL" =~ ^[a-z0-9][a-z0-9._:-]{0,63}$ ]]; then
+  # The rule agents/hydra_core.py ROUTE_ID_RE applies to a route id.
+  echo "WARNING: HYDRA_DEFAULT_MODEL='$HYDRA_DEFAULT_MODEL' is not a route id ([a-z0-9][a-z0-9._:-]*) — using beast." >&2
+  HYDRA_DEFAULT_MODEL=beast
+fi
+HYDRA_READY_GRACE="${OPENBEAST_HYDRA_READY_GRACE:-$(_ob_conf_value HYDRA_READY_GRACE || true)}"
+HYDRA_READY_GRACE="${HYDRA_READY_GRACE%%[[:space:]#]*}"
+# Base 10 explicitly: `08` would otherwise be an invalid octal in every
+# (( )) that reads it, and wait_hydra_routable would never time out.
+if [[ "$HYDRA_READY_GRACE" =~ ^[0-9]{1,6}$ ]]; then
+  HYDRA_READY_GRACE="$((10#$HYDRA_READY_GRACE))"
+else
+  HYDRA_READY_GRACE=60
+fi
+# CONSUMER_BASE: where the stack's own consumers (router, beast-gate) send
+# inference. INFERENCE_URL keeps meaning "the local engine" either way.
+CONSUMER_BASE="$INFERENCE_URL"
+HYDRA_URL=""
+HYDRA_CALLER_TOKEN_FILE=""
+if [[ "$HYDRA" == "true" ]]; then
+  HYDRA_URL="http://127.0.0.1:${HYDRA_PORT}"          # hydra binds loopback, always
+  CONSUMER_BASE="$HYDRA_URL"
+  HYDRA_CALLER_TOKEN_FILE="$REPO_DIR/.run/hydra-caller.token"
+  # The id agents send becomes the ROUTE (`beast`), for every backend, so
+  # agents/runner.py sends a routable name with no edit. The engine's own
+  # served id travels separately as OPENBEAST_HYDRA_UPSTREAM_MODEL. A child
+  # that re-sources this file inherits OPENBEAST_INFERENCE_MODEL=beast
+  # (start.sh -d forwards every OPENBEAST_* into the daemon), so recover the
+  # real id from there instead of taking the route for the served model.
+  if [[ "$INFERENCE_MODEL" == "$HYDRA_DEFAULT_MODEL" ]]; then
+    INFERENCE_MODEL="${OPENBEAST_HYDRA_UPSTREAM_MODEL:-}"
+  fi
+  if [[ -n "$INFERENCE_MODEL" ]]; then
+    export OPENBEAST_HYDRA_UPSTREAM_MODEL="$INFERENCE_MODEL"
+  else
+    unset OPENBEAST_HYDRA_UPSTREAM_MODEL
+  fi
+  export OPENBEAST_INFERENCE_MODEL="$HYDRA_DEFAULT_MODEL"
+  # hydra itself reads this (hydra_core.implicit_raw's default_route, and
+  # `hydra.py --check` holds an explicit hydra.toml to it) — without the
+  # export a conf-file HYDRA_DEFAULT_MODEL reached the agents but not hydra.
+  export OPENBEAST_HYDRA_DEFAULT_MODEL="$HYDRA_DEFAULT_MODEL"
+  export OPENBEAST_HYDRA=true
+  export OPENBEAST_HYDRA_PORT="$HYDRA_PORT"
+  export OPENBEAST_HYDRA_URL="$HYDRA_URL"
+  export OPENBEAST_HYDRA_CONFIG="$HYDRA_CONFIG"
+  export OPENBEAST_CONSUMER_BASE="$CONSUMER_BASE"
+  # The PATH of the 0600 token start.sh mints (never the token): hydra trusts
+  # X-OpenBeast-Device / X-OpenWebUI-User-* only next to X-Hydra-Caller, and
+  # the router and beast-gate (including a healthcheck --restart relaunch)
+  # read the token from here to vouch for what they forward.
+  export OPENBEAST_HYDRA_CALLER_TOKEN_FILE="$HYDRA_CALLER_TOKEN_FILE"
+else
+  # Derived exports only (never an input knob): a shell that once sourced
+  # this with HYDRA=true must not keep pointing consumers at a dead hydra.
+  unset OPENBEAST_CONSUMER_BASE OPENBEAST_HYDRA_URL OPENBEAST_HYDRA_CALLER_TOKEN_FILE
+fi
+INSTINCT="$(_ob_bool "${OPENBEAST_INSTINCT:-$(_ob_conf_value INSTINCT || true)}" false INSTINCT)"
+INSTINCT_PORT="$(_ob_port "${OPENBEAST_INSTINCT_PORT:-$(_ob_conf_value INSTINCT_PORT || true)}" 8094 INSTINCT_PORT)"
+INSTINCT_SCORER="$(_ob_bool "${OPENBEAST_INSTINCT_SCORER:-$(_ob_conf_value INSTINCT_SCORER || true)}" false INSTINCT_SCORER)"
+INSTINCT_CONFIG="$(_ob_repo_path "${OPENBEAST_INSTINCT_CONFIG:-$(_ob_conf_value INSTINCT_CONFIG || true)}" agents/instinct/instinct.toml)"
+_ob_ri="${OPENBEAST_ROUTER_INSTINCT:-$(_ob_conf_value ROUTER_INSTINCT || true)}"
+_ob_ri="${_ob_ri%%[[:space:]#]*}"
+_ob_ri="${_ob_ri//[\"\']/}"
+ROUTER_INSTINCT="$(printf '%s' "$_ob_ri" | tr 'A-Z' 'a-z')"
+case "$ROUTER_INSTINCT" in
+  "")                 ROUTER_INSTINCT=off ;;
+  off|shadow|enforce) ;;
+  *)
+    echo "WARNING: ROUTER_INSTINCT='$_ob_ri' is not off|shadow|enforce — using off." >&2
+    ROUTER_INSTINCT=off ;;
+esac
+unset _ob_ri
+if [[ "$INSTINCT" == "true" ]]; then
+  # For the dashboard's services.instinct probe (extensions inherit this
+  # environment). Only when on: a default rig exports nothing new.
+  export OPENBEAST_INSTINCT=true
+  export OPENBEAST_INSTINCT_PORT="$INSTINCT_PORT"
+fi
 # The tool server's web_search (agents/tools.py) defaults SEARXNG_URL to
 # localhost:8888, but SearXNG binds BIND_HOST — and a socket bound to a
 # specific LAN/tailnet address refuses loopback, so the MODEL's search tool
@@ -528,6 +667,10 @@ _ob_model_host="$OPENBEAST_PROBE_HOST"
 [[ "$_ob_model_host" == "127.0.0.1" ]] && _ob_model_host=localhost
 if [[ "$AGENT_ROUTER" == "true" ]]; then
   MODEL_URL="http://localhost:${ROUTER_PORT}/v1"
+elif [[ "$HYDRA" == "true" ]]; then
+  # hydra binds 127.0.0.1 whatever BIND_HOST is (like the router), so it is
+  # dialled there, in the router line's `localhost` spelling.
+  MODEL_URL="http://localhost:${HYDRA_PORT}/v1"
 elif [[ "$INFERENCE_URL_SET" == "true" ]]; then
   MODEL_URL="${INFERENCE_URL}/v1"
 else
@@ -607,7 +750,11 @@ AGENT_INFERENCE_URL="${OPENBEAST_AGENT_INFERENCE_URL:-$(_ob_conf_value AGENT_INF
 # explicit AGENT_INFERENCE_URL (a separate worker box) still wins. Setting it
 # is also what lets agents present LLAMA_API_KEY to that host
 # (agents/runner.py _key_endpoint_trusted).
-if [[ -z "$AGENT_INFERENCE_URL" && "$INFERENCE_URL_SET" == "true" ]]; then
+# Under HYDRA=true spawned agents go through hydra too (an explicit value
+# still wins), so an agent's calls are routed and audited like every other.
+if [[ -z "$AGENT_INFERENCE_URL" && "$HYDRA" == "true" ]]; then
+  AGENT_INFERENCE_URL="${HYDRA_URL}/v1"
+elif [[ -z "$AGENT_INFERENCE_URL" && "$INFERENCE_URL_SET" == "true" ]]; then
   AGENT_INFERENCE_URL="${INFERENCE_URL}/v1"
 fi
 if [[ -n "$AGENT_INFERENCE_URL" ]]; then

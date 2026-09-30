@@ -22,6 +22,10 @@ sys.path.insert(0, str(PYLIB))
 
 import conformance  # noqa: E402
 
+sys.path.insert(0, str(REPO / "tests" / "fakes"))
+# The response shapes are shared with beast-hydra's fake engine (one source).
+from fake_engine import chat_response, sse_frames, tool_call  # noqa: E402
+
 MARK = conformance.MARKER_TEXT
 
 
@@ -88,7 +92,7 @@ class Stub:
                           {"choices": [{"index": 0, "delta": {reason_key: "the sea…"}}]},
                           {"choices": [{"index": 0, "delta": {"content": "The sea is wide."}}]},
                           {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
-                data = b"".join(b"data: " + json.dumps(c).encode() + b"\n\n" for c in chunks) + b"data: [DONE]\n\n"
+                data = sse_frames(chunks)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(data)))
@@ -149,15 +153,8 @@ class Stub:
             msg["content"] = "<think>17*23</think>391"
         return 200, self._resp(msg, "stop")
 
-    @staticmethod
-    def _call(name, args, i):
-        return {"id": f"call_{i}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
-
-    @staticmethod
-    def _resp(msg, finish, ct=5):
-        return {"id": "x", "object": "chat.completion", "choices": [{"index": 0, "message": msg,
-                                                                      "finish_reason": finish}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": ct, "total_tokens": 10 + ct}}
+    _call = staticmethod(tool_call)
+    _resp = staticmethod(chat_response)
 
 
 @pytest.fixture

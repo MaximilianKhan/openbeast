@@ -692,3 +692,42 @@ def test_tailscale_status_lists_the_ntfy_row(ts_rig):
     rows = {ln.split()[0]: ln.split()[-1] for ln in p.stdout.splitlines()
             if ln.strip() and ln.split()[0].isdigit()}
     assert rows["8447"] == "published" and rows["8446"] == "-", p.stdout
+
+
+# --- beast-hydra: never a raw inference port under HYDRA=true --------------
+# docs/BEAST_HYDRA_PLAN.md §6.7 / §10 decision 4. hydra holds the fleet's node
+# keys and trusts identity only through beast-gate.
+
+def _mounts(rig, port):
+    return [a for k, a in _events(rig)
+            if k == "ts" and f"--https={port}" in a and "off" not in a]
+
+
+def test_tailscale_refuses_raw_inference_under_hydra(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="admin")
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_HYDRA": "true"})
+    assert p.returncode != 0
+    assert "hydra holds node keys: enable EDGE_GATE=true to publish inference" in p.stderr
+    # refused BEFORE anything was mounted — not even the WebUI
+    assert not _mounts(ts_rig, 8443) and not _mounted_443(ts_rig)
+
+
+def test_tailscale_publishes_the_gate_under_hydra(ts_rig):
+    """Negative control: with the gate on, :8443 goes to the gate (whose
+    upstream is hydra), never to hydra's own port or raw :8080."""
+    ts_rig.set_state(auth=True, admin_pw="admin")
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_HYDRA": "true",
+                                                    "OPENBEAST_EDGE_GATE": "true"})
+    assert p.returncode == 0, p.stderr
+    m = _mounts(ts_rig, 8443)
+    assert m and all(a[-1].endswith(":8090") for a in m), m
+    assert not [a for k, a in _events(ts_rig) if k == "ts" and any(":8095" in x for x in a)]
+
+
+def test_tailscale_without_hydra_still_publishes_raw(ts_rig):
+    """HYDRA off: the raw :8443 -> :8080 path is exactly what it was."""
+    ts_rig.set_state(auth=True, admin_pw="admin")
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    m = _mounts(ts_rig, 8443)
+    assert m and m[-1][-1].endswith(":8080"), m

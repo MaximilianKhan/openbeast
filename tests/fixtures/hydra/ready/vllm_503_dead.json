@@ -1,0 +1,9 @@
+{
+ "status": 503,
+ "body": "",
+ "expect": {
+  "llama": "down",
+  "vllm": "down",
+  "tensorfold": "down"
+ }
+}

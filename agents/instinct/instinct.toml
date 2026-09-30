@@ -1,0 +1,79 @@
+# beast-instinct service + engine bindings (docs/BEAST_INSTINCT.md, plan §5.2).
+#
+# Paths are relative to the repo root. Env overrides: INSTINCT_CONFIG (this
+# file), INSTINCT_PORT, INSTINCT_ENGINE_OVERRIDE=<binding> (every LLM engine in
+# every chain becomes that binding — the stub smoke test).
+#
+# Loader rules: an unknown key refuses THAT binding; a url equal to
+# INFERENCE_URL is refused unless allow_primary = true (and only async_only
+# decisions may use it); a url on the hydra / beast-gate / router ports is
+# refused (I7); placeholder pins ("<...>") are refused — an unpinned engine
+# cannot be part of a decision_hash.
+
+[service]
+host              = "127.0.0.1"          # non-loopback refused unless allow_remote = true
+port              = 8094
+key_file          = ".run/instinct.key"  # 0600, minted by `scripts/instinct.sh up`
+ledger_dir        = ".run/instinct"
+log_inputs        = "hash"               # hash | excerpt | full (per-decision override)
+retention_days    = 30
+max_concurrency   = 8                    # engine calls in flight, all decisions
+shadow_queue      = 32                   # shadow work beyond this is DROPPED (never blocks)
+decisions_dir     = "agents/instinct/decisions"
+records_dir       = "evals/decisions"    # calib/, gates/, linear/ under <records_dir>/<decision>/
+probe_interval_s  = 300
+require_committed_gate = true            # a gate record only counts once committed
+
+[engines.rules]
+adapter = "rules"
+
+[engines.linear]
+adapter = "linear"                        # model per decision: <records_dir>/<decision>/linear/<hash16>.json
+
+# The hermetic stub (scripts/instinct/stub_scorer.py) — plumbing only.
+[engines.stub]
+adapter      = "llamacpp_logprobs"
+url          = "http://127.0.0.1:18082"
+model        = "stub-lexicon"
+model_sha256 = "stub"
+n_probs      = 100
+timeout_ms   = 1000
+
+[engines.stub-sglang]
+adapter      = "sglang_score"
+url          = "http://127.0.0.1:18082"
+model        = "stub-lexicon"
+model_sha256 = "stub"
+exec         = "mis"
+
+# P1: CPU llama-server (scripts/serve-instinct-scorer.sh). Uses no VRAM.
+[engines.rig-cpu]
+adapter      = "llamacpp_logprobs"
+url          = "http://127.0.0.1:8082"
+key_file     = ".run/instinct-scorer.key"
+model        = "Qwen3-0.6B-Q8_0.gguf"
+model_sha256 = "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031"  # scripts/weights.registry
+n_probs      = 100
+timeout_ms   = 1500
+
+# P3: SGLang MIS scorer on the 5090 once the Sparks carry the primary. The pins
+# below are placeholders ON PURPOSE: the loader refuses this binding until a
+# real HF revision, image digest and commit are filled in (R2 in the plan).
+[engines.rig-sglang]
+adapter        = "sglang_score"
+url            = "http://127.0.0.1:30010"
+model          = "Qwen/Qwen3-0.6B"
+model_revision = "<hf commit sha>"
+image_digest   = "sha256:<digest>"
+sglang_commit  = "3b537e96e2e676583f72d0c86558570bc7723282"
+exec           = "mis"                    # declared; the SIS/MIS probe confirms it
+timeout_ms     = 200
+
+# P3 alternative (a Spark over the tailnet). Uncomment and pin when it exists.
+# [engines.spark-sglang]
+# adapter        = "sglang_score"
+# url            = "http://<spark1-tailnet-ip>:30010"
+# key_file       = ".run/instinct-spark.key"
+# model          = "Qwen/Qwen3-0.6B"
+# model_revision = "<hf commit sha>"
+# exec           = "mis"

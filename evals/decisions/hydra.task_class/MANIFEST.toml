@@ -1,0 +1,6 @@
+# hydra.task_class dataset manifest. STATUS: scaffold — no rows yet (P3).
+dataset_version = "2026-09-30.scaffold"
+status          = "scaffold"
+labelling_rules = "README.md"
+
+[files]

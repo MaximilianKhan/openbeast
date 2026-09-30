@@ -577,5 +577,62 @@ class TestEdgeAuthMode(unittest.TestCase):
         self.assertEqual(self._auth(False), "device")
 
 
+class TestServicesInstinct(unittest.TestCase):
+    """beast-instinct (INSTINCT=true): services.instinct is a plain bool,
+    added INSIDE `services`; the top-level contract key set is unchanged.
+    With instinct off the key is absent — a default rig's /api/slot is
+    byte-identical — and its port is never probed."""
+
+    _HEALTHY = {"8094/health": (200, '{"status":"ok"}'),
+                "/health": (200, "ok"), "/v1/models": (200, _MODELS),
+                "/props": (200, _PROPS), "/slots": (200, _SLOTS_CURRENT),
+                "/api/version": (200, "version x"), "8888/": (200, "")}
+    _TOP = {"beast_slot", "min_client", "healthy", "model", "slots",
+            "capacity", "services", "auth"}
+
+    def setUp(self):
+        self._saved = (dashboard._get, dashboard._API_KEY, dashboard._kv_unified,
+                       dashboard._BACKEND, dashboard._INFER,
+                       dashboard._INSTINCT, dashboard._INSTINCT_PORT)
+        dashboard._API_KEY = ""
+        dashboard._BACKEND, dashboard._INFER = "llama", "http://127.0.0.1:8080"
+
+    def tearDown(self):
+        (dashboard._get, dashboard._API_KEY, dashboard._kv_unified,
+         dashboard._BACKEND, dashboard._INFER,
+         dashboard._INSTINCT, dashboard._INSTINCT_PORT) = self._saved
+
+    def _with(self, on, responses):
+        dashboard._INSTINCT, dashboard._INSTINCT_PORT = on, 8094
+        seen = []
+        fake = _fake_get(responses)
+
+        def get(url, timeout=2, auth=False):
+            seen.append(url)
+            return fake(url, timeout, auth)
+        dashboard._get = get
+        dashboard._kv_unified = lambda: True
+        return dashboard.slot_status(), seen
+
+    def test_on_and_up_is_true(self):
+        out, _ = self._with(True, self._HEALTHY)
+        self.assertIs(out["services"]["instinct"], True)
+        self.assertEqual(set(out), self._TOP)
+
+    def test_on_and_down_is_false_not_missing(self):
+        resp = dict(self._HEALTHY)
+        resp["8094/health"] = (None, "")
+        out, _ = self._with(True, resp)
+        self.assertIs(out["services"]["instinct"], False)
+        self.assertEqual(set(out), self._TOP)
+
+    def test_off_is_absent_and_never_probed(self):
+        out, seen = self._with(False, self._HEALTHY)
+        self.assertNotIn("instinct", out["services"])
+        self.assertFalse([u for u in seen if ":8094/" in u])
+        self.assertEqual(set(out["services"]), {"model", "tools", "webui", "search"})
+        self.assertEqual(set(out), self._TOP)
+
+
 if __name__ == "__main__":
     unittest.main()

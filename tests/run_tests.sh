@@ -126,7 +126,10 @@ for _suite in \
   "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \
   "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
-  "test_opencode_sessions.sh|opencode session clearing"; do
+  "test_opencode_sessions.sh|opencode session clearing" \
+  "test_hydra_ready_parity.sh|beast-hydra readiness parity (hydra_core vs backend.sh)" \
+  "test_hydra_sim.sh|beast-hydra simulated fleet + scripts/hydra.sh" \
+  "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""
@@ -141,6 +144,26 @@ for _suite in \
   echo ""
   echo ""
 done
+
+# --- beast-hydra / beast-instinct Python suites ---
+# Hermetic: fake engines, a stub scorer and uvicorn/TestClient on ephemeral
+# loopback ports. Also part of the full pytest run below; listed on its own
+# so a failure here is named, as in CI.
+if python3 -c "import pytest" 2>/dev/null; then
+  echo "--- beast-hydra / beast-instinct tests (tests/test_hydra_*.py, test_instinct_*.py, test_router_instinct.py) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR"/tests/test_hydra_*.py "$REPO_DIR"/tests/test_instinct_*.py \
+       "$REPO_DIR/tests/test_router_instinct.py" -q; then
+    echo ""
+    echo "beast-hydra / beast-instinct tests: ALL PASSED"
+  else
+    echo ""
+    echo "beast-hydra / beast-instinct tests: SOME FAILED"
+    OVERALL=1
+  fi
+  echo ""
+  echo ""
+fi
 
 # --- Spark model onboarding (profiles, inspect, fetch, conformance) ---
 # Hermetic: a stub Hugging Face Hub and stub OpenAI servers on ephemeral
