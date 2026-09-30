@@ -2419,6 +2419,34 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
 
 
+def test_a_scope_oom_kills_only_the_offender(tmp_path, monkeypatch):
+    """B-chat-2: a user scope's default OOMPolicy=stop SIGTERMs the whole
+    scope after the kernel kills the biggest process — job.sh filed the OOM
+    as "stopped by operator" and one bash tool call over the cap killed a
+    whole agent. The scope must carry OOMPolicy=continue, and a systemd that
+    rejects it must still get a (capped) scope without it."""
+    bindir, log = _stub_systemd_run(tmp_path, 0)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(chat_server, "_in_service_cgroup", lambda: True)
+    monkeypatch.setenv("OPENBEAST_CHAT_JOB_MEM_PCT", "25")
+    prefix = chat_server._probe_scope()
+    assert "OOMPolicy=continue" in prefix
+    assert prefix.index("OOMPolicy=continue") < prefix.index("--")
+    assert "OOMPolicy=continue" in log.read_text(), "the PROBE must test it"
+
+    # an older systemd that refuses the property: fall back without it
+    stub = bindir / "systemd-run"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> {log}\n"
+        "[[ \"$*\" == *OOMPolicy* ]] && exit 1\n"
+        "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done; shift\n"
+        "exec \"$@\"\n")
+    prefix = chat_server._probe_scope()
+    assert prefix and "OOMPolicy=continue" not in prefix
+    assert [a for a in prefix if a.startswith("MemoryMax=")]
+
+
 def _stub_systemctl(bindir, tmp_path, rc):
     log = tmp_path / "systemctl.calls"
     stub = bindir / "systemctl"

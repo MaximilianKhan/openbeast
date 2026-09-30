@@ -775,7 +775,12 @@ also bounds them *together*: every scope goes into
 `openbeast-chat-jobs.slice`, which carries that cap as an aggregate (a
 runtime drop-in, set with `systemctl --user set-property --runtime`), so two
 runaway jobs cannot add up to the box. If the slice cannot be capped, the
-scopes stay where they were and each keeps its own cap. The pid,
+scopes stay where they were and each keeps its own cap. Each scope also
+carries `OOMPolicy=continue` (dropped on a systemd too old for it): an OOM
+kills only the process that blew the cap, so a job is recorded `failed`
+with `exit 137 (SIGKILL: out of memory?)` rather than as an operator stop,
+and one bash tool call over the cap fails that call instead of tearing
+down the whole agent. The pid,
 the ledger record and Stop are unchanged (a scope execs the command in place).
 **Under a foreground `./start.sh`, or where `systemd-run --user` cannot reach
 a user manager, there is no scope and no memory cap on the job**: it runs in

@@ -961,16 +961,32 @@ def _probe_scope() -> list[str]:
         # No swap escape hatch either: a job thrashing swap takes the box's
         # responsiveness with it just as surely as one that fills RAM.
         prefix += ["-p", f"MemoryMax={cap}", "-p", "MemorySwapMax=0"]
-    prefix.append("--")
+    # A user scope's default OOMPolicy is `stop`: when the kernel OOM-kills
+    # the biggest process, systemd SIGTERMs the rest of the scope — job.sh's
+    # supervisor took that as an operator Stop (the verdict read "stopped by
+    # operator"), and one bash tool call over the cap tore down a whole agent.
+    # `continue` confines the kill to the process that blew the cap, so the
+    # supervisor sees exit 137 and records it.
+    oom = ["-p", "OOMPolicy=continue"]
+
     # The probe carries the SAME properties the real spawn will, so a systemd
-    # too old for one of them falls back to a plain spawn instead of failing
+    # too old for one of them falls back — first without OOMPolicy (older
+    # scopes do not know it), then to a plain spawn — instead of failing
     # every job.
-    try:
-        ok = subprocess.run(prefix + ["true"], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=10).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        ok = False
+    def _probe(argv):
+        try:
+            return subprocess.run(argv + ["true"], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL,
+                                  timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    ok = False
+    for candidate in (prefix + oom + ["--"], prefix + ["--"]):
+        if _probe(candidate):
+            prefix, ok = candidate, True
+            break
     if not ok:
         # Once, and out loud: a user bus that is slow at boot silently
         # disabled this for the life of the process.
