@@ -87,8 +87,14 @@ class Chrome:
             wrapper += ["nice", "-n", "19"]
         if shutil.which("ionice"):
             wrapper += ["ionice", "-c3"]
+        # bash, not sh: the pipe ends are usually fds >= 10, and dash (Ubuntu's
+        # /bin/sh) rejects multi-digit fds in a redirection ("3<&10: Bad fd
+        # number"), so chrome never got its pipes and every browser test in
+        # CI timed out on Target.createTarget. Arch's /bin/sh is bash, which
+        # is why it only failed there.
+        shell = shutil.which("bash") or "sh"
         self.proc = subprocess.Popen(
-            wrapper + ["sh", "-c", script] + args,
+            wrapper + [shell, "-c", script] + args,
             pass_fds=(cmd_r, out_w), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         os.close(cmd_r)
