@@ -221,14 +221,19 @@ found rows in both arms where the model server had died mid-task, or the
 validator had run out of threads, recorded as model failures, and on clean rows
 it fell to p = 0.064. So we reran it clean, in a new harness era, every cell
 fresh: **26 rescues and 2 regressions across two replicates (net +24,
-p < 0.0001)**, and no regression on the champion model (23 → 28 of 30, not
-significant). The rerun wasn't spotless either. The first record said "0
-timeouts", but two passing rows had hit the wall timeout after their
-solutions were already on disk. Dropping the one that counts as a rescue
-still leaves net +23 (p < 0.0001). The same row had also made a prompt-token
-figure look like a saving that it isn't. The effect is measured on the units
-the pack was written against; a held-out check is the next step before it's
-on by default. We publish the misses alongside the hits on purpose.
+p < 0.0001)**, and the champion model improves too (23 → 28 of 30, not
+significant). The rerun wasn't spotless either: the first record said "0
+timeouts", but two passing rows had hit the wall timeout after their solutions
+were already on disk. Dropping the one that counts as a rescue still leaves net
++23 (p < 0.0001), and the same row had made a prompt-token figure look like a
+saving it isn't. The pack is now **on in production for agents on zig tasks**,
+on both models: an agent started from `start_agent`, the beast-chat console,
+`agent.sh` or `client.sh agent` whose task names zig gets the exact measured
+file, the same way the A/B delivered it (`LANG_PACK_CONTEXT=off` turns it off).
+It is **not** injected into Open WebUI chats or opencode, because that is not
+where it was measured. The effect is measured on the units the pack was written
+against; the held-out check is still pending. We publish the misses alongside
+the hits on purpose.
 
 ### beast-artifact 🎨 — a URL for anything the model renders
 

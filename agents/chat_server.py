@@ -151,6 +151,18 @@ def _log_dir() -> str:
     a separate process must never write into the repo's agents/logs/)."""
     return (os.environ.get("OPENBEAST_CHAT_LOG_DIR") or "").strip() or LOG_DIR
 
+
+
+def _pack_context_args(task: str, workdir: str, context: str) -> tuple[list[str], dict]:
+    """(runner context argv, info) — agents/lang/pack_context.context_args,
+    fail-soft: a pack problem is "no pack", never a failed start."""
+    try:
+        from lang import pack_context as _pc     # noqa: PLC0415
+        return _pc.context_args(task, workdir, context)
+    except Exception:                             # noqa: BLE001
+        return (["--context", context] if context else []), {}
+
+
 DEFAULT_PORT = 3003
 TERMINAL_STATES = frozenset(s for s in sessions.STATES if s != "running")
 
@@ -3177,8 +3189,15 @@ def create_app() -> FastAPI:
             if base_url:
                 cmd += ["--base-url", base_url]
             context = _body_str(body, "context")
-            if context:
-                cmd += ["--context", context]
+            # The Tier-3 awareness pack for a zig task — the same file, via
+            # the same --context-file channel, that the A/B measured
+            # (agents/lang/pack_context.py). A caller context is folded into
+            # the one file, because the runner's --context-file REPLACES
+            # --context. Content-addressed, so the dry run's argv and digest
+            # match the start's.
+            ctx_args, pack_info = _pack_context_args(task, workdir, context)
+            pack_label = pack_info.get("label") or ""
+            cmd += ctx_args
             # `--` ends the runner's options. The task is a nargs='*'
             # positional, so without it a task that starts with '-' was
             # parsed as a FLAG: '--help' printed usage and exited before
@@ -3193,6 +3212,7 @@ def create_app() -> FastAPI:
                                     detail="job sessions need a cmd")
             title = given_title or body.get("_preset_title") or shell_cmd[:80]
             model = ""
+            pack_label = ""
             max_iter = None
             # Equivalent in power to the stack's existing `bash` tool, and
             # gated by the same class of credential (an enrolled device key,
@@ -3207,7 +3227,8 @@ def create_app() -> FastAPI:
                 "transcript": transcript, "title": title,
                 "given_title": given_title, "model": model or None,
                 "max_iter": max_iter, "cmd": cmd, "argv": list(cmd),
-                "display": display, "meta_in": meta_in}
+                "display": display, "meta_in": meta_in,
+                "pack": pack_label or None}
 
     def plan_digest(plan: dict) -> str:
         """sha256 of what a plan RUNS, minus its per-start values: the argv
@@ -3240,6 +3261,7 @@ def create_app() -> FastAPI:
                             "argv": plan["argv"], "display": plan["display"],
                             "workdir": plan["workdir"], "title": plan["title"],
                             "plan_sha256": plan_digest(plan),
+                            "pack": plan.get("pack"),
                             "wrapper": ("scripts/job.sh __supervise"
                                         if plan["kind"] == "job" else None)}
                 confirmed = body.get("confirm_sha256")
@@ -3331,11 +3353,18 @@ def create_app() -> FastAPI:
                 # /stop answered "already finished" and never signalled,
                 # /send 409'd, and the SSE stream closed — for the whole
                 # duration of a 19-hour job. Review of v1.4.0.
+                # `pack` is provenance only this server may write: which
+                # awareness pack (lang@sha8) the agent was started with.
                 meta = {k: v for k, v in (meta_in or {}).items()
-                        if k not in RESERVED_META}
+                        if k not in RESERVED_META and k != "pack"}
                 meta.update({"started_by": principal.get("login"),
                              "device": principal.get("device"),
                              "command": display[:500]})
+                if plan.get("pack"):
+                    meta["pack"] = plan["pack"]
+                    print(f"[beast-lang] chat session {session_id}: agent gets "
+                          f"the awareness pack {plan['pack']}",
+                          file=sys.stderr, flush=True)
 
                 # E4 — ONE WRITER PER RECORD. The child registers this id
                 # itself: the runner (we passed --session-id) or the job
@@ -3383,6 +3412,7 @@ def create_app() -> FastAPI:
                     "kind": kind, "pid": proc.pid, "workdir": workdir,
                     "preset": _body_str(body, "preset") or None,
                     "command": display[:500],
+                    "pack": plan.get("pack"),
                     "command_sha256": hashlib.sha256(
                         display.encode("utf-8", "replace")).hexdigest(),
                 }

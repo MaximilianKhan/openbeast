@@ -143,8 +143,10 @@ lists them, and warns on cross-commit/engine pairs. Record:
 manifest `scratch/tier3_cells-fresh-20260929.txt`. Clause 2: last arm on this
 suite. **Still in-sample** (the pack was written against these units' failures;
 the held-out check in `LANG_AWARENESS_PLAN.md` §5 is unrun; read it with
-`tier3_verdict.py --heldout`, never pooled into R1). **Wiring the pack
-into production is Max's call** — the evidence now supports both models.
+`tier3_verdict.py --heldout`, never pooled into R1). **✅ WIRED INTO
+PRODUCTION 2026-09-30 on Max's go, both models:** agents on zig tasks get the
+exact measured pack as `--context-file` (`agents/lang/pack_context.py`,
+`LANG_PACK_CONTEXT=auto|off`); not Open WebUI chats or opencode.
 
 **Superseded — the 09-29 re-audit of the contaminated 09-17 run (kept for the record):**
 *Tier-3 verdict: UNRESOLVED. The 09-17 "SHIP" does not survive clean rows.*
@@ -189,7 +191,10 @@ In order, each on Max's go:
    the held-out zig set as `EXTRA_UNITS` if it is authored by then
    (+~1.5 h). Patching the 29 contaminated unit-runs into the 09-17 cells
    would mix eras, so don't.
-3. **Only if the rerun ships**: wire the pack into production, gated per
+3. ✅ **DONE 2026-09-30** — the rerun shipped and the pack is wired into
+   production for agents on zig tasks, both models (`LANG_PACK_CONTEXT`,
+   `agents/lang/pack_context.py`; no per-model gate — nothing measured says it
+   hurts either). Original plan: wire the pack into production, gated per
    model, via the `LANG_PACKS` allow list. Decide the champion from its own
    clean cells, not from the 09-17 guard. `start.sh` / `configure-webui.sh`
    wiring touches no era-hashed file; live-check it on `beastup`.
