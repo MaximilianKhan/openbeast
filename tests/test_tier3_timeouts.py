@@ -54,9 +54,13 @@ def _cell(tmp_path, name, passed, packs, overrides=None, commit="c0ffee", tokens
     return str(p)
 
 
+def _run_verdict(*args, cwd=ROOT):
+    return subprocess.run([sys.executable, str(SCRATCH / "tier3_verdict.py"), "--agent-logs", "none", *args],
+                          capture_output=True, text=True, cwd=cwd)
+
+
 def _verdict(*args):
-    r = subprocess.run([sys.executable, str(SCRATCH / "tier3_verdict.py"), "--agent-logs", "none", *args],
-                       capture_output=True, text=True, cwd=ROOT)
+    r = _run_verdict(*args)
     assert r.returncode == 0, r.stdout + r.stderr
     return r.stdout
 
@@ -142,3 +146,35 @@ def test_heldout_units_are_read_alone_not_pooled(tmp_path):
     suite = tmp_path / "zig-heldout.json"
     suite.write_text(json.dumps({"units": held}))
     assert "b=5 c=0" in _verdict("--p0", p0, "--p1", p1, "--heldout", str(suite))
+
+
+def test_heldout_missing_suite_file_refuses(tmp_path):
+    held = UNITS[15:]
+    p0 = _cell(tmp_path, "P0", set(), False)
+    p1 = _cell(tmp_path, "P1", set(UNITS[:3]) | set(held), True)
+    r = _run_verdict("--p0", p0, "--p1", p1, "--heldout", "evals/suites/no-such-heldout.json", cwd=tmp_path)
+    assert r.returncode == 2, r.stdout
+    assert "no such suite file" in r.stderr
+    assert "in-sample only" not in r.stdout and "VERDICT" not in r.stdout
+    # a suite json without a units list is refused too
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"tasks": held}))
+    r2 = _run_verdict("--p0", p0, "--p1", p1, "--heldout", str(bad))
+    assert r2.returncode == 2 and "no 'units' list" in r2.stderr
+    # negative control: the same suite, present, runs
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"units": held}))
+    assert _run_verdict("--p0", p0, "--p1", p1, "--heldout", str(good)).returncode == 0
+
+
+def test_heldout_ids_matching_no_rows_refuse(tmp_path):
+    p0 = _cell(tmp_path, "P0", set(), False)
+    p1 = _cell(tmp_path, "P1", set(UNITS[:3]), True)
+    r = _run_verdict("--p0", p0, "--p1", p1, "--heldout", "999_nope_f,998_nope_f")
+    assert r.returncode == 2, r.stdout
+    assert "none of which appear" in r.stderr and "VERDICT" not in r.stdout
+    # partial match still runs, warns, and the banner counts only real units
+    r2 = _run_verdict("--p0", p0, "--p1", p1, "--heldout", f"{UNITS[19]},999_nope_f")
+    assert r2.returncode == 0
+    assert "999_nope_f" in r2.stderr
+    assert "HELD-OUT    1 unit(s) read separately below (1 named but absent)" in r2.stdout

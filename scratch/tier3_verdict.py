@@ -235,8 +235,22 @@ def main() -> int:
     heldout = set()
     if a.heldout:
         hp = Path(a.heldout)
-        if a.heldout.endswith(".json") and hp.exists():
-            heldout = set(json.loads(hp.read_text()).get("units") or [])
+        if a.heldout.endswith(".json"):
+            # never fall through to the comma split: a missing suite file would
+            # become one bogus "unit id", R1 would stay fully pooled under a
+            # banner saying it is in-sample only, and exit 0
+            if not hp.is_file():
+                print(f"--heldout {a.heldout!r}: no such suite file (cwd {Path.cwd()})", file=sys.stderr)
+                return 2
+            try:
+                units = json.loads(hp.read_text()).get("units")
+            except (ValueError, AttributeError) as e:
+                print(f"--heldout {a.heldout!r}: not a suite json object ({e})", file=sys.stderr)
+                return 2
+            if not isinstance(units, list):
+                print(f"--heldout {a.heldout!r} has no 'units' list", file=sys.stderr)
+                return 2
+            heldout = {str(u) for u in units}
         else:
             heldout = {u.strip() for u in a.heldout.split(",") if u.strip()}
         if not heldout:
@@ -300,13 +314,24 @@ def main() -> int:
             G1 = drop_contaminated(G1, "C1", keep)
     H0 = H1 = None
     if heldout:
+        present = set().union(*(c["rows"] for c in P0 + P1))
+        if not heldout & present:
+            print(f"--heldout names {len(heldout)} unit(s), none of which appear in any P cell "
+                  f"({', '.join(sorted(heldout)[:5])}{' …' if len(heldout) > 5 else ''}) — "
+                  "refusing to print an in-sample-only verdict that excluded nothing", file=sys.stderr)
+            return 2
+        absent = sorted(heldout - present)
+        if absent:
+            print(f"WARNING: --heldout units with no rows in any P cell: {', '.join(absent)}", file=sys.stderr)
         H0 = [restrict(c, heldout) for c in P0]
         H1 = [restrict(c, heldout) for c in P1]
         P0 = [restrict(c, heldout, exclude=True) for c in P0]
         P1 = [restrict(c, heldout, exclude=True) for c in P1]
         G0 = restrict(G0, heldout, exclude=True) if G0 is not None else None
         G1 = restrict(G1, heldout, exclude=True) if G1 is not None else None
-        print(f"HELD-OUT    {len(heldout)} unit(s) read separately below; R1-R4 are in-sample only")
+        print(f"HELD-OUT    {len(heldout & present)} unit(s) read separately below"
+              + (f" ({len(absent)} named but absent)" if absent else "")
+              + "; R1-R4 are in-sample only")
 
     # R1 primary — pooled replicates
     B = C = 0
