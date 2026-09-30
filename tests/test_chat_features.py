@@ -580,10 +580,88 @@ def test_scrub_catches_quoted_hyphenated_flag_and_scheme_forms(leak, secret):
 
 def test_scrub_leaves_ordinary_text_alone():
     for text in ("--max-iter 200 --model qwen", "512 tokens per second",
-                 '{"title": "nightly build"}', "keys are fine: yes"):
+                 '{"title": "nightly build"}', "keys are fine: yes",
+                 "see https://example.com/a:b@c no creds", "task-runner ok",
+                 "pip install scikit-learn", "desk-lamp-controller: on"):
         assert chat_server.scrub_secrets(text) == text
 
 
+@pytest.fixture()
+def fresh_literals(monkeypatch, tmp_path):
+    """No cached rig literals, an empty run dir, and the cache reset after."""
+    for var in ("OPENBEAST_RUN_DIR", "OPENBEAST_CHAT_RUN_DIR"):
+        monkeypatch.setenv(var, str(tmp_path / "run"))
+    (tmp_path / "run").mkdir()
+    monkeypatch.setitem(chat_server._LITERALS_CACHE, "at", -1e9)
+    yield tmp_path / "run"
+    chat_server._LITERALS_CACHE["at"] = -1e9
+
+
+@pytest.mark.parametrize("leak, secret", [
+    ("origin https://max:ghp_OTHERTOKEN1234567890abcd@github.com/x.git (fetch)",
+     "ghp_OTHERTOKEN1234567890abcd"),
+    ("DATABASE postgres://user:hunter2pass@db/x", "hunter2pass"),
+    ("curl -u admin:hunter2secret https://x", "hunter2secret"),
+    ("token was sk-proj-abcdefghijklmnopqrstuvwxyz0123 ok",
+     "sk-proj-abcdefghijklmnopqrstuvwxyz0123"),
+    ("hf_AbCdEfGhIjKlMnOpQrStUvWx is the key", "hf_AbCdEfGhIjKlMnOpQrStUvWx"),
+    ("aws AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n"
+     "QUJDREVGR0hJSktMTU5PUA==\n-----END OPENSSH PRIVATE KEY-----\n",
+     "b3BlbnNzaC1rZXktdjEAAAAA"),
+])
+def test_scrub_catches_url_creds_pem_and_prefixed_tokens(leak, secret,
+                                                          fresh_literals):
+    """B-chat-3: shapes the export used to publish verbatim."""
+    out = chat_server.scrub_secrets(leak)
+    assert secret not in out and "redacted" in out
+
+
+def test_scrub_redacts_the_rig_tokens_and_the_notify_topic(fresh_literals,
+                                                           monkeypatch,
+                                                           tmp_path):
+    """B-chat-3: the locality token, the raw-origin key and the ntfy topic
+    have no secret-shaped NAME next to them — they are redacted by value."""
+    run = fresh_literals
+    (run / "chat-local.token").write_text("4d096154684c44ee81d6fe98f2352a78\n")
+    (run / "artifact-raw.key").write_text("rawkey-0123456789abcdef\n")
+    tok = tmp_path / "ntfy.token"
+    tok.write_text("tk_ntfyTOKENvalue99\n")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL",
+                       "http://127.0.0.1:38715/mytopic-SECRET-TOPIC")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_TOKEN_FILE", str(tok))
+    text = ("localtoken 4d096154684c44ee81d6fe98f2352a78\n"
+            "raw rawkey-0123456789abcdef\n"
+            "topic http://127.0.0.1:38715/mytopic-SECRET-TOPIC\n"
+            "ntfy subscribe mytopic-SECRET-TOPIC\n"
+            "ntfy tk_ntfyTOKENvalue99\n")
+    out = chat_server.scrub_secrets(text)
+    for secret in ("4d096154684c44ee81d6fe98f2352a78", "rawkey-0123456789abcdef",
+                   "mytopic-SECRET-TOPIC", "tk_ntfyTOKENvalue99"):
+        assert secret not in out
+    assert out.count("[redacted") == 5
+
+
+@pytest.mark.parametrize("blob", [
+    "-" * 40000,
+    "a-" * 20000,
+    "Ab_9-" * 40000,                                     # 200 KB base64url
+    "x" * 100000 + "=" + "y" * 100000,
+    "--" + "a-" * 20000 + " value",
+])
+def test_scrub_is_linear_on_hostile_runs(blob, fresh_literals):
+    """B-chat-1: these each took 30+ s (quadratic) and froze the event loop
+    long enough for the healthcheck to restart the server mid-export."""
+    started = time.monotonic()
+    chat_server.scrub_secrets(blob)
+    assert time.monotonic() - started < 1.5
+
+
+def test_scrub_still_redacts_after_a_benign_assignment(fresh_literals):
+    """The name/value pass is one left-to-right scan: a value it skips must
+    not hide a secret assignment inside it."""
+    out = chat_server.scrub_secrets("x=API_KEY=sk_abcdef123 y=1")
+    assert "sk_abcdef123" not in out and "y=1" in out
 def _free_port():
     import socket
     s = socket.socket()

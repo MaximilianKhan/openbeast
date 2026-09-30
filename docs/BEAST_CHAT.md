@@ -543,7 +543,12 @@ as a beast-artifact page: turns, tool calls and results (already clipped to
 secret list — secret-named env values; `NAME=` / `NAME:` assignments whose
 name is secret-shaped, quoted JSON keys and hyphenated headers included
 (`X-OpenBeast-Device-Key`, `X-OpenBeast-Local`); `--api-key` / `--token` /
-`--password` flags; `Authorization:` credentials of any scheme. The page's
+`--password` flags; `Authorization:` credentials of any scheme; a URL's
+`user:password@`, `curl -u`, PEM private-key blocks and well-known token
+prefixes (`ghp_`, `github_pat_`, `hf_`, `sk-`, `xox?-`, `glpat-`, `AKIA`); and,
+by value, the rig's own unnamed secrets — the notify topic URL and token and
+the `.run/` locality tokens and raw-origin key. Every pattern is linear, so a
+huge log line cannot stall the server while it exports. The page's
 title and description are scrubbed too. Redaction is pattern-based and
 errs toward over-redacting (`prompt_tokens: 512` shows as `[redacted]`); read
 the page before you widen its visibility.

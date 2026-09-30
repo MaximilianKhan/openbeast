@@ -1833,47 +1833,162 @@ def chat_public_url(port: int) -> str:
 EXPORT_MAX_BYTES = 8 * 1024 * 1024
 _EXPORT_TEXT_MAX = 20000
 
-_SECRET_ASSIGN_RE = None
+import re as _re
+
+# Every pattern below is LINEAR in its input (review B-chat-1). The old ones
+# opened with an unbounded `[A-Z0-9_-]*` at every word boundary, so one long
+# base64url blob or run of dashes cost O(n^2) — tens of seconds holding the
+# GIL, the event loop and every SSE stream with it, long enough for the
+# healthcheck to restart the server mid-export. A NAME may now only START
+# where a name-run starts (the lookbehind), so each run is scanned once, and
+# whether it is secret-shaped is decided on the matched name afterwards.
+_NAME_SEP_RE = _re.compile(
+    r"([\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\1(\s*[=:]\s*)")
+_FLAG_SEP_RE = _re.compile(r"(?<![A-Za-z0-9-])(--[A-Za-z0-9-]+)(=|\s+)")
+_SECRET_NAME_RE = _re.compile(
+    r"(?i)API[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|DEVICE[_-]KEY"
+    r"|OPENBEAST[_-]LOCAL")
+_SECRET_FLAG_RE = _re.compile(r"(?i)api-?key|token|password|passwd|secret")
+_ASSIGN_VALUE_RE = _re.compile(r"\"[^\"]*\"|'[^']*'|[^\s\"',;}]+")
+_FLAG_VALUE_RE = _re.compile(r"\"[^\"]*\"|'[^']*'|[^\s\"']+")
+# user:password@ in any URL (remotes, postgres://, redis://, proxies).
+_URL_CRED_RE = _re.compile(
+    r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,20}://[^\s/@:]{1,256}:)"
+    r"[^\s/@]{1,256}@")
+# curl -u user:password / --user user:password
+_CURL_USER_RE = _re.compile(
+    r"(?<!\S)(-u|--user)(\s+|=)([^\s:]{1,256}):[^\s]{1,256}")
+_PEM_RE = _re.compile(
+    r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"
+    r"(?:(?!-----END)[\s\S]){0,20000}"
+    r"(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----)?")
+# Well-known credential prefixes, wherever they stand on their own.
+_PREFIXED_TOKEN_RE = _re.compile(
+    r"(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|hf_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})(?![A-Za-z0-9_-])")
+
+#: Files in .run/ whose CONTENT is a rig credential (the locality tokens,
+#: the raw-origin key) — their values are redacted wherever they appear.
+_RUN_SECRET_SUFFIXES = (".token", ".key")
+_LITERALS_CACHE = {"at": -1e9, "value": ()}
+
+
+def _redact_named(text: str, sep_re, name_ok, value_re, name_group: int) -> str:
+    """Replace the VALUE after every `name<sep>` whose name is secret-shaped.
+    One left-to-right pass: a value that was redacted is never rescanned."""
+    out, cursor = [], 0
+    for m in sep_re.finditer(text):
+        if m.start() < cursor:
+            continue
+        if not name_ok.search(m.group(name_group)):
+            continue
+        v = value_re.match(text, m.end())
+        if not v:
+            continue
+        out.append(text[cursor:m.end()])
+        out.append("[redacted]")
+        cursor = v.end()
+    if not out:
+        return text
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _rig_literals() -> tuple:
+    """(label, value) for rig secrets that have no secret-shaped NAME in the
+    text: the notify topic URL/token (CHAT_NOTIFY_* is not KEY/TOKEN-named)
+    and the .run/ locality tokens and raw-origin key. Cached for 30 s."""
+    now = time.monotonic()
+    if now - _LITERALS_CACHE["at"] < 30:
+        return _LITERALS_CACHE["value"]
+    found = []
+    for name, value in os.environ.items():
+        if not (is_notify_env_name(name) and value and value.strip()):
+            continue
+        value = value.strip()
+        up = name.upper()
+        if up.endswith("NOTIFY_TOKEN_FILE"):
+            try:
+                with open(os.path.expanduser(value)) as f:
+                    found.append(("notify-token", f.read(4096).strip()))
+            except OSError:
+                pass
+            continue
+        found.append((name, value))
+        if up.endswith("NOTIFY_URL") and "//" in value:
+            path = value.split("//", 1)[1].split("?", 1)[0].rstrip("/")
+            if "/" in path:
+                found.append(("notify-topic", path.rsplit("/", 1)[-1]))
+    runs = []
+    for var in ("OPENBEAST_CHAT_RUN_DIR", "OPENBEAST_RUN_DIR"):
+        run = (os.environ.get(var) or "").strip() or RUN_DIR
+        if run not in runs:
+            runs.append(run)
+    entries = []
+    for run in runs:
+        try:
+            entries += [os.path.join(run, e) for e in sorted(os.listdir(run))]
+        except OSError:
+            pass
+    for path in entries:
+        entry = os.path.basename(path)
+        if not entry.endswith(_RUN_SECRET_SUFFIXES):
+            continue
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) > 4096:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                found.append((entry, f.read().strip()))
+        except OSError:
+            pass
+    # Longest first, so a URL is redacted whole before its topic is.
+    value = tuple(sorted(((label, v) for label, v in found if len(v) >= 6),
+                         key=lambda lv: -len(lv[1])))
+    _LITERALS_CACHE.update(at=now, value=value)
+    return value
 
 
 def scrub_secrets(text: str) -> str:
     """Redact what the bash tool would never have shown the model.
 
-    Three passes: (1) the VALUE of every secret-named variable in this
-    server's environment, wherever it appears — the names come from the bash
-    tool's own list (is_secret_env_name mirrors tools._scrubbed_env);
-    (2) any NAME=value / NAME: value whose name is secret-shaped, whatever
-    process printed it (quoted JSON keys and hyphenated headers too); (3)
-    --api-key/--token/--password flags and Authorization credentials.
+    Passes: (1) the VALUE of every secret-named variable in this server's
+    environment, wherever it appears — the names come from the bash tool's
+    own list (is_secret_env_name mirrors tools._scrubbed_env) — plus the
+    rig's own unnamed secrets (notify topic, .run/ tokens and key); (2) any
+    NAME=value / NAME: value whose name is secret-shaped, whatever process
+    printed it (quoted JSON keys and hyphenated headers too); (3)
+    --api-key/--token/--password flags and Authorization credentials;
+    (4) URL user:password@, curl -u, PEM private keys and well-known token
+    prefixes (ghp_, github_pat_, hf_, sk-, xox?-, glpat-, AKIA).
+    Every pattern is linear in the input — see _NAME_SEP_RE.
     """
-    import re
-    global _SECRET_ASSIGN_RE
     if not text:
         return text
     for name, value in os.environ.items():
         if is_secret_env_name(name) and value and len(value) >= 6:
             text = text.replace(value, f"[redacted:{name}]")
-    if _SECRET_ASSIGN_RE is None:
-        # The NAME may be quoted (a JSON config a tool printed) and may use
-        # hyphens (an HTTP header) — including this stack's own two
-        # credentials, X-OpenBeast-Device-Key and X-OpenBeast-Local.
-        _SECRET_ASSIGN_RE = re.compile(
-            r"(?i)([\"']?)\b([A-Z0-9_-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD"
-            r"|TOKEN|DEVICE[_-]KEY|OPENBEAST[_-]LOCAL)[A-Z0-9_-]*)\1"
-            r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s\"',;}]+)")
-    text = _SECRET_ASSIGN_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}[redacted]",
-        text)
+    for label, value in _rig_literals():
+        if value in text:
+            text = text.replace(value, f"[redacted:{label}]")
+    text = _PEM_RE.sub("[redacted private key]", text)
+    # The NAME may be quoted (a JSON config a tool printed) and may use
+    # hyphens (an HTTP header) — including this stack's own two
+    # credentials, X-OpenBeast-Device-Key and X-OpenBeast-Local.
+    text = _redact_named(text, _NAME_SEP_RE, _SECRET_NAME_RE,
+                         _ASSIGN_VALUE_RE, 2)
     # --api-key VALUE / --token=VALUE / --password VALUE on a command line.
-    text = re.sub(
-        r"(?i)(--[A-Za-z0-9-]*(?:api-?key|token|password|passwd|secret)"
-        r"[A-Za-z0-9-]*)(=|\s+)(\"[^\"]*\"|'[^']*'|[^\s\"']+)",
-        r"\1\2[redacted]", text)
+    text = _redact_named(text, _FLAG_SEP_RE, _SECRET_FLAG_RE,
+                         _FLAG_VALUE_RE, 1)
+    text = _URL_CRED_RE.sub(r"\1[redacted]@", text)
+    text = _CURL_USER_RE.sub(r"\1\2\3:[redacted]", text)
+    text = _PREFIXED_TOKEN_RE.sub("[redacted]", text)
     # Authorization: <any scheme> <credential> — token, Basic, Bearer…
-    text = re.sub(r"(?i)\b(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*)\s+"
-                  r"[^\s\"',;]{4,}", r"\1 [redacted]", text)
-    text = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]",
-                  text)
+    text = _re.sub(r"(?i)\b(authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*)\s+"
+                   r"[^\s\"',;]{4,}", r"\1 [redacted]", text)
+    text = _re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]",
+                   text)
     return text
 
 
