@@ -30,10 +30,23 @@ The 09-17 cells read SHIP (+13, p=0.019) only with those rows counted; see
 scratch/tier3-verdict-reaudit-2026-09-29.txt. --raw reproduces the
 as-registered read; --keep CELL:UNIT keeps one flagged row (sensitivity).
 
+WALL TIMEOUTS (added 2026-09-30, review A-campaign-1): a row that hit the
+harness wall timeout (exit -1) keeps its pass/fail — a timed-out PASS
+validated the files the agent left behind — but run_eval records its tokens
+as 0 and its iterations as None, so it is excluded from EVERY token and
+iteration statistic (a recorded 0 used to enter R2 as a real value). Every
+timeout is listed under VALIDITY, and R1/R3 print a sensitivity read with
+the timed-out units dropped. The R2 prompt figure is the all-unit TOTAL
+prompt tokens per unit (dominated by iteration count), not the pack's
+per-request overhead. PROVENANCE warns when the repo commit or the engine
+build differs across cells, or the weights differ within P*/C* cells.
+--heldout UNITS reads held-out units on their own (one-sided sign test,
+LANG_AWARENESS_PLAN §5) and takes them out of R1-R4 instead of pooling.
+
 Usage:
   python3 scratch/tier3_verdict.py --manifest scratch/tier3_cells-<stamp>.txt
   python3 scratch/tier3_verdict.py --p0 A.json B.json --p1 C.json D.json [--c0 X.json --c1 Y.json]
-  [--agent-logs DIR|none] [--raw] [--keep P0a:62_crt_f ...]
+  [--agent-logs DIR|none] [--raw] [--keep P0a:62_crt_f ...] [--heldout U1,U2|suite.json]
 """
 from __future__ import annotations
 
@@ -56,16 +69,76 @@ def load_cell(path: str, language: str = "zig", log_idx=None) -> dict:
     for t in r.get("tasks", []):
         if language and t.get("language") not in (language, None):
             continue
+        # A wall timeout (exit -1) or a zero-token row carries tokens 0 /
+        # iterations None because run_eval never measured them — not because
+        # the agent spent nothing. Blank them so no token statistic reads a
+        # recorded 0 as a real value (2026-09-30: one such row moved the
+        # published prompt Δ from -2163 to -5189).
+        unrec = row_validity.tokens_unrecorded(t)
         rows[t["id"]] = {
             "passed": bool(t.get("passed")),
-            "tokens": t.get("tokens_completion"),
-            "prompt": t.get("tokens_prompt"),
-            "iters": t.get("iterations"),
+            "tokens": None if unrec else t.get("tokens_completion"),
+            "prompt": None if unrec else t.get("tokens_prompt"),
+            "iters": None if unrec else t.get("iterations"),
             "cached": bool(t.get("from_cache")),
+            "unrecorded": unrec,
         }
     bad = row_validity.contaminated_ids(r, log_idx)
+    rt, eng = r.get("runtime") or {}, r.get("inference_engine") or {}
+    weights = ((r.get("harness") or {}).get("env") or {}).get("weights") or {}
+    prov = {"commit": rt.get("openbeast_commit"), "dirty": rt.get("openbeast_dirty"),
+            "engine": (f"{eng.get('build')}/{eng.get('commit')}" if eng else None),
+            "weights": weights.get("sha256")}
     return {"path": path, "model": r.get("model"), "harness": r.get("harness", {}), "rows": rows,
-            "contaminated": {k: v for k, v in bad.items() if k in rows}}
+            "contaminated": {k: v for k, v in bad.items() if k in rows},
+            "timeouts": {k: v for k, v in row_validity.wall_timeouts(r).items() if k in rows},
+            "prov": prov}
+
+
+def drop_timeouts(cell: dict) -> dict:
+    """The cell without its wall-timeout rows (the sensitivity read)."""
+    return {**cell, "rows": {u: v for u, v in cell["rows"].items() if u not in cell["timeouts"]}}
+
+
+def restrict(cell: dict, units, exclude: bool = False) -> dict:
+    """The cell keeping only (or, with exclude, dropping) the given units."""
+    units = set(units)
+    return {**cell, "rows": {u: v for u, v in cell["rows"].items() if (u in units) != exclude}}
+
+
+def sign_test_greater(b: int, c: int) -> float:
+    """Exact one-sided binomial p for b > c on the discordant pairs."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    return sum(math.comb(n, i) for i in range(b, n + 1)) / 2 ** n
+
+
+def provenance_warnings(named_cells) -> list[str]:
+    """Pairing across a code, engine or weights change is not a paired
+    comparison. The repo commit and the llama.cpp build must match across
+    every cell; the weights must match within the treated (P*) and within the
+    champion (C*) cells. Unknown (absent) fields are not compared."""
+    out = []
+
+    def differs(field, cells):
+        vals = {n: c["prov"][field] for n, c in cells if c["prov"][field] is not None}
+        return vals if len(set(vals.values())) > 1 else None
+
+    for field in ("commit", "engine"):
+        v = differs(field, named_cells)
+        if v:
+            out.append(f"{field} differs across cells: " + ", ".join(f"{n}={str(x)[:12]}" for n, x in v.items()))
+    for group in ("P", "C"):
+        v = differs("weights", [(n, c) for n, c in named_cells if n.startswith(group)])
+        if v:
+            out.append(f"weights differ within {group}* cells: "
+                       + ", ".join(f"{n}={str(x)[:12]}" for n, x in v.items()))
+    dirty = [n for n, c in named_cells if c["prov"]["dirty"]]
+    if dirty:
+        out.append(f"dirty repo tree at run time in {', '.join(dirty)} "
+                   "(the uncommitted diff is not recoverable from the results)")
+    return out
 
 
 def drop_contaminated(cell: dict, name: str, keep: set) -> dict:
@@ -109,11 +182,25 @@ def paired(p0: dict, p1: dict) -> dict:
             "d_tok_all": d_tok_all, "d_prompt": d_prompt,
             "pass0": sum(p0["rows"][i]["passed"] for i in ids),
             "pass1": sum(p1["rows"][i]["passed"] for i in ids),
-            "missing_iters": sum(1 for i in both if p0["rows"][i]["iters"] is None or p1["rows"][i]["iters"] is None)}
+            "missing_iters": sum(1 for i in both if p0["rows"][i]["iters"] is None or p1["rows"][i]["iters"] is None),
+            "unrecorded": sum(1 for i in ids if p0["rows"][i].get("unrecorded") or p1["rows"][i].get("unrecorded"))}
 
 
 def mean(xs):
     return sum(xs) / len(xs) if xs else float("nan")
+
+
+def fmt_p(p: float) -> str:
+    """4 decimals, but never round a real p to 0.0000."""
+    return f"{p:.4f}" if p >= 1e-4 else f"{p:.2g}"
+
+
+def median(xs):
+    if not xs:
+        return float("nan")
+    s = sorted(xs)
+    m = len(s) // 2
+    return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2
 
 
 def parse_manifest(path: str) -> dict:
@@ -140,7 +227,21 @@ def main() -> int:
                     help="count every row, contaminated or not (the as-registered read)")
     ap.add_argument("--keep", action="append", default=[], metavar="CELL:UNIT",
                     help="keep one flagged row anyway (sensitivity), e.g. P0a:62_crt_f")
+    ap.add_argument("--heldout", metavar="UNITS|SUITE.json",
+                    help="held-out units (comma list, or a suite json with 'units'): taken OUT of "
+                         "R1-R4 and read on their own with the pre-registered one-sided sign test "
+                         "(LANG_AWARENESS_PLAN §5), never pooled with the in-sample units")
     a = ap.parse_args()
+    heldout = set()
+    if a.heldout:
+        hp = Path(a.heldout)
+        if a.heldout.endswith(".json") and hp.exists():
+            heldout = set(json.loads(hp.read_text()).get("units") or [])
+        else:
+            heldout = {u.strip() for u in a.heldout.split(",") if u.strip()}
+        if not heldout:
+            print(f"--heldout {a.heldout!r} names no units", file=sys.stderr)
+            return 2
     p0, p1, c0, c1 = list(a.p0), list(a.p1), a.c0, a.c1
     if a.manifest:
         cells = parse_manifest(a.manifest)
@@ -176,51 +277,88 @@ def main() -> int:
         if cell["contaminated"]:
             print(f"    {nm}: " + "; ".join(f"{u} [{', '.join(w)}]" + (" KEPT" if f"{nm}:{u}" in keep else "")
                                         for u, w in sorted(cell["contaminated"].items())))
+
+    G0 = load_cell(c0, a.language, idx) if c0 else None
+    G1 = load_cell(c1, a.language, idx) if c1 else None
+    named = list(zip(names0 + names1, P0 + P1)) + [(n, c) for n, c in (("C0", G0), ("C1", G1)) if c]
+    n_to = sum(len(c["timeouts"]) for _, c in named)
+    print(f"    wall timeouts (exit -1; pass/fail counted, tokens NOT recorded → out of every token "
+          f"statistic): {n_to}" + (": " + "; ".join(
+              f"{nm} {u} [{v}]" for nm, c in named for u, v in sorted(c["timeouts"].items())) if n_to else ""))
+    warns = provenance_warnings(named)
+    for w in warns:
+        print(f"PROVENANCE  WARNING: {w}")
+    if not warns:
+        print("PROVENANCE  repo commit, engine build and weights consistent across cells")
+
     if not a.raw:
         P0 = [drop_contaminated(c, n, keep) for c, n in zip(P0, names0)]
         P1 = [drop_contaminated(c, n, keep) for c, n in zip(P1, names1)]
+        if G0 is not None:
+            G0 = drop_contaminated(G0, "C0", keep)
+        if G1 is not None:
+            G1 = drop_contaminated(G1, "C1", keep)
+    H0 = H1 = None
+    if heldout:
+        H0 = [restrict(c, heldout) for c in P0]
+        H1 = [restrict(c, heldout) for c in P1]
+        P0 = [restrict(c, heldout, exclude=True) for c in P0]
+        P1 = [restrict(c, heldout, exclude=True) for c in P1]
+        G0 = restrict(G0, heldout, exclude=True) if G0 is not None else None
+        G1 = restrict(G1, heldout, exclude=True) if G1 is not None else None
+        print(f"HELD-OUT    {len(heldout)} unit(s) read separately below; R1-R4 are in-sample only")
 
     # R1 primary — pooled replicates
     B = C = 0
     rescued_by_pair, regressed_by_pair = [], []
     d_tok, d_it, d_tok_all, d_prompt = [], [], [], []
-    missing_iters = 0
+    missing_iters = unrecorded = 0
     for k, (x0, x1) in enumerate(zip(P0, P1)):
         pr = paired(x0, x1)
         B += len(pr["b"]); C += len(pr["c"])
         rescued_by_pair.append(pr["b"]); regressed_by_pair.append(pr["c"])
         d_tok += pr["d_tok"]; d_it += pr["d_it"]; d_tok_all += pr["d_tok_all"]; d_prompt += pr["d_prompt"]
-        missing_iters += pr["missing_iters"]
+        missing_iters += pr["missing_iters"]; unrecorded += pr["unrecorded"]
         print(f"  pair {k}: units={len(pr['ids'])} P0 pass={pr['pass0']} P1 pass={pr['pass1']} "
               f"rescues={len(pr['b'])} regressions={len(pr['c'])} "
               f"(cached rows: P0 {sum(r['cached'] for r in x0['rows'].values())}, "
               f"P1 {sum(r['cached'] for r in x1['rows'].values())})")
     net = B - C
     p = mcnemar_exact(B, C)
-    print(f"\nR1 PRIMARY  pooled McNemar: rescues b={B} regressions c={C} net={net:+d} p={p:.4f}")
+    print(f"\nR1 PRIMARY  pooled McNemar: rescues b={B} regressions c={C} net={net:+d} p={fmt_p(p)}")
+    if any(c["timeouts"] for c in P0 + P1):
+        sb = sc = 0
+        for x0, x1 in zip(P0, P1):
+            s = paired(drop_timeouts(x0), drop_timeouts(x1))
+            sb += len(s["b"]); sc += len(s["c"])
+        print(f"    sensitivity, wall-timeout units dropped from their pair: b={sb} c={sc} "
+              f"net={sb - sc:+d} p={mcnemar_exact(sb, sc):.2g}")
 
     # R2 co-primary
-    print(f"R2 CO-PRIMARY (units passed in both arms, n={len(d_tok)}):")
+    print(f"R2 CO-PRIMARY (units passed in both arms, n={len(d_tok)}"
+          + (f"; {unrecorded} pair(s) excluded — a side's tokens were not recorded" if unrecorded else "")
+          + "):")
     print(f"    completion tokens-to-fix  mean Δ(P1-P0)={mean(d_tok):+.0f}  sign-test p={sign_test(d_tok):.3f}")
     if d_it:
         print(f"    iterations-to-fix         mean Δ(P1-P0)={mean(d_it):+.2f}  sign-test p={sign_test(d_it):.3f}"
               + (f"  ({missing_iters} pairs lacked iterations)" if missing_iters else ""))
     else:
         print(f"    iterations-to-fix         unavailable (rows carry no `iterations`; {missing_iters} pairs)")
+    # Prompt tokens are a total over every request of a unit, so this is
+    # dominated by how many iterations each arm ran — not the pack's own
+    # per-request cost (~2k tokens), which only a per-request count measures.
     print(f"    all-unit completion tokens mean Δ={mean(d_tok_all):+.0f} (n={len(d_tok_all)}); "
-          f"prompt-token overhead mean Δ={mean(d_prompt):+.0f}/unit")
+          f"all-unit prompt tokens (total per unit, not per-request overhead) "
+          f"mean Δ={mean(d_prompt):+.0f} median Δ={median(d_prompt):+.0f} (n={len(d_prompt)})")
 
     # R3 guard
     guard_clean = None
-    if c0 and c1:
-        G0, G1 = load_cell(c0, a.language, idx), load_cell(c1, a.language, idx)
+    if G0 is not None and G1 is not None:
         for nm, cell in (("C0", G0), ("C1", G1)):
             if cell["contaminated"]:
                 print(f"    {nm} contaminated: " + "; ".join(
                     f"{u} [{', '.join(w)}]" + (" KEPT" if f"{nm}:{u}" in keep else "")
                     for u, w in sorted(cell["contaminated"].items())))
-        if not a.raw:
-            G0, G1 = drop_contaminated(G0, "C0", keep), drop_contaminated(G1, "C1", keep)
         g = paired(G0, G1)
         gp = mcnemar_exact(len(g["b"]), len(g["c"]))
         gnet = len(g["b"]) - len(g["c"])
@@ -228,8 +366,12 @@ def main() -> int:
         print(f"R3 GUARD    champion {G1['model']}: units={len(g['ids'])} C0 pass={g['pass0']} C1 pass={g['pass1']} "
               f"rescues={len(g['b'])} regressions={len(g['c'])} net={gnet:+d} p={gp:.3f} → "
               f"{'CLEAN' if guard_clean else 'REGRESSION'}")
-    elif c1:
-        G1 = load_cell(c1, a.language)
+        if G0["timeouts"] or G1["timeouts"]:
+            s = paired(drop_timeouts(G0), drop_timeouts(G1))
+            snet = len(s["b"]) - len(s["c"])
+            print(f"    sensitivity, wall-timeout units dropped: b={len(s['b'])} c={len(s['c'])} "
+                  f"net={snet:+d} p={mcnemar_exact(len(s['b']), len(s['c'])):.3f}")
+    elif G1 is not None:
         print(f"R3 GUARD    champion C1 pass={sum(r['passed'] for r in G1['rows'].values())}/{len(G1['rows'])} "
               f"— NO C0 reference: guard NOT evaluated (pass --c0)")
     else:
@@ -245,6 +387,22 @@ def main() -> int:
         if ids:
             print(f"    pair {k} regressions: {', '.join(ids)}")
 
+    # Held-out readout (LANG_AWARENESS_PLAN §5 item 4): its own test, never
+    # pooled — 30 in-sample units at +24 would swamp any held-out signal.
+    if heldout:
+        hb = hc = 0
+        hunits = set()
+        for k, (x0, x1) in enumerate(zip(H0, H1)):
+            h = paired(x0, x1)
+            hb += len(h["b"]); hc += len(h["c"]); hunits |= set(h["ids"])
+            print(f"HELD-OUT    pair {k}: units={len(h['ids'])} P0 pass={h['pass0']} P1 pass={h['pass1']} "
+                  f"rescues={', '.join(h['b']) or '-'} regressions={', '.join(h['c']) or '-'}")
+        missing = sorted(heldout - hunits)
+        hp_ = sign_test_greater(hb, hc)
+        print(f"HELD-OUT    pooled one-sided exact sign test P1>P0: b={hb} c={hc} net={hb - hc:+d} "
+              f"p={hp_:.4f} → {'P1 > P0 at α=0.05' if hp_ < 0.05 else 'not shown at α=0.05'}"
+              + (f"  (no rows for: {', '.join(missing)})" if missing else ""))
+
     # Ship rule
     reasons = []
     if net < SHIP_MIN_NET:
@@ -258,7 +416,7 @@ def main() -> int:
     verdict = "SHIP" if not reasons else "NO-SHIP"
     print("\n" + "-" * 72)
     print(f"VERDICT: {verdict} — Clause 1 (net>={SHIP_MIN_NET}, p<{SHIP_ALPHA}, guard clean): "
-          f"net={net:+d} p={p:.4f} guard={'clean' if guard_clean else ('regression' if guard_clean is False else 'n/a')}"
+          f"net={net:+d} p={fmt_p(p)} guard={'clean' if guard_clean else ('regression' if guard_clean is False else 'n/a')}"
           + (f" — {'; '.join(reasons)}" if reasons else ""))
     print("Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).")
     return 0
