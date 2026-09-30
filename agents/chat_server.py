@@ -1925,6 +1925,11 @@ def _rig_literals() -> tuple:
             continue
         value = value.strip()
         up = name.upper()
+        # Only the URL and the token are secrets. CHAT_NOTIFY_ON / _PERIOD_S
+        # hold ordinary words and numbers ("failed", "5") — redacting them
+        # by value would blank every such word in exports and alerts.
+        if not (up.endswith("NOTIFY_URL") or "NOTIFY_TOKEN" in up):
+            continue
         if up.endswith("NOTIFY_TOKEN_FILE"):
             try:
                 with open(os.path.expanduser(value)) as f:

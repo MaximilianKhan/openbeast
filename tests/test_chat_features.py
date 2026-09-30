@@ -425,6 +425,25 @@ def test_a_named_title_is_scrubbed_but_still_sent(rig, stub):
     assert any("deploy with" in b for b in bodies)
 
 
+def test_a_custom_notify_on_word_survives_in_the_alert(rig, stub,
+                                                      monkeypatch):
+    """CHAT_NOTIFY_ON=failed is config, not a secret: the alert body must
+    still say 'failed', not '[redacted:OPENBEAST_CHAT_NOTIFY_ON]'."""
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", "failed")
+    monkeypatch.setitem(chat_server._LITERALS_CACHE, "at", -1e9)
+    s = stub()
+    agent = sessions.new_id("agent")
+    sessions.register(agent, kind="agent", pid=os.getpid(), pgid=os.getpid(),
+                      title="fix the failed build")
+    n = _notifier(rig, s.url + "/t", on=("failed",))
+    n.tick()
+    sessions.finalize(agent, "failed")
+    assert n.tick() == [agent]
+    body = s.calls[-1]["body"].decode()
+    assert "fix the failed build" in body and "redacted" not in body
+    chat_server._LITERALS_CACHE["at"] = -1e9
+
+
 def test_notify_on_filters_states(rig, stub):
     s = stub()
     sid = rig.session(kind="job", state="running")
@@ -642,6 +661,20 @@ def test_scrub_redacts_the_rig_tokens_and_the_notify_topic(fresh_literals,
     assert out.count("[redacted") == 5
 
 
+@pytest.mark.parametrize("value", ["failed", "stopped", "failed,lost,done"])
+def test_scrub_keeps_ordinary_words_named_in_notify_on(value, fresh_literals,
+                                                       monkeypatch):
+    """CHAT_NOTIFY_ON is config, not a secret: a custom state list must not
+    redact that word everywhere in exports and phone alerts."""
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", value)
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_PERIOD_S", "5")
+    text = f"build failed: 3 tests stopped after 5 s ({value})"
+    assert chat_server.scrub_secrets(text) == text
+    labels = [label for label, _ in chat_server._rig_literals()]
+    assert "OPENBEAST_CHAT_NOTIFY_ON" not in labels
+    assert "OPENBEAST_CHAT_NOTIFY_PERIOD_S" not in labels
+
+
 @pytest.mark.parametrize("blob", [
     "-" * 40000,
     "a-" * 20000,
@@ -662,6 +695,8 @@ def test_scrub_still_redacts_after_a_benign_assignment(fresh_literals):
     not hide a secret assignment inside it."""
     out = chat_server.scrub_secrets("x=API_KEY=sk_abcdef123 y=1")
     assert "sk_abcdef123" not in out and "y=1" in out
+
+
 def _free_port():
     import socket
     s = socket.socket()
