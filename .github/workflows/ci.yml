@@ -104,6 +104,23 @@ jobs:
       - name: Inference backend tests (vLLM / TensorFold, unmanaged)
         run: bash tests/test_backends.sh
 
+      # beast-hydra: hydra_core's readiness rule vs lib/backend.sh on shared
+      # fixtures, and the simulated fleet (fake engines + a real hydra on
+      # ephemeral loopback ports) driving every scripts/hydra.sh command.
+      - name: beast-hydra readiness parity + simulated fleet
+        run: |
+          bash tests/test_hydra_ready_parity.sh
+          bash tests/test_hydra_sim.sh
+
+      # The shared stack wiring for beast-hydra + beast-instinct: conf.sh
+      # derivations (HYDRA/INSTINCT off = byte-identical, diffed against the
+      # merge base when it is in the clone), start/stop/healthcheck in a
+      # stub sandbox. curl reaches only the suite's own fake servers.
+      - name: beast-hydra / beast-instinct stack wiring tests
+        run: |
+          base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+          WIRING_BASELINE_REF="$base" bash tests/test_hydra_instinct_wiring.sh
+
       # opencode session clearing: a stub opencode (python + sqlite) with
       # 1.18's delete cascade; a stub pgrep decides "is opencode running".
       - name: opencode session clearing tests
@@ -120,6 +137,12 @@ jobs:
       # servers, use-model. Loopback stubs only; no network.
       - name: Spark model onboarding tests (profiles, inspect, fetch, conformance)
         run: python -m pytest tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
+
+      # beast-hydra (proxy, routing core) and beast-instinct (decision math,
+      # engines, service, contract, router hook). Also in the full run below;
+      # named here so a failure is attributable.
+      - name: beast-hydra / beast-instinct tests
+        run: python -m pytest tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
 
       - name: Tool unit tests
         env:
