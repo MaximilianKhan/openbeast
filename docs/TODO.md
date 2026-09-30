@@ -1,5 +1,21 @@
 # TODO
 
+## 🐉 beast-hydra + 🧠 beast-instinct — PLANNED 2026-09-30
+
+- **beast-hydra** — distributed inference routing across heterogeneous rigs
+  (5090 rig + 2× DGX Spark + e.g. a 2×3090 Ti rig; llama.cpp / vLLM /
+  TensorFold): [`BEAST_HYDRA_PLAN.md`](BEAST_HYDRA_PLAN.md), prior art in
+  [`reviews/HYDRA_PRIOR_ART-2026-09-30.md`](reviews/HYDRA_PRIOR_ART-2026-09-30.md).
+- **beast-instinct** — the decision plane (typed, calibrated decisions via
+  decision models; SGLang `/v1/score` + MIS, llama.cpp logprobs, vLLM):
+  [`BEAST_INSTINCT_PLAN.md`](BEAST_INSTINCT_PLAN.md), research in
+  [`reviews/INSTINCT_RESEARCH-2026-09-30.md`](reviews/INSTINCT_RESEARCH-2026-09-30.md).
+- The two are reconciled (last section of each plan): one classifier
+  (instinct's `instinct-route/1`), hydra owns eligibility/capacity/failover,
+  instinct never grants anything and nothing is enforced before its quality is
+  measured. MVPs are built to be testable today with stub engines; the
+  "day the nodes come online" runbooks are §7 (hydra) and §5.14 (instinct).
+
 ## 🟩 DGX SPARK INFERENCE — milestone 1 built 2026-09-29, hardware pending
 
 - **What:** the stack stays on the rig and points at vLLM or TensorFold
