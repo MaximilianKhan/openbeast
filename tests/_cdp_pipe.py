@@ -48,8 +48,16 @@ class Chrome:
                 "--no-default-browser-check", "--disable-gpu",
                 "--disable-extensions", "--disable-background-networking",
                 "--hide-scrollbars", "--mute-audio", "about:blank"]
-        if os.geteuid() == 0:
-            args.insert(1, "--no-sandbox")
+        # Chrome's sandbox needs unprivileged user namespaces. Root can't use
+        # it at all, and Ubuntu 24.04 CI runners (GitHub Actions) block the
+        # namespaces through AppArmor, so there the browser dies on its first
+        # CDP command (Target.createTarget timeout, then a broken pipe). On a
+        # desktop the sandbox stays on. OPENBEAST_CHROME_NO_SANDBOX=1 forces
+        # it off for other containers.
+        if (os.geteuid() == 0 or os.environ.get("GITHUB_ACTIONS") == "true"
+                or os.environ.get("CI") == "true"
+                or os.environ.get("OPENBEAST_CHROME_NO_SANDBOX") == "1"):
+            args[1:1] = ["--no-sandbox", "--disable-dev-shm-usage"]
         # sh re-plumbs the two pipe ends onto fds 3 and 4 and execs chrome.
         script = (f'exec "$0" "$@" 3<&{cmd_r} 4>&{out_w} '
                   f'{cmd_r}<&- {out_w}>&-')
