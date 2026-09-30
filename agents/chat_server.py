@@ -63,18 +63,22 @@ any page the operator happens to visit, published or not.
           {"status": "ok"} and nothing more (start.sh probes it with no
           credential). Counts and paths need a read credential.
 
-Lifecycle. A session spawned HERE has no job wrapper and no other writer, so
-this module keeps the Popen handle, reaps it, and finalizes the ledger from
-the exit status (0 -> done, >0 -> failed, <0 -> stopped). Without that the
-child becomes a zombie, a zombie still answers the liveness check, and the
-session reads `running` forever while /send queues into a corpse.
+Lifecycle. A job spawned HERE runs under scripts/job.sh's supervisor, which
+writes its own terminal state; an agent writes its own. This module still
+keeps the Popen handle and reaps it, and finalizes the ledger from the exit
+status (0 -> done, >0 -> failed, <0 -> stopped) only when the record is still
+`running`/`lost` — a child that died before it could write anything. Without
+the reap the child becomes a zombie, a zombie still answers the liveness
+check, and the session reads `running` forever while /send queues into a
+corpse.
 
 Env:
   OPENBEAST_CHAT_PORT          listen port            (default 3003)
   OPENBEAST_CHAT_BIND          bind address           (default 127.0.0.1;
                                off loopback, the login header is ignored
                                from non-loopback peers — device keys only)
-  OPENBEAST_CHAT_OPERATORS     comma-separated logins (unset = open reads)
+  OPENBEAST_CHAT_OPERATORS     comma-separated logins (unset = any
+                               identified login reads; anonymous never)
   OPENBEAST_CHAT_RATE_PER_MIN  write rate per device  (default 60)
   OPENBEAST_CHAT_STOP_TERM_S   SIGTERM escalation     (default 30)
   OPENBEAST_CHAT_STOP_KILL_S   SIGKILL escalation     (default 60)
