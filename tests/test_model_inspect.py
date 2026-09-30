@@ -379,6 +379,37 @@ def test_tensorfold_other_exl3_families_take_any_variant(tmp_path):
     assert tf["status"] == "supported" and tf["ranks"] == [1]       # EXL3_VARIANT "any", one GPU
 
 
+def test_mirror_dir_of_a_tested_repo_is_tested(tmp_path):
+    # the staged weights/GLM-5.3-Flash-EXL3-TR3-4bpw: a snapshot of Mia's repo, whose own MIRROR.json names it
+    mirror = {"mirror_of": "brandonmusic/GLM-5.3-Flash-tr3-4bpw", "this_repo": MIA,
+              "note": "Byte-identical redistribution. Not an original quantization."}
+    d = make_ckpt(tmp_path / "GLM-5.3-Flash-EXL3-TR3-4bpw", glm(TR3), QWEN_TEMPLATE, expert_tensors(),
+                  {"MIRROR.json": mirror})
+    tf = run_inspect(d)["engines"]["tensorfold"]
+    assert tf["tested"] is True
+    assert not any("not a tested checkpoint" in n for n in tf["notes"]), tf["notes"]
+    assert any("MIRROR.json" in n and MIA in n for n in tf["notes"])
+
+
+@pytest.mark.parametrize("mirror", [
+    {"this_repo": "someone/Other-Repo"},                       # names an untested repo
+    {"this_repo": "../../" + MIA},                             # not a repo id: ignored
+    "not json",
+])
+def test_mirror_json_that_names_no_tested_repo_changes_nothing(tmp_path, mirror):
+    d = make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, expert_tensors(), {"MIRROR.json": mirror})
+    tf = run_inspect(d)["engines"]["tensorfold"]
+    assert tf["tested"] is False and any("not a tested checkpoint" in n for n in tf["notes"])
+
+
+def test_fetched_dir_marker_names_the_tested_repo(tmp_path):
+    # model-fetch's own marker already names the repo; the tested check ignored it for a local directory
+    d = make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, expert_tensors(),
+                  {".openbeast-model.json": {"source": MIA, "revision": SHA}})
+    tf = run_inspect(d)["engines"]["tensorfold"]
+    assert tf["tested"] is True and not any("not a tested checkpoint" in n for n in tf["notes"])
+
+
 def test_vendored_tensorfold_is_the_commit_the_sparks_install():
     """model-inspect's TensorFold verdict is only true for the code spark-node.sh pip-installs."""
     import re
