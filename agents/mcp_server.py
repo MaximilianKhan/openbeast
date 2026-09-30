@@ -1307,17 +1307,50 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
 # discovering the service is off by failing to connect.
 
 
+def _artifact_setting() -> str:
+    """BEAST_ARTIFACT as this process can see it: the environment first
+    (start.sh exports it into every child — the identity tool server), then
+    the rig's own openbeast.conf. The conf fallback is not optional: OpenCode
+    launches THIS module itself from opencode.json with the user's plain
+    shell environment, so under OpenCode the env var is never there and the
+    tool used to refuse with "set BEAST_ARTIFACT=true" on a rig where it was
+    already set (correctness-02 / integration-ops-2)."""
+    val = (os.environ.get("OPENBEAST_BEAST_ARTIFACT")
+           or os.environ.get("BEAST_ARTIFACT") or "").strip()
+    if val:
+        return val.lower()
+    try:
+        import artifact as _artifact
+        return str(_artifact.conf_value("BEAST_ARTIFACT") or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _artifact_enabled() -> bool:
     """Is beast-artifact turned on for this rig?
 
-    start.sh sources scripts/lib/conf.sh, which exports BEAST_ARTIFACT into
-    every child — including the tool server this module runs inside. Without
-    this check `publish_artifact` happily writes into the store and hands the
-    model a confident URL that nothing is serving (reg#3).
+    Without this check `publish_artifact` happily writes into the store and
+    hands the model a confident URL that nothing is serving (reg#3).
     """
-    val = (os.environ.get("OPENBEAST_BEAST_ARTIFACT")
-           or os.environ.get("BEAST_ARTIFACT") or "").strip().lower()
-    return val in ("1", "true", "yes", "on")
+    return _artifact_setting() in ("1", "true", "yes", "on")
+
+
+def _artifact_off() -> str:
+    """The refusal, worded for where this process actually runs. On a CLIENT
+    (setup-client.sh: inference goes to the rig, and there is no rig config
+    here) there is no store to publish into at all, and telling the user to
+    edit this machine's openbeast.conf sent them in circles."""
+    try:
+        import artifact as _artifact
+        rig_here = _artifact.conf_exists()
+    except Exception:
+        rig_here = True
+    if not rig_here and os.environ.get("OPENBEAST_AGENT_INFERENCE_URL"):
+        return ("Error: artifacts are published on the rig, not from a "
+                "client machine — this machine runs the tools locally and has "
+                "no artifact store. Publish from the rig (its OpenCode, Open "
+                "WebUI, or ./scripts/artifact.sh publish <file.html> there).")
+    return _ARTIFACT_OFF
 
 
 _ARTIFACT_OFF = ("Error: beast-artifact is not enabled on this rig. Enable it "
@@ -1377,9 +1410,8 @@ def _read_artifact_page(path: str, cap: int):
         if rel == os.pardir or rel.startswith(os.pardir + os.sep):
             return None, (f"Error: refusing to publish {path} — it is outside "
                           f"your workspace ({base}), and publishing mints a "
-                          f"durable URL anyone with the link can open. Write "
-                          f"the page there first (write_file) and publish that "
-                          f"path.")
+                          f"durable URL on your tailnet. Write the page there "
+                          f"first (write_file) and publish that path.")
         if _is_store_path(resolved):
             # D26. "Inside the workspace" is NOT the same as "yours": the
             # store is $OPENBEAST_FILES_DIR/artifacts and the workspace is
@@ -1429,7 +1461,7 @@ def _read_artifact_page(path: str, cap: int):
 @_tool()
 def publish_artifact(path: str, title: str = "", description: str = "",
                      favicon: str = "", artifact_id: str = "",
-                     label: str = "", visibility: str = "private") -> str:
+                     label: str = "", visibility: str = "") -> str:
     """Publish an HTML file as a page with a durable, shareable URL on the rig,
     and return that URL. Use it whenever the answer is worth more as a page
     than as chat text — a report, a table, a dashboard, a chart, a checklist,
@@ -1471,6 +1503,8 @@ def publish_artifact(path: str, title: str = "", description: str = "",
       8. Wide content — tables, pre/code, diagrams — goes in a container with
          overflow-x: auto so the page itself never scrolls sideways on a
          phone.
+      9. Links to other sites open in a new tab (write target="_blank"; the
+         viewer also does it for you) — the page itself never navigates away.
 
     Args:
         path: Path to the .html file to publish. It must be in your workspace
@@ -1487,8 +1521,10 @@ def publish_artifact(path: str, title: str = "", description: str = "",
                      pass back later).
         label: Short name for this version (e.g. "with Q3 numbers"), shown in
                the version picker.
-        visibility: "private" (default, only you) or "tailnet" (any device
-                    signed in to the tailnet can open the link).
+        visibility: "private" (the default: only you, and the rig's admins)
+                    or "tailnet" (anyone signed in to the tailnet). Applied
+                    when the page is FIRST published only — an update keeps
+                    the page's visibility, and the result says which it has.
 
     Returns:
         A line naming the page and its URL, or a string starting with "Error:".
@@ -1498,7 +1534,7 @@ def publish_artifact(path: str, title: str = "", description: str = "",
     # import succeeded, the store wrote a version, and the model got a URL
     # that nothing serves.
     if not _artifact_enabled():
-        return _ARTIFACT_OFF
+        return _artifact_off()
     try:
         import artifact as _artifact  # lazy: see the note above
     except Exception as e:
@@ -1509,26 +1545,42 @@ def publish_artifact(path: str, title: str = "", description: str = "",
         return err
     if not html.strip():
         return f"Error: {path} is empty — nothing to publish."
+    want_title = title.strip() or None
+    if (want_title is None and not artifact_id.strip()
+            and not _artifact.extract_title(html)):
+        # correctness-08: the documented fallback is the filename, not the
+        # store's "Untitled". Only for a NEW page that names itself nothing —
+        # a page's own <title> still wins, and an update keeps its title.
+        stem = os.path.splitext(os.path.basename(str(path)))[0].strip()
+        want_title = stem.replace("_", " ").replace("-", " ").strip() or None
     try:
         meta = _artifact.publish(
             html,
-            title=title.strip() or None,
+            title=want_title,
             description=description.strip() or None,
             favicon=favicon.strip() or None,
             artifact_id=artifact_id.strip() or None,
             label=label.strip() or None,
-            visibility=(visibility.strip() or "private"),
+            visibility=(visibility.strip() or None),
+            # F-A3: the beast-chat session this tool runs under, if any.
+            source_session=os.environ.get("OPENBEAST_SESSION_ID") or None,
         )
     except Exception as e:  # ArtifactError and anything else: tool contract
         return f"Error: publish failed: {e}"
     name = meta.get("title") or os.path.basename(path)
     out = (f'Published "{name}" → {meta.get("url")} '
-           f'(v{meta.get("version")}, id {meta.get("id")})')
+           f'(v{meta.get("version")}, id {meta.get("id")}, '
+           f'visibility {meta.get("visibility")})')
+    notes = []
+    if meta.get("notice"):
+        notes.append(str(meta["notice"]))
     try:
         caveat = _artifact.url_caveat(meta.get("url"))
     except Exception:
         caveat = ""
-    return f"{out}\nNOTE: {caveat}" if caveat else out
+    if caveat:
+        notes.append(caveat)
+    return out + "".join(f"\nNOTE: {n}" for n in notes)
 
 
 @_tool()
@@ -1549,7 +1601,7 @@ def list_artifacts(limit: int = 25) -> str:
     # tools already states the intent — check the flag here rather than let
     # the user discover the service is off by failing to connect.
     if not _artifact_enabled():
-        return _ARTIFACT_OFF
+        return _artifact_off()
     try:
         import artifact as _artifact  # lazy: see the note above
     except Exception as e:
@@ -1558,8 +1610,13 @@ def list_artifacts(limit: int = 25) -> str:
     try:
         # viewer= is not optional: without it the gallery enumerates EVERY
         # operator's private artifacts to whoever called the tool. The identity
-        # server sets the ContextVar that default_owner() reads.
+        # server sets the ContextVar that default_owner() reads; with no
+        # identity at all the caller is the rig itself and sees the rig's own
+        # pages. NEVER the admin view (F-A1's administrator path is for the
+        # human at the CLI or the gallery): a model's context is not where
+        # every owner's private titles belong.
         rows = _artifact.list_artifacts(viewer=_artifact.default_owner(),
+                                        admin=False,
                                         limit=max(1, int(limit)))
     except Exception as e:
         return f"Error: could not list artifacts: {e}"
