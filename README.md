@@ -45,13 +45,13 @@ line in `openbeast.conf`.
 | **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 18-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
-| **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. On `main`: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · `main` |
-| **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. On `main`: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · `main` |
-| **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, and (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix | v1.5 |
+| **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. Since v1.7: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · v1.7 |
+| **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. Since v1.7: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · v1.7 |
+| **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix, and the measured zig 0.16 awareness pack handed to agents on zig tasks (`LANG_PACK_CONTEXT`) | v1.5 · v1.7 |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
-| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate. Tested against simulated fleets, not yet on the Sparks | `main` |
+| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model; the Sparks serve GLM-5.3-Flash uncensored on TensorFold. Tested against simulated fleets, not yet on the Sparks | v1.7 |
 
 Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
 capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
@@ -855,7 +855,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| `main` (next) | beast-artifact: one `rig` owner + admins (`ARTIFACT_ADMINS`), pin/tag/share/delete from a phone (`artifact` device scope), per-version delete + `prune`, opt-in retention, gallery paging + search, session links · beast-chat: new-session sheet + presets, pause/resume, PWA, push notifications (ntfy extension, `--publish-ntfy`), export to artifact, rig status strip · a 2026-09-29 review of both, fixed with tests, incl. real-browser ones · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | — |
+| `main` (next) | — | — |
+| v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
@@ -865,7 +866,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.0 | the rig | — |
 
 Everything in [What ships](#what-ships) is in a tagged release; work that
-lands on `main` after v1.6.0 is marked `main` there until the next one.
+lands on `main` after v1.7.0 is marked `main` there until the next one.
 
 ## Uninstall
 
