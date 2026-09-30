@@ -153,12 +153,27 @@ def build_answer(spec: DecisionSpec, *, q: dict[str, float] | None = None,
                   list(truncated or []), expected_value(spec, p))
 
 
+def effective_threshold(spec: DecisionSpec, label: str,
+                        thresholds: dict[str, float | None] | None) -> float | None:
+    """max(policy.act[label], fitted[label]); None when the fit said never."""
+    floor = spec.policy.act.get(label)
+    if thresholds and label in thresholds:
+        fitted = thresholds[label]
+        if fitted is None or floor is None:
+            return None
+        return max(floor, fitted)
+    return floor
+
+
 def decide_action(spec: DecisionSpec, ans: Answer, *, thresholds: dict[str, float] | None = None,
                   context_forbidden: bool = False, head_engine: bool = False,
                   ood: bool = False) -> tuple[str, str | None]:
     """(action, reason) for one answer. `thresholds` are the calibration
-    record's fitted thresholds; they override policy.act VALUES but can never
-    add a label — only labels listed in policy.act may act (I4)."""
+    record's fitted thresholds; they can only RAISE the spec's policy.act
+    value (the reviewed floor — a fit on a small calib split must not quietly
+    lower `inline = 0.90` to 0.55), a fitted None means "infeasible, never
+    act", and they can never add a label — only labels in policy.act may act
+    (I4)."""
     pol = spec.policy
     if context_forbidden:
         return "abstain", "eval_context"
@@ -168,9 +183,7 @@ def decide_action(spec: DecisionSpec, ans: Answer, *, thresholds: dict[str, floa
     p_top = ans.confidence["p_top"] if ans.confidence else 0.0
     margin = ans.confidence["margin"] if ans.confidence else 0.0
     if label in pol.act:
-        thr = pol.act[label]
-        if thresholds and label in thresholds:
-            thr = thresholds[label]
+        thr = effective_threshold(spec, label, thresholds)
         if thr is None:
             return "abstain", "below_threshold"
         if not ans.calibrated:

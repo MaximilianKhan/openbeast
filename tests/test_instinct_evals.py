@@ -279,3 +279,12 @@ def test_mechanical_rows_are_not_part_of_the_judged_population():
     kept, dropped = RUN.judged_rows(spec, {"test": rows, "calib": rows[:1]})
     assert [r["id"] for r in kept["test"]] == ["a"] and dropped == {"test": 2}
     assert RUN.judged_rows(SPAWN, {"test": rows}) == ({"test": rows}, {})   # no mechanical
+
+
+def test_fitted_threshold_never_lowers_the_spec_floor():
+    from instinct.core import effective_threshold
+    assert SPAWN.policy.act["inline"] == 0.90
+    assert effective_threshold(SPAWN, "inline", {"inline": 0.55}) == 0.90
+    assert effective_threshold(SPAWN, "inline", {"inline": 0.97}) == 0.97
+    assert effective_threshold(SPAWN, "inline", {"inline": None}) is None
+    assert effective_threshold(SPAWN, "inline", None) == 0.90

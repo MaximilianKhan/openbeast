@@ -248,7 +248,7 @@ def split_metrics(spec: DecisionSpec, rows: list[dict], thresholds: dict | None,
                    for lb in spec.policy.act) or not calibrated:
             abstain += 1
     for lb in spec.policy.act:
-        thr = thresholds.get(lb, spec.policy.act[lb]) if thresholds else spec.policy.act[lb]
+        thr = core.effective_threshold(spec, lb, thresholds)
         st = C.act_stats(spec, rows, lb, thr) if calibrated else {
             "acts": 0, "act_errors": 0, "act_coverage": 0.0, "act_precision": 1.0}
         n_true = sum(1 for r in rows if r["y"] == lb)
