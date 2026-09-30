@@ -2842,7 +2842,8 @@ def create_app() -> FastAPI:
                 out.append({
                     **rec,
                     "transcript_bytes": _file_size(path),
-                    "last_line": _tail_line(path),
+                    "last_line": _preview_line(_tail_line(path),
+                                               rec.get("kind")),
                 })
             return {"sessions": out, "count": len(out),
                     "states": list(sessions.STATES)}
@@ -3866,6 +3867,36 @@ def _inbox_path(session_id: str) -> str | None:
         return sessions.inbox_path(session_id)
     except Exception:
         return None
+
+
+def _preview_line(line: str, kind) -> str:
+    """The list card's one-line preview. An agent's transcript is runner
+    JSONL, so its raw last line read `{"type": "assistant", "content": …` on
+    the phone; show the event's text (or its type) instead. Jobs are plain
+    text and pass through."""
+    if kind != "agent" or not line.startswith("{"):
+        return line
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return line          # a clipped tail line — better raw than nothing
+    if not isinstance(ev, dict):
+        return line
+    etype = str(ev.get("type") or "")
+    for field in ("content", "summary", "error", "task", "message"):
+        value = ev.get(field)
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            if etype in ("error", "done"):
+                text = f"{etype}: {text}"
+            return text[:500]
+    if etype == "tool_call" and ev.get("name"):
+        return f"tool: {ev['name']}"
+    if etype == "max_iterations":
+        return f"stopped at the iteration cap ({ev.get('iterations')})"
+    if etype == "iteration" and ev.get("number") is not None:
+        return f"step {ev['number']}"
+    return f"[{etype}]" if etype else line
 
 
 def _tail_line(path: str, window: int = 8192) -> str:

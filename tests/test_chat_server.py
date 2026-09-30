@@ -406,9 +406,27 @@ def test_listing_and_filtering(rig):
 
     done = c.get("/api/chat/sessions?state=done").json()
     assert {r["id"] for r in done["sessions"]} == {b, j}
-    jobs = c.get("/api/chat/sessions?kind=job").json()
+    jobs =c.get("/api/chat/sessions?kind=job").json()
     assert {r["id"] for r in jobs["sessions"]} == {j}
     assert c.get("/api/chat/sessions?state=nonsense").status_code == 400
+
+
+def test_the_list_previews_an_agent_s_text_not_its_raw_jsonl(rig):
+    """Review B-chat-6: an agent card previewed `{"type": "assistant", …`."""
+    a = rig.session(kind="agent", state="done", lines=[
+        {"type": "assistant", "content": "step 30  seen the\nlogs"}])
+    m = rig.session(kind="agent", state="done", lines=[
+        {"type": "max_iterations", "iterations": 30}])
+    t = rig.session(kind="agent", state="done", lines=[
+        {"type": "tool_call", "name": "bash", "args": {}, "result": ""}])
+    j = rig.session(kind="job", state="done", lines=['{"raw": "json"}'])
+    rows = {r["id"]: r["last_line"] for r in
+            rig.client.get("/api/chat/sessions").json()["sessions"]}
+    assert rows[a] == "step 30 seen the logs"
+    assert rows[m] == "stopped at the iteration cap (30)"
+    assert rows[t] == "tool: bash"
+    assert rows[j] == '{"raw": "json"}'          # a job's output is its own
+    assert not any(v.startswith('{"type"') for v in rows.values())
 
 
 def test_session_detail_derives_status(rig):
