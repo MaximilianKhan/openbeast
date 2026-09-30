@@ -251,6 +251,41 @@ if grep -qE '^ENV (OPENBEAST_CONSUMER_BASE|OPENBEAST_HYDRA_URL|OPENBEAST_HYDRA_C
 else
   pass "HYDRA=false drops stale CONSUMER_BASE / HYDRA_URL / caller-token exports"
 fi
+# The same shell sources conf.sh twice (the owner's "source conf.sh before
+# docker compose", then ./start.sh -d later): HYDRA/INSTINCT flipped off, or
+# HYDRA_PORT moved, in openbeast.conf in between. The first source's own
+# OPENBEAST_HYDRA=true export used to read back as an operator override and
+# keep hydra on. A value the operator exports himself still wins.
+_resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
+  env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
+    printf "SEARXNG_SECRET=stub\n%s\n" "$2" > "$1/openbeast.conf"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null
+    printf "SEARXNG_SECRET=stub\n%s\n" "$3" > "$1/openbeast.conf"
+    eval "$4"
+    source "$1/scripts/lib/conf.sh" 2>/dev/null
+    echo "H=$HYDRA I=$INSTINCT URL=${HYDRA_URL:-} CB=${OPENBEAST_CONSUMER_BASE-unset}" \
+         "OH=${OPENBEAST_HYDRA-unset} OI=${OPENBEAST_INSTINCT-unset} OIP=${OPENBEAST_INSTINCT_PORT-unset}" \
+         "IM=${OPENBEAST_INFERENCE_MODEL-unset} UP=${OPENBEAST_HYDRA_UPSTREAM_MODEL-unset}" \
+         "D=$(compgen -e | grep -c "^OPENBEAST_DERIVED_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
+}
+_V=$'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL=m1'
+_r="$(_resource $'HYDRA=true\nINSTINCT=true\n'"$_V" $'HYDRA=false\nINSTINCT=false\n'"$_V")"
+[[ "$_r" == "H=false I=false URL= CB=unset OH=unset OI=unset OIP=unset IM=m1 UP=unset D=0" ]] \
+  && pass "re-sourced after HYDRA/INSTINCT flip off: both off, no stale export, served id back" \
+  || fail "flip off in one shell: $_r"
+_r="$(_resource $'HYDRA=true\nHYDRA_PORT=9001' $'HYDRA=true\nHYDRA_PORT=9002')"
+[[ "$_r" == "H=true I=false URL=http://127.0.0.1:9002 "* ]] \
+  && pass "re-sourced after HYDRA_PORT moved: the conf's new port wins" || fail "port move: $_r"
+_r="$(_resource $'HYDRA=true\nINSTINCT=true' $'HYDRA=true\nINSTINCT=true' 'export OPENBEAST_HYDRA=false')"
+[[ "$_r" == "H=false I=true "* ]] \
+  && pass "…an operator's own OPENBEAST_HYDRA=false in that shell still wins (control)" \
+  || fail "operator override lost: $_r"
+_r="$(env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_HYDRA=true bash -c 'set -euo pipefail; REPO_DIR="$1"
+  printf "SEARXNG_SECRET=stub\nHYDRA=false\n" > "$1/openbeast.conf"
+  source "$1/scripts/lib/conf.sh" 2>/dev/null; source "$1/scripts/lib/conf.sh" 2>/dev/null; echo "$HYDRA"' _ "$_N")"
+[[ "$_r" == "true" ]] && pass "…and an env override set before the first source survives a re-source" \
+  || fail "env override lost across a re-source: $_r"
+
 # vLLM: the served id rides OPENBEAST_HYDRA_UPSTREAM_MODEL, and a child that
 # re-sources conf.sh with the parent's exports (start.sh -d forwards every
 # OPENBEAST_*) must recover it rather than mistake the route for it.

@@ -67,6 +67,44 @@ _ob_conf_value() {
   printf '%s\n' "$line"
 }
 
+# A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
+# file's own derived export (the dashboard, children and `start.sh -d` read
+# them). Re-sourced in a shell that once had HYDRA=true, the old export read
+# back as an operator override and pinned the value: flipping HYDRA=false in
+# openbeast.conf did nothing. Such exports now go through _ob_derive, which
+# records the value in OPENBEAST_DERIVED_<KEY> (forwarded by -d with the
+# rest); _ob_override ignores an env value that is only that record, so the
+# conf file decides again. An env value that differs from the record is a
+# real override and wins as always.
+_ob_override() { # _ob_override KEY — print the real env override, or fail
+  local ev="OPENBEAST_$1" mv="OPENBEAST_DERIVED_$1"
+  [[ -n "${!ev:-}" ]] || return 1
+  [[ -n "${!mv+x}" && "${!ev}" == "${!mv}" ]] && return 1
+  printf '%s\n' "${!ev}"
+}
+_ob_derive() { # _ob_derive KEY VALUE [FROM_ENV] — export OPENBEAST_KEY=VALUE as derived
+  # ...unless the operator's own env set KEY: that stays an override on
+  # every re-source, so no record is kept for it. FROM_ENV (1/0) says so
+  # when the caller knows better than the env does now.
+  local from_env="${3:-}"
+  if [[ -z "$from_env" ]]; then
+    from_env=0
+    _ob_override "$1" >/dev/null && from_env=1
+  fi
+  if [[ "$from_env" == 1 ]]; then
+    unset "OPENBEAST_DERIVED_$1"
+    export "OPENBEAST_$1=$2"
+  else
+    export "OPENBEAST_$1=$2" "OPENBEAST_DERIVED_$1=$2"
+  fi
+}
+_ob_underive() { # _ob_underive KEY — drop OPENBEAST_KEY if it is only our record
+  local ev="OPENBEAST_$1" mv="OPENBEAST_DERIVED_$1"
+  [[ -n "${!mv+x}" ]] || return 0
+  [[ "${!ev:-}" == "${!mv}" ]] && unset "$ev"
+  unset "$mv"
+}
+
 # _ob_bool <raw value> <default> [KEY] — the ONE parser for every true/false
 # key. Prints exactly "true" or "false", which is all any consumer compares
 # against (start.sh `== "true"`, Open WebUI's `.lower() == "true"`, edge.py,
@@ -486,7 +524,14 @@ fi
 # 404s any other id, so for vllm/tensorfold the agent runner sends this one
 # (OPENBEAST_INFERENCE_MODEL). A served name may contain spaces but never
 # " #", so a trailing comment is cut there; one layer of quotes is dropped.
-INFERENCE_MODEL="${OPENBEAST_INFERENCE_MODEL:-$(_ob_conf_value INFERENCE_MODEL || true)}"
+# (_ob_im_env: whether the operator's env gave it — the export below would
+# otherwise look like one to the hydra block.)
+_ob_im_env=0
+if INFERENCE_MODEL="$(_ob_override INFERENCE_MODEL)"; then
+  _ob_im_env=1
+else
+  INFERENCE_MODEL="$(_ob_conf_value INFERENCE_MODEL || true)"
+fi
 INFERENCE_MODEL="${INFERENCE_MODEL%%[[:space:]]#*}"
 INFERENCE_MODEL="${INFERENCE_MODEL%"${INFERENCE_MODEL##*[![:space:]]}"}"   # rtrim
 INFERENCE_MODEL="${INFERENCE_MODEL%\"}"; INFERENCE_MODEL="${INFERENCE_MODEL#\"}"
@@ -558,10 +603,10 @@ _ob_repo_path() {
   esac
   printf '%s\n' "$p"
 }
-HYDRA="$(_ob_bool "${OPENBEAST_HYDRA:-$(_ob_conf_value HYDRA || true)}" false HYDRA)"
-HYDRA_PORT="$(_ob_port "${OPENBEAST_HYDRA_PORT:-$(_ob_conf_value HYDRA_PORT || true)}" 8095 HYDRA_PORT)"
-HYDRA_CONFIG="$(_ob_repo_path "${OPENBEAST_HYDRA_CONFIG:-$(_ob_conf_value HYDRA_CONFIG || true)}" hydra.toml)"
-HYDRA_DEFAULT_MODEL="${OPENBEAST_HYDRA_DEFAULT_MODEL:-$(_ob_conf_value HYDRA_DEFAULT_MODEL || true)}"
+HYDRA="$(_ob_bool "$(_ob_override HYDRA || _ob_conf_value HYDRA || true)" false HYDRA)"
+HYDRA_PORT="$(_ob_port "$(_ob_override HYDRA_PORT || _ob_conf_value HYDRA_PORT || true)" 8095 HYDRA_PORT)"
+HYDRA_CONFIG="$(_ob_repo_path "$(_ob_override HYDRA_CONFIG || _ob_conf_value HYDRA_CONFIG || true)" hydra.toml)"
+HYDRA_DEFAULT_MODEL="$(_ob_override HYDRA_DEFAULT_MODEL || _ob_conf_value HYDRA_DEFAULT_MODEL || true)"
 HYDRA_DEFAULT_MODEL="${HYDRA_DEFAULT_MODEL%%[[:space:]#]*}"
 if [[ -z "$HYDRA_DEFAULT_MODEL" ]]; then
   HYDRA_DEFAULT_MODEL=beast
@@ -593,8 +638,10 @@ if [[ "$HYDRA" == "true" ]]; then
   # served id travels separately as OPENBEAST_HYDRA_UPSTREAM_MODEL. A child
   # that re-sources this file inherits OPENBEAST_INFERENCE_MODEL=beast
   # (start.sh -d forwards every OPENBEAST_* into the daemon), so recover the
-  # real id from there instead of taking the route for the served model.
-  if [[ "$INFERENCE_MODEL" == "$HYDRA_DEFAULT_MODEL" ]]; then
+  # real id from there instead of taking the route for the served model. An
+  # id that came from the env only is gone once that export is recognised as
+  # derived (_ob_override): it is empty then, and recovered the same way.
+  if [[ -z "$INFERENCE_MODEL" || "$INFERENCE_MODEL" == "$HYDRA_DEFAULT_MODEL" ]]; then
     INFERENCE_MODEL="${OPENBEAST_HYDRA_UPSTREAM_MODEL:-}"
   fi
   if [[ -n "$INFERENCE_MODEL" ]]; then
@@ -602,15 +649,15 @@ if [[ "$HYDRA" == "true" ]]; then
   else
     unset OPENBEAST_HYDRA_UPSTREAM_MODEL
   fi
-  export OPENBEAST_INFERENCE_MODEL="$HYDRA_DEFAULT_MODEL"
+  _ob_derive INFERENCE_MODEL "$HYDRA_DEFAULT_MODEL" "$_ob_im_env"
   # hydra itself reads this (hydra_core.implicit_raw's default_route, and
   # `hydra.py --check` holds an explicit hydra.toml to it) — without the
   # export a conf-file HYDRA_DEFAULT_MODEL reached the agents but not hydra.
-  export OPENBEAST_HYDRA_DEFAULT_MODEL="$HYDRA_DEFAULT_MODEL"
-  export OPENBEAST_HYDRA=true
-  export OPENBEAST_HYDRA_PORT="$HYDRA_PORT"
+  _ob_derive HYDRA_DEFAULT_MODEL "$HYDRA_DEFAULT_MODEL"
+  _ob_derive HYDRA true
+  _ob_derive HYDRA_PORT "$HYDRA_PORT"
   export OPENBEAST_HYDRA_URL="$HYDRA_URL"
-  export OPENBEAST_HYDRA_CONFIG="$HYDRA_CONFIG"
+  _ob_derive HYDRA_CONFIG "$HYDRA_CONFIG"
   export OPENBEAST_CONSUMER_BASE="$CONSUMER_BASE"
   # The PATH of the 0600 token start.sh mints (never the token): hydra trusts
   # X-OpenBeast-Device / X-OpenWebUI-User-* only next to X-Hydra-Caller, and
@@ -621,9 +668,17 @@ else
   # Derived exports only (never an input knob): a shell that once sourced
   # this with HYDRA=true must not keep pointing consumers at a dead hydra.
   unset OPENBEAST_CONSUMER_BASE OPENBEAST_HYDRA_URL OPENBEAST_HYDRA_CALLER_TOKEN_FILE
+  # ...nor keep its own earlier HYDRA=true (an input knob too) switching
+  # hydra back on, or agents sending the route id to the bare engine. Only
+  # values this file exported are dropped; an operator's env is kept.
+  if [[ -n "${OPENBEAST_DERIVED_HYDRA+x}" ]]; then
+    _ob_underive HYDRA; _ob_underive HYDRA_PORT; _ob_underive HYDRA_CONFIG
+    _ob_underive HYDRA_DEFAULT_MODEL; _ob_underive INFERENCE_MODEL
+    unset OPENBEAST_HYDRA_UPSTREAM_MODEL
+  fi
 fi
-INSTINCT="$(_ob_bool "${OPENBEAST_INSTINCT:-$(_ob_conf_value INSTINCT || true)}" false INSTINCT)"
-INSTINCT_PORT="$(_ob_port "${OPENBEAST_INSTINCT_PORT:-$(_ob_conf_value INSTINCT_PORT || true)}" 8094 INSTINCT_PORT)"
+INSTINCT="$(_ob_bool "$(_ob_override INSTINCT || _ob_conf_value INSTINCT || true)" false INSTINCT)"
+INSTINCT_PORT="$(_ob_port "$(_ob_override INSTINCT_PORT || _ob_conf_value INSTINCT_PORT || true)" 8094 INSTINCT_PORT)"
 INSTINCT_SCORER="$(_ob_bool "${OPENBEAST_INSTINCT_SCORER:-$(_ob_conf_value INSTINCT_SCORER || true)}" false INSTINCT_SCORER)"
 INSTINCT_CONFIG="$(_ob_repo_path "${OPENBEAST_INSTINCT_CONFIG:-$(_ob_conf_value INSTINCT_CONFIG || true)}" agents/instinct/instinct.toml)"
 _ob_ri="${OPENBEAST_ROUTER_INSTINCT:-$(_ob_conf_value ROUTER_INSTINCT || true)}"
@@ -637,12 +692,14 @@ case "$ROUTER_INSTINCT" in
     echo "WARNING: ROUTER_INSTINCT='$_ob_ri' is not off|shadow|enforce — using off." >&2
     ROUTER_INSTINCT=off ;;
 esac
-unset _ob_ri
+unset _ob_ri _ob_im_env
 if [[ "$INSTINCT" == "true" ]]; then
   # For the dashboard's services.instinct probe (extensions inherit this
   # environment). Only when on: a default rig exports nothing new.
-  export OPENBEAST_INSTINCT=true
-  export OPENBEAST_INSTINCT_PORT="$INSTINCT_PORT"
+  _ob_derive INSTINCT true
+  _ob_derive INSTINCT_PORT "$INSTINCT_PORT"
+else
+  _ob_underive INSTINCT; _ob_underive INSTINCT_PORT
 fi
 # The tool server's web_search (agents/tools.py) defaults SEARXNG_URL to
 # localhost:8888, but SearXNG binds BIND_HOST — and a socket bound to a
