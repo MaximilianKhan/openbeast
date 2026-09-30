@@ -28,7 +28,10 @@ def base() -> dict:
     """A three-node fleet: the 1-slot rig, a vLLM pair, a 2-slot llama box."""
     return {
         "schema": 1,
-        "hydra": {"probe_interval_s": 1, "down_after": 2, "up_after": 2},
+        # A mechanism fixture: it mixes families on purpose, so it must say so
+        # (an undeclared mix is a config error — Max's uncensored-only rule).
+        "hydra": {"probe_interval_s": 1, "down_after": 2, "up_after": 2,
+                  "allowed_families": ["unc", "stock", "moe"]},
         "nodes": {
             "rig": {"url": "http://127.0.0.1:8080", "engine": "llama", "slots": 1},
             "sparks": {"url": "http://10.0.0.5:8000", "engine": "vllm", "slots": 8, "key_env": "SPARK_KEY"},
@@ -88,19 +91,70 @@ def test_example_config_validates(tmp_path, monkeypatch):
     home = tmp_path / "home"
     kd = home / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
-    for k in ("sparks", "ti"):
+    for k in ("ti",):
         (kd / f"{k}.key").write_text("secret\n")
         (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(home))
     cfg = core.load_config(REPO / "hydra.toml.example", {})
     assert set(cfg.routes) >= {"beast", "beast:max", "beast:fast", "beast:long", "beast:vision", "classify"}
-    nv = cfg.deployments["qwen38-nvfp4@sparks"]
-    assert nv.upstream == "qwen3.8-27b-nvfp4" and nv.ctx == 262144      # from the profile
     assert cfg.nodes["rig"].gpu_lease and cfg.nodes["rig"].loopback
+    assert cfg.nodes["sparks"].engine == "tensorfold" and not cfg.nodes["sparks"].has_key
     assert cfg.route_by_id_or_alias["qwen-27b-q5"].id == "beast"
-    assert not cfg.nodes["sparks-tf"].enabled
-    assert any("then.route with no when.model" in w for w in cfg.warnings)
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
+    assert cfg.warnings == [], cfg.warnings            # the shipped example is clean under `check`
+
+
+def test_example_instinct_deadline_lets_a_27b_answer(tmp_path, monkeypatch):
+    # R-hydra-2: Max's decision (3) — routing decisions go to a FULL 27B.
+    # The example shipped deadline_ms = 25, which no 27B prefill can meet,
+    # so the small tiers would be hydra's real decider. The brief estimates
+    # 0.2-0.6 s on the 5090; the example must leave room for that.
+    raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
+    ms = raw["hydra"]["instinct"]["deadline_ms"]
+    assert 600 <= ms <= 2000, ms
+    assert "open question" not in (REPO / "hydra.toml.example").read_text().lower()
+    assert "keep `linear` online" not in (REPO / "docs" / "BEAST_HYDRA_PLAN.md").read_text()
+
+
+def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
+    # Max 2026-09-30: "all of our models are uncensored" — hydra must never
+    # route or spill to a stock model. The example used to ship stock NVFP4
+    # (and the stock 35B-A3B MoE) in four routes, and same_family = false.
+    kd = tmp_path / ".config" / "openbeast" / "hydra"
+    kd.mkdir(parents=True)
+    (kd / "ti.key").write_text("secret\n")
+    (kd / "ti.key").chmod(0o600)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = core.load_config(REPO / "hydra.toml.example", {})
+    allowed = cfg.settings.allowed_families
+    assert allowed and all("uncensored" in f for f in allowed), allowed
+    assert all(d.family in allowed for d in cfg.deployments.values())
+    assert cfg.routes["beast"].same_family and cfg.routes["beast"].family == "qwen3.8-27b-uncensored"
+    glm = cfg.deployments["glm53-flash-unc@sparks"]
+    assert glm.family == "glm-5.3-flash-uncensored" and cfg.nodes[glm.node].engine == "tensorfold"
+    st = ready_state(cfg)
+    for d in cfg.deployments.values():
+        st.conformance[d.id] = ("pass", False)          # remote nodes need a passing report
+    stock = {"qwen3.8-27b", "qwen3.6-35b-a3b"}
+    # Every path the finding named: rig busy, rig drained, huge prompt,
+    # guest, phone — `beast` stays on the uncensored 27B family throughout.
+    st.admit("qwen38-unc-q5@rig", "rig", 1000.0)
+    cases = [decide(cfg, st),
+             decide(cfg, st, {"model": "beast", "messages": [{"role": "user", "content": "x " * 200_000}]}),
+             decide(cfg, st, caller=core.Caller(trusted=True, role="user")),
+             decide(cfg, st, caller=core.Caller(trusted=True, device="max-phone"))]
+    for d in cases:
+        fams = {c.d.family for c in d.attempts}
+        assert d.ok and fams == {"qwen3.8-27b-uncensored"}, (d.route, ids(d), d.trace.excluded)
+    assert cases[1].route == "beast:long" and "glm53-flash-unc@sparks" in cases[1].trace.excluded
+    # beast:max is quality-first and no longer rewritten by the phone rule
+    assert decide(cfg, st, {"model": "beast:max", "messages": []},
+                  caller=core.Caller(trusted=True, device="max-phone")).route == "beast:max"
+    # classify (router decisions) lands on a full 27B, never a small/MoE model
+    assert {c.d.id for c in decide(cfg, st, {"model": "classify", "messages": []}).attempts} <= \
+        {"qwen38-unc-q5@ti", "qwen38-unc-q5@rig"}
+    for d in cfg.deployments.values():
+        assert d.family not in stock
 
 
 def test_example_classify_route_decides_on_a_full_uncensored_27b():
@@ -132,7 +186,7 @@ def test_example_upstreams_are_the_ids_llama_server_actually_lists():
     raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
     deps = raw["deployments"]
     assert deps["qwen38-unc-q5@rig"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-mtp-q5.sh")
-    assert deps["qwen36-a3b-q4@ti"]["upstream"] == _served_alias("serve-qwen-35b-a3b.sh")
+    assert deps["qwen38-unc-q5@ti"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-q5.sh")
     assert all(d.get("verify_upstream", True) for d in deps.values())
 
 
@@ -221,10 +275,7 @@ REJECT = {
     "instinct_engine_role": (lambda r: r["nodes"]["ti"].update(role="instinct-engine"),
                              "refuses to route to an instinct engine"),
     "node_is_instinct_url": (lambda r: r["nodes"].update(ins={"url": "http://127.0.0.1:8094", "engine": "openai"}),
-                             "is an instinct URL"),
-    "node_is_instinct_engine_url": (lambda r: (r["hydra"].update(instinct={"engine_urls": ["http://127.0.0.1:8082"]}),
-                                               r["nodes"].update(sc={"url": "http://127.0.0.1:8082",
-                                                                     "engine": "llama"})), "is an instinct URL"),
+                             "is the instinct service URL"),
     "instinct_url_not_loopback": (lambda r: r["hydra"].update(instinct={"url": "http://10.0.0.1:8094"}),
                                   "must be a loopback"),
     "bad_engine": (lambda r: r["nodes"]["rig"].update(engine="ollama"), "engine must be one of"),
@@ -718,12 +769,245 @@ def test_same_family_and_max_attempts():
     raw["routes"]["beast"]["same_family"] = True
     cfg = cfg_of(raw)
     d = decide(cfg, ready_state(cfg))
-    assert ids(d) == ["unc@rig"] and d.trace.excluded["nvfp4@sparks"] == "family stock != unc"
+    assert ids(d) == ["unc@rig"] and d.trace.excluded["nvfp4@sparks"].startswith("family stock != unc")
     raw = base()
     raw["routes"]["beast:fast"]["max_attempts"] = 2
     cfg = cfg_of(raw)
     assert len(ids(decide(cfg, ready_state(cfg), {"model": "beast:fast"}))) == 2
     assert len(ids(decide(cfg_of(), ready_state(cfg_of()), {"model": "beast:fast"}))) == 3
+
+
+# ─────────────────── family policy (Max 2026-09-30: never stock) ───────────────────
+
+def _uncensored_only(raw=None):
+    """base() with the fleet policy on: only the uncensored family may serve.
+    Routes drop the stock/MoE targets (validation refuses a route target
+    outside the policy); those stay as pinnable deployments."""
+    raw = raw or base()
+    raw["hydra"]["allowed_families"] = ["unc"]
+    for r in raw["routes"].values():
+        r["targets"] = [t for t in r["targets"] if t["d"] == "unc@rig"]
+    return raw
+
+
+def _with_policy(cfg, **kw):
+    cfg.settings = core.Settings(**{**{k: getattr(cfg.settings, k) for k in cfg.settings.__dataclass_fields__},
+                                    **kw})
+    return cfg
+
+
+def test_allowed_families_refuses_a_route_target_outside_the_policy():
+    raw = base()
+    raw["hydra"]["allowed_families"] = ["unc"]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nvfp4@sparks is family 'stock', outside hydra.allowed_families" in x for x in e.value.errors)
+    assert any("moe@ti is family 'moe'" in x for x in e.value.errors)
+
+
+def test_allowed_families_leaves_strict_pins_alone_and_warns_about_them():
+    cfg = cfg_of(_uncensored_only())
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)                   # the 1-slot rig is busy
+    assert ids(decide(cfg, st)) == ["unc@rig"]           # queue on the rig, never spill off-policy
+    assert ids(decide(cfg, st, {"model": "nvfp4@sparks", "messages": []})) == ["nvfp4@sparks"]
+    assert any("deployments.nvfp4@sparks: family 'stock' is outside hydra.allowed_families" in w
+               for w in cfg.warnings)
+
+
+def test_allowed_families_is_a_hard_filter_in_decide_on_spill_and_ctx_last_resort():
+    # Old code has no policy: with the rig saturated `beast` spills to stock.
+    # decide() filters every non-strict candidate even when a route still
+    # lists a forbidden target (a Config built around validation, as a hot
+    # reload racing an in-flight plan could leave it).
+    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)
+    d = decide(cfg, st)
+    assert ids(d) == ["unc@rig"], ids(d)
+    assert d.trace.excluded["nvfp4@sparks"] == "family stock not in hydra.allowed_families"
+    big = {"model": "beast", "messages": [{"role": "user", "content": "x " * 450_000}]}   # ~300K tokens
+    d = decide(cfg, st, big)
+    assert ids(d) == ["unc@rig"], (ids(d), d.trace.notes)
+
+
+def test_same_family_anchor_is_explicit_never_list_order():
+    # A-hydra-2: beast:long lists the stock target FIRST at priority 0. The old
+    # anchor was min(targets) = first listed = stock, so same_family excluded
+    # the UNCENSORED rig. Now a mixed top group is a config error…
+    raw = base()
+    raw["routes"]["beast:long"]["same_family"] = True
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("routes.beast:long: same_family, but the priority-0 targets span stock, unc" in x
+               for x in e.value.errors), e.value.errors
+    # …and an explicit family anchors it, whatever the order.
+    raw["routes"]["beast:long"]["family"] = "unc"
+    cfg = cfg_of(raw)
+    assert cfg.routes["beast:long"].family == "unc"
+    d = decide(cfg, ready_state(cfg), {"model": "beast:long", "messages": []})
+    assert ids(d) == ["unc@rig"], ids(d)
+    assert d.trace.excluded["nvfp4@sparks"].startswith("family stock != unc")
+
+
+def test_family_key_rules():
+    raw = base()
+    raw["routes"]["beast"].update(family="unc", same_family=False)
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("family implies same_family" in x for x in e.value.errors)
+    raw = base()
+    raw["routes"]["beast"]["family"] = "martian"
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("no target has that family" in x for x in e.value.errors)
+    raw = base()
+    raw["routes"]["beast"]["family"] = "unc"            # family alone implies same_family
+    cfg = cfg_of(raw)
+    assert cfg.routes["beast"].same_family
+    assert any("nvfp4@sparks (family stock) can never serve" in w for w in cfg.warnings)
+
+
+def test_same_family_survives_a_rule_hop():
+    # B-hydra-2: the guard read the route AFTER the rule rewrite, so a huge
+    # `beast` prompt redirected to beast:long went to stock first.
+    raw = base()
+    raw["routes"]["beast"]["same_family"] = True
+    raw["rules"] = [{"name": "long", "when": {"min_prompt_tokens": 1000, "model": ["beast"]},
+                     "then": {"route": "beast:long"}}]
+    cfg = cfg_of(raw)
+    big = {"model": "beast", "messages": [{"role": "user", "content": "x " * 3000}]}
+    d = decide(cfg, ready_state(cfg), big)
+    assert d.route == "beast:long" and ids(d) == ["unc@rig"], (d.route, ids(d))
+    assert "same_family" in d.trace.excluded["nvfp4@sparks"]
+
+
+def test_a_rule_that_strands_a_same_family_route_is_a_config_error():
+    raw = base()
+    raw["routes"]["beast"]["same_family"] = True
+    raw["routes"]["stock-only"] = {"targets": [{"d": "nvfp4@sparks"}]}
+    raw["rules"] = [{"name": "strand", "when": {"device": "phone"}, "then": {"route": "stock-only"}}]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("rules.strand: sends same_family route beast (family unc) to stock-only, which has no unc"
+               in x for x in e.value.errors), e.value.errors
+    raw["routes"]["stock-only"] = {"targets": [{"d": "nvfp4@sparks"}, {"d": "unc@rig", "priority": 1}],
+                                   "family": "stock"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("anchored on stock" in x for x in e.value.errors), e.value.errors
+
+
+def test_ctx_last_resort_is_chosen_among_policy_clean_targets():
+    # A-hydra-3: the last resort picked max(ctx) FIRST and only then checked
+    # the family, so a bigger stock target turned an overflow 400 (which the
+    # runner compacts on) into a hydra 503.
+    raw = base()
+    raw["deployments"]["unc@rig"]["ctx"] = 131072
+    raw["routes"]["t"] = {"targets": [{"d": "unc@rig", "priority": 0}, {"d": "nvfp4@sparks", "priority": 1}],
+                          "same_family": True}
+    cfg = cfg_of(raw)
+    big = {"model": "t", "messages": [{"role": "user", "content": "x " * 400_000}]}   # ~267K tokens
+    d = decide(cfg, ready_state(cfg), big)
+    assert d.ok and ids(d) == ["unc@rig"], (d.status, ids(d), d.trace.excluded)
+    assert any("last resort -> unc@rig" in n for n in d.trace.notes)
+
+
+def test_sticky_affinity_cannot_hold_a_conversation_on_a_forbidden_family():
+    # B-hydra-4: a turn that spilled to stock stayed there (sticky) after the
+    # rig freed up. Under the policy a stale entry naming stock is ignored.
+    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+    cfg.routes["beast"] = core.Route(**{**{k: getattr(cfg.routes["beast"], k)
+                                           for k in core.Route.__dataclass_fields__}, "affinity": "sticky"})
+    cfg.route_by_id_or_alias["beast"] = cfg.routes["beast"]
+    st = ready_state(cfg)
+    f = feats(cfg)
+    st.affinity.put(f.session_key, "nvfp4@sparks", 999.0)
+    d = decide(cfg, st)
+    assert ids(d) == ["unc@rig"] and not any("sticky hit" in n for n in d.trace.notes), d.trace.notes
+
+
+def test_rule_warnings_prefer_that_cannot_apply_and_a_model_scoped_route_rule():
+    # A-hydra-5: a prefer outside every reachable route did nothing silently,
+    # and the phone rule (no when.model) rewrote beast:max to beast:fast.
+    raw = base()
+    raw["rules"] = [{"name": "p", "when": {"model": ["beast:vision"]}, "then": {"prefer": ["moe@ti"]}},
+                    {"name": "phone", "when": {"device": "phone", "model": ["beast"]},
+                     "then": {"route": "beast:fast"}}]
+    cfg = cfg_of(raw)
+    assert any("rules.p.then.prefer: 'moe@ti' is not a target of any route" in w for w in cfg.warnings)
+    assert not any("redirects EVERY route" in w for w in cfg.warnings)
+    phone = core.Caller(trusted=True, device="phone")
+    assert decide(cfg, ready_state(cfg), {"model": "beast:max", "messages": []}, caller=phone).route == "beast:max"
+
+
+def test_instinct_engine_that_is_also_a_node_is_allowed_with_a_warning():
+    # Revision 2026-09-30: the rig's own 27B may be an instinct engine (logprob
+    # scoring) AND the rig node. No loop: instinct calls it directly. Only the
+    # instinct SERVICE url is refused.
+    raw = base()
+    raw["hydra"]["instinct"] = {"engine_urls": ["http://127.0.0.1:8080/"]}
+    cfg = cfg_of(raw)
+    assert "rig" in cfg.nodes
+    assert any("nodes.rig.url is also an instinct engine" in w for w in cfg.warnings)
+    raw["nodes"]["ins"] = {"url": "http://127.0.0.1:8094/", "engine": "openai"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
+
+
+def test_instinct_urls_match_across_loopback_spellings():
+    # Review minor on B-hydra-5: engine_urls = ["http://localhost:8080/"] did
+    # not match the rig at 127.0.0.1:8080 (no risk-13 warning), and a node at
+    # localhost:8094 slipped past the instinct-service refusal.
+    raw = base()
+    raw["hydra"]["instinct"] = {"engine_urls": ["http://localhost:8080/"]}
+    assert any("nodes.rig.url is also an instinct engine" in w for w in cfg_of(raw).warnings)
+    raw["nodes"]["ins"] = {"url": "http://localhost:8094", "engine": "openai"}
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
+    assert core._endpoint_key("http://localhost:8095") != core._endpoint_key("http://127.0.0.1:8094")  # port matters
+
+
+def test_routes_that_mix_families_without_a_policy_are_a_config_error():
+    # R-hydra-1: the uncensored-only rule was opt-in — an undeclared mix only
+    # warned, so `beast` kept spilling to stock. Now hydra refuses the file.
+    raw = base()
+    del raw["hydra"]["allowed_families"]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("hydra.allowed_families is required" in x for x in e.value.errors), e.value.errors
+    # one family across every route needs no declaration
+    one = _uncensored_only()
+    del one["hydra"]["allowed_families"]
+    assert not any("allowed_families" in w for w in cfg_of(one).warnings)
+    # nor does the implicit single-node config
+    core.implicit_config({})
+
+
+def test_the_pre_policy_example_hydra_toml_is_refused(tmp_path, monkeypatch):
+    # R-hydra-1: a hydra.toml copied from the template shipped before
+    # 2026-09-30 (beast spills to stock NVFP4, beast:fast on the stock MoE)
+    # passed `check` with a warning. It must not load.
+    kd = tmp_path / ".config" / "openbeast" / "hydra"
+    kd.mkdir(parents=True)
+    for k in ("sparks", "ti"):
+        (kd / f"{k}.key").write_text("secret\n")
+        (kd / f"{k}.key").chmod(0o600)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(core.ConfigError) as e:
+        core.load_config(FIX / "pre-policy-example.toml", {})
+    assert e.value.errors == [x for x in e.value.errors if "allowed_families is required" in x], e.value.errors
+    assert len(e.value.errors) == 1
+
+
+def test_allowed_families_bad_entries_are_config_errors():
+    raw = base()
+    raw["hydra"]["allowed_families"] = ["unc", ""]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("hydra.allowed_families" in x for x in e.value.errors)
 
 
 # ───────────────────────────── health ─────────────────────────────

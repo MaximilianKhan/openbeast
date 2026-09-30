@@ -149,13 +149,28 @@ print(json.dumps(d))
   printf '%s' "$body" | _admin POST /hydra/explain -H "Content-Type: application/json" --data-binary @- | _pretty
 }
 
+# _admin_ok METHOD PATH — pretty-prints the answer, and exits 1 when hydra
+# refused the change ({"ok": false}: a 422 reload, a 404 unknown node) or the
+# answer is not JSON. curl -sS exits 0 on any HTTP status, so without this
+# `hydra.sh reload && echo applied` said "applied" while hydra kept the old
+# config.
+_admin_ok() {
+  local body
+  body="$(_admin "$@")" || exit 1
+  printf '%s\n' "$body" | _pretty || { printf '%s\n' "$body" >&2; exit 1; }
+  printf '%s' "$body" | "$PY" -c 'import json, sys
+d = json.load(sys.stdin)
+sys.exit(1 if isinstance(d, dict) and (d.get("ok") is False or "error" in d) else 0)' \
+    || exit 1
+}
+
 cmd_reload() {
-  _admin POST /hydra/reload | _pretty
+  _admin_ok POST /hydra/reload
 }
 
 cmd_drain() {
   [[ -n "${2:-}" ]] || die "$1 <node>"
-  _admin POST "/hydra/$1/$2" | _pretty
+  _admin_ok POST "/hydra/$1/$2"
 }
 
 cmd_decisions() {
