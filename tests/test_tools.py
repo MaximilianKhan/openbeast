@@ -754,6 +754,16 @@ class TestBuildRunnerCmd(unittest.TestCase):
         self.assertIn("--context", cmd)
         self.assertIn("--base-url", cmd)
 
+    def test_a_dash_leading_task_is_never_parsed_as_runner_flags(self):
+        # Review B-chat-5: without `--`, a task of "--task-file=/etc/hostname"
+        # made runner.py read that file as its task.
+        import mcp_server
+        cmd = mcp_server._build_runner_cmd(
+            task="--task-file=/etc/hostname", log_path="/tmp/x.jsonl",
+            max_iter=10, workdir="/tmp", context_budget=0)
+        self.assertEqual(cmd[-2:], ["--", "--task-file=/etc/hostname"])
+        self.assertEqual(cmd.count("--"), 1)
+
 
 class TestRunnerApiKey(unittest.TestCase):
     """resolve_api_key: flag > OPENBEAST_API_KEY > OPENAI_API_KEY > sentinel.
