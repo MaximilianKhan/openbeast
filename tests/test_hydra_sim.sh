@@ -93,6 +93,19 @@ out="$(bash "$H" tail 3)"
 [[ "$(wc -l <<< "$out")" -eq 3 ]] && grep -q -- "-> pin" <<< "$out" && ok "tail" || bad "tail: $out"
 bash "$H" reload | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]' \
   && ok "reload" || bad "reload"
+# A refused change must fail the command: `hydra.sh reload && echo applied`
+# used to say "applied" while hydra kept the old config (curl -sS exits 0 on
+# a 422, and json.tool exits 0 on valid JSON).
+cp "$OPENBEAST_HYDRA_CONFIG" "$W/good.toml"
+printf 'this is = = not toml\n' > "$OPENBEAST_HYDRA_CONFIG"
+out="$(bash "$H" reload 2>&1)"; rc=$?
+cp "$W/good.toml" "$OPENBEAST_HYDRA_CONFIG"
+[[ $rc -ne 0 ]] && grep -q '"ok": false' <<< "$out" && ok "reload of a broken config exits non-zero" \
+  || bad "refused reload rc=$rc: $out"
+bash "$H" reload >/dev/null && ok "reload after the fix exits 0" || bad "reload of the restored config failed"
+out="$(bash "$H" drain nosuchnode 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && grep -q "no node" <<< "$out" && ok "drain of an unknown node exits non-zero" \
+  || bad "drain unknown rc=$rc: $out"
 
 out="$(bash "$H" add-node newbox --url "$HYDRA_SIM_TI" --engine llama --key-file "$W/sim/ti.key" \
         --slots 2 --deployment unc@newbox 2>"$W/add.err")"; rc=$?
