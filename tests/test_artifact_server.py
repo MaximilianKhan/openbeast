@@ -80,9 +80,10 @@ FLAT_404 = {"detail": "Not Found"}
 # The exact policy /raw/ must carry. Duplicated here (not imported) so a typo
 # in the server constant cannot silently agree with itself.
 EXPECTED_RAW_CSP = (
-    "sandbox allow-scripts allow-forms allow-modals allow-popups; "
+    "sandbox allow-scripts allow-forms allow-modals allow-popups "
+    "allow-popups-to-escape-sandbox; "
     "default-src 'none'; "
-    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com "
     "https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com "
     "https://code.jquery.com; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
@@ -104,6 +105,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_ARTIFACT_PORT", "39917")
     monkeypatch.delenv("OPENBEAST_ARTIFACT_OPERATORS", raising=False)
     monkeypatch.delenv("OPENBEAST_CHAT_OPERATORS", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_ADMINS", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", raising=False)
+    # Hermetic: never the checkout's own openbeast.conf, never the real
+    # `tailscale serve` (the shell's session link asks it about :8445).
+    monkeypatch.setenv("OPENBEAST_CONF", str(tmp_path / "absent.conf"))
+    monkeypatch.setenv("OPENBEAST_CHAT_BASE_URL", "off")
     return tmp_path
 
 
@@ -127,6 +134,7 @@ def make_client(env, monkeypatch):
         # name a rebinding attack arrives under.
         c = TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3004")
         c.app_token = app.state.local_token      # type: ignore[attr-defined]
+        c.tmp = env                              # type: ignore[attr-defined]
         c.asgi_app = app                         # type: ignore[attr-defined]
         return c
     return _make
@@ -146,6 +154,26 @@ def local(c, extra=None):
     return h
 
 
+def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False):
+    """Write an enrolled device into .run/clients.json (the schema
+    scripts/clients.sh owns) and return its bearer header."""
+    import hashlib
+    key = f"key-{dev_id}-{'-'.join(scopes)}-{int(revoked)}"
+    path = tmp_path / "run" / "clients.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        doc = {"version": 1, "devices": []}
+    doc["devices"] = [d for d in doc["devices"] if d.get("id") != dev_id]
+    doc["devices"].append({
+        "id": dev_id, "key_sha256": hashlib.sha256(key.encode()).hexdigest(),
+        "scopes": list(scopes), "revoked_at": "x" if revoked else None})
+    path.write_text(json.dumps(doc))
+    os.chmod(path, 0o600)
+    return {"Authorization": f"Bearer {key}"}
+
+
 def publish(c, headers=None, **kw):
     body = {"html": PAGE}
     body.update(kw)
@@ -158,10 +186,12 @@ def publish(c, headers=None, **kw):
 # The exact policy the shell and gallery must carry. Duplicated for the same
 # reason as EXPECTED_RAW_CSP above — asserting equality with the server's own
 # constant lets a weakening edit pass unnoticed. Review [11].
+# {scripts} is the sha256 list of the template's own inline blocks
+# (security-3): never 'self', never 'unsafe-inline'.
 EXPECTED_SHELL_CSP = (
     "default-src 'none'; "
-    "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
+    "script-src {scripts}; "
+    "style-src 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
@@ -215,11 +245,19 @@ def test_shell_and_gallery_carry_a_different_stricter_policy(make_client):
         # EXPECTED_RAW_CSP precisely so a typo cannot agree with itself. Pin
         # both: the duplicate catches a silent weakening, the identity catches
         # a header that stops coming from the constant at all.
-        assert csp == EXPECTED_SHELL_CSP
-        assert csp == artifact_server.SHELL_CSP
+        import re as _re
+        m = _re.search(r"script-src ([^;]*);", csp)
+        assert m, csp
+        sources = m.group(1).split()
+        assert sources and all(_re.fullmatch(r"'sha256-[A-Za-z0-9+/]+=*'", x)
+                               for x in sources), sources
+        assert csp == EXPECTED_SHELL_CSP.format(scripts=m.group(1))
+        assert csp == artifact_server.shell_csp(
+            [x[8:-1] for x in sources])
         assert csp != EXPECTED_RAW_CSP
         assert "frame-ancestors 'none'" in csp   # our UI is never framed
-        assert "script-src 'self' 'unsafe-inline'" in csp
+        assert "'self'" not in m.group(1)         # security-3
+        assert "'unsafe-inline'" not in m.group(1)
         assert "sandbox" not in csp              # sandboxing our own UI = broken
         assert "cdnjs.cloudflare.com" not in csp
         assert r.headers["x-frame-options"] == "DENY"
@@ -531,8 +569,9 @@ def test_unlisted_login_gets_404_everywhere(make_client):
 
 def test_private_artifact_of_another_owner_is_404(make_client):
     c = make_client(operators="max@example.com,kid@example.com")
-    a = publish(c)                                 # owner: first operator
-    assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    a = publish(c)                                 # owner: the rig (F-A1)
+    assert store.get_meta(a["id"])["owner"] == "rig"
+    # max, the first operator, administers the rig's pages; kid does not
     assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 200
     assert c.get(f"/a/{a['id']}", headers=KID).status_code == 404
     assert c.get(f"/raw/{a['id']}/v/1/", headers=KID).status_code == 404
@@ -615,7 +654,7 @@ def test_local_token_file_is_0600(make_client, tmp_path):
 def test_publish_owner_defaults_to_the_caller(make_client):
     c = make_client(operators="max@example.com,kid@example.com")
     a = publish(c)                                     # no login header
-    assert store.get_meta(a["id"])["owner"] == "max@example.com"  # 1st operator
+    assert store.get_meta(a["id"])["owner"] == "rig"   # the rig (F-A1)
     r = c.post("/api/artifacts", json={"html": PAGE}, headers=local(c, KID))
     assert store.get_meta(r.json()["id"])["owner"] == "kid@example.com"
 
@@ -630,7 +669,7 @@ def test_the_body_cannot_name_an_owner(make_client):
                headers=local(c))
     assert r.status_code == 201                        # ignored, not rejected
     meta = store.get_meta(r.json()["id"])
-    assert meta["owner"] == "max@example.com"          # the principal, not the body
+    assert meta["owner"] == "rig"                      # the principal, not the body
     assert c.get(f"/a/{r.json()['id']}", headers=MAX).status_code == 200
     # the model no longer carries the field at all
     assert "owner" not in artifact_server.PublishBody.model_fields
@@ -642,27 +681,35 @@ def test_the_body_cannot_name_an_owner(make_client):
 def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
     """The store gates visibility changes on ownership (D5), so the server
     has to say WHO is asking instead of letting it guess."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators="boss@example.com,max@example.com,kid@example.com")
     a = publish(c, headers=local(c, MAX))          # owner: max, not boss
     assert store.get_meta(a["id"])["owner"] == "max@example.com"
+    phone = enroll(c.tmp, "phone")
     r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
-                headers=local(c, MAX))
+                headers={**MAX, **phone})
     assert r.status_code == 200, r.text
     assert r.json()["visibility"] == "tailnet"
-    # ...and a local caller who is somebody else cannot share max's page.
-    # The refusal is the FLAT 404 (D29): "not your artifact" is a 400 that
-    # confirms a page exists at an id where a nonexistent one answers 404, so
-    # the second operator could map the store by the shape of the error.
+    # ...and a caller who is somebody else — kid, listed but neither owner
+    # nor admin — cannot un-share max's page. The refusal is the FLAT 404
+    # (D29): "not your artifact" is a 400 that confirms a page exists at an
+    # id where a nonexistent one answers 404, so a second operator could map
+    # the store by the shape of the error.
     r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "private"},
-                headers=local(c))                  # resolves to boss
+                headers={**KID, **phone})
     assert r.status_code == 404 and r.json() == FLAT_404
     assert "not your artifact" not in r.text
     # and it really was refused, not quietly applied
     assert store.get_meta(a["id"])["visibility"] == "tailnet"
     # an id that does not exist at all is indistinguishable from it
     r = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
-                json={"visibility": "private"}, headers=local(c))
+                json={"visibility": "private"}, headers={**KID, **phone})
     assert r.status_code == 404 and r.json() == FLAT_404
+    # F-A1: the RIG (locality token) is the administrator of every page —
+    # the explicit admin path, not a guess at the first operator.
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "private"},
+                headers=local(c))
+    assert r.status_code == 200, r.text
+    assert store.get_meta(a["id"])["visibility"] == "private"
 
 
 # --- R2: every mutation names its owner, without help from the ContextVar ----
@@ -678,8 +725,8 @@ def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
 def _drop_the_contextvar(monkeypatch):
     """Delete the mechanism R2 says is load-bearing but must not be.
 
-    `store.default_owner()` then falls back to the env allowlist's first
-    entry (boss), exactly as it would if the ContextVar silently stopped
+    `store.default_owner()` then falls back to the rig principal, exactly
+    as it would if the ContextVar silently stopped
     crossing BaseHTTPMiddleware into the threadpool one Starlette release
     from now. Applied AFTER the fixture publishes, because `publish()` is
     owned by the ContextVar by design (D28: `owner=` is an assertion there,
@@ -698,19 +745,31 @@ def _maxs_artifact(c, monkeypatch, versions: int = 1) -> dict:
     return a
 
 
+# Since F-A1 the locality token is the rig's ADMINISTRATOR, so R2's "second
+# operator" is now the one other writer there is: a listed tailnet login on
+# an `artifact`-scoped device (F-A2) who owns nothing and administers
+# nothing. boss is first on the list, so boss is the admin; max and kid are
+# plain operators.
+R2_OPERATORS = "boss@example.com,max@example.com,kid@example.com"
+
+
+def _as(c, who):
+    return {**who, **enroll(c.tmp, "phone")}
+
+
 def test_patching_a_description_refuses_a_non_owner_over_http(
         make_client, monkeypatch):
     """R2. The gallery subtitle is the text every other operator reads."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = _maxs_artifact(c, monkeypatch)
     r = c.patch(f"/api/artifacts/{a['id']}", json={"description": "pwned"},
-                headers=local(c))                  # resolves to boss
+                headers=_as(c, KID))               # listed, not the owner
     assert r.status_code == 404 and r.json() == FLAT_404
     assert store.get_meta(a["id"]).get("description") != "pwned"
     # and the owner still can, with the ContextVar still gone: the identity
     # travelled as an argument, which is the whole point.
     r = c.patch(f"/api/artifacts/{a['id']}", json={"description": "mine"},
-                headers=local(c, MAX))
+                headers=_as(c, MAX))
     assert r.status_code == 200, r.text
     assert store.get_meta(a["id"])["description"] == "mine"
 
@@ -719,28 +778,28 @@ def test_rolling_back_a_version_refuses_a_non_owner_over_http(
         make_client, monkeypatch):
     """R2. An ungated rollback serves an OLDER page at a URL its owner
     believes is current — a deface that leaves no trace in the version list."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = _maxs_artifact(c, monkeypatch, versions=2)
     assert store.get_meta(a["id"])["current"] == 2
     r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1},
-                headers=local(c))
+                headers=_as(c, KID))
     assert r.status_code == 404 and r.json() == FLAT_404
     assert store.get_meta(a["id"])["current"] == 2
     r = c.patch(f"/api/artifacts/{a['id']}", json={"current": 1},
-                headers=local(c, MAX))
+                headers=_as(c, MAX))
     assert r.status_code == 200, r.text
     assert store.get_meta(a["id"])["current"] == 1
 
 
 def test_deleting_refuses_a_non_owner_over_http(make_client, monkeypatch):
     """R2, the irreversible one: versions are the only copy there is."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = _maxs_artifact(c, monkeypatch)
-    r = c.delete(f"/api/artifacts/{a['id']}", headers=local(c))
+    r = c.delete(f"/api/artifacts/{a['id']}", headers=_as(c, KID))
     assert r.status_code == 404 and r.json() == FLAT_404
     assert store.get_meta(a["id"]) is not None, "the page was destroyed"
     assert c.get(f"/raw/{a['id']}/v/1/", headers=MAX).status_code == 200
-    r = c.delete(f"/api/artifacts/{a['id']}", headers=local(c, MAX))
+    r = c.delete(f"/api/artifacts/{a['id']}", headers=_as(c, MAX))
     assert r.status_code == 200 and r.json()["removed"] is True
     assert store.get_meta(a["id"]) is None
 
@@ -749,10 +808,10 @@ def test_sharing_refuses_a_non_owner_over_http_too(make_client,
                                                    monkeypatch):
     """The fourth mutation — the only one D22 actually reached — held up
     under the same conditions, which is what made the other three look safe."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = _maxs_artifact(c, monkeypatch)
     r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
-                headers=local(c))
+                headers=_as(c, KID))
     assert r.status_code == 404 and r.json() == FLAT_404
     assert store.get_meta(a["id"])["visibility"] == "private"
 
@@ -762,13 +821,13 @@ def test_a_mixed_patch_body_cannot_slip_one_field_past_the_guard(
     """All three fields in ONE request: the guard is per-mutator, so a body
     that sets every field must be refused on the first one and change
     nothing at all."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = _maxs_artifact(c, monkeypatch, versions=2)
     before = dict(store.get_meta(a["id"]))
     r = c.patch(f"/api/artifacts/{a['id']}",
                 json={"visibility": "tailnet", "description": "pwned",
                       "current": 1},
-                headers=local(c))
+                headers=_as(c, KID))
     assert r.status_code == 404 and r.json() == FLAT_404
     after = store.get_meta(a["id"])
     for field in ("visibility", "description", "current"):
@@ -797,7 +856,7 @@ def test_a_local_publish_cannot_attribute_to_a_non_operator(make_client):
     r = c.post("/api/artifacts", json={"html": PAGE},
                headers=local(c, STRANGER))
     assert r.status_code == 201
-    assert store.get_meta(r.json()["id"])["owner"] == "max@example.com"
+    assert store.get_meta(r.json()["id"])["owner"] == "rig"
 
 
 # --- D9: nothing announces the route table ------------------------------------
@@ -1026,8 +1085,8 @@ def test_listing_limit_is_clamped(make_client, monkeypatch):
     assert c.get("/api/artifacts?limit=0", headers=h).json()["count"] == 1
     assert c.get("/api/artifacts?limit=-9", headers=h).json()["count"] == 1
     seen = []
-    real = store.list_artifacts
-    monkeypatch.setattr(store, "list_artifacts",
+    real = store.list_page
+    monkeypatch.setattr(store, "list_page",
                         lambda **kw: (seen.append(kw.get("limit")),
                                       real(**kw))[1])
     c.get("/api/artifacts?limit=999999999", headers=h)
@@ -1036,7 +1095,8 @@ def test_listing_limit_is_clamped(make_client, monkeypatch):
 
 # --- D16: single-pass template substitution -----------------------------------
 
-IFRAME_SANDBOX = 'sandbox="allow-scripts allow-forms allow-modals allow-popups"'
+IFRAME_SANDBOX = ('sandbox="allow-scripts allow-forms allow-modals allow-popups '
+                  'allow-popups-to-escape-sandbox"')
 
 
 def _iframe_tag(body: str) -> str:
@@ -1186,7 +1246,12 @@ def test_unlisted_login_is_audited_too(make_client, tmp_path):
     rows = [json.loads(x) for x in
             (tmp_path / "run" / "artifact-audit.jsonl").read_text().splitlines()]
     denied = [r for r in rows if r["outcome"] == 404]
-    assert denied and denied[-1]["login"] == "nobody@example.com"
+    # security-2: the RESOLVED identity is null (it was refused); what was
+    # claimed, and from which peer, is kept beside it — never logged as if
+    # the named user had made the request.
+    assert denied and denied[-1]["login"] is None
+    assert denied[-1]["claimed_login"] == "nobody@example.com"
+    assert denied[-1]["peer"] == "127.0.0.1"
     assert denied[-1]["denied"] == "anonymous"     # why, for the operator
 
 
@@ -1603,16 +1668,17 @@ def test_an_ownership_refusal_is_indistinguishable_from_a_miss(make_client):
     """D29. `400 "not your artifact"` confirmed a page exists at an id where
     a nonexistent one answers 404 — a map of the store, one id at a time, for
     anyone holding the locality token."""
-    c = make_client(operators="boss@example.com,max@example.com")
+    c = make_client(operators=R2_OPERATORS)
     a = publish(c, headers=local(c, MAX))          # owner: max
     miss = c.patch("/api/artifacts/00000000-0000-4000-8000-000000000000",
-                   json={"description": "x"}, headers=local(c))
+                   json={"description": "x"}, headers=_as(c, KID))
     hit = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
-                  headers=local(c))                # boss, not max
+                  headers=_as(c, KID))             # kid, not max
     assert hit.status_code == miss.status_code == 404
     assert hit.text == miss.text
     assert hit.headers.get("content-length") == miss.headers.get("content-length")
-    # the republish path says exactly as little
+    # the republish path says exactly as little: the rig administers max's
+    # page, but PUBLISHING into it stays the owner's own act
     r = c.post("/api/artifacts", json={"html": PAGE, "artifact_id": a["id"]},
                headers=local(c))
     assert r.status_code == 404 and r.json() == FLAT_404
@@ -1683,12 +1749,16 @@ def test_the_rig_owner_is_a_valid_identity_not_the_first_allowlist_entry(make_cl
     c = make_client(operators="not-an-email, max@example.com")
     a = publish(c)
     owner = store.get_meta(a["id"])["owner"]
-    assert owner == "max@example.com", f"rig published as {owner!r}"
-    # an all-invalid allowlist falls back to the rig constant, and must NOT
-    # turn the read gate off
+    # F-A1: the rig publishes as the rig, whatever the list says; the list's
+    # first VALID entry is who administers it
+    assert owner == "rig", f"rig published as {owner!r}"
+    assert store.admins() == ["max@example.com"]
+    assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 200
+    # an all-invalid allowlist administers nothing, and must NOT turn the
+    # read gate off
     c2 = make_client(operators="not-an-email")
     b = publish(c2)
-    assert store.get_meta(b["id"])["owner"] == artifact_server.LOCAL_LOGIN
+    assert store.get_meta(b["id"])["owner"] == artifact_server.RIG_LOGIN
     assert c2.get("/api/artifacts",
                   headers={"Tailscale-User-Login": "stranger@example.com"}
                   ).status_code == 404, "an all-invalid allowlist failed OPEN"

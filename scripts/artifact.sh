@@ -4,12 +4,21 @@
 #   ./scripts/artifact.sh publish <file.html> [--title "T"] [--description "D"]
 #                                 [--favicon 📊] [--id ID] [--label "L"]
 #                                 [--file published=source]... [--visibility private|tailnet]
-#   ./scripts/artifact.sh list [--json]
+#   ./scripts/artifact.sh list [--json] [--limit N | --all] [--session ID] [--tag T]
 #   ./scripts/artifact.sh show <id> [--json]
 #   ./scripts/artifact.sh versions <id>
 #   ./scripts/artifact.sh rollback <id> <n>
 #   ./scripts/artifact.sh visibility <id> private|tailnet
-#   ./scripts/artifact.sh remove <id> --yes
+#   ./scripts/artifact.sh pin <id>  |  unpin <id>
+#   ./scripts/artifact.sh tag <id> [TAG]...          # replaces the tags; none clears
+#   ./scripts/artifact.sh chown <id> <login|rig>     # hand a page to another owner
+#   ./scripts/artifact.sh prune <id> --keep N --yes  # delete old versions, keep URL
+#   ./scripts/artifact.sh remove <id> [--version N] --yes
+#
+# The CLI is the RIG: it acts as the rig principal, which owns everything this
+# box publishes and administers every page (see docs/BEAST_ARTIFACT.md).
+# OPENBEAST_SESSION_ID, when set (beast-chat sessions export it), is stamped
+# on the published version as its source session.
 #
 # This is the shell half of the tool surface the model gets as
 # publish_artifact/list_artifacts (agents/mcp_server.py): the same store, the
@@ -49,7 +58,7 @@ REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 RUN_DIR="$REPO_DIR/.run"
 TOKEN_FILE="$RUN_DIR/artifact-local.token"
 
-_usage() { sed -n '4,12p' "$0" | sed 's/^# \{0,1\}//'; }
+_usage() { sed -n '4,23p' "$0" | sed 's/^# \{0,1\}//'; }
 _die() { echo "ERROR: $*" >&2; exit 2; }
 
 # One KEY= value out of openbeast.conf; last assignment wins, quotes trimmed.
@@ -247,7 +256,20 @@ if isinstance(d, dict):
 print(str(d)[:500])' 2>/dev/null || true)"
   echo "ERROR: $what failed (HTTP $code)${msg:+: $msg}" >&2
   if [[ "$code" == "404" ]]; then
-    echo "       A private artifact owned by someone else reports 404 too." >&2
+    if [[ "$what" == "publish" ]]; then
+      # correctness-07: the size gate refuses BEFORE the body is read, with
+      # the same flat 404 as everything else.
+      echo "       A 404 on publish means one of two things:" >&2
+      echo "       - the request body is over the server's size gate" >&2
+      echo "         (supporting files travel base64-encoded inside JSON), or" >&2
+      echo "       - with --id, the page is owned by another login; the rig or" >&2
+      echo "         an admin can hand it over: ./scripts/artifact.sh chown <id> rig" >&2
+    else
+      echo "       A private artifact owned by someone else reports 404 too." >&2
+    fi
+  fi
+  if [[ "$code" == "507" ]]; then
+    echo "       The rig's disk is full — free space and publish again." >&2
   fi
   exit 3
 }
@@ -300,21 +322,33 @@ def ident(a):
 
 if mode == "list":
     items = rows(doc)
+    total = doc.get("total") if isinstance(doc, dict) else None
     if not items:
+        if total:
+            print("No artifacts on this page (%s in all)." % total)
+            sys.exit(0)
         print("No artifacts published yet.")
         print("  Publish one:  ./scripts/artifact.sh publish page.html --title \"My page\"")
         sys.exit(0)
-    print("%-36s  %-30s  %4s  %-8s  %s" % ("ID", "TITLE", "VERS", "VIS", "UPDATED"))
+    print("%-36s  %-28s  %4s  %-8s  %-16s  %s" % (
+        "ID", "TITLE", "VERS", "VIS", "UPDATED", "OWNER"))
     for a in items:
         title = str(a.get("title") or "(untitled)")
-        if len(title) > 30:
-            title = title[:29] + "…"
-        print("%-36s  %-30s  %4s  %-8s  %s" % (
+        if a.get("pinned"):
+            title = "* " + title
+        if len(title) > 28:
+            title = title[:27] + "…"
+        print("%-36s  %-28s  %4s  %-8s  %-16s  %s" % (
             ident(a), title, "v%s" % nver(a),
             a.get("visibility", "?"),
-            stamp(a.get("updated_at") or a.get("created_at"))))
+            stamp(a.get("updated_at") or a.get("created_at")),
+            a.get("owner") or "-"))
     print("")
-    print("  Details: ./scripts/artifact.sh show <id>")
+    if isinstance(total, int) and total > len(items):
+        # correctness-06: never truncate silently.
+        print("  Showing %d of %d — see more with --limit N or --all." % (
+            len(items), total))
+    print("  * = pinned.  Details: ./scripts/artifact.sh show <id>")
     sys.exit(0)
 
 if mode == "show":
@@ -328,6 +362,12 @@ if mode == "show":
     print("url:         %s" % (a.get("url") or ""))
     print("visibility:  %s" % a.get("visibility", "?"))
     print("owner:       %s" % (a.get("owner") or "-"))
+    if a.get("pinned"):
+        print("pinned:      yes")
+    if a.get("tags"):
+        print("tags:        %s" % ", ".join(a["tags"]))
+    if a.get("source_session"):
+        print("session:     %s" % a["source_session"])
     print("versions:    %s (current v%s)" % (nver(a), a.get("current") or nver(a)))
     print("created:     %s" % stamp(a.get("created_at")))
     if a.get("updated_at"):
@@ -359,9 +399,15 @@ if mode == "published":
     print('Published "%s" → %s (v%s)' % (
         doc.get("title") or "(untitled)", doc.get("url") or "",
         doc.get("version") or 1))
-    print("  id:    %s" % ident(doc))
+    print("  id:         %s" % ident(doc))
+    if doc.get("visibility"):
+        # correctness-05: the EFFECTIVE visibility, every time — a republish
+        # keeps the page's own, whatever --visibility said.
+        print("  visibility: %s" % doc["visibility"])
     if doc.get("bytes") is not None:
-        print("  bytes: %s" % doc["bytes"])
+        print("  bytes:      %s" % doc["bytes"])
+    if doc.get("notice"):
+        sys.stderr.write("WARNING: %s\n" % doc["notice"])
     print("")
     print("  Update it in place (same URL, new version):")
     print("    ./scripts/artifact.sh publish <file.html> --id %s" % ident(doc))
@@ -372,6 +418,20 @@ if mode == "patched":
     print("%s: %s" % (ident(a), os.environ.get("OB_EXTRA", "updated")))
     if a.get("url"):
         print("  %s" % a["url"])
+    sys.exit(0)
+
+if mode == "versions-to-prune":
+    a = doc.get("artifact", doc) if isinstance(doc, dict) else doc
+    keep = int(os.environ.get("OB_EXTRA") or "0")
+    current = a.get("current")
+    ns = sorted(int(v.get("n")) for v in (a.get("versions") or [])
+                if isinstance(v, dict) and str(v.get("n", "")).isdigit())
+    newest = set(ns[-keep:]) if keep > 0 else set()
+    print(" ".join(str(n) for n in ns if n not in newest and n != current))
+    sys.exit(0)
+
+if mode == "page-total":
+    print(doc.get("total") if isinstance(doc.get("total"), int) else 0)
     sys.exit(0)
 
 sys.stderr.write("internal: unknown render mode %r\n" % mode)
@@ -393,6 +453,7 @@ case "$cmd" in
     [[ -r "$src" ]] || _die "cannot read: $src"
     [[ -s "$src" ]] || _die "$src is empty — nothing to publish"
     title=""; description=""; favicon=""; art_id=""; label=""; visibility="private"
+    vis_set=0
     # "given and empty" is not "not given": --description "" means CLEAR it.
     # The old code dropped every empty value on the floor and reported
     # success, so there was no way to unset a description at all.
@@ -410,8 +471,8 @@ case "$cmd" in
         --id=*)         art_id="${1#*=}"; shift ;;
         --label)        [[ $# -ge 2 ]] || _die "--label needs a value"; label="$2"; shift 2 ;;
         --label=*)      label="${1#*=}"; shift ;;
-        --visibility)   [[ $# -ge 2 ]] || _die "--visibility needs a value"; visibility="$2"; shift 2 ;;
-        --visibility=*) visibility="${1#*=}"; shift ;;
+        --visibility)   [[ $# -ge 2 ]] || _die "--visibility needs a value"; visibility="$2"; vis_set=1; shift 2 ;;
+        --visibility=*) visibility="${1#*=}"; vis_set=1; shift ;;
         --file)         [[ $# -ge 2 ]] || _die "--file needs published=source"; file_pairs+=("$2"); shift 2 ;;
         --file=*)       file_pairs+=("${1#*=}"); shift ;;
         *)              _die "unknown option for publish: $1" ;;
@@ -455,9 +516,25 @@ case "$cmd" in
     # decides text-vs-base64 per file, and emits valid JSON. Bash never
     # escapes a byte of it.
     OB_SRC="$src" OB_TITLE="$title" OB_DESC="$description" OB_FAVICON="$favicon" \
-    OB_ID="$art_id" OB_LABEL="$label" OB_VIS="$visibility" OB_OUT="$REQ" \
+    OB_ID="$art_id" OB_LABEL="$label" OB_VIS="$visibility" OB_VIS_SET="$vis_set" \
+    OB_OUT="$REQ" OB_SESSION="${OPENBEAST_SESSION_ID:-}" \
     python3 - ${file_pairs[@]+"${file_pairs[@]}"} <<'PY' || exit $?
-import base64, json, os, sys
+import base64, json, mimetypes, os, sys
+
+# The server's own text/binary split (agents/artifact.py _is_text): by the
+# PUBLISHED extension, never by "does it decode as UTF-8". A raw typed-array
+# .bin of low bytes decodes fine, and as a JSON string every control byte
+# became \u00XX — six bytes each — so a legal 20 MB version tripped the
+# server's body gate and came back as a flat 404 (correctness-07).
+_TEXT_TYPES = {
+    "application/json", "application/javascript", "application/xml",
+    "application/xhtml+xml", "image/svg+xml", "application/manifest+json",
+}
+
+
+def is_text(path):
+    guessed, _ = mimetypes.guess_type(path)
+    return bool(guessed) and (guessed.startswith("text/") or guessed in _TEXT_TYPES)
 
 MAX_TEXT = 16 * 1024 * 1024
 MAX_BIN = 15 * 1024 * 1024
@@ -503,12 +580,18 @@ for pair in pairs:
         sys.exit(2)
     blob = open(source, "rb").read()
     total += len(blob)
-    try:
-        files[published] = blob.decode("utf-8")
+    text = None
+    if is_text(published):
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+    if text is not None:
+        files[published] = text
         cap, kind = MAX_TEXT, "text"
-    except UnicodeDecodeError:
+    else:
         files[published] = {"b64": base64.b64encode(blob).decode("ascii")}
-        cap, kind = MAX_BIN, "binary"
+        cap, kind = (MAX_TEXT, "text") if is_text(published) else (MAX_BIN, "binary")
     if len(blob) > cap:
         sys.stderr.write("ERROR: %s is %.1f MB — the per-file %s cap is %d MB\n"
                          % (source, len(blob) / 1048576.0, kind, cap // 1048576))
@@ -518,7 +601,15 @@ if total > MAX_TOTAL:
                      % (total / 1048576.0))
     sys.exit(2)
 
-body = {"html": html, "visibility": os.environ["OB_VIS"]}
+body = {"html": html}
+# Only when ASKED: on a republish the server keeps the page's own visibility
+# either way, and a default "private" sent every time made it impossible to
+# tell "you asked for a change that did not happen" from "you asked nothing".
+if os.environ.get("OB_VIS_SET") == "1":
+    body["visibility"] = os.environ["OB_VIS"]
+session = os.environ.get("OB_SESSION", "").strip()
+if session:
+    body["source_session"] = session
 for key, env in (("title", "OB_TITLE"), ("description", "OB_DESC"),
                  ("favicon", "OB_FAVICON"), ("artifact_id", "OB_ID"),
                  ("label", "OB_LABEL")):
@@ -531,8 +622,18 @@ if files:
 # ensure_ascii=False: the default writes every non-ASCII character as \uXXXX —
 # 2x the bytes for CJK, 3x for emoji — and the server gates the BODY size, so
 # a legal page of Japanese text was refused as oversize (a flat 404).
-with open(os.environ["OB_OUT"], "w", encoding="utf-8") as fh:
-    json.dump(body, fh, ensure_ascii=False)
+encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+# The server's pre-parse gate (artifact_server._max_body_bytes): refuse HERE,
+# with a size, instead of shipping it and getting the flat 404 back.
+gate = MAX_TOTAL * 4 // 3 + MAX_TOTAL // 8
+if len(encoded) > gate:
+    sys.stderr.write("ERROR: the request would be %.1f MB — over the server's "
+                     "%.1f MB body limit (supporting files travel base64 inside "
+                     "JSON). Publish fewer or smaller files.\n"
+                     % (len(encoded) / 1048576.0, gate / 1048576.0))
+    sys.exit(2)
+with open(os.environ["OB_OUT"], "wb") as fh:
+    fh.write(encoded)
 PY
     code="$(_api POST /api/artifacts "$REQ")" || exit $?
     _check "$code" "publish"
@@ -552,15 +653,53 @@ PY
     ;;
 
   list)
-    json=0
+    json=0; limit=25; all=0; q_session=""; q_tag=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --json) json=1; shift ;;
-        *)      _die "unknown option for list: $1" ;;
+        --json)      json=1; shift ;;
+        --all)       all=1; shift ;;
+        --limit)     [[ $# -ge 2 ]] || _die "--limit needs a number"; limit="$2"; shift 2 ;;
+        --limit=*)   limit="${1#*=}"; shift ;;
+        --session)   [[ $# -ge 2 ]] || _die "--session needs an id"; q_session="$2"; shift 2 ;;
+        --session=*) q_session="${1#*=}"; shift ;;
+        --tag)       [[ $# -ge 2 ]] || _die "--tag needs a value"; q_tag="$2"; shift 2 ;;
+        --tag=*)     q_tag="${1#*=}"; shift ;;
+        *)           _die "unknown option for list: $1" ;;
       esac
     done
-    code="$(_api GET /api/artifacts)" || exit $?
-    _check "$code" "list"
+    case "$limit" in
+      ''|*[!0-9]*|0) _die "--limit takes a positive number (got: $limit)" ;;
+    esac
+    extra=""
+    [[ -n "$q_session" ]] && extra="$extra&session=$(_urlenc "$q_session")"
+    [[ -n "$q_tag" ]] && extra="$extra&tag=$(_urlenc "$q_tag")"
+    if [[ $all -eq 1 ]]; then
+      # Page through the server's 200-row cap and hand the renderer ONE doc.
+      ALL="$TMPDIR_RUN/all.jsonl"; : > "$ALL"
+      offset=0
+      while :; do
+        code="$(_api GET "/api/artifacts?limit=200&offset=$offset$extra")" || exit $?
+        _check "$code" "list"
+        cat "$BODY" >> "$ALL"; printf '\n' >> "$ALL"
+        total="$(_render page-total)"
+        offset=$((offset + 200))
+        [[ $offset -lt $total ]] || break
+      done
+      OB_ALL="$ALL" OB_BODY="$BODY" python3 -c '
+import json, os
+rows, total = [], 0
+for line in open(os.environ["OB_ALL"]):
+    line = line.strip()
+    if line:
+        d = json.loads(line)
+        rows += d.get("artifacts") or []
+        total = d.get("total") or total
+json.dump({"artifacts": rows, "count": len(rows), "total": total},
+          open(os.environ["OB_BODY"], "w"))'
+    else
+      code="$(_api GET "/api/artifacts?limit=$limit$extra")" || exit $?
+      _check "$code" "list"
+    fi
     if [[ $json -eq 1 ]]; then _render json; else _render list; fi
     ;;
 
@@ -626,17 +765,118 @@ PY
     _render patched "visibility = $vis"
     ;;
 
-  remove)
+  pin|unpin)
     art_id="${1:-}"
-    [[ -n "$art_id" ]] || _die "usage: artifact.sh remove <id> --yes"
+    [[ -n "$art_id" ]] || _die "usage: artifact.sh $cmd <id>"
     shift
-    yes=0
+    [[ $# -eq 0 ]] || _die "unknown option for $cmd: $1"
+    _check_id "$art_id" "$cmd"
+    _need_token
+    if [[ "$cmd" == "pin" ]]; then printf '{"pinned": true}' > "$REQ"
+    else printf '{"pinned": false}' > "$REQ"; fi
+    code="$(_api PATCH "/api/artifacts/$(_urlenc "$art_id")" "$REQ")" || exit $?
+    _check "$code" "$cmd"
+    _render patched "${cmd}ned"
+    ;;
+
+  tag)
+    art_id="${1:-}"
+    [[ -n "$art_id" ]] || _die "usage: artifact.sh tag <id> [TAG]...  (no tags = clear)"
+    shift
+    _check_id "$art_id" "tag"
+    _need_token
+    OB_OUT="$REQ" python3 - ${1+"$@"} <<'PY' || exit $?
+import json, os, sys
+json.dump({"tags": [t for t in sys.argv[1:] if t.strip()]},
+          open(os.environ["OB_OUT"], "w"))
+PY
+    code="$(_api PATCH "/api/artifacts/$(_urlenc "$art_id")" "$REQ")" || exit $?
+    _check "$code" "tag"
+    _render patched "tags = ${*:-(none)}"
+    ;;
+
+  chown)
+    art_id="${1:-}"; new_owner="${2:-}"
+    [[ -n "$art_id" && -n "$new_owner" ]] || _die "usage: artifact.sh chown <id> <login|rig>"
+    shift 2
+    [[ $# -eq 0 ]] || _die "unknown option for chown: $1"
+    _check_id "$art_id" "chown"
+    _need_token
+    OB_OUT="$REQ" OB_OWNER="$new_owner" python3 -c '
+import json, os
+json.dump({"owner": os.environ["OB_OWNER"]}, open(os.environ["OB_OUT"], "w"))'
+    code="$(_api PATCH "/api/artifacts/$(_urlenc "$art_id")" "$REQ")" || exit $?
+    _check "$code" "chown"
+    _render patched "owner = $new_owner"
+    ;;
+
+  prune)
+    art_id="${1:-}"
+    [[ -n "$art_id" ]] || _die "usage: artifact.sh prune <id> --keep N --yes"
+    shift
+    keep=""; yes=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --yes) yes=1; shift ;;
-        *)     _die "unknown option for remove: $1" ;;
+        --keep)   [[ $# -ge 2 ]] || _die "--keep needs a number"; keep="$2"; shift 2 ;;
+        --keep=*) keep="${1#*=}"; shift ;;
+        --yes)    yes=1; shift ;;
+        *)        _die "unknown option for prune: $1" ;;
       esac
     done
+    case "$keep" in
+      ''|*[!0-9]*) _die "prune needs --keep N (how many newest versions to keep)" ;;
+    esac
+    _check_id "$art_id" "prune"
+    code="$(_api GET "/api/artifacts/$(_urlenc "$art_id")")" || exit $?
+    _check "$code" "prune"
+    victims="$(OB_EXTRA="$keep" _render versions-to-prune)"
+    if [[ -z "$victims" ]]; then
+      echo "Nothing to prune: $art_id keeps its newest $keep version(s) and the current one."
+      exit 0
+    fi
+    if [[ $yes -ne 1 ]]; then
+      echo "Would delete these versions of $art_id: $victims" >&2
+      echo "The URL, the current version and the newest $keep stay." >&2
+      echo "  Really do it: ./scripts/artifact.sh prune $art_id --keep $keep --yes" >&2
+      exit 2
+    fi
+    _need_token
+    for vn in $victims; do
+      code="$(_api DELETE "/api/artifacts/$(_urlenc "$art_id")/v/$vn")" || exit $?
+      _check "$code" "deleting v$vn"
+    done
+    echo "Pruned $art_id: removed v${victims// /, v}."
+    ;;
+
+  remove)
+    art_id="${1:-}"
+    [[ -n "$art_id" ]] || _die "usage: artifact.sh remove <id> [--version N] --yes"
+    shift
+    yes=0; one=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --yes)       yes=1; shift ;;
+        --version)   [[ $# -ge 2 ]] || _die "--version needs a number"; one="$2"; shift 2 ;;
+        --version=*) one="${1#*=}"; shift ;;
+        *)           _die "unknown option for remove: $1" ;;
+      esac
+    done
+    if [[ -n "$one" ]]; then
+      case "$one" in
+        ''|*[!0-9]*|0) _die "--version takes a positive number (got: $one)" ;;
+      esac
+      if [[ $yes -ne 1 ]]; then
+        echo "Refusing: 'remove --version $one' deletes v$one of '$art_id' for good." >&2
+        echo "  Really delete it: ./scripts/artifact.sh remove $art_id --version $one --yes" >&2
+        exit 2
+      fi
+      _check_id "$art_id" "remove"
+      _need_token
+      code="$(_api DELETE "/api/artifacts/$(_urlenc "$art_id")/v/$one")" || exit $?
+      _check "$code" "remove v$one"
+      echo "Removed v$one of $art_id (the URL and the other versions stay)."
+      exit 0
+    fi
     if [[ $yes -ne 1 ]]; then
       echo "Refusing: 'remove' deletes artifact '$art_id' and EVERY version of it." >&2
       echo "Its URL dies with it — anyone holding the link gets a 404 forever." >&2

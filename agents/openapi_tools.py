@@ -367,7 +367,7 @@ def create_app() -> FastAPI:
                 import artifact as _artifact
                 return _artifact.default_owner()
             except Exception:
-                return "local"
+                return "rig"
         raise HTTPException(status_code=400,
                             detail=_NO_EMAIL_JWT if jwt_secret
                             else _NO_EMAIL_HEADER)

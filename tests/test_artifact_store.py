@@ -72,9 +72,13 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path / "files"))
     monkeypatch.setenv("OPENBEAST_ARTIFACT_BASE_URL", "https://beast:8446")
     # No allowlist in the environment: every publish here is owned by the
-    # "local" principal default_owner() falls back to (security model D3).
+    # rig principal default_owner() falls back to (security model D3, F-A1).
     monkeypatch.delenv("OPENBEAST_ARTIFACT_OPERATORS", raising=False)
     monkeypatch.delenv("OPENBEAST_CHAT_OPERATORS", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_ADMINS", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", raising=False)
+    # Hermetic: never read the checkout's own openbeast.conf.
+    monkeypatch.setenv("OPENBEAST_CONF", str(tmp_path / "absent.conf"))
     return artifact
 
 
@@ -219,7 +223,9 @@ def test_failed_publish_leaves_no_version_dir(store):
     real_write_meta = artifact._write_meta
     artifact._write_meta = boom          # NOT monkeypatch: undo() would also
     try:                                 # revert the fixture's env patches
-        with pytest.raises(OSError):
+        # A named storage error now (correctness-09), not a bare OSError —
+        # still an OSError-caused failure the caller can tell apart.
+        with pytest.raises(artifact.ArtifactStorageError):
             store.publish("two", artifact_id=a["id"])
     finally:
         artifact._write_meta = real_write_meta
@@ -707,13 +713,16 @@ def test_set_visibility_by_another_owner_is_refused(store):
 
 def test_default_owner_is_never_none(store, monkeypatch):
     """D3: an ownerless artifact was readable by every operator forever, so
-    publish always resolves an owner — "local" on an unconfigured rig."""
-    assert store.default_owner() == "local"
-    assert store.get_meta(store.publish(PAGE)["id"])["owner"] == "local"
+    publish always resolves an owner — the rig principal when no human
+    identity is in context, whatever the allowlist says (F-A1: the owner of a
+    rig publish no longer changes with the config of the day)."""
+    assert store.default_owner() == "rig"
+    assert store.get_meta(store.publish(PAGE)["id"])["owner"] == "rig"
     monkeypatch.setenv("OPENBEAST_CHAT_OPERATORS", " , max@Example.com ,x")
-    assert store.default_owner() == "max@example.com"
+    assert store.default_owner() == "rig"
+    assert store.admins() == ["max@example.com"]
     monkeypatch.setenv("OPENBEAST_ARTIFACT_OPERATORS", "Art@Example.com")
-    assert store.default_owner() == "art@example.com"       # artifact wins
+    assert store.admins() == ["art@example.com"]            # artifact wins
     token = store.set_owner_override("Ctx@Example.com")
     try:
         assert store.default_owner() == "ctx@example.com"   # ContextVar wins
@@ -791,7 +800,7 @@ def test_publish_owner_kwarg_cannot_forge_attribution(store):
     assertion now: honoured when it matches the resolved caller, ignored
     otherwise, and it never mints a page in someone else's name."""
     r = store.publish(PAGE, owner="victim@example.com")
-    assert store.get_meta(r["id"])["owner"] == "local"       # the real caller
+    assert store.get_meta(r["id"])["owner"] == "rig"         # the real caller
     assert store.can_view(store.get_meta(r["id"]), "victim@example.com") is False
     # ...and it cannot be used to dodge the republish guard either
     with as_user("max@example.com"):
@@ -916,7 +925,7 @@ def test_owner_override_alias_does_not_leak(store):
     assert store.default_owner() == "max@example.com"
     assert store.default_owner_alias() == "3f1c-uuid"
     store.reset_owner_override(token)
-    assert store.default_owner() == "local"
+    assert store.default_owner() == "rig"
     assert store.default_owner_alias() == ""
     assert store.get_meta(store.publish(PAGE)["id"])["owner_webui_id"] is None
 
