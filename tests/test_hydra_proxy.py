@@ -174,6 +174,16 @@ def pause_probes(srv, timeout=8):
     assert called.wait(timeout), "hydra's probe loop never came back around"
 
 
+def wait_admitted(srv, node, n=1, timeout=8) -> None:
+    """Wait until hydra holds n in-flight units on node. A fixed sleep before
+    the next step (a reload, a second caller) assumed the first request was
+    already admitted; on a loaded runner it was not, and the step raced it."""
+    deadline = time.time() + timeout
+    while srv.hy.state.node_inflight(node) < n:
+        assert time.time() < deadline, f"no request was admitted to {node}"
+        time.sleep(0.01)
+
+
 def wait_audit(tmp, pred, timeout=5) -> dict:
     """The newest audit row matching pred, polled with a deadline.
 
@@ -694,7 +704,7 @@ def test_inflight_request_finishes_on_the_old_snapshot(fleet, tmp_path):
             got["body"] = r.read()
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.3)
+    wait_admitted(srv, "rig")
     raw = copy.deepcopy(srv.raw)
     raw["routes"]["beast"]["targets"] = [{"d": "nvfp4@sparks"}]
     (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
@@ -716,7 +726,7 @@ def test_spill_under_concurrency(fleet):
             r.read()
     a = threading.Thread(target=one)
     a.start()
-    time.sleep(0.25)
+    wait_admitted(srv, "rig")
     b = threading.Thread(target=one)
     b.start()
     a.join(20)
@@ -1082,7 +1092,7 @@ def test_a_reload_that_renames_the_deployment_mid_request_does_not_leak(fleet, t
         got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"))
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.4)
+    wait_admitted(srv, "rig")
     _rename(srv, tmp_path, "unc@rig", "unc2@rig")
     t.join(15)
     assert got["r"] == (200, "unc@rig"), got
@@ -1099,7 +1109,7 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
         got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
     t = threading.Thread(target=slow)
     t.start()
-    time.sleep(0.4)
+    wait_admitted(srv, "rig")
     _rename(srv, tmp_path, "nvfp4@sparks", "nvfp4b@sparks")
     t.join(15)
     assert got["r"][:2] == (200, "nvfp4@sparks"), got
@@ -1129,7 +1139,7 @@ def test_a_half_open_trial_is_exclusive_across_failover(fleet):
     w.start()
     a = threading.Thread(target=req, args=("a",))
     a.start()
-    time.sleep(0.3)
+    wait_admitted(srv, "rig")
     b = threading.Thread(target=req, args=("b",))
     b.start()
     a.join(20)
