@@ -27,8 +27,27 @@ LLM_ADAPTERS = ("llamacpp_logprobs", "sglang_score")
 
 # Ports that belong to the edge / router / hydra — an engine may never be one,
 # on ANY host (the rig's gate on its tailnet address is still beast-gate).
-# :8443 beast-gate (edge), :8088 agent router, :8095 hydra (reconciliation §4).
-FORBIDDEN_ENGINE_PORTS = {8443: "beast-gate", 8088: "agent router", 8095: "hydra"}
+# :8443 beast-gate's tailnet front, :8090 beast-gate itself (EDGE_PORT),
+# :8088 agent router, :8095 hydra (reconciliation §4). The live ports are
+# added from the environment too (forbidden_ports): a moved EDGE_PORT,
+# ROUTER_PORT or HYDRA_PORT must not open a hole in I7.
+FORBIDDEN_ENGINE_PORTS = {8443: "beast-gate", 8090: "beast-gate", 8088: "agent router",
+                          8095: "hydra"}
+_PORT_ENV = (("OPENBEAST_EDGE_PORT", "beast-gate"), ("EDGE_PORT", "beast-gate"),
+             ("OPENBEAST_ROUTER_PORT", "agent router"), ("ROUTER_PORT", "agent router"),
+             ("OPENBEAST_HYDRA_PORT", "hydra"), ("HYDRA_PORT", "hydra"))
+
+
+def forbidden_ports(env=None) -> dict[int, str]:
+    """FORBIDDEN_ENGINE_PORTS plus the ports this stack actually runs the
+    gate, router and hydra on (conf.sh's EDGE_PORT / ROUTER_PORT /
+    HYDRA_PORT, under either spelling)."""
+    ports = dict(FORBIDDEN_ENGINE_PORTS)
+    for key, who in _PORT_ENV:
+        v = str((env or {}).get(key) or "").strip()
+        if v.isdecimal() and 0 < int(v) < 65536:
+            ports[int(v)] = who
+    return ports
 # The primary when nothing says otherwise — the same default conf.sh and
 # serve-instinct-scorer.sh use. instinct.sh never sources conf.sh, so without
 # this the primary-URL lint would be inactive exactly where it matters.
@@ -148,7 +167,7 @@ def same_endpoint(a: str, b: str) -> bool:
 
 
 def _lint_url(field_name: str, url: str, b: EngineBinding, inference_url: str,
-              hydra_url: str) -> str | None:
+              hydra_url: str, forbidden: dict[int, str]) -> str | None:
     try:
         scheme, host, port = _norm_url(url)
     except ValueError:
@@ -160,8 +179,8 @@ def _lint_url(field_name: str, url: str, b: EngineBinding, inference_url: str,
     if hydra_url and same_endpoint(url, hydra_url):
         return (f"{field_name} is the hydra endpoint (I7: engine traffic never routes "
                 "through hydra)")
-    if port in FORBIDDEN_ENGINE_PORTS:
-        return (f"{field_name} is the {FORBIDDEN_ENGINE_PORTS[port]} port :{port} "
+    if port in forbidden:
+        return (f"{field_name} is the {forbidden[port]} port :{port} "
                 "(I7: engine traffic never routes through hydra or beast-gate)")
     if inference_url and same_endpoint(url, inference_url) and not b.allow_primary:
         return (f"{field_name} is the primary INFERENCE_URL; set allow_primary = true and "
@@ -169,9 +188,11 @@ def _lint_url(field_name: str, url: str, b: EngineBinding, inference_url: str,
     return None
 
 
-def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "") -> str | None:
+def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "",
+                 forbidden: dict[int, str] | None = None) -> str | None:
     """Return a refusal reason, or None if the binding may be used. Every URL
     the engine will call (url AND sis_url) is linted the same way."""
+    forbidden = FORBIDDEN_ENGINE_PORTS if forbidden is None else forbidden
     if b.adapter not in ADAPTERS:
         return f"unknown adapter {b.adapter!r}"
     if b.adapter in LLM_ADAPTERS:
@@ -179,13 +200,13 @@ def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "")
             return "LLM adapters need url"
         if b.role != "instinct-engine":
             return "role must be 'instinct-engine'"
-        why = _lint_url("url", b.url, b, inference_url, hydra_url)
+        why = _lint_url("url", b.url, b, inference_url, hydra_url, forbidden)
         if why:
             return why
         if b.sis_url:
             if b.adapter != "sglang_score":
                 return "sis_url is only meaningful on sglang_score"
-            why = _lint_url("sis_url", b.sis_url, b, inference_url, hydra_url)
+            why = _lint_url("sis_url", b.sis_url, b, inference_url, hydra_url, forbidden)
             if why:
                 return why
             # The engine's bearer key goes to sis_url too: it may only name the
@@ -267,6 +288,7 @@ def load_config(path: str | Path | None = None, *, env: dict | None = None,
     inference_url = (env.get("INFERENCE_URL") or env.get("OPENBEAST_INFERENCE_URL")
                      or DEFAULT_INFERENCE_URL)
     hydra_url = env.get("HYDRA_URL") or ""
+    forbidden = forbidden_ports(env)
     for name, raw in (data.get("engines") or {}).items():
         if not isinstance(raw, dict):
             cfg.engine_errors[name] = "binding must be a table"
@@ -299,7 +321,7 @@ def load_config(path: str | Path | None = None, *, env: dict | None = None,
         except (TypeError, ValueError) as exc:
             cfg.engine_errors[name] = f"bad value: {exc}"
             continue
-        why = lint_binding(b, inference_url, hydra_url)
+        why = lint_binding(b, inference_url, hydra_url, forbidden)
         if why:
             cfg.engine_errors[name] = why
             continue

@@ -110,6 +110,36 @@ def test_engine_never_routes_through_hydra_gate_or_router(tmp_path, url):
     assert "x" in cfg.engine_errors and "I7" in cfg.engine_errors["x"]
 
 
+def test_the_gate_on_its_own_port_is_refused(tmp_path):
+    """beast-gate listens on EDGE_PORT (8090); :8443 is only its tailnet
+    front. An engine at 127.0.0.1:8090 went through the gate's audit and
+    caps and passed the lint."""
+    cfg = _cfg(tmp_path, {"x": H.llama_binding("http://127.0.0.1:8090")}, env={})
+    assert "x" in cfg.engine_errors and "beast-gate" in cfg.engine_errors["x"]
+
+
+@pytest.mark.parametrize("key,port,who", [
+    ("OPENBEAST_EDGE_PORT", 8191, "beast-gate"), ("EDGE_PORT", 8192, "beast-gate"),
+    ("OPENBEAST_ROUTER_PORT", 8098, "agent router"), ("ROUTER_PORT", 8099, "agent router"),
+    ("HYDRA_PORT", 8196, "hydra"), ("OPENBEAST_HYDRA_PORT", 8197, "hydra")])
+def test_a_moved_gate_router_or_hydra_port_is_still_refused(tmp_path, key, port, who):
+    url = f"http://127.0.0.1:{port}"
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)}, env={key: str(port)})
+    assert "x" in cfg.engine_errors and who in cfg.engine_errors["x"], cfg.engine_errors
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)}, env={})
+    assert "x" in cfg.engines                                     # control: nothing lives there
+
+
+def test_start_hands_instinct_the_live_router_and_gate_ports():
+    """conf.sh's ROUTER_PORT is a plain shell variable (never exported), so
+    unless start.sh passes it, a moved router port never reaches the lint."""
+    src = (H.REPO / "start.sh").read_text()
+    launch = src[src.index('Starting beast-instinct'):]
+    launch = launch[:launch.index('instinct.sh" up')]
+    assert 'OPENBEAST_ROUTER_PORT="${ROUTER_PORT' in launch
+    assert 'OPENBEAST_EDGE_PORT="${EDGE_PORT' in launch
+
+
 @pytest.mark.parametrize("url", [
     "http://127.0.0.2:8443", "http://[::ffff:127.0.0.1]:8095", "http://127.1:8095",
     "http://localhost.:8443", "http://0x7f.1:8088", "http://2130706433:8095",

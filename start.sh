@@ -973,9 +973,11 @@ fi
 if [[ "${INSTINCT:-false}" == "true" ]]; then
   echo "Starting beast-instinct on http://127.0.0.1:${INSTINCT_PORT}..."
   # instinct.sh owns the pre-bind check, the 0600 key and the pidfile. The
-  # config loader lints engine URLs against the primary and hydra (I7).
+  # config loader lints engine URLs against the primary, hydra, and the ports
+  # this stack runs the router and beast-gate on (I7) — pass the live ones.
   if INSTINCT_CONFIG="$INSTINCT_CONFIG" INSTINCT_PORT="$INSTINCT_PORT" \
      INSTINCT_RUN_DIR="$RUN_DIR" HYDRA_URL="${HYDRA_URL:-}" \
+     OPENBEAST_ROUTER_PORT="${ROUTER_PORT:-8088}" OPENBEAST_EDGE_PORT="${EDGE_PORT:-8090}" \
        "$SCRIPT_DIR/scripts/instinct.sh" up; then
     INSTINCT_STARTED=1
   else
