@@ -140,6 +140,14 @@ AGENT_EVENT_TYPES = frozenset({
 CONTROL_EVENT_TYPES = frozenset({"hello", "end", "lost", "log", "unknown"})
 
 MAX_MESSAGE_BYTES = 32 * 1024
+# The longest operator message an agent actually RECEIVES: sessions.py clips
+# every op to OP_MAX_TEXT and the runner clips again to the same figure (its
+# _SAY_MAX_CHARS — runner.py is era-locked, so this side conforms). /send used
+# to accept 32 KiB, answer "queued — lands at the next turn", and deliver the
+# first 4000 characters: a 10 KB instruction ending "FINAL INSTRUCTION: do not
+# delete anything" arrived without its last line and without any marker the
+# model could see. A message the agent cannot receive whole is now refused.
+MAX_MESSAGE_CHARS = sessions.OP_MAX_TEXT
 # Ledger meta keys the SERVER owns. A caller may attach free-form meta to a
 # session it starts; it may not attach these, because they are load-bearing
 # for liveness (`pid_start`, `boot_id`) and for steering (`cursor`). The list
@@ -1698,8 +1706,16 @@ def create_app() -> FastAPI:
                 if not isinstance(text, str) or not text.strip():
                     raise HTTPException(status_code=400, detail="empty message")
                 blob = text.encode("utf-8")
-                if len(blob) > MAX_MESSAGE_BYTES:
-                    raise HTTPException(status_code=413, detail="message too long")
+                # The runner strips surrounding whitespace before clipping, so
+                # the stripped length is what must fit.
+                if (len(blob) > MAX_MESSAGE_BYTES
+                        or len(text.strip()) > MAX_MESSAGE_CHARS):
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(f"message too long — an agent receives at "
+                                f"most {MAX_MESSAGE_CHARS} characters per "
+                                f"message (this one is {len(text.strip())}); "
+                                f"split it into several"))
                 rec = load_session(session_id)
                 if rec.get("state") in TERMINAL_STATES:
                     raise HTTPException(
