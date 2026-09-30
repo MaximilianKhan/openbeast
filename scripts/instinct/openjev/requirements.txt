@@ -1,0 +1,9 @@
+# The Open-Jev loader's inference set — pinned to what the Open-Jev-27B-v1.1
+# card and the loader's pyproject name (transformers 5.10.2, peft 0.19.1,
+# accelerate 1.13.0). torch is installed from the CUDA index first (Dockerfile).
+# Container-only: never installed into the rig's environment.
+# [HW] freeze with hashes on the build host before relying on it.
+transformers==5.10.2
+peft==0.19.1
+accelerate==1.13.0
+safetensors==0.6.2

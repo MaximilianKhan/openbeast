@@ -162,10 +162,11 @@ class Engine:
 
 
 def build_engine(binding: EngineBinding, **ctx) -> Engine:
-    from . import linear, llamacpp, rules, sglang
+    from . import linear, llamacpp, openjev, rules, sglang
     adapters = {"rules": rules.RulesEngine, "linear": linear.LinearEngine,
                 "llamacpp_logprobs": llamacpp.LlamaCppEngine,
-                "sglang_score": sglang.SGLangEngine}
+                "sglang_score": sglang.SGLangEngine,
+                "openjev_head": openjev.OpenJevEngine}
     try:
         cls = adapters[binding.adapter]
     except KeyError:

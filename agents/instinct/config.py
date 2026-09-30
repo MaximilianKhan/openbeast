@@ -27,8 +27,8 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / "agents" / "instinct" / "instinct.toml"
-ADAPTERS = ("rules", "linear", "llamacpp_logprobs", "sglang_score")
-LLM_ADAPTERS = ("llamacpp_logprobs", "sglang_score")
+ADAPTERS = ("rules", "linear", "llamacpp_logprobs", "sglang_score", "openjev_head")
+LLM_ADAPTERS = ("llamacpp_logprobs", "sglang_score", "openjev_head")
 
 # Ports that belong to the edge / router / hydra — an engine may never be one,
 # on ANY host (the rig's gate on its tailnet address is still beast-gate).

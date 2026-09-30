@@ -111,6 +111,26 @@ timeout_ms     = 200
 # adapter        = "sglang_score"
 # url            = "http://<spark1-tailnet-ip>:30010"
 # key_file       = ".run/instinct-spark.key"
-# model          = "Qwen/Qwen3-0.6B"
+# model          = "JonathanColetti/Qwen3.8-27B-Uncensored"
 # model_revision = "<hf commit sha>"
 # exec           = "mis"
+# mis_delimiter  = "<the server's MIS delimiter text>"
+
+# TARGET decision model: Open-Jev-27B-v1.1 (LoRA + scalar decision head on the
+# Qwen3.8-27B backbone), run LOCALLY by scripts/serve-openjev.sh on a DEDICATED
+# GPU host — a Spark, or the 5090 once the Sparks serve generation. Never
+# TypeSafe's hosted Jev API (cloud is forbidden). Uncomment when that host
+# serves it, and put it FIRST in router.spawn_intent's chain. The adapter was
+# trained on the STOCK base: it can only shadow until evals/decisions
+# re-validates it on the uncensored base (docs/BEAST_INSTINCT_PLAN.md,
+# revision 2026-09-30) and a gate record exists for this exact hash.
+# [engines.openjev]
+# adapter          = "openjev_head"
+# url              = "http://<spark1-tailnet-ip>:8791"      # or http://127.0.0.1:8791 on a freed 5090
+# key_file         = ".run/openjev.key"                     # a copy of the host's key, 0600
+# model            = "JonathanColetti/Qwen3.8-27B-Uncensored"
+# model_revision   = "5bb7aa90f0efef548e87005b1fb7658e522b6b7f"   # the base the host serves
+# adapter_revision = "28cf73067d5b337860bbef3c85b8b82ba8730956"   # ZefanCai/Open-Jev-27B-v1.1
+# head_sha256      = "76e382f122abfa4e0c467d860a8d142d2fb6d2a98dc0ef9e19870bfc6eb296b4"
+# loader_digest    = "sha256:<the pinned openjev image digest>"
+# timeout_ms       = 1500
