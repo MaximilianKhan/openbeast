@@ -197,6 +197,11 @@ def test_fit_calibrate_gate_end_to_end(tmp_path, capsys):
     mc = next(c for c in g["criteria"] if c["metric"] == "mcnemar_p_vs")
     assert mc["pass"] is True and mc["note"].startswith("not_applicable")
     assert g["min_n_met"] is False                           # 8 rows < 200
+    # an empty component split fails its criterion instead of being dropped
+    ae = next(c for c in g["criteria"] if c["split"] == "test+ood+adversarial")
+    assert ae["pass"] is False and ae["note"] == "empty split(s): ood,adversarial"
+    integ = {i["check"]: i["ok"] for i in g["integrity"]}
+    assert integ == {"dataset status is gated": False, "gate splits pinned in MANIFEST": False}
     rec = json.loads(Path(g["path"]).read_text())
     assert rec["calib_sha256"] == hashlib.sha256(
         Path(rep.get("calibration", {}).get("path") or
@@ -288,3 +293,24 @@ def test_fitted_threshold_never_lowers_the_spec_floor():
     assert effective_threshold(SPAWN, "inline", {"inline": 0.97}) == 0.97
     assert effective_threshold(SPAWN, "inline", {"inline": None}) is None
     assert effective_threshold(SPAWN, "inline", None) == 0.90
+
+
+def test_gate_integrity_needs_a_gated_pinned_set_and_a_probe():
+    import types
+    spec = SPAWN
+    pins = {k: "x" for k in ("test", "ood", "adversarial")}
+    llm = types.SimpleNamespace(adapter="llamacpp_logprobs",
+                                probe=types.SimpleNamespace(ok=True))
+    ok = RUN.gate_integrity(spec, {"status": "gated", "files": pins}, llm,
+                            types.SimpleNamespace(no_probe=False))
+    assert all(i["ok"] for i in ok)                          # control
+    seed = RUN.gate_integrity(spec, {"status": "seed", "files": pins}, llm,
+                              types.SimpleNamespace(no_probe=False))
+    assert [i["ok"] for i in seed] == [False, True, True]
+    unpinned = RUN.gate_integrity(spec, {"status": "gated", "files": {"test": "x"}}, llm,
+                                  types.SimpleNamespace(no_probe=False))
+    assert unpinned[1]["ok"] is False and unpinned[1]["detail"] == ["adversarial", "ood"]
+    noprobe = RUN.gate_integrity(spec, {"status": "gated", "files": pins},
+                                 types.SimpleNamespace(adapter="llamacpp_logprobs", probe=None),
+                                 types.SimpleNamespace(no_probe=True))
+    assert noprobe[2]["ok"] is False

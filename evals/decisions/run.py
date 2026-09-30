@@ -205,6 +205,24 @@ def judged_rows(spec: DecisionSpec, data: dict[str, list[dict]]
     return out, dropped
 
 
+def gate_integrity(spec: DecisionSpec, manifest: dict, subj, a) -> list[dict]:
+    """What a PASSING gate record needs besides good numbers: a frozen,
+    human-labelled dataset (MANIFEST status "gated"), every split a
+    criterion reads pinned by sha256 in MANIFEST [files] (load_dataset
+    already refuses a mismatch; this refuses an ABSENT pin), and — for an
+    LLM engine — a conformance probe on the engine that was gated."""
+    pins = manifest.get("files") or {}
+    used = sorted({p for c in spec.gate.criteria for p in c.split.split("+") if p in SPLITS})
+    out = [{"check": "dataset status is gated", "ok": manifest.get("status") == "gated",
+            "detail": manifest.get("status", "no MANIFEST")},
+           {"check": "gate splits pinned in MANIFEST", "ok": all(p in pins for p in used),
+            "detail": [p for p in used if p not in pins]}]
+    if subj.adapter in LLM_ADAPTERS:
+        out.append({"check": "conformance probe ran", "ok": not a.no_probe and bool(
+            subj.probe and subj.probe.ok), "detail": "--no-probe" if a.no_probe else None})
+    return out
+
+
 def apply_T(samples: list[dict], T: float | None) -> list[dict]:
     out = []
     for s in samples:
@@ -439,8 +457,11 @@ async def main_async(a) -> int:
         if not calibrated:
             raise SystemExit("no calibration record for this decision_hash — run --calibrate")
         load = None
+        load_meta = None
         if a.load_report:
-            load = json.loads(Path(a.load_report).read_text())
+            lp = Path(a.load_report)
+            load = json.loads(lp.read_text())
+            load_meta = {"path": str(lp), "sha256": sha256_file(lp)}
         # score splits the gate needs that were not evaluated above
         for crit in spec.gate.criteria:
             for s in crit.split.split("+"):
@@ -454,6 +475,11 @@ async def main_async(a) -> int:
             ok = (note or "").startswith("not_applicable") or (
                 val is not None and not (isinstance(val, float) and math.isnan(val))
                 and C.compare(val, crit.op, crit.value))
+            empty = [p for p in crit.split.split("+") if p in SPLITS and not scaled.get(p)]
+            if empty and crit.split != "load":
+                # "test+ood+adversarial" with no ood rows must not quietly
+                # become "test+adversarial".
+                ok, note = False, f"empty split(s): {','.join(empty)}"
             passed = passed and ok
             crits.append({"metric": crit.metric, "label": crit.label, "split": crit.split,
                           "value": val, "op": crit.op, "threshold": crit.value, "ci95": ci,
@@ -462,17 +488,21 @@ async def main_async(a) -> int:
                  for s, n in spec.gate.min_n.items()}
         min_n_met = all(v["have"] is None or v["have"] >= v["need"] for v in min_n.values())
         passed = passed and min_n_met
+        integrity = gate_integrity(spec, manifest, subj, a)
+        passed = passed and all(i["ok"] for i in integrity)
         calib_sha = C.file_sha256(crec_path)
         grec = {"decision": spec.id, "decision_hash": dhash, "engine": a.engine,
                 "passed": passed, "criteria": crits, "min_n": min_n, "min_n_met": min_n_met,
                 "calib_sha256": calib_sha, "calib_hash": calib_sha,
                 "samples_sha256": samples_sha, "git_sha": report["git_sha"],
                 "dataset_version": report["dataset_version"],
+                "dataset_status": report["dataset_status"],
+                "integrity": integrity, "load_report": load_meta,
                 "created_at": report["created_at"]}
         gpath = C.gate_path(cfg.records_dir, spec.id, dhash)
         C.write_record(gpath, grec)
         report["gate"] = {"path": str(gpath), "passed": passed, "min_n_met": min_n_met,
-                          "criteria": crits}
+                          "criteria": crits, "integrity": integrity}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(a.out_dir) / spec.id / ts
@@ -531,6 +561,8 @@ def render_text(r: dict) -> str:
     if "gate" in r:
         g = r["gate"]
         lines.append(f"GATE passed={g['passed']} min_n_met={g['min_n_met']}")
+        for i in g.get("integrity") or []:
+            lines.append(f"  {'PASS' if i['ok'] else 'FAIL'} {i['check']}  ({i['detail']})")
         for c in g["criteria"]:
             lines.append(f"  {'PASS' if c['pass'] else 'FAIL'} {c['metric']}"
                          f"{'[' + c['label'] + ']' if c['label'] else ''}@{c['split']} "
