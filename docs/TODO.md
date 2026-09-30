@@ -75,7 +75,8 @@ README. Notes: [`RELEASE_NOTES_v1.6.0.md`](RELEASE_NOTES_v1.6.0.md). Eval era
      so it cannot carve one file out of an otherwise free shell; Sandlock
      default-on changes eval behaviour (needs a GPU measurement first) and a
      separate uid needs sudo/system setup. See [`RBAC_PLAN.md`](RBAC_PLAN.md).
-  3. **GPU reruns — NOT YET** (Max: "no re-run yet", "not yet"). When wanted,
+  3. **GPU reruns — Tier-3 DONE 2026-09-30 (SHIP, see NEXT).** Originally
+     "not yet"; run overnight 09-29→09-30 on Max's go. Remaining, when wanted,
      in the new era: Tier-3 FRESH (`FRESH=1 bash scratch/tier3_zig_ab.sh`,
      ~7 GPU-h, +1.5 h optional held-out zig set); single-slot greedy floor
      (`bash scratch/greedy_floor.sh --single-slot`, ~20 GPU-h). Until then the
@@ -118,9 +119,24 @@ README. Notes: [`RELEASE_NOTES_v1.6.0.md`](RELEASE_NOTES_v1.6.0.md). Eval era
   can now publish their own tables with a stable id per verdict (a rerun
   becomes version 2 of the same URL instead of a new link). Not wired yet.
 
-## ⏭ NEXT — decided 2026-09-17 night, RE-AUDITED 2026-09-29
+## ⏭ NEXT — decided 2026-09-17 night, RE-AUDITED 2026-09-29, SETTLED 2026-09-30
 
-**Tier-3 verdict: UNRESOLVED. The 09-17 "SHIP" does not survive clean rows.**
+**Tier-3 verdict (FRESH rerun, 2026-09-30): SHIP — decisively.** Six clean
+cells in the new era (`b5596c660b5ab819`, every cell `--no-cache`, 0 timeouts,
+0 infrastructure rows). Treated model Qwen3.8-27B-Uncensored: pairs 14/0 and
+12/2 → **pooled 26 rescues / 2 regressions, net +24, exact McNemar p < 0.0001**;
+7 units rescued in both replicates. Tokens-to-fix down 4,681 (p = 0.064).
+**Champion guard: CLEAN and positive** — Qwen3.6-27B C0 23/30 → C1 28/30
+(7/2, net +5, p = 0.18). The per-model gating rationale is gone: nothing
+measured says the pack hurts either model. Record:
+[`scratch/tier3-verdict-fresh-20260930.txt`](../scratch/tier3-verdict-fresh-20260930.txt),
+manifest `scratch/tier3_cells-fresh-20260929.txt`. Clause 2: last arm on this
+suite. **Still in-sample** (the pack was written against these units' failures;
+the held-out check in `LANG_AWARENESS_PLAN.md` §5 is unrun). **Wiring the pack
+into production is Max's call** — the evidence now supports both models.
+
+**Superseded — the 09-29 re-audit of the contaminated 09-17 run (kept for the record):**
+*Tier-3 verdict: UNRESOLVED. The 09-17 "SHIP" does not survive clean rows.*
 As registered it read net +13 (20/7, p = 0.019). Eleven treated-model rows
 were banked while llama-server was dead ("Connection error." for the rest of
 the unit, exit 0). Seven of those are P0a rows replayed from the 09-15 cache.

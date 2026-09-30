@@ -218,9 +218,13 @@ and provably harmless; the default stays off until the follow-on arms measure a
 decisive effect. The follow-on arm (a zig "awareness pack" of verified facts
 injected before the write) first read as a ship at p = 0.019. A re-audit then
 found rows in both arms where the model server had died mid-task, or the
-validator had run out of threads, recorded as model failures. On clean rows it
-is +10, p = 0.064: **unresolved**, so the pack stays unwired until a clean rerun
-decides it. We publish the misses alongside the hits on purpose.
+validator had run out of threads, recorded as model failures, and on clean rows
+it fell to p = 0.064. So we reran it clean, in a new harness era, every cell
+fresh: **26 rescues and 2 regressions across two replicates (net +24,
+p < 0.0001)**, and the champion model improves too (23 → 28 of 30). The effect
+is measured on the units the pack was written against; a held-out check is the
+next step before it's on by default. We publish the misses alongside the hits
+on purpose.
 
 ### beast-artifact 🎨 — a URL for anything the model renders
 
