@@ -69,6 +69,9 @@ def raw_config(rig: FakeEngine, sparks: FakeEngine, tf: FakeEngine, tmp: Path, *
         "schema": 1,
         "hydra": {"probe_interval_s": 1, "probe_down_interval_s": 1, "models_interval_s": 10,
                   "down_after": 1, "up_after": 1, "pre_commit_budget_s": 20,
+                  # mixes families on purpose to exercise spill/failover
+                  # mechanics; an undeclared mix is a config error
+                  "allowed_families": ["unc", "stock"],
                   "audit": str(tmp / "audit.jsonl"),
                   "breaker": {"fail_threshold": 3, "open_s": 30, "success_threshold": 1},
                   "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp / "instinct.key")}},
@@ -1021,6 +1024,35 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
     _rename(srv, tmp_path, "nvfp4@sparks", "nvfp4b@sparks")
     t.join(15)
     assert got["r"][:2] == (200, "nvfp4@sparks"), got
+    assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
+
+
+def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, tmp_path):
+    # Max 2026-09-30: never answer from a stock model. The plan for `retry`
+    # (rig -> stock sparks) was made before a reload added
+    # allowed_families = ["unc"]; its failover must honour the NEW policy.
+    srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=3), cfg_file=True)
+    got = {}
+    before = len(posts(sparks))
+
+    def slow():
+        r = post(srv, chat(model="retry", stream=True), headers={"X-Fake-Fault": "ttft_ms:4500"})
+        got["r"] = (r.status_code, r.headers.get("x-hydra-deployment"), r.headers.get("x-hydra-attempts"))
+    t = threading.Thread(target=slow)
+    t.start()
+    time.sleep(0.4)
+    raw = copy.deepcopy(srv.raw)
+    raw["hydra"]["allowed_families"] = ["unc"]
+    for r in raw["routes"].values():
+        r["targets"] = [tg for tg in r["targets"] if raw["deployments"][tg["d"]]["family"] == "unc"]
+    raw["routes"] = {k: v for k, v in raw["routes"].items() if v["targets"]}
+    (tmp_path / "hydra.toml").write_text(core.to_toml(raw))
+    rl = httpx.post(srv.url + "/hydra/reload", headers=srv.local()).json()
+    assert rl["ok"], rl
+    t.join(15)
+    assert got["r"][1] != "nvfp4@sparks" and got["r"][0] != 200, got
+    assert "nvfp4@sparks:skipped" in (got["r"][2] or ""), got
+    assert len(posts(sparks)) == before, "a stock engine was called after the policy forbade it"
     assert srv.hy.state.node_inflight("sparks") == 0 and srv.hy.state.node_inflight("rig") == 0
 
 

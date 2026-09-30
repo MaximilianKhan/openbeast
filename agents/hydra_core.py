@@ -112,6 +112,11 @@ class Settings:
     affinity_max: int = 4096
     audit: str = ".run/hydra-audit.jsonl"
     audit_max_mb: int = 50
+    # The fleet-wide family policy (Max, 2026-09-30: "all of our models are
+    # uncensored"). Non-empty = every NON-strict candidate — first choice,
+    # spill, failover, ctx last resort, after any rule hop — must be one of
+    # these families. Empty = no policy (the implicit single-node config).
+    allowed_families: tuple[str, ...] = ()
     breaker: Breaker = Breaker()
     instinct: InstinctCfg = InstinctCfg()
 
@@ -176,6 +181,11 @@ class Route:
     aliases: tuple[str, ...] = ()
     spill: bool = True
     same_family: bool = False
+    # The anchor family of a same_family route. Resolved at validation: the
+    # explicit `family = "..."`, else the ONE family of the top-priority
+    # targets (a tie across families is a config error — the anchor is never
+    # inferred from list order). None when same_family is off.
+    family: str | None = None
     affinity: str = "session"
     require: tuple[str, ...] = ()
     min_ctx: int = 0
@@ -222,7 +232,7 @@ _HYDRA_TYPES: dict[str, tuple] = {
     "pre_commit_budget_s": (int, float), "chars_per_token": (int, float),
     "ctx_margin": (int, float), "default_max_tokens": (int,), "list_deployments": (bool,),
     "affinity_ttl_s": (int, float), "affinity_max": (int,), "audit": (str,),
-    "audit_max_mb": (int,), "breaker": (dict,), "instinct": (dict,),
+    "audit_max_mb": (int,), "breaker": (dict,), "instinct": (dict,), "allowed_families": (list,),
 }
 _BREAKER_TYPES = {"fail_threshold": (int,), "open_s": (int, float), "success_threshold": (int,)}
 _INSTINCT_TYPES = {"enabled": (bool,), "url": (str,), "key_file": (str,), "deadline_ms": (int,),
@@ -240,7 +250,7 @@ _DEP_TYPES = {
     "verify_upstream": (bool,),
 }
 _ROUTE_TYPES = {
-    "targets": (list,), "aliases": (list,), "spill": (bool,), "same_family": (bool,),
+    "targets": (list,), "aliases": (list,), "spill": (bool,), "same_family": (bool,), "family": (str,),
     "affinity": (str,), "require": (list,), "min_ctx": (int,), "max_attempts": (int,),
     "retry_on_ttft_timeout": (bool,), "description": (str,), "listed": (bool,),
 }
@@ -314,6 +324,25 @@ def _norm_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _endpoint_key(url: str) -> str:
+    """Compare two URLs by the endpoint they reach: scheme, host, port.
+    Every loopback spelling (localhost, 127.x, ::1) is one host, so a node at
+    http://localhost:8094/ is still recognised as instinct's 127.0.0.1:8094."""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url.strip())
+        host = (u.hostname or "").lower()
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme, 0)
+    except ValueError:
+        return _norm_url(url)
+    try:
+        if host == "localhost" or ipaddress.ip_address(host).is_loopback:
+            host = "loopback"
+    except ValueError:
+        pass
+    return f"{u.scheme.lower()}://{host}:{port}{u.path.rstrip('/')}"
+
+
 def gate_read_timeout(env: dict) -> float:
     try:
         return float(env.get("OPENBEAST_EDGE_READ_TIMEOUT") or 600)
@@ -350,6 +379,42 @@ def _welltyped(table: dict, types: dict) -> dict:
     the default instead of raising TypeError on (say) `down_after = "2"`."""
     return {k: v for k, v in table.items() if k in types
             and isinstance(v, types[k]) and not (isinstance(v, bool) and bool not in types[k])}
+
+
+def _route_family(where: str, r: dict, targets: list, deps: dict, allowed: tuple[str, ...],
+                  errors: list[str], warnings: list[str]) -> tuple[bool, str | None]:
+    """(same_family, anchor) for one route; appends every policy error."""
+    fam_of = {t.d: deps[t.d].family for t in targets}
+    if allowed:
+        for t in targets:
+            if fam_of[t.d] not in allowed:
+                errors.append(f"{where}.targets: {t.d} is family {fam_of[t.d]!r}, outside "
+                              f"hydra.allowed_families ({', '.join(allowed)})")
+    explicit = r.get("family") if isinstance(r.get("family"), str) else None
+    same = r.get("same_family")
+    if explicit is not None:
+        if same is False:
+            errors.append(f"{where}: family = {explicit!r} with same_family = false — pick one "
+                          "(family implies same_family)")
+            return False, None
+        if targets and explicit not in fam_of.values():
+            errors.append(f"{where}.family {explicit!r}: no target has that family")
+        anchor = explicit
+    elif same is True and targets:
+        top = min(t.priority for t in targets)
+        fams = sorted({fam_of[t.d] for t in targets if t.priority == top})
+        if len(fams) > 1:
+            errors.append(f"{where}: same_family, but the priority-{top} targets span {', '.join(fams)} — "
+                          "set family = \"...\" (the anchor is never inferred from list order)")
+            return True, None
+        anchor = fams[0]
+    else:
+        return False, None
+    for t in targets:
+        if fam_of[t.d] != anchor:
+            warnings.append(f"{where}.targets: {t.d} (family {fam_of[t.d]}) can never serve this "
+                            f"same_family route (anchored on {anchor})")
+    return True, anchor
 
 
 def validate(raw: dict, env: dict | None = None, *, repo: Path = REPO,
@@ -392,6 +457,12 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     _typecheck("hydra.instinct", ins, _INSTINCT_TYPES, errors)
     hs = {k: v for k, v in _welltyped(h, _HYDRA_TYPES).items() if k not in ("breaker", "instinct")}
     ins = _welltyped(ins, _INSTINCT_TYPES)
+    if "allowed_families" in hs:
+        af = hs["allowed_families"]
+        if not all(isinstance(x, str) and x for x in af):
+            errors.append("hydra.allowed_families: every entry must be a non-empty family string")
+            af = [x for x in af if isinstance(x, str) and x]
+        hs["allowed_families"] = tuple(dict.fromkeys(af))
     if "engine_urls" in ins and not all(isinstance(u, str) for u in ins["engine_urls"]):
         errors.append("hydra.instinct.engine_urls: every entry must be a string URL")
         ins.pop("engine_urls")
@@ -448,7 +519,13 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     if not isinstance(rn, dict) or not rn:
         errors.append("nodes: at least one [nodes.<id>] is required")
         rn = {}
-    instinct_urls = {_norm_url(instinct.url)} | {_norm_url(u) for u in instinct.engine_urls}
+    # Reconciliation §4 as revised 2026-09-30 (plan "Revision"): only the
+    # instinct SERVICE is never a pool (that would be a loop: hydra asks
+    # instinct, instinct is routed through hydra). An instinct ENGINE that is
+    # also an inference node — the rig's own 27B scoring by logprobs — is no
+    # loop: instinct calls it directly, never through hydra.
+    instinct_service = _endpoint_key(instinct.url)
+    instinct_engines = {_endpoint_key(u) for u in instinct.engine_urls}
     for nid, n in rn.items():
         where = f"nodes.{nid}"
         if not NODE_ID_RE.match(nid):
@@ -485,8 +562,14 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
                             "tailnet or LAN; prefer the tailnet IP or *.ts.net name")
         if allow_public:
             warnings.append(f"{where}: allow_public = true")
-        if url and _norm_url(url) in instinct_urls:
-            errors.append(f"{where}.url is an instinct URL — never a hydra pool (reconciliation §4)")
+        if url and _endpoint_key(url) == instinct_service:
+            errors.append(f"{where}.url is the instinct service URL — never a hydra pool "
+                          "(reconciliation §4)")
+        elif url and _endpoint_key(url) in instinct_engines:
+            warnings.append(f"{where}.url is also an instinct engine (hydra.instinct.engine_urls): "
+                            "instinct scores on it directly, so hydra's in-flight count cannot see "
+                            "those calls — on a 1-slot node they queue with routed turns (plan "
+                            "Revision 2026-09-30, risk 13)")
         loopback = cls == "loopback"
         if n.get("key_env") and n.get("key_file"):
             errors.append(f"{where}: set key_env OR key_file, not both")
@@ -664,9 +747,10 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
             errors.append(f"{where}.max_attempts must be 1..6")
             ma = 3
         mc = r.get("min_ctx", 0)
+        same_family, anchor = _route_family(where, r, targets, deps, s.allowed_families, errors, warnings)
         routes[rid] = Route(
             id=rid, targets=tuple(targets), aliases=_strlist(r.get("aliases")),
-            spill=bool(r.get("spill", True)), same_family=bool(r.get("same_family", False)),
+            spill=bool(r.get("spill", True)), same_family=same_family, family=anchor,
             affinity=aff if aff in ("session", "sticky", "none") else "session", require=req,
             min_ctx=mc if isinstance(mc, int) else 0, max_attempts=ma,
             retry_on_ttft_timeout=bool(r.get("retry_on_ttft_timeout", False)),
@@ -676,6 +760,21 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
             warnings.append(f"{where}: every target is disabled")
     if routes and s.default_route not in routes:
         errors.append(f"hydra.default_route {s.default_route!r} is not a configured route")
+    routed = {t.d for r in routes.values() for t in r.targets}
+    if s.allowed_families:
+        for did, d in deps.items():
+            if d.family not in s.allowed_families and did not in routed:
+                warnings.append(f"deployments.{did}: family {d.family!r} is outside hydra.allowed_families "
+                                "— never routed; reachable only as a strict pin")
+    else:
+        fams = sorted({deps[d].family for d in routed if d in deps})
+        if len(fams) > 1:
+            # Max 2026-09-30: "all of our models are uncensored" — a fleet rule.
+            # hydra can only enforce it when the families are declared, so a
+            # config whose routes mix families must say which ones may answer.
+            # (A pre-policy hydra.toml that spilled beast to stock lands here.)
+            errors.append(f"hydra.allowed_families is required: routes can answer from any of "
+                          f"{', '.join(fams)} — list the families a route may ever use")
 
     # the id namespace: routes, aliases and deployments must never collide
     by_id: dict[str, Route] = {}
@@ -736,6 +835,26 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
         for did in _strlist(then.get("prefer")):
             if did not in deps:
                 errors.append(f"{where}.then.prefer: {did!r} is not a configured deployment")
+        wm = when.get("model")
+        sources = (list(routes.values()) if "model" not in when
+                   else [by_id[m] for m in _strlist(wm) if m in by_id] if isinstance(wm, (str, list)) else [])
+        dest = routes.get(then["route"]) if isinstance(then.get("route"), str) else None
+        if dest is not None:
+            for src in dict.fromkeys(sources):
+                if src.id == dest.id or not src.same_family:
+                    continue
+                if dest.same_family and dest.family != src.family:
+                    errors.append(f"{where}: sends same_family route {src.id} (family {src.family}) to "
+                                  f"{dest.id}, anchored on {dest.family} — every such request would 503")
+                elif not any(deps[t.d].family == src.family for t in dest.targets):
+                    errors.append(f"{where}: sends same_family route {src.id} (family {src.family}) to "
+                                  f"{dest.id}, which has no {src.family} target — every such request "
+                                  "would 503")
+        reach = [dest] if dest is not None else sources
+        for did in _strlist(then.get("prefer")):
+            if did in deps and reach and not any(t.d == did for r_ in reach for t in r_.targets):
+                warnings.append(f"{where}.then.prefer: {did!r} is not a target of any route this rule "
+                                "applies to — it does nothing")
         rules.append(Rule(name=name, when=dict(when), then=dict(then)))
 
     if errors:
@@ -1418,8 +1537,28 @@ def effective_ttft(node: Node, est_prompt_tokens: int, budget_s: float) -> float
     return min(t, budget_s)
 
 
+def policy_reason(cfg: Config, d: Deployment, route: Route | None = None) -> str | None:
+    """Why the family policy forbids `d` for a NON-strict request, or None.
+
+    hydra.allowed_families first (fleet-wide), then the route's same_family
+    anchor. Applied to every candidate — first choice, spill, failover, the
+    ctx last resort, sticky affinity — so no path can reach a family the
+    policy forbids. Strict pins never pass through here.
+    """
+    allowed = cfg.settings.allowed_families
+    if allowed and d.family not in allowed:
+        return f"family {d.family} not in hydra.allowed_families"
+    if route is not None and route.same_family and route.family and d.family != route.family:
+        return f"family {d.family} != {route.family} (route {route.id} same_family)"
+    return None
+
+
 def _exclude(d: Deployment, n: Node, state: FleetState, f: Features, need: set[str], route: Route | None,
              eff: dict, now: float, cfg: Config, check_ctx: bool = True) -> str | None:
+    if route is not None:
+        why = policy_reason(cfg, d, route)
+        if why:
+            return why
     if not n.enabled:
         return f"node {n.id} disabled"
     if not d.enabled:
@@ -1499,6 +1638,7 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
         route = cfg.routes[cfg.default_route]
         t.note(f"unknown id {f.model!r} -> default_route {route.id}")
     requested = {f.model, route.id}
+    origin = route           # its same_family anchor survives a rule hop (a rule never escapes it)
     # 2. rules: first setter wins per key; device/role only with a trusted caller
     eff: dict[str, tuple[Any, str]] = {}
     for r in cfg.rules:
@@ -1518,10 +1658,15 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
     # 3. candidates + filters, every exclusion with its reason
     cands: list[Candidate] = []
     ctx_only: list[Candidate] = []
+    carried = origin if origin is not route and origin.same_family else None
     for tg in route.targets:
         d = cfg.deployments[tg.d]
         n = cfg.nodes[d.node]
         prio = -1 if tg.d in prefer else tg.priority
+        why = policy_reason(cfg, d, carried) if carried is not None else None
+        if why:
+            t.excluded[tg.d] = why
+            continue
         why = _exclude(d, n, state, f, need, route, eff_nodes, now, cfg)
         if why:
             t.excluded[tg.d] = why
@@ -1530,12 +1675,9 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
                 ctx_only.append(Candidate(d, n, prio, tg.weight))
         else:
             cands.append(Candidate(d, n, prio, tg.weight))
-    if route.same_family and cands and route.targets:
-        top = min(route.targets, key=lambda x: x.priority)
-        fam = cfg.deployments[top.d].family
-        for c in [c for c in cands if c.d.family != fam]:
-            cands.remove(c)
-            t.excluded[c.d.id] = f"family {c.d.family} != {fam}"
+    # The family policy already ran inside the loop, so ctx_only holds only
+    # policy-clean targets: the last resort below can never pick a forbidden
+    # family, nor 503 because the largest context happened to be one.
     if not cands and ctx_only:
         # Every otherwise-routable target was excluded ONLY by the (deliberately
         # conservative) token estimate. Send it to the largest context anyway:
@@ -1543,11 +1685,9 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
         # own overflow 400, which passes through verbatim so runner.py can
         # compact. A hydra 503 here would break compaction.
         best = max(ctx_only, key=lambda c: c.d.ctx)
-        if not route.same_family or best.d.family == cfg.deployments[
-                min(route.targets, key=lambda x: x.priority).d].family:
-            t.note(f"ctx estimate excluded every target; last resort -> {best.d.id} "
-                   "(engine decides, overflow 400 passes through)")
-            cands = [best]
+        t.note(f"ctx estimate excluded every target; last resort -> {best.d.id} "
+               "(engine decides, overflow 400 passes through)")
+        cands = [best]
     if not cands:
         detail = "; ".join(f"{k}: {v}" for k, v in t.excluded.items()) or "no targets"
         return Decision.err(503, "hydra_unavailable", t,
