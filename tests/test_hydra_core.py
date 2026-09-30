@@ -103,6 +103,25 @@ def test_example_config_validates(tmp_path, monkeypatch):
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
 
 
+def _served_alias(script: str) -> str:
+    import re
+    m = re.search(r'^\s*-a "([^"]+)"', (REPO / "scripts" / script).read_text(), re.M)
+    assert m, script
+    return m.group(1)
+
+
+def test_example_upstreams_are_the_ids_llama_server_actually_lists():
+    # llama-server lists its -a alias as the /v1/models id (server-context.cpp:
+    # model_name = *params_base.model_alias.begin()). An example upstream that
+    # is a slug instead makes the rig MISMATCH forever once the runbook's
+    # "name the rig deployment explicitly" step is followed.
+    raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
+    deps = raw["deployments"]
+    assert deps["qwen38-unc-q5@rig"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-mtp-q5.sh")
+    assert deps["qwen36-a3b-q4@ti"]["upstream"] == _served_alias("serve-qwen-35b-a3b.sh")
+    assert all(d.get("verify_upstream", True) for d in deps.values())
+
+
 def test_implicit_config_from_env():
     cfg = core.implicit_config({"INFERENCE_URL": "http://127.0.0.1:8080", "INFERENCE_BACKEND": "llama",
                                 "INFERENCE_SLOTS": "2"})

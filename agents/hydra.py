@@ -584,7 +584,9 @@ class Hydra:
             return
         for d in deps:
             if d.verify_upstream and d.upstream not in ids:
-                self._transition(d, "mismatch", now, f"{d.upstream!r} not in /v1/models")
+                served = ", ".join(repr(x) for x in sorted(i for i in ids if isinstance(i, str))[:4])
+                self._transition(d, "mismatch", now,
+                                 f"{d.upstream!r} not in /v1/models (it lists {served or 'nothing'})")
             else:
                 self._transition(d, "ok", now)
 

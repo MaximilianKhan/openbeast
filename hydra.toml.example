@@ -101,13 +101,17 @@ labels      = ["remote", "ampere"]
 # ─────────────────────── deployments (strict ids) ───────────────────────
 [deployments."qwen38-unc-q5@rig"]
 node     = "rig"
-upstream = "qwen38-27b-uncensored-mtp-q5"
+upstream = "Qwen3.8 27B Uncensored MTP Q5"   # llama-server lists its -a ALIAS as the id — this is
+                                              # serve-qwen38-27b-uncensored-mtp-q5.sh's -a, not the slug
 ctx      = 262144                             # the full -c: --kv-unified, never divide by slots
 family   = "qwen3.8-27b-uncensored"
 caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "vision", "id_slot"]
 # upstream must be listed by the node's /v1/models, or the deployment is
 # MISMATCH (a relaunched node serving other weights is never routed to).
-# verify_upstream = false turns that off — only while the served id is unknown.
+# For llama.cpp that id is the serve script's `-a "..."`; read it off the
+# node:  curl -s -H "Authorization: Bearer $KEY" <url>/v1/models
+# (`scripts/hydra.sh add-node` prints it). verify_upstream = false turns the
+# check off — only while the served id is unknown.
 
 [deployments."qwen38-nvfp4@sparks"]
 node     = "sparks"
@@ -125,7 +129,8 @@ caps     = ["tools"]                          # no json_schema on TensorFold
 
 [deployments."qwen36-a3b-q4@ti"]
 node     = "ti"
-upstream = "qwen36-35b-a3b-q4"
+upstream = "Qwen 35B MoE"                     # the -a of scripts/serve-qwen-35b-a3b.sh; VERIFY against
+                                              # the Ti's own /v1/models if it runs another script
 ctx      = 131072                             # VERIFY on 48 GB
 family   = "qwen3.6-35b-a3b"
 caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
@@ -181,6 +186,13 @@ max_attempts = 2
 listed       = false
 
 # ─────────────────────────────── rules ───────────────────────────────
+# Rules are ROUTING POLICY, not access control: they only see non-strict
+# requests, so any caller holding the inference key can name a deployment id
+# (model = "qwen38-unc-q5@rig", /pin/<d>/…, X-Hydra-Pin) and skip every rule —
+# and list_deployments = true shows those ids in the WebUI picker. A rule like
+# "guests-off-the-5090" steers well-behaved traffic; it does not keep anyone
+# off the 5090. Per-device ACLs are future work (plan X13); until then keep
+# enforcement at the gate (per-device keys, scripts/clients.sh revoke).
 # Evaluated top to bottom for NON-strict requests. For each `then` key the FIRST rule that sets it wins.
 # when: model, device, role, has_images, has_tools, needs_json_schema,
 #       min_prompt_tokens, hours ("HH:MM-HH:MM", may wrap midnight), task_class
@@ -197,7 +209,7 @@ then = { route = "beast:long" }
 
 [[rules]]
 name = "guests-off-the-5090"
-when = { role = "user" }                      # trusted only with X-Hydra-Caller (router)
+when = { role = "user" }                      # trusted only with X-Hydra-Caller (router); policy, not ACL
 then = { ignore_nodes = ["rig"] }
 
 [[rules]]
