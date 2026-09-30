@@ -94,6 +94,7 @@ class FakeEngine:
         self.disconnects = 0
         self.served = 0
         self._lock = threading.Lock()
+        self._conns: set = set()
         self.srv: http.server.ThreadingHTTPServer | None = None
         self.start()
 
@@ -112,11 +113,20 @@ class FakeEngine:
         threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
 
     def stop(self) -> None:
-        """Stop listening (the `refuse` fault). Connections are refused after this."""
+        """Die like a killed engine: stop listening AND cut every open
+        connection — a client's keep-alive pool must not keep talking to a
+        dead node. New connections are refused after this."""
         srv, self.srv = self.srv, None
         if srv is not None:
             srv.shutdown()
             srv.server_close()
+        with self._lock:
+            conns, self._conns = list(self._conns), set()
+        for c in conns:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     close = stop
 
@@ -155,6 +165,19 @@ def _handler(eng: FakeEngine):
 
         def log_message(self, *a):
             pass
+
+        def setup(self):
+            super().setup()
+            with eng._lock:
+                eng._conns.add(self.connection)
+
+        def finish(self):
+            with eng._lock:
+                eng._conns.discard(self.connection)
+            try:
+                super().finish()
+            except OSError:
+                pass
 
         # ─── plumbing ───
         def _send(self, code: int, body: bytes, ctype: str = "application/json", extra: dict | None = None):
