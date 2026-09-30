@@ -61,8 +61,9 @@ Env:
                              JWT (same value WebUI signs with) -> role from it
   ROUTER_CLASSIFY_MODEL      beast-hydra (HYDRA=true, a `classify` route in
                              hydra.toml): the classify call names this model
-                             so hydra can place it off the one-slot primary.
-                             Unset = the body carries no model, as always.
+                             so hydra can place it off the one-slot primary;
+                             without that route start.sh names the default
+                             route. Unset = the body carries no model, as always.
   OPENBEAST_HYDRA_CALLER_TOKEN_FILE  beast-hydra: the 0600 token the router
                              presents as X-Hydra-Caller on proxied and
                              classify calls, vouching for the WebUI identity

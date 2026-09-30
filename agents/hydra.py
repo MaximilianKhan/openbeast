@@ -1444,6 +1444,23 @@ def load_for_serve(env) -> tuple[core.Config, Path, bool]:
     return cfg, p, True
 
 
+def default_model_check(cfg: core.Config, env) -> tuple[list[str], list[str]]:
+    """The route id agents send (conf.sh HYDRA_DEFAULT_MODEL, exported as
+    OPENBEAST_HYDRA_DEFAULT_MODEL) must name something this config serves.
+
+    Otherwise every agent request (and the router's classify call) only works
+    through unknown_model = "default" — and under "404" it never works at
+    all. Returns (errors, warnings)."""
+    dm = (env.get("OPENBEAST_HYDRA_DEFAULT_MODEL") or "").strip()
+    if not dm or dm in cfg.route_by_id_or_alias or dm in cfg.deployments:
+        return [], []
+    msg = (f"HYDRA_DEFAULT_MODEL={dm!r} (the id agents send) names no route, alias or "
+           f"deployment in this config")
+    if cfg.settings.unknown_model == "404":
+        return [msg + " and hydra.unknown_model = \"404\" — every agent request would 404"], []
+    return [], [msg + f" — it falls back to default_route {cfg.default_route!r}"]
+
+
 def _cmd_check(arg: str, env, as_json: bool) -> int:
     p = Path(arg) if arg else config_path(env)
     try:
@@ -1453,6 +1470,10 @@ def _cmd_check(arg: str, env, as_json: bool) -> int:
             raise core.ConfigError([f"{p} does not exist"])
         else:
             cfg, what = core.implicit_config(dict(env)), f"implicit config ({p} absent)"
+        dm_err, dm_warn = default_model_check(cfg, env)
+        if dm_err:
+            raise core.ConfigError(dm_err, list(cfg.warnings) + dm_warn)
+        cfg.warnings.extend(dm_warn)
     except core.ConfigError as e:
         if as_json:
             print(json.dumps({"ok": False, "errors": e.errors, "warnings": e.warnings}))

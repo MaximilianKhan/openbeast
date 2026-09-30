@@ -572,7 +572,13 @@ elif [[ ! "$HYDRA_DEFAULT_MODEL" =~ ^[a-z0-9][a-z0-9._:-]{0,63}$ ]]; then
 fi
 HYDRA_READY_GRACE="${OPENBEAST_HYDRA_READY_GRACE:-$(_ob_conf_value HYDRA_READY_GRACE || true)}"
 HYDRA_READY_GRACE="${HYDRA_READY_GRACE%%[[:space:]#]*}"
-[[ "$HYDRA_READY_GRACE" =~ ^[0-9]+$ ]] || HYDRA_READY_GRACE=60
+# Base 10 explicitly: `08` would otherwise be an invalid octal in every
+# (( )) that reads it, and wait_hydra_routable would never time out.
+if [[ "$HYDRA_READY_GRACE" =~ ^[0-9]{1,6}$ ]]; then
+  HYDRA_READY_GRACE="$((10#$HYDRA_READY_GRACE))"
+else
+  HYDRA_READY_GRACE=60
+fi
 # CONSUMER_BASE: where the stack's own consumers (router, beast-gate) send
 # inference. INFERENCE_URL keeps meaning "the local engine" either way.
 CONSUMER_BASE="$INFERENCE_URL"
@@ -597,6 +603,10 @@ if [[ "$HYDRA" == "true" ]]; then
     unset OPENBEAST_HYDRA_UPSTREAM_MODEL
   fi
   export OPENBEAST_INFERENCE_MODEL="$HYDRA_DEFAULT_MODEL"
+  # hydra itself reads this (hydra_core.implicit_raw's default_route, and
+  # `hydra.py --check` holds an explicit hydra.toml to it) — without the
+  # export a conf-file HYDRA_DEFAULT_MODEL reached the agents but not hydra.
+  export OPENBEAST_HYDRA_DEFAULT_MODEL="$HYDRA_DEFAULT_MODEL"
   export OPENBEAST_HYDRA=true
   export OPENBEAST_HYDRA_PORT="$HYDRA_PORT"
   export OPENBEAST_HYDRA_URL="$HYDRA_URL"
@@ -607,6 +617,10 @@ if [[ "$HYDRA" == "true" ]]; then
   # the router and beast-gate (including a healthcheck --restart relaunch)
   # read the token from here to vouch for what they forward.
   export OPENBEAST_HYDRA_CALLER_TOKEN_FILE="$HYDRA_CALLER_TOKEN_FILE"
+else
+  # Derived exports only (never an input knob): a shell that once sourced
+  # this with HYDRA=true must not keep pointing consumers at a dead hydra.
+  unset OPENBEAST_CONSUMER_BASE OPENBEAST_HYDRA_URL OPENBEAST_HYDRA_CALLER_TOKEN_FILE
 fi
 INSTINCT="$(_ob_bool "${OPENBEAST_INSTINCT:-$(_ob_conf_value INSTINCT || true)}" false INSTINCT)"
 INSTINCT_PORT="$(_ob_port "${OPENBEAST_INSTINCT_PORT:-$(_ob_conf_value INSTINCT_PORT || true)}" 8094 INSTINCT_PORT)"

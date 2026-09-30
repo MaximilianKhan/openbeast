@@ -201,7 +201,9 @@ LLAMA_BASE="$INFERENCE_URL"
 # Where the stack's own consumers (router, beast-gate) send inference:
 # beast-hydra when HYDRA=true, else exactly LLAMA_BASE. LLAMA_BASE keeps
 # meaning the local engine (readiness, KV warm-up, rollback).
-CONSUMER_BASE="${OPENBEAST_CONSUMER_BASE:-$LLAMA_BASE}"
+# From THIS start's conf (HYDRA/HYDRA_URL), never an inherited export.
+CONSUMER_BASE="$LLAMA_BASE"
+[[ "${HYDRA:-false}" == "true" ]] && CONSUMER_BASE="$HYDRA_URL"
 
 # beast-hydra: validate its config BEFORE anything is launched (both the
 # daemon launcher and the supervisor pass through here). An invalid config
@@ -222,9 +224,11 @@ if [[ "${HYDRA:-false}" == "true" ]]; then
   read -r HYDRA_CLASSIFY_ROUTE HYDRA_CHECK_SUMMARY < <(printf '%s' "$_hy_json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
+for w in d.get("warnings") or []:
+    print("WARNING: beast-hydra: %s" % w, file=sys.stderr)
 print("true" if d.get("classify_route") else "false",
       "%s node(s), %s route(s), config %s" % (d.get("nodes"), d.get("routes"), d.get("config")))
-' 2>/dev/null) || true
+') || true
   [[ "$HYDRA_CLASSIFY_ROUTE" == "true" ]] || HYDRA_CLASSIFY_ROUTE=false
   unset _hy_json _hy_check
 fi
@@ -992,7 +996,7 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   #   ROUTER_CLASSIFY_MODEL "classify" under HYDRA=true when hydra.toml has
   #                         that route, so the generative classify can be
   #                         placed off the one-slot primary. Without the route
-  #                         it stays unset and resolves to the default route.
+  #                         it names HYDRA_DEFAULT_MODEL, the route agents use.
   _router_env=()
   if [[ "${ROUTER_INSTINCT:-off}" != "off" ]]; then
     _router_env+=(ROUTER_INSTINCT="$ROUTER_INSTINCT" INSTINCT_URL="http://127.0.0.1:${INSTINCT_PORT}")
@@ -1008,6 +1012,11 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   fi
   if [[ "${HYDRA:-false}" == "true" && "$HYDRA_CLASSIFY_ROUTE" == "true" ]]; then
     _router_env+=(ROUTER_CLASSIFY_MODEL=classify)
+  elif [[ "${HYDRA:-false}" == "true" ]]; then
+    # Name the default route: a model-less classify body only works through
+    # hydra's unknown_model = "default" fallback, and "404" would quietly
+    # turn every classification (and so every spawn) into an error.
+    _router_env+=(ROUTER_CLASSIFY_MODEL="$HYDRA_DEFAULT_MODEL")
   fi
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
   OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \

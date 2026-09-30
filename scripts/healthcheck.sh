@@ -494,13 +494,13 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       # and the supervisor is left holding a stale pid.
       # Upstream where llama-server answers (BIND_HOST), as start.sh does:
       # a specific-address bind refuses 127.0.0.1. Under HYDRA=true that is
-      # hydra (OPENBEAST_CONSUMER_BASE) — this line used to name
+      # hydra (conf.sh's CONSUMER_BASE, never an inherited export) — this line used to name
       # INFERENCE_URL, so a watchdog-relaunched gate quietly bypassed hydra.
       # The caller-token path rides OPENBEAST_HYDRA_CALLER_TOKEN_FILE, which
       # conf.sh exports under HYDRA=true.
       _edge_log="$(_restart_log beast-gate)"
       OPENBEAST_REPO_DIR="$REPO_DIR" \
-        OPENBEAST_LLAMA_UPSTREAM="${OPENBEAST_CONSUMER_BASE:-$INFERENCE_URL}" \
+        OPENBEAST_LLAMA_UPSTREAM="${CONSUMER_BASE:-$INFERENCE_URL}" \
         python3 "$REPO_DIR/agents/edge.py" >>"$_edge_log" 2>&1 &
       mkdir -p "$REPO_DIR/.run"
       echo "$!" > "$REPO_DIR/.run/edge.pid"

@@ -915,6 +915,34 @@ def test_instinct_without_the_contract_is_not_asked(fleet, tmp_path):
         ins.close()
 
 
+# ───────────────────── the default model agents send (wiring review minor 4) ─────────────────────
+
+def _check(tmp_path, capsys, env, unknown_model="default"):
+    raw = core.implicit_raw({})
+    raw["hydra"]["unknown_model"] = unknown_model
+    p = tmp_path / "hydra.toml"
+    p.write_text(core.to_toml(raw))
+    rc = hydra._cmd_check(str(p), env, True)
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def test_check_warns_when_the_agents_default_names_nothing(tmp_path, capsys):
+    rc, doc = _check(tmp_path, capsys, {"OPENBEAST_HYDRA_DEFAULT_MODEL": "fleet"})
+    assert rc == 0 and any("HYDRA_DEFAULT_MODEL='fleet'" in w for w in doc["warnings"]), doc
+
+
+def test_check_fails_closed_when_the_default_would_404(tmp_path, capsys):
+    rc, doc = _check(tmp_path, capsys, {"OPENBEAST_HYDRA_DEFAULT_MODEL": "fleet"}, unknown_model="404")
+    assert rc == 1 and not doc["ok"] and "every agent request would 404" in doc["errors"][0], doc
+
+
+@pytest.mark.parametrize("dm", ["", "beast", "default", "local@rig"])
+def test_check_is_quiet_when_the_default_resolves(tmp_path, capsys, dm):
+    rc, doc = _check(tmp_path, capsys, {"OPENBEAST_HYDRA_DEFAULT_MODEL": dm} if dm else {},
+                     unknown_model="404")
+    assert rc == 0 and not any("HYDRA_DEFAULT_MODEL" in w for w in doc["warnings"]), doc
+
+
 def test_verify_upstream_false_skips_the_mismatch_check(fleet):
     def mut(raw):
         raw["deployments"]["unc@rig"].update(upstream="not-what-llama-lists", verify_upstream=False)

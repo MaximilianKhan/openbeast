@@ -255,12 +255,14 @@ if grep -A3 'OPENBEAST_ROUTER_PORT="$ROUTER_PORT"' "$REPO_DIR/start.sh" | grep -
 else
   fail "a start.sh consumer still points at LLAMA_BASE"
 fi
-if grep -q 'CONSUMER_BASE="${OPENBEAST_CONSUMER_BASE:-$LLAMA_BASE}"' "$REPO_DIR/start.sh"; then
-  pass "start.sh: CONSUMER_BASE defaults to exactly LLAMA_BASE"
+if grep -q '^CONSUMER_BASE="$LLAMA_BASE"$' "$REPO_DIR/start.sh" \
+   && grep -q '^\[\[ "${HYDRA:-false}" == "true" \]\] && CONSUMER_BASE="$HYDRA_URL"$' "$REPO_DIR/start.sh" \
+   && ! grep -q 'OPENBEAST_CONSUMER_BASE' "$REPO_DIR/start.sh"; then
+  pass "start.sh: CONSUMER_BASE is exactly LLAMA_BASE, or HYDRA_URL from THIS conf (never an inherited export)"
 else
-  fail "start.sh: CONSUMER_BASE derivation missing"
+  fail "start.sh: CONSUMER_BASE derivation missing or reads an inherited export"
 fi
-if grep -q 'OPENBEAST_LLAMA_UPSTREAM="${OPENBEAST_CONSUMER_BASE:-$INFERENCE_URL}"' "$REPO_DIR/scripts/healthcheck.sh" \
+if grep -q 'OPENBEAST_LLAMA_UPSTREAM="${CONSUMER_BASE:-$INFERENCE_URL}"' "$REPO_DIR/scripts/healthcheck.sh" \
    && ! grep -q 'OPENBEAST_LLAMA_UPSTREAM="$INFERENCE_URL"' "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck.sh: the gate relaunch no longer uses bare \$INFERENCE_URL (the :396 bug)"
 else
@@ -277,7 +279,8 @@ else
   fail "start.sh: launch_hydra ($_lh) not before the waits ($_wu, $_lw)"
 fi
 if grep -q 'env ${_router_env\[@\]+"${_router_env\[@\]}"} python3 "$SCRIPT_DIR/agents/router.py"' "$REPO_DIR/start.sh" \
-   && grep -q '_router_env+=(ROUTER_CLASSIFY_MODEL=classify)' "$REPO_DIR/start.sh"; then
+   && grep -q '_router_env+=(ROUTER_CLASSIFY_MODEL=classify)' "$REPO_DIR/start.sh" \
+   && grep -q '_router_env+=(ROUTER_CLASSIFY_MODEL="$HYDRA_DEFAULT_MODEL")' "$REPO_DIR/start.sh"; then
   pass "router gets ROUTER_INSTINCT / ROUTER_CLASSIFY_MODEL in its own env only"
 else
   fail "router env wiring missing"
@@ -499,6 +502,16 @@ if grep -q "\"upstream\": \"http://127.0.0.1:$P_DEAD\", \"caller\": null" "$_H/.
 else
   fail "relaunched gate without hydra: $(cat "$_H/.run/launched-edge" 2>/dev/null)"
 fi
+rm -f "$_H/.run/launched-edge"
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_EDGE_GATE=true OPENBEAST_EDGE_PORT="$P_DEAD" OPENBEAST_HYDRA=false
+         OPENBEAST_CONSUMER_BASE="http://127.0.0.1:$P_200"
+         OPENBEAST_HYDRA_CALLER_TOKEN_FILE="$_H/.run/hydra-caller.token")
+_run "$_H" "$_H/scripts/healthcheck.sh" --restart >/dev/null
+if grep -q "\"upstream\": \"http://127.0.0.1:$P_DEAD\", \"caller\": null" "$_H/.run/launched-edge" 2>/dev/null; then
+  pass "HYDRA off + stale hydra exports: the relaunched gate still goes to INFERENCE_URL"
+else
+  fail "stale OPENBEAST_CONSUMER_BASE steered the relaunched gate: $(cat "$_H/.run/launched-edge" 2>/dev/null)"
+fi
 
 echo ""
 echo "start.sh:"
@@ -527,6 +540,98 @@ if grep -q '  hydra: not running' <<< "$_o" && grep -q '  instinct: not running'
   pass "--status with hydra/instinct on: their rows and hydra's routability"
 else
   fail "--status rows: $(grep -iE 'hydra|instinct' <<< "$_o" | tr '\n' ' ')"
+fi
+
+# start.sh's own hydra functions, RUN (not grepped): launch_hydra against a
+# stand-in that really binds HYDRA_PORT, cleanup() after a watchdog replaced
+# it, and wait_hydra_routable under an octal-looking grace.
+echo ""
+echo "start.sh launch_hydra / cleanup / wait_hydra_routable, executed:"
+_L="$_T/launch"; _box "$_L"
+P_LH="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+cat > "$_L/bin/curl" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *127.0.0.1:$P_LH*) exec /usr/bin/curl "\$@" ;; esac; done
+exit 7
+EOF
+chmod +x "$_L/bin/curl"
+cat > "$_L/agents/hydra.py" <<'PY'
+import http.server, json, os, sys
+run = os.environ["OPENBEAST_HYDRA_RUN_DIR"]
+with open(os.path.join(run, "stub-hydra-%d" % os.getpid()), "w") as fh:
+    json.dump({"argv": sys.argv[1:], "port": os.environ.get("OPENBEAST_HYDRA_PORT"),
+               "default": os.environ.get("OPENBEAST_HYDRA_DEFAULT_MODEL")}, fh)
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+http.server.HTTPServer(("127.0.0.1", int(os.environ["OPENBEAST_HYDRA_PORT"])), H).serve_forever()
+PY
+# _sx <driver>: start.sh's libs + its hydra functions, in the sandbox.
+_sx() {
+  env -i HOME="$_L/home" PATH="$_L/bin:/usr/bin:/bin" OPENBEAST_HYDRA=true OPENBEAST_HYDRA_PORT="$P_LH" \
+    OPENBEAST_INFERENCE_MANAGED=false OPENBEAST_INFERENCE_URL="http://127.0.0.1:$P_DEAD" \
+    OPENBEAST_HYDRA_READY_GRACE="${GRACE:-60}" \
+    timeout 60 nice -n 19 bash -c '
+      set -euo pipefail
+      SCRIPT_DIR="$1"; REPO_DIR="$1"; RUN_DIR="$1/.run"
+      for l in proc conf extensions net backend curl_auth portown; do source "$1/scripts/lib/$l.sh"; done
+      eval "$(sed -n -e "/^_rm_own_pidfile() {/,/^}/p" -e "/^cleanup() {/,/^}/p" \
+                     -e "/^launch_hydra() {/,/^}/p" -e "/^wait_hydra_routable() {/,/^}/p" "$1/start.sh")"
+      CLEANED=0
+      '"$1"'
+    ' _ "$_L" 2>&1 || true
+}
+_o="$(_sx 'launch_hydra; echo "PID=$HYDRA_PID"')"
+_hp="$(sed -n 's/^PID=//p' <<< "$_o")"
+[[ -n "$_hp" ]] && _PIDS="$_PIDS $_hp"
+_tok="$_L/.run/hydra-caller.token"
+if [[ -n "$_hp" ]] && kill -0 "$_hp" 2>/dev/null && [[ "$(cat "$_L/.run/hydra.pid")" == "$_hp" ]] \
+   && [[ "$(stat -c '%a' "$_tok")" == 600 && "$(wc -c < "$_tok")" -eq 65 ]] \
+   && grep -q '"argv": \[\], "port": "'"$P_LH"'", "default": "beast"' "$_L/.run/stub-hydra-$_hp" \
+   && grep -q "beast-hydra answering on http://127.0.0.1:$P_LH (pid $_hp)" <<< "$_o"; then
+  pass "launch_hydra: starts hydra (no argv), records its pid, mints a 0600 caller token, waits for /health"
+else
+  fail "launch_hydra: $(tr '\n' ' ' <<< "$_o") pidfile=$(cat "$_L/.run/hydra.pid" 2>/dev/null) tok=$(stat -c '%a' "$_tok" 2>/dev/null)"
+fi
+_o="$(_sx 'launch_hydra; echo SECOND-STARTED')"
+if grep -q "port $P_LH is already held" <<< "$_o" && ! grep -q SECOND-STARTED <<< "$_o"; then
+  pass "launch_hydra refuses a port already held (an orphan or a sibling's hydra)"
+else
+  fail "second launch_hydra: $(tr '\n' ' ' <<< "$_o")"
+fi
+# The watchdog replaced our hydra: healthcheck --restart recorded the new pid.
+kill "$_hp" 2>/dev/null || true
+for _i in $(seq 1 50); do kill -0 "$_hp" 2>/dev/null || break; sleep 0.1; done
+nice -n 19 python3 -c 'import time; time.sleep(120)' "$_L/agents/hydra.py" &
+_rep=$!; _PIDS="$_PIDS $_rep"
+echo "$_rep" > "$_L/.run/hydra.pid"; echo "replacement-start" > "$_L/.run/hydra.start"
+_sx "HYDRA_PID=$_hp; cleanup" >/dev/null
+if [[ "$(cat "$_L/.run/hydra.pid" 2>/dev/null)" == "$_rep" && -e "$_L/.run/hydra.start" ]] && kill -0 "$_rep" 2>/dev/null; then
+  pass "cleanup keeps hydra.pid when the watchdog's replacement owns it (no unreapable orphan)"
+else
+  fail "cleanup deleted the replacement's hydra.pid ($(cat "$_L/.run/hydra.pid" 2>/dev/null)) or killed it"
+fi
+kill "$_rep" 2>/dev/null || true
+# Negative control: the pidfile still names OUR hydra -> removed with its sidecar.
+echo "$_hp" > "$_L/.run/hydra.pid"
+_sx "HYDRA_PID=$_hp; cleanup" >/dev/null
+if [[ ! -e "$_L/.run/hydra.pid" && ! -e "$_L/.run/hydra.start" ]]; then
+  pass "cleanup removes hydra.pid + hydra.start when they are ours (control)"
+else
+  fail "cleanup left our own hydra.pid behind: $(ls "$_L/.run")"
+fi
+# wait_hydra_routable must time out under HYDRA_READY_GRACE=08 (octal-looking).
+# sleep advances SECONDS instead of waiting, and nothing is routable.
+_o="$(GRACE=08 _sx 'ob_hydra_ready() { return 1; }; sleep() { SECONDS=$((SECONDS + 1)); }
+                    if wait_hydra_routable; then echo ROUTABLE; else echo "RC=$? after ${SECONDS}s"; fi')"
+if grep -q "NO routable default route after 8s" <<< "$_o" && grep -q '^RC=1 after' <<< "$_o" \
+   && ! grep -q 'value too great' <<< "$_o"; then
+  pass "wait_hydra_routable: HYDRA_READY_GRACE=08 times out after 8s (not 'value too great for base')"
+else
+  fail "wait_hydra_routable with grace 08: $(tr '\n' ' ' <<< "$_o")"
 fi
 
 echo ""
