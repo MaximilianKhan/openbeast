@@ -1,0 +1,9 @@
+{
+ "status": 200,
+ "body": "{\"status\"  :\t \"ok\", \"slots_idle\": 1}",
+ "expect": {
+  "llama": "ready",
+  "vllm": "ready",
+  "tensorfold": "ready"
+ }
+}

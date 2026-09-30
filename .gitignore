@@ -66,3 +66,6 @@ extensions/*/compose.yaml.pre-bundle
 scratch/logs/
 scratch/**/*.pre-*
 llamacpp-clean/
+
+# beast-hydra routing config: names tailnet hosts (hydra.toml.example is tracked)
+/hydra.toml

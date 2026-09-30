@@ -1,0 +1,214 @@
+# hydra.toml — beast-hydra routing config (docs/BEAST_HYDRA_PLAN.md §6.2).
+#
+#   Copy:      cp hydra.toml.example hydra.toml      (hydra.toml is gitignored:
+#              it names tailnet hosts)
+#   Validate:  scripts/hydra.sh check                 (fails closed: every error listed)
+#   Reload:    scripts/hydra.sh reload   (or kill -HUP $(cat .run/hydra.pid))
+#              A bad file is refused and the running config is kept.
+#   Start:     HYDRA=true in openbeast.conf. With no hydra.toml at all, hydra
+#              builds an implicit single-node config that behaves like today:
+#              python3 agents/hydra.py --print-default-config > hydra.toml
+#
+# Vocabulary: a NODE is one engine endpoint. A DEPLOYMENT is one model on one
+# node; its id is STRICT (served by that deployment and nothing else — no
+# rules, no spill, no failover, 503 when down). A ROUTE is a virtual model id
+# with a policy. RULES are deterministic when → then rewrites.
+#
+# The port and bind are NOT here: HYDRA_PORT in openbeast.conf, and hydra
+# always binds 127.0.0.1. Keys live in ~/.config/openbeast/hydra/<node>.key,
+# mode 0600 — this example validates only once those files exist.
+schema = 1
+
+[hydra]
+default_route       = "beast"      # what an unknown/legacy model id resolves to
+unknown_model       = "default"    # "default" | "404"
+inbound_key_env     = "LLAMA_API_KEY"   # callers must present it; empty env = open (loopback only anyway)
+probe_interval_s    = 5            # READY/LOADING probe cadence
+probe_down_interval_s = 30         # DOWN/AUTH_FAILED probe cadence
+models_interval_s   = 60           # /v1/models re-check (catches a swapped model)
+down_after          = 2            # consecutive failed probes → DOWN
+up_after            = 2            # consecutive good probes → READY
+pre_commit_budget_s = 580          # all attempts before commit; MUST be < gate read timeout (600) and < SDK 600
+chars_per_token     = 3.0          # conservative estimate (over-estimates tokens)
+ctx_margin          = 0.05
+default_max_tokens  = 4096         # assumed completion size when a request has none
+list_deployments    = true         # also list strict deployment ids in /v1/models
+affinity_ttl_s      = 1800
+affinity_max        = 4096
+audit               = ".run/hydra-audit.jsonl"
+audit_max_mb        = 50
+
+[hydra.breaker]
+fail_threshold    = 5
+open_s            = 30
+success_threshold = 2
+
+# beast-instinct (docs/BEAST_INSTINCT_PLAN.md §5.11, instinct-route/1). Only
+# consulted when a rule below uses `when.task_class`, only when >= 2 eligible
+# deployments remain after hydra's own hard filters, and its answer is APPLIED
+# only when instinct says action = "act" AND enforce = true (enforcement comes
+# from instinct's eval-gate record, never from a toggle here). Otherwise it is
+# logged as shadow and the static policy decides. Instinct absent = static policy.
+[hydra.instinct]
+enabled        = true
+url            = "http://127.0.0.1:8094"   # loopback only
+key_file       = ".run/instinct.key"
+deadline_ms    = 25
+contract_ttl_s = 60
+feedback       = true                       # POST /v1/instinct/feedback per request (trace_id)
+# engine_urls  = ["http://127.0.0.1:8082"]  # instinct's own scorer: refused as a node
+
+# ─────────────────────────── nodes ───────────────────────────
+[nodes.rig]                                   # the 5090, launched + supervised by start.sh
+url         = "http://127.0.0.1:8080"
+engine      = "llama"                         # llama | vllm | tensorfold | openai
+key_env     = "LLAMA_API_KEY"
+slots       = 1                               # MTP forces -np 1
+gpu_lease   = true                            # drain while an eval campaign holds scripts/gpu-lease.sh
+ttft_timeout_s = 120
+labels      = ["local", "5090", "mtp"]
+
+[nodes.sparks]                                # TP=2 pair = ONE node (rank 0 serves HTTP)
+url         = "http://100.101.102.103:8000"   # spark-node.sh SPARK_SERVE_HOST:PORT (tailnet IP)
+engine      = "vllm"
+key_file    = "~/.config/openbeast/hydra/sparks.key"   # same value as the Spark's VLLM_API_KEY_FILE
+slots       = 8                               # = MAX_NUM_SEQS (profile)
+members     = ["spark-a", "spark-b"]
+exclusive_group = "spark-pair"
+connect_timeout_s = 5
+ttft_timeout_s    = 60
+prefill_tps_floor = 1500                      # VERIFY: ttft deadline += est_prompt_tokens / floor
+idle_timeout_s    = 180
+labels      = ["remote", "gb10", "tp2"]
+
+[nodes.sparks-tf]                             # same boxes, TensorFold — mutually exclusive with vLLM
+url         = "http://100.101.102.103:8000"
+engine      = "tensorfold"                    # never gets a key; MUST be firewalled to the rig (DGX §7)
+enabled     = false
+exclusive_group = "spark-pair"
+slots       = 4
+
+[nodes.ti]                                    # 2× RTX 3090 Ti, llama.cpp --tensor-split
+url         = "http://100.64.10.20:8080"
+engine      = "llama"
+key_file    = "~/.config/openbeast/hydra/ti.key"
+slots       = 2
+connect_timeout_s = 5
+labels      = ["remote", "ampere"]
+
+# role = "instinct-engine" is REFUSED: an instinct scorer is never a hydra pool.
+
+# ─────────────────────── deployments (strict ids) ───────────────────────
+[deployments."qwen38-unc-q5@rig"]
+node     = "rig"
+upstream = "qwen38-27b-uncensored-mtp-q5"
+ctx      = 262144                             # the full -c: --kv-unified, never divide by slots
+family   = "qwen3.8-27b-uncensored"
+caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "vision", "id_slot"]
+# upstream must be listed by the node's /v1/models, or the deployment is
+# MISMATCH (a relaunched node serving other weights is never routed to).
+# verify_upstream = false turns that off — only while the served id is unknown.
+
+[deployments."qwen38-nvfp4@sparks"]
+node     = "sparks"
+profile  = "qwen38-27b-nvfp4-vllm"            # upstream/ctx/engine from scripts/backends/models/*.env
+family   = "qwen3.8-27b"                      # STOCK (not abliterated) — different family
+caps     = ["tools", "json_schema", "reasoning_budget"]
+conformance = "required"                      # default for non-loopback nodes anyway:
+                                              # scripts/hydra.sh conformance qwen38-nvfp4@sparks
+
+[deployments."qwen38-mlx4@sparks-tf"]
+node     = "sparks-tf"
+profile  = "qwen38-27b-mlx4-tensorfold"
+family   = "qwen3.8-27b"
+caps     = ["tools"]                          # no json_schema on TensorFold
+
+[deployments."qwen36-a3b-q4@ti"]
+node     = "ti"
+upstream = "qwen36-35b-a3b-q4"
+ctx      = 131072                             # VERIFY on 48 GB
+family   = "qwen3.6-35b-a3b"
+caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
+
+# ────────────────────────── routes (virtual ids) ──────────────────────────
+# Lower priority = tried first. Inside a group: affinity, then least (inflight+1)/slots/weight.
+[routes.beast]
+description = "Daily driver: the champion, spill to the Sparks when the 5090 is busy"
+targets = [
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
+]
+spill        = true
+same_family  = false          # OPEN DECISION (plan §10): true = never answer `beast` with a stock model
+affinity     = "sticky"       # a conversation that spilled stays where its cache is while healthy
+aliases      = ["qwen-27b-q5", "qwen38-27b-uncensored-mtp-q5", "default", "local"]
+
+[routes."beast:max"]
+description = "Quality-first: wait for the best model rather than spill down"
+targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]   # a Sparks flagship joins ONLY after a paired eval win
+spill   = false
+
+[routes."beast:fast"]
+description = "Throughput: the MoE on the Ti rig, then anything free"
+targets = [
+  { d = "qwen36-a3b-q4@ti",    priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
+  { d = "qwen38-unc-q5@rig",   priority = 2 },
+]
+
+[routes."beast:long"]
+description = "Long context"
+targets = [
+  { d = "qwen38-nvfp4@sparks", priority = 0, weight = 2 },
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
+]
+min_ctx = 200000
+
+[routes."beast:vision"]
+targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]
+require = ["vision"]
+
+[routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
+description = "Grammar-constrained spawn classifier — keep it off the 1-slot 5090"
+targets = [
+  { d = "qwen36-a3b-q4@ti",    priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
+  { d = "qwen38-unc-q5@rig",   priority = 2 },
+]
+require      = ["json_schema"]
+affinity     = "none"
+max_attempts = 2
+listed       = false
+
+# ─────────────────────────────── rules ───────────────────────────────
+# Evaluated top to bottom for NON-strict requests. For each `then` key the FIRST rule that sets it wins.
+# when: model, device, role, has_images, has_tools, needs_json_schema,
+#       min_prompt_tokens, hours ("HH:MM-HH:MM", may wrap midnight), task_class
+# then: route (one hop, never chained), only_nodes, ignore_nodes, require, prefer
+[[rules]]
+name = "images-need-vision"
+when = { has_images = true, model = ["beast", "beast:fast"] }
+then = { route = "beast:vision" }
+
+[[rules]]
+name = "huge-prompts-go-long"
+when = { min_prompt_tokens = 120000, model = ["beast", "beast:fast"] }
+then = { route = "beast:long" }
+
+[[rules]]
+name = "guests-off-the-5090"
+when = { role = "user" }                      # trusted only with X-Hydra-Caller (router)
+then = { ignore_nodes = ["rig"] }
+
+[[rules]]
+name = "phone-stays-on-fast"
+when = { device = "max-phone" }               # trusted only with X-Hydra-Caller (gate)
+then = { route = "beast:fast" }
+
+# A judgement rule fed by beast-instinct. Shadow-only until instinct's eval
+# gate promotes `task_class` to enforce: until then it never fires, and the
+# audit records what it WOULD have done (instinct.shadow_deployment).
+# [[rules]]
+# name = "bulk-to-fast"
+# when = { task_class = "bulk", model = ["beast"] }
+# then = { route = "beast:fast" }
