@@ -45,8 +45,8 @@ line in `openbeast.conf`.
 | **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 18-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
-| **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP | v1.3 |
-| **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job | v1.4 |
+| **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. On `main`: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · `main` |
+| **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. On `main`: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · `main` |
 | **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, and (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix | v1.5 |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
@@ -234,19 +234,33 @@ Published "Drive wear, 90 days" → https://beast.tail1234.ts.net:8446/a/6f1c2a3
 
 Publish again with the same id and the URL stays while a new **immutable
 version** is added, so the link you sent someone last week still resolves to
-what they read. A mobile gallery lists everything; the viewer adds a version
-picker, a theme toggle and a copy-link button; `./scripts/artifact.sh publish
-page.html --file app.js=dist/app.js` is how scripts and background agents
-publish, supporting files included.
+what they read. A mobile gallery lists everything (100 a page, pinned first,
+searchable); the viewer adds a version picker, a theme toggle and a copy-link
+button; `./scripts/artifact.sh publish page.html --file app.js=dist/app.js`
+is how scripts and background agents publish, supporting files included.
+Everything the rig itself publishes is owned by one `rig` principal, and its
+**admins** (`ARTIFACT_ADMINS`, else the first operator) manage every page.
+From a phone, a device key with the `artifact` scope pins, tags, shares and
+deletes a page through the viewer's Manage sheet; `artifact.sh prune` keeps a
+long-lived page under its 200-version cap, and `ARTIFACT_RETAIN_DAYS` is
+opt-in retention. A page published from a beast-chat session links back to
+it.
 
 **Model-authored HTML is treated as hostile, because it is.** Pages render in
 an opaque-origin sandboxed iframe under a Content-Security-Policy: no storage,
 no `fetch`, no downloads, no reaching the page that frames it, scripts only
-from four pinned CDNs. Pages are **private to their publisher** by default,
+from four pinned CDNs. Pages are **private to their publisher** (and the rig's
+admins) by default,
 reads require a tailnet identity (an unlisted login gets a 404, never a 403),
-and **every write is loopback-only** — a phone can view and never publish.
-Three adversarial reviews attacked this before and after it shipped; every
-finding is closed with a test that fails without the fix.
+and **publishing is loopback-only** — a phone can view and, with a scoped
+key, manage a page it owns or administers, but never create one. Four adversarial reviews
+attacked it; each finding shipped with a regression test that fails without
+its fix. That is not the same as every guard being tested: a mutation pass
+on 2026-09-29 (across beast-artifact and beast-chat) deleted ten guards one
+at a time with every test still green. Two were real gaps — the store's
+per-version byte cap and the pid-recycle recheck before a `killpg` — and now
+have tests. The other eight are still untested; most are deliberate second
+locks behind a gate that already refuses the request.
 → [`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md)
 
 ### beast-chat 📱 — the rig's sessions, from your phone
@@ -259,12 +273,22 @@ own: drop the connection in a tunnel, reconnect, lose nothing and duplicate
 nothing. `say` something to a running agent and it lands at the next turn
 boundary; `stop` asks politely, then SIGTERM, then SIGKILL, and the ledger
 records which one it took. `scripts/job.sh run -- <command>` registers any
-shell job the same way, and jobs started from the console live in their own
-memory-capped scope — outside the stack's, so `./stop.sh` never kills them.
+shell job the same way. Under `./start.sh -d`, jobs started from the console
+live in their own memory-capped scope — outside the stack's, so `./stop.sh`
+never kills them (a foreground `./start.sh` gives them no scope and no cap).
+
+The console starts agents and jobs from a **+** sheet (with one-tap presets
+you define on the rig, and a Review step that shows the exact argv), pauses
+and resumes agents, installs as a PWA, shows who holds the GPU, and
+**exports** a transcript, secrets scrubbed, as a private beast-artifact page.
+Opt-in **push notifications** tell your phone when a session ends — title,
+state and a link, never transcript text — through a self-hosted ntfy
+extension (`./scripts/ext.sh enable ntfy`, `--publish-ntfy`).
 
 Reads need a tailnet identity on the `CHAT_OPERATORS` list; writes additionally
 need an enrolled device key with the `chat` scope (`./scripts/clients.sh enroll
 phone --scope chat`). Publish with `setup-tailscale.sh --publish-chat`.
+Walkthrough: [docs/TUTORIALS.md](docs/TUTORIALS.md#beast-chat--watch-and-steer-the-rig-from-a-phone).
 → [`docs/BEAST_CHAT.md`](docs/BEAST_CHAT.md)
 
 ### beast-lang 📚 — the offline language library
@@ -390,8 +414,9 @@ flowchart TB
       subgraph FRONT["FRONTENDS"]
         direction LR
         webui["🌐 <b>Open WebUI</b> · :3000<br/>chat · accounts · roles"]
-        chat["📱 <b>beast-chat</b> · :3003<br/><i>opt-in</i> · sessions ledger<br/>SSE reattach · say / stop"]
-        artifact["🎨 <b>beast-artifact</b> · :3004<br/><i>opt-in</i> · versioned pages<br/>sandbox + CSP · writes loopback-only"]
+        chat["📱 <b>beast-chat</b> · :3003<br/><i>opt-in</i> · sessions ledger<br/>SSE reattach · say / pause / stop"]
+        artifact["🎨 <b>beast-artifact</b> · :3004<br/><i>opt-in</i> · versioned pages<br/>sandbox + CSP · publish loopback-only"]
+        ntfy["🔔 <b>ntfy</b> · :3005<br/><i>opt-in extension</i><br/>session-ended alerts"]
       end
 
       gate["🛡️ <b>beast-gate</b> · :8090<br/><i>opt-in</i> · per-device keys<br/>route allowlist · caps · audit<br/><i>authenticates the DEVICE</i>"]
@@ -448,6 +473,8 @@ flowchart TB
       mcp -.-> artifact
       artifact -.-> store
       chat -.-> store
+      chat -.->|"export"| artifact
+      chat -.->|"alert"| ntfy
       gate --> llama
       router --> llama
       prim -.-> llama
@@ -467,6 +494,7 @@ flowchart TB
   phone ==>|"chat · :443"| webui
   phone -->|"console · :8445"| chat
   phone -->|"pages · :8446"| artifact
+  phone -.->|"alerts · :8447"| ntfy
   ccli -.->|"status · :8444 · search · :8889"| searx
 
   classDef cli fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0c2733;
@@ -477,7 +505,7 @@ flowchart TB
   classDef lang fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#431407;
   class coc,ccli,cmcp,ctools,phone cli;
   class webui,runner,jobs,llama,gpu rig;
-  class gate,router,chat,artifact,remote sec;
+  class gate,router,chat,artifact,remote,ntfy sec;
   class idsrv,mcp,prim,searx tool;
   class weights,skills,evals,store,bundle store;
   class corpus,intro,verify,escal lang;
@@ -502,7 +530,8 @@ every service binds `127.0.0.1`, and the only way in is Tailscale's
 authenticated WireGuard mesh (`tailscale funnel` is deliberately never used).
 Above the rig sit the callers: a **client laptop** running the whole tool stack
 locally, and any **browser device**, which needs nothing installed and reaches
-three published surfaces — chat, the session console, and published pages.
+three published surfaces — chat, the session console, and published pages —
+plus, opt-in, the ntfy push server its notification app subscribes to.
 Inside the rig: the frontends, then the **tool plane** (never published, acts
 only on the rig), then the **inference plane** (the one surface that *is*
 published), then **beast-lang**, whose verified corpus feeds both the tools and
@@ -520,7 +549,7 @@ the rig (a locality token no browser can read) or an enrolled device key.
 Dashed borders and dashed arrows are **opt-in**: beast-gate (`EDGE_GATE`), the
 agent router (`AGENT_ROUTER`), beast-chat (`BEAST_CHAT`), beast-artifact
 (`BEAST_ARTIFACT`), a remote inference engine (`INFERENCE_BACKEND`) and the
-dashboard extension (`EXTENSIONS`) all default to off, so a plain `./start.sh` brings up the rig with none of them. Remote access
+dashboard and ntfy extensions (`EXTENSIONS`) all default to off, so a plain `./start.sh` brings up the rig with none of them. Remote access
 is a separate deliberate step: nothing is published until you run
 `setup-tailscale.sh`.
 
@@ -554,6 +583,7 @@ Everything else is **opt-in**, one flag each:
 | `…:8889` | SearXNG, for a client's `web_search` | `--publish-searxng` |
 | `…:8445` | beast-chat — the session console | `--publish-chat` |
 | `…:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
+| `…:8447` | ntfy — the push server beast-chat notifies (needs the `ntfy` extension) | `--publish-ntfy` |
 
 Every device authenticates via its WireGuard key; the WebUI additionally
 requires an account. Open WebUI's built-in `admin@localhost` has a hardcoded
@@ -809,6 +839,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
+| `main` (next) | beast-artifact: one `rig` owner + admins (`ARTIFACT_ADMINS`), pin/tag/share/delete from a phone (`artifact` device scope), per-version delete + `prune`, opt-in retention, gallery paging + search, session links · beast-chat: new-session sheet + presets, pause/resume, PWA, push notifications (ntfy extension, `--publish-ntfy`), export to artifact, rig status strip · a 2026-09-29 review of both, fixed with tests, incl. real-browser ones · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | — |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
 | v1.4.0 | beast-chat 📱 | [RELEASE_NOTES_v1.4.0.md](docs/RELEASE_NOTES_v1.4.0.md) |
