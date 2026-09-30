@@ -544,6 +544,23 @@ def test_body_cap(fleet, monkeypatch):
     assert post(srv, chat(content="x" * 5000)).status_code == 413
 
 
+def test_body_cap_holds_without_a_content_length(fleet, monkeypatch):
+    """A chunked upload (or one that lies about its length) is capped while
+    it streams in, not only by the header check: nothing is buffered past the
+    cap and nothing reaches an engine."""
+    srv, rig, sparks, _ = fleet()
+    monkeypatch.setattr(hydra, "MAX_BODY_BYTES", 1000)
+    before = [len(posts(e)) for e in (rig, sparks)]
+
+    def gen():
+        blob = json.dumps(chat(content="x" * 5000)).encode()
+        for i in range(0, len(blob), 256):
+            yield blob[i:i + 256]
+    r = httpx.post(srv.url + "/v1/chat/completions", content=gen(), headers=auth(), timeout=30)
+    assert r.status_code == 413 and "too large" in r.text
+    assert [len(posts(e)) for e in (rig, sparks)] == before, "a capped body must never go upstream"
+
+
 # ───────────────────────────── catalog + health ─────────────────────────────
 
 def test_models_catalog(fleet):
@@ -933,6 +950,38 @@ def test_feedback_rejection_is_counted_not_silent(tmp_path, real_instinct):
     ok, bad = asyncio.run(go())
     assert ok is True and bad is False
     assert ic.feedback_result == {"ok": 1, "http_400": 1} and ic.feedback_warned
+
+
+def test_feedback_backpressure_drops_rather_than_queues(tmp_path):
+    """At most 32 feedback posts in flight; the rest are dropped at once, never
+    queued behind a slow instinct (plan §5.11: feedback must not cost hydra)."""
+    import asyncio
+    ic = hydra.InstinctClient(core.InstinctCfg(url="http://127.0.0.1:9", key_file=str(_key(tmp_path))), REPO)
+    seen = []
+
+    async def go():
+        gate = asyncio.Event()
+
+        async def slow_post(url, **kw):
+            seen.append(url)
+            await gate.wait()
+            return httpx.Response(200, json={"ok": True})
+        ic.client.post = slow_post
+        body = hydra.InstinctClient.feedback_body("ins_x", "req-1", served_pool="unc@rig",
+                                                  ttft_ms=1.0, outcome="ok")
+        tasks = [asyncio.create_task(ic.feedback(body)) for _ in range(40)]
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(seen) == 32 and ic.pending == 32, (len(seen), ic.pending)
+        dropped = [t.result() for t in tasks if t.done()]
+        assert dropped == [False] * 8, "the overflow must return at once, not wait its turn"
+        gate.set()
+        res = await asyncio.gather(*tasks)
+        await ic.aclose()
+        return res
+    res = asyncio.run(go())
+    assert res.count(True) == 32 and res.count(False) == 8 and len(seen) == 32
+    assert ic.pending == 0 and ic.feedback_result == {"ok": 32}
 
 
 def test_instinct_act_and_enforce_is_applied(fleet, tmp_path):
