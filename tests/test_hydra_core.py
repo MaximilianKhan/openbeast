@@ -88,19 +88,58 @@ def test_example_config_validates(tmp_path, monkeypatch):
     home = tmp_path / "home"
     kd = home / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
-    for k in ("sparks", "ti"):
+    for k in ("ti",):
         (kd / f"{k}.key").write_text("secret\n")
         (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(home))
     cfg = core.load_config(REPO / "hydra.toml.example", {})
     assert set(cfg.routes) >= {"beast", "beast:max", "beast:fast", "beast:long", "beast:vision", "classify"}
-    nv = cfg.deployments["qwen38-nvfp4@sparks"]
-    assert nv.upstream == "qwen3.8-27b-nvfp4" and nv.ctx == 262144      # from the profile
     assert cfg.nodes["rig"].gpu_lease and cfg.nodes["rig"].loopback
+    assert cfg.nodes["sparks"].engine == "tensorfold" and not cfg.nodes["sparks"].has_key
     assert cfg.route_by_id_or_alias["qwen-27b-q5"].id == "beast"
-    assert not cfg.nodes["sparks-tf"].enabled
-    assert any("then.route with no when.model" in w for w in cfg.warnings)
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
+    assert cfg.warnings == [], cfg.warnings            # the shipped example is clean under `check`
+
+
+def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
+    # Max 2026-09-30: "all of our models are uncensored" — hydra must never
+    # route or spill to a stock model. The example used to ship stock NVFP4
+    # (and the stock 35B-A3B MoE) in four routes, and same_family = false.
+    kd = tmp_path / ".config" / "openbeast" / "hydra"
+    kd.mkdir(parents=True)
+    (kd / "ti.key").write_text("secret\n")
+    (kd / "ti.key").chmod(0o600)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = core.load_config(REPO / "hydra.toml.example", {})
+    allowed = cfg.settings.allowed_families
+    assert allowed and all("uncensored" in f for f in allowed), allowed
+    assert all(d.family in allowed for d in cfg.deployments.values())
+    assert cfg.routes["beast"].same_family and cfg.routes["beast"].family == "qwen3.8-27b-uncensored"
+    glm = cfg.deployments["glm53-flash-unc@sparks"]
+    assert glm.family == "glm-5.3-flash-uncensored" and cfg.nodes[glm.node].engine == "tensorfold"
+    st = ready_state(cfg)
+    for d in cfg.deployments.values():
+        st.conformance[d.id] = ("pass", False)          # remote nodes need a passing report
+    stock = {"qwen3.8-27b", "qwen3.6-35b-a3b"}
+    # Every path the finding named: rig busy, rig drained, huge prompt,
+    # guest, phone — `beast` stays on the uncensored 27B family throughout.
+    st.admit("qwen38-unc-q5@rig", "rig", 1000.0)
+    cases = [decide(cfg, st),
+             decide(cfg, st, {"model": "beast", "messages": [{"role": "user", "content": "x " * 200_000}]}),
+             decide(cfg, st, caller=core.Caller(trusted=True, role="user")),
+             decide(cfg, st, caller=core.Caller(trusted=True, device="max-phone"))]
+    for d in cases:
+        fams = {c.d.family for c in d.attempts}
+        assert d.ok and fams == {"qwen3.8-27b-uncensored"}, (d.route, ids(d), d.trace.excluded)
+    assert cases[1].route == "beast:long" and "glm53-flash-unc@sparks" in cases[1].trace.excluded
+    # beast:max is quality-first and no longer rewritten by the phone rule
+    assert decide(cfg, st, {"model": "beast:max", "messages": []},
+                  caller=core.Caller(trusted=True, device="max-phone")).route == "beast:max"
+    # classify (router decisions) lands on a full 27B, never a small/MoE model
+    assert {c.d.id for c in decide(cfg, st, {"model": "classify", "messages": []}).attempts} <= \
+        {"qwen38-unc-q5@ti", "qwen38-unc-q5@rig"}
+    for d in cfg.deployments.values():
+        assert d.family not in stock
 
 
 def _served_alias(script: str) -> str:
@@ -118,7 +157,7 @@ def test_example_upstreams_are_the_ids_llama_server_actually_lists():
     raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
     deps = raw["deployments"]
     assert deps["qwen38-unc-q5@rig"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-mtp-q5.sh")
-    assert deps["qwen36-a3b-q4@ti"]["upstream"] == _served_alias("serve-qwen-35b-a3b.sh")
+    assert deps["qwen38-unc-q5@ti"]["upstream"] == _served_alias("serve-qwen38-27b-uncensored-q5.sh")
     assert all(d.get("verify_upstream", True) for d in deps.values())
 
 
