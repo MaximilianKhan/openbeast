@@ -80,7 +80,10 @@ __all__ = [
     "set_description", "set_current", "remove", "artifact_url", "can_view",
     "url_caveat", "extract_title", "wrap_skeleton", "set_owner_override",
     "reset_owner_override", "default_owner", "default_owner_alias",
-    "valid_email",
+    "valid_email", "RIG_OWNER", "conf_value", "operators", "admins",
+    "is_admin", "set_pinned", "set_tags", "set_owner", "remove_version",
+    "list_page", "migrate_legacy_owners", "sweep_retention", "human_ts",
+    "publish_notice",
 ]
 
 
@@ -114,6 +117,34 @@ CAPS = {
 }
 
 VISIBILITIES = ("private", "tailnet")
+
+# The RIG principal (F-A1). Everything this box publishes with no human
+# identity attached — scripts/artifact.sh (the locality token), campaign
+# scripts, background agents, the OpenCode stdio tool — is owned by this one
+# stable name, whatever the operator allowlist says TODAY. It used to be the
+# allowlist's first entry when there was one and the literal "local" when
+# there was not, so adding ARTIFACT_OPERATORS later stranded every page
+# published before it: owned by "local", which no principal could present any
+# more, unreadable and unmanageable through every surface.
+#
+# Not an email, on purpose: no reader can ever present it by header (the
+# server refuses both reserved names), so it is never a read password. Who
+# may act AS the rig is decided by is_admin(): the locality token, and the
+# configured admins (ARTIFACT_ADMINS, else the operator allowlist).
+RIG_OWNER = "rig"
+# The pre-F-A1 spelling of the same principal; migrate_legacy_owners()
+# rewrites it, and _owner_of() reads it as RIG_OWNER in the meantime.
+LEGACY_LOCAL_OWNER = "local"
+RESERVED_LOGINS = frozenset({RIG_OWNER, LEGACY_LOCAL_OWNER})
+
+# Tags a page may carry (F-A2): a short, boring alphabet — they are rendered
+# as chips and matched byte for byte by the gallery filter.
+_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9 _.-]{0,31}\Z")
+MAX_TAGS = 16
+# A session id stamped as provenance (F-A3). beast-chat's ids are
+# "<kind>-<stamp>-<hex>"; accept that shape and nothing that could smuggle
+# markup or a path into the shell's link.
+_SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 
 # Ids are path segments. uuid4 is what publish() mints, but a caller may pass
 # a stable human id (the campaign verdict scripts do — reruns become versions
@@ -457,18 +488,32 @@ def _owner_of(meta) -> str:
     presented the UUID as their login read the private page. It is pure
     provenance now, consulted by nothing here and by no guard anywhere.
     """
-    return _norm_login(meta.get("owner")) if isinstance(meta, dict) else ""
+    if not isinstance(meta, dict):
+        return ""
+    owner = _norm_login(meta.get("owner"))
+    # The legacy spelling of the rig principal IS the rig principal (F-A1),
+    # before and after migrate_legacy_owners() has rewritten it on disk.
+    return RIG_OWNER if owner == LEGACY_LOCAL_OWNER else owner
 
 
-def _require_owner(meta, owner) -> str:
+def _require_owner(meta, owner, admin: bool = False) -> str:
     """The ownership guard every mutator shares (D5/D22).
 
     `owner` is who is asking (the server passes the resolved principal);
     absent, the resolved caller. An artifact with no recorded identity at all
     is legacy and stays mutable — everything else is owner-only, and the
     message says nothing about who the owner is, so a probe learns nothing.
+
+    `admin` (F-A1) is the explicit administrator path: the caller has already
+    been established as the rig (locality token) or a configured admin, and
+    may manage every page. It is a flag the SERVER sets from the principal it
+    resolved — never something a request body can say about itself.
     """
     who = _norm_login(owner) or default_owner()
+    if who == LEGACY_LOCAL_OWNER:
+        who = RIG_OWNER
+    if admin:
+        return who
     known = _owner_of(meta)
     if known and who != known:
         raise ArtifactError("not your artifact")
@@ -670,8 +715,27 @@ def _append_log(entry: dict) -> None:
 
 def publish(html, *, title=None, description=None, favicon=None,
             files=None, artifact_id=None, label=None,
-            visibility="private", owner=None, owner_alias=None) -> dict:
-    """Write a new version and return {id, version, url, title, bytes}.
+            visibility=None, owner=None, owner_alias=None,
+            source_session=None) -> dict:
+    """Write a new version and return {id, version, url, title, bytes,
+    visibility, created, owner, notice}.
+
+    `visibility` in the result is the page's EFFECTIVE visibility — on a
+    republish that is the stored one, whatever was asked for (D5 below) — so
+    no caller can report a share that did not happen. `notice` is a sentence
+    to show the publisher when the page, as published, will not open where
+    they probably expect it to (publish_notice), or "".
+
+    title       None keeps the rule Claude Code uses: the page's own <title>
+                wins when it has one — on EVERY version, so a republished
+                page whose title changed is not stuck under the first one's
+                name — else the stored title, else "Untitled".
+    favicon     fixed for the life of the artifact: taken from the first
+                publish that supplies one, ignored after (people find a tab
+                by its icon, and the docs promise it does not move).
+    source_session  provenance (F-A3): the beast-chat session that published
+                this version, when there was one. Recorded on the version and
+                as the artifact's latest `source_session`.
 
     html        str or bytes — exactly what gets stored as vN/index.html.
     files       {published_path: bytes|str} supporting files.
@@ -710,6 +774,9 @@ def publish(html, *, title=None, description=None, favicon=None,
     removed on failure, including a failure of the meta write itself).
     """
     page = _as_bytes(html, "html")
+    requested = visibility
+    if visibility is None:
+        visibility = "private"
     if visibility not in VISIBILITIES:
         raise ArtifactError(
             f"visibility must be one of {VISIBILITIES}, got {visibility!r}")
@@ -719,6 +786,9 @@ def publish(html, *, title=None, description=None, favicon=None,
             f"{CAPS['page_bytes']} byte page cap")
     if not page.strip():
         raise ArtifactError("page is empty")
+    session = str(source_session or "").strip()
+    if session and not _SESSION_RE.match(session):
+        session = ""          # provenance is best effort, never a failure
 
     payload: dict[str, bytes] = {}
     for raw_path, value in (files or {}).items():
@@ -819,7 +889,9 @@ def publish(html, *, title=None, description=None, favicon=None,
         if len(meta["versions"]) >= CAPS["versions"]:
             raise ArtifactError(
                 f"{aid} already has {len(meta['versions'])} versions, at the "
-                f"{CAPS['versions']} version cap — publish under a new id")
+                f"{CAPS['versions']} version cap — free room at the same URL "
+                f"with `./scripts/artifact.sh prune {aid} --keep 50 --yes` "
+                f"(old versions only; the current one is never pruned)")
         # R4: the number a READER would resolve next, and clear of every vN
         # directory that already exists.
         #
@@ -836,6 +908,7 @@ def publish(html, *, title=None, description=None, favicon=None,
         # is all D14 ever asked for.
         n = max(_resolvable_versions(aid, meta) + _disk_versions(aid) or [0]) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
+        adir_existed = os.path.isdir(_artifact_dir(aid))
         try:
             # [6] os.makedirs recurses WITHOUT mode, so `mode=` reaches only the
             # leaf: one deep call left <root>/<id> at 0755 while vN got 0700,
@@ -852,7 +925,11 @@ def publish(html, *, title=None, description=None, favicon=None,
             # NotADirectoryError (<root>/index.jsonl is a file) — neither
             # `except FileExistsError` nor `except ArtifactError` caught it, so
             # the page's own owner got a 500.
-            raise ArtifactError(f"cannot create version v{n} of {aid}: {e}")
+            _drop_empty_dir(aid, adir_existed)
+            if isinstance(e, (FileExistsError, NotADirectoryError)):
+                raise ArtifactError(
+                    f"cannot create version v{n} of {aid}: {e}")
+            raise _storage_error(f"cannot create version v{n} of {aid}", e)
         try:
             _write_bytes(os.path.join(vdir, "index.html"), page)
             for p, data in sorted(payload.items()):
@@ -862,28 +939,47 @@ def publish(html, *, title=None, description=None, favicon=None,
                 # subdirectory at 0777 & ~umask.
                 _mkdir_chain_0700(vdir, ["files"] + p.split("/")[:-1])
                 _write_bytes(dest, data)
-        except BaseException:
+        except BaseException as e:
             shutil.rmtree(vdir, ignore_errors=True)
+            _drop_empty_dir(aid, adir_existed)
+            if isinstance(e, OSError):
+                # A full disk used to surface as a bare OSError: HTTP 500 with
+                # a traceback and no reason, and an empty <store>/<id>/ left
+                # behind for a brand-new id. Name it (correctness-09).
+                raise _storage_error(f"cannot write v{n} of {aid}", e)
             raise
 
         sha = hashlib.sha256(page).hexdigest()
-        meta["versions"].append({
+        entry = {
             "n": n,
             "ts": _now(),
             "label": (label or "").strip() or None,
             "sha256": sha,               # of index.html
             "bytes": total,              # page + supporting files
             "files": sorted(payload),
-        })
+        }
+        if session:
+            entry["source_session"] = session
+            meta["source_session"] = session
+        meta["versions"].append(entry)
         meta["current"] = n
         meta["updated_at"] = _now()
+        page_title = extract_title(page)
         if title is not None and str(title).strip():
             meta["title"] = str(title).strip()[:200]
+        elif page_title:
+            # correctness-08: the page's own <title> on EVERY version, not
+            # only the first — a republish that renamed the page used to keep
+            # the first version's name forever.
+            meta["title"] = page_title[:200]
         elif not meta.get("title"):
-            meta["title"] = (extract_title(page) or "Untitled")[:200]
+            meta["title"] = "Untitled"
         if description is not None and str(description).strip():
             meta["description"] = str(description).strip()[:1000]
-        if favicon is not None and str(favicon).strip():
+        if (favicon is not None and str(favicon).strip()
+                and not str(meta.get("favicon") or "").strip()):
+            # Fixed for the life of the artifact (the documented contract):
+            # the first icon given sticks, later ones are ignored.
             meta["favicon"] = str(favicon).strip()[:32]
         # No visibility change here, in either direction (D5): set_visibility()
         # is the only path, and it is owner-only.
@@ -891,16 +987,63 @@ def publish(html, *, title=None, description=None, favicon=None,
             meta["visibility"] = "private"
         try:
             _write_meta(aid, meta)
-        except BaseException:
+        except BaseException as e:
             # The version is only real once meta names it; if the meta write
             # fails, the directory must not survive to block v{n} forever.
             shutil.rmtree(vdir, ignore_errors=True)
+            if new:
+                _drop_empty_dir(aid, adir_existed, meta_too=True)
+            if isinstance(e, OSError):
+                raise _storage_error(f"cannot record v{n} of {aid}", e)
             raise
 
-    _append_log({"ts": _now(), "id": aid, "n": n,
-                 "owner": meta.get("owner"), "bytes": total, "sha256": sha})
+    log = {"ts": _now(), "id": aid, "n": n,
+           "owner": meta.get("owner"), "bytes": total, "sha256": sha}
+    if session:
+        log["source_session"] = session
+    _append_log(log)
     return {"id": aid, "version": n, "url": artifact_url(aid),
-            "title": meta.get("title"), "bytes": total}
+            "title": meta.get("title"), "bytes": total,
+            "visibility": meta.get("visibility"), "created": new,
+            "owner": meta.get("owner"),
+            "notice": publish_notice(meta, requested=requested,
+                                     created=new)}
+
+
+class ArtifactStorageError(ArtifactError):
+    """The disk said no (ENOSPC, EDQUOT, EIO, ...) — not the caller's input.
+    `errno` rides along so the server can answer 507 for a full disk."""
+
+    def __init__(self, message: str, err=None):
+        super().__init__(message)
+        self.errno = err
+
+
+def _storage_error(what: str, e: OSError) -> "ArtifactStorageError":
+    reason = e.strerror or str(e)
+    return ArtifactStorageError(f"storage error: {what}: {reason}", e.errno)
+
+
+def _drop_empty_dir(aid: str, existed: bool, meta_too: bool = False) -> None:
+    """Remove <store>/<id>/ when THIS publish created it and nothing real is
+    in it. Never touches a directory that existed before the call."""
+    if existed:
+        return
+    d = _artifact_dir(aid)
+    try:
+        names = set(os.listdir(d))
+    except OSError:
+        return
+    names = {n for n in names if not n.startswith(".meta.json.")}
+    if names and not (meta_too and names <= {"meta.json"}):
+        return
+    if meta_too:
+        # A meta.json that names no version on disk is debris of this very
+        # call (the rename can land before the error surfaces).
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(d, "meta.json"))
+    with contextlib.suppress(OSError):
+        os.rmdir(d)
 
 
 def _mkdir_chain_0700(base: str, parts: list) -> None:
@@ -938,22 +1081,18 @@ def _write_bytes(path: str, data: bytes) -> None:
 
 # --- read --------------------------------------------------------------------
 
-def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
-    """Artifacts newest-updated first, as compact gallery rows.
-
-    owner  restrict to one login. viewer  drop anything can_view() refuses.
-
-    A record that is unreadable, corrupt or the wrong shape is SKIPPED, never
-    raised (D14): the gallery is the one page an operator reaches for when
-    something has gone wrong on disk, so one bad meta.json must not turn the
-    whole listing into a server error.
-    """
+def _rows(*, owner=None, viewer=None, admin=False, session=None,
+          tag=None, pinned_first=False, query=None) -> list[dict]:
+    """Every gallery row the filters admit, sorted. Never raises (D14)."""
     root = store_root()
     rows = []
     try:
         entries = os.listdir(root)
     except OSError:
         return []
+    want_session = str(session or "").strip()
+    want_tag = str(tag or "").strip().lower()
+    want_q = str(query or "").strip().lower()
     for name in entries:
         if not _valid_id(name):
             continue        # index.jsonl, .locks, junk: not artifacts (R7)
@@ -970,13 +1109,25 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
                 # their own login the way their identity provider does
                 # (Max@Example.com). meta["owner"] alone (R6).
                 want = _norm_login(owner)
+                if want == LEGACY_LOCAL_OWNER:
+                    want = RIG_OWNER
                 have = _owner_of(meta)
                 if want:
                     if want != have:
                         continue
                 elif have:
                     continue        # owner="" asks for the unowned records
-            if viewer is not None and not can_view(meta, viewer):
+            if viewer is not None and not can_view(meta, viewer, admin=admin):
+                continue
+            if want_session and meta.get("source_session") != want_session:
+                continue
+            tags = _tags_of(meta)
+            if want_tag and want_tag not in tags:
+                continue
+            if want_q and want_q not in " ".join(
+                    str(x or "") for x in (meta.get("title"),
+                                           meta.get("description"), name,
+                                           " ".join(tags))).lower():
                 continue
             versions = meta.get("versions")
             versions = versions if isinstance(versions, list) else []
@@ -985,12 +1136,13 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
             aid = meta.get("id") if isinstance(meta.get("id"), str) else name
             if not _valid_id(aid):
                 aid = name
+            sess = meta.get("source_session")
             rows.append({
                 "id": aid,
                 "title": meta.get("title") or "Untitled",
                 "description": meta.get("description"),
                 "favicon": meta.get("favicon"),
-                "owner": meta.get("owner"),
+                "owner": _owner_of(meta) or None,
                 "visibility": (meta.get("visibility")
                                if meta.get("visibility") in VISIBILITIES
                                else "private"),
@@ -999,17 +1151,58 @@ def list_artifacts(*, owner=None, viewer=None, limit=25) -> list[dict]:
                 "created_at": meta.get("created_at"),
                 "updated_at": meta.get("updated_at"),
                 "bytes": _coerce_int(last.get("bytes"), 0),
+                "pinned": meta.get("pinned") is True,
+                "tags": tags,
+                "source_session": (sess if isinstance(sess, str)
+                                   and _SESSION_RE.match(sess) else None),
                 "url": artifact_url(aid),
             })
         except Exception:
             continue            # any shape surprise: drop the row, keep going
     rows.sort(key=lambda r: (str(r.get("updated_at") or ""), str(r["id"])),
               reverse=True)
+    if pinned_first:
+        rows.sort(key=lambda r: not r.get("pinned"))     # stable: keeps order
+    return rows
+
+
+def list_artifacts(*, owner=None, viewer=None, limit=25, admin=False,
+                   session=None, tag=None, pinned_first=False,
+                   offset=0, query=None) -> list[dict]:
+    """Artifacts newest-updated first, as compact gallery rows.
+
+    owner  restrict to one login. viewer  drop anything can_view() refuses
+    (`admin` is passed through to it: the explicit administrator path).
+    session / tag  F-A3 / F-A2 filters. pinned_first  pinned rows lead.
+
+    A record that is unreadable, corrupt or the wrong shape is SKIPPED, never
+    raised (D14): the gallery is the one page an operator reaches for when
+    something has gone wrong on disk, so one bad meta.json must not turn the
+    whole listing into a server error.
+    """
+    return list_page(owner=owner, viewer=viewer, limit=limit, admin=admin,
+                     session=session, tag=tag, pinned_first=pinned_first,
+                     offset=offset, query=query)[0]
+
+
+def list_page(*, owner=None, viewer=None, limit=25, offset=0, admin=False,
+              session=None, tag=None, pinned_first=False, query=None):
+    """(rows, total): one page of list_artifacts() plus how many rows the
+    same filters admit in all — so a caller can say "showing 25 of 1002"
+    instead of silently truncating (correctness-06)."""
+    rows = _rows(owner=owner, viewer=viewer, admin=admin, session=session,
+                 tag=tag, pinned_first=pinned_first, query=query)
     try:
         limit = int(limit)
     except (TypeError, ValueError):
         limit = 25
-    return rows[:limit] if limit > 0 else rows
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
+    total = len(rows)
+    rows = rows[offset:]
+    return (rows[:limit] if limit > 0 else rows), total
 
 
 def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]:
@@ -1053,7 +1246,8 @@ def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]
 
 # --- mutate (metadata only; versions stay immutable) -------------------------
 
-def set_visibility(artifact_id, visibility, *, owner=None) -> dict:
+def set_visibility(artifact_id, visibility, *, owner=None,
+                   admin=False) -> dict:
     """The ONLY way an artifact's visibility changes (D5), and owner-only.
 
     `owner` defaults to the resolved caller (`default_owner()`: the identity
@@ -1069,14 +1263,22 @@ def set_visibility(artifact_id, visibility, *, owner=None) -> dict:
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
-        _require_owner(meta, owner)
+        who = _require_owner(meta, owner, admin)
+        before = meta.get("visibility")
         meta["visibility"] = visibility
         meta["updated_at"] = _now()
-        _write_meta(aid, meta)
+        _write_meta_or_raise(aid, meta)
+    if before != visibility:
+        # The one WIDENING act on the store, and it used to leave no trace
+        # outside the server's audit row (correctness-04).
+        _append_log({"ts": _now(), "id": aid, "n": None, "owner": who,
+                     "event": "visibility", "from": before,
+                     "to": visibility})
     return meta
 
 
-def set_description(artifact_id, description, *, owner=None) -> dict:
+def set_description(artifact_id, description, *, owner=None,
+                    admin=False) -> dict:
     """Gallery subtitle. Metadata only — the stored pages are untouched.
 
     Owner-only, the same guard set_visibility carries (D22). Round one gated
@@ -1089,15 +1291,16 @@ def set_description(artifact_id, description, *, owner=None) -> dict:
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
-        _require_owner(meta, owner)
+        _require_owner(meta, owner, admin)
         meta["description"] = (str(description).strip()[:1000]
                                if description is not None else None) or None
         meta["updated_at"] = _now()
-        _write_meta(aid, meta)
+        _write_meta_or_raise(aid, meta)
     return meta
 
 
-def set_current(artifact_id, version, *, owner=None) -> dict:
+def set_current(artifact_id, version, *, owner=None,
+                admin=False) -> dict:
     """Rollback: move the `current` pointer. Every version stays on disk and
     stays reachable at /a/<id>/v/<n>.
 
@@ -1110,20 +1313,25 @@ def set_current(artifact_id, version, *, owner=None) -> dict:
         meta = _read_meta(aid)
         if meta is None:
             raise ArtifactError(f"no such artifact: {artifact_id}")
-        _require_owner(meta, owner)
+        who = _require_owner(meta, owner, admin)
         try:
             n = int(version)
         except (TypeError, ValueError):
             raise ArtifactError(f"invalid version: {version!r}")
         if n not in _resolvable_versions(aid, meta):
             raise ArtifactError(f"no such version: v{version}")
+        before = meta.get("current")
         meta["current"] = n
         meta["updated_at"] = _now()
-        _write_meta(aid, meta)
+        _write_meta_or_raise(aid, meta)
+    if before != n:
+        _append_log({"ts": _now(), "id": aid, "n": n, "owner": who,
+                     "event": "rollback", "from": before})
     return meta
 
 
-def remove(artifact_id, *, owner=None) -> bool:
+def remove(artifact_id, *, owner=None, admin=False,
+           reason=None) -> bool:
     """Delete an artifact and every version. True if something was removed.
 
     Owner-only (D22), and it is the loudest of the three: round one left
@@ -1161,14 +1369,410 @@ def remove(artifact_id, *, owner=None) -> bool:
         # below and delete another owner's page. Ownership is the one thing
         # DELETE cannot guess at.
         if meta is not None:
-            _require_owner(meta, owner)
+            _require_owner(meta, owner, admin)
         if not os.path.isdir(real):
             return False
         shutil.rmtree(real)
-    _append_log({"ts": _now(), "id": aid, "n": None,
-                 "owner": _norm_login(owner) or default_owner(),
-                 "bytes": 0, "event": "remove"})
+    entry = {"ts": _now(), "id": aid, "n": None,
+             "owner": _norm_login(owner) or default_owner(),
+             "bytes": 0, "event": "remove"}
+    if reason:
+        entry["reason"] = str(reason)[:64]
+    _append_log(entry)
     return True
+
+
+def _write_meta_or_raise(aid: str, meta: dict) -> None:
+    """_write_meta, with a disk failure named (correctness-09) rather than
+    escaping as a bare OSError the server turns into a 500 + traceback."""
+    try:
+        _write_meta(aid, meta)
+    except OSError as e:
+        raise _storage_error(f"cannot update {aid}", e)
+
+
+def _tags_of(meta) -> list:
+    """meta["tags"], de-junked: only strings that pass _TAG_RE, in order."""
+    raw = meta.get("tags") if isinstance(meta, dict) else None
+    out: list = []
+    for t in raw if isinstance(raw, list) else []:
+        if isinstance(t, str):
+            t = t.strip().lower()
+            if _TAG_RE.match(t) and t not in out:
+                out.append(t)
+    return out[:MAX_TAGS]
+
+
+def _check_tags(tags) -> list:
+    if not isinstance(tags, (list, tuple)):
+        raise ArtifactError("tags must be a list of strings")
+    out: list = []
+    for t in tags:
+        if not isinstance(t, str):
+            raise ArtifactError("tags must be a list of strings")
+        t = t.strip().lower()
+        if not t:
+            continue
+        if not _TAG_RE.match(t):
+            raise ArtifactError(
+                f"invalid tag {t[:40]!r}: letters, digits, space . _ - "
+                f"only, 32 characters max")
+        if t not in out:
+            out.append(t)
+    if len(out) > MAX_TAGS:
+        raise ArtifactError(f"{len(out)} tags, over the {MAX_TAGS} tag cap")
+    return out
+
+
+def _set_field(artifact_id, owner, admin, event, apply) -> dict:
+    """Locked, owner-gated read-modify-write of one meta field. `apply`
+    mutates meta and returns (before, after) for the ledger row."""
+    aid = _check_id(artifact_id)
+    with _artifact_lock(aid):
+        meta = _read_meta(aid)
+        if meta is None:
+            raise ArtifactError(f"no such artifact: {artifact_id}")
+        who = _require_owner(meta, owner, admin)
+        before, after = apply(meta)
+        if before != after:
+            meta["updated_at"] = meta.get("updated_at") or _now()
+            _write_meta_or_raise(aid, meta)
+    if before != after:
+        _append_log({"ts": _now(), "id": aid, "n": None, "owner": who,
+                     "event": event, "from": before, "to": after})
+    return meta
+
+
+def set_pinned(artifact_id, pinned, *, owner=None, admin=False) -> dict:
+    """Pin or unpin (F-A2). A pinned page leads the gallery and is never
+    touched by the retention sweep. Metadata only; owner-gated like every
+    other mutator. Deliberately does NOT bump updated_at: pinning is not an
+    edit, and the gallery's order must not jump because someone starred."""
+    want = bool(pinned)
+
+    def apply(meta):
+        before = meta.get("pinned") is True
+        if want:
+            meta["pinned"] = True
+        else:
+            meta.pop("pinned", None)
+        return before, want
+    return _set_field(artifact_id, owner, admin, "pin", apply)
+
+
+def set_tags(artifact_id, tags, *, owner=None, admin=False) -> dict:
+    """Replace the page's tags (F-A2). Validated: at most MAX_TAGS, each a
+    short lowercase label. An empty list clears them."""
+    clean = _check_tags(tags)
+
+    def apply(meta):
+        before = _tags_of(meta)
+        if clean:
+            meta["tags"] = clean
+        else:
+            meta.pop("tags", None)
+        return before, clean
+    return _set_field(artifact_id, owner, admin, "tags", apply)
+
+
+def set_owner(artifact_id, new_owner, *, owner=None, admin=False) -> dict:
+    """Hand a page to another principal (correctness-03). ADMIN ONLY — the
+    rig (locality token) or a configured admin — because it is the one
+    mutation that decides who can read a private page. The new owner must be
+    something a reader can present (valid_email) or the rig itself."""
+    if not admin:
+        raise ArtifactError("not your artifact")
+    target = _norm_login(new_owner)
+    if target == LEGACY_LOCAL_OWNER:
+        target = RIG_OWNER
+    if target != RIG_OWNER:
+        target = valid_email(target)
+    if not target:
+        raise ArtifactError(
+            f"invalid owner {str(new_owner)[:80]!r}: a tailnet login "
+            f"(an email address) or 'rig'")
+
+    def apply(meta):
+        before = _owner_of(meta) or None
+        meta["owner"] = target
+        return before, target
+    return _set_field(artifact_id, owner, admin, "owner", apply)
+
+
+def remove_version(artifact_id, version, *, owner=None, admin=False) -> dict:
+    """Delete ONE old version (F-A2 / correctness-10): the escape from the
+    200-version cap that keeps the URL. Refuses the version `current` points
+    at (roll back first) and the last remaining version (remove the artifact
+    instead). Only a version meta NAMES is removed — R4: debris judgement is
+    never made here."""
+    aid = _check_id(artifact_id)
+    try:
+        n = int(version)
+    except (TypeError, ValueError):
+        raise ArtifactError(f"invalid version: {version!r}")
+    with _artifact_lock(aid):
+        meta = _read_meta(aid)
+        if meta is None:
+            raise ArtifactError(f"no such artifact: {artifact_id}")
+        who = _require_owner(meta, owner, admin)
+        versions = meta.get("versions")
+        if not isinstance(versions, list) or n not in _version_numbers(meta):
+            raise ArtifactError(f"no such version: v{version}")
+        if len(_version_numbers(meta)) <= 1:
+            raise ArtifactError(
+                f"v{n} is the only version of {aid} — remove the artifact "
+                f"instead")
+        if _coerce_int(meta.get("current"), 0) == n:
+            raise ArtifactError(
+                f"v{n} is the version {aid} currently serves — roll back to "
+                f"another one first")
+        keep = []
+        for v in versions:
+            try:
+                vn = int(v.get("n")) if isinstance(v, dict) else None
+            except (TypeError, ValueError):
+                vn = None
+            if vn != n:
+                keep.append(v)
+        meta["versions"] = keep
+        _write_meta_or_raise(aid, meta)
+        # Meta first, THEN the directory: a crash between the two leaves an
+        # unreferenced vN, which is exactly the debris D14 already tolerates.
+        shutil.rmtree(os.path.join(_artifact_dir(aid), f"v{n}"),
+                      ignore_errors=True)
+    _append_log({"ts": _now(), "id": aid, "n": n, "owner": who,
+                 "event": "remove-version"})
+    return meta
+
+
+def migrate_legacy_owners() -> list:
+    """Re-own every page stored under the pre-F-A1 "local" owner to the rig
+    principal. Idempotent (a second run finds nothing), locked per id, and
+    written to the index.jsonl ledger — one row per page it touched. Returns
+    the ids it re-owned. Never raises: a page it cannot rewrite keeps its old
+    owner, which _owner_of() already reads as the rig."""
+    done = []
+    try:
+        names = os.listdir(store_root())
+    except OSError:
+        return done
+    for name in sorted(names):
+        if not _valid_id(name):
+            continue
+        try:
+            meta = get_meta(name)
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if _norm_login(meta.get("owner")) != LEGACY_LOCAL_OWNER:
+            continue
+        try:
+            with _artifact_lock(name):
+                meta = _read_meta(name)
+                if (not isinstance(meta, dict) or _norm_login(
+                        meta.get("owner")) != LEGACY_LOCAL_OWNER):
+                    continue
+                meta["owner"] = RIG_OWNER
+                _write_meta(name, meta)
+        except Exception:
+            continue
+        _append_log({"ts": _now(), "id": name, "n": None, "owner": RIG_OWNER,
+                     "event": "reown", "from": LEGACY_LOCAL_OWNER,
+                     "to": RIG_OWNER, "reason": "migration"})
+        done.append(name)
+    return done
+
+
+def _parse_ts(value):
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def retain_days() -> int:
+    """ARTIFACT_RETAIN_DAYS (env OPENBEAST_ARTIFACT_RETAIN_DAYS, else
+    openbeast.conf). 0 — the default — means the sweep is OFF."""
+    raw = conf_value("ARTIFACT_RETAIN_DAYS")
+    try:
+        days = int(str(raw or "0").strip())
+    except ValueError:
+        return 0
+    return days if days > 0 else 0
+
+
+def sweep_retention(days=None, *, now=None) -> list:
+    """Opt-in retention (F-A2): delete every UNPINNED artifact whose last
+    update is older than `days` days (default: retain_days()). Pinned pages
+    are never touched; so is anything whose timestamp cannot be read (a
+    sweep must not guess). Each deletion is a ledger row with
+    reason "retention". Returns the removed ids."""
+    days = retain_days() if days is None else int(days)
+    if days <= 0:
+        return []
+    now = now or datetime.now(timezone.utc)
+    cutoff = now.timestamp() - days * 86400
+    removed = []
+    for row in _rows():
+        if row.get("pinned"):
+            continue
+        ts = _parse_ts(row.get("updated_at"))
+        if ts is None or ts.timestamp() >= cutoff:
+            continue
+        try:
+            meta = get_meta(row["id"])
+        except Exception:
+            continue
+        # Re-checked on the record itself: the row is a snapshot.
+        if not isinstance(meta, dict) or meta.get("pinned") is True:
+            continue
+        try:
+            if remove(row["id"], owner=RIG_OWNER, admin=True,
+                      reason="retention"):
+                removed.append(row["id"])
+        except ArtifactError:
+            continue
+    return removed
+
+
+def human_ts(value) -> str:
+    """'2026-09-30 05:29 UTC' from a stored ISO stamp (browser-10). The
+    stored value keeps its microseconds — it is the gallery's sort key."""
+    dt = _parse_ts(value)
+    if dt is None:
+        return ""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+# --- configuration -----------------------------------------------------------
+
+def _repo_dir() -> str:
+    return (os.environ.get("OPENBEAST_REPO_DIR", "").strip()
+            or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _conf_path() -> str:
+    return (os.environ.get("OPENBEAST_CONF", "").strip()
+            or os.path.join(_repo_dir(), "openbeast.conf"))
+
+
+def _conf_file_value(key: str):
+    """KEY= out of openbeast.conf: last assignment wins, quotes trimmed —
+    the same reading scripts/artifact.sh's _conf_value and lib/conf.sh's
+    _ob_conf_value do, without sourcing anything. None when absent."""
+    try:
+        with open(_conf_path(), "r", encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    found = None
+    pat = re.compile(r"^\s*%s\s*=(.*)$" % re.escape(key))
+    for line in lines:
+        m = pat.match(line)
+        if m:
+            found = m.group(1)
+    if found is None:
+        return None
+    val = found.strip()
+    for q in ('"', "'"):
+        if len(val) >= 2 and val.startswith(q) and val.endswith(q):
+            val = val[1:-1]
+    return val.strip() or None
+
+
+def conf_value(key: str, *env_names):
+    """A setting: the first non-empty of $OPENBEAST_<KEY>, the extra env
+    names given, then openbeast.conf's KEY=. None when unset everywhere.
+
+    The conf fallback is what lets a process NOT started by start.sh — the
+    OpenCode stdio MCP server launches agents/mcp_server.py with the user's
+    plain environment — see the rig's settings (correctness-02)."""
+    for name in (f"OPENBEAST_{key}",) + tuple(env_names):
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return _conf_file_value(key)
+
+
+def conf_exists() -> bool:
+    return os.path.isfile(_conf_path())
+
+
+def _logins(raw) -> list:
+    out: list = []
+    for part in str(raw or "").split(","):
+        who = valid_email(part)
+        if who and who not in out:
+            out.append(who)
+    return out
+
+
+def operators() -> list:
+    """The read allowlist as valid logins, in order: ARTIFACT_OPERATORS,
+    else CHAT_OPERATORS (env first, then openbeast.conf)."""
+    return (_logins(conf_value("ARTIFACT_OPERATORS"))
+            or _logins(conf_value("CHAT_OPERATORS")))
+
+
+def admins() -> list:
+    """Who may act AS THE RIG from a browser (F-A1): see and manage every
+    page, and hand a page to someone else.
+
+    ARTIFACT_ADMINS when set; else the FIRST operator on the allowlist —
+    the login a CLI publish used to be owned by, i.e. the rig's own human.
+    Not the whole list: D22 exists because a second operator must not be
+    able to read, re-share or delete another operator's private page, and
+    making every listed reader an administrator would quietly undo it. A
+    rig that wants several administrators lists them in ARTIFACT_ADMINS.
+
+    With neither set it is EMPTY: the first identified tailnet login is
+    never auto-trusted, so on an unconfigured rig only the locality token
+    (this box) administers anything."""
+    return _logins(conf_value("ARTIFACT_ADMINS")) or operators()[:1]
+
+
+def is_admin(login) -> bool:
+    who = _norm_login(login)
+    if not who:
+        return False
+    if who in RESERVED_LOGINS:
+        return True               # the rig itself; never presentable by header
+    return who in admins()
+
+
+def publish_notice(meta, *, requested=None, created=True) -> str:
+    """What the publisher needs to hear about where this page will open, or
+    "". Two cases (F-A1, correctness-05):
+
+      * a republish asked for a visibility the page does not have — D5 keeps
+        the stored one, and saying nothing let a model tell a user a page was
+        shared when it was not;
+      * a private page owned by the rig on a rig with NO admin configured —
+        no tailnet login can open it, the phone included.
+    """
+    if not isinstance(meta, dict):
+        return ""
+    vis = meta.get("visibility")
+    aid = meta.get("id") or "<id>"
+    notes = []
+    if not created and requested and requested != vis:
+        notes.append(
+            f"visibility unchanged ({vis}): it is set when a page is first "
+            f"published and changed only with `./scripts/artifact.sh "
+            f"visibility {aid} {requested}`.")
+    if vis == "private" and _owner_of(meta) == RIG_OWNER and not admins():
+        notes.append(
+            "No operator is configured, so this private page opens for no "
+            "tailnet login yet — your phone included. Set "
+            "ARTIFACT_OPERATORS=you@example.com in openbeast.conf and "
+            "restart the stack (./stop.sh && ./start.sh); or share this one "
+            f"page with `./scripts/artifact.sh visibility {aid} tailnet`.")
+    return " ".join(notes)
 
 
 # --- urls / visibility -------------------------------------------------------
@@ -1190,6 +1794,27 @@ def _serve_status() -> str:
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
     return done.stdout or ""
+
+
+_PUBLISHED_CACHE: dict = {}
+
+
+def published_base(port: int) -> str:
+    """https://<name>:<port> when `tailscale serve` publishes that port, else
+    "". Cached like _detect_base_url (same anchoring rule). The shell uses it
+    for :8445 so a "made by session" link renders only when beast-chat is
+    actually reachable on the tailnet (F-A3)."""
+    now = time.monotonic()
+    with _BASE_URL_LOCK:
+        hit = _PUBLISHED_CACHE.get(port)
+        if hit and now - hit[0] < _BASE_URL_TTL:
+            return hit[1]
+    m = re.search(r"^https://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):%d(?=\s|$)"
+                  % int(port), _serve_status(), re.M)
+    value = f"https://{m.group(1).lower()}:{int(port)}" if m else ""
+    with _BASE_URL_LOCK:
+        _PUBLISHED_CACHE[port] = (now, value)
+    return value
 
 
 def _detect_base_url() -> str:
@@ -1293,25 +1918,21 @@ def reset_owner_override(token):
 def default_owner() -> str:
     """Who owns a publish that named no owner. NEVER None (D3).
 
-    Order: the identity the server put in the ContextVar, else the rig's first
-    artifact operator, else its first chat operator, else the literal "local".
+    The identity the server put in the ContextVar, else the RIG principal
+    (F-A1). It used to fall back to the allowlist's first entry, else the
+    literal "local" — so the owner of a CLI publish depended on the config of
+    the day, and changing that config stranded every page published before
+    it. Rig pages are now owned by one stable name, and who may act as the
+    rig (is_admin) is the part the config decides.
 
     An ownerless artifact used to mean "readable by every operator forever",
     so a CLI or campaign publish on an unconfigured rig silently shared itself
-    with the whole tailnet. "local" is a real principal instead: the rig's own
-    processes publish as it, and `can_view` treats it like any other owner.
+    with the whole tailnet. The rig principal is a real owner instead.
     """
     who = _owner_override()[0]
-    if who:
+    if who and who != LEGACY_LOCAL_OWNER:
         return who
-    for var in ("OPENBEAST_ARTIFACT_OPERATORS", "OPENBEAST_CHAT_OPERATORS"):
-        for part in (os.environ.get(var) or "").split(","):
-            # R1: a login, not any non-empty string. A stray "@" in the
-            # allowlist used to become the owner of every unattributed page.
-            who = valid_email(part)
-            if who:
-                return who
-    return "local"
+    return RIG_OWNER
 
 
 def _owner_override() -> tuple:
@@ -1334,7 +1955,7 @@ def default_owner_alias() -> str:
     return _owner_override()[1] or ""
 
 
-def can_view(meta, viewer_login) -> bool:
+def can_view(meta, viewer_login, *, admin=False) -> bool:
     """Read permission for one artifact. Fails CLOSED (D2).
 
     True for anything marked `tailnet`, and otherwise only for the owner. An
@@ -1358,10 +1979,15 @@ def can_view(meta, viewer_login) -> bool:
         return True
     if viewer_login is None:
         return False         # NEVER open to anonymous
+    if admin:
+        return True          # the explicit administrator path (F-A1)
     owner = _owner_of(meta)
     if not owner:
         return True          # legacy/unowned: an identified caller may read
-    return _norm_login(viewer_login) == owner
+    viewer = _norm_login(viewer_login)
+    if viewer == LEGACY_LOCAL_OWNER:
+        viewer = RIG_OWNER
+    return viewer == owner
 
 
 # --- html helpers ------------------------------------------------------------
@@ -1418,7 +2044,23 @@ def extract_title(html) -> str | None:
     return text or None
 
 
-def wrap_skeleton(body_html, *, theme=None) -> bytes:
+# browser-3. The viewer shell frames artifacts under `frame-src 'self'`, so an
+# ordinary off-site <a href> navigated the FRAME to a blocked URL and replaced
+# the page with Chromium's "This content is blocked" — model-written reports
+# cite sources with exactly such links. Served (never stored) into every raw
+# page: an http(s) link to another host opens in a new tab instead, where
+# allow-popups-to-escape-sandbox lets the site run as itself. In-page anchors
+# and the page's own supporting files (same host) are left alone.
+LINK_GUARD = (
+    b'<script>(function(){document.addEventListener("click",function(e){'
+    b'var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;'
+    b'if(!a||a.target==="_blank")return;var u;try{u=new URL(a.href,'
+    b'location.href)}catch(x){return}if((u.protocol==="http:"||'
+    b'u.protocol==="https:")&&u.host!==location.host){a.target="_blank";'
+    b'a.rel="noopener noreferrer"}},true)})();</script>')
+
+
+def wrap_skeleton(body_html, *, theme=None, link_guard=False) -> bytes:
     """Wrap an authored page fragment in the serve-time skeleton.
 
     Applied on the way OUT, never stored: the version's sha256 is over the
@@ -1426,21 +2068,34 @@ def wrap_skeleton(body_html, *, theme=None) -> bytes:
     ever published without rewriting a single file.
 
     A page that already carries its own <html> tag is passed through untouched
-    (beyond the optional data-theme stamp) — hand-built pages like
-    scratch/spare-memory-meta.html predate the tool and must still render —
-    even if a BOM, a licence comment or an XML declaration comes first.
+    (beyond the optional data-theme stamp and link guard) — hand-built pages
+    like scratch/spare-memory-meta.html predate the tool and must still
+    render — even if a BOM, a licence comment or an XML declaration comes
+    first.
+
+    theme       "dark"/"light" stamps data-theme on <html> and, for a
+                fragment, pins `color-scheme` to it (browser-2).
+    link_guard  inject LINK_GUARD (raw artifact pages only — never the
+                shell or gallery, whose CSP admits hashed scripts only).
     """
     data = (body_html.encode("utf-8") if isinstance(body_html, str)
             else bytes(body_html or b""))
     stamp = ""
+    scheme = "light dark"
     if theme in ("dark", "light"):
         stamp = f' data-theme="{theme}"'
+        scheme = theme
+    guard = LINK_GUARD if link_guard else b""
     at = _html_tag_at(data)
     if at >= 0:
         if stamp and b"data-theme" not in data[:2048]:
             # Stamp THE document's tag, found above — never a "<html" that
             # happens to sit inside the leading comment.
             data = data[:at + 5] + stamp.encode() + data[at + 5:]
+        if guard:
+            end = data.find(b">", at)
+            if end >= 0:
+                data = data[:end + 1] + guard + data[end + 1:]
         return data
     head = (
         "<!doctype html>\n"
@@ -1448,11 +2103,10 @@ def wrap_skeleton(body_html, *, theme=None) -> bytes:
         "<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<style>\n"
-        ":root{color-scheme:light dark}\n"
+        f":root{{color-scheme:{scheme}}}\n"
         "body{margin:0;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif}\n"
         "img{max-width:100%}\n"
         "[hidden]{display:none!important}\n"
         "</style>\n"
-        "</head>\n<body>\n"
-    ).encode("utf-8")
+    ).encode("utf-8") + guard + b"\n</head>\n<body>\n"
     return head + data + b"\n</body>\n</html>\n"

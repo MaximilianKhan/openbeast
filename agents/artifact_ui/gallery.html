@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <title>Artifacts — OpenBeast</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%20100%20100%27%3E%3Ctext%20y%3D%27.9em%27%20font-size%3D%2790%27%3E%F0%9F%A6%81%3C%2Ftext%3E%3C%2Fsvg%3E">
 <!--
   beast-artifact gallery (agents/artifact_server.py renders this).
 
@@ -18,9 +19,13 @@
              EMPTY STRING when there is nothing to show - the empty state
              below is driven by `.list:empty`, so a stray newline or a
              placeholder comment inside the list would suppress it.
-    COUNT    integer, the number of rows rendered
+    COUNT    the number of rows, or "1–100 of 1002" when paged
     VIEWER   the tailnet login the rows were filtered for; may be empty, in
              which case its chip hides itself (`:empty`)
+    PAGER    server-rendered newer/older links, or empty
+    FILTERS  server-rendered "q: … · clear" line for active filters, or empty
+    Q        the current server-side search text (attribute-escaped)
+    ADMIN    "1" when the viewer administers every page, else empty
 
   Row contract - one list item per artifact, everything inside one anchor:
 
@@ -42,10 +47,10 @@
 
   Served under a strict CSP with no external hosts: every style and script is
   inline and every icon is inline SVG. Do not add a font, CDN, or image URL.
-  The gallery and shell responses need a policy that admits their own inline
-  block - script-src 'self' 'unsafe-inline', or a sha256 of the block - and
-  they are ours, not model-authored, so that stays separate from the far
-  stricter policy on /raw/.
+  script-src admits ONLY the sha256 of the inline script block below, hashed
+  by the server from this file at request time: keep it one bare script
+  element and never put a placeholder inside it (it would not be hashed, so
+  it would not run).
 -->
 <style>
 :root{
@@ -132,7 +137,23 @@ h1{
 /* ── rows ──────────────────────────────────────────────────────────── */
 .list{list-style:none; margin:0; padding:0; display:flex;
   flex-direction:column; gap:8px}
-.row[hidden]{display:none}
+/* browser-5: `.card{display:block}` is an author rule and beat the UA's
+   [hidden] rule, so the filter hid nothing. Whatever the row markup is. */
+.list>[hidden],.row[hidden],[hidden]{display:none!important}
+.row{display:block}
+.fav{margin-right:2px}
+.pin{color:#d29922; margin-right:2px}
+.tag{border:1px solid var(--border); border-radius:999px; padding:0 7px;
+  font-size:11px; color:var(--muted)}
+.owner{border:1px dashed var(--border); border-radius:999px; padding:0 7px;
+  font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+  max-width:14em; white-space:nowrap}
+.row-meta{flex-wrap:wrap}
+.pager{display:flex; justify-content:space-between; gap:10px; margin-top:14px}
+.pager:empty{display:none}
+.pg{color:var(--accent); text-decoration:none; font-size:14px}
+.active{margin:0 0 10px; font-size:13px; color:var(--muted)}
+.active a{color:var(--accent)}
 .card{
   display:block; padding:13px 14px; min-height:64px;
   background:var(--surface); border:1px solid var(--border);
@@ -231,7 +252,7 @@ code{
     <h1><span class="mark" aria-hidden="true">&#129409;</span> Artifacts</h1>
     <p class="sub">
       <span>{{COUNT}} published</span>
-      <span class="who">{{VIEWER}}</span>
+      <span class="who" data-admin="{{ADMIN}}">{{VIEWER}}</span>
     </p>
   </div>
   <button class="btn" type="button" id="theme" aria-label="Switch theme">
@@ -246,7 +267,9 @@ code{
 </header>
 
 <main class="wrap">
+  {{FILTERS}}
   <ul class="list" id="list">{{ROWS}}</ul>
+  <nav class="pager" aria-label="pages">{{PAGER}}</nav>
 
   <div class="empty">
     <h2>Nothing published yet</h2>
@@ -263,7 +286,8 @@ code{
   <div class="toolbar">
     <label class="sr-only" for="filter">Filter artifacts</label>
     <input class="filter" id="filter" type="search" autocomplete="off"
-           spellcheck="false" placeholder="Filter by title or description">
+           spellcheck="false" value="{{Q}}"
+           placeholder="Filter this page · Enter searches everything">
   </div>
 </main>
 
@@ -329,6 +353,13 @@ code{
         if (hit) { shown++; }
       }
       nomatch.style.display = (rows.length && shown === 0) ? "block" : "none";
+    });
+    /* Enter searches EVERY page server-side (correctness-06): the rows here
+       are one page of the gallery, and an older artifact must be findable. */
+    input.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") { return; }
+      var q = input.value.trim();
+      location.href = q ? "/?q=" + encodeURIComponent(q) : "/";
     });
   }
 })();

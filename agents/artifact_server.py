@@ -22,20 +22,33 @@ the service:
              Chromium: every supporting file ever published failed to load.
              Files under the token path are served `cross-origin`; the token
              (an HMAC over id+version, keyed by .run/artifact-raw.key) is what
-             stops a hostile page in the viewer's browser from embedding them,
-             because it cannot read the shell that carries it. The token is
-             NOT an identity: every gate below still applies.
+             stops a THIRD-PARTY page in the viewer's browser from embedding
+             them. The framed artifact itself can read its own token from
+             location.href — which unlocks only that version's files, which it
+             can already load; it cannot mint a token for another id or
+             version. The token is NOT an identity: every gate below still
+             applies.
   /a/…, /    OUR shell and gallery. Different, stricter policy: no CDN hosts,
-             `frame-ancestors 'none'`, scripts from self only.
+             `frame-ancestors 'none'`, and script-src admits ONLY the sha256
+             of each inline block the template ships with (security-3): not
+             'self' (a model-authored /raw/…/x.js is same-origin) and not
+             'unsafe-inline' (an escaping slip in a template would run).
 
 Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
   identity  a caller is the LOCAL principal if it presents the locality token
           (`X-OpenBeast-Local` == .run/artifact-local.token, 0600, minted at
           startup — agents/edge.py:412 pattern), otherwise whoever
           `Tailscale-User-Login` says, otherwise ANONYMOUS. The header counts
-          only from a LOOPBACK peer (`tailscale serve` proxies from
-          127.0.0.1): with BIND_HOST off loopback, a LAN caller that forges
-          it is ANONYMOUS, not the login it named.
+          only from a peer ON THIS HOST — loopback, or the very address the
+          connection was made TO (`tailscale serve` dials the bind address
+          from this box, so with BIND_HOST on a LAN address its source IS
+          that address; security-1). A LAN caller that forges it is
+          ANONYMOUS, not the login it named. The reserved rig names ("rig",
+          "local") are never accepted from a header.
+  admin   the locality token, and the logins in ARTIFACT_ADMINS (else the
+          FIRST valid operator-allowlist entry) — see artifact.admins(). An
+          admin views and manages every page and may hand one to another
+          owner (F-A1). Every other operator stays owner-only (D22).
   reads   ANONYMOUS gets 404 on every route but health: no identity, no
           service. With OPENBEAST_ARTIFACT_OPERATORS set (falling back to
           OPENBEAST_CHAT_OPERATORS) the login must also be on that list.
@@ -43,15 +56,24 @@ Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
           service exists. A private artifact owned by someone else is 404
           for the same reason, and so is a 405 or a 422: every refusal this
           service makes is the same 404 body, byte for byte.
-  writes  POST/PATCH/DELETE need the locality token, checked in MIDDLEWARE
-          before the body is read. A phone on the tailnet can view; only the
-          rig can publish. Ownership is the principal's — the publish body
-          cannot name an owner.
+  writes  checked in MIDDLEWARE before the body is read. POST (publish)
+          needs the locality token: only the rig publishes. PATCH/DELETE
+          (lifecycle: pin, tags, visibility, rollback, delete) take the
+          locality token OR an identified tailnet reader presenting an
+          enrolled device key with the `artifact` scope (F-A2; enroll with
+          `scripts/clients.sh enroll phone --scope artifact`) — small bodies
+          only, rate limited, and still owner-or-admin in the store.
+          Ownership is the principal's — the publish body cannot name an
+          owner.
   docs    /docs, /redoc and /openapi.json are OFF: the route table is not
           public information.
   audit   every request → .run/artifact-audit.jsonl (0600):
-          {ts, login, route, id, n, outcome, ms}; publish rows add sha256 and
-          bytes, never content.
+          {ts, login, method, route, id, n, outcome, ms}; `login` is the
+          RESOLVED principal (null when refused), `local` marks the rig, and a
+          login header that was presented but not honoured is kept as
+          `claimed_login` beside the socket `peer`. Publish rows add id, n,
+          owner, sha256 and bytes; PATCH rows name what changed; never
+          content.
 
 UI templates — agents/artifact_ui/{gallery,shell}.html, loaded at REQUEST
 time (edit the HTML, reload the page, no restart) with these exact
@@ -67,16 +89,24 @@ the files are absent:
                    {{VERSION}}         version being shown, e.g. "3"
                    {{VERSION_OPTIONS}} <option> list for the picker
                    {{RAW_URL}}         same-origin /raw/<id>/v/<n>/ for the iframe
-                   {{UPDATED}}         ISO timestamp of the last publish
+                   {{UPDATED}}         "2026-09-30 05:29 UTC"
                    {{VISIBILITY}}      private | tailnet
                    {{SANDBOX}}         (optional) the iframe sandbox attribute,
                                        mirroring the header policy
+                   {{FAVICON_HREF}}    data: URI of the page's emoji icon
+                   {{SESSION_LINK}}    "made by session …" link, or ""
+                   {{OWNER}}           owner chip text for an admin, or ""
+                   {{PINNED}}          "1" or ""
+                   {{TAGS}}            comma-separated tags
+                   {{CAN_MANAGE}}      "1" when the viewer owns or admins it
 
 Env:
   OPENBEAST_ARTIFACT_PORT       listen port          (default 3004)
   OPENBEAST_BIND                bind address         (default 127.0.0.1)
   OPENBEAST_ARTIFACT_OPERATORS  read allowlist, comma-separated logins
   OPENBEAST_CHAT_OPERATORS      fallback allowlist (beast-chat's)
+  OPENBEAST_ARTIFACT_ADMINS     admins (else the first operator) — env or conf
+  OPENBEAST_ARTIFACT_RETAIN_DAYS  opt-in retention sweep; 0/unset = off
   OPENBEAST_FILES_DIR           workspace root — the store lives under it
   OPENBEAST_RUN_DIR             where the token + audit log go (default .run)
 """
@@ -84,11 +114,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import hmac
 import html as _html
 import http.client
 import ipaddress
+import urllib.parse
 import json
 import os
 import re
@@ -147,10 +179,23 @@ UNMATCHED_ROUTE = "<unmatched>"
 # their login was treated as the owner.
 PRIVATE_META_FIELDS = frozenset({"owner_webui_id"})
 
-# Who the rig itself is when no allowlist is configured; mirrors
-# artifact.default_owner()'s last resort (D3) so a CLI publish on an
-# unconfigured rig is readable by the CLI that made it.
-LOCAL_LOGIN = "local"
+# Who the rig itself is — the owner of every CLI, campaign and background
+# publish, whatever the allowlist says (F-A1; artifact.RIG_OWNER). LOCAL_LOGIN
+# is its pre-F-A1 spelling, kept because pages owned by it may still be on
+# disk until migrate_legacy_owners() runs (at every start).
+RIG_LOGIN = store.RIG_OWNER
+LOCAL_LOGIN = store.LEGACY_LOCAL_OWNER
+
+# F-A2. The device scope that lets a PHONE manage pages (pin, tags,
+# visibility, rollback, delete) — never publish. Same registry and the same
+# fail-closed rule as beast-chat's `chat` scope.
+DEVICE_SCOPE = "artifact"
+# A lifecycle write is a few hundred bytes of JSON. A device key is a secret,
+# not a licence to stream the 90 MB publish body into this process.
+REMOTE_WRITE_MAX_BYTES = 64 * 1024
+REMOTE_WRITES_PER_MIN = 60
+# Gallery rows per page (correctness-06). The API keeps MAX_LIST_LIMIT.
+GALLERY_PAGE = 100
 
 # The request-size gate. CAPS["version_bytes"] bounds the DECODED version; a
 # binary supporting file travels as base64 inside JSON, which inflates it by
@@ -171,7 +216,7 @@ COUNT_LIMIT = 1_000_000       # operator-only counters, explicitly bounded
 # literals in the middleware, and _deny_label() clamps anything else to
 # "other", so this stays a bounded set no caller can grow.
 DENY_REASONS = frozenset({"oversize", "ambiguous-identity", "anonymous",
-                          "not-local"})
+                          "not-local", "rate-limited"})
 DENY_OTHER = "other"
 
 # D27/R5: how many REFUSED requests an unidentified caller may write into
@@ -211,10 +256,18 @@ LOGIN_AUDIT_BUCKETS = 1024
 # Pinned by tests/test_artifact_server.py. If you weaken either string the
 # test fails loudly, on purpose: the isolation IS these headers.
 
+# 'unsafe-eval' (browser-4): Alpine.js, Vue's in-DOM templates, Handlebars
+# and _.template compile at runtime and rendered NOTHING without it. It grants
+# nothing 'unsafe-inline' does not already grant inside this sandbox: the
+# page is model-authored code running in an opaque, network-less origin
+# either way. allow-popups-to-escape-sandbox (browser-3): an external link
+# opened from the page lands on the real site, not a crippled opaque-origin
+# copy of it — our OWN pages opened that way still carry this CSP by header.
 RAW_CSP = (
-    "sandbox allow-scripts allow-forms allow-modals allow-popups; "
+    "sandbox allow-scripts allow-forms allow-modals allow-popups "
+    "allow-popups-to-escape-sandbox; "
     "default-src 'none'; "
-    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com "
     "https://cdn.jsdelivr.net/npm/ https://cdn.tailwindcss.com "
     "https://code.jquery.com; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
@@ -225,10 +278,14 @@ RAW_CSP = (
     "form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
 )
 
-SHELL_CSP = (
+# Our own UI. script-src is filled per response with the sha256 of each
+# inline <script> block the TEMPLATE ships (computed before substitution, so a
+# value spliced into the page can never match): security-3. `'none'` when a
+# template has no script.
+SHELL_CSP_TEMPLATE = (
     "default-src 'none'; "
-    "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
+    "script-src {scripts}; "
+    "style-src 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
@@ -236,9 +293,37 @@ SHELL_CSP = (
     "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
 )
 
+
+def shell_csp(hashes=()) -> str:
+    scripts = " ".join(f"'sha256-{h}'" for h in hashes) or "'none'"
+    return SHELL_CSP_TEMPLATE.format(scripts=scripts)
+
+
+SHELL_CSP = shell_csp()
+
+_SCRIPT_BLOCK_RE = re.compile(r"<script>(.*?)</script>", re.S | re.I)
+
+
+def inline_script_hashes(template: str) -> list:
+    """base64 sha256 of every bare `<script>` block in a TEMPLATE.
+
+    A block carrying a placeholder is NOT hashed: its content changes with
+    what is substituted, so it could not be pinned — and it will not run,
+    which is the failure mode we want if a template ever does that."""
+    out = []
+    text = re.sub(r"<!--.*?-->", "", template or "", flags=re.S)
+    for m in _SCRIPT_BLOCK_RE.finditer(text):
+        body = m.group(1)
+        if "{{" in body:
+            continue
+        digest = hashlib.sha256(body.encode("utf-8")).digest()
+        out.append(base64.b64encode(digest).decode("ascii"))
+    return out
+
 # The iframe attribute mirrors the header, so the page stays boxed in even if
 # a proxy ever strips Content-Security-Policy.
-IFRAME_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups"
+IFRAME_SANDBOX = ("allow-scripts allow-forms allow-modals allow-popups "
+                  "allow-popups-to-escape-sandbox")
 
 RAW_HEADERS = {
     "Content-Security-Policy": RAW_CSP,
@@ -332,11 +417,33 @@ def _peer_is_loopback(request) -> bool:
     if client is None:
         return True
     try:
-        addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
+        addr = _unmap(ipaddress.ip_address((client.host or "").split("%", 1)[0]))
     except ValueError:
         return False
+    if addr.is_loopback:
+        return True
+    # security-1: with BIND_HOST on a LAN address, setup-tailscale.sh mounts
+    # :8446 at http://<that address>:3004, and tailscaled — on THIS box —
+    # connects from that same address (a connection to one of our own
+    # addresses is sourced from it). The peer is then this host, just not
+    # 127.0.0.1, and every tailnet reader used to become anonymous: 404 for
+    # every page, the `tailnet` ones included. A socket whose PEER address
+    # equals the address it was ACCEPTED on is on this host — a remote host
+    # cannot complete a TCP handshake from our own address — so it is trusted
+    # exactly like loopback, and nothing more.
+    server = (request.scope.get("server") if hasattr(request, "scope")
+              else None) or (None,)
+    try:
+        local = _unmap(ipaddress.ip_address(
+            str(server[0] or "").split("%", 1)[0]))
+    except ValueError:
+        return False
+    return (not local.is_unspecified) and addr == local
+
+
+def _unmap(addr):
     mapped = getattr(addr, "ipv4_mapped", None)
-    return bool(addr.is_loopback or (mapped is not None and mapped.is_loopback))
+    return mapped if mapped is not None else addr
 
 
 def _read_local_token() -> str:
@@ -513,6 +620,7 @@ a.card:hover{border-color:var(--mut)}
 """
 
 _FALLBACK_SHELL = """<title>{{TITLE}}</title>
+<link rel="icon" href="{{FAVICON_HREF}}">
 <style>
 :root{color-scheme:light dark;--fg:#16181d;--bg:#fafbfc;--mut:#5d6470;--line:#e3e6ea}
 @media (prefers-color-scheme:dark){:root{--fg:#e8eaed;--bg:#14161a;--mut:#9aa1ad;--line:#282c33}}
@@ -534,11 +642,12 @@ iframe{flex:1;border:0;width:100%;background:#fff}
 <a href="/">gallery</a>
 </header>
 <iframe title="{{TITLE}}" src="{{RAW_URL}}"
- sandbox="allow-scripts allow-forms allow-modals allow-popups"
+ sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"
  referrerpolicy="no-referrer"></iframe>
 <script>
 document.getElementById('v').addEventListener('change', function (e) {
-  location.href = '/a/{{ARTIFACT_ID}}/v/' + encodeURIComponent(e.target.value);
+  var m = /^\/a\/([^/]+)/.exec(location.pathname);
+  if (m) { location.href = '/a/' + m[1] + '/v/' + encodeURIComponent(e.target.value); }
 });
 </script>
 """
@@ -566,13 +675,20 @@ class PublishBody(BaseModel):
     files: dict | None = None
     artifact_id: str | None = None
     label: str | None = None
-    visibility: str = "private"
+    # None = "not asked": private on creation, and no "unchanged" notice on a
+    # republish (correctness-05).
+    visibility: str | None = None
+    # Provenance (F-A3): the beast-chat session that published, if any.
+    source_session: str | None = None
 
 
 class PatchBody(BaseModel):
     visibility: str | None = None
     description: str | None = None
     current: int | None = None
+    pinned: bool | None = None
+    tags: list | None = None
+    owner: str | None = None          # admin only (F-A1)
 
 
 def _decode_files(files: dict | None) -> dict:
@@ -608,6 +724,8 @@ class Principal:
     login: str | None
     local: bool
     operator: bool
+    admin: bool = False
+    device: str | None = None
 
 
 def _metric_label(value: str) -> str:
@@ -632,6 +750,74 @@ def _deny_label(reason) -> str:
     except TypeError:            # unhashable: not a label, not a budget key
         known = False
     return reason if known else DENY_OTHER
+
+
+class DeviceRegistry:
+    """Stat-gated reader for .run/clients.json (schema owned by
+    scripts/clients.sh). A local reimplementation, like beast-chat's: the
+    file format is the contract, and this server must not need a restart
+    when the gate changes. (mtime, size, inode) — mtime alone misses two
+    writes inside one timestamp tick, and a stale map is a MISSED REVOCATION.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._stamp = None
+        self._by_hash: dict = {}
+
+    def _reload(self) -> None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            self._by_hash, self._stamp = {}, None
+            return
+        stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+        if stamp == self._stamp:
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return          # half-written: keep serving the last good map
+        by_hash = {}
+        devices = data.get("devices") if isinstance(data, dict) else None
+        for dev in devices if isinstance(devices, list) else []:
+            if not isinstance(dev, dict):
+                continue
+            digest = str(dev.get("key_sha256") or "").strip().lower()
+            if digest:
+                by_hash[digest] = dev
+        self._by_hash, self._stamp = by_hash, stamp
+
+    def lookup(self, key: str, scope: str):
+        """The enrolled, un-revoked device holding `scope` for this key, or
+        None. Unknown, revoked and unscoped are all None."""
+        if not key:
+            return None
+        self._reload()
+        digest = hashlib.sha256(key.encode("utf-8", "surrogateescape")
+                                ).hexdigest()
+        for key_hash, dev in self._by_hash.items():
+            if hmac.compare_digest(key_hash, digest):
+                if dev.get("revoked_at"):
+                    return None
+                scopes = dev.get("scopes")
+                if not isinstance(scopes, (list, tuple)):
+                    return None        # no field => no scope (fail closed)
+                if scope not in {str(x).strip().lower() for x in scopes}:
+                    return None
+                return dev
+        return None
+
+
+def _favicon_href(favicon) -> str:
+    """A data: SVG that draws the page's emoji — the tab icon the docs
+    promise (browser-6). The shell CSP already admits img-src data:."""
+    glyph = str(favicon or "").strip()[:32] or "\U0001F981"
+    svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+           "<text y='.9em' font-size='90'>"
+           + _html.escape(glyph, quote=True) + "</text></svg>")
+    return "data:image/svg+xml," + urllib.parse.quote(svg, safe="")
 
 
 # --- app ---------------------------------------------------------------------
@@ -675,6 +861,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
     app.state.local_token = local_token
     app.state.operators = operators
     raw_key = _raw_key()
+    registry = DeviceRegistry(os.path.join(_run_dir(), "clients.json"))
+    remote_hits: dict = defaultdict(list)       # device id -> [monotonic]
+    remote_lock = threading.Lock()
 
     def raw_token(artifact_id: str, n: int) -> str:
         """The capability for one version's /raw tree (module docstring)."""
@@ -788,20 +977,38 @@ def create_app(local_token: str | None = None) -> FastAPI:
         ms = int((time.monotonic() - t0) * 1000)
         metric, route = _labels(request)
         params = request.scope.get("path_params") or {}
+        _p = getattr(request.state, "principal", None)
+        resolved = getattr(_p, "login", None)
+        resolved = str(resolved)[:128] if resolved else None
+        # CAPPED, like the raw path below. Uncapped, this was the biggest row
+        # in the file by two orders of magnitude: an 8 KB header produced an
+        # 8 KB audit row, so D27's budget bounded the row COUNT while the
+        # BYTES stayed unbounded. Review of v1.4.0.
+        claimed = (request.headers.get(_HDR_LOGIN) or "")[:128] or None
         entry = {
             "ts": _now(),
-            # CAPPED, like the raw path below. Uncapped, this was the
-            # biggest row in the file by two orders of magnitude: an
-            # 8 KB header produced an 8 KB audit row, so D27's budget
-            # bounded the row COUNT while the BYTES stayed unbounded
-            # (~8 MB per reason per window). Review of v1.4.0.
-            "login": (request.headers.get(_HDR_LOGIN) or "")[:128] or None,
+            # WHO the server decided this was — not the raw header (browser-7,
+            # security-2): a forged, refused header used to be logged as the
+            # victim's own login, and every rig write as null.
+            "login": resolved,
+            "method": request.method,
             "route": route,
             "id": params.get("artifact_id"),
             "n": params.get("n"),
             "outcome": status,
             "ms": ms,
         }
+        if getattr(_p, "local", False):
+            entry["local"] = True
+        if getattr(_p, "device", None):
+            entry["device"] = _p.device
+        if claimed and claimed.strip().lower()[:128] != (resolved or ""):
+            # Presented and NOT honoured: keep what was claimed and where it
+            # came from, so a forgery is traceable to its source instead of
+            # reading like the named user's own device misbehaving.
+            entry["claimed_login"] = claimed
+            client = getattr(request, "client", None)
+            entry["peer"] = (getattr(client, "host", None) or "")[:64] or None
         entry.update(extra or getattr(request.state, "extra", {}) or {})
         reason = _deny_label(entry.get("denied"))
         # The budget has to cover every row an UNIDENTIFIED caller can mint,
@@ -881,12 +1088,18 @@ def create_app(local_token: str | None = None) -> FastAPI:
         elif principal.login is None and request.url.path != HEALTH_PATH:
             deny = "anonymous"
         elif request.method in WRITE_METHODS and not principal.local:
-            deny = "not-local"
+            deny = _remote_write_refusal(request, principal)
         else:
             deny = ""
+        if deny == "rate-limited":
+            _record(request, 429, t0, {"denied": deny})
+            return JSONResponse({"detail": "too many changes — wait a minute"},
+                                status_code=429,
+                                headers=dict([COOP_HEADER]))
         if deny:
             _record(request, 404, t0, {"denied": deny})
             return _flat_404()
+        principal = request.state.principal       # may carry the device now
 
         # Whoever this is, every store call made while serving the request
         # attributes to them (artifact.default_owner()'s ContextVar). This is
@@ -957,6 +1170,48 @@ def create_app(local_token: str | None = None) -> FastAPI:
 
     # --- auth ---------------------------------------------------------------
 
+    def _device_key(request: Request) -> str:
+        auth = request.headers.get("authorization", "")
+        key = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        return key or (request.headers.get("x-openbeast-device-key")
+                       or "").strip()
+
+    def _remote_write_refusal(request: Request, principal: Principal) -> str:
+        """"" when a NON-LOCAL write may proceed, else the deny reason.
+
+        F-A2: lifecycle changes from the phone. Publishing (POST) stays the
+        rig's alone. PATCH and DELETE need BOTH halves — an identity the
+        tailnet vouched for (the reader) AND an enrolled device key carrying
+        the `artifact` scope (the device) — and a small body. Everything the
+        store then does is still owner-or-admin for THAT login.
+        """
+        if request.method not in ("PATCH", "DELETE") or not principal.login:
+            return "not-local"
+        dev = registry.lookup(_device_key(request), DEVICE_SCOPE)
+        if dev is None:
+            return "not-local"
+        raw_len = request.headers.get("content-length")
+        if raw_len is None and request.headers.get("transfer-encoding"):
+            return "oversize"          # no length, no streaming
+        try:
+            if raw_len is not None and int(raw_len) > REMOTE_WRITE_MAX_BYTES:
+                return "oversize"
+        except ValueError:
+            return "oversize"
+        dev_id = str(dev.get("id") or "device")[:64]
+        now = time.monotonic()
+        with remote_lock:
+            q = [t for t in remote_hits[dev_id] if now - t < 60.0]
+            if len(q) >= REMOTE_WRITES_PER_MIN:
+                remote_hits[dev_id] = q
+                return "rate-limited"
+            q.append(now)
+            remote_hits[dev_id] = q
+        request.state.principal = Principal(
+            login=principal.login, local=False, operator=principal.operator,
+            admin=principal.admin, device=dev_id)
+        return ""
+
     def _ambiguous_identity(request: Request) -> bool:
         """More than one copy of an identity header (D29).
 
@@ -999,56 +1254,38 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
         raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
                if _peer_is_loopback(request) else "")
+        # The rig's own names are never an identity a HEADER can carry. The
+        # rig principal owns every CLI/campaign publish, so accepting it from
+        # a header would make it a read password — the defect class R6
+        # deleted `owner_webui_id` for (a constant printed in the docs is not
+        # a credential). Both spellings, in both modes: an allowlist that
+        # happened to list "local" must not reopen it either.
+        if raw in store.RESERVED_LOGINS:
+            raw = ""
         if operators:
             if raw and raw in operator_set:
-                return Principal(login=raw, local=local, operator=True)
+                return Principal(login=raw, local=local, operator=True,
+                                 admin=local or store.is_admin(raw))
             if local:
-                # operators[0] verbatim becomes an artifact OWNER (via the
-                # ContextVar that feeds default_owner()), so a malformed first
-                # entry in the allowlist silently owns every rig publish.
-                # Take the first entry that is actually a valid identity, and
-                # fall back to LOCAL_LOGIN rather than to garbage.
-                #
-                # NOT by filtering _operators() itself, which three of the
-                # findings suggested: an all-invalid allowlist would then be
-                # indistinguishable from NO allowlist, flipping the server out
-                # of allowlist mode into accept-any-identity. That is a
-                # fail-open, and it would be a worse bug than the one it fixes.
-                return Principal(login=_rig_owner(operators), local=True,
-                                 operator=True)
+                # The rig itself (F-A1): ONE stable owner for everything this
+                # box publishes, whatever the allowlist says today. It used
+                # to be operators[0], so adding the allowlist later stranded
+                # every page published before it under "local".
+                return Principal(login=RIG_LOGIN, local=True, operator=True,
+                                 admin=True)
             return Principal(login=None, local=False, operator=False)
         if local:
             # The rig itself. A login header on a local call is the identity
             # server telling us whose call this is.
-            return Principal(login=raw or LOCAL_LOGIN, local=True,
-                             operator=True)
-        # LOCAL_LOGIN is the documented constant every CLI/campaign publish
-        # is owned by on a rig with no allowlist. Accepting it from a HEADER
-        # made it a read password: a non-local caller presenting
-        # `Tailscale-User-Login: local` read every private page the rig
-        # published, because can_view is a plain owner comparison. Same defect
-        # class R6 deleted `owner_webui_id` for — a constant printed in the
-        # docs is not a credential. The browser route was already closed by
-        # TrustedHostMiddleware; this closes the identity itself.
-        if raw and raw != LOCAL_LOGIN:
-            return Principal(login=raw, local=False, operator=False)
+            return Principal(login=raw or RIG_LOGIN, local=True,
+                             operator=True, admin=True)
+        if raw:
+            # No allowlist: identity is required but not listed. NOT an
+            # admin unless ARTIFACT_ADMINS names it — the first tailnet login
+            # to show up is never auto-trusted with the rig's pages (F-A1).
+            return Principal(login=raw, local=False, operator=False,
+                             admin=store.is_admin(raw))
         return Principal(login=None, local=False, operator=False)
-
-    def _rig_owner(operators: list) -> str:
-        """The login the RIG publishes as, when an allowlist is configured.
-
-        The first allowlist entry that survives store.valid_email(), else
-        LOCAL_LOGIN. This value becomes an artifact's `owner`, so it has to be
-        something `can_view` can compare later — a malformed entry would own
-        pages nobody could then be matched against.
-        """
-        for cand in operators:
-            try:
-                if store.valid_email(cand):
-                    return cand
-            except Exception:                       # noqa: BLE001
-                continue
-        return LOCAL_LOGIN
 
     def principal_of(request: Request) -> Principal:
         p = getattr(request.state, "principal", None)
@@ -1069,6 +1306,14 @@ def create_app(local_token: str | None = None) -> FastAPI:
         the second lock on the same door."""
         if not principal_of(request).local:
             # 404, not 403: writes are invisible from the tailnet.
+            raise HTTPException(status_code=404, detail="Not Found")
+
+    def require_manager(request: Request) -> None:
+        """PATCH/DELETE guard (F-A2): the rig, or a tailnet reader whose
+        request carried an `artifact`-scoped device key (the middleware
+        resolved it). Second lock on the middleware's door, like the above."""
+        p = principal_of(request)
+        if not (p.local or (p.device and p.login)):
             raise HTTPException(status_code=404, detail="Not Found")
 
     # --- refusals (D9) ------------------------------------------------------
@@ -1096,15 +1341,23 @@ def create_app(local_token: str | None = None) -> FastAPI:
         return _flat_404()
 
     def _trusted(request: Request) -> bool:
+        # A caller holding an enrolled `artifact` device key has proven a
+        # secret, not just claimed a name: it may read why its own lifecycle
+        # change was refused (a bad tag), like an operator.
         p = principal_of(request)
-        return bool(p.local or p.operator)
+        return bool(p.local or p.operator or (p.device and p.login))
 
-    def visible_meta(artifact_id: str, viewer: str | None) -> dict:
+    def is_admin(request: Request) -> bool:
+        p = principal_of(request)
+        return bool(p.local or p.admin)
+
+    def visible_meta(artifact_id: str, viewer: str | None,
+                     admin: bool = False) -> dict:
         try:
             meta = store.get_meta(artifact_id)
         except store.ArtifactError:
             meta = None
-        if not meta or not store.can_view(meta, viewer):
+        if not meta or not store.can_view(meta, viewer, admin=admin):
             # Someone else's private artifact is indistinguishable from one
             # that does not exist.
             raise HTTPException(status_code=404, detail="Not Found")
@@ -1113,8 +1366,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def owner_for(request: Request) -> str:
         """Who a publish belongs to (D3/D4): the resolved principal, full
         stop. The body has no say — it never sees an `owner` field again.
-        Writes are LOCAL-only, so this is never None."""
-        return principal_of(request).login or LOCAL_LOGIN
+        Every write has an identity, so this is never None."""
+        return principal_of(request).login or RIG_LOGIN
 
     # --- version resolution (D23) -------------------------------------------
     # The store hardened this once (D14) and the server then re-derived it
@@ -1192,43 +1445,139 @@ def create_app(local_token: str | None = None) -> FastAPI:
         """Store failure -> HTTP. A cap or a validation error is a real 400
         for the rig; the OWNERSHIP refusal is the flat 404 (D29), because
         "not your artifact" confirms a page exists exactly where a
-        nonexistent id would have said Not Found."""
+        nonexistent id would have said Not Found. A disk that said no is
+        507 for a full disk, else 500 — with the reason, never a bare
+        traceback (correctness-09)."""
         if "not your artifact" in str(e).lower():
             return HTTPException(status_code=404, detail="Not Found")
+        if isinstance(e, getattr(store, "ArtifactStorageError", ())):
+            full = getattr(e, "errno", None) in (errno.ENOSPC, errno.EDQUOT,
+                                                 errno.EFBIG)
+            return HTTPException(status_code=507 if full else 500,
+                                 detail=str(e))
         return HTTPException(status_code=400, detail=str(e))
 
     # --- gallery + shell ----------------------------------------------------
 
-    @app.get("/", response_class=HTMLResponse)
-    def gallery(request: Request):
-        viewer = viewer_of(request)
-        rows = store.list_artifacts(viewer=viewer, limit=MAX_LIST_LIMIT)
-        cards = []
-        for r in rows:
-            fav = f"{_esc(r['favicon'])} " if r.get("favicon") else ""
-            desc = (f'<div class="d">{_esc(r["description"])}</div>'
-                    if r.get("description") else "")
-            cards.append(
-                f'<a class="card" href="/a/{_esc(r["id"])}">'
-                f'<div class="t">{fav}{_esc(r["title"])}</div>{desc}'
-                f'<div class="m">v{_esc(r["current"])} &middot; '
-                f'{_esc(r["versions"])} version(s) &middot; '
-                f'{_esc(r["visibility"])} &middot; {_esc(r["updated_at"])}</div>'
-                f'</a>')
-        body = "\n".join(cards) or \
-            '<div class="empty">No artifacts yet. Publish one with ' \
-            'scripts/artifact.sh publish page.html</div>'
-        page = _fill(_read_template("gallery.html", _FALLBACK_GALLERY), {
-            "ROWS": body,
-            "COUNT": str(len(rows)),
-            "VIEWER": _esc(viewer or "single-user rig"),
-        })
+    def _ui_response(template: str, page: str) -> HTMLResponse:
+        """Our own UI, under a CSP that admits exactly the template's own
+        inline scripts (security-3). Hashed from the TEMPLATE, before any
+        value was substituted, so nothing a title or description carries can
+        ever match a hash."""
+        headers = dict(SHELL_HEADERS)
+        headers["Content-Security-Policy"] = shell_csp(
+            inline_script_hashes(template))
         return HTMLResponse(store.wrap_skeleton(page).decode("utf-8"),
-                            headers=SHELL_HEADERS)
+                            headers=headers)
+
+    def _chat_base() -> str:
+        """https://<rig>:8445 when beast-chat is published on the tailnet,
+        else "" — the "made by session" link renders only when it can open
+        (F-A3). The name comes from `tailscale serve`, exactly as the
+        artifact base URL does (artifact._detect_base_url)."""
+        override = (store.conf_value("CHAT_BASE_URL") or "").strip()
+        if override:
+            return "" if override.lower() in ("off", "none") \
+                else override.rstrip("/")
+        try:
+            return store.published_base(8445)
+        except Exception:
+            return ""
+
+    def _session_link(meta) -> str:
+        sess = meta.get("source_session") if isinstance(meta, dict) else None
+        if not isinstance(sess, str) or not store._SESSION_RE.match(sess):
+            return ""
+        chat = _chat_base()
+        label = f"made by session {_esc(sess)}"
+        if not chat:
+            return f'<span class="sess">{label}</span>'
+        href = f"{chat}/#/s/{urllib.parse.quote(sess, safe='')}"
+        return (f'<a class="sess" href="{_esc(href)}" target="_blank" '
+                f'rel="noopener">{label}</a>')
+
+    def _row_html(r: dict, admin: bool, viewer: str) -> str:
+        search = " ".join(str(x) for x in (
+            r.get("title"), r.get("description") or "", r.get("id"),
+            " ".join(r.get("tags") or []))).lower()
+        fav = f'<span class="fav">{_esc(r["favicon"])}</span> ' \
+            if r.get("favicon") else ""
+        pin = '<span class="pin" title="pinned">&#9733;</span> ' \
+            if r.get("pinned") else ""
+        desc = _esc(r.get("description") or "")
+        tags = "".join(f'<span class="tag">{_esc(t)}</span>'
+                       for t in (r.get("tags") or []))
+        owner = r.get("owner") or ""
+        owner_chip = (f'<span class="owner">{_esc(owner)}</span>'
+                      if admin and owner and owner != viewer else "")
+        return (
+            f'<li class="row" data-search="{_esc(search)}">'
+            f'<a class="card" href="/a/{_esc(r["id"])}">'
+            f'<span class="row-top"><span class="row-title">{pin}{fav}'
+            f'{_esc(r["title"])}</span>'
+            f'<span class="row-age">{_esc(store.human_ts(r.get("updated_at")))}'
+            f'</span></span>'
+            f'<span class="row-desc">{desc}</span>'
+            f'<span class="row-meta">'
+            f'<span class="badge" data-visibility="{_esc(r["visibility"])}">'
+            f'{_esc(r["visibility"])}</span>'
+            f'<span class="vers">v{_esc(r["current"])} of '
+            f'{_esc(r["versions"])}</span>{tags}{owner_chip}</span>'
+            f'</a></li>')
+
+    @app.get("/", response_class=HTMLResponse)
+    def gallery(request: Request, page: int = 1, q: str = "",
+                session: str = "", tag: str = ""):
+        viewer = viewer_of(request)
+        admin = is_admin(request)
+        try:
+            page = max(1, int(page))
+        except (TypeError, ValueError):
+            page = 1
+        q = str(q or "").strip()[:100]
+        rows, total = store.list_page(
+            viewer=viewer, admin=admin, limit=GALLERY_PAGE,
+            offset=(page - 1) * GALLERY_PAGE, session=session or None,
+            tag=tag or None, pinned_first=True, query=q or None)
+        body = "\n".join(_row_html(r, admin, viewer) for r in rows)
+        if not rows and (q or session or tag or page > 1):
+            # A filter (or a page past the end) that matched nothing is not
+            # "nothing published yet" — say what happened.
+            body = ('<li class="empty"><h2>No artifact matches that</h2>'
+                    '<p><a href="/">Show everything</a></p></li>')
+        first = (page - 1) * GALLERY_PAGE + 1
+        count = (str(total) if total <= GALLERY_PAGE
+                 else f"{first}&ndash;{first + len(rows) - 1} of {total}"
+                 if rows else f"0 of {total}")
+        keep = {k: v for k, v in (("q", q), ("session", session),
+                                  ("tag", tag)) if v}
+        links = []
+        if page > 1:
+            links.append(f'<a class="pg" href="/?{_esc(urllib.parse.urlencode(dict(keep, page=page - 1)))}">&larr; newer</a>')
+        if page * GALLERY_PAGE < total:
+            links.append(f'<a class="pg" href="/?{_esc(urllib.parse.urlencode(dict(keep, page=page + 1)))}">older &rarr;</a>')
+        active = []
+        for k in ("q", "session", "tag"):
+            if keep.get(k):
+                active.append(f'{k}: <b>{_esc(keep[k])}</b>')
+        filt = (f'<p class="active">{" &middot; ".join(active)} &middot; '
+                f'<a href="/">clear</a></p>' if active else "")
+        template = _read_template("gallery.html", _FALLBACK_GALLERY)
+        page_html = _fill(template, {
+            "ROWS": body,
+            "COUNT": count,
+            "VIEWER": _esc(viewer or ""),
+            "PAGER": "".join(links),
+            "FILTERS": filt,
+            "Q": _esc(q),
+            "ADMIN": "1" if admin else "",
+        })
+        return _ui_response(template, page_html)
 
     def _shell(request: Request, artifact_id: str, n=None) -> HTMLResponse:
         viewer = viewer_of(request)
-        meta = visible_meta(artifact_id, viewer)
+        admin = is_admin(request)
+        meta = visible_meta(artifact_id, viewer, admin)
         aid = _meta_id(meta, artifact_id)
         version = _version_or_current(meta, n, artifact_id)
         # The picker is built from the RESOLVABLE versions (D23), not from
@@ -1240,11 +1589,14 @@ def create_app(local_token: str | None = None) -> FastAPI:
             v = entries.get(vn, {})
             label = f" · {v['label']}" if v.get("label") else ""
             sel = " selected" if vn == version else ""
-            ts = v.get("ts")
-            opts.append(f'<option value="{vn}"{sel}>v{vn}{_esc(label)} · '
-                        f'{_esc((ts if isinstance(ts, str) else "")[:16])}'
-                        f'</option>')
-        page = _fill(_read_template("shell.html", _FALLBACK_SHELL), {
+            ts = store.human_ts(v.get("ts"))[:16]
+            opts.append(f'<option value="{vn}"{sel}>v{vn}{_esc(label)}'
+                        f'{" · " + _esc(ts) if ts else ""}</option>')
+        owner = store._owner_of(meta)
+        can_manage = admin or (owner and owner == store._norm_login(viewer)) \
+            or not owner
+        template = _read_template("shell.html", _FALLBACK_SHELL)
+        page = _fill(template, {
             "TITLE": _esc(meta.get("title") or "Untitled"),
             "DESCRIPTION": _esc(meta.get("description") or ""),
             "ARTIFACT_ID": _esc(aid),
@@ -1254,12 +1606,17 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # (<img src="chart.png">) inherit the token and load.
             "RAW_URL": f"/raw/{_esc(aid)}/v/{version}/"
                        f"~{raw_token(aid, version)}/",
-            "UPDATED": _esc(meta.get("updated_at") or ""),
+            "UPDATED": _esc(store.human_ts(meta.get("updated_at"))),
             "VISIBILITY": _esc(meta.get("visibility") or "private"),
             "SANDBOX": IFRAME_SANDBOX,
+            "FAVICON_HREF": _esc(_favicon_href(meta.get("favicon"))),
+            "SESSION_LINK": _session_link(meta),
+            "OWNER": _esc(owner if admin and owner != viewer else ""),
+            "PINNED": "1" if meta.get("pinned") is True else "",
+            "TAGS": _esc(",".join(store._tags_of(meta))),
+            "CAN_MANAGE": "1" if can_manage else "",
         })
-        return HTMLResponse(store.wrap_skeleton(page).decode("utf-8"),
-                            headers=SHELL_HEADERS)
+        return _ui_response(template, page)
 
     @app.get("/a/{artifact_id}/v/{n}", response_class=HTMLResponse)
     def shell_versioned(request: Request, artifact_id: str, n: int):
@@ -1269,10 +1626,36 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def shell_current(request: Request, artifact_id: str):
         return _shell(request, artifact_id)
 
+    @app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+    def favicon(request: Request):
+        """browser-6: every view used to fetch this, get the flat 404 and
+        write a refused-request audit row. The real icon is a data: URI in
+        the page; this just answers the browser's reflex."""
+        viewer_of(request)
+        return Response(status_code=204,
+                        headers={"Cache-Control": "private, max-age=86400"})
+
     # --- raw ----------------------------------------------------------------
 
-    def _raw_response(data: bytes, ctype: str) -> Response:
+    def _raw_response(data: bytes, ctype: str, request: Request | None = None,
+                      ranged: bool = False) -> Response:
         headers = dict(RAW_HEADERS)
+        if ranged:
+            # browser-9: media (<video src="demo.mp4">) needs byte ranges —
+            # WebKit on iOS will not play a source without 206, and no
+            # browser can seek without them. ONE range; anything fancier is
+            # answered with the whole body, which is always correct.
+            headers["Accept-Ranges"] = "bytes"
+            rng = _parse_range(request.headers.get("range") if request
+                               else None, len(data))
+            if rng == "unsatisfiable":
+                headers["Content-Range"] = f"bytes */{len(data)}"
+                return Response(status_code=416, headers=headers)
+            if rng is not None:
+                start, end = rng
+                headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
+                return Response(content=data[start:end + 1], status_code=206,
+                                media_type=ctype, headers=headers)
         return Response(content=data, media_type=ctype, headers=headers)
 
     # GET + HEAD: `curl -I` and any probe that only wants the headers must
@@ -1280,7 +1663,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     @app.api_route("/raw/{artifact_id}/v/{n}/", methods=["GET", "HEAD"])
     def raw_page(request: Request, artifact_id: str, n: int, theme: str = ""):
         viewer = viewer_of(request)
-        meta = visible_meta(artifact_id, viewer)
+        meta = visible_meta(artifact_id, viewer, is_admin(request))
         version = _version_or_current(meta, n, artifact_id)
         try:
             data, _ = store.read_file(_meta_id(meta, artifact_id), version,
@@ -1289,7 +1672,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
         html = store.wrap_skeleton(
-            data, theme=theme if theme in ("dark", "light") else None)
+            data, theme=theme if theme in ("dark", "light") else None,
+            link_guard=True)
         return _raw_response(html, "text/html; charset=utf-8")
 
     # --- raw, under the capability path --------------------------------------
@@ -1308,7 +1692,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def raw_page_tokened(request: Request, artifact_id: str, n: int,
                          token: str, theme: str = ""):
         viewer = viewer_of(request)
-        _token_ok(visible_meta(artifact_id, viewer), artifact_id, n, token)
+        _token_ok(visible_meta(artifact_id, viewer, is_admin(request)),
+                  artifact_id, n, token)
         return raw_page(request, artifact_id, n, theme)
 
     @app.api_route("/raw/{artifact_id}/v/{n}/~{token}/{path:path}",
@@ -1316,7 +1701,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def raw_file_tokened(request: Request, artifact_id: str, n: int,
                          token: str, path: str):
         viewer = viewer_of(request)
-        _token_ok(visible_meta(artifact_id, viewer), artifact_id, n, token)
+        _token_ok(visible_meta(artifact_id, viewer, is_admin(request)),
+                  artifact_id, n, token)
         response = raw_file(request, artifact_id, n, path)
         if path.strip().strip("/") not in ("", "index.html"):
             # A supporting file, not the page: loadable by the sandboxed
@@ -1329,7 +1715,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
                    methods=["GET", "HEAD"])
     def raw_file(request: Request, artifact_id: str, n: int, path: str):
         viewer = viewer_of(request)
-        meta = visible_meta(artifact_id, viewer)
+        meta = visible_meta(artifact_id, viewer, is_admin(request))
         version = _version_or_current(meta, n, artifact_id)
         # [26] `.strip("/")` alone left surrounding whitespace, so
         # /raw/<id>/v/<n>/%20index.html missed this delegation while the
@@ -1345,7 +1731,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
-        return _raw_response(data, ctype)
+        return _raw_response(data, ctype, request, ranged=True)
 
     # --- api ----------------------------------------------------------------
 
@@ -1372,27 +1758,37 @@ def create_app(local_token: str | None = None) -> FastAPI:
             return {"status": "error", "detail": str(e)}
         return {"status": "ok" if ok else "error", "artifacts": count,
                 "auth": "allowlist" if operators else "identified",
+                "admins": len(store.admins()),
+                "retain_days": store.retain_days(),
                 "store": root}
 
     @app.get("/api/artifacts")
-    def api_list(request: Request, limit: int = 25, owner: str = ""):
+    def api_list(request: Request, limit: int = 25, owner: str = "",
+                 offset: int = 0, session: str = "", tag: str = "",
+                 q: str = ""):
         viewer = viewer_of(request)
         # D12: clamp. `limit=0` meant "no limit" in the store, so the cheapest
         # possible query was also the most expensive one to serve.
         limit = max(1, min(int(limit), MAX_LIST_LIMIT))
-        rows = store.list_artifacts(owner=owner or None, viewer=viewer,
-                                    limit=limit)
-        return {"artifacts": rows, "count": len(rows), "viewer": viewer}
+        offset = max(0, int(offset))
+        rows, total = store.list_page(
+            owner=owner or None, viewer=viewer, admin=is_admin(request),
+            limit=limit, offset=offset, session=session or None,
+            tag=tag or None, query=(q or "").strip()[:100] or None)
+        return {"artifacts": rows, "count": len(rows), "total": total,
+                "offset": offset, "viewer": viewer,
+                "admin": is_admin(request)}
 
     @app.get("/api/artifacts/{artifact_id}")
     def api_get(request: Request, artifact_id: str):
         viewer = viewer_of(request)
-        meta = visible_meta(artifact_id, viewer)
+        meta = visible_meta(artifact_id, viewer, is_admin(request))
         aid = _meta_id(meta, artifact_id)
         known = _known_versions(meta, artifact_id)
         entries = _version_entries(meta)
         out = {k: v for k, v in meta.items() if k not in PRIVATE_META_FIELDS}
         out["id"] = aid
+        out["owner"] = store._owner_of(meta) or None
         out["url"] = store.artifact_url(aid)
         out["current"] = _current_version(meta, known)
         # Built from the resolvable list (D23): `dict(v, ...)` on a null and
@@ -1424,8 +1820,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 page, title=body.title, description=body.description,
                 favicon=body.favicon, files=files,
                 artifact_id=body.artifact_id, label=body.label,
-                visibility=(body.visibility or "private"),
-                owner=owner_for(request))
+                visibility=body.visibility,
+                owner=owner_for(request),
+                source_session=body.source_session)
         except store.ArtifactError as e:
             raise _store_error(e)
         meta = store.get_meta(result["id"]) or {}
@@ -1438,13 +1835,19 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # _version_entries (D23) drops non-records and non-numeric `n` and
         # never raises.
         version = _version_entries(meta).get(result["version"], {})
-        request.state.extra = {"sha256": version.get("sha256"),
+        # The row the log exists for (browser-7/correctness-04): WHICH page,
+        # which version, whose — not just a hash to join against the ledger.
+        request.state.extra = {"id": result["id"], "n": result["version"],
+                               "owner": result.get("owner"),
+                               "created": result.get("created"),
+                               "visibility": result.get("visibility"),
+                               "sha256": version.get("sha256"),
                                "bytes": result.get("bytes")}
         return result
 
     @app.patch("/api/artifacts/{artifact_id}")
     def api_patch(request: Request, artifact_id: str, body: PatchBody,
-                  _local: None = Depends(require_local)):
+                  _w: None = Depends(require_manager)):
         try:
             exists = bool(store.get_meta(artifact_id))
         except store.ArtifactError:
@@ -1461,47 +1864,72 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # This check is safe to hoist where a `current` pre-check is not: an
         # enum test on the caller's own input reveals nothing about the
         # artifact, so it cannot become the existence-and-version oracle the
-        # note below describes.
+        # note below describes. Tags are the caller's input too.
         if body.visibility is not None and body.visibility not in store.VISIBILITIES:
             raise HTTPException(
                 status_code=400,
                 detail=f"visibility must be one of "
                        f"{', '.join(store.VISIBILITIES)}")
-        # ORDER IS LOAD-BEARING. These are three independent locked store
-        # writes with no rollback, so a mixed body whose LATER field fails
-        # returns 4xx with the EARLIER field already committed. `set_current`
-        # is the only one that can fail after a successful sibling (a version
-        # that does not exist), so it goes FIRST and `visibility` — the only
-        # WIDENING write — goes LAST. Before this, `{"visibility": "tailnet",
-        # "current": 999}` answered 400 "no such version" having already made
-        # the artifact tailnet-readable, and pointed it at whatever `current`
-        # still was: the caller is told the request failed while the artifact
-        # is now shared at a pointer they were trying to move. Review of
-        # v1.4.0.
+        if body.tags is not None:
+            try:
+                store._check_tags(body.tags)
+            except store.ArtifactError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        admin = is_admin(request)
+        who = owner_for(request)
+        if body.owner is not None and not admin:
+            # Handing a page to someone else decides who may read it: the
+            # rig and admins only. Same flat 404 as any ownership refusal.
+            raise HTTPException(status_code=404, detail="Not Found")
+        # ORDER IS LOAD-BEARING. These are independent locked store writes
+        # with no rollback, so a mixed body whose LATER field fails returns
+        # 4xx with the EARLIER field already committed. `set_current` is the
+        # only one that can fail after a successful sibling (a version that
+        # does not exist), so it goes FIRST; `visibility` — the WIDENING
+        # write — and `owner` — which changes who can read — go LAST. Before
+        # this, `{"visibility": "tailnet", "current": 999}` answered 400 "no
+        # such version" having already made the artifact tailnet-readable.
+        # Review of v1.4.0.
         #
         # NOT fixed by pre-validating `current` in this route: every ownership
         # check lives inside the store mutators, so a check up here would run
         # before _require_owner and answer a non-owner "no such version: 999"
         # instead of the flat 404 — turning D29's deliberately indistinguishable
-        # refusal into an existence-and-version-count oracle. Full atomicity
-        # would need one store-side call holding _artifact_lock once; safe
-        # ordering is what this fix buys, and it is enough to remove the
-        # security-relevant partial.
+        # refusal into an existence-and-version-count oracle.
+        changed: dict = {}
         try:
             meta = None
             if body.current is not None:
                 meta = store.set_current(artifact_id, body.current,
-                                         owner=owner_for(request))
+                                         owner=who, admin=admin)
+                changed["current"] = body.current
             if body.description is not None:
                 meta = store.set_description(artifact_id, body.description,
-                                             owner=owner_for(request))
+                                             owner=who, admin=admin)
+                changed["description"] = True
+            if body.pinned is not None:
+                meta = store.set_pinned(artifact_id, body.pinned,
+                                        owner=who, admin=admin)
+                changed["pinned"] = bool(body.pinned)
+            if body.tags is not None:
+                meta = store.set_tags(artifact_id, body.tags,
+                                      owner=who, admin=admin)
+                changed["tags"] = store._tags_of(meta)
             if body.visibility is not None:
+                before = (store.get_meta(artifact_id) or {}).get("visibility")
                 # Owner-gated in the store (D5/R2): say WHO is asking rather
                 # than letting it guess the rig's first operator.
                 meta = store.set_visibility(artifact_id, body.visibility,
-                                            owner=owner_for(request))
+                                            owner=who, admin=admin)
+                changed["visibility"] = f"{before}->{body.visibility}"
+            if body.owner is not None:
+                meta = store.set_owner(artifact_id, body.owner,
+                                       owner=who, admin=admin)
+                changed["owner"] = meta.get("owner")
         except store.ArtifactError as e:
+            request.state.extra = {"changed": changed} if changed else {}
             raise _store_error(e)
+        request.state.extra = {"changed": changed}
         if meta is None:
             meta = store.get_meta(artifact_id)
         # [4]/[15] The store mutators return the raw _read_meta dict with no id
@@ -1520,19 +1948,37 @@ def create_app(local_token: str | None = None) -> FastAPI:
         return {"id": aid, "visibility": meta.get("visibility"),
                 "description": meta.get("description"),
                 "current": meta.get("current"),
+                "pinned": meta.get("pinned") is True,
+                "tags": store._tags_of(meta),
+                "owner": store._owner_of(meta) or None,
                 "url": store.artifact_url(aid)}
 
     @app.delete("/api/artifacts/{artifact_id}")
     def api_delete(request: Request, artifact_id: str,
-                   _local: None = Depends(require_local)):
+                   _w: None = Depends(require_manager)):
         try:
             # R2, and the loudest of the four: DELETE is irreversible.
-            gone = store.remove(artifact_id, owner=owner_for(request))
+            gone = store.remove(artifact_id, owner=owner_for(request),
+                                admin=is_admin(request))
         except store.ArtifactError as e:
             raise _store_error(e)
         if not gone:
             raise HTTPException(status_code=404, detail="Not Found")
         return {"id": artifact_id, "removed": True}
+
+    @app.delete("/api/artifacts/{artifact_id}/v/{n}")
+    def api_delete_version(request: Request, artifact_id: str, n: int,
+                           _w: None = Depends(require_manager)):
+        """Delete one OLD version (F-A2): room under the 200-version cap
+        without giving up the URL. Never the current one, never the last."""
+        try:
+            meta = store.remove_version(artifact_id, n,
+                                        owner=owner_for(request),
+                                        admin=is_admin(request))
+        except store.ArtifactError as e:
+            raise _store_error(e)
+        return {"id": _meta_id(meta, artifact_id), "removed_version": n,
+                "versions": len(_version_entries(meta))}
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics(request: Request):
@@ -1585,7 +2031,86 @@ def create_app(local_token: str | None = None) -> FastAPI:
             pass
         return "\n".join(lines) + "\n"
 
+    # F-A1 migration: pages stored under the pre-F-A1 "local" owner become
+    # the rig's. Idempotent (a second start finds nothing), per-id locked,
+    # one ledger row per page in the store's index.jsonl, and one summary row
+    # here so the operator reading the audit log sees it happened.
+    try:
+        reowned = store.migrate_legacy_owners()
+    except Exception:                                   # noqa: BLE001
+        reowned = []
+    if reowned:
+        audit({"ts": _now(), "login": RIG_LOGIN, "local": True,
+               "event": "migrate-owner", "from": LOCAL_LOGIN,
+               "to": RIG_LOGIN, "count": len(reowned),
+               "ids": reowned[:50]})
+
+    def sweep() -> list:
+        """One pass of the opt-in retention sweep (F-A2). Audited per page.
+        A no-op unless ARTIFACT_RETAIN_DAYS > 0; never touches pinned."""
+        try:
+            removed = store.sweep_retention()
+        except Exception:                               # noqa: BLE001
+            return []
+        for aid in removed:
+            audit({"ts": _now(), "login": RIG_LOGIN, "local": True,
+                   "method": "SWEEP", "route": "retention", "id": aid,
+                   "outcome": "removed", "retain_days": store.retain_days()})
+        return removed
+
+    app.state.sweep = sweep
     return app
+
+
+RETENTION_INTERVAL_S = 24 * 3600
+
+
+def _start_retention_thread(app) -> threading.Thread:
+    """Daily retention sweep, in the server process (the one long-lived
+    writer). The setting is re-read every pass, so turning it on or off in
+    openbeast.conf takes effect by the next day without a restart."""
+    def loop():
+        while True:
+            try:
+                app.state.sweep()
+            except Exception:                           # noqa: BLE001
+                pass
+            time.sleep(RETENTION_INTERVAL_S)
+    t = threading.Thread(target=loop, name="artifact-retention", daemon=True)
+    t.start()
+    return t
+
+
+def _parse_range(header, size: int):
+    """One `bytes=a-b` / `bytes=a-` / `bytes=-n` range -> (start, end), None
+    for "serve the whole body", or "unsatisfiable". Multi-range and anything
+    malformed is None: answering 200 with everything is always correct."""
+    if not header or size <= 0:
+        return None
+    h = str(header).strip()
+    if not h.lower().startswith("bytes=") or "," in h:
+        return None
+    spec = h[6:].strip()
+    first, sep, last = spec.partition("-")
+    if not sep:
+        return None
+    try:
+        if first == "":
+            n = int(last)
+            if n <= 0:
+                return "unsatisfiable"
+            return (max(0, size - n), size - 1)
+        start = int(first)
+        end = int(last) if last else size - 1
+    except ValueError:
+        return None
+    if start < 0:
+        return None
+    if start >= size:
+        return "unsatisfiable"
+    if end < start:
+        return None
+    return (start, min(end, size - 1))
 
 
 def _uvicorn_config(app, host: str, port: int):
@@ -1633,6 +2158,7 @@ def main() -> None:
               file=sys.stderr)
         raise SystemExit(1)
     app = create_app(local_token=_mint_local_token())
+    _start_retention_thread(app)
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
     uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])

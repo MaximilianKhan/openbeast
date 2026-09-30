@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <title>{{TITLE}} — OpenBeast artifact</title>
+<link rel="icon" href="{{FAVICON_HREF}}">
 <!--
   beast-artifact viewer shell (agents/artifact_server.py renders this).
 
@@ -23,8 +24,14 @@
                      option's value is the URL to navigate to, e.g.
                      value="/a/<id>/v/2" with the current one selected
     RAW_URL          src for the sandboxed frame, e.g. /raw/<id>/v/3/
-    UPDATED          human text, e.g. "2h ago" or "2026-09-14 11:04"
+    UPDATED          human text, e.g. "2026-09-14 11:04 UTC"
     VISIBILITY       exactly "private" or "tailnet" (styled by attribute)
+    FAVICON_HREF     data: URI drawing the page's emoji (the tab icon)
+    SESSION_LINK     server-rendered "made by session" link markup, or empty
+    OWNER            the owner's login, shown to an admin only; may be empty
+    PINNED           "1" or empty
+    TAGS             comma-separated tags (attribute-escaped); may be empty
+    CAN_MANAGE       "1" when this viewer owns or administers the page
 
   The frame's sandbox attribute is a SECURITY CONTROL, not decoration. It must
   stay byte-identical and must never gain allow-same-origin: without it the
@@ -34,10 +41,11 @@
 
   Served under a strict CSP with no external hosts: every style and script here
   is inline, every icon is inline SVG. Do not add a font, CDN, or image URL.
-  The shell's own policy must admit this inline block - script-src 'self'
-  'unsafe-inline', or a sha256 of it - which is a different, looser policy
-  than the one on /raw/, and deliberately so: this page is ours, the page in
-  the frame is not.
+  script-src admits ONLY the sha256 of the inline script block below, hashed
+  by the server from this file at request time. So: keep it ONE bare script
+  element with no attributes, and never put a placeholder inside it (a block that
+  carries one is not hashed and will not run). Data reaches the script
+  through data- attributes on body.
 -->
 <style>
 :root{
@@ -57,6 +65,11 @@
     --focus:#58a6ff; --canvas:#0c0f14; --shadow:0 1px 2px rgba(0,0,0,.45);
   }
 }
+/* An explicit light choice must say so: inside an iframe, the framed page's
+   prefers-color-scheme follows the USED color-scheme of the frame element,
+   so without this a dark device kept every artifact dark under a light shell
+   (browser-2). */
+:root[data-theme="light"]{ color-scheme: light; }
 :root[data-theme="dark"]{
   color-scheme: dark;
   --bg:#0c0f14; --surface:#141922; --surface-2:#1b2230; --border:#232b38;
@@ -151,6 +164,32 @@ select.ver{
        "Liberation Mono",monospace;
   color:var(--muted); overflow:hidden; text-overflow:ellipsis; max-width:20em;
 }
+.sess{color:var(--accent); text-decoration:none; overflow:hidden;
+  text-overflow:ellipsis}
+.sess:empty{display:none}
+.owner:empty,.tags:empty{display:none}
+.owner{border:1px solid var(--border); border-radius:999px; padding:0 7px}
+.tags a{color:var(--muted); text-decoration:none; margin-right:4px}
+.tags a:hover{color:var(--accent)}
+.pin{color:var(--warn)}
+[hidden]{display:none!important}
+
+/* ── manage sheet (owner / admin, with an artifact-scoped device key) ── */
+.sheet{position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:10;
+  display:flex; align-items:flex-end; justify-content:center}
+.sheet-card{background:var(--surface); color:var(--fg); width:100%;
+  max-width:520px; border-radius:14px 14px 0 0; padding:16px 16px 22px;
+  box-shadow:0 -4px 24px rgba(0,0,0,.3); max-height:90vh; overflow:auto}
+.sheet-card h2{margin:0 0 10px; font-size:16px}
+.sheet-card .line{display:flex; gap:8px; flex-wrap:wrap; margin:10px 0}
+.sheet-card input{font:inherit; font-size:14px; color:var(--fg);
+  background:var(--bg); border:1px solid var(--border); border-radius:8px;
+  padding:8px 10px; min-height:38px; flex:1 1 12rem; min-width:0}
+.sheet-card small{display:block; color:var(--muted); font-size:12px}
+.btn.danger{color:#cf222e; border-color:#cf222e}
+.status{min-height:1.3em; font-size:13px; color:var(--muted)}
+.status[data-bad="1"]{color:#cf222e}
+details summary{cursor:pointer; color:var(--muted); font-size:13px}
 
 /* ── the artifact itself ───────────────────────────────────────────── */
 .stage{flex:1 1 auto; min-height:0; background:var(--canvas)}
@@ -169,7 +208,9 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
 }
 </style>
 </head>
-<body>
+<body data-id="{{ARTIFACT_ID}}" data-manage="{{CAN_MANAGE}}"
+      data-pinned="{{PINNED}}" data-tags="{{TAGS}}"
+      data-visibility="{{VISIBILITY}}">
 
 <header class="bar">
   <a class="back" href="/" title="All artifacts" aria-label="All artifacts">
@@ -193,6 +234,14 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
       <span class="label" id="copy-label">Copy link</span>
     </button>
 
+    <button class="btn icon" type="button" id="manage" aria-label="Manage this page"
+            title="Manage: pin, tags, sharing, delete" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/>
+        <circle cx="19" cy="12" r="1.3"/>
+      </svg>
+    </button>
+
     <button class="btn icon" type="button" id="theme" aria-label="Switch theme">
       <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="12" r="4.2"/>
@@ -206,10 +255,14 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
 </header>
 
 <div class="strip">
+  <span class="pin" id="pinmark" title="pinned" hidden>&#9733;</span>
   <span class="badge" data-visibility="{{VISIBILITY}}">{{VISIBILITY}}</span>
   <span class="ver-chip">v{{VERSION}}</span>
   <span class="sep">·</span>
   <span>updated {{UPDATED}}</span>
+  <span class="owner" title="owner">{{OWNER}}</span>
+  <span class="tags" id="tagchips"></span>
+  {{SESSION_LINK}}
   <code class="aid" title="artifact id">{{ARTIFACT_ID}}</code>
 </div>
 
@@ -217,8 +270,48 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
   <iframe id="frame"
           title="{{TITLE}}"
           src="{{RAW_URL}}"
-          sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe>
+          sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"></iframe>
 </main>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-h">
+    <h2 id="sheet-h">Manage this page</h2>
+    <div class="line">
+      <button class="btn" type="button" id="m-pin">Pin</button>
+      <button class="btn" type="button" id="m-vis">Share with tailnet</button>
+    </div>
+    <div class="line">
+      <label class="sr-only" for="m-tags">Tags</label>
+      <input id="m-tags" type="text" autocomplete="off" spellcheck="false"
+             placeholder="tags, comma separated">
+      <button class="btn" type="button" id="m-tags-save">Save tags</button>
+    </div>
+    <details>
+      <summary>Delete this page&hellip;</summary>
+      <p class="status">Deletes EVERY version; the link dies with it. Type
+        the page id to confirm.</p>
+      <div class="line">
+        <label class="sr-only" for="m-del-confirm">Page id</label>
+        <input id="m-del-confirm" type="text" autocomplete="off" spellcheck="false">
+        <button class="btn danger" type="button" id="m-del">Delete forever</button>
+      </div>
+    </details>
+    <details id="m-keybox">
+      <summary>Device key</summary>
+      <div class="line">
+        <label class="sr-only" for="m-key">Device key</label>
+        <input id="m-key" type="password" autocomplete="off" spellcheck="false"
+               placeholder="paste this phone's artifact key">
+        <button class="btn" type="button" id="m-key-save">Save</button>
+      </div>
+      <small>Changes need a key enrolled on the rig with
+        <code>./scripts/clients.sh enroll phone --scope artifact</code>.
+        It stays in this browser only.</small>
+    </details>
+    <p class="status" id="m-status" role="status"></p>
+    <div class="line"><button class="btn" type="button" id="m-close">Close</button></div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -250,6 +343,18 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
 
   var frame = document.getElementById("frame");
   var rawSrc = frame.getAttribute("src");
+  function themed(t) {
+    return rawSrc + (rawSrc.indexOf("?") === -1 ? "?" : "&") + "theme=" + t;
+  }
+  /* A SAVED preference reaches the frame too (browser-2): the framed page
+     follows our color-scheme for its media queries, and a page that keys
+     off data-theme gets the stamp. Only when it differs from the device,
+     so the common case costs no second load. */
+  if ((saved === "dark" || saved === "light") && window.matchMedia) {
+    var device = window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+    if (saved !== device) { frame.setAttribute("src", themed(saved)); }
+  }
 
   themeBtn.addEventListener("click", function () {
     var next = active() === "dark" ? "light" : "dark";
@@ -259,8 +364,124 @@ iframe{display:block; width:100%; height:100%; border:0; background:var(--canvas
     /* The artifact lives in an opaque origin, so it cannot read our stamp and
        we cannot script into it. Re-serving with ?theme= is the only channel;
        it reloads the page, which is why we do it on an explicit toggle only. */
-    frame.setAttribute("src",
-      rawSrc + (rawSrc.indexOf("?") === -1 ? "?" : "&") + "theme=" + next);
+    frame.setAttribute("src", themed(next));
+  });
+
+  /* Tags as links into the gallery's tag filter. */
+  var body = document.body;
+  var chips = document.getElementById("tagchips");
+  var tags = (body.getAttribute("data-tags") || "").split(",")
+    .map(function (t) { return t.trim(); }).filter(Boolean);
+  tags.forEach(function (t) {
+    var a = document.createElement("a");
+    a.href = "/?tag=" + encodeURIComponent(t);
+    a.textContent = "#" + t;
+    chips.appendChild(a);
+  });
+  var pinned = body.getAttribute("data-pinned") === "1";
+  document.getElementById("pinmark").hidden = !pinned;
+
+  /* Manage sheet (F-A2). Writes go to the same API the CLI uses and need an
+     enrolled device key with the `artifact` scope; the server still checks
+     that this viewer owns or administers the page. */
+  var DEVKEY = "openbeast.artifact.devkey";
+  var aidAttr = body.getAttribute("data-id") || "";
+  var manageBtn = document.getElementById("manage");
+  var sheet = document.getElementById("sheet");
+  var status = document.getElementById("m-status");
+  function say(text, bad) {
+    status.textContent = text;
+    if (bad) { status.setAttribute("data-bad", "1"); }
+    else { status.removeAttribute("data-bad"); }
+  }
+  function getKey() {
+    try { return localStorage.getItem(DEVKEY) || ""; } catch (e) { return ""; }
+  }
+  if (body.getAttribute("data-manage") === "1" && aidAttr) {
+    manageBtn.hidden = false;
+  }
+  var vis = body.getAttribute("data-visibility");
+  document.getElementById("m-pin").textContent = pinned ? "Unpin" : "Pin";
+  document.getElementById("m-vis").textContent =
+    vis === "tailnet" ? "Make private" : "Share with tailnet";
+  document.getElementById("m-tags").value = tags.join(", ");
+  function openSheet() {
+    sheet.hidden = false;
+    document.getElementById("m-keybox").open = !getKey();
+    say(getKey() ? "" : "Paste this device's artifact key first.");
+  }
+  manageBtn.addEventListener("click", openSheet);
+  document.getElementById("m-close").addEventListener("click", function () {
+    sheet.hidden = true;
+  });
+  sheet.addEventListener("click", function (e) {
+    if (e.target === sheet) { sheet.hidden = true; }
+  });
+  document.getElementById("m-key-save").addEventListener("click", function () {
+    var v = document.getElementById("m-key").value.trim();
+    try {
+      if (v) { localStorage.setItem(DEVKEY, v); } else { localStorage.removeItem(DEVKEY); }
+    } catch (e) { say("This browser will not store the key.", true); return; }
+    document.getElementById("m-key").value = "";
+    say(v ? "Key saved in this browser." : "Key removed.");
+  });
+  function call(method, payload) {
+    var key = getKey();
+    if (!key) {
+      document.getElementById("m-keybox").open = true;
+      say("Paste this device's artifact key first.", true);
+      return Promise.resolve(null);
+    }
+    var init = { method: method, credentials: "same-origin",
+                 headers: { "Authorization": "Bearer " + key } };
+    if (payload) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(payload);
+    }
+    say("Working…");
+    return fetch("/api/artifacts/" + encodeURIComponent(aidAttr), init)
+      .then(function (r) {
+        if (r.ok) { return r; }
+        if (r.status === 429) { say("Too many changes — wait a minute.", true); }
+        else if (r.status === 400) {
+          r.json().then(function (j) { say(String(j.detail || "Refused."), true); },
+                        function () { say("Refused.", true); });
+        } else {
+          say("Refused: the key is missing, revoked or lacks the artifact " +
+              "scope — or this page is not yours.", true);
+        }
+        return null;
+      }, function () { say("The rig did not answer.", true); return null; });
+  }
+  document.getElementById("m-pin").addEventListener("click", function () {
+    call("PATCH", { pinned: !pinned }).then(function (r) {
+      if (r) { location.reload(); }
+    });
+  });
+  document.getElementById("m-vis").addEventListener("click", function () {
+    var next = vis === "tailnet" ? "private" : "tailnet";
+    if (next === "tailnet" &&
+        !window.confirm("Share this page with everyone on the tailnet?")) { return; }
+    call("PATCH", { visibility: next }).then(function (r) {
+      if (r) { location.reload(); }
+    });
+  });
+  document.getElementById("m-tags-save").addEventListener("click", function () {
+    var list = document.getElementById("m-tags").value.split(",")
+      .map(function (t) { return t.trim().toLowerCase(); }).filter(Boolean);
+    call("PATCH", { tags: list }).then(function (r) {
+      if (r) { location.reload(); }
+    });
+  });
+  document.getElementById("m-del").addEventListener("click", function () {
+    var typed = document.getElementById("m-del-confirm").value.trim();
+    if (typed !== aidAttr) {
+      say("Type the page id exactly (" + aidAttr + ") to delete.", true);
+      return;
+    }
+    call("DELETE").then(function (r) {
+      if (r) { location.href = "/"; }
+    });
   });
 
   /* Version picker. An option's value is either the target URL or the bare
