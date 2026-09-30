@@ -843,6 +843,27 @@ def test_stop_on_a_finished_session_is_a_no_op(rig):
     assert not os.path.exists(sessions.inbox_path(sid))
 
 
+def test_create_session_answers_with_provenance_even_if_the_reaper_is_slow(rig, tmp_path, monkeypatch):
+    """The 201 must not race the reaper thread's provenance merge.
+
+    On a slow box (the CI runner) the reaper merged started_by/device/command
+    after the response, so a client reading the session right away saw no
+    started_by. Freeze the reaper's merge entirely: provenance must still be
+    on the record when the 201 arrives."""
+    real = chat_server.start_reaper
+    monkeypatch.setattr(chat_server, "start_reaper",
+                        lambda sid, proc, annotate=None, *a, **k:
+                        real(sid, proc, None, *a, **k))
+    marker = tmp_path / "ran.txt"
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "title": "slow-reaper",
+        "cmd": f"sleep 0.3; echo x > {marker}", "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    rec = sessions.get(r.json()["session"]["id"])
+    assert rec["meta"].get("started_by") and rec["meta"].get("command"), rec["meta"]
+    assert marker_wait(marker)
+
+
 def test_create_session_spawns_a_job_and_registers_it(rig, tmp_path):
     """The whole point of the feature, end to end — and NOBODY hand-writes the
     terminal state.

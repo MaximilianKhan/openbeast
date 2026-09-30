@@ -3357,6 +3357,17 @@ def create_app() -> FastAPI:
                        and read_record_raw(session_id) is None
                        and proc.poll() is None):
                     await asyncio.sleep(0.05)
+                # Our provenance (started_by / device / command, the title)
+                # is merged by the reaper thread, which can land AFTER this
+                # 201 on a slow box: a client reading the session right away
+                # saw it without started_by (reproduced on the CI runner).
+                # Merge it here too, before answering. touch() merges, so the
+                # reaper's second merge is harmless.
+                if read_record_raw(session_id) is not None:
+                    await asyncio.to_thread(
+                        annotate_when_registered, session_id, meta,
+                        timeout=0.0, proc=proc,
+                        fields={"title": plan["given_title"]})
                 rec = sessions.get(session_id) or {
                     "id": session_id, "kind": kind, "title": title,
                     "pid": proc.pid, "pgid": proc.pid, "state": "running",
