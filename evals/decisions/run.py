@@ -299,11 +299,45 @@ def concat(by_split: dict[str, list[dict]], split_expr: str) -> list[dict]:
     return out
 
 
+# A load report whose calls failed more often than this measured the survivors,
+# not the engine: loadgen's p95 is computed over SUCCESSFUL calls only.
+LOAD_MAX_ERROR_RATE = 0.01
+
+
+def load_report_problem(load: dict, decision: str, engine: str, dhash: str) -> str | None:
+    """Why a loadgen report cannot vouch for THIS gate subject, or None
+    (B-instinct-04: a foreign or mostly-failing report used to PASS)."""
+    if not isinstance(load, dict):
+        return "load report is not an object"
+    if load.get("decision") != decision or load.get("engine") != engine:
+        return (f"load report is for {load.get('decision')}/{load.get('engine')}, "
+                f"not {decision}/{engine}")
+    if load.get("decision_hash") is None:
+        # loadgen stamps the hash; an unstamped report predates that and may
+        # have been measured on other weights under the same engine name.
+        return "load report has no decision_hash (re-run loadgen)"
+    if load.get("decision_hash") != dhash:
+        return "load report was measured under another decision_hash"
+    pts = [p for p in load.get("points") or [] if isinstance(p, dict)]
+    intended = load.get("intended_qps")
+    at = [p for p in pts if p.get("qps") == intended] or pts
+    sent = sum(int(p.get("sent") or 0) for p in at)
+    errors = sum(int(p.get("errors") or 0) for p in at)
+    if sent <= 0:
+        return "load report sent no calls"
+    if errors / sent > LOAD_MAX_ERROR_RATE:
+        return (f"load report error rate {errors}/{sent} > {LOAD_MAX_ERROR_RATE:.0%} "
+                "(p95 covers only the calls that succeeded)")
+    return None
+
+
 def metric_value(spec: DecisionSpec, crit, rows: list[dict], thresholds, calibrated,
                  comparisons: dict, load: dict | None, subject_adapter: str):
     """(value, ci95 or None, note)."""
     if crit.metric == "latency_p95_ms":
-        if not load or "p95_ms" not in load:
+        if load and load.get("_invalid"):
+            return None, None, load["_invalid"]
+        if not load or load.get("p95_ms") is None:
             return None, None, "no loadgen report"
         return float(load["p95_ms"]), None, None
     if crit.metric == "mcnemar_p_vs":
@@ -462,6 +496,9 @@ async def main_async(a) -> int:
             lp = Path(a.load_report)
             load = json.loads(lp.read_text())
             load_meta = {"path": str(lp), "sha256": sha256_file(lp)}
+            why = load_report_problem(load, spec.id, a.engine, dhash)
+            if why:
+                load, load_meta["refused"] = {"_invalid": why}, why
         # score splits the gate needs that were not evaluated above
         for crit in spec.gate.criteria:
             for s in crit.split.split("+"):

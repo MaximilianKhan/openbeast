@@ -8,10 +8,14 @@ adapter, probe and fault path can be tested with no GPU and no real model
 llama.cpp:  GET /health  GET /props  POST /tokenize {content, add_special, with_pieces}
             POST /completion {prompt, n_predict, n_probs, temperature, ...}
               -> completion_probabilities[0].top_logprobs[{id, token, logprob, bytes}]
+            GET /slots -> [{id, is_processing}]   (the primary's busy check)
 SGLang:     GET /v1/models  POST /tokenize {text, add_special_tokens} -> {tokens:[int]}
             POST /v1/score {query, items, label_token_ids, apply_softmax, temperature}
               -> {scores: [[p...]], object: "scoring", model, usage}
               apply_softmax:false returns exp(full-vocab logprob) per label (F1)
+Open-Jev:   GET /v1/identity (what scripts/instinct/openjev_gate.py adds)
+            POST /v1/systemone {state, questions: {id: {type: noul|choice, ...}}}
+              -> {answers: {id: {type, noul: p} | {type, probabilities: {..}}}}
 
 Tokenizer: whitespace/punctuation pieces with a leading-space convention
 (" yes"), newline runs as their own piece, ChatML/think specials as single
@@ -33,7 +37,9 @@ Faults (CLI flags, combinable; or per request via `X-Stub-Fault: a,b=1`):
   --nondeterministic S gaussian noise (sigma S) on every logit
   --mis-skew D         /v1/score with >1 item: shift p(yes) by D
   --squatter           /props and /v1/models report a different model id
-Every request is appended to --call-log (JSONL) when given.
+  --busy               /slots reports slot 0 is_processing (a user owns the primary)
+Every request is appended to --call-log (JSONL) when given, with the
+Authorization header it carried (this is a test stub: tests assert on it).
 """
 from __future__ import annotations
 
@@ -71,6 +77,9 @@ CLASS_LEX = {
     "E": {"client_class=batch": 3.0, "batch": 1.5},
 }
 FILLERS = ["The", " I", " Sure", " It", ".", " Maybe"]
+OPENJEV_IDENTITY = {"model": MODEL_ID, "base_revision": "stub-base",
+                    "adapter_revision": "stub-adapter", "head_sha256": "stub-head",
+                    "loader_digest": "sha256:" + "0" * 64}
 
 
 def parse_faults(spec: str) -> dict:
@@ -171,10 +180,18 @@ class Stub:
             dist[fl] = dist.get(fl, 0.0) + rest * w
         return dist
 
-    def log(self, path: str, body, fault: dict) -> None:
+    def p_yes(self, text: str, f: dict) -> float:
+        z = -2.0 + sum(w for k, w in YES_LEX.items() if k in text.lower())
+        if f.get("invert"):
+            z = -z
+        if f.get("garbage"):
+            z = 0.0
+        return 1.0 / (1.0 + math.exp(-z))
+
+    def log(self, path: str, body, fault: dict, auth: str | None = None) -> None:
         if not self.call_log:
             return
-        row = json.dumps({"ts": time.time(), "path": path, "body": body,
+        row = json.dumps({"ts": time.time(), "path": path, "body": body, "auth": auth,
                           "fault": {k: v for k, v in fault.items()}}, sort_keys=True)
         with self.lock:
             with open(self.call_log, "a") as fh:
@@ -206,7 +223,7 @@ def make_handler(stub: Stub):
                 pass  # the client gave up (a timeout test) — not an error here
 
         def _pre(self, f: dict, body=None) -> bool:
-            stub.log(self.path, body, f)
+            stub.log(self.path, body, f, self.headers.get("Authorization"))
             if f.get("slow"):
                 time.sleep(float(f["slow"]) / 1000.0)
             rate = f.get("error-rate")
@@ -230,6 +247,10 @@ def make_handler(stub: Stub):
                                         "total_slots": 2})
             if self.path == "/v1/models":
                 return self._send(200, {"object": "list", "data": [{"id": model}]})
+            if self.path == "/slots":
+                return self._send(200, [{"id": 0, "is_processing": bool(f.get("busy"))}])
+            if self.path == "/v1/identity":
+                return self._send(200, dict(OPENJEV_IDENTITY, model=model))
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -273,6 +294,26 @@ def make_handler(stub: Stub):
                 return self._send(200, {
                     "content": first["token"], "model": MODEL_ID, "stop": True,
                     "completion_probabilities": [dict(first, top_logprobs=top)]})
+            if self.path == "/v1/systemone":
+                state, qs = body.get("state"), body.get("questions")
+                if not isinstance(state, str) or not isinstance(qs, dict) or not qs:
+                    return self._send(422, {"error": "state/questions"})
+                answers = {}
+                for qid, q in qs.items():
+                    if q.get("type") == "noul":
+                        answers[qid] = {"type": "noul", "noul": stub.p_yes(state, f)}
+                    elif q.get("type") == "choice" and isinstance(q.get("criteria"), dict):
+                        low = state.lower()
+                        z = {k: sum(w for kw, w in CLASS_LEX.get(str(v).strip()[:1], {}).items()
+                                    if kw in low) for k, v in q["criteria"].items()}
+                        m = max(z.values())
+                        e = {k: math.exp(v - m) for k, v in z.items()}
+                        tot = sum(e.values())
+                        answers[qid] = {"type": "choice",
+                                        "probabilities": {k: v / tot for k, v in e.items()}}
+                    else:
+                        return self._send(422, {"error": "question type"})
+                return self._send(200, {"answers": answers})
             if self.path == "/v1/score":
                 query, items = body.get("query", ""), body.get("items")
                 ids = body.get("label_token_ids")
@@ -322,12 +363,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--nondeterministic", type=float)
     ap.add_argument("--mis-skew", type=float)
     ap.add_argument("--squatter", action="store_true")
+    ap.add_argument("--busy", action="store_true")
     return ap
 
 
 def faults_from_args(a) -> dict:
     f: dict = {}
-    for k in ("garbage", "invert", "low_mass", "squatter"):
+    for k in ("garbage", "invert", "low_mass", "squatter", "busy"):
         if getattr(a, k):
             f[k.replace("_", "-")] = True
     for k in ("slow", "error_rate", "drop_label", "multi_token_label", "nondeterministic",

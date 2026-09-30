@@ -4,6 +4,13 @@
 # never cause a spawn (I4). A confident, enforced "inline" on a hint-bearing
 # turn lets agents/router.py skip the generative classify on the primary's
 # single MTP slot. Everything else runs today's path.
+#
+# Engines (plan revision 2026-09-30): the decision runs on a FULL model. The
+# rig's own 27B (rig-27b) scores it at the answer boundary, SUBSTITUTING the
+# classify it would otherwise generate on that same model — so only hinted
+# turns (baseline "hint") may reach it. The 0.6B CPU scorer is the fallback
+# when the primary is busy or skipped; linear is the McNemar baseline; rules
+# is today's behaviour. Open-Jev-27B goes first once its host exists.
 id          = "router.spawn_intent"
 version     = 1
 owner       = "agents/router.py"
@@ -33,7 +40,7 @@ max_tokens = 1400
 truncate   = "head_tail:200:1200"   # delegation phrasing often sits at the END (sidecar plan review)
 
 [engines]
-chain = ["linear", "rig-cpu", "rules"]
+chain = ["rig-27b", "rig-cpu", "linear", "rules"]
 
 [rules]
 set = "router_hints"                # a copy of router._HINTS, drift-tested
@@ -46,6 +53,8 @@ min_label_mass   = 0.50
 cost             = { "spawn>inline" = 20.0, "inline>spawn" = 1.0 }  # skipping a true spawn is the costly error
 hard_constraints = ["act_errors[inline]@test+ood+adversarial == 0"]
 deadline_ms      = 600
+primary_use      = "substitute"      # rig-27b replaces this call, never adds one:
+substitutes      = "agents/router.py:_classify"
 
 [privacy]
 log_inputs = "hash"

@@ -27,13 +27,14 @@ from . import calibrate
 from .config import REPO_ROOT, ServiceConfig, effective_chain
 from .core import (MODE_ORDER, Answer, build_answer, canary_bucket, decide_action, is_enforced,
                    mask_mechanical, min_mode)
-from .engines import Engine, EngineError, LockResult, ProbeResult, ScoreReq, build_engine
+from .engines import (Engine, EngineBusy, EngineError, LockResult, ProbeResult, ScoreReq,
+                      build_engine)
 from .engines.rules import mechanical_label
 from .ledger import Ledger, excerpt, input_sha256
 from .lifecycle import (AutoDemoter, Demotions, LifecycleInputs, effective_mode,
                         gate_record_ok, git_committed)
 from .render import InputError, validate_inputs
-from .spec import DecisionSpec, decision_hash, load_registry
+from .spec import SUBSTITUTE_BASELINE, DecisionSpec, decision_hash, load_registry
 
 SERVICE_VERSION = "0.1.0"
 CONTRACTS = ["instinct/1", "instinct-route/1"]
@@ -44,7 +45,15 @@ FALLBACK_REASONS = (
     "no_gate", "engine_unavailable", "engine_timeout", "deadline", "overload",
     "label_lock_failed", "labels_truncated", "low_label_mass", "below_threshold",
     "not_act_label", "registry_invalid", "conformance_failed", "demoted", "eval_context",
-    "ood_input")
+    "ood_input", "engine_busy", "primary_async_only", "primary_not_substitute")
+
+# The caller-side ceiling at or above which a verdict may be acted on (awaited).
+_ACTABLE = MODE_ORDER["canary"]
+# A probe deferred because the primary's slot was busy retries this soon,
+# not a full probe_interval_s later: on a rig whose agents keep the -np 1
+# slot busy, a 300 s cadence could leave the 27B unprobed indefinitely and
+# the 0.6B fallback deciding de facto.
+PROBE_BUSY_RETRY_S = 15
 
 
 class UnknownDecision(LookupError):
@@ -89,6 +98,15 @@ def new_trace_id() -> str:
     return "ins_" + uuid.uuid4().hex[:20]
 
 
+@dataclass(frozen=True)
+class View:
+    specs: dict[str, DecisionSpec]
+    chains: dict[str, list[str]]
+    hashes: dict[tuple[str, str], str | None]
+    calib: dict[tuple[str, str], dict | None]
+    gates: dict[tuple[str, str], bool]
+
+
 class Instinct:
     def __init__(self, cfg: ServiceConfig, *, engine_ctx: dict | None = None,
                  clock=time.monotonic, wall=time.time, repo_root: Path = REPO_ROOT):
@@ -97,7 +115,7 @@ class Instinct:
         self.repo_root = Path(repo_root)
         self.ledger = Ledger(cfg.ledger_dir, retention_days=cfg.retention_days, clock=wall)
         self.demotions = Demotions(Path(cfg.state_dir) / "demoted.json")
-        self.autodemoter = AutoDemoter(self.demotions)
+        self.autodemoter = AutoDemoter(self.demotions, hashes_for=self.hashes_of)
         ctx = dict(engine_ctx or {})
         ctx.setdefault("records_dir", cfg.records_dir)
         self.engines: dict[str, Engine] = {n: build_engine(b, **ctx)
@@ -110,14 +128,24 @@ class Instinct:
         self.calib: dict[tuple[str, str], dict | None] = {}
         self.gates: dict[tuple[str, str], bool] = {}
         self._sem: asyncio.Semaphore | None = None
+        self._shadow_sem: asyncio.Semaphore | None = None
         self.shadow_inflight = 0
+        self._bg: set[asyncio.Task] = set()   # shadow walks answered early
+        self.probe_deferred = False
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
         await self.reload()
         await self.probe_all()
 
+    async def drain(self) -> None:
+        """Wait for shadow walks that answered their caller early (each is
+        bounded by its decision's deadline)."""
+        while self._bg:
+            await asyncio.gather(*list(self._bg), return_exceptions=True)
+
     async def aclose(self) -> None:
+        await self.drain()
         for e in self.engines.values():
             await e.aclose()
 
@@ -133,12 +161,14 @@ class Instinct:
                 # engine left is invalid. Both are visible on /decisions.
                 chain = [e for e in chain if e in self.engines]
                 errors.setdefault(f"{did}#engines", json.dumps(bad, sort_keys=True))
-            for e in chain:
+            for e in list(chain):
                 b = self.cfg.engines[e]
-                if b.allow_primary and not spec.policy.async_only:
+                if b.allow_primary and spec.policy.primary_use not in ("async", "substitute"):
                     chain = [x for x in chain if x != e]
-                    errors.setdefault(f"{did}#engines", f"{e} is the primary; decision "
-                                      "is not async_only")
+                    why = (f"{e} is the primary; the decision's primary_use is none "
+                           "(want async|substitute)")
+                    k = f"{did}#engines"
+                    errors[k] = f"{errors[k]}; {why}" if k in errors else why
             if not chain:
                 errors[did] = "no usable engine in chain"
                 specs.pop(did)
@@ -146,6 +176,11 @@ class Instinct:
             chains[did] = chain
         self.specs, self.spec_errors, self.chains = specs, errors, chains
         self.demotions.load()
+        for did in self.demotions.cleared:
+            # undemoted: a fresh window, or the next call re-demotes it
+            self.autodemoter.reset(did)
+        if self.demotions.cleared:
+            self.demotions.save_auto()
         for name, eng in self.engines.items():
             relevant = [s for s in specs.values() if name in chains.get(s.id, [])]
             locks = await self._attach(eng, relevant) if relevant else {}
@@ -160,13 +195,24 @@ class Instinct:
 
     def _expire_auto_demotions(self, before: dict) -> None:
         """An auto-demotion survives a reload (any `demote` of another decision
-        sends SIGHUP) unless what it judged changed: a decision whose engine
-        hashes differ is a new thing and starts un-demoted."""
+        sends SIGHUP) AND a restart (it is persisted) unless what it judged
+        changed: a decision whose chain or engine hashes differ is a new thing
+        and starts un-demoted. A hash that is unknown right now (the engine is
+        down, so its label lock failed) is not a change — that is exactly the
+        flapping engine the demotion is about."""
         for did in list(self.demotions.auto):
-            old = {k: v for k, v in before.items() if k[0] == did}
-            new = {k: v for k, v in self.hashes.items() if k[0] == did}
-            if old != new:
-                self.demotions.auto.pop(did, None)
+            stored = self.demotions.auto[did].get("hashes")
+            if not isinstance(stored, dict):
+                # legacy / in-memory record: compare with the pre-reload maps
+                stored = {k[1]: v for k, v in before.items() if k[0] == did} or None
+            if stored is None:
+                continue
+            cur = self.hashes_of(did)
+            changed = set(cur) != set(stored) or any(
+                cur[n] is not None and stored.get(n) is not None and cur[n] != stored[n]
+                for n in cur)
+            if changed:
+                self.demotions.drop_auto(did)
                 self.autodemoter.reset(did)
 
     @staticmethod
@@ -207,16 +253,18 @@ class Instinct:
         return decision_hash(spec, eng.hash_identity(), None)
 
     def refresh_records(self) -> None:
-        self.hashes.clear()
-        self.calib.clear()
-        self.gates.clear()
+        # NEW maps, never cleared in place: a decide() in flight holds a
+        # snapshot of the old ones (B-instinct-05) and must finish on them.
+        hashes: dict[tuple[str, str], str | None] = {}
+        calib: dict[tuple[str, str], dict | None] = {}
+        gates: dict[tuple[str, str], bool] = {}
         for did, chain in self.chains.items():
             for name in chain:
                 h = self.engine_hash(did, name)
-                self.hashes[(did, name)] = h
+                hashes[(did, name)] = h
                 if h is None:
-                    self.calib[(did, name)] = None
-                    self.gates[(did, name)] = False
+                    calib[(did, name)] = None
+                    gates[(did, name)] = False
                     continue
                 cpath = calibrate.calib_path(self.cfg.records_dir, did, h)
                 crec = calibrate.load_record(cpath, h)
@@ -230,16 +278,32 @@ class Instinct:
                             crec = None
                     if crec is not None and not isinstance(crec.get("T"), (int, float)):
                         crec = None
-                self.calib[(did, name)] = crec
+                calib[(did, name)] = crec
                 gpath = calibrate.gate_path(self.cfg.records_dir, did, h)
                 grec = calibrate.load_record(gpath, h)
                 ok = gate_record_ok(grec, h, crec)
                 if ok and self.cfg.require_committed_gate:
                     ok = git_committed(gpath, self.repo_root)
-                self.gates[(did, name)] = ok
+                gates[(did, name)] = ok
+        self.hashes, self.calib, self.gates = hashes, calib, gates
+
+    def view(self) -> "View":
+        """The registry + records a single call runs on, captured once: a
+        SIGHUP reload replaces these maps and never mutates them, so a call in
+        flight finishes on the registry it started with (one ledger row, no
+        KeyError when its decision vanished — B-instinct-05)."""
+        return View(self.specs, self.chains, self.hashes, self.calib, self.gates)
+
+    def hashes_of(self, did: str) -> dict[str, str | None]:
+        return {name: h for (d, name), h in self.hashes.items() if d == did}
+
+    def next_probe_delay(self) -> float:
+        interval = self.cfg.probe_interval_s
+        return min(interval, PROBE_BUSY_RETRY_S) if self.probe_deferred else interval
 
     async def probe_all(self) -> None:
         changed = False
+        self.probe_deferred = False
         for name, eng in self.engines.items():
             relevant = [s for s in self.specs.values() if name in self.chains.get(s.id, [])]
             if not eng.caps.needs_render:
@@ -250,6 +314,14 @@ class Instinct:
                 continue
             try:
                 res = await eng.probe(relevant)
+            except EngineBusy:
+                # The engine is the primary and its slot is serving a user: the
+                # probe is DEFERRED, never allowed to queue in front of them.
+                # State is untouched; a probe that stays deferred goes stale
+                # and the engine drops to shadow (fail safe). The loop retries
+                # it in PROBE_BUSY_RETRY_S, not probe_interval_s.
+                self.probe_deferred = True
+                continue
             except Exception as exc:  # a probe must never take the service down
                 res = ProbeResult(False, {}, f"probe crashed: {exc.__class__.__name__}")
             st = self.states[name]
@@ -266,7 +338,15 @@ class Instinct:
             self.refresh_records()
 
     # ---------------------------------------------------------------- helpers
-    def _sem_get(self) -> asyncio.Semaphore:
+    def _sem_get(self, shadow: bool = False) -> asyncio.Semaphore:
+        """Two pools (A-instinct-6): calls a caller may ACT on get
+        max_concurrency slots of their own; shadow work gets a separate,
+        smaller pool, so queued shadow work can never sit in front of an
+        enforce-target call and eat its deadline."""
+        if shadow:
+            if self._shadow_sem is None:
+                self._shadow_sem = asyncio.Semaphore(max(1, self.cfg.max_concurrency // 2))
+            return self._shadow_sem
         if self._sem is None:
             self._sem = asyncio.Semaphore(max(1, self.cfg.max_concurrency))
         return self._sem
@@ -283,12 +363,14 @@ class Instinct:
         # startup probe must not vouch for an engine forever).
         return interval > 0 and (self.clock() - st.last_probe) <= 2 * interval
 
-    def lifecycle(self, did: str, name: str, ceiling: str) -> tuple[str, str | None]:
-        spec, eng = self.specs[did], self.engines[name]
+    def lifecycle(self, did: str, name: str, ceiling: str,
+                  view: View | None = None) -> tuple[str, str | None]:
+        v = view or self.view()
+        spec, eng = v.specs[did], self.engines[name]
         return effective_mode(LifecycleInputs(
             spec_mode=spec.policy.mode,
-            gate_ok=self.gates.get((did, name), False),
-            calib_ok=self.calib.get((did, name)) is not None,
+            gate_ok=v.gates.get((did, name), False),
+            calib_ok=v.calib.get((did, name)) is not None,
             engine_healthy=self.states[name].healthy,
             probe_fresh=self._probe_fresh(name),
             probabilistic=eng.caps.probs,
@@ -308,9 +390,10 @@ class Instinct:
         return th
 
     # ---------------------------------------------------------------- cascade
-    async def _evaluate(self, spec: DecisionSpec, name: str, res, items_in) -> Outcome:
+    async def _evaluate(self, spec: DecisionSpec, name: str, res, items_in,
+                        view: View | None = None) -> Outcome:
         eng = self.engines[name]
-        crec = self.calib.get((spec.id, name))
+        crec = (view or self.view()).calib.get((spec.id, name))
         calibrated = bool(crec) and eng.caps.probs
         T = float(crec["T"]) if calibrated else None
         thresholds = self._thresholds(spec.id, name, crec) if calibrated else None
@@ -342,7 +425,9 @@ class Instinct:
                               "action": action})
             if reason in ("uncalibrated", "labels_truncated", "low_label_mass", "ood_input"):
                 reasons.append(reason)
-        if any(i["p"] is None for i in out_items):
+        if not calibrated or any(i["p"] is None for i in out_items):
+            # An uncalibrated rank never "acts", whatever its items' labels
+            # (all-no_fit rows used to aggregate to act — B-instinct-08).
             action, reason = "abstain", "uncalibrated"
         elif reasons:
             action, reason = "abstain", reasons[0]
@@ -350,34 +435,75 @@ class Instinct:
             action, reason = "act", None
         return Outcome(name, None, action, reason, out_items, res.exec_used, res.engine_ms)
 
+    def _primary_skip(self, spec: DecisionSpec, eng: Engine, ceiling: str,
+                      baseline: Any) -> str | None:
+        """Runtime half of the primary rule (the loader only checks the chain):
+        a primary binding may score an `async` decision only when nobody acts
+        on the verdict, and a `substitute` decision only on a request whose
+        caller declares it would make the substituted primary call anyway."""
+        if not eng.binding.allow_primary:
+            return None
+        use = spec.policy.primary_use
+        if use == "async":
+            return "primary_async_only" if MODE_ORDER[ceiling] >= _ACTABLE else None
+        if use == "substitute":
+            return None if baseline == SUBSTITUTE_BASELINE else "primary_not_substitute"
+        return "primary_not_substitute"   # "none" never reaches a chain; belt and braces
+
     async def _cascade(self, spec: DecisionSpec, inputs: dict, items_in: list[dict] | None,
-                       deadline_at: float, ceiling: str = "enforce"
+                       deadline_at: float, ceiling: str = "enforce", *,
+                       view: View | None = None, baseline: Any = None,
+                       released: asyncio.Event | None = None,
+                       progress: dict | None = None,
                        ) -> tuple[Outcome | None, list[dict], str | None]:
         """Walk the chain under the deadline (plan §5.5).
 
-        The walk stops at the first `act` whose engine's lifecycle reaches the
+        The answer is the first `act` whose engine's lifecycle reaches the
         request's target mode (min of spec mode and ceiling): an `act` from an
         engine that could only ever shadow (no gate yet — `linear` as the
         McNemar baseline, typically) must not hide a later engine that can
         enforce. With no such act, the answer is the first act (it is what
-        the service WOULD have done), else the last result from a
-        probabilistic engine, else `rules` — so shadow rows carry the model's
-        distribution, not rules' one-hot. Every attempted engine's own view
-        (label, probabilities, label_mass) is kept in its cascade entry.
+        the service WOULD have done), else the FIRST result from a
+        probabilistic engine — chain order is tier order, so a row nobody
+        acted on is credited to the highest tier that answered (the 27B, not
+        its 0.6B fallback or `linear`; R-instinct-2) — else `rules`, so
+        shadow rows carry the model's distribution, not rules' one-hot.
+        Every attempted engine's own view (label, probabilities, label_mass)
+        is kept in its cascade entry.
+
+        When the target can act (canary/enforce) the walk stops at that
+        answer. Below that (shadow/off) nothing is acted on, so the walk goes
+        on through the whole chain under the deadline: shadow data must
+        measure EVERY engine, including on the rows an earlier engine was
+        confident about (A-instinct-2).
+
+        `released`, when given, is set as soon as every engine bound to the
+        PRIMARY (allow_primary) has been attempted — the moment the walk no
+        longer touches the caller's own model — and `progress` then holds the
+        live `cascade`/`results` lists, so decide() can answer a shadow
+        caller early and finish the walk in the background (R-instinct-1).
         """
+        v = view or self.view()
         cascade: list[dict] = []
         final: Outcome | None = None
         results: list[Outcome] = []
         target = min_mode(spec.policy.mode, ceiling)
+        walk_all = MODE_ORDER[target] < _ACTABLE
         last_err: str | None = None
-        chain = list(self.chains[spec.id])
+        chain = list(v.chains.get(spec.id, []))
         if spec.mechanical and mechanical_label(spec, inputs):
             # Mechanical facts are computed, never judged: only rules answer.
             chain = [e for e in chain if self.engines[e].adapter == "rules"]
             if not chain and "rules" in self.engines:
                 chain = ["rules"]
         texts = [it["text"] for it in items_in] if items_in is not None else None
-        for name in chain:
+        if progress is not None:
+            progress["cascade"], progress["results"] = cascade, results
+        last_primary = max((i for i, n in enumerate(chain)
+                            if self.engines[n].binding.allow_primary), default=-1)
+        for i, name in enumerate(chain):
+            if released is not None and i > last_primary:
+                released.set()
             eng, st = self.engines[name], self.states[name]
             is_rules = eng.adapter == "rules"
             remaining_ms = (deadline_at - self.clock()) * 1000
@@ -393,6 +519,12 @@ class Instinct:
                                 "reason": "engine_unavailable", "ms": 0.0})
                 last_err = last_err or "engine_unavailable"
                 continue
+            why = self._primary_skip(spec, eng, ceiling, baseline)
+            if why:
+                cascade.append({"engine": name, "action": "skipped", "reason": why,
+                                "ms": 0.0})
+                last_err = last_err or why
+                continue
             if not is_rules and remaining_ms < eng.p95_ms():
                 cascade.append({"engine": name, "action": "skipped", "reason": "deadline",
                                 "ms": 0.0})
@@ -405,7 +537,15 @@ class Instinct:
                                label_ids=lk.ids if lk else None,
                                deadline_s=max(0.001, remaining_ms / 1000))
                 res = await asyncio.wait_for(eng.score(req), timeout=timeout)
-                out = await self._evaluate(spec, name, res, items_in)
+                out = await self._evaluate(spec, name, res, items_in, v)
+            except EngineBusy:
+                # The primary's slot is serving someone: skip in ~1 ms, never
+                # queue behind them. Not an engine fault (no auto-demotion,
+                # no latency sample), just "not now".
+                cascade.append({"engine": name, "action": "skipped", "reason": "engine_busy",
+                                "ms": round((self.clock() - t0) * 1000, 3)})
+                last_err = last_err or "engine_busy"
+                continue
             except asyncio.TimeoutError:
                 ms = (self.clock() - t0) * 1000
                 eng.record_latency(ms)
@@ -428,7 +568,10 @@ class Instinct:
                 last_err = "engine_unavailable"
                 continue
             entry = {"engine": name, "action": out.action, "reason": out.reason,
-                     "ms": round(out.engine_ms, 3)}
+                     "ms": round(out.engine_ms, 3),
+                     # which exact thing scored this row: the shadow soak a
+                     # promotion needs is counted per engine AND hash
+                     "hash": (v.hashes.get((spec.id, name)) or "")[:16] or None}
             if out.answer is not None and out.answer.confidence:
                 # per-engine view for shadow analysis (the final answer may be
                 # a later engine's)
@@ -441,16 +584,28 @@ class Instinct:
             cascade.append(entry)
             results.append(out)
             if out.action == "act":
-                mode, _ = self.lifecycle(spec.id, name, ceiling)
+                mode, _ = self.lifecycle(spec.id, name, ceiling, v)
                 entry["mode"] = mode
-                if MODE_ORDER[mode] >= MODE_ORDER[target]:
+                if final is None and MODE_ORDER[mode] >= MODE_ORDER[target]:
                     final = out
-                    break
-        if final is None and results:
-            acts = [o for o in results if o.action == "act"]
-            probs = [o for o in results if self.engines[o.engine].caps.probs]
-            final = acts[0] if acts else (probs[-1] if probs else results[-1])
+                    if not walk_all:
+                        break
+        if released is not None:
+            released.set()
+        if final is None:
+            final = self._pick_final(results)
         return final, cascade, last_err
+
+    def _pick_final(self, results: list[Outcome]) -> Outcome | None:
+        """No act reached the target: the first act, else the FIRST
+        probabilistic result (chain order = tier order), else the last."""
+        if not results:
+            return None
+        acts = [o for o in results if o.action == "act"]
+        if acts:
+            return acts[0]
+        probs = [o for o in results if self.engines[o.engine].caps.probs]
+        return probs[0] if probs else results[-1]
 
     # ----------------------------------------------------------------- decide
     def _validate_items(self, spec: DecisionSpec, items: Any) -> list[dict] | None:
@@ -477,14 +632,16 @@ class Instinct:
     async def decide(self, req: dict[str, Any]) -> dict[str, Any]:
         t_start = self.clock()
         did = req["decision"]
-        spec = self.specs.get(did)
+        v = self.view()
+        spec = v.specs.get(did)
         trace_id = new_trace_id()
         ceiling = req.get("ceiling") or "enforce"
         context = req.get("context") or {}
         if spec is None:
             if did in self.spec_errors:
                 return self._respond(None, req, trace_id, t_start, outcome=None, cascade=[],
-                                     mode=min_mode("shadow", ceiling), reason="registry_invalid")
+                                     mode=min_mode("shadow", ceiling), reason="registry_invalid",
+                                     view=v)
             raise UnknownDecision(did)
         inputs = validate_inputs(spec, req.get("inputs"))
         items_in = self._validate_items(spec, req.get("items"))
@@ -492,7 +649,7 @@ class Instinct:
                           spec.policy.deadline_ms)
         target = min_mode(spec.policy.mode, ceiling)
         common = dict(spec=spec, req=req, trace_id=trace_id, t_start=t_start, inputs=inputs,
-                      items_in=items_in, deadline_ms=deadline_ms)
+                      items_in=items_in, deadline_ms=deadline_ms, view=v)
         if any(context.get(c) is True for c in spec.forbidden_contexts):
             return self._respond(outcome=None, cascade=[], mode=target, reason="eval_context",
                                  **common)
@@ -500,38 +657,107 @@ class Instinct:
             return self._respond(outcome=None, cascade=[], mode="off", reason="lifecycle_off",
                                  **common)
         shadowish = target in ("off", "shadow")
+        # shadow_queue bounds shadow work WAITING as well as running: it is
+        # counted from here, so a burst beyond it is dropped, never queued.
         if shadowish and self.shadow_inflight >= self.cfg.shadow_queue:
             return self._respond(outcome=None, cascade=[], mode=target, reason="overload",
                                  **common)
         deadline_at = t_start + deadline_ms / 1000
-        sem = self._sem_get()
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=max(0.0, deadline_at - self.clock()))
-        except asyncio.TimeoutError:
-            return self._respond(outcome=None, cascade=[], mode=target, reason="overload",
-                                 **common)
-        t_queue = self.clock()
         if shadowish:
             self.shadow_inflight += 1
+        run = self._run(spec, req, ceiling, target, shadowish, deadline_at, common)
+        if not (shadowish and req.get("return_after") == "primary"):
+            return await run()
+        # R-instinct-1: a shadow caller that serializes with its own primary
+        # call (the router's classify) waits only until the walk has left
+        # the primary; the rest of the chain is measured in the background
+        # and ledgered under the same trace_id. Never on an actable target:
+        # a caller that may act always gets the whole answer.
+        released = asyncio.Event()
+        progress: dict = {}
+        task = asyncio.get_running_loop().create_task(run(released, progress))
+        self._bg.add(task)            # held from birth: a caller that goes away
+        task.add_done_callback(self._bg_done)   # must not orphan the walk
+        waiter = asyncio.get_running_loop().create_task(released.wait())
         try:
-            outcome, cascade, err = await self._cascade(spec, inputs, items_in, deadline_at,
-                                                        ceiling)
+            await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            sem.release()
-            if shadowish:
-                self.shadow_inflight -= 1
-        if outcome is None:
-            return self._respond(outcome=None, cascade=cascade, mode=target,
-                                 reason=err or "engine_unavailable",
-                                 queue_ms=(t_queue - t_start) * 1000, **common)
-        mode, mode_reason = self.lifecycle(spec.id, outcome.engine, ceiling)
-        return self._respond(outcome=outcome, cascade=cascade, mode=mode, reason=mode_reason,
-                             queue_ms=(t_queue - t_start) * 1000, **common)
+            waiter.cancel()
+        if task.done():
+            return task.result()
+        results = list(progress.get("results") or [])
+        outcome = self._pick_final(results)
+        mode = (self.lifecycle(spec.id, outcome.engine, ceiling, v)[0]
+                if outcome is not None else target)
+        resp = self._build(spec=spec, req=req, trace_id=trace_id, t_start=t_start,
+                           outcome=outcome, cascade=list(progress.get("cascade") or []),
+                           mode=mode, reason="shadow_pending", view=v, partial=True)
+        return resp
+
+    def _bg_done(self, task: asyncio.Task) -> None:
+        self._bg.discard(task)
+        if not task.cancelled():
+            task.exception()   # retrieved: a crash here must not warn at exit
+
+    def _run(self, spec: DecisionSpec, req: dict, ceiling: str, target: str,
+             shadowish: bool, deadline_at: float, common: dict):
+        """The queued + cascaded + ledgered half of decide(). The caller has
+        already counted this call in shadow_inflight when shadowish."""
+        t_start, v = common["t_start"], common["view"]
+
+        async def go(released: asyncio.Event | None = None,
+                     progress: dict | None = None) -> dict:
+            sem = self._sem_get(shadow=shadowish)
+            try:
+                try:
+                    await asyncio.wait_for(sem.acquire(),
+                                           timeout=max(0.0, deadline_at - self.clock()))
+                except asyncio.TimeoutError:
+                    return self._respond(outcome=None, cascade=[], mode=target,
+                                         reason="overload", **common)
+                t_queue = self.clock()
+                try:
+                    outcome, cascade, err = await self._cascade(
+                        spec, common["inputs"], common["items_in"], deadline_at, ceiling,
+                        view=v, baseline=req.get("baseline"), released=released,
+                        progress=progress)
+                finally:
+                    sem.release()
+            finally:
+                if shadowish:
+                    self.shadow_inflight -= 1
+                if released is not None:
+                    released.set()
+            if outcome is None:
+                return self._respond(outcome=None, cascade=cascade, mode=target,
+                                     reason=err or "engine_unavailable",
+                                     queue_ms=(t_queue - t_start) * 1000, **common)
+            mode, mode_reason = self.lifecycle(spec.id, outcome.engine, ceiling, v)
+            return self._respond(outcome=outcome, cascade=cascade, mode=mode,
+                                 reason=mode_reason, queue_ms=(t_queue - t_start) * 1000,
+                                 **common)
+        return go
 
     def _respond(self, spec: DecisionSpec | None, req: dict, trace_id: str, t_start: float, *,
                  outcome: Outcome | None, cascade: list[dict], mode: str, reason: str | None,
                  inputs: dict | None = None, items_in: list | None = None,
-                 deadline_ms: int | None = None, queue_ms: float = 0.0) -> dict:
+                 deadline_ms: int | None = None, queue_ms: float = 0.0,
+                 view: View | None = None) -> dict:
+        v = view or self.view()
+        resp = self._build(spec, req, trace_id, t_start, outcome=outcome, cascade=cascade,
+                           mode=mode, reason=reason, queue_ms=queue_ms, view=v)
+        ans = outcome.answer if outcome else None
+        self._ledger(resp, spec, req, inputs, items_in, deadline_ms, ans, v)
+        return resp
+
+    def _build(self, spec: DecisionSpec | None, req: dict, trace_id: str, t_start: float, *,
+               outcome: Outcome | None, cascade: list[dict], mode: str, reason: str | None,
+               queue_ms: float = 0.0, view: View | None = None,
+               partial: bool = False) -> dict:
+        """The response body (no ledger). `partial` marks an early shadow
+        answer: never enforced, and its ledger row is written by the
+        background walk under the same trace_id."""
+        v = view or self.view()
         did = req["decision"]
         request_id = req.get("request_id")
         if outcome is None:
@@ -540,18 +766,24 @@ class Instinct:
         else:
             action = outcome.action
             in_canary = canary_bucket(request_id, spec.policy.canary_pct) if spec else False
-            enforce = is_enforced(mode, in_canary, action)
-            if enforce:
+            enforce = is_enforced(mode, in_canary, action) and not partial
+            if partial:
+                fb_reason = reason
+            elif enforce:
                 fb_reason = None
             elif action != "act":
                 fb_reason = outcome.reason or "below_threshold"
             elif mode == "canary" and not in_canary:
                 fb_reason = "canary_out"
+            elif self.demotions.reason(did):
+                # A demoted decision says so, whichever engine answered and
+                # whatever other cap also held it (B-instinct-06).
+                fb_reason = "demoted"
             else:
                 fb_reason = reason or "lifecycle_shadow"
         ans = outcome.answer if outcome else None
         eng_name = outcome.engine if outcome else None
-        dhash = self.hashes.get((did, eng_name)) if eng_name else None
+        dhash = v.hashes.get((did, eng_name)) if eng_name else None
         eng_obj = None
         if eng_name:
             e = self.engines[eng_name]
@@ -588,11 +820,12 @@ class Instinct:
                            "engine": round(sum(c.get("ms", 0.0) for c in cascade), 3),
                            "total": round(total_ms, 3)},
         }
-        self._ledger(resp, spec, req, inputs, items_in, deadline_ms, ans)
+        if partial:
+            resp["partial"] = True
         return resp
 
     def _ledger(self, resp: dict, spec: DecisionSpec | None, req: dict, inputs, items_in,
-                deadline_ms, ans: Answer | None) -> None:
+                deadline_ms, ans: Answer | None, v: View | None = None) -> None:
         baseline = req.get("baseline")
         agree = None
         blabel = baseline_label(spec, baseline) if spec is not None else None
@@ -631,9 +864,9 @@ class Instinct:
         except OSError:
             pass  # a full disk must not turn into a caller-visible error
         if spec is not None:
-            self._observe(spec, resp)
+            self._observe(spec, resp, v)
 
-    def _observe(self, spec: DecisionSpec, resp: dict) -> None:
+    def _observe(self, spec: DecisionSpec, resp: dict, view: View | None = None) -> None:
         """Feed auto-demotion (plan §5.7). A call counts as failed when ANY
         engine it attempted timed out or errored, or it was shed — not only
         when the whole chain failed: `rules` is last in every chain and
@@ -649,7 +882,7 @@ class Instinct:
             m = c.get("label_mass")
             if not isinstance(m, (int, float)) or isinstance(m, bool):
                 continue
-            crec = self.calib.get((spec.id, c["engine"]))
+            crec = (view or self.view()).calib.get((spec.id, c["engine"]))
             ref = ((crec or {}).get("label_mass_ref") or {}).get("p50")
             self.autodemoter.observe_mass(spec.id, c["engine"], float(m), ref)
 

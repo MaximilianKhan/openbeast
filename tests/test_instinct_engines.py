@@ -327,7 +327,7 @@ def test_sglang_score_query_knob(tmp_path, mode):
     body = [c for c in H.read_calls(log) if c["path"] == "/v1/score"][-1]["body"]
     if mode == "empty":
         assert body["query"] == "" and len(body["items"]) == 1 and body["items"][0]
-        assert "score_query" not in eng.hash_identity()
+        assert eng.hash_identity()["score_query"] == "empty"
     else:
         assert body["query"] and body["items"] == [""]
         assert eng.hash_identity()["score_query"] == "prompt"
@@ -338,3 +338,22 @@ def test_score_query_is_linted(tmp_path):
         "a": H.sglang_binding("http://127.0.0.1:30010", score_query="both"),
         "b": H.llama_binding("http://127.0.0.1:30011", score_query="prompt")}), env={})
     assert "empty|prompt" in cfg.engine_errors["a"] and "sglang" in cfg.engine_errors["b"]
+
+
+@pytest.mark.parametrize("field,a,b", [
+    ("score_query", "empty", "prompt"),
+    ("model_revision", "r1", "r2"),          # ignored whenever model_sha256 was set
+    ("image_digest", "sha256:" + "1" * 64, "sha256:" + "2" * 64),
+    ("sglang_commit", "a" * 40, "b" * 40),
+    ("mis_delimiter", "<|x|>", "<|y|>"),
+])
+def test_decision_hash_covers_every_engine_identity_field(field, a, b):
+    """A-instinct-3: every field hash_identity() names is in decision_hash —
+    flipping one (the SGLang request shape, an image or commit bump, the
+    revision beside a sha) must invalidate calibration and gate records."""
+    from instinct.spec import decision_hash
+    base = dict(name="x", adapter="sglang_score", url="http://127.0.0.1:1",
+                model_sha256="s" * 64, exec="mis", mis_delimiter="<|m|>")
+    one = EngineBinding(**{**base, field: a}).hash_identity()
+    two = EngineBinding(**{**base, field: b}).hash_identity()
+    assert decision_hash(SPAWN, one, None) != decision_hash(SPAWN, two, None)

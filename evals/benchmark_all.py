@@ -171,6 +171,10 @@ BENCH_EXCLUDED = {
         "not a chat model: beast-instinct's CPU decision scorer (Qwen3-0.6B, "
         "answer-boundary logprobs on :8082). Its quality is measured by "
         "evals/decisions/, never by the agentic suite.",
+    "scripts/serve-openjev.sh":
+        "not a chat model: Open-Jev-27B-v1.1, beast-instinct's decision engine "
+        "(a scalar decision head on a dedicated host, POST /v1/systemone). Its "
+        "quality is measured by evals/decisions/, never by the agentic suite.",
 }
 
 LLAMA_HEALTH_URL = "http://localhost:8080/health"

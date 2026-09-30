@@ -525,6 +525,9 @@ fi
 #   INSTINCT            (env OPENBEAST_INSTINCT)            default false
 #   INSTINCT_PORT       (env OPENBEAST_INSTINCT_PORT)       default 8094
 #   INSTINCT_SCORER     (env OPENBEAST_INSTINCT_SCORER)     default false
+#       The CPU Qwen3-0.6B FALLBACK scorer (:8082). Decisions run on the
+#       primary 27B (the rig-27b binding, which presents LLAMA_API_KEY via
+#       the service's environment); the 0.6B answers only when it is busy.
 #   INSTINCT_CONFIG     (env OPENBEAST_INSTINCT_CONFIG)     default agents/instinct/instinct.toml
 #   ROUTER_INSTINCT     (env OPENBEAST_ROUTER_INSTINCT)     default off
 #       off|shadow|enforce: the agent router's CEILING for router.spawn_intent

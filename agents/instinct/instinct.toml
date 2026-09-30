@@ -5,10 +5,19 @@
 # every chain becomes that binding — the stub smoke test).
 #
 # Loader rules: an unknown key refuses THAT binding; a url equal to
-# INFERENCE_URL is refused unless allow_primary = true (and only async_only
-# decisions may use it); a url on the hydra / beast-gate / router ports is
+# INFERENCE_URL is refused unless allow_primary = true, and then only a
+# decision whose policy.primary_use is "async" (nobody awaits it) or
+# "substitute" (it REPLACES a primary call the caller makes anyway — checked
+# per call) may use it; a url on the hydra / beast-gate / router ports is
 # refused (I7); placeholder pins ("<...>") are refused — an unpinned engine
-# cannot be part of a decision_hash.
+# cannot be part of a decision_hash; exec = "mis" needs mis_delimiter.
+#
+# Engine tiers (plan revision 2026-09-30 — Max: decisions run on a FULL model):
+#   openjev    Open-Jev-27B-v1.1 head, LOCAL, on its own GPU host   (target; P6)
+#   rig-27b    the rig's own 27B primary, answer-boundary logprobs   (interim default)
+#   rig-cpu    Qwen3-0.6B on CPU                                     (fallback only)
+#   linear     tier-0 baseline (McNemar reference; shadow)
+#   rules      today's behaviour, always last
 
 [service]
 host              = "127.0.0.1"          # non-loopback refused unless allow_remote = true
@@ -17,7 +26,9 @@ key_file          = ".run/instinct.key"  # 0600, minted by `scripts/instinct.sh 
 ledger_dir        = ".run/instinct"
 log_inputs        = "hash"               # hash | excerpt | full (per-decision override)
 retention_days    = 30
-max_concurrency   = 8                    # engine calls in flight, all decisions
+max_concurrency   = 8                    # actable decides in flight, all decisions; shadow
+                                         # work has its OWN pool of max_concurrency//2 on
+                                         # top (so up to 12 engine calls at once at 8)
 shadow_queue      = 32                   # shadow work beyond this is DROPPED (never blocks)
 decisions_dir     = "agents/instinct/decisions"
 records_dir       = "evals/decisions"    # calib/, gates/, linear/ under <records_dir>/<decision>/
@@ -40,13 +51,42 @@ n_probs      = 100
 timeout_ms   = 1000
 
 [engines.stub-sglang]
-adapter      = "sglang_score"
-url          = "http://127.0.0.1:18082"
-model        = "stub-lexicon"
-model_sha256 = "stub"
-exec         = "mis"
+adapter       = "sglang_score"
+url           = "http://127.0.0.1:18082"
+model         = "stub-lexicon"
+model_sha256  = "stub"
+exec          = "mis"
+mis_delimiter = "<|mis|>"
 
-# P1: CPU llama-server (scripts/serve-instinct-scorer.sh). Uses no VRAM.
+# INTERIM DEFAULT for router.spawn_intent: the primary 27B itself (the served
+# Qwen3.8-27B-Uncensored MTP Q5), scored at the answer boundary. It can
+# SUBSTITUTE the router's generative json_schema classify on the same model,
+# but only an ENFORCED confident "inline" actually skips the classify: in
+# shadow (the shipped mode) and on every other verdict it is ONE EXTRA primary
+# prefill per hinted turn, awaited before the classify (<= 600 ms; the router
+# waits for this engine only, not the fallbacks behind it). It is only called
+# on requests whose caller would classify (baseline = "hint"), and busy_skip
+# checks /slots first so a busy primary
+# falls to the 0.6B in ~1 ms instead of queueing. The key is the stack's
+# LLAMA_API_KEY, read from the service's environment (instinct.sh resolves it
+# the way conf.sh does; never argv). A default-model swap changes /props'
+# alias -> the identity probe fails -> the chain falls to rig-cpu (fail safe).
+# [HW] VERIFY: prefill p50/p95 at 128/512/1600 tokens, the slot swap cost
+# (--cache-ram), qwen3-nothink/1 vs the 27B's own template (label lock).
+[engines.rig-27b]
+adapter       = "llamacpp_logprobs"
+url           = "http://127.0.0.1:8080"
+allow_primary = true
+busy_skip     = true
+key_env       = "LLAMA_API_KEY"
+model         = "Qwen3.8 27B Uncensored MTP Q5"      # serve-qwen38-27b-uncensored-mtp-q5.sh -a
+model_sha256  = "24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547"  # scripts/weights.registry
+n_probs       = 100
+timeout_ms    = 900
+
+# FALLBACK tier: Qwen3-0.6B on a CPU llama-server (scripts/serve-instinct-scorer.sh,
+# INSTINCT_SCORER=true). Uses no VRAM. Answers only when the 27B is skipped
+# (engine_busy / deadline / identity) — it never outranks a full model.
 [engines.rig-cpu]
 adapter      = "llamacpp_logprobs"
 url          = "http://127.0.0.1:8082"
@@ -56,13 +96,16 @@ model_sha256 = "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
 n_probs      = 100
 timeout_ms   = 1500
 
-# P3: SGLang MIS scorer on the 5090 once the Sparks carry the primary. The pins
-# below are placeholders ON PURPOSE: the loader refuses this binding until a
-# real HF revision, image digest and commit are filled in (R2 in the plan).
+# P3: SGLang MIS scorer on the 5090 once the Sparks carry the primary — a 27B,
+# the uncensored safetensors (all our models are uncensored). The pins below
+# are placeholders ON PURPOSE: the loader refuses this binding until a real
+# HF revision, image digest, commit and the server's MIS delimiter text
+# (mis_delimiter) are filled in (R2 in the plan). [HW] MIS on the hybrid
+# Gated-DeltaNet arch must pass the SIS/MIS equivalence probe first.
 [engines.rig-sglang]
 adapter        = "sglang_score"
 url            = "http://127.0.0.1:30010"
-model          = "Qwen/Qwen3-0.6B"
+model          = "JonathanColetti/Qwen3.8-27B-Uncensored"
 model_revision = "<hf commit sha>"
 image_digest   = "sha256:<digest>"
 sglang_commit  = "3b537e96e2e676583f72d0c86558570bc7723282"
@@ -74,6 +117,26 @@ timeout_ms     = 200
 # adapter        = "sglang_score"
 # url            = "http://<spark1-tailnet-ip>:30010"
 # key_file       = ".run/instinct-spark.key"
-# model          = "Qwen/Qwen3-0.6B"
+# model          = "JonathanColetti/Qwen3.8-27B-Uncensored"
 # model_revision = "<hf commit sha>"
 # exec           = "mis"
+# mis_delimiter  = "<the server's MIS delimiter text>"
+
+# TARGET decision model: Open-Jev-27B-v1.1 (LoRA + scalar decision head on the
+# Qwen3.8-27B backbone), run LOCALLY by scripts/serve-openjev.sh on a DEDICATED
+# GPU host — a Spark, or the 5090 once the Sparks serve generation. Never
+# TypeSafe's hosted Jev API (cloud is forbidden). Uncomment when that host
+# serves it, and put it FIRST in router.spawn_intent's chain. The adapter was
+# trained on the STOCK base: it can only shadow until evals/decisions
+# re-validates it on the uncensored base (docs/BEAST_INSTINCT_PLAN.md,
+# revision 2026-09-30) and a gate record exists for this exact hash.
+# [engines.openjev]
+# adapter          = "openjev_head"
+# url              = "http://<spark1-tailnet-ip>:8791"      # or http://127.0.0.1:8791 on a freed 5090
+# key_file         = ".run/openjev.key"                     # a copy of the host's key, 0600
+# model            = "JonathanColetti/Qwen3.8-27B-Uncensored"
+# model_revision   = "5bb7aa90f0efef548e87005b1fb7658e522b6b7f"   # the base the host serves
+# adapter_revision = "28cf73067d5b337860bbef3c85b8b82ba8730956"   # ZefanCai/Open-Jev-27B-v1.1
+# head_sha256      = "76e382f122abfa4e0c467d860a8d142d2fb6d2a98dc0ef9e19870bfc6eb296b4"
+# loader_digest    = "sha256:<the pinned openjev image digest>"
+# timeout_ms       = 1500

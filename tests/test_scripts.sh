@@ -557,7 +557,7 @@ else
 fi
 MISSING_PINS=""
 for f in "$REPO_DIR"/scripts/serve-*.sh; do
-  w="$(grep -oE '\$WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$f" | head -1 | sed 's|.*/||')"
+  w="$(grep -oE '\$WEIGHTS_DIR/[A-Za-z0-9._-]+\.gguf' "$f" | head -1 | sed 's|.*/||' || true)"
   [[ -z "$w" ]] && continue
   grep -qP "\t\Q$w\E\t" "$REGISTRY" 2>/dev/null || MISSING_PINS="$MISSING_PINS $w"
 done
