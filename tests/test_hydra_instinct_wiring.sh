@@ -11,7 +11,9 @@
 #   2. when WIRING_BASELINE_REF names a git ref from before the wiring
 #      (e.g. WIRING_BASELINE_REF=integ/chat-artifact-2026-09-30), conf.sh,
 #      stop.sh and healthcheck.sh from that ref and from the worktree are run
-#      side by side under `set -euo pipefail` and their outputs diffed;
+#      side by side under `set -euo pipefail` and their outputs diffed
+#      (CI pins v1.6.0 so the proof keeps running now the wiring is on main;
+#      _BASELINE_ALLOW names the few unrelated exports added since);
 #   3. stop.sh / healthcheck.sh with hydra off print no hydra/instinct line.
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no network, no
@@ -151,12 +153,23 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   echo ""
   echo "conf.sh — byte-identical to $WIRING_BASELINE_REF (set -euo pipefail, ${#SCENARIOS[@]} scenarios + env overrides):"
   _B="$_T/base"; _conf_box "$_B" "$WIRING_BASELINE_REF"
+  # Exports added since the pinned pre-wiring baseline (CI pins v1.6.0) for
+  # reasons that have nothing to do with hydra/instinct. Each entry is one
+  # exact variable, never a family, so a leaked HYDRA/INSTINCT/CONSUMER line
+  # can never hide behind it:
+  #   OPENBEAST_CHAT_NOTIFY_ON, OPENBEAST_NTFY_PORT — beast-chat notify (#113)
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)='
+  if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
+    _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
+  fi
   _cmp() { # _cmp <label> <conf-text> [VAR=value ...]
     local label="$1" text="$2" a b
     shift 2
     # The two sandboxes differ only in their own path: normalise it away.
     a="$(_conf "$_B" "$text" "$@"; cat "$_B/stderr")"; a="${a//$_B/<BOX>}"
     b="$(_conf "$_N" "$text" "$@"; cat "$_N/stderr")"; b="${b//$_N/<BOX>}"
+    a="$(grep -Ev "$_BASELINE_ALLOW" <<< "$a" || true)"
+    b="$(grep -Ev "$_BASELINE_ALLOW" <<< "$b" || true)"
     if [[ "$a" == "$b" ]]; then
       pass "$label: identical exported env, derived values and warnings"
     else
