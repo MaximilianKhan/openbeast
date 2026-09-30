@@ -56,6 +56,12 @@ _EDGE_GATE = os.environ.get("EDGE_GATE", "").strip().lower() == "true"
 # would overstate what a client is actually protected by. It only applies
 # while NO device is enrolled, though — see _edge_has_devices().
 _EDGE_ANON = os.environ.get("OPENBEAST_EDGE_ALLOW_ANON", "").strip().lower() == "true"
+# beast-instinct: conf.sh exports these only under INSTINCT=true.
+_INSTINCT = os.environ.get("OPENBEAST_INSTINCT", "").strip().lower() == "true"
+try:
+    _INSTINCT_PORT = int(os.environ.get("OPENBEAST_INSTINCT_PORT", "") or 8094)
+except ValueError:
+    _INSTINCT_PORT = 8094
 
 
 def _edge_has_devices():
@@ -146,6 +152,12 @@ def services_status():
         # vLLM's /health is an EMPTY 200 and TensorFold's {"ok": true}: for
         # them the status code is the answer (a 404 is a wrong URL, not up).
         out["model"] = _get(f"{_INFER}/health")[0] == 200
+    if _INSTINCT:
+        # beast-instinct (INSTINCT=true): a plain bool like its siblings — the
+        # /health route is open and says nothing else. Absent when instinct is
+        # off, so a default rig's /api/slot is byte-identical (v2 is additive:
+        # a new key inside `services`, never a new top-level key).
+        out["instinct"] = _get(f"http://{H}:{_INSTINCT_PORT}/health")[0] == 200
     return out
 
 
