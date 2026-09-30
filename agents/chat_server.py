@@ -1352,6 +1352,28 @@ def create_app() -> FastAPI:
             with metrics_lock:
                 counters[(route, ctx["outcome"])] += 1
 
+    def steer_op(op: str, op_id: str, principal: dict, **fields) -> dict:
+        """One inbox op, attributed. `from` is the field agents/runner.py
+        reads into the transcript's steer event (era-locked, so this side
+        conforms); `by` and `device` stay for the audit-minded reader. Only
+        `by` used to be written, so every steer in every transcript said
+        from:"" and the console could not tell one operator from another
+        (review chat-browser-5 / chat-security-7)."""
+        login = principal.get("login")
+        dev = principal.get("device")
+        sender = login if not dev or dev == "local" else f"{login} ({dev})"
+        return {"op": op, "id": op_id, "ts": _now_iso(), **fields,
+                "from": sender, "by": login, "device": dev}
+
+    def note_stopper(session_id: str, principal: dict) -> None:
+        """Who asked for the stop, on the RECORD — the ledger used to say
+        `stopped` and nothing about by whom; only the audit log knew."""
+        with contextlib.suppress(Exception):
+            sessions.touch(session_id, meta={
+                "stop_requested_by": principal.get("login"),
+                "stop_requested_device": principal.get("device"),
+                "stop_requested_at": _now_iso()})
+
     def escalation_audit(principal: dict, session_id: str):
         """on_event for start_escalation: every signal it actually delivers,
         and the state it records, become audit rows under the stopper's
@@ -1854,14 +1876,9 @@ def create_app() -> FastAPI:
                 # turn"} either way. A silently dropped operator instruction
                 # with a positive acknowledgement is the shape of bug this
                 # route already got fixed for once (jobs, below).
-                if not sessions.append_op(session_id, {
-                    "op": "say",
-                    "id": op_id,
-                    "text": text,
-                    "ts": _now_iso(),
-                    "by": principal.get("login"),
-                    "device": principal.get("device"),
-                }):
+                if not sessions.append_op(session_id,
+                                          steer_op("say", op_id, principal,
+                                                   text=text)):
                     raise HTTPException(
                         status_code=503,
                         detail="could not write to the session inbox — the "
@@ -1913,11 +1930,9 @@ def create_app() -> FastAPI:
                     # cooperative op was ever read, so a failed write costs a
                     # clean shutdown, not the shutdown. Answering 503 here
                     # would refuse a stop we can still deliver.
-                    sessions.append_op(session_id, {
-                        "op": "stop", "id": op_id, "ts": _now_iso(),
-                        "by": principal.get("login"),
-                        "device": principal.get("device"),
-                    })
+                    sessions.append_op(session_id,
+                                       steer_op("stop", op_id, principal))
+                    note_stopper(session_id, principal)
                     start_escalation(session_id, term_after, kill_after,
                                      poll=min(1.0, max(0.05, poll)),
                                      on_event=escalation_audit(principal,
@@ -1936,6 +1951,7 @@ def create_app() -> FastAPI:
                     }
                 # Jobs have no inbox and no turn boundary — a shell command
                 # cannot be asked politely. Signal the group now and escalate.
+                note_stopper(session_id, principal)
                 sent = signal_session(rec, signal.SIGTERM)
                 start_escalation(session_id, 0.0,
                                  max(1.0, kill_after - term_after),

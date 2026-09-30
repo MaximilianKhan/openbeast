@@ -161,3 +161,33 @@ def test_stream_close_is_audited_with_bytes_read(rig):
     assert rows and rows[-1]["session"] == sid
     size = os.path.getsize(sessions.get(sid)["transcript"])
     assert rows[-1]["offset"] == size and rows[-1]["bytes"] == size
+
+
+# ---------------------------------------------------------------------------
+# chat-browser-5 / chat-security-7: steers and stops are attributed
+# ---------------------------------------------------------------------------
+
+def test_send_writes_the_field_the_runner_reads(rig):
+    sid = rig.session(kind="agent", state="running")
+    key = rig.enroll("phone", "k-phone", scopes=["chat"])
+    r = rig.client.post(f"/api/chat/sessions/{sid}/send",
+                        json={"text": "hello"}, headers=key)
+    assert r.status_code == 200, r.text
+    op = _ops(sid)[-1]
+    # agents/runner.py _apply_steer_ops: sender = op.get("from")
+    assert op["from"] == "max@example.com (phone)"
+    assert op["by"] == "max@example.com" and op["device"] == "phone"
+
+
+def test_stop_records_who_asked_on_the_record(rig, monkeypatch):
+    monkeypatch.setattr(chat_server, "start_escalation", lambda *a, **k: None)
+    sid = rig.session(kind="agent", state="running")
+    key = rig.enroll("phone", "k-phone", scopes=["chat"])
+    r = rig.client.post(f"/api/chat/sessions/{sid}/stop", json={},
+                        headers=key)
+    assert r.status_code == 200, r.text
+    meta = sessions.get(sid)["meta"]
+    assert meta["stop_requested_by"] == "max@example.com"
+    assert meta["stop_requested_device"] == "phone"
+    assert _ops(sid)[-1]["op"] == "stop"
+    assert _ops(sid)[-1]["from"] == "max@example.com (phone)"
