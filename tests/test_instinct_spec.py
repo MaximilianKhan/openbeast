@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Decision spec + binding config validation (plan §5.13 test_instinct_spec).
+An invalid file invalidates ONLY its own decision / binding."""
+from __future__ import annotations
+
+import pytest
+
+import _instinct_helpers as H
+from instinct.config import ConfigError, effective_chain, load_config
+from instinct.service import Instinct
+from instinct.spec import SpecError, load_registry, load_spec, parse_constraint
+
+GOOD = H.spec_text("router.spawn_intent")
+
+
+def test_shipped_specs_load():
+    specs, errors = load_registry(H.DECISIONS)
+    assert errors == {}
+    assert set(specs) == {"router.spawn_intent", "hydra.task_class", "hydra.pool_fit"}
+    s = specs["router.spawn_intent"]
+    assert s.policy.act == {"inline": 0.90}          # skip-only (I4)
+    assert s.policy.mode == "shadow"
+    assert s.chain == ["linear", "rig-cpu", "rules"]
+    t = specs["hydra.task_class"]
+    assert t.mechanical == ["vision", "long_context"]
+    assert [lb.text for lb in t.labels] == ["A", "B", "C", "D", "E"]
+    assert specs["hydra.pool_fit"].policy.mode == "off"
+
+
+def _write(tmp_path, did, text):
+    (tmp_path / f"{did}.toml").write_text(text)
+
+
+@pytest.mark.parametrize("bad,needle", [
+    (GOOD.replace('owner       = "agents/router.py"',
+                  'owner       = "agents/router.py"\ncolour = "red"'), "unknown key"),
+    (GOOD.replace('act              = { inline = 0.90 }', ''), "policy"),
+    (GOOD.replace('act              = { inline = 0.90 }',
+                  'act              = { maybe = 0.90 }'), "not a label"),
+    (GOOD.replace('truncate   = "head_tail:200:1200"', 'truncate   = "tail:5"'), "head_tail"),
+    (GOOD.replace('{user_turn}\n</user_turn>', 'x\n</user_turn>'), "slots"),
+    (GOOD.replace('text = "no"', 'text = "yes"'), "duplicate text"),
+    (GOOD.replace('type        = "yes_no"', 'type        = "classify"'), "reserved"),
+    (GOOD.replace('metric = "ece"', 'metric = "vibes"'), "unknown metric"),
+    (GOOD.replace('"act_errors[inline]@test+ood+adversarial == 0"',
+                  '"act_errors[inline]@test ~ 0"'), "cannot parse"),
+    (GOOD.replace('mode             = "shadow"', 'mode             = "yolo"'), "policy.mode"),
+    (GOOD.replace('text = "yes"', 'text = " yes"'), "whitespace"),
+])
+def test_invalid_spec_isolated(tmp_path, bad, needle):
+    _write(tmp_path, "router.spawn_intent", bad)
+    _write(tmp_path, "hydra.task_class", H.spec_text("hydra.task_class"))
+    specs, errors = load_registry(tmp_path)
+    assert "router.spawn_intent" in errors and needle in errors["router.spawn_intent"]
+    # control: the sibling still serves
+    assert "hydra.task_class" in specs and "hydra.task_class" not in errors
+
+
+def test_id_must_match_filename(tmp_path):
+    _write(tmp_path, "router.other", GOOD)
+    specs, errors = load_registry(tmp_path)
+    assert "router.other" in errors and "filename" in errors["router.other"]
+
+
+def test_rank_needs_item_slot(tmp_path):
+    txt = H.spec_text("hydra.pool_fit").replace("<pool>\n{item}\n</pool>", "<pool>\n</pool>")
+    _write(tmp_path, "hydra.pool_fit", txt)
+    _, errors = load_registry(tmp_path)
+    assert "{item}" in errors["hydra.pool_fit"]
+
+
+def test_constraint_parser():
+    c = parse_constraint("act_errors[inline]@test+ood+adversarial == 0", ["spawn", "inline"])
+    assert (c.metric, c.label, c.splits, c.op, c.value) == (
+        "act_errors", "inline", ("test", "ood", "adversarial"), "==", 0.0)
+    with pytest.raises(SpecError):
+        parse_constraint("act_errors@test == 0", ["spawn", "inline"])     # needs a label
+    with pytest.raises(SpecError):
+        parse_constraint("__import__('os')@test == 0", ["a", "b"])        # no eval, ever
+
+
+# --- binding config ------------------------------------------------------------
+
+def _cfg(tmp_path, engines, env=None, service=None):
+    p = H.write_config(tmp_path, engines, decisions=["router.spawn_intent"], service=service)
+    return load_config(p, env=env or {})
+
+
+def test_unknown_binding_key_refuses_only_that_binding(tmp_path):
+    cfg = _cfg(tmp_path, {"a": H.llama_binding("http://127.0.0.1:1", colour="red"),
+                          "b": H.llama_binding("http://127.0.0.1:2")})
+    assert "a" in cfg.engine_errors and "unknown key" in cfg.engine_errors["a"]
+    assert "b" in cfg.engines
+
+
+def test_primary_url_refused_unless_allowed(tmp_path):
+    env = {"INFERENCE_URL": "http://localhost:59999"}
+    cfg = _cfg(tmp_path, {"p": H.llama_binding("http://127.0.0.1:59999")}, env)
+    assert "p" in cfg.engine_errors and "INFERENCE_URL" in cfg.engine_errors["p"]
+    cfg = _cfg(tmp_path, {"p": H.llama_binding("http://127.0.0.1:59999", allow_primary=True)},
+               env)
+    assert "p" in cfg.engines   # control
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8095", "http://localhost:8443",
+                                 "http://127.0.0.1:8088"])
+def test_engine_never_routes_through_hydra_gate_or_router(tmp_path, url):
+    """I7: instinct's engine traffic never goes through hydra or beast-gate."""
+    cfg = _cfg(tmp_path, {"x": H.llama_binding(url)})
+    assert "x" in cfg.engine_errors and "I7" in cfg.engine_errors["x"]
+
+
+def test_hydra_url_env_refused(tmp_path):
+    cfg = _cfg(tmp_path, {"x": H.llama_binding("http://10.0.0.5:9000")},
+               {"HYDRA_URL": "http://10.0.0.5:9000/"})
+    assert "x" in cfg.engine_errors
+    cfg = _cfg(tmp_path, {"x": H.llama_binding("http://10.0.0.5:9001")},
+               {"HYDRA_URL": "http://10.0.0.5:9000/"})
+    assert "x" in cfg.engines   # control
+
+
+def test_placeholder_pins_refused(tmp_path):
+    cfg = _cfg(tmp_path, {"x": H.sglang_binding("http://127.0.0.1:30010",
+                                                model_sha256="", model_revision="<hf sha>")})
+    assert "placeholder" in cfg.engine_errors["x"]
+
+
+def test_non_loopback_host_refused(tmp_path):
+    with pytest.raises(ConfigError):
+        _cfg(tmp_path, {}, service={"host": "0.0.0.0"})
+
+
+def test_shipped_config_refuses_unpinned_sglang():
+    cfg = load_config(env={})
+    assert "rig-sglang" in cfg.engine_errors       # placeholders until R2
+    assert cfg.engines["rig-cpu"].model_sha256.startswith("9465e63a")
+    assert cfg.port == 8094 and cfg.host == "127.0.0.1"
+
+
+def test_engine_override(tmp_path):
+    cfg = _cfg(tmp_path, {"stub": H.llama_binding("http://127.0.0.1:1")},
+               {"INSTINCT_ENGINE_OVERRIDE": "stub"})
+    assert effective_chain(["linear", "rig-cpu", "rules"], cfg) == ["linear", "stub", "rules"]
+    with pytest.raises(ConfigError):
+        _cfg(tmp_path, {}, {"INSTINCT_ENGINE_OVERRIDE": "linear"})
+
+
+def test_allow_primary_binding_only_for_async_decisions(tmp_path):
+    env = {"INFERENCE_URL": "http://127.0.0.1:59999"}
+    p = H.write_config(tmp_path, {"prim": H.llama_binding("http://127.0.0.1:59999",
+                                                          allow_primary=True)},
+                       extra_decisions={"router.spawn_intent": GOOD.replace(
+                           '"rig-cpu"', '"prim"')})
+    inst = Instinct(load_config(p, env=env))
+    H.run(inst.reload())
+    assert "prim" not in inst.chains["router.spawn_intent"]
+    assert "async_only" in inst.spec_errors["router.spawn_intent#engines"]
+
+
+def test_load_spec_roundtrip():
+    s = load_spec(H.DECISIONS / "hydra.task_class.toml")
+    assert s.rule_set == "hydra_static" and s.rule_params["long_context_tokens"] == 32000
