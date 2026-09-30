@@ -61,8 +61,11 @@ success_threshold = 2
 enabled        = true
 url            = "http://127.0.0.1:8094"   # loopback only
 key_file       = ".run/instinct.key"
-deadline_ms    = 25                         # a 27B prefill cannot meet this: hydra.task_class stays on
-                                            # instinct's fast tiers (open question for Max, plan Revision)
+deadline_ms    = 800                        # sized for a FULL 27B scorer (Max: routing decisions go to
+                                            # a 27B — Open-Jev local, the rig 27B by logprobs meanwhile).
+                                            # Brief estimate 0.2-0.6 s prefill on the 5090 — VERIFY on
+                                            # hardware. The consult is awaited before the first byte;
+                                            # a miss falls back to the static policy for that request.
 contract_ttl_s = 60
 feedback       = true                       # POST /v1/instinct/feedback per request (trace_id)
 # instinct's engines, when one is ALSO a node here. The instinct SERVICE url

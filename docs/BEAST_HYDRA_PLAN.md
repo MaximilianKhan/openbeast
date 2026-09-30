@@ -1458,8 +1458,8 @@ What changes in hydra:
 - **Only the instinct SERVICE URL is refused as a node.** That rule prevents a loop: hydra asks instinct, and instinct is routed back through hydra.
 - An **instinct ENGINE** listed in `hydra.instinct.engine_urls` may also be a node (the rig at `:8080`). instinct calls it directly, never through hydra, so there is no loop. `check` warns (risk 13).
 - A node flagged `role = "instinct-engine"` (a dedicated scorer) is still refused. So are instinct's own `:8094`/`:8082`.
-- `hydra.instinct.deadline_ms` stays 25 by default. A 27B prefill cannot meet it: the instinct brief estimates about 0.2–0.6 s for 512–1,600 tokens on the 5090, unmeasured. So `hydra.task_class` keeps using instinct's fast tiers.
-- **Open question for Max:** either raise that deadline to about 250 ms (the call sits before a generation of several seconds) and give it a 27B on its own GPU (Open-Jev), or keep `linear` online and let the 27B label shadow rows only.
+- **hydra's consult is answered by the 27B, not the small tiers.** The shipped example sets `hydra.instinct.deadline_ms = 800`, sized for a 27B scorer: the instinct brief estimates about 0.2–0.6 s for 512–1,600 tokens on the 5090 (unmeasured). The call sits before a generation of several seconds; a miss falls back to hydra's static policy for that request, never to a different decider. The 0.6B stays instinct's fallback only, as Max set it. (`hydra_core`'s built-in default is still 25 ms, and instinct's own `agents/instinct/decisions/hydra.task_class.toml` still caps the decision at 25 ms with `linear` first in its chain; instinct answers with `min(caller, cap)`, so both must follow this on the instinct track. The validator accepts 1..2000.)
+- **The only open item is the hardware measurement** (R4 item 5): the rig 27B's real scoring latency, and later Open-Jev's on its own GPU, to set the deadline from data instead of the estimate.
 
 ### Risk 13 (new): hydra cannot see instinct's direct calls on a 1-slot node
 
@@ -1478,3 +1478,4 @@ What changes in hydra:
 2. When the `glm53-flash-unc-exl3-tensorfold` profile lands, replace the example's explicit `upstream`/`ctx` with `profile = ...`. They must match or `check` refuses the file.
 3. The Ti: the `-np` its serve script runs (→ `slots`) and whether 262144 fits 48 GB at that slot count.
 4. The rig as instinct engine: the effect of scoring calls on a routed turn's TTFT (risk 13), measured with X1 or the audit's `ttft_ms`.
+5. The 27B scorer's latency on hydra's consult (p50/p95 of the audit's instinct `ms`) against `hydra.instinct.deadline_ms = 800`: tighten it to about p95 plus a margin, or raise it if the rig misses too often.

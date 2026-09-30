@@ -104,6 +104,18 @@ def test_example_config_validates(tmp_path, monkeypatch):
     assert cfg.warnings == [], cfg.warnings            # the shipped example is clean under `check`
 
 
+def test_example_instinct_deadline_lets_a_27b_answer(tmp_path, monkeypatch):
+    # R-hydra-2: Max's decision (3) — routing decisions go to a FULL 27B.
+    # The example shipped deadline_ms = 25, which no 27B prefill can meet,
+    # so the small tiers would be hydra's real decider. The brief estimates
+    # 0.2-0.6 s on the 5090; the example must leave room for that.
+    raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
+    ms = raw["hydra"]["instinct"]["deadline_ms"]
+    assert 600 <= ms <= 2000, ms
+    assert "open question" not in (REPO / "hydra.toml.example").read_text().lower()
+    assert "keep `linear` online" not in (REPO / "docs" / "BEAST_HYDRA_PLAN.md").read_text()
+
+
 def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
     # Max 2026-09-30: "all of our models are uncensored" — hydra must never
     # route or spill to a stock model. The example used to ship stock NVFP4
