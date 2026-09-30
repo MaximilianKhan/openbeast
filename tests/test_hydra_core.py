@@ -164,7 +164,10 @@ def test_example_classify_route_decides_on_a_full_uncensored_27b():
     raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
     deps = raw["deployments"]
     targets = sorted(raw["routes"]["classify"]["targets"], key=lambda t: t.get("priority", 0))
-    assert targets and targets[0]["d"] == "qwen38-unc-q5@rig"
+    assert targets
+    # Which uncensored 27B goes first is a placement choice (the example keeps
+    # the classifier off the 1-slot 5090 when the 3090 Ti box is up); the rule
+    # pinned here is what every target must be.
     for t in targets:
         fam = deps[t["d"]]["family"]
         assert "uncensored" in fam, (t["d"], fam)
