@@ -240,7 +240,7 @@ main() {
     calibrate) cmd_run_py --calibrate "$@" ;;
     gate) cmd_run_py --gate "$@" ;;
     promote) "$PY" -m instinct.cli promote "$@" ;;
-    demote) "$PY" -m instinct.cli demote "$@"; hup ;;
+    demote) "$PY" -m instinct.cli demote "$@" && hup ;;
     undemote) "$PY" -m instinct.cli undemote "$@"; hup ;;
     label) "$PY" -m instinct.cli label "$@" ;;
     stats) "$PY" -m instinct.cli stats "$@" ;;
