@@ -183,9 +183,15 @@ elif CMD == "show":
 
 elif CMD == "stopinfo":
     record = need(ARGV[0])
-    # One line the shell can read with `read -r`: state, pid, pgid.
-    print("%s %s %s" % (record.get("state") or "unknown",
-                        record.get("pid") or 0, record.get("pgid") or 0))
+    # One line the shell can read with `read -r`: state, pid, pgid, proven.
+    # `proven` is 1 only when the recorded pid is STILL the process that
+    # registered (pid AND start time, same boot) — the signalling contract
+    # chat_server holds to. A record with no start time on file used to be
+    # signalled on bare-pid evidence here, i.e. whoever holds that pid now.
+    proven = 1 if sessions.is_alive(record, require_start=True) else 0
+    print("%s %s %s %d" % (record.get("state") or "unknown",
+                           record.get("pid") or 0, record.get("pgid") or 0,
+                           proven))
 
 elif CMD == "rawstate":
     # The state EXACTLY as it sits on disk, with NO reconciliation.
@@ -263,7 +269,7 @@ _supervise() {
   # running, which would delay the ledger write until after the job died.
   trap 'stopped=1; [[ -n "${child:-}" ]] && kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
 
-  cd "$workdir" || { OB_CMD=finalize _ledger_op "$session_id" failed "workdir gone: $workdir"; exit 1; }
+  cd "$workdir" || { OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" failed "workdir gone: $workdir"; exit 1; }
   "$@" >> "$log" 2>&1 &
   child=$!
   set +e
@@ -271,6 +277,11 @@ _supervise() {
   rc=$?
   set -e
 
+  # Every finalize below passes OB_OVERRIDE_LOST=1: this supervisor HOLDS the
+  # child and read its exit status, so it is the one writer that knows better
+  # than the reconciler. Its verdict must replace a `lost` guess a reader
+  # persisted meanwhile (a failed liveness probe on a busy macOS client)
+  # instead of being refused by finalize()'s first-verdict-wins rule.
   if [[ $stopped -eq 1 ]]; then
     # Signalled. Give the child (and its own children — they share our group)
     # 30s to unwind, then SIGKILL just the child; the group-wide SIGKILL is
@@ -287,16 +298,16 @@ _supervise() {
     set +e
     wait "$child" 2>/dev/null
     set -e
-    OB_CMD=finalize _ledger_op "$session_id" stopped "stopped by operator"
+    OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" stopped "stopped by operator"
     echo "--- job $session_id STOPPED $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
     exit 143
   fi
 
   if [[ $rc -eq 0 ]]; then
-    OB_CMD=finalize _ledger_op "$session_id" done "exit 0"
+    OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" done "exit 0"
     echo "--- job $session_id DONE (exit 0) $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
   else
-    OB_CMD=finalize _ledger_op "$session_id" failed "exit $rc"
+    OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" failed "exit $rc"
     echo "--- job $session_id FAILED (exit $rc) $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
   fi
   exit "$rc"
@@ -426,10 +437,20 @@ case "$cmd" in
     state="$(printf '%s\n' "$info" | awk '{print $1}')"
     pid="$(printf '%s\n' "$info" | awk '{print $2}')"
     pgid="$(printf '%s\n' "$info" | awk '{print $3}')"
+    proven="$(printf '%s\n' "$info" | awk '{print $4}')"
 
     if [[ "$state" != "running" ]]; then
       echo "Job '$session_id' is already '$state' — nothing to signal."
       exit 0
+    fi
+    if [[ "$proven" != "1" ]]; then
+      # A pid is a reusable integer. Without the start time captured at
+      # register() there is no proof PID $pid is still this job, and the
+      # group kill below would land on whoever holds it now.
+      echo "ERROR: cannot prove PID $pid is still job '$session_id' (no process" >&2
+      echo "       start time on record, or the probe failed) — refusing to signal." >&2
+      echo "       Check it by hand: ps -o pid,lstart,args -p $pid" >&2
+      exit 1
     fi
 
     # Signal the GROUP (kill -- -PGID) so a campaign script's children die

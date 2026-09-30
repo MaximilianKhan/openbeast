@@ -410,6 +410,64 @@ else
   fail "override_lost re-decided a real verdict: $KEEP"
 fi
 
+# --- 7d. review 2026-09-29 ---
+echo ""
+echo "review 2026-09-29:"
+# (b) The supervisor's own verdict replaces a `lost` GUESS a reader persisted
+# while the job ran (a failed ps probe on a busy macOS client, say). Built
+# case: flip the live record to `lost` by hand, then let the job exit 0.
+"$CLI" run --title "guessed lost" -- bash -c 'sleep 3; exit 0' >/dev/null 2>&1
+GUESS_ID="$(_latest)"
+sleep 1
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" "$GUESS_ID" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+path = sessions.record_path(sys.argv[2])
+rec = json.load(open(path))
+rec["state"], rec["summary"] = "lost", "process gone without a terminal event"
+assert sessions._write_record(rec)
+PY
+if [[ "$(_q "$GUESS_ID" 'rec["state"]')" == "lost" ]]; then
+  pass "fixture: a running job whose record a reader filed 'lost'"
+else
+  fail "fixture did not take"
+fi
+sleep 4
+if [[ "$(_q "$GUESS_ID" 'rec["state"]')" == "done" ]]; then
+  pass "the supervisor's exit-0 verdict replaced the reconciler's guess"
+else
+  fail "the job exited 0 but the ledger still says '$(_q "$GUESS_ID" 'rec["state"]')'"
+fi
+
+# (c) stop refuses to signal a pid it cannot prove is still the job: with no
+# start time on record, "PID N" is whoever holds that integer now.
+setsid sleep 300 </dev/null >/dev/null 2>&1 &
+NOPROOF_PID=$!
+sleep 0.5
+NOPROOF_ID="noproof-$$"
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" "$NOPROOF_ID" "$NOPROOF_PID" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+pid = int(sys.argv[3])
+assert sessions.register(sys.argv[2], kind="job", title="np", pid=pid, pgid=pid)
+path = sessions.record_path(sys.argv[2])
+rec = json.load(open(path))
+rec["meta"].pop("pid_start", None)          # a pre-start-time record
+assert sessions._write_record(rec)
+PY
+NP_RC=0
+NP_OUT="$("$CLI" stop "$NOPROOF_ID" --timeout 2 2>&1)" || NP_RC=$?
+if [[ $NP_RC -ne 0 ]] && echo "$NP_OUT" | grep -q "refusing to signal" \
+   && kill -0 "$NOPROOF_PID" 2>/dev/null; then
+  pass "stop refuses a record with no start-time proof, and signals nothing"
+else
+  fail "stop signalled an unproven pid (rc=$NP_RC): $NP_OUT"
+fi
+kill -KILL "$NOPROOF_PID" 2>/dev/null || true
+wait "$NOPROOF_PID" 2>/dev/null || true
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"
