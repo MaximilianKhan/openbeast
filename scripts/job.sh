@@ -171,8 +171,13 @@ elif CMD == "show":
         if key in record and record[key] not in (None, ""):
             print("  %-12s %s" % (key + ":", record[key]))
     print("  %-12s %s" % ("age:", age_of(record)))
-    if meta.get("command"):
-        print("  %-12s %s" % ("command:", " ".join(meta["command"])))
+    command = meta.get("command")
+    if command:
+        # A list from `job.sh run`; a string from a console-started job
+        # (chat_server records the shell command as typed). " ".join() over a
+        # string spaced out every character.
+        print("  %-12s %s" % ("command:", command if isinstance(command, str)
+                              else " ".join(str(c) for c in command)))
     log = record.get("transcript")
     if log and os.path.exists(log):
         print("")

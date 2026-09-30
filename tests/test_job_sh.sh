@@ -478,6 +478,23 @@ fi
 kill -KILL "$NOPROOF_PID" 2>/dev/null || true
 wait "$NOPROOF_PID" 2>/dev/null || true
 
+# (d) A console-started job records its command as the STRING typed (the
+# supervisor's list is merged over by chat_server); `show` must print it,
+# not space out every character.
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+sessions.register("strcmd", kind="job", title="s", pid=os.getpid(), pgid=0,
+                  meta={"command": "make test"})
+sessions.finalize("strcmd", "done", summary="exit 0")
+PY
+if "$CLI" show strcmd | grep -q "^  command:     make test$"; then
+  pass "show prints a string command as typed"
+else
+  fail "show mangled a string command: $("$CLI" show strcmd | grep command:)"
+fi
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"
