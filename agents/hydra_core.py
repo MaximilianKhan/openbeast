@@ -750,8 +750,12 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     else:
         fams = sorted({deps[d].family for d in routed if d in deps})
         if len(fams) > 1:
-            warnings.append(f"no hydra.allowed_families: routes can answer from any of {', '.join(fams)} "
-                            "(set it to the families a route may ever use)")
+            # Max 2026-09-30: "all of our models are uncensored" — a fleet rule.
+            # hydra can only enforce it when the families are declared, so a
+            # config whose routes mix families must say which ones may answer.
+            # (A pre-policy hydra.toml that spilled beast to stock lands here.)
+            errors.append(f"hydra.allowed_families is required: routes can answer from any of "
+                          f"{', '.join(fams)} — list the families a route may ever use")
 
     # the id namespace: routes, aliases and deployments must never collide
     by_id: dict[str, Route] = {}

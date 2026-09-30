@@ -1413,6 +1413,7 @@ Max answered §10 decisions 1 and 2 on 2026-09-30, and set the direction for bea
 
 - **`[hydra] allowed_families = [...]`** is a hard filter inside `_exclude`. It applies to every non-strict candidate: first choice, spill, sticky affinity, failover, the ctx last resort, and after a rule hop.
   - A route target outside it is a **config error**. A stock model can't be listed in a route by mistake.
+  - **Leaving it out is also a config error once the routes span more than one family** (review R-hydra-1). hydra can only enforce the rule when the families are declared, so a `hydra.toml` copied from the pre-2026-09-30 template (which spilled `beast` to stock) no longer loads; it used to pass `check` with a warning. A single-family fleet and the implicit single-node config need no declaration.
   - A deployment outside it is only reachable by its strict id (a pin). `check` warns about it. Pins stay exempt because naming a deployment is explicit and is how evals measure one.
   - The proxy re-checks the policy against the *current* config before every failover attempt, so a reload that tightens it mid-request can't let a stale plan call a stock engine.
 - **The `same_family` anchor is explicit.** A route's `family = "..."` sets it, and implies `same_family`. Without it, the anchor is the one family of the top-priority targets. If that group has more than one family, it is an error: the anchor is never inferred from list order. The old anchor was the first-listed target, which made `beast:long` anchor on stock and drop the uncensored rig (review A-hydra-2).

@@ -28,7 +28,10 @@ def base() -> dict:
     """A three-node fleet: the 1-slot rig, a vLLM pair, a 2-slot llama box."""
     return {
         "schema": 1,
-        "hydra": {"probe_interval_s": 1, "down_after": 2, "up_after": 2},
+        # A mechanism fixture: it mixes families on purpose, so it must say so
+        # (an undeclared mix is a config error — Max's uncensored-only rule).
+        "hydra": {"probe_interval_s": 1, "down_after": 2, "up_after": 2,
+                  "allowed_families": ["unc", "stock", "moe"]},
         "nodes": {
             "rig": {"url": "http://127.0.0.1:8080", "engine": "llama", "slots": 1},
             "sparks": {"url": "http://10.0.0.5:8000", "engine": "vllm", "slots": 8, "key_env": "SPARK_KEY"},
@@ -927,9 +930,36 @@ def test_instinct_engine_that_is_also_a_node_is_allowed_with_a_warning():
     assert any("nodes.ins.url is the instinct service URL" in x for x in e.value.errors)
 
 
-def test_no_policy_warns_when_routes_mix_families():
-    assert any("no hydra.allowed_families" in w for w in cfg_of().warnings)
-    assert not any("no hydra.allowed_families" in w for w in cfg_of(_uncensored_only()).warnings)
+def test_routes_that_mix_families_without_a_policy_are_a_config_error():
+    # R-hydra-1: the uncensored-only rule was opt-in — an undeclared mix only
+    # warned, so `beast` kept spilling to stock. Now hydra refuses the file.
+    raw = base()
+    del raw["hydra"]["allowed_families"]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("hydra.allowed_families is required" in x for x in e.value.errors), e.value.errors
+    # one family across every route needs no declaration
+    one = _uncensored_only()
+    del one["hydra"]["allowed_families"]
+    assert not any("allowed_families" in w for w in cfg_of(one).warnings)
+    # nor does the implicit single-node config
+    core.implicit_config({})
+
+
+def test_the_pre_policy_example_hydra_toml_is_refused(tmp_path, monkeypatch):
+    # R-hydra-1: a hydra.toml copied from the template shipped before
+    # 2026-09-30 (beast spills to stock NVFP4, beast:fast on the stock MoE)
+    # passed `check` with a warning. It must not load.
+    kd = tmp_path / ".config" / "openbeast" / "hydra"
+    kd.mkdir(parents=True)
+    for k in ("sparks", "ti"):
+        (kd / f"{k}.key").write_text("secret\n")
+        (kd / f"{k}.key").chmod(0o600)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(core.ConfigError) as e:
+        core.load_config(FIX / "pre-policy-example.toml", {})
+    assert e.value.errors == [x for x in e.value.errors if "allowed_families is required" in x], e.value.errors
+    assert len(e.value.errors) == 1
 
 
 def test_allowed_families_bad_entries_are_config_errors():

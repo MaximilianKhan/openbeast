@@ -69,6 +69,9 @@ def raw_config(rig: FakeEngine, sparks: FakeEngine, tf: FakeEngine, tmp: Path, *
         "schema": 1,
         "hydra": {"probe_interval_s": 1, "probe_down_interval_s": 1, "models_interval_s": 10,
                   "down_after": 1, "up_after": 1, "pre_commit_budget_s": 20,
+                  # mixes families on purpose to exercise spill/failover
+                  # mechanics; an undeclared mix is a config error
+                  "allowed_families": ["unc", "stock"],
                   "audit": str(tmp / "audit.jsonl"),
                   "breaker": {"fail_threshold": 3, "open_s": 30, "success_threshold": 1},
                   "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp / "instinct.key")}},

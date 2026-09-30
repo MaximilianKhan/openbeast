@@ -37,14 +37,6 @@ affinity_ttl_s      = 1800
 affinity_max        = 4096
 audit               = ".run/hydra-audit.jsonl"
 audit_max_mb        = 50
-# THE FAMILY POLICY (Max, 2026-09-30: "all of our models are uncensored").
-# A hard filter on every non-strict request: first choice, spill, sticky
-# affinity, failover, the ctx last resort, and after any rule hop. A route
-# target outside it is a config ERROR, so a stock model can never be routed
-# to — it can only be reached by naming its strict deployment id (a pin).
-# Required once the routes span more than one family: hydra refuses a
-# mixed-family config that does not declare which families may answer.
-allowed_families    = ["qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"]
 
 [hydra.breaker]
 fail_threshold    = 5
@@ -61,17 +53,10 @@ success_threshold = 2
 enabled        = true
 url            = "http://127.0.0.1:8094"   # loopback only
 key_file       = ".run/instinct.key"
-deadline_ms    = 25                         # a 27B prefill cannot meet this: hydra.task_class stays on
-                                            # instinct's fast tiers (open question for Max, plan Revision)
+deadline_ms    = 25
 contract_ttl_s = 60
 feedback       = true                       # POST /v1/instinct/feedback per request (trace_id)
-# instinct's engines, when one is ALSO a node here. The instinct SERVICE url
-# above is never a node (that would loop through hydra); an engine instinct
-# calls directly is no loop. Max's direction: instinct decides on a full
-# 27B — the rig's own 27B by logprob scoring until Open-Jev-27B has a GPU of
-# its own. Listing it here makes `check` warn that hydra cannot count
-# instinct's direct calls: on the 1-slot rig they queue with routed turns.
-# engine_urls  = ["http://127.0.0.1:8080"]
+# engine_urls  = ["http://127.0.0.1:8082"]  # instinct's own scorer: refused as a node
 
 # ─────────────────────────── nodes ───────────────────────────
 [nodes.rig]                                   # the 5090, launched + supervised by start.sh
@@ -83,31 +68,37 @@ gpu_lease   = true                            # drain while an eval campaign hol
 ttft_timeout_s = 120
 labels      = ["local", "5090", "mtp"]
 
-[nodes.sparks]                                # both Sparks, TensorFold TP=2 = ONE node (rank 0 serves HTTP)
-url         = "http://100.101.102.103:8000"   # tensorfold/spark-node.sh rank 0 (tailnet IP)
-engine      = "tensorfold"                    # never gets a key; MUST be firewalled to the rig (DGX §7)
-slots       = 1                               # TENSORFOLD_PARALLEL=auto = one request at a time on CUDA (VERIFY)
+[nodes.sparks]                                # TP=2 pair = ONE node (rank 0 serves HTTP)
+url         = "http://100.101.102.103:8000"   # spark-node.sh SPARK_SERVE_HOST:PORT (tailnet IP)
+engine      = "vllm"
+key_file    = "~/.config/openbeast/hydra/sparks.key"   # same value as the Spark's VLLM_API_KEY_FILE
+slots       = 8                               # = MAX_NUM_SEQS (profile)
 members     = ["spark-a", "spark-b"]
-exclusive_group = "spark-pair"                # any other engine on these boxes joins this group, disabled
+exclusive_group = "spark-pair"
 connect_timeout_s = 5
-ttft_timeout_s    = 120                       # VERIFY: 320B/18B-active prefill on GB10 is unmeasured
-prefill_tps_floor = 500                       # VERIFY: ttft deadline += est_prompt_tokens / floor
+ttft_timeout_s    = 60
+prefill_tps_floor = 1500                      # VERIFY: ttft deadline += est_prompt_tokens / floor
 idle_timeout_s    = 180
 labels      = ["remote", "gb10", "tp2"]
+
+[nodes.sparks-tf]                             # same boxes, TensorFold — mutually exclusive with vLLM
+url         = "http://100.101.102.103:8000"
+engine      = "tensorfold"                    # never gets a key; MUST be firewalled to the rig (DGX §7)
+enabled     = false
+exclusive_group = "spark-pair"
+slots       = 4
 
 [nodes.ti]                                    # 2× RTX 3090 Ti, llama.cpp --tensor-split
 url         = "http://100.64.10.20:8080"
 engine      = "llama"
 key_file    = "~/.config/openbeast/hydra/ti.key"
-slots       = 4                               # VERIFY: the -np the Ti's serve script really runs
+slots       = 2
 connect_timeout_s = 5
 labels      = ["remote", "ampere"]
 
-# role = "instinct-engine" is REFUSED: a dedicated instinct scorer is never a hydra pool.
+# role = "instinct-engine" is REFUSED: an instinct scorer is never a hydra pool.
 
 # ─────────────────────── deployments (strict ids) ───────────────────────
-# EVERY deployment is uncensored (hydra.allowed_families). A stock model has
-# no place in a route; list one here only to pin it by id, and `check` warns.
 [deployments."qwen38-unc-q5@rig"]
 node     = "rig"
 upstream = "Qwen3.8 27B Uncensored MTP Q5"   # llama-server lists its -a ALIAS as the id — this is
@@ -122,42 +113,38 @@ caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "vision", "id
 # (`scripts/hydra.sh add-node` prints it). verify_upstream = false turns the
 # check off — only while the served id is unknown.
 
-[deployments."qwen38-unc-q5@ti"]
-node     = "ti"
-upstream = "Qwen3.8 27B Uncensored Q5"        # the -a of serve-qwen38-27b-uncensored-q5.sh: the SAME
-                                              # GGUF as the rig's, without MTP, so it can run -np > 1
-ctx      = 262144                             # VERIFY on 48 GB (the rig measured 26.2 GB at 6 slots)
-family   = "qwen3.8-27b-uncensored"           # same weights as the rig = same family
-caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
-
-[deployments."glm53-flash-unc@sparks"]
-# GLM-5.3-Flash Uncensored (320B total / 18B active), EXL3 TR3 4bpw — the
-# only EXL3 TensorFold's glm5_next reader accepts (4-bit, mcg codebook,
-# routed experts only): neko-legends/GLM-5.3-Flash-Uncensored-EXL3 (gated;
-# built from orcarouter's FP8). Profile: glm53-flash-unc-exl3-tensorfold.
-# Once that profile is in scripts/backends/models/, replace upstream + ctx
-# with   profile = "glm53-flash-unc-exl3-tensorfold"   (they must match its
-# SERVED_MODEL_NAME / MAX_MODEL_LEN, or `check` refuses the file).
+[deployments."qwen38-nvfp4@sparks"]
 node     = "sparks"
-upstream = "glm-5.3-flash-uncensored"         # VERIFY: the profile's SERVED_MODEL_NAME
-ctx      = 262144                             # VERIFY: TensorFold's EXL3 long context is "TBD" upstream
-family   = "glm-5.3-flash-uncensored"
-caps     = ["tools"]                          # TensorFold: no json_schema / grammar / reasoning_budget
+profile  = "qwen38-27b-nvfp4-vllm"            # upstream/ctx/engine from scripts/backends/models/*.env
+family   = "qwen3.8-27b"                      # STOCK (not abliterated) — different family
+caps     = ["tools", "json_schema", "reasoning_budget"]
 conformance = "required"                      # default for non-loopback nodes anyway:
-                                              # scripts/hydra.sh conformance glm53-flash-unc@sparks
+                                              # scripts/hydra.sh conformance qwen38-nvfp4@sparks
+
+[deployments."qwen38-mlx4@sparks-tf"]
+node     = "sparks-tf"
+profile  = "qwen38-27b-mlx4-tensorfold"
+family   = "qwen3.8-27b"
+caps     = ["tools"]                          # no json_schema on TensorFold
+
+[deployments."qwen36-a3b-q4@ti"]
+node     = "ti"
+upstream = "Qwen 35B MoE"                     # the -a of scripts/serve-qwen-35b-a3b.sh; VERIFY against
+                                              # the Ti's own /v1/models if it runs another script
+ctx      = 131072                             # VERIFY on 48 GB
+family   = "qwen3.6-35b-a3b"
+caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
 
 # ────────────────────────── routes (virtual ids) ──────────────────────────
 # Lower priority = tried first. Inside a group: affinity, then least (inflight+1)/slots/weight.
-# `family = "..."` makes a route same_family, anchored on that family: it
-# never answers from another one, not even after a rule sends it elsewhere.
 [routes.beast]
-description = "Daily driver: the uncensored 27B on the 5090, spill to the same weights on the Ti"
+description = "Daily driver: the champion, spill to the Sparks when the 5090 is busy"
 targets = [
-  { d = "qwen38-unc-q5@rig", priority = 0 },
-  { d = "qwen38-unc-q5@ti",  priority = 1 },
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
 ]
 spill        = true
-family       = "qwen3.8-27b-uncensored"   # Max 2026-09-30: `beast` is one model, whichever box answers
+same_family  = false          # OPEN DECISION (plan §10): true = never answer `beast` with a stock model
 affinity     = "sticky"       # a conversation that spilled stays where its cache is while healthy
 aliases      = ["qwen-27b-q5", "qwen38-27b-uncensored-mtp-q5", "default", "local"]
 
@@ -167,23 +154,18 @@ targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]   # a Sparks flagship jo
 spill   = false
 
 [routes."beast:fast"]
-description = "Throughput: the multi-slot uncensored 27B on the Ti, then the rig"
+description = "Throughput: the MoE on the Ti rig, then anything free"
 targets = [
-  { d = "qwen38-unc-q5@ti",  priority = 0 },
-  { d = "qwen38-unc-q5@rig", priority = 1 },
+  { d = "qwen36-a3b-q4@ti",    priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
+  { d = "qwen38-unc-q5@rig",   priority = 2 },
 ]
 
-[routes."beast:glm"]
-description = "The Sparks flagship, by name only: GLM-5.3-Flash Uncensored or nothing"
-targets = [ { d = "glm53-flash-unc@sparks", priority = 0 } ]
-spill   = false
-
 [routes."beast:long"]
-description = "Long context: the Sparks first, then the 27Bs"
+description = "Long context"
 targets = [
-  { d = "glm53-flash-unc@sparks", priority = 0 },
-  { d = "qwen38-unc-q5@rig",      priority = 1 },
-  { d = "qwen38-unc-q5@ti",       priority = 1 },
+  { d = "qwen38-nvfp4@sparks", priority = 0, weight = 2 },
+  { d = "qwen38-unc-q5@rig",   priority = 0 },
 ]
 min_ctx = 200000
 
@@ -192,10 +174,11 @@ targets = [ { d = "qwen38-unc-q5@rig", priority = 0 } ]
 require = ["vision"]
 
 [routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
-description = "Grammar-constrained spawn classifier — a full 27B, kept off the 1-slot 5090"
+description = "Grammar-constrained spawn classifier — keep it off the 1-slot 5090"
 targets = [
-  { d = "qwen38-unc-q5@ti",  priority = 0 },
-  { d = "qwen38-unc-q5@rig", priority = 1 },
+  { d = "qwen36-a3b-q4@ti",    priority = 0 },
+  { d = "qwen38-nvfp4@sparks", priority = 1 },
+  { d = "qwen38-unc-q5@rig",   priority = 2 },
 ]
 require      = ["json_schema"]
 affinity     = "none"
@@ -214,8 +197,6 @@ listed       = false
 # when: model, device, role, has_images, has_tools, needs_json_schema,
 #       min_prompt_tokens, hours ("HH:MM-HH:MM", may wrap midnight), task_class
 # then: route (one hop, never chained), only_nodes, ignore_nodes, require, prefer
-# Scope every `then.route` with `when.model`: without it the rule rewrites
-# EVERY route, beast:max included (`check` warns).
 [[rules]]
 name = "images-need-vision"
 when = { has_images = true, model = ["beast", "beast:fast"] }
@@ -224,7 +205,7 @@ then = { route = "beast:vision" }
 [[rules]]
 name = "huge-prompts-go-long"
 when = { min_prompt_tokens = 120000, model = ["beast", "beast:fast"] }
-then = { route = "beast:long" }               # `beast` keeps its family through the hop: rig/Ti, never GLM
+then = { route = "beast:long" }
 
 [[rules]]
 name = "guests-off-the-5090"
@@ -233,14 +214,12 @@ then = { ignore_nodes = ["rig"] }
 
 [[rules]]
 name = "phone-stays-on-fast"
-when = { device = "max-phone", model = ["beast"] }   # trusted only with X-Hydra-Caller (gate)
+when = { device = "max-phone" }               # trusted only with X-Hydra-Caller (gate)
 then = { route = "beast:fast" }
 
 # A judgement rule fed by beast-instinct. Shadow-only until instinct's eval
 # gate promotes `task_class` to enforce: until then it never fires, and the
-# audit records what it WOULD have done (instinct.shadow_deployment). Both
-# sides are the same full uncensored 27B — instinct picks the box, never a
-# smaller model.
+# audit records what it WOULD have done (instinct.shadow_deployment).
 # [[rules]]
 # name = "bulk-to-fast"
 # when = { task_class = "bulk", model = ["beast"] }
