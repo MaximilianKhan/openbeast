@@ -15,6 +15,7 @@
 #   4  workflows         every action pinned by full commit SHA; the relock
 #                        push job never runs the resolver
 #   5  client SearXNG    the client compose pins the rig's image digest
+#   6  extensions        every extensions/*/compose.yaml image is digest-pinned
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -347,6 +348,35 @@ if [[ -n "$_cli" && "$_cli" == "$_rig" ]]; then
 else
   fail "client SearXNG pin drifted: client '$_cli' vs rig '$_rig' — mirror the rig's digest (docs/UPDATING.md)"
 fi
+
+# ===========================================================================
+echo ""
+echo "6. extension compose fragments — every image digest-pinned:"
+# ===========================================================================
+# bundle.sh carries them and update.sh --images bumps them (both now read
+# extensions/*/compose.yaml); both assume a `<repo>:<tag>@sha256:<64 hex>`
+# pin, and a bare tag would be pulled mutable by `docker compose up`.
+_n=0; _bad=""
+for _cf in "$REPO_DIR"/extensions/*/compose.yaml; do
+  [[ -f "$_cf" ]] || continue
+  while IFS= read -r _img; do
+    _n=$((_n + 1))
+    [[ "$_img" =~ ^[^[:space:]@]+:[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || _bad+="${_cf#"$REPO_DIR"/}: $_img "
+  done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$_cf")
+done
+if [[ $_n -ge 1 && -z "$_bad" ]]; then
+  pass "all $_n extension image(s) are pinned <repo>:<tag>@sha256:<digest>"
+else
+  fail "extension images not digest-pinned (checked $_n): $_bad"
+fi
+# NEGATIVE CONTROL: the same check trips on a bare tag and on a tagless digest.
+for _img in "binwiederhier/ntfy:v2.28.0" "binwiederhier/ntfy@sha256:$(printf 'a%.0s' {1..64})"; do
+  if [[ "$_img" =~ ^[^[:space:]@]+:[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+    fail "negative control: '$_img' passed the pin check"
+  else
+    pass "negative control: '$_img' is rejected"
+  fi
+done
 
 # ===========================================================================
 echo ""

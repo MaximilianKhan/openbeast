@@ -1,0 +1,3 @@
+NAME=ntfy push notifications
+DESCRIPTION=Self-hosted ntfy server on loopback, so beast-chat can push "session done/failed" to a phone.
+KIND=compose

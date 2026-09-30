@@ -61,17 +61,27 @@ be sourced before any `docker compose up` so containers get the real values.
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
 | `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
 | `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
-| `AGENT_LOG_RETENTION_DAYS` | `AGENT_LOG_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for `agents/logs/` transcripts. The daily logrotate timer deletes transcripts untouched for this many days **and** no longer named by any session-ledger record (`sessions.prune_transcripts`); a live session's transcript is never removed |
+| `AGENT_LOG_RETENTION_DAYS` | `AGENT_LOG_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for `agents/logs/` transcripts. The daily logrotate timer deletes transcripts untouched for this many days **and** no longer named by any session-ledger record (`sessions.prune_transcripts`); a live session's transcript is never removed. Also sweeps `job.sh` logs in `.run/sessions/` whose record is gone |
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on. Written automatically (`admin@localhost` + a random password) when it rotates the built-in admin's upstream default password — see "The built-in admin account" below |
 | `AGENT_ROUTER` | `OPENBEAST_AGENT_ROUTER` | `false` | Opt-in agent-spawn router: `start.sh` runs `agents/router.py` on `ROUTER_PORT` in front of llama-server, and the human frontends (WebUI/OpenCode) point at it. Evals and spawned agents keep hitting :8080 directly. See `docs/RESEARCH_FINDINGS.md` §8–11 and the multi-user warning in `docs/TOOLS.md` |
 | `ROUTER_PORT` | `OPENBEAST_ROUTER_PORT` | `8088` | Port the agent-spawn router listens on when `AGENT_ROUTER=true` |
 | `BEAST_ARTIFACT` | `OPENBEAST_BEAST_ARTIFACT` | `false` | Run beast-artifact (`agents/artifact_server.py`), the publish-and-view service for model- or script-authored HTML. Adds the `publish_artifact`/`list_artifacts` tools to the MCP/WebUI surface (not the autonomous runner's registry). See `docs/BEAST_ARTIFACT.md` |
 | `ARTIFACT_PORT` | `OPENBEAST_ARTIFACT_PORT` | `3004` | Loopback port the artifact server listens on when `BEAST_ARTIFACT=true`. `setup-tailscale.sh --publish-artifact` mounts `:8446` at it |
-| `ARTIFACT_OPERATORS` | `OPENBEAST_ARTIFACT_OPERATORS` | *(empty)* | Comma-separated tailnet logins allowed to READ published pages; falls back to `CHAT_OPERATORS`. An unlisted login gets 404, never 403. **Empty means every identified tailnet login can read** — anonymous callers are refused either way. Writes are loopback-only regardless |
+| `ARTIFACT_OPERATORS` | `OPENBEAST_ARTIFACT_OPERATORS` | *(empty)* | Comma-separated tailnet logins allowed to READ published pages; falls back to `CHAT_OPERATORS`. An unlisted login gets 404, never 403. **Empty means every identified tailnet login can read** `tailnet` pages, and the rig's own private pages then open for nobody off the rig (`publish` and `doctor` warn) — anonymous callers are refused either way. The first entry is also the default admin (see `ARTIFACT_ADMINS`). Publishing is loopback-only regardless; managing from a phone needs an `artifact`-scoped device key |
 | `ARTIFACT_BASE_URL` | `OPENBEAST_ARTIFACT_BASE_URL` | *(unset = detect)* | The public base of every artifact URL. Normally **unset**: `agents/artifact.py` asks `tailscale serve` for the name it publishes `:8446` under and falls back to `http://localhost:<ARTIFACT_PORT>` (the tools then say the link cannot open off the rig). Set it only behind a proxy of your own. Exported only when non-empty, so "unset" still means "detect" |
+| `ARTIFACT_ADMINS` | `OPENBEAST_ARTIFACT_ADMINS` | *(unset = the first `ARTIFACT_OPERATORS` login)* | Comma-separated logins that administer beast-artifact from a browser: see, share, pin, tag, roll back, chown and delete **every** page, the rig's own included. Unset, the first operator is the only admin (with more than one operator, every start says so on stderr and in an `admin-default` audit row); with no operators either, only the rig itself administers. Read by `agents/artifact.py` from the env or `openbeast.conf` directly. See `docs/BEAST_ARTIFACT.md` § Who administers |
+| `ARTIFACT_RETAIN_DAYS` | `OPENBEAST_ARTIFACT_RETAIN_DAYS` | `0` (keep everything) | Opt-in retention: once a day the artifact server deletes every **unpinned** page not updated for this many days, with an audit row and a ledger row each. Pinned pages are never touched. Read from the env or `openbeast.conf` directly |
 | `BEAST_CHAT` | `OPENBEAST_BEAST_CHAT` | `false` | Run beast-chat (`agents/chat_server.py`), the tailnet operator console for the rig's own agent and job sessions — list, follow the live transcript, `say`, stop, start. Loopback-bound; `setup-tailscale.sh --publish-chat` maps `:8445` at it. See `docs/BEAST_CHAT.md` |
 | `CHAT_PORT` | `OPENBEAST_CHAT_PORT` | `3003` | Loopback port beast-chat listens on when `BEAST_CHAT=true` |
 | `CHAT_OPERATORS` | `OPENBEAST_CHAT_OPERATORS` | *(empty)* | The **read** allowlist: comma-separated tailnet logins (the `Tailscale-User-Login` that `tailscale serve` injects). An unlisted login gets 404, never 403. **Left empty the allowlist is not enforced** — every identified login on your tailnet can read every session (the single-operator default; `doctor` warns). **Writes** (say, stop, start an agent) additionally need a chat-scoped device key: `./scripts/clients.sh enroll phone --scope chat`. Also the fallback for `ARTIFACT_OPERATORS` |
+| `CHAT_NOTIFY_URL` | `OPENBEAST_CHAT_NOTIFY_URL` | *(empty = no notifications)* | beast-chat push notifications: an ntfy-compatible topic URL (the self-hosted way is the `ntfy` extension, `http://127.0.0.1:3005/<topic>`). With ntfy's default access the topic is the credential, so `conf.sh` does **not** export it: only the chat server's process receives it (`ob_exec_chat_server`), never on an argv, never in `./start.sh -d`'s unit env or a spawned session's env. A hand-started `chat_server.py` therefore sends nothing. Not `http(s)://` = off. See `docs/BEAST_CHAT.md` § Push notifications |
+| `CHAT_NOTIFY_ON` | `OPENBEAST_CHAT_NOTIFY_ON` | `failed,lost,done` | Which terminal session states notify (`done`, `failed`, `stopped`, `lost`) |
+| `CHAT_NOTIFY_TOKEN_FILE` | `OPENBEAST_CHAT_NOTIFY_TOKEN_FILE` | empty | Path (leading `~/` expanded) to a 0600 file holding a bearer token for the notify URL (ntfy `tk_…`). The token itself never goes in `openbeast.conf`, the environment or argv |
+| `CHAT_PUBLIC_URL` | `OPENBEAST_CHAT_PUBLIC_URL` | *(unset = detect)* | The console URL a notification's link opens. Unset: the name `tailscale serve` publishes `:8445` under, else `http://localhost:<CHAT_PORT>`. Exported only when set |
+| `CHAT_BASE_URL` | `OPENBEAST_CHAT_BASE_URL` | *(unset = detect)* | The console URL beast-artifact's viewer links *made by session …* to. Unset: `https://<name>:8445` when `tailscale serve` publishes `:8445`, else no link. `off` or `none` disables the link. Read by `agents/artifact_server.py` from the env or `openbeast.conf` directly |
+| `NTFY_PORT` | `OPENBEAST_NTFY_PORT` | `3005` | Loopback port of the opt-in `ntfy` extension. `setup-tailscale.sh --publish-ntfy` mounts `:8447` at it |
+| `NTFY_BASE_URL` / `NTFY_UPSTREAM_BASE_URL` | `OPENBEAST_NTFY_BASE_URL` / `OPENBEAST_NTFY_UPSTREAM_BASE_URL` | empty | iOS instant delivery only: the URL the phone subscribes to, and `https://ntfy.sh` as the relay. Setting the upstream sends ntfy.sh a poll request (message id + a hash of the topic URL, not the content) per notification — read `extensions/ntfy/README.md` first; `doctor` warns when it is set under `OFFLINE=true` |
+| `NTFY_DEFAULT_ACCESS` | `OPENBEAST_NTFY_DEFAULT_ACCESS` | `read-write` (ntfy's default) | `deny-all` once you have created an ntfy user and token (then set `CHAT_NOTIFY_TOKEN_FILE`) |
 | `ROUTER_REQUIRE_IDENTITY` | `OPENBEAST_ROUTER_REQUIRE_IDENTITY` | automatic | The router only spawns for admin turns — the role comes from the plain `X-OpenWebUI-User-Role` header, or, when `IDENTITY_JWT_SECRET` is set, only from the verified `X-OpenWebUI-User-Jwt` (a plain role header is ignored there). A turn with **no** identity fails closed automatically when `WEBUI_AUTH=true` or `IDENTITY_JWT_SECRET` is set; `true` forces fail-closed on any rig. Only a single-user, auth-off rig lets an anonymous turn spawn. See `docs/RBAC_PLAN.md` |
 | `MCPO_ADMIN_KEY` | `OPENBEAST_MCPO_ADMIN_KEY` | empty | RBAC Phase 2 profile key for the identity tool server (`:3001`) granting all 18 tools. Generate with `scripts/setup-mcpo-keys.sh` — don't hand-write |
 | `MCPO_GUEST_KEY` | `OPENBEAST_MCPO_GUEST_KEY` | empty | Same, for the guest profile: `web_search` + `fetch` only, everything else 404. **Either** key set turns on keyed enforcement; a missing key disables that profile (fail closed). Both empty = open server on loopback |
@@ -87,7 +97,7 @@ anchors all relative-path reads/writes from direct chat tool calls to a
 persistent, private directory instead. It applies to the chat surface only —
 spawned background agents keep using their own `AGENT_WORKDIR`.
 
-**beast-chat's environment-only knobs.** Beyond the three conf keys above,
+**beast-chat's environment-only knobs.** Beyond the conf keys above,
 `agents/chat_server.py` reads a handful of `OPENBEAST_CHAT_*` variables that
 have no `openbeast.conf` spelling (defaults in parentheses):
 `OPENBEAST_CHAT_BIND` (`127.0.0.1`; set off loopback, `Tailscale-User-Login`
@@ -105,7 +115,26 @@ heartbeat, capped at 5 s — an open stream re-authorizes on this period), and
 percent of RAM, on the systemd scope each console-started session runs in
 and, as an aggregate, on the `openbeast-chat-jobs.slice` they all share —
 *outside* the stack's own scope so `./stop.sh` never takes a phone-started
-job with it. Full semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
+job with it. That scope exists only under `./start.sh -d` with a reachable
+user systemd; a foreground `./start.sh` spawns sessions uncapped, in
+`chat_server`'s own cgroup. Also: `OPENBEAST_CHAT_SOCKET` (unset; a path
+adds a 0600 Unix listener in a 0700 directory) with
+`OPENBEAST_CHAT_LOGIN_FROM` (`loopback`; `unix` makes that socket the only
+place a `Tailscale-User-Login` header counts — point `tailscale serve` at
+`unix:<path>`), `OPENBEAST_CHAT_AUDIT_MAX_MB` (50; `chat-audit.jsonl`
+rotates to `.1` past it), `OPENBEAST_CHAT_AUDIT_DENIALS_PER_MIN` (60
+unverified denial rows per peer), `OPENBEAST_CHAT_NOTIFY_PERIOD_S` (5; the
+notification diff period), `OPENBEAST_CHAT_SLOT_URL` (the beast-slot URL the
+model picker reads; default the dashboard's `/api/slot`) and
+`OPENBEAST_CHAT_GPU_LEASE` (`.run/gpu.lease`, for the rig strip). Full
+semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
+
+**beast-artifact's environment-only knobs:** `OPENBEAST_ARTIFACT_LOCK_TIMEOUT`
+(10 s; how long a publish waits for a page's lock) and
+`OPENBEAST_ARTIFACT_ALLOWED_HOSTS` (extra `Host` values for the DNS-rebinding
+guard). Everything a spawned session inherits from beast-chat includes
+`OPENBEAST_SESSION_ID`, which `artifact.sh publish` and `publish_artifact`
+stamp on the page as its source session.
 
 ### DGX Spark settings (`scripts/backends/`, not `openbeast.conf`)
 
@@ -832,8 +861,16 @@ when configured:
 |---|---|---|
 | **beast-gate** | `EDGE_GATE=true` | `:$EDGE_PORT/gate/health` (default 8090) — the inference edge remote clients arrive through. `--restart` relaunches `agents/edge.py` and rewrites `.run/edge.pid` |
 | **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:3002/api/slot` — the discovery contract. Advisory only; never fails the run |
-| **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern |
-| **beast-chat console** | `BEAST_CHAT=true` | `:$CHAT_PORT/api/chat/health` (default 3003, on `OPENBEAST_CHAT_BIND` rather than `BIND_HOST`) expecting `"status":"ok"`. `--restart` relaunches `agents/chat_server.py` from `.run/chat.pid` — by recorded PID (identity-checked via `lib/proc.sh`), never by pattern |
+| **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern — and appends its output to `.run/stack.log` |
+| **beast-chat console** | `BEAST_CHAT=true` | `:$CHAT_PORT/api/chat/health` (default 3003, on `OPENBEAST_CHAT_BIND` rather than `BIND_HOST`) expecting `"status":"ok"`. `--restart` relaunches `agents/chat_server.py` from `.run/chat.pid` — by recorded PID (identity-checked via `lib/proc.sh`), never by pattern — and appends its output to `.run/stack.log` |
+
+For beast-chat and beast-artifact, a green health answer is checked against the pidfile: when the
+port's listener is not the recorded pid (a sibling worktree's server, an
+orphan), the row reads `FOREIGN … answers, but from pid N` and counts as
+unhealthy. Nothing is killed — it may be someone else's. `start.sh` applies
+the same rule before it spawns: it will not start over a port held by a
+process it has no record of, and calls a server ready only when its own pid
+holds the listener.
 
 Tailscale is checked too, but only when installed — the stack is fully
 functional without it, just localhost-only. With `--restart`, any service
@@ -858,7 +895,18 @@ stranger.
 with the read policy and running-session count, a **warning** when
 `CHAT_OPERATORS` is empty (every tailnet login can read every session), and a
 **failure** — not a warning — when `:8445` is published but nothing answers,
-because the mount makes it look reachable. For the air-gap path: whether the
+because the mount makes it look reachable. The same pair for beast-artifact
+(`:8446` published over a dead server fails; `BEAST_ARTIFACT=true` with
+`:8446` unpublished warns) and for the ntfy extension (`:8447`). It warns
+when neither `ARTIFACT_OPERATORS` nor `CHAT_OPERATORS` is set (private pages
+then open for nobody from a phone) and when beast-chat binds off loopback. A
+*notifications* section reports whether `CHAT_NOTIFY_URL` is set and valid,
+whether its endpoint answers (the topic path is never printed), whether
+`BEAST_CHAT` — the sender — is off, the token file's mode, and an
+`OFFLINE=true` rig with an iOS upstream relay set. Under `OFFLINE=true` it
+fails when an enabled extension's pinned image is not on the box, because
+`compose up --pull never` would then take WebUI and SearXNG down with it.
+For the air-gap path: whether the
 hash-pinned lock is current (`pydeps.sh verify`), and under `OFFLINE=true`
 whether a *rebuild* would succeed with no network (llama.cpp source, the lock,
 and a wheelhouse that covers it).

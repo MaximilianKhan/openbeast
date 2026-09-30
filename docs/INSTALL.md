@@ -609,9 +609,15 @@ device key enrolled with the `chat` scope (`./scripts/clients.sh enroll phone
 ([`BEAST_CHAT.md`](BEAST_CHAT.md)). `--publish-artifact` needs `BEAST_ARTIFACT=true` or it serves 502s;
 reads are gated on your tailnet login against `ARTIFACT_OPERATORS` (unlisted →
 404), and **publishing stays loopback-only**, so a phone can view a page and
-never create or delete one. Leave `ARTIFACT_OPERATORS` empty and every
-identified login on your tailnet can read every page — the script says so
-loudly when you publish. `--publish-slot` needs the
+never create one (pin, share, tag or delete it only with a device key enrolled
+with `--scope artifact`). Pages the rig publishes — the CLI, campaigns,
+background agents — are owned by the rig itself, and the first
+`ARTIFACT_OPERATORS` entry (or `ARTIFACT_ADMINS`) administers them. **Leave
+`ARTIFACT_OPERATORS` empty (and `CHAT_OPERATORS`, its fallback) and no tailnet
+login can open a private page the rig published, your phone included** — any identified login can still read
+pages marked `tailnet`, and `artifact.sh publish` warns about it every time.
+Set `ARTIFACT_OPERATORS=you@example.com` before you publish the port.
+`--publish-slot` needs the
 dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
 serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
 `/api/status` stay rig-local. Every `--publish-*` has an `--unpublish-*`
@@ -871,7 +877,9 @@ source component is skipped and the manifest says so):
 
 `build` writes a `git archive` of `llama.cpp/` at its current commit, fills
 `wheels/` with the exact artifacts the lock names (it runs
-`pydeps.sh wheelhouse` for you), saves the two digest-pinned images, and —
+`pydeps.sh wheelhouse` for you), saves the digest-pinned images (the core two, plus every
+`extensions/*/compose.yaml` fragment's, such as ntfy — install rewrites
+whichever compose file runs each one, keeping a `.pre-bundle` copy), and —
 only when asked — copies weights; every file is recorded with its sha256 in
 `MANIFEST.json`, alongside the repo commit and the eval era. Weights are
 opt-in because a 20 GB copy is a different operation from a 60 MB one, and
