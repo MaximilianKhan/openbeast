@@ -87,6 +87,25 @@ def test_uncalibrated_never_acts(spec):
     assert core.decide_action(spec, ans) == ("abstain", "uncalibrated")
 
 
+def test_ood_input_never_acts(spec):
+    """linear.py's promise ('ood inputs can never act') lives only here:
+    service.py passes ood=row.ood and nothing else checks it."""
+    ans = core.build_answer(spec, q={"spawn": 0.01, "inline": 0.98}, label_mass=0.99,
+                            calibrated=True, temperature=1.0)
+    assert core.decide_action(spec, ans, ood=True) == ("abstain", "ood_input")
+    assert core.decide_action(spec, ans) == ("act", None)                 # control
+
+
+def test_min_margin_blocks_a_close_call(spec):
+    import dataclasses
+    tight = dataclasses.replace(spec, policy=dataclasses.replace(spec.policy, min_margin=0.99))
+    ans = core.build_answer(tight, q={"spawn": 0.01, "inline": 0.98}, label_mass=0.99,
+                            calibrated=True, temperature=1.0)
+    assert ans.confidence["margin"] < 0.99 and ans.confidence["p_top"] >= 0.90
+    assert core.decide_action(tight, ans) == ("abstain", "below_threshold")
+    assert core.decide_action(spec, ans) == ("act", None)                 # control: margin 0
+
+
 def test_canary_bucket_deterministic():
     a = [core.canary_bucket(f"req-{i}", 30) for i in range(400)]
     b = [core.canary_bucket(f"req-{i}", 30) for i in range(400)]
