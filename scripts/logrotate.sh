@@ -89,13 +89,15 @@ run() {
     local IFS=$'\n'
     rotate_builtin
   fi
+  prune_ledger
   prune_transcripts
 }
 
 # Opt-in retention for agents/logs/ transcripts (AGENT_LOG_RETENTION_DAYS in
 # openbeast.conf or the env; unset/0 = keep forever). The rule — past the
 # cutoff AND not named by any session-ledger record — lives in
-# agents/sessions.py:prune_transcripts, next to the ledger it reads.
+# agents/sessions.py:prune_transcripts, next to the ledger it reads. The same
+# knob covers job logs in .run/sessions/ (prune_job_logs below).
 prune_transcripts() {
   local days="${AGENT_LOG_RETENTION_DAYS:-}" conf="$REPO_DIR/openbeast.conf"
   if [[ -z "$days" && -f "$conf" ]]; then
@@ -103,11 +105,68 @@ prune_transcripts() {
     days="${days%%#*}"; days="${days//[\"\'[:space:]]/}"
   fi
   [[ "$days" =~ ^[0-9]+$ && "$days" -gt 0 ]] || return 0
+  prune_job_logs "$days"
   [[ -d "$REPO_DIR/agents/logs" ]] || return 0
   local n
   n="$(cd "$REPO_DIR/agents" && python3 -c 'import sys, sessions; print(sessions.prune_transcripts(sys.argv[1], int(sys.argv[2])))' \
         "$REPO_DIR/agents/logs" "$days")" || { echo "transcript retention failed (kept everything)" >&2; return 0; }
   [[ "$n" == 0 ]] || echo "pruned $n agent transcript(s) older than ${days}d"
+}
+
+# The session ledger's own sweep, independent of beast-chat. sessions.prune()
+# retires terminal records after 30 days, and its only caller used to be
+# chat_server at startup — so on a rig with BEAST_CHAT=false the ledger grew
+# forever. keep_logs: a job's <id>.log is its only output; forgetting the
+# index entry is fine, destroying the work is a retention decision (below).
+prune_ledger() {
+  [[ -d "$RUN/sessions" ]] || return 0
+  (cd "$REPO_DIR/agents" && python3 -c 'import sessions; sessions.prune(30, keep_logs=True)') \
+    2>/dev/null || echo "session ledger sweep failed (kept everything)" >&2
+  return 0
+}
+
+# Opt-in retention for job logs in .run/sessions/ (same AGENT_LOG_RETENTION_DAYS
+# knob as the transcripts). A <id>.log — or a rotated <id>.log.N[.gz] — is
+# removed only when BOTH hold: untouched for more than <days>, and no ledger
+# record <id>.json names it any more (a live or recent job always has one).
+# Before this, a job log outlived its record forever: no rotation, no prune
+# verb, only uninstall --purge-data (integration-ops-7).
+prune_job_logs() { # prune_job_logs <days>
+  [[ -d "$RUN/sessions" ]] || return 0
+  local n
+  n="$(cd "$REPO_DIR/agents" && python3 - "$1" <<'PY'
+import os, re, sys, time
+import sessions
+d = sessions._dir()
+cutoff = time.time() - int(sys.argv[1]) * 86400
+rx = re.compile(r"^(?!\.)(.+?)\.log(?:\.[0-9]+(?:\.gz)?)?$")
+removed = 0
+try:
+    entries = list(os.scandir(d))
+except OSError:
+    entries = []
+for ent in entries:
+    m = rx.match(ent.name)
+    if not m:
+        continue
+    try:
+        if not ent.is_file(follow_symlinks=False):
+            continue
+        if ent.stat(follow_symlinks=False).st_mtime >= cutoff:
+            continue
+    except OSError:
+        continue
+    if os.path.exists(os.path.join(d, m.group(1) + ".json")):
+        continue
+    try:
+        os.unlink(ent.path)
+        removed += 1
+    except OSError:
+        pass
+print(removed)
+PY
+)" || { echo "job log retention failed (kept everything)" >&2; return 0; }
+  [[ "$n" == 0 ]] || echo "pruned $n job log(s) older than ${1}d with no ledger record"
 }
 
 install_units() {

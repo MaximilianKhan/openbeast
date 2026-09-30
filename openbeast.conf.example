@@ -84,7 +84,10 @@
 # Agent transcript retention (agents/logs/*.jsonl, *.log). Off by default:
 # transcripts are kept forever. Set a day count and the daily logrotate timer
 # deletes transcripts untouched for that long that no session-ledger record
-# still points at (the ledger itself retires finished sessions after 30 days).
+# still points at (the ledger itself retires finished sessions after 30 days,
+# swept by the same daily timer). It also deletes scripts/job.sh job logs
+# (.run/sessions/<id>.log) past the cutoff whose ledger record is gone; those
+# are size-rotated like the other logs whether or not this is set.
 # Env override: $AGENT_LOG_RETENTION_DAYS.
 #AGENT_LOG_RETENTION_DAYS=0
 
