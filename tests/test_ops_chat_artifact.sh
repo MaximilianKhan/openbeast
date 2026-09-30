@@ -404,11 +404,20 @@ if ! has "$_a" "no operator allowlist" && ! has "$_O" "no operator allowlist"; t
 else
   fail "allowlist control: $(row 'allowlist')"
 fi
-doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com BIND_HOST=192.168.1.20
-if has "$_O" "beast-artifact binds 192.168.1.20 (BIND_HOST), not loopback"; then
-  pass "a non-loopback BIND_HOST WARNs that tailnet logins are not honoured through :8446"
+doctor BEAST_ARTIFACT=true ARTIFACT_ADMINS=me@example.com
+if ! has "$_O" "no operator allowlist"; then
+  pass "…ARTIFACT_ADMINS alone (an admin may open the rig's private pages) silences it too"
 else
-  fail "bind caveat: $(row 'binds')"
+  fail "admins control: $(row 'allowlist')"
+fi
+# The server now honours a login from a peer on the bind address itself (how
+# tailscale serve reaches a LAN BIND_HOST), so the old "not honoured through
+# :8446" WARN described a rule it no longer has — it must be gone.
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com BIND_HOST=192.168.1.20
+if ! has "$_O" "not honoured through :8446" && ! has "$_O" "beast-artifact binds 192.168.1.20"; then
+  pass "a LAN BIND_HOST no longer WARNs that logins are not honoured through :8446"
+else
+  fail "stale bind caveat: $(row 'binds')"
 fi
 S8446='https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'
 RUN_ENV=(TS_SERVE="$S8446" ART_UP=0)

@@ -494,22 +494,23 @@ _is_loop() { case "$1" in 127.*|"[::1]"|::1|localhost) return 0 ;; *) return 1 ;
 
 if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   # An EMPTY allowlist is not "open": the rig's own publishes (artifact.sh,
-  # the model's tools, campaign scripts) are owned by the principal "local",
+  # the model's tools, campaign scripts) are owned by the principal "rig",
   # private is the default visibility, and a phone always presents its real
   # tailnet login — so on the default config every private page opens for
   # nobody from a phone, the operator included (integration-ops-1/-5). The
-  # server falls back to CHAT_OPERATORS, so either list counts.
+  # admin who may open rig pages is ARTIFACT_ADMINS, else the FIRST operator;
+  # the server falls back to CHAT_OPERATORS, so any of the three counts.
   _art_ops="${OPENBEAST_ARTIFACT_OPERATORS:-}${OPENBEAST_CHAT_OPERATORS:-}"
+  _art_ops+="${OPENBEAST_ARTIFACT_ADMINS:-$(_ob_conf_value ARTIFACT_ADMINS 2>/dev/null || true)}"
   if [[ -z "${_art_ops// /}" ]]; then
     warn "beast-artifact has no operator allowlist — private pages (the default) cannot be opened from a phone, by anyone" \
          "set ARTIFACT_OPERATORS=<your-tailnet-login> in openbeast.conf, then ./stop.sh && ./start.sh -d"
   fi
-  # Identity headers count only from a LOOPBACK peer (anything else could
-  # forge them), and tailscale serve dials the address the server binds.
-  if ! _is_loop "$HEALTH_HOST"; then
-    warn "beast-artifact binds $HEALTH_HOST (BIND_HOST), not loopback — tailnet logins are not honoured through :8446, so pages will not open from a phone" \
-         "keep BIND_HOST=127.0.0.1 (the default) for login-gated reads"
-  fi
+  # No bind caveat any more: a login header counts from loopback OR from a
+  # peer whose address is the one the socket was accepted on — which is how
+  # tailscale serve reaches a LAN BIND_HOST from this box (security-1). The
+  # old "not honoured through :8446" WARN described a rule the server no
+  # longer has.
 fi
 if [[ "${BEAST_CHAT:-false}" == "true" ]] && ! _is_loop "$CHAT_HEALTH_HOST"; then
   warn "beast-chat binds $CHAT_HEALTH_HOST (OPENBEAST_CHAT_BIND), not loopback — tailnet logins are not honoured through :8445" \
