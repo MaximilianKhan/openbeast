@@ -974,14 +974,21 @@ class HealthState:
                 self._set(DOWN, now, f"{h.fail_streak} failed probes")
         return h.state
 
-    def on_models(self, result: str, now: float, detail: str = "") -> str:
-        """result: ok | auth | mismatch | error (error = no information)."""
+    def on_models(self, result: str, now: float, detail: str = "",
+                  started: float | None = None) -> str:
+        """result: ok | auth | mismatch | error (error = no information).
+
+        `started` is when the /v1/models check was SENT. An "ok" that was in
+        flight when a request observed a 401/403 or a model 404 is stale: it
+        must not clear the newer AUTH_FAILED / MISMATCH (a check fired at boot
+        re-admitted a node whose key had just been refused)."""
         h = self.h
         if result == "auth":
             self._set(AUTH_FAILED, now, detail or "401/403 from the node")
         elif result == "mismatch":
             self._set(MISMATCH, now, detail or "upstream id not served")
-        elif result == "ok" and h.state in (AUTH_FAILED, MISMATCH):
+        elif (result == "ok" and h.state in (AUTH_FAILED, MISMATCH)
+              and (started is None or h.last_change <= started)):
             # health said ready (we only check models on a live node): resume
             self._set(READY if h.ok_streak >= 1 else UNKNOWN, now)
         return h.state
