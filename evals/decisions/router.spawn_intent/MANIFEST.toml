@@ -1,0 +1,26 @@
+# router.spawn_intent dataset manifest (evals/decisions/run.py checks the pins).
+#
+# STATUS: SEED. This is a scaffold for plumbing and for the `linear` baseline,
+# NOT a gate set. Almost every row is synthetic (written by Claude, unreviewed)
+# and n is far below gate.min_n (test >= 200, adversarial >= 32 human rows).
+# No quality claim may be made from it. It becomes a gate set only once Max
+# (or labelled shadow rows via `scripts/instinct.sh label`) replaces the
+# synthetic rows, `status` is set to "gated" and dataset_version is frozen.
+dataset_version = "2026-09-30.seed1"
+status          = "seed"          # seed | gated
+split_seed      = 0               # splits are by source GROUP (row.group), assigned by hand
+labelling_rules = "README.md"
+
+[files]
+train       = "129d6e8b7bbc83058fd4b4fa8acf5332e230defdae65e3151fac6197cd3012f1"
+calib       = "97bb4813559b764032ec4200bd1863c158d690c31307a0c20e075c51cddd9de1"
+test        = "d09b0051e3128ae95bc8536385165c4b3a5fe8765fc3381b8d20262e16b382b8"
+ood         = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+adversarial = "dab4884381ea228daf921969b39fe18b84ce58bb2586b35e283be223fb040b27"
+
+[counts]           # rows (spawn / inline)
+train       = "52 (26 / 26)  synthetic"
+calib       = "40 (20 / 20)  synthetic"
+test        = "15 (5 / 10)   battery rows lifted from labelled repo tests"
+ood         = "0             needs real shadow-log rows"
+adversarial = "47 (11 / 36)  synthetic: 34 adversarial negatives, 8 implicit spawns, 5 truncation"
