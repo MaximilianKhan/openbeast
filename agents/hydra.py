@@ -22,7 +22,8 @@ Invariants this file exists to keep (each has a test in tests/test_hydra_proxy.p
   * An engine's 4xx passes through byte for byte (runner.py compacts on the
     overflow text). A node's 401/403 is never shown as the caller's own.
   * Strict ids (/pin/<d>/…, X-Hydra-Pin, a deployment id) never substitute.
-  * Every response carries X-Hydra-* provenance; every request one audit line,
+  * Every response carries X-Hydra-* provenance, and only hydra writes it (a
+    node's own X-Hydra-* headers are dropped); every request one audit line,
     with no prompt or completion text in it.
   * Every pre-commit read is bounded by the attempt's deadline (an error
     body too), every failover attempt is re-vetted at admission, and a caller
@@ -754,7 +755,11 @@ def _upstream_headers(request: Request, caller: core.Caller, key: str | None, re
 
 
 def _resp_headers(resp: httpx.Response) -> dict:
-    return {k: v for k, v in resp.headers.items() if k.lower() not in _HOP}
+    # X-Hydra-* is hydra's provenance and only hydra writes it: a node that
+    # sends its own X-Hydra-Deployment would otherwise ship next to ours
+    # (different case, both kept) and a client's .get() would read the forgery.
+    return {k: v for k, v in resp.headers.items()
+            if k.lower() not in _HOP and not k.lower().startswith("x-hydra-")}
 
 
 class _UpstreamTruncated(Exception):
@@ -1078,7 +1083,7 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         hy.metrics.observe_ttft(c.d.id, a.ttft_s)
         ms = a.ttft_s * 1000
         hs.h.ttft_ewma_ms = ms if hs.h.ttft_ewma_ms is None else 0.8 * hs.h.ttft_ewma_ms + 0.2 * ms
-    out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}
+    out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}   # no x-hydra-*: _resp_headers
     out_h.update(hdr)
     if a.it is None:
         # non-stream (or a stream that ended at once): the whole body is in hand

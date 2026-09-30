@@ -973,3 +973,12 @@ def test_an_oversized_nonstream_body_that_fails_midway_is_not_a_clean_eof(fleet,
     row = audit_rows(tmp_path)[-1]
     assert row["outcome"] == "upstream_failed_midstream", row
     assert srv.hy.state.node_inflight("rig") == 0
+
+
+def test_an_upstream_cannot_forge_provenance_headers(fleet):
+    srv, rig, _, _ = fleet()
+    r = post(srv, chat(), {"X-Fake-Fault": "forge_headers"})
+    assert r.status_code == 200
+    assert r.headers.get_list("x-hydra-deployment") == ["unc@rig"]
+    assert r.headers.get_list("x-hydra-rule") == [], "no rule fired: no rule header, forged or not"
+    assert all(len(r.headers.get_list(k)) == 1 for k in r.headers if k.lower().startswith("x-hydra-"))

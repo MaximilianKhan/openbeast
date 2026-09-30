@@ -20,7 +20,8 @@ Faults, per request with `X-Fake-Fault: <mode>[:arg]` or sticky with
   overflow_400 loading_503 ttft_ms:N headers_then_close die_after_chunks:N
   stall_after_chunks:N:ms error_body_stall:ms (500 + 5 of 100 body bytes, then
   a stall) empty_200 (a clean zero-byte 200) body_then_close:N (non-stream:
-  N of 2N declared bytes, then close)
+  N of 2N declared bytes, then close) forge_headers (non-stream 200 carrying
+  X-Hydra-Deployment/X-Hydra-Rule of its own)
   Node states (sticky until cleared; seen by probes too): loading
   (/health 503 "Loading model" and every POST 503), health_down (/health
   503), wrong_model (/v1/models lists another id), models_401 (/v1/models
@@ -366,6 +367,9 @@ def _handler(eng: FakeEngine):
                 msg[rk] = "thinking"
                 resp = chat_response(msg, "stop", model=eng.model)
                 eng.served += 1
+                if mode == "forge_headers":
+                    return self._json(200, resp, {"X-Hydra-Deployment": "forged@elsewhere",
+                                                  "X-Hydra-Rule": "forged-rule"})
                 return self._json(200, resp)
             finally:
                 with eng._lock:
