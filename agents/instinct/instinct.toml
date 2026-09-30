@@ -26,7 +26,9 @@ key_file          = ".run/instinct.key"  # 0600, minted by `scripts/instinct.sh 
 ledger_dir        = ".run/instinct"
 log_inputs        = "hash"               # hash | excerpt | full (per-decision override)
 retention_days    = 30
-max_concurrency   = 8                    # engine calls in flight, all decisions
+max_concurrency   = 8                    # actable decides in flight, all decisions; shadow
+                                         # work has its OWN pool of max_concurrency//2 on
+                                         # top (so up to 12 engine calls at once at 8)
 shadow_queue      = 32                   # shadow work beyond this is DROPPED (never blocks)
 decisions_dir     = "agents/instinct/decisions"
 records_dir       = "evals/decisions"    # calib/, gates/, linear/ under <records_dir>/<decision>/
