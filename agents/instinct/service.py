@@ -125,13 +125,21 @@ class Instinct:
         self._sem: asyncio.Semaphore | None = None
         self._shadow_sem: asyncio.Semaphore | None = None
         self.shadow_inflight = 0
+        self._bg: set[asyncio.Task] = set()   # shadow walks answered early
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
         await self.reload()
         await self.probe_all()
 
+    async def drain(self) -> None:
+        """Wait for shadow walks that answered their caller early (each is
+        bounded by its decision's deadline)."""
+        while self._bg:
+            await asyncio.gather(*list(self._bg), return_exceptions=True)
+
     async def aclose(self) -> None:
+        await self.drain()
         for e in self.engines.values():
             await e.aclose()
 
@@ -427,6 +435,8 @@ class Instinct:
     async def _cascade(self, spec: DecisionSpec, inputs: dict, items_in: list[dict] | None,
                        deadline_at: float, ceiling: str = "enforce", *,
                        view: View | None = None, baseline: Any = None,
+                       released: asyncio.Event | None = None,
+                       progress: dict | None = None,
                        ) -> tuple[Outcome | None, list[dict], str | None]:
         """Walk the chain under the deadline (plan §5.5).
 
@@ -448,6 +458,12 @@ class Instinct:
         on through the whole chain under the deadline: shadow data must
         measure EVERY engine, including on the rows an earlier engine was
         confident about (A-instinct-2).
+
+        `released`, when given, is set as soon as every engine bound to the
+        PRIMARY (allow_primary) has been attempted — the moment the walk no
+        longer touches the caller's own model — and `progress` then holds the
+        live `cascade`/`results` lists, so decide() can answer a shadow
+        caller early and finish the walk in the background (R-instinct-1).
         """
         v = view or self.view()
         cascade: list[dict] = []
@@ -463,7 +479,13 @@ class Instinct:
             if not chain and "rules" in self.engines:
                 chain = ["rules"]
         texts = [it["text"] for it in items_in] if items_in is not None else None
-        for name in chain:
+        if progress is not None:
+            progress["cascade"], progress["results"] = cascade, results
+        last_primary = max((i for i, n in enumerate(chain)
+                            if self.engines[n].binding.allow_primary), default=-1)
+        for i, name in enumerate(chain):
+            if released is not None and i > last_primary:
+                released.set()
             eng, st = self.engines[name], self.states[name]
             is_rules = eng.adapter == "rules"
             remaining_ms = (deadline_at - self.clock()) * 1000
@@ -550,6 +572,8 @@ class Instinct:
                     final = out
                     if not walk_all:
                         break
+        if released is not None:
+            released.set()
         if final is None:
             final = self._pick_final(results)
         return final, cascade, last_err
@@ -621,39 +645,100 @@ class Instinct:
             return self._respond(outcome=None, cascade=[], mode=target, reason="overload",
                                  **common)
         deadline_at = t_start + deadline_ms / 1000
-        sem = self._sem_get(shadow=shadowish)
         if shadowish:
             self.shadow_inflight += 1
+        run = self._run(spec, req, ceiling, target, shadowish, deadline_at, common)
+        if not (shadowish and req.get("return_after") == "primary"):
+            return await run()
+        # R-instinct-1: a shadow caller that serializes with its own primary
+        # call (the router's classify) waits only until the walk has left
+        # the primary; the rest of the chain is measured in the background
+        # and ledgered under the same trace_id. Never on an actable target:
+        # a caller that may act always gets the whole answer.
+        released = asyncio.Event()
+        progress: dict = {}
+        task = asyncio.get_running_loop().create_task(run(released, progress))
+        self._bg.add(task)            # held from birth: a caller that goes away
+        task.add_done_callback(self._bg_done)   # must not orphan the walk
+        waiter = asyncio.get_running_loop().create_task(released.wait())
         try:
-            try:
-                await asyncio.wait_for(sem.acquire(),
-                                       timeout=max(0.0, deadline_at - self.clock()))
-            except asyncio.TimeoutError:
-                return self._respond(outcome=None, cascade=[], mode=target, reason="overload",
-                                     **common)
-            t_queue = self.clock()
-            try:
-                outcome, cascade, err = await self._cascade(
-                    spec, inputs, items_in, deadline_at, ceiling, view=v,
-                    baseline=req.get("baseline"))
-            finally:
-                sem.release()
+            await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            if shadowish:
-                self.shadow_inflight -= 1
-        if outcome is None:
-            return self._respond(outcome=None, cascade=cascade, mode=target,
-                                 reason=err or "engine_unavailable",
-                                 queue_ms=(t_queue - t_start) * 1000, **common)
-        mode, mode_reason = self.lifecycle(spec.id, outcome.engine, ceiling, v)
-        return self._respond(outcome=outcome, cascade=cascade, mode=mode, reason=mode_reason,
-                             queue_ms=(t_queue - t_start) * 1000, **common)
+            waiter.cancel()
+        if task.done():
+            return task.result()
+        results = list(progress.get("results") or [])
+        outcome = self._pick_final(results)
+        mode = (self.lifecycle(spec.id, outcome.engine, ceiling, v)[0]
+                if outcome is not None else target)
+        resp = self._build(spec=spec, req=req, trace_id=trace_id, t_start=t_start,
+                           outcome=outcome, cascade=list(progress.get("cascade") or []),
+                           mode=mode, reason="shadow_pending", view=v, partial=True)
+        return resp
+
+    def _bg_done(self, task: asyncio.Task) -> None:
+        self._bg.discard(task)
+        if not task.cancelled():
+            task.exception()   # retrieved: a crash here must not warn at exit
+
+    def _run(self, spec: DecisionSpec, req: dict, ceiling: str, target: str,
+             shadowish: bool, deadline_at: float, common: dict):
+        """The queued + cascaded + ledgered half of decide(). The caller has
+        already counted this call in shadow_inflight when shadowish."""
+        t_start, v = common["t_start"], common["view"]
+
+        async def go(released: asyncio.Event | None = None,
+                     progress: dict | None = None) -> dict:
+            sem = self._sem_get(shadow=shadowish)
+            try:
+                try:
+                    await asyncio.wait_for(sem.acquire(),
+                                           timeout=max(0.0, deadline_at - self.clock()))
+                except asyncio.TimeoutError:
+                    return self._respond(outcome=None, cascade=[], mode=target,
+                                         reason="overload", **common)
+                t_queue = self.clock()
+                try:
+                    outcome, cascade, err = await self._cascade(
+                        spec, common["inputs"], common["items_in"], deadline_at, ceiling,
+                        view=v, baseline=req.get("baseline"), released=released,
+                        progress=progress)
+                finally:
+                    sem.release()
+            finally:
+                if shadowish:
+                    self.shadow_inflight -= 1
+                if released is not None:
+                    released.set()
+            if outcome is None:
+                return self._respond(outcome=None, cascade=cascade, mode=target,
+                                     reason=err or "engine_unavailable",
+                                     queue_ms=(t_queue - t_start) * 1000, **common)
+            mode, mode_reason = self.lifecycle(spec.id, outcome.engine, ceiling, v)
+            return self._respond(outcome=outcome, cascade=cascade, mode=mode,
+                                 reason=mode_reason, queue_ms=(t_queue - t_start) * 1000,
+                                 **common)
+        return go
 
     def _respond(self, spec: DecisionSpec | None, req: dict, trace_id: str, t_start: float, *,
                  outcome: Outcome | None, cascade: list[dict], mode: str, reason: str | None,
                  inputs: dict | None = None, items_in: list | None = None,
                  deadline_ms: int | None = None, queue_ms: float = 0.0,
                  view: View | None = None) -> dict:
+        v = view or self.view()
+        resp = self._build(spec, req, trace_id, t_start, outcome=outcome, cascade=cascade,
+                           mode=mode, reason=reason, queue_ms=queue_ms, view=v)
+        ans = outcome.answer if outcome else None
+        self._ledger(resp, spec, req, inputs, items_in, deadline_ms, ans, v)
+        return resp
+
+    def _build(self, spec: DecisionSpec | None, req: dict, trace_id: str, t_start: float, *,
+               outcome: Outcome | None, cascade: list[dict], mode: str, reason: str | None,
+               queue_ms: float = 0.0, view: View | None = None,
+               partial: bool = False) -> dict:
+        """The response body (no ledger). `partial` marks an early shadow
+        answer: never enforced, and its ledger row is written by the
+        background walk under the same trace_id."""
         v = view or self.view()
         did = req["decision"]
         request_id = req.get("request_id")
@@ -663,8 +748,10 @@ class Instinct:
         else:
             action = outcome.action
             in_canary = canary_bucket(request_id, spec.policy.canary_pct) if spec else False
-            enforce = is_enforced(mode, in_canary, action)
-            if enforce:
+            enforce = is_enforced(mode, in_canary, action) and not partial
+            if partial:
+                fb_reason = reason
+            elif enforce:
                 fb_reason = None
             elif action != "act":
                 fb_reason = outcome.reason or "below_threshold"
@@ -715,7 +802,8 @@ class Instinct:
                            "engine": round(sum(c.get("ms", 0.0) for c in cascade), 3),
                            "total": round(total_ms, 3)},
         }
-        self._ledger(resp, spec, req, inputs, items_in, deadline_ms, ans, v)
+        if partial:
+            resp["partial"] = True
         return resp
 
     def _ledger(self, resp: dict, spec: DecisionSpec | None, req: dict, inputs, items_in,

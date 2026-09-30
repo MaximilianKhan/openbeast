@@ -72,6 +72,9 @@ class DecideReq(_Strict):
     ceiling: Mode = "enforce"
     deadline_ms: int | None = Field(default=None, ge=1, le=60000)
     context: Context | None = None
+    # "primary": on a shadow target, answer (partial) once the walk has left
+    # the primary-bound engines; the rest runs and is ledgered behind it.
+    return_after: Literal["primary"] | None = None
 
 
 class Features(_Strict):

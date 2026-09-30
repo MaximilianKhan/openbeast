@@ -33,10 +33,14 @@ wins.
    an authenticating gate; the `openjev_head` adapter calls it. Not enabled
    until that host exists.
 2. **Interim: the rig's own 27B**, zero-shot through answer-boundary logprobs
-   (`rig-27b`, `llamacpp_logprobs` against `INFERENCE_URL`). It replaces the
-   router's generative classify on that same model, so it adds no primary load;
-   it is only called on hinted turns, checks `/slots` first and falls through
-   in ~1 ms when the slot is busy.
+   (`rig-27b`, `llamacpp_logprobs` against `INFERENCE_URL`). It is only called
+   on hinted turns (where the router classifies on that same model anyway),
+   checks `/slots` first and falls through in ~1 ms when the slot is busy.
+   **Cost, stated plainly (R-instinct-1):** it skips the classify only on an
+   enforced confident `inline`; in shadow and on every other verdict it is one
+   EXTRA primary prefill per hinted turn, awaited before the classify (≤ 600
+   ms). The router waits for the primary engine only (`return_after:
+   "primary"`); the fallbacks are measured in the background.
 3. **Fallback only: Qwen3-0.6B on CPU** (`rig-cpu`). It answers when the 27B is
    skipped (busy, deadline, identity) and never outranks it.
 
@@ -914,7 +918,7 @@ Other routes:
 | `POST /v1/instinct/score` | Debug only, off unless `INSTINCT_DEBUG_SCORE=true`: engine-neutral `{engine, query, items, labels}` → raw rows; no policy, no enforce; ledger `kind:"raw"` |
 
 **Client** (`agents/instinct/client.py`):
-- `async decide(decision, inputs, *, items=None, baseline=None, ceiling="enforce", deadline_ms, request_id=None, context=None) -> Verdict`, plus a sync twin.
+- `async decide(decision, inputs, *, items=None, baseline=None, ceiling="enforce", deadline_ms, request_id=None, context=None, return_after=None) -> Verdict`, plus a sync twin.
 - `Verdict = (enforce: bool, label: str|None, items: list|None, action, reason, trace_id)`.
 - The HTTP timeout is `deadline_ms + 10`.
 - Circuit breaker: after 5 consecutive failures it opens for 30 s and returns `Verdict(enforce=False, reason="client_breaker_open")` immediately.

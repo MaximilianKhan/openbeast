@@ -7,7 +7,9 @@ Hermetic: the stub scorer on an ephemeral port plays the primary
 The Open-Jev-27B head adapter is tested in test_instinct_openjev.py."""
 from __future__ import annotations
 
+import json
 import os
+import time
 
 import pytest
 
@@ -188,6 +190,79 @@ def _two_tier(tmp_path, purl, curl, chain='["prim", "cpu", "rules"]', mode="shad
     c = H.llama_binding(curl)
     p = H.write_config(tmp_path, {"prim": b, "cpu": c}, extra_decisions={DID: text})
     return load_config(p, env={"INFERENCE_URL": purl})
+
+
+def _ledger_rows(tmp_path):
+    return [json.loads(line) for p in (tmp_path / "ledger").glob("*.jsonl")
+            for line in p.read_text().splitlines() if line.strip()]
+
+
+def test_shadow_router_waits_for_the_primary_only(tmp_path):
+    """R-instinct-1: a shadow decide from the router (return_after=primary)
+    answers once the walk has left the primary; the slow fallback behind it
+    is still measured, in the background, under the same trace_id. Before
+    the fix the router waited ~600 ms for the whole chain on every hinted
+    turn."""
+    log = tmp_path / "prim.jsonl"
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl), repo_root=tmp_path)
+        await inst.start()
+        n0 = sum(1 for c in H.read_calls(log) if c.get("path") == "/completion")
+        t = time.perf_counter()
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="shadow", baseline="hint", deadline_ms=600,
+                          return_after="primary")
+        dt = (time.perf_counter() - t) * 1000
+        n1 = sum(1 for c in H.read_calls(log) if c.get("path") == "/completion")
+        pending = len(inst._bg)
+        await inst.drain()
+        await inst.aclose()
+        return r, dt, n1 - n0, pending
+    with H.stub_server(call_log=str(log)) as (purl, _), \
+            H.stub_server({"slow": "400"}) as (curl, _):
+        r, dt, prim_calls, pending = H.run(body(purl, curl))
+    assert dt < 300, f"router waited {dt:.0f} ms for the fallback"
+    assert r["partial"] is True and r["enforce"] is False
+    assert r["fallback"]["reason"] == "shadow_pending"
+    assert [c["engine"] for c in r["cascade"]] == ["prim"]
+    assert r["engine"]["id"] == "prim"
+    assert prim_calls == 1 and pending == 1
+    rows = [x for x in _ledger_rows(tmp_path) if x.get("kind") == "decide"]
+    assert [x["trace_id"] for x in rows] == [r["trace_id"]]          # one row, full walk
+    assert [c["engine"] for c in rows[0]["cascade"]][:2] == ["prim", "cpu"]
+    assert rows[0]["engine"]["id"] == "prim"
+
+
+def test_return_after_is_ignored_when_the_target_can_act(tmp_path):
+    """A caller that may act on the verdict always gets the whole answer."""
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"),
+                        repo_root=tmp_path)
+        await inst.start()
+        assert inst.specs[DID].policy.mode == "enforce"
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="enforce", baseline="hint", return_after="primary")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert "partial" not in r
+    assert "cpu" in [c["engine"] for c in r["cascade"]]
+
+
+def test_shadow_without_return_after_still_walks_everything(tmp_path):
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl), repo_root=tmp_path)
+        await inst.start()
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="shadow", baseline="hint")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert "partial" not in r
+    assert [c["engine"] for c in r["cascade"]][:2] == ["prim", "cpu"]
 
 
 def test_no_act_row_is_credited_to_the_highest_tier(tmp_path):

@@ -57,10 +57,14 @@ exec          = "mis"
 mis_delimiter = "<|mis|>"
 
 # INTERIM DEFAULT for router.spawn_intent: the primary 27B itself (the served
-# Qwen3.8-27B-Uncensored MTP Q5), scored at the answer boundary. It SUBSTITUTES
-# the router's generative json_schema classify on the same model, so it adds
-# no primary load; it is only called on requests whose caller would classify
-# (baseline = "hint"), and busy_skip checks /slots first so a busy primary
+# Qwen3.8-27B-Uncensored MTP Q5), scored at the answer boundary. It can
+# SUBSTITUTE the router's generative json_schema classify on the same model,
+# but only an ENFORCED confident "inline" actually skips the classify: in
+# shadow (the shipped mode) and on every other verdict it is ONE EXTRA primary
+# prefill per hinted turn, awaited before the classify (<= 600 ms; the router
+# waits for this engine only, not the fallbacks behind it). It is only called
+# on requests whose caller would classify (baseline = "hint"), and busy_skip
+# checks /slots first so a busy primary
 # falls to the 0.6B in ~1 ms instead of queueing. The key is the stack's
 # LLAMA_API_KEY, read from the service's environment (instinct.sh resolves it
 # the way conf.sh does; never argv). A default-model swap changes /props'

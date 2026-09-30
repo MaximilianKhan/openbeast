@@ -64,6 +64,13 @@ can't set the mode. It may pass a `ceiling`, and the lower of the two wins.
  "ceiling": "enforce", "deadline_ms": 600, "context": {"caller": "router", "eval": false}}
 ```
 
+Optional `"return_after": "primary"` (the router sends it): on a request whose
+target is below `canary` (nothing can act), the service answers as soon as the
+walk has left every engine bound to the primary, with `"partial": true`,
+`enforce: false` and `fallback.reason: "shadow_pending"`; the rest of the chain
+still runs, and the ONE ledger row for that `trace_id` is written when it
+finishes. An actable target ignores it and always gets the whole answer.
+
 The client sets `context.eval = true` itself whenever its process carries the
 eval markers that `evals/run_eval.py` puts in every child's environment
 (`OPENBEAST_EVAL`, `OPENBEAST_TASK_PATHS`). A caller inside an eval unit can't
@@ -73,7 +80,8 @@ The response keys are frozen by `tests/test_instinct_contract.py`:
 `contract, decision, decision_version, decision_hash, trace_id, request_id,
 mode, enforce, action, answer{type,label,probabilities,raw_probabilities,calibrated,confidence{p_top,margin,shape},label_mass,labels_truncated,expected_value},
 items, would{label,action}, fallback{used,reason}, engine{id,adapter,model,model_sha256,exec,label_token_ids},
-cascade[{engine,action,reason,ms,hash?,label?,p_top?,probabilities?,label_mass?,mode?,error?}], latency_ms{queue,engine,total}`.
+cascade[{engine,action,reason,ms,hash?,label?,p_top?,probabilities?,label_mass?,mode?,error?}], latency_ms{queue,engine,total}`
+(plus `partial: true` on an early `return_after` answer only).
 
 **A caller acts only on `enforce == true`.**
 
@@ -344,13 +352,21 @@ if hinted:
 ```
 
 - Only **hinted** turns are scored: the decision's engine is the primary, and
-  an unhinted turn would add a primary call that replaces nothing.
+  an unhinted turn's call could never replace anything.
   `ROUTER_INSTINCT_SHADOW_UNHINTED=true` restores fire-and-forget shadow on
   unhinted turns (the service keeps the primary out of those).
 - A hinted turn's decide is **awaited** before the classify, in shadow as in
   enforce, so on a `-np 1` primary it serializes with the classify instead of
-  racing the user's turn for the slot. Shadow is capped at 2 in flight and
+  racing the user's turn for the slot. In shadow it waits only until the
+  walk has left the primary (`return_after: "primary"`); the fallbacks behind
+  it are measured in the background. Shadow is capped at 2 in flight and
   drops beyond that; everything is bounded by 600 ms and fails open.
+- **The real cost.** The 27B's score is one prompt prefill on the primary. It
+  *replaces* the generative classify only on an **enforced, confident
+  `inline`**. On every other hinted turn — all of shadow, and every `spawn`,
+  abstain or low-confidence verdict under enforce — it is **added** before
+  the classify: one extra primary call and its latency (at most 600 ms) per
+  hinted turn. Shadow buys the 27B's calibration data with exactly that.
 - After the classify, its verdict goes back on the decide's `trace_id`
   (`POST /v1/instinct/feedback {trace_id, request_id, outcome: {source:
   "classify", label}}`), and each decide carries a `request_id`, which also

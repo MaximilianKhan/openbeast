@@ -113,6 +113,46 @@ def test_shadow_never_changes_behaviour(tmp_path):
     b = json.loads(decides(calls)[0].content)
     assert b["ceiling"] == "shadow" and b["baseline"] == "hint"
     assert b["request_id"].startswith("rt_")            # canary + feedback join key
+    assert b["return_after"] == "primary"               # R-instinct-1
+
+
+def test_shadow_hinted_turn_latency_is_bounded_by_the_primary(tmp_path):
+    """R-instinct-1, end to end: router hook -> real client -> real service
+    app -> [prim, cpu(slow 400 ms), rules]. The hinted turn waits for the
+    primary engine only; the slow fallback no longer sits in front of the
+    classify (it was ~600 ms per hinted turn)."""
+    import time
+
+    from instinct.config import load_config
+    from instinct.server import create_app
+    from instinct.service import Instinct
+    did = "router.spawn_intent"
+    text = _instinct_helpers.spec_text(did).replace(
+        'chain = ["rig-27b", "rig-cpu", "linear", "rules"]', 'chain = ["prim", "cpu", "rules"]')
+    with _instinct_helpers.stub_server() as (purl, _), \
+            _instinct_helpers.stub_server({"slow": "400"}) as (curl, _):
+        cfgp = _instinct_helpers.write_config(
+            tmp_path, {"prim": _instinct_helpers.llama_binding(purl, allow_primary=True,
+                                                               busy_skip=True),
+                       "cpu": _instinct_helpers.llama_binding(curl)},
+            extra_decisions={did: text})
+        inst = Instinct(load_config(cfgp, env={"INFERENCE_URL": purl}), repo_root=tmp_path)
+        app = create_app(inst, "k" * 40, allowed_hosts=["instinct.test"], probe_loop=False)
+        client = InstinctClient("http://instinct.test", tmp_path / "instinct.key",
+                                transport=httpx.ASGITransport(app=app))
+        hook = RouterInstinct("shadow", client, shadow_unhinted=False)
+
+        async def go():
+            await inst.start()
+            cls, seen = legacy_classify(False)
+            t = time.perf_counter()
+            turn = await hook.consult("spawn a background agent to port the tests", True)
+            dt = (time.perf_counter() - t) * 1000
+            await inst.aclose()          # drains the background walk
+            return turn, dt
+        turn, dt = asyncio.run(go())
+    assert turn.skip is False and turn.trace_id
+    assert dt < 300, f"hinted turn waited {dt:.0f} ms"
 
 
 def test_unhinted_turns_fire_no_decide_by_default(tmp_path, monkeypatch):

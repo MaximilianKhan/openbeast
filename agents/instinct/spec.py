@@ -32,10 +32,12 @@ RULE_SETS = ("router_hints", "hydra_static", "none")
 # How a decision may use an engine bound to the PRIMARY (allow_primary = true):
 #   none        never (the default);
 #   async       only when nobody awaits the verdict (ceiling below enforce);
-#   substitute  the verdict REPLACES a call the caller makes on the primary
-#               anyway (router.spawn_intent replaces router._classify) — so
-#               scoring there adds no primary load. Only on requests whose
-#               caller declares it would make that call (baseline = "hint").
+#   substitute  the verdict CAN REPLACE a call the caller makes on the primary
+#               anyway (router.spawn_intent vs router._classify). It saves
+#               that call only when the caller acts (enforce + act); in shadow
+#               or on any other verdict it is an extra primary call, so it is
+#               allowed only on requests whose caller declares it would make
+#               that call (baseline = "hint"), never on the rest.
 PRIMARY_USES = ("none", "async", "substitute")
 # The baseline a caller sends when it would otherwise run the substituted call.
 SUBSTITUTE_BASELINE = "hint"

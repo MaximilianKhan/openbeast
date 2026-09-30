@@ -21,14 +21,22 @@ Properties (tests/test_router_instinct.py):
   * only HINTED turns are scored by default — the turns the router classifies
     on the primary anyway. The decision's main engine IS that primary (the
     27B, `rig-27b`), and its only slot (-np 1) belongs to the user's turn: an
-    unhinted turn would add a primary call that replaces nothing, so it is
+    unhinted turn could never have its call replaced, so it is
     never scored unless ROUTER_INSTINCT_SHADOW_UNHINTED=true (and even then
     the service skips the primary for it: `primary_not_substitute`);
   * a hinted turn's decide is AWAITED before the classify, in shadow as in
     enforce: it serializes with the classify on the primary instead of racing
     the user's turn for the slot (a fire-and-forget call could land in the
-    slot first and make the turn wait). Bounded by DEADLINE_MS, fails open;
-    shadow is capped at SHADOW_SLOTS in flight and DROPS beyond that;
+    slot first and make the turn wait). In shadow it is awaited only until
+    the walk has LEFT the primary (return_after="primary"): the fallbacks
+    behind it are measured in the background. Bounded by DEADLINE_MS, fails
+    open; shadow is capped at SHADOW_SLOTS in flight and DROPS beyond that;
+  * THE REAL COST (R-instinct-1): the 27B's scoring call is one prompt
+    prefill on the primary. It replaces the classify only on an ENFORCED
+    confident "inline"; on every other hinted turn (all of shadow, and every
+    spawn / abstain / low-confidence verdict under enforce) it is ADDED
+    before the classify — one extra primary call and its latency (<=
+    DEADLINE_MS) per hinted turn;
   * shadow never changes the router's behaviour; the only effect enforce can
     have is to SKIP the generative classify — and only on a verdict that is
     enforce + act + label "inline" (I4). There is no code path from here to a
@@ -141,7 +149,12 @@ class RouterInstinct:
                 DECISION, {"user_turn": user_text},
                 ceiling="shadow" if shadow else "enforce", deadline_ms=DEADLINE_MS,
                 baseline="hint", request_id=rid,
-                context={"caller": "router", "eval": False})
+                context={"caller": "router", "eval": False},
+                # The service honours this only below an actable target:
+                # in shadow the turn waits for the primary engine alone
+                # (the part that must serialize with the classify), never
+                # for the fallbacks behind it (R-instinct-1).
+                return_after="primary")
         except Exception:
             return NO_TURN
         finally:
