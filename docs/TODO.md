@@ -122,17 +122,28 @@ README. Notes: [`RELEASE_NOTES_v1.6.0.md`](RELEASE_NOTES_v1.6.0.md). Eval era
 ## ⏭ NEXT — decided 2026-09-17 night, RE-AUDITED 2026-09-29, SETTLED 2026-09-30
 
 **Tier-3 verdict (FRESH rerun, 2026-09-30): SHIP — decisively.** Six clean
-cells in the new era (`b5596c660b5ab819`, every cell `--no-cache`, 0 timeouts,
+cells in the new era (`b5596c660b5ab819`, every cell `--no-cache`,
 0 infrastructure rows). Treated model Qwen3.8-27B-Uncensored: pairs 14/0 and
 12/2 → **pooled 26 rescues / 2 regressions, net +24, exact McNemar p < 0.0001**;
 7 units rescued in both replicates. Tokens-to-fix down 4,681 (p = 0.064).
-**Champion guard: CLEAN and positive** — Qwen3.6-27B C0 23/30 → C1 28/30
-(7/2, net +5, p = 0.18). The per-model gating rationale is gone: nothing
-measured says the pack hurts either model. Record:
+**Champion guard: CLEAN** — Qwen3.6-27B C0 23/30 → C1 28/30
+(7/2, net +5, p = 0.18: no regression, not a significant gain). The per-model
+gating rationale is gone: nothing measured says the pack hurts either model.
+**Corrected 2026-09-30 (review A-campaign-1): NOT "0 timeouts".** Two rows hit
+the 2400 s wall timeout (exit -1, tokens recorded as 0) and PASSED on files
+already on disk before a 20-minute request hang (cause unverified):
+P1a `65_miller_rabin_f` (a rescue) and C1 `27_brainfuck_interpreter_f`.
+Dropping the rescue gives net +23, p = 5.6e-6, so **SHIP stands**. The zero-token
+row had biased R2's prompt figure: −5,189/unit is really **−2,163** (median
++23,399, a per-unit total, not the pack's per-request overhead). The
+pre-registered R4 parroting review is now done: no parroting, only idiom
+adoption. `tier3_verdict.py` now keeps timeouts out of every token statistic,
+lists them, and warns on cross-commit/engine pairs. Record:
 [`scratch/tier3-verdict-fresh-20260930.txt`](../scratch/tier3-verdict-fresh-20260930.txt),
 manifest `scratch/tier3_cells-fresh-20260929.txt`. Clause 2: last arm on this
 suite. **Still in-sample** (the pack was written against these units' failures;
-the held-out check in `LANG_AWARENESS_PLAN.md` §5 is unrun). **Wiring the pack
+the held-out check in `LANG_AWARENESS_PLAN.md` §5 is unrun; read it with
+`tier3_verdict.py --heldout`, never pooled into R1). **Wiring the pack
 into production is Max's call** — the evidence now supports both models.
 
 **Superseded — the 09-29 re-audit of the contaminated 09-17 run (kept for the record):**

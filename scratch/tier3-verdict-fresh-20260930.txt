@@ -1,3 +1,6 @@
+[CORRECTED 2026-09-30: line 4's "0 timeouts" is false and the R2 prompt figure was biased.
+ The verdict (SHIP) is unchanged. The original record below is kept verbatim; the correction and the re-run follow it.]
+
 Tier-3 zig-0.16 awareness pack — FRESH rerun, 2026-09-29 21:04 → 2026-09-30 05:11
 Era b5596c660b5ab819 (post-#102 harness: server deaths and fork/thread EAGAIN are never banked as FAILs).
 Every cell run --no-cache (FRESH=1) under the GPU lease; manifest scratch/tier3_cells-fresh-20260929.txt.
@@ -27,4 +30,88 @@ R4 AUDIT    P1-only passes per pair (review for pack-parroting):
 
 ------------------------------------------------------------------------
 VERDICT: SHIP — Clause 1 (net>=7, p<0.05, guard clean): net=+24 p=0.0000 guard=clean
+Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).
+
+
+########################################################################
+CORRECTION — 2026-09-30 (double-pass review A-campaign-1 / A-campaign-5)
+########################################################################
+1. "0 timeouts" in the original record is FALSE. Two rows hit the harness
+   wall timeout (agent_exit_code -1, elapsed 2400.1 s, tokens 0, iterations
+   None):
+     P1a 65_miller_rabin_f          PASS: a pair-0 rescue (P0a failed it)
+     C1  27_brainfuck_interpreter_f PASS: passed in C0 too, so the guard is unaffected
+   Both passes are real. By iteration 10 the model's own check had already
+   passed (miller-rabin printed "DIFF_OK: outputs match"). The iteration-11
+   request then hung for exactly 20 minutes (23:39:57→23:59:57 and
+   04:39:44→04:59:45), and the 2400 s wall killed the agent. The files it
+   left on disk validated. The cause of the 20-minute request hang is
+   UNVERIFIED (server stall or runaway generation). The classifier missed
+   these rows because row_validity.py only looked at failed rows, so a
+   timed-out PASS never appeared. It now lists every timeout.
+2. Sensitivity with the timed-out unit dropped from pair 0: b=25 c=2,
+   net +23, exact McNemar p = 5.6e-6. The guard is still 7/2, net +5,
+   p = 0.180, CLEAN. **VERDICT UNCHANGED: SHIP.**
+3. The same row biased R2. run_eval records a timeout's tokens as 0, and
+   paired() took that 0 as a real value. On the 59 pairs with recorded
+   tokens, the published "prompt-token overhead mean Δ = -5189/unit" is
+   really -2163/unit, and its median is +23,399, so it is NOT a saving.
+   The figure is the all-unit TOTAL of prompt tokens per unit, which
+   iteration count dominates. It is not the pack's per-request overhead,
+   which is about 2k tokens by construction. All-unit completion Δ moves
+   from -5041 to -4913. Tokens-to-fix (-4681, p=0.064, n=19) and
+   iterations-to-fix (-1.79, p=0.549) do not change, because the timeout
+   row was never a both-pass unit.
+4. R4 pack-parroting review. This pre-registered step was still open; this
+   is its result, from the independent recompute on 2026-09-30.
+   - Scope: all 180 agent logs in the campaign window. Each unit's final
+     .zig was rebuilt from its write_file/edit_file calls.
+   - The longest verbatim substring of agents/packs/zig-0.16.md in any
+     solution is 46 chars or less in every cell, P0 and P1 alike. The most
+     common match is `pub fn main(init: std.process.Init) !void {`, which
+     the task prompt itself requires.
+   - No solution copies pack prose, headers or the OLD/NEW map.
+   - What the pack changed is idiom adoption. `= .empty` ArrayList appears
+     in 14 units in each of P1a and P1b, against 3 in each P0 cell. The old
+     `ArrayList(..).init(` appears in no P1 unit.
+   - 20_priority_queue_f was rescued in both replicates without using
+     std.PriorityQueue.
+   - 15 units had no reconstructable source (written with bash heredocs).
+     None of them is a rescue.
+   Verdict: no parroting found.
+5. Provenance: every cell ran at 9fe5de96 with runtime.openbeast_dirty=true,
+   and the uncommitted diff cannot be recovered from the results files. The
+   engine build (10865/d4389a4dd) and the weights are consistent across
+   cells.
+
+The corrected scratch/tier3_verdict.py re-run on the same manifest
+(2026-09-30). It now reports timeouts, the sensitivity read and provenance
+itself.
+
+========================================================================
+Tier-3 zig-0.16 awareness pack — zig-only mini-A/B verdict
+========================================================================
+treated model: Qwen3.8 27B Uncensored Q5_K_M   replicates: 2   pack: {'zig': '5cdf4b64'}
+VALIDITY    contaminated rows dropped from their pair
+    wall timeouts (exit -1; pass/fail counted, tokens NOT recorded → out of every token statistic): 2: P1a 65_miller_rabin_f [PASS]; C1 27_brainfuck_interpreter_f [PASS]
+PROVENANCE  WARNING: dirty repo tree at run time in P0a, P0b, P1a, P1b, C0, C1 (the uncommitted diff is not recoverable from the results)
+  pair 0: units=30 P0 pass=10 P1 pass=24 rescues=14 regressions=0 (cached rows: P0 0, P1 0)
+  pair 1: units=30 P0 pass=11 P1 pass=21 rescues=12 regressions=2 (cached rows: P0 0, P1 0)
+
+R1 PRIMARY  pooled McNemar: rescues b=26 regressions c=2 net=+24 p=3e-06
+    sensitivity, wall-timeout units dropped from their pair: b=25 c=2 net=+23 p=5.6e-06
+R2 CO-PRIMARY (units passed in both arms, n=19; 1 pair(s) excluded — a side's tokens were not recorded):
+    completion tokens-to-fix  mean Δ(P1-P0)=-4681  sign-test p=0.064
+    iterations-to-fix         mean Δ(P1-P0)=-1.79  sign-test p=0.549
+    all-unit completion tokens mean Δ=-4913 (n=59); all-unit prompt tokens (total per unit, not per-request overhead) mean Δ=-2163 median Δ=+23399 (n=59)
+R3 GUARD    champion Qwen 27B Q5_K_XL: units=30 C0 pass=23 C1 pass=28 rescues=7 regressions=2 net=+5 p=0.180 → CLEAN
+    sensitivity, wall-timeout units dropped: b=7 c=2 net=+5 p=0.180
+R4 AUDIT    P1-only passes per pair (review for pack-parroting):
+    pair 0: 115_fft_f, 11_bst_f, 122_gemm_blocked_e, 123_nbody_f, 127_aes_keysched_f, 148_convex_hull_f, 159_ntt_convolution_f, 20_priority_queue_f, 36_black_scholes_f, 51_toposort_f, 61_extgcd_f, 62_crt_f, 65_miller_rabin_f, 92_popcount_f
+    pair 1: 100_constant_time_compare_f, 115_fft_f, 11_bst_f, 123_nbody_f, 148_convex_hull_f, 20_priority_queue_f, 54_astar_f, 61_extgcd_f, 63_det_f, 71_reverse_list_f, 74_palindrome_f, 92_popcount_f
+    rescued in EVERY replicate: 115_fft_f, 11_bst_f, 123_nbody_f, 148_convex_hull_f, 20_priority_queue_f, 61_extgcd_f, 92_popcount_f
+    pair 1 regressions: 19_three_way_quicksort_f, 36_black_scholes_f
+
+------------------------------------------------------------------------
+VERDICT: SHIP — Clause 1 (net>=7, p<0.05, guard clean): net=+24 p=3e-06 guard=clean
 Clause 2: this was the last arm on this suite — STOP regardless (roadmap §5 stopping rule).
