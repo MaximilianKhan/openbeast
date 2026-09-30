@@ -100,7 +100,9 @@ class Stub:
         self.call_log = call_log
         self.lock = threading.Lock()
         self.rng = random.Random(seed)
-        self.noise_rng = random.Random()
+        # Seeded too: an unseeded noise source made the nondeterminism probe test
+        # fail at random when the noise also sank the known-answer check first.
+        self.noise_rng = random.Random(seed + 1)
         self.rev: dict[int, str] = {v: k for k, v in SPECIALS.items()}
         for p in ["yes", "no", " yes", " no", "A", "B", "C", "D", "E",
                   " A", " B", " C", " D", " E"] + FILLERS:
