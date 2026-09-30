@@ -115,7 +115,10 @@ class SGLangEngine(LLMEngine):
             rows, usage = await self._request(rendered.query, rendered.items, label_ids,
                                               timeout_s)
         else:
-            rows, usage = await self._request("", [rendered.prompt], label_ids, timeout_s)
+            if self.binding.score_query == "prompt":
+                rows, usage = await self._request(rendered.prompt, [""], label_ids, timeout_s)
+            else:
+                rows, usage = await self._request("", [rendered.prompt], label_ids, timeout_s)
         return rows, self.exec, usage
 
     async def _identity(self) -> str | None:

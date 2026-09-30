@@ -40,7 +40,8 @@ _SERVICE_KEYS = {"host", "port", "key_file", "ledger_dir", "log_inputs", "retent
                  "state_dir"}
 _BINDING_KEYS = {"adapter", "url", "key_file", "model", "model_sha256", "model_revision",
                  "image_digest", "sglang_commit", "exec", "n_probs", "timeout_ms",
-                 "allow_primary", "tokenize_path", "mis_delimiter", "sis_url", "role"}
+                 "allow_primary", "tokenize_path", "mis_delimiter", "sis_url", "role",
+                 "score_query"}
 
 
 class ConfigError(ValueError):
@@ -66,6 +67,10 @@ class EngineBinding:
     mis_delimiter: str = ""
     sis_url: str = ""
     role: str = "instinct-engine"
+    # sglang_score, non-rank decisions: "empty" sends query="" + the prompt as
+    # the one item (the documented "complete prompt" convention); "prompt" is
+    # the [HW] fallback — the prompt as query + one empty item.
+    score_query: str = "empty"
 
     def hash_identity(self) -> dict:
         """The engine half of decision_hash."""
@@ -73,8 +78,11 @@ class EngineBinding:
             return {"adapter": "rules", "model_sha256": "rules/1", "exec": None}
         if self.adapter == "linear":
             return {"adapter": "linear", "model_sha256": "linear/1", "exec": None}
-        return {"adapter": self.adapter, "model_sha256": self.model_sha256,
-                "model_revision": self.model_revision, "exec": self.exec}
+        ident = {"adapter": self.adapter, "model_sha256": self.model_sha256,
+                 "model_revision": self.model_revision, "exec": self.exec}
+        if self.score_query != "empty":
+            ident["score_query"] = self.score_query   # a different request is a new hash
+        return ident
 
 
 @dataclass
@@ -185,6 +193,10 @@ def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "")
             # third party.
             if _norm_url(b.sis_url)[:2] != _norm_url(b.url)[:2]:
                 return "sis_url must use the same scheme and host as url (it receives the key)"
+        if b.score_query not in ("empty", "prompt"):
+            return "score_query must be empty|prompt"
+        if b.score_query != "empty" and b.adapter != "sglang_score":
+            return "score_query is only meaningful on sglang_score"
         if b.exec not in ("sis", "mis"):
             return "exec must be sis|mis"
         if b.exec == "mis" and b.adapter != "sglang_score":
@@ -282,7 +294,8 @@ def load_config(path: str | Path | None = None, *, env: dict | None = None,
                 tokenize_path=str(raw.get("tokenize_path", "")),
                 mis_delimiter=str(raw.get("mis_delimiter", "")),
                 sis_url=str(raw.get("sis_url", "")),
-                role=str(raw.get("role", "instinct-engine")))
+                role=str(raw.get("role", "instinct-engine")),
+                score_query=str(raw.get("score_query", "empty")))
         except (TypeError, ValueError) as exc:
             cfg.engine_errors[name] = f"bad value: {exc}"
             continue
