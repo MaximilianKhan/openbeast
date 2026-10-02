@@ -463,6 +463,13 @@ _box() { # _box <dir> [git-ref]   — stop.sh, healthcheck.sh, libs, stubs
     fi
   done
   cp -n "$REPO_DIR"/scripts/lib/*.sh "$d/scripts/lib/"     # the libs no case changes
+  # doctor's "Remote skills" row (the import gate, 2026-10) reads the ledger
+  # through skill-import.sh; a worktree box gets the real ones.
+  if [[ -z "$ref" ]]; then
+    cp "$REPO_DIR/scripts/skill-import.sh" "$d/scripts/"
+    cp "$REPO_DIR/scripts/lib/skill_import.py" "$d/scripts/lib/"
+    cp -r "$REPO_DIR/skills" "$d/skills"
+  fi
   printf 'SEARXNG_SECRET=stub\n' > "$d/openbeast.conf"; chmod 600 "$d/openbeast.conf"
   for c in docker tailscale nvidia-smi sudo systemctl systemd-run smartctl; do
     printf '#!/bin/bash\nexit 1\n' > "$d/bin/$c"; chmod +x "$d/bin/$c"
@@ -821,8 +828,18 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
     fail "start.sh --status output differs from $WIRING_BASELINE_REF"
   fi
   RUN_ENV=("${_env_hc[@]}" OPENBEAST_EDGE_GATE=true OPENBEAST_EDGE_PORT="$P_OK")
-  if diff <(_run "$_OB" "$_OB/scripts/doctor.sh" | _norm "$_OB") \
-          <(_run "$_NB" "$_NB/scripts/doctor.sh" | _norm "$_NB") >/dev/null; then
+  # One section added to doctor since the pinned baseline for a reason that has
+  # nothing to do with hydra/instinct: "Remote skills" (the skill import gate).
+  # Exactly that section (header, its one passing row, the blank line) is
+  # dropped, and with it the one extra "ok" in the summary; warnings and
+  # failures are still compared, and so is every other line.
+  _doc() { _norm "$1" | awk '
+      /Remote skills/ { skip = 1; next }
+      skip && /^[[:space:]]*$/ { skip = 0; next }
+      skip && /✓ remote skills: / { next }
+      { print }' | sed -E 's/^doctor: [0-9]+ ok,/doctor: <N> ok,/'; }
+  if diff <(_run "$_OB" "$_OB/scripts/doctor.sh" | _doc "$_OB") \
+          <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") >/dev/null; then
     pass "doctor.sh: identical output"
   else
     fail "doctor.sh output differs from $WIRING_BASELINE_REF"

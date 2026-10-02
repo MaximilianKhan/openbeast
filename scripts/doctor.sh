@@ -282,9 +282,15 @@ section "Remote skills"
 _sk="$("$SCRIPT_DIR/skill-import.sh" verify --quiet 2>&1)" && _sk_rc=0 || _sk_rc=$?
 if [[ $_sk_rc -eq 0 ]]; then
   pass "$(tail -1 <<< "$_sk" | sed 's/^remote skills: OK — /remote skills: /')"
-else
+elif [[ $_sk_rc -eq 3 ]]; then
+  # 3 is the gate's own "no": it looked, and a row and the files disagree.
   fail "an imported skill no longer matches skills/REMOTE_PROVENANCE.md" \
        "./scripts/skill-import.sh verify   (an edit to an imported skill is a re-import)"
+else
+  # Anything else means the check did not run (no script, no python, no
+  # ledger). That is not evidence of tampering, so it is not reported as one.
+  warn "remote-skill hash check could not run (exit $_sk_rc)" \
+       "./scripts/skill-import.sh verify"
 fi
 
 # ── Docker ──────────────────────────────────────────────────────────────────
