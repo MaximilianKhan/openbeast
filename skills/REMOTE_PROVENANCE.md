@@ -73,7 +73,7 @@ sha256sum skills/<name>/SKILL.md | cut -d' ' -f1
 
 | Skill | Source URL | Upstream rev | SHA-256 | Tree SHA-256 | Imported | Reviewed by | Rewrite notes |
 |---|---|---|---|---|---|---|---|
-| _(none yet — first import will land here)_ | | | | | | | |
+| `verification-before-completion` | https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/verification-before-completion | `8ca22dba9a94f28898bbce59f2537ff4d87c747d` | `e433276376b4df1e6547d0df28693f2a48f7ba495c1f6d1671dab70288111d9e` | `bca766c22ee3325e14a7483b29375fe5b5e61cc688245b365d2701e2d0ca442e` | 2026-10-02 | agent claude-opus-5-5 for MK | Body verbatim; added MIT LICENSE and a provenance section. EA2 is the red-flag list line 'About to commit/push/PR without verification' · scan: SkillSpector 2.12.0 static, score 7, CAUTION, accepted EA2 |
 
 ## Refresh policy
 
