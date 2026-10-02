@@ -849,6 +849,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 [RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md) (MTP, profiling, model comparisons) ·
 [DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md) ·
 [SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·
+[EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) (third-party skills: verdicts and the import gate) ·
 [docs/archive/](docs/archive/) (superseded plans, kept for provenance)
 
 ## Releases
