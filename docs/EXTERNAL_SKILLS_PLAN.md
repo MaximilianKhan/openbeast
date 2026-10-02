@@ -1,10 +1,12 @@
 # External skills: what to take from the ecosystem, and the gate it comes through
 
-**Status (2026-10-01):** step 1 of 5 is built. The import gate
-(`scripts/skill-import.sh`) exists, is tested, and has been run against the
-real scanner. **No external skill has been imported.** One candidate
-(Humanizer) is staged for review in `.run/skill-staging/` and is not in the
-tree.
+**Status (2026-10-02):** steps 1 and 3 of 5 are done. The import gate
+(`scripts/skill-import.sh`) exists and is tested, and **nine external skills
+came through it** (§4a): five from obra/superpowers, four from
+anthropics/skills. All nine were read by an agent on Max's instruction and the
+ledger says so; none has been read by a human yet. One candidate was refused
+(`web-artifacts-builder`). Humanizer is still staged for a human review in
+`.run/skill-staging/` and is not in the tree.
 
 This doc records a review of 15 widely used agent-skill repositories against
 OpenBeast's mission, the verdict on each, and the design of the gate that any
@@ -116,13 +118,56 @@ architecture proposals. The gaps are `verification-before-completion`,
 `writing-skills`. The plugin itself is not wanted: its brainstorming companion
 loads a logo from the author's site as a usage beacon.
 
-**Anthropic Skills.** `frontend-design` and `web-artifacts-builder` would
-become the authoring skill beast-artifact lacks. `webapp-testing` is the
-"Playwright as a skill" item already in `TODO.md`. `skill-creator` covers
-evals for skills and description tuning, which bears on the open skill-fire
-experiment. The `docx`, `pdf`, `pptx` and `xlsx` skills declare
-`license: Proprietary` and cannot be vendored. The per-skill `LICENSE.txt` of
-the others has not been read yet; do that before importing any.
+**Anthropic Skills.** `frontend-design` is the authoring skill beast-artifact
+lacked. `webapp-testing` is the "Playwright as a skill" item already in
+`TODO.md`. `skill-creator` covers evals for skills, which bears on the open
+skill-fire experiment. `mcp-builder` covers writing an MCP server. The `docx`,
+`pdf`, `pptx` and `xlsx` skills declare `license: Proprietary` and cannot be
+vendored. The `LICENSE.txt` of each of the five we looked at was read on
+2026-10-02: all are Apache-2.0.
+
+## 4a. What was imported on 2026-10-02, and what each import changed
+
+Pinned at obra/superpowers `8ca22dba9a94` and anthropics/skills `8a1541c4a3ff`.
+Every file kept was read end to end by the importing agent before `promote`.
+
+| Skill | Changed on the way in |
+|---|---|
+| `verification-before-completion` | Nothing in the body. Licence and provenance added |
+| `receiving-code-review` | Nothing in the body. Licence and provenance added |
+| `writing-plans` | Skill names mapped to ours; plans saved under `docs/plans/`; the handoff offers only `executing-plans` |
+| `executing-plans` | Its two helper scripts call three scripts from a skill we did not import, so they were removed and their steps written out as commands; workspace moved to `.run/plans/` |
+| `writing-skills` | Dropped `anthropic-best-practices.md` (Anthropic's text, which upstream's MIT licence does not cover) and a Node helper; added an "In OpenBeast" section |
+| `frontend-design` | Nothing in the body. Added the beast-artifact page rules and the offline-font caveat |
+| `webapp-testing` | Added the Playwright install note and a caution on `with_server.py` (`shell=True`); example paths moved to `/tmp` |
+| `mcp-builder` | Dropped `scripts/`: the evaluation harness calls Anthropic's hosted API. Added where its advice and our tool-count findings disagree |
+| `skill-creator` | Dropped the description-optimization scripts (they drive the `claude` CLI), `quick_validate.py` and `package_skill.py` (they reject our frontmatter). The viewer no longer loads Google Fonts or the SheetJS CDN, and no longer kills the process that owns its port |
+
+**Refused: `web-artifacts-builder`.** Three reasons, any one sufficient:
+
+- It ships `shadcn-components.tar.gz`. The scanner cannot inspect a tarball:
+  15 of its pattern analyzers fail on the skill, which the gate treats as a
+  hard refusal with no override. A reviewer would have to unpack and read 45
+  component files.
+- `init-artifact.sh` runs `npm install -g pnpm`, `pnpm create vite` at
+  "latest", and dozens of unpinned package installs; `bundle-artifact.sh` adds
+  Parcel and `html-inline` the same way. That is an unpinned supply chain
+  executed on the rig, against the posture of our own hash-pinned lockfile.
+- It needs the network on every use, so it does nothing on an `OFFLINE=true`
+  rig.
+
+What would change the answer: the components unpacked into plain files, and a
+committed lockfile for the scaffold. `frontend-design` covers the design half
+without any of this.
+
+**Conflicts with our 15 skills.** None of the nine collides by name. Three of
+upstream's own skills would have (`test-driven-development`), or would have
+overlapped ours (`systematic-debugging` with `debugging-methodology`,
+`requesting-code-review` with `code-review`); they were not imported and the
+references to them were pointed at ours. The remaining disagreements are
+recorded in `skills/README.md` ("Imported"): description style and tone
+(`writing-skills` against `skill-creator` and our own descriptions), and tool
+surface (`mcp-builder` against our deliberately small tool server).
 
 ### Why the last four are skipped
 
@@ -262,6 +307,15 @@ Three conclusions shaped the policy:
 
 ## 9. Risks and what is still open
 
+- **Nine rows are agent-read.** The agent that imported them read every file,
+  and is also the kind of reader a poisoned skill is written to fool. Until a
+  human runs `attest`, treat those rows as scanned and rewritten, not as
+  independently reviewed.
+- **The imported viewer renders model output.** `skill-creator`'s review page
+  puts a few benchmark fields into the page unescaped and embeds run outputs
+  in an inline script. It is served on loopback or opened as a file, and the
+  data comes from our own runs, but do not point it at output from a source
+  you would not open in a browser.
 - **A reviewer can accept everything.** `--accept` with every id is one
   command. The gate makes the review visible and recorded, not mandatory in
   spirit. The ledger row shows what was accepted.
@@ -287,8 +341,8 @@ Three conclusions shaped the policy:
 | Step | State |
 |---|---|
 | 1. Import gate with SkillSpector as the probe | **Built** (this change) |
-| 2. Humanizer through the gate as the first ledger row | Staged; needs a human read and a rewrite |
-| 3. Four Superpowers skills, the Anthropic artifact and Playwright skills, all `prompt_index: false` | Not started |
+| 2. Humanizer through the gate | Staged; needs a human read and a rewrite |
+| 3. Superpowers and Anthropic skills, all `prompt_index: false` | **Done 2026-10-02**: nine imported (agent-read, awaiting `attest`), one refused (§4a) |
 | 4. On-disk plan for the long-horizon runner | Not started; needs its own proposal |
 | 5. Graphify trial behind an A/B | Blocked on a repo-navigation task set |
 

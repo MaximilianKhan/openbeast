@@ -1,22 +1,36 @@
 # TODO
 
-## 🧩 EXTERNAL SKILLS — import gate BUILT 2026-10-01, nothing imported yet
+## 🧩 EXTERNAL SKILLS — gate BUILT 2026-10-01, 9 skills IMPORTED 2026-10-02 (agent-read)
 
 - **What:** 15 popular agent-skill repos reviewed against the mission; verdicts,
   the gate's design and the scanner's measured behaviour are in
   [`EXTERNAL_SKILLS_PLAN.md`](EXTERNAL_SKILLS_PLAN.md).
 - **Built:** `scripts/skill-import.sh` (`fetch` a pinned commit → scan with a
-  pinned SkillSpector → `promote --reviewed-by` → ledger row → `verify`),
+  pinned SkillSpector → `promote` with a named reader → ledger row → `verify`;
+  `attest` for a human to take over an agent-read row),
   `tests/test_skill_import.sh`, a doctor row, a ledger tree hash.
-- **Max's move:** Humanizer is staged at `.run/skill-staging/humanizer/`
+- **Imported:** five from obra/superpowers (`verification-before-completion`,
+  `receiving-code-review`, `writing-plans`, `executing-plans`,
+  `writing-skills`) and four from anthropics/skills (`frontend-design`,
+  `webapp-testing`, `mcp-builder`, `skill-creator`). All `prompt_index: false`;
+  eval era unchanged. Table and conflicts: `skills/README.md`.
+- **Refused:** `web-artifacts-builder`. It ships an opaque tarball the scanner
+  cannot inspect (15 analyzers fail on it), and its scripts install unpinned
+  npm packages at run time. Reasons and what would change the answer are in the
+  plan, §4.
+- **Max's move (1):** all nine rows read `agent claude-opus-5-5 for MK`: an
+  agent read them, no human has. Read each (`git show` the import commit, or
+  the files), then `./scripts/skill-import.sh attest <skill> --reviewed-by MK`.
+- **Max's move (2):** Humanizer is still staged at `.run/skill-staging/humanizer/`
   (`225a6f39ac85`, 7 static findings, none of which looks malicious). Read it,
   prune the non-skill files, then `promote humanizer --reviewed-by MK`.
-- **Next:** the four Superpowers skills and the Anthropic artifact / Playwright
-  skills through the same gate; a proposal for the on-disk plan (24/7 item);
-  Graphify once there is a repo-navigation task set.
+- **Next:** a proposal for the on-disk plan (24/7 item); Graphify once there
+  is a repo-navigation task set; measure whether any import changes behaviour
+  on the local model (`skill-creator` is the tool for that).
 - **Open:** the scanner's LLM pass on the rig is unmeasured; its dependency
   closure is not hash-pinned; it is not run in CI; it sends declared dependency
-  names to OSV.dev; the loader still serves only `SKILL.md`.
+  names to OSV.dev; the loader still serves only `SKILL.md`; Playwright is not
+  installed, so `webapp-testing` cannot run here yet.
 
 ## 🐉 beast-hydra + 🧿 beast-instinct — BUILT (opt-in) 2026-09-30, shipped in v1.7.0; hardware pending
 
