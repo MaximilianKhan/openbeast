@@ -45,8 +45,8 @@ Two things stopped us from using any of it:
 
 - No automatic "pull latest", no runtime skill fetching, no trust on first
   use. Unchanged from `TODO.md`.
-- The gate does not replace the reviewer. `promote` refuses without
-  `--reviewed-by`.
+- The gate does not replace the reviewer. `promote` refuses without a named
+  reader, and records whether that reader was a human or an agent.
 - No vendoring of any third-party tool into the stack's Python closure. The
   scanner lives in its own venv.
 - No import is decided here. Each one is its own review and its own commit.
@@ -146,8 +146,10 @@ fetch <https url> --rev <40-hex sha> --name <skill> [--path <dir>]
    │   scan (static) and print every finding. Nothing in skills/ yet.
    │   ── human: read every file, rewrite the staged copy ──
    ▼
-promote <skill> --reviewed-by <initials> [--accept IDS] [--notes "..."]
-   │   re-scans WHAT WAS EDITED; refuses on any open finding or incomplete scan;
+promote <skill> --reviewed-by <initials> [--accept IDS] [--read-in-full FILES] [--notes "..."]
+   │   (an agent: --agent-read <agent> --ordered-by <initials> in place of --reviewed-by)
+   │   re-scans WHAT WAS EDITED; refuses on any open finding, any unnamed partly
+   │   inspected file, or an incomplete scan;
    │   never overwrites a skill that has no ledger row (one of ours);
    │   adds `prompt_index: false` when the skill does not say
    ▼
@@ -158,8 +160,8 @@ verify            every row's SHA-256 and tree SHA-256 still match the disk
 ```
 
 **Interface.** `scripts/skill-import.sh` with `install-scanner`, `scanner`,
-`fetch`, `scan`, `diff`, `promote`, `verify`. Exit 0 pass, 1 could not judge,
-3 the gate said no.
+`fetch`, `scan`, `diff`, `promote`, `attest`, `verify`. Exit 0 pass, 1 could
+not judge, 3 the gate said no.
 
 **Policy: accept by rule id.** A finding is open until the reviewer names its
 rule id (`--accept TM1,PE3`), and the accepted ids are written into the ledger
@@ -168,8 +170,28 @@ does not decide; §6 is why.
 
 **What blocks regardless.** The scanner missing, timing out or exiting with an
 error; a report without the fields this gate reads; the scanner reporting its
-own execution as unsuccessful, any file uninspected or partly inspected, a
-fatal analysis exception, or a failed analyzer.
+own execution as unsuccessful, any file not inspected at all, a fatal analysis
+exception, or a failed analyzer.
+
+**Partly inspected files: open until named.** The scanner marks a file partly
+inspected when one of its pattern analyzers gives up on it
+(`static_parse_limit`, `obfuscated_instruction_text`, `manifest_parse_error`).
+The first version of this gate refused on any such file. Measured on
+2026-10-02, that rule refuses two of our own skills (`eval-variant-porter`,
+`performance-optimization`) and 5 of the 10 external skills staged that day,
+all on ordinary prose or short shell scripts. So it is handled like a finding:
+the file is open until the reviewer names it (`--read-in-full SKILL.md`),
+meaning "the scanner could not finish this file, so I read all of it", and the
+row records it. If the report's count of partly inspected files and the files
+it names disagree, the gate refuses.
+
+**Who signs.** `--reviewed-by` takes a human's initials and means a human read
+every file. An agent asked to run an import signs as an agent (`--agent-read
+<agent> --ordered-by <initials>`); the cell then reads `agent <agent> for MK`,
+`verify` and doctor count those rows, and `attest` lets a human take one over
+after reading the skill, provided the files still match the row. An agent's
+read is weaker than a human's: it is the kind of reader a poisoned skill is
+written to fool. The row says which one happened.
 
 **Two hashes.** The ledger pinned only `SKILL.md`. Skills that ship helper
 scripts are the riskier kind, so the row now also carries a tree digest over

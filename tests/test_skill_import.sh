@@ -15,6 +15,9 @@
 #   * a blocked promote leaves skills/ and the ledger byte-identical
 #   * the scan always runs --no-llm, so skill contents stay on the box
 #   * an in-house skill is never overwritten by an import
+#   * a file the scanner only partly inspected is open until it is NAMED, and
+#     naming it never overrides a fatal or uninspected file
+#   * an agent that reads a skill signs as an agent; only a human can attest
 #
 # The last section runs `verify` against the REAL ledger, read-only.
 
@@ -120,10 +123,23 @@ report = {
         "status": "partial", "execution_successful": mode != "incomplete",
         "entirely_uninspected_files": 1 if mode == "incomplete" else 0,
         "partially_inspected_files": 0,
-        "ledger_exceptions": [{"reason_code": "reference_missing", "fatal": False}],
+        # Present on most real skills: a backticked path that is not a bundled
+        # file. Reported as `partial`, yet every file is fully inspected.
+        "ledger_exceptions": [{"outcome": "partial", "phase": "reference_resolution",
+                               "reason_code": "reference_missing", "path": "SKILL.md",
+                               "start_line": 9, "end_line": 9, "fatal": False}],
         "analyzer_statuses": [{"analyzer_id": "artifact_integrity", "status": "completed", "failed": 0}],
     },
 }
+comp = report["analysis_completeness"]
+# A partly inspected file, as 2.12.0 reports one (captured 2026-10-02 from
+# skills/eval-variant-porter): the count, plus a non-fatal `partial` exception
+# outside reference resolution that names the file.
+if mode in ("partial", "partialmismatch", "fatal"):
+    comp["partially_inspected_files"] = 2 if mode == "partialmismatch" else 1
+    comp["ledger_exceptions"].append({
+        "outcome": "partial", "phase": "static", "reason_code": "static_parse_limit",
+        "path": "SKILL.md", "fatal": mode == "fatal"})
 if mode == "unknown":
     del report["analysis_completeness"]
 json.dump(report, open(out, "w"))
@@ -349,6 +365,114 @@ if ! run promote renamed --reviewed-by MK >"$TMPROOT/out" 2>&1 && [[ ! -e "$SAND
   pass "a frontmatter name that does not match the import name is refused"
 else
   fail "a name mismatch was promoted"
+fi
+
+# --- 6b. Partly inspected files: open until named, never an override ---
+echo ""
+echo "Partly inspected files:"
+mk_upstream() { # mk_upstream <name>: a second clean skill in the fixture
+  mkdir -p "$FIXTURE/pack/$1"
+  printf -- '---\nname: %s\ndescription: Another demo skill for the import tests.\n---\n\n# %s\n\n%s\n' "$1" "$1" \
+    "Body long enough to be a real skill: read the plan, run the checks, report what they print." \
+    > "$FIXTURE/pack/$1/SKILL.md"
+  run fetch "$URL" --rev "$REV" --name "$1" --path "pack/$1" >/dev/null 2>&1
+}
+mk_upstream part
+before="$(ledger_sum)"
+part_blocked() { [[ ! -e "$SANDBOX/skills/part" && "$(ledger_sum)" == "$before" ]]; }
+echo partial > "$SCAN_MODE"
+run promote part --reviewed-by MK >"$TMPROOT/out" 2>&1; rc=$?
+if [[ $rc -eq 3 ]] && part_blocked && grep -q "PARTIAL  *SKILL.md" "$TMPROOT/out" \
+   && grep -q "static_parse_limit" "$TMPROOT/out"; then
+  pass "a partly inspected file blocks promote (exit 3) and is shown with its reason"
+else
+  fail "a partly inspected file did not block promote (rc=$rc): $(tail -3 "$TMPROOT/out")"
+fi
+if ! run promote part --reviewed-by MK --read-in-full scripts/other.sh >/dev/null 2>&1 && part_blocked; then
+  pass "naming a DIFFERENT file does not unblock the partly inspected one"
+else
+  fail "--read-in-full scripts/other.sh unblocked SKILL.md"
+fi
+for mode in partialmismatch fatal; do
+  echo "$mode" > "$SCAN_MODE"
+  if ! run promote part --reviewed-by MK --read-in-full SKILL.md >/dev/null 2>&1 && part_blocked; then
+    pass "scanner '$mode': naming the file does not override it; promote is refused"
+  else
+    fail "scanner '$mode': --read-in-full promoted a skill the scanner could not account for"
+  fi
+done
+echo incomplete > "$SCAN_MODE"
+if ! run promote part --reviewed-by MK --read-in-full SKILL.md >/dev/null 2>&1 && part_blocked; then
+  pass "an UNINSPECTED file is still refused whatever is named"
+else
+  fail "--read-in-full overrode an entirely uninspected file"
+fi
+echo partial > "$SCAN_MODE"
+if run promote part --reviewed-by MK --read-in-full SKILL.md >"$TMPROOT/out" 2>&1 \
+   && grep '^| `part`' "$LEDGER" | grep -q "scanner partial on SKILL.md (read in full)"; then
+  pass "naming the file (--read-in-full SKILL.md) promotes, and the row records it"
+else
+  fail "promote with the partial file named failed: $(tail -3 "$TMPROOT/out")"
+fi
+
+# --- 6c. Who signs: a human's initials, or an agent as an agent ---
+echo ""
+echo "Reviewer identity:"
+echo clean > "$SCAN_MODE"
+mk_upstream bot
+before="$(ledger_sum)"
+bot_blocked() { [[ ! -e "$SANDBOX/skills/bot" && "$(ledger_sum)" == "$before" ]]; }
+if ! run promote bot --agent-read some-agent >"$TMPROOT/out" 2>&1 && bot_blocked \
+   && grep -q "needs both" "$TMPROOT/out" \
+   && ! run promote bot --ordered-by MK >"$TMPROOT/out" 2>&1 && bot_blocked \
+   && grep -q "needs both" "$TMPROOT/out"; then
+  pass "an agent-read promote needs BOTH the agent and the human who ordered it"
+else
+  fail "an agent-read promote went through with half its identity"
+fi
+if ! run promote bot --reviewed-by MK --agent-read some-agent --ordered-by MK >/dev/null 2>&1 && bot_blocked; then
+  pass "claiming a human review AND an agent read in one row is refused"
+else
+  fail "--reviewed-by together with --agent-read was accepted"
+fi
+if ! run promote bot --reviewed-by some-agent >/dev/null 2>&1 && bot_blocked; then
+  pass "an agent name is not accepted as --reviewed-by initials"
+else
+  fail "--reviewed-by accepted something that is not initials"
+fi
+if run promote bot --agent-read some-agent --ordered-by mk >"$TMPROOT/out" 2>&1 \
+   && grep '^| `bot`' "$LEDGER" | grep -q '| agent some-agent for MK |' && grep -q "attest bot" "$TMPROOT/out"; then
+  pass "an agent-read row says so in the ledger, and promote points at attest"
+else
+  fail "agent-read promote did not record the agent: $(grep '^| `bot`' "$LEDGER")"
+fi
+if run verify >"$TMPROOT/out" 2>&1 && grep -q "1 read by an agent" "$TMPROOT/out"; then
+  pass "verify counts the rows no human has read"
+else
+  fail "verify did not report the agent-read row: $(tail -1 "$TMPROOT/out")"
+fi
+echo "tampered" >> "$SANDBOX/skills/bot/SKILL.md"
+run attest bot --reviewed-by MK >/dev/null 2>&1; rc=$?
+if [[ $rc -eq 3 ]] && grep '^| `bot`' "$LEDGER" | grep -q '| agent some-agent for MK |'; then
+  pass "attest refuses to sign files that no longer match the row (exit 3, row unchanged)"
+else
+  fail "attest signed a tampered skill (rc=$rc)"
+fi
+sed -i '$ d' "$SANDBOX/skills/bot/SKILL.md"
+if ! run attest bot >/dev/null 2>&1 && ! run attest bot --reviewed-by some-agent >/dev/null 2>&1 \
+   && ! run attest nosuch --reviewed-by MK >/dev/null 2>&1 \
+   && grep '^| `bot`' "$LEDGER" | grep -q '| agent some-agent for MK |'; then
+  pass "attest needs a human's initials and an existing row"
+else
+  fail "attest ran without initials, with an agent name, or on a missing row"
+fi
+tree_before="$(grep '^| `bot`' "$LEDGER" | cut -d'|' -f5,6)"
+if run attest bot --reviewed-by MK >/dev/null 2>&1 && grep '^| `bot`' "$LEDGER" | grep -q '| MK |' \
+   && [[ "$(grep '^| `bot`' "$LEDGER" | cut -d'|' -f5,6)" == "$tree_before" ]] \
+   && run verify >"$TMPROOT/out" 2>&1 && ! grep -q "read by an agent" "$TMPROOT/out"; then
+  pass "attest replaces the reviewer cell only; hashes untouched, verify no longer counts it"
+else
+  fail "attest did not replace the reviewer, or changed the hashes"
 fi
 
 # --- 7. Verify catches drift ---

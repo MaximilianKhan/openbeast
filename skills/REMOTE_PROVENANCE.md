@@ -35,6 +35,20 @@ and the accepted ids are written into the row's notes. The scan is static
 (`--no-llm`), so a skill that *discusses* dangerous patterns is flagged like one
 that uses them; reading the flagged lines is the reviewer's job.
 
+A file the scanner could only **partly** inspect is open the same way, until
+you name it: `--read-in-full SKILL.md,scripts/run.py` says "the scanner could
+not finish this file, so I read all of it", and the row records it. A file it
+did not inspect at all, a fatal exception or a failed analyzer cannot be named
+away.
+
+**Who signs.** `--reviewed-by MK` means a human read every file. An agent
+asked to do an import signs as an agent (`--agent-read <agent> --ordered-by
+MK`), and the `Reviewed by` cell reads `agent <agent> for MK`. That row is
+weaker: the reader is the kind of system a poisoned skill is written to fool.
+`verify` and `./start.sh doctor` count such rows. After reading the skill
+yourself, `./scripts/skill-import.sh attest <skill> --reviewed-by MK` replaces
+the cell; it refuses if the files no longer match the row.
+
 The hashes, by hand:
 
 ```bash
@@ -52,8 +66,8 @@ sha256sum skills/<name>/SKILL.md | cut -d' ' -f1
 | `SHA-256` | sha256 of the *imported* SKILL.md as it sits on disk after our rewrite |
 | `Tree SHA-256` | one digest over every file in the skill directory (command above), so a changed helper script or reference file is caught too |
 | `Imported` | ISO date (YYYY-MM-DD) of the import |
-| `Reviewed by` | Initials of the human who ran the review + sandbox probe |
-| `Rewrite notes` | One line on what we changed during the strip/rewrite pass (tool names remapped, paths generalized, dangerous instructions removed, etc.). `promote` appends the scan it passed (scanner version, score, accepted rule ids) |
+| `Reviewed by` | Initials of the human who read every file, or `agent <name> for <initials>` when an agent read it on that human's instruction and no human has attested yet |
+| `Rewrite notes` | One line on what we changed during the strip/rewrite pass (tool names remapped, paths generalized, dangerous instructions removed, etc.). `promote` appends the scan it passed (scanner version, score, accepted rule ids, partly inspected files read in full) |
 
 ## Ledger
 

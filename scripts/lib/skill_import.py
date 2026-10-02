@@ -31,6 +31,20 @@ the policy is "accept by rule id" rather than "trust the recommendation":
     The cause is `analysis_completeness.status == "partial"`: a backticked
     path in the prose that is not a bundled file. So CAUTION alone carries no
     signal, and `partial` alone must not block.
+  * MEASURED 2026-10-02: our own skills/eval-variant-porter and
+    skills/performance-optimization each have one PARTLY INSPECTED file (a
+    pattern analyzer hit `static_parse_limit` / `manifest_parse_error` on
+    plain prose). A hard block on that count would refuse two of our own
+    skills, so a partly inspected file is treated like a finding: it is open
+    until the reviewer names the file (`--read-in-full SKILL.md`), which says
+    "the scanner could not finish this file, so I read all of it". A file the
+    scanner did not inspect AT ALL, a fatal exception and a failed analyzer
+    still refuse with no override.
+
+WHO SIGNS.  `--reviewed-by MK` means a human read every file. An agent asked
+to do an import signs as what it is (`--agent-read <agent> --ordered-by MK`),
+and the ledger row says so: the reader was the kind of system a poisoned
+skill targets, so that row is weaker until a human runs `attest`.
 
 EGRESS.  The scan runs with --no-llm, so file contents never leave the box.
 SkillSpector's dependency check still sends the package names a skill
@@ -71,6 +85,10 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 REV_RE = re.compile(r"^[0-9a-f]{40}$")
 URL_RE = re.compile(r"^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/[A-Za-z0-9._~/-]+$")
 INITIALS_RE = re.compile(r"^[A-Za-z]{2,5}$")
+AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,47}$")
+#: The ledger's `Reviewed by` cell for an agent-read import. `verify` counts
+#: these, and `attest` is how a human replaces one with their own initials.
+AGENT_CELL_RE = re.compile(r"^agent ([a-z0-9][a-z0-9.-]{1,47}) for ([A-Z]{2,5})$")
 RULE_RE = re.compile(r"^[A-Z]{1,4}[0-9]{1,3}$")
 
 #: A skill is prose plus a few helper files. Anything near these is not one.
@@ -287,12 +305,14 @@ def run_scanner(skill_dir: str) -> dict:
             pass
 
 
-def judge(report: dict, accept: set[str]) -> tuple[bool, list[str], dict]:
+def judge(report: dict, accept: set[str],
+          read_in_full: set[str] | None = None) -> tuple[bool, list[str], dict]:
     """(allowed, lines to show the reviewer, summary for the ledger).
 
     Raises GateError when the report is not the shape this was written
     against: an unknown report is refused, never read optimistically.
     """
+    read_in_full = read_in_full or set()
     try:
         risk = report["risk_assessment"]
         rec = risk["recommendation"]
@@ -305,7 +325,15 @@ def judge(report: dict, accept: set[str]) -> tuple[bool, list[str], dict]:
         partial_files = int(comp["partially_inspected_files"])
         exceptions = comp["ledger_exceptions"]
         ids = [str(i["id"]).upper() for i in issues]
-    except (KeyError, TypeError, ValueError) as e:
+        # Which files, and why. A missing reference (a backticked path that is
+        # not a bundled file) is reported as partial too but leaves every file
+        # fully inspected, so it is not one of these.
+        partial: dict[str, list[str]] = {}
+        for exc in exceptions:
+            if (exc.get("outcome") == "partial" and not exc.get("fatal")
+                    and exc.get("phase") != "reference_resolution"):
+                partial.setdefault(str(exc["path"]), []).append(str(exc["reason_code"]))
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise GateError(
             f"unrecognised scanner report (missing {e}). This gate reads the "
             f"SkillSpector {SCANNER_VERSION} JSON; re-read a real report before "
@@ -322,8 +350,11 @@ def judge(report: dict, accept: set[str]) -> tuple[bool, list[str], dict]:
         incomplete.append("the scanner reports its own execution as unsuccessful")
     if uninspected:
         incomplete.append(f"{uninspected} file(s) were not inspected at all")
-    if partial_files:
-        incomplete.append(f"{partial_files} file(s) were only partly inspected")
+    if partial_files != len(partial):
+        # The count and the per-file reasons must agree, or this gate does not
+        # know which files the scanner failed to finish.
+        incomplete.append(f"{partial_files} file(s) were only partly inspected, but the "
+                          f"report names {len(partial)}")
     for exc in exceptions:
         if isinstance(exc, dict) and exc.get("fatal"):
             incomplete.append(f"fatal analysis exception at {exc.get('path')}: {exc.get('reason_code')}")
@@ -342,33 +373,51 @@ def judge(report: dict, accept: set[str]) -> tuple[bool, list[str], dict]:
         lines.append(f"  {mark:8} {str(i.get('severity', '?')):8} {str(i['id']).upper():5} "
                      f"{where:22} {label}: {text}")
 
+    for path in sorted(partial):
+        mark = "read" if path in read_in_full else "OPEN"
+        lines.append(f"  {mark:8} PARTIAL  {path:28} the scanner could not finish this file: "
+                     f"{', '.join(sorted(set(partial[path])))}")
+
     open_ids = sorted(set(ids) - accept)
+    open_partial = sorted(set(partial) - read_in_full)
     unused = sorted(accept - set(ids))
     for rule in unused:
         lines.append(f"  ! --accept {rule} matches no finding in this scan")
+    for path in sorted(read_in_full - set(partial)):
+        lines.append(f"  ! --read-in-full {path} is not a partly inspected file in this scan")
     for reason in incomplete:
         lines.append(f"  ✗ incomplete analysis: {reason}")
+    if open_partial:
+        lines.append(f"  ✗ {len(open_partial)} file(s) the scanner only partly inspected: "
+                     f"{', '.join(open_partial)}")
+        lines.append("    read each one end to end, then name it:  --read-in-full <FILE,FILE>")
 
-    allowed = not incomplete and not open_ids
+    allowed = not incomplete and not open_ids and not open_partial
     if open_ids:
         lines.append(f"  ✗ {len(open_ids)} finding type(s) not accepted: {', '.join(open_ids)}")
         lines.append("    read each flagged line in the skill, then either rewrite the staged copy")
         lines.append("    or accept the rule ids you have read:  --accept <ID,ID>")
     summary = {"version": version, "score": score, "recommendation": rec,
-               "accepted": sorted(set(ids) & accept), "findings": len(issues)}
+               "accepted": sorted(set(ids) & accept), "findings": len(issues),
+               "read_in_full": sorted(set(partial) & read_in_full)}
     return allowed, lines, summary
 
 
-def scan_and_judge(skill_dir: str, accept: set[str]) -> tuple[bool, dict]:
+def scan_and_judge(skill_dir: str, accept: set[str],
+                   read_in_full: set[str] | None = None) -> tuple[bool, dict]:
     report = run_scanner(skill_dir)
-    allowed, lines, summary = judge(report, accept)
+    allowed, lines, summary = judge(report, accept, read_in_full)
     say(f"scan: SkillSpector {summary['version']} static (--no-llm) — score "
         f"{summary['score']}, {summary['recommendation']}, {summary['findings']} finding(s)")
     for line in lines:
         say(line)
     if allowed:
-        say("  ✓ nothing open" + (f" (accepted: {', '.join(summary['accepted'])})"
-                                  if summary["accepted"] else ""))
+        closed = []
+        if summary["accepted"]:
+            closed.append(f"accepted: {', '.join(summary['accepted'])}")
+        if summary["read_in_full"]:
+            closed.append(f"read in full: {', '.join(summary['read_in_full'])}")
+        say("  ✓ nothing open" + (f" ({'; '.join(closed)})" if closed else ""))
     return allowed, summary
 
 
@@ -382,6 +431,46 @@ def parse_accept(raw: str | None) -> set[str]:
             raise GateError(f"--accept takes scanner rule ids (TM1,PE3), not {part!r}")
         out.add(part)
     return out
+
+
+def parse_read_in_full(raw: str | None) -> set[str]:
+    """Paths inside the skill, as the scan prints them (SKILL.md, scripts/x.py)."""
+    out: set[str] = set()
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if os.path.isabs(part) or ".." in part.split("/"):
+            raise GateError(f"--read-in-full takes paths inside the skill, not {part!r}")
+        out.add(part[2:] if part.startswith("./") else part)
+    return out
+
+
+def reviewer_cell(args) -> str:
+    """The ledger's `Reviewed by` cell: a human's initials, or an agent's name
+    and the human who ordered the import. Never both, never neither."""
+    human, agent, boss = args.reviewed_by, args.agent_read, args.ordered_by
+    if human and (agent or boss):
+        raise GateError("--reviewed-by (a human read it) and --agent-read/--ordered-by "
+                        "(an agent read it) are two different rows; pick the true one")
+    if human:
+        if not INITIALS_RE.match(human):
+            raise GateError(f"--reviewed-by takes a human's initials (2-5 letters), not {human!r}")
+        return human.upper()
+    if agent or boss:
+        if not (agent and boss):
+            raise GateError("an agent-read import needs both --agent-read <agent> and "
+                            "--ordered-by <initials of the human who asked for it>")
+        if not AGENT_RE.match(agent):
+            raise GateError(f"--agent-read takes a lowercase agent name (claude-opus-5-5), not {agent!r}")
+        if not INITIALS_RE.match(boss):
+            raise GateError(f"--ordered-by takes a human's initials (2-5 letters), not {boss!r}")
+        return f"agent {agent} for {boss.upper()}"
+    raise GateError(
+        "a reviewer is required: --reviewed-by <initials> for the human who read this "
+        "skill end to end,\n  or --agent-read <agent> --ordered-by <initials> when an agent "
+        "read it on a human's instruction.\n"
+        "  The scan narrows the review; it does not replace it.")
 
 
 # --- the ledger -------------------------------------------------------------
@@ -482,7 +571,8 @@ def cmd_scan(args) -> int:
     if not os.path.isfile(os.path.join(target, "SKILL.md")):
         raise GateError(f"{target} has no SKILL.md")
     walk_skill(target)
-    allowed, _ = scan_and_judge(target, parse_accept(args.accept))
+    allowed, _ = scan_and_judge(target, parse_accept(args.accept),
+                                parse_read_in_full(args.read_in_full))
     return EXIT_OK if allowed else EXIT_BLOCKED
 
 
@@ -563,6 +653,7 @@ def cmd_fetch(args) -> int:
         say(f"  3. ./scripts/skill-import.sh diff {name}        (this is a refresh)")
     say(f"  {'4' if os.path.isdir(os.path.join(SKILLS, name)) else '3'}. "
         f"./scripts/skill-import.sh promote {name} --reviewed-by <initials> --notes \"...\"")
+    say("     (an agent doing this for you signs as itself: --agent-read <agent> --ordered-by <initials>)")
     return EXIT_OK
 
 
@@ -582,10 +673,7 @@ def cmd_promote(args) -> int:
     name = args.name
     if not NAME_RE.match(name):
         raise GateError(f"not a skill name: {name!r}")
-    if not args.reviewed_by or not INITIALS_RE.match(args.reviewed_by):
-        raise GateError(
-            "--reviewed-by <initials> is required: the initials of the human who read "
-            "this skill end to end.\n  The scan narrows the review; it does not replace it.")
+    reviewer = reviewer_cell(args)
     staged = os.path.join(STAGING, name)
     prov_path = staged + ".provenance.json"
     if not os.path.isdir(staged) or not os.path.isfile(prov_path):
@@ -613,7 +701,8 @@ def cmd_promote(args) -> int:
     walk_skill(staged)
 
     say(f"promote {name}  ({url}@{rev[:12]})")
-    allowed, summary = scan_and_judge(staged, parse_accept(args.accept))
+    allowed, summary = scan_and_judge(staged, parse_accept(args.accept),
+                                      parse_read_in_full(args.read_in_full))
     if not allowed:
         say("")
         say(f"NOT promoted. skills/{name} and the ledger are untouched.")
@@ -628,6 +717,8 @@ def cmd_promote(args) -> int:
               f"{summary['recommendation']}")
     if summary["accepted"]:
         notes += f", accepted {','.join(summary['accepted'])}"
+    if summary["read_in_full"]:
+        notes += f", scanner partial on {','.join(summary['read_in_full'])} (read in full)"
     row = {
         "Skill": f"`{name}`",
         "Source URL": permalink(url, rev, sub),
@@ -635,7 +726,7 @@ def cmd_promote(args) -> int:
         "SHA-256": f"`{sha256_file(os.path.join(live, 'SKILL.md'))}`",
         "Tree SHA-256": f"`{tree_sha256(live)}`",
         "Imported": _today(),
-        "Reviewed by": args.reviewed_by.upper(),
+        "Reviewed by": reviewer,
         "Rewrite notes": notes.replace("|", "\\|"),
     }
     write_ledger(lines, start, end, [r for r in rows if r not in known] + [row])
@@ -647,7 +738,38 @@ def cmd_promote(args) -> int:
     elif str(fm.get("prompt_index", "")).lower() != "false":
         say("  ! this skill is ON the always-on menu: run scripts/generate-skill-index.py")
         say("    and expect the eval era to roll (./scripts/eval-era.sh)")
+    if AGENT_CELL_RE.match(reviewer):
+        say("  ! read by an agent, not a human. After reading it yourself:")
+        say(f"    ./scripts/skill-import.sh attest {name} --reviewed-by <initials>")
     say(f"  stage both in one commit:  git add skills/{name} skills/REMOTE_PROVENANCE.md")
+    return EXIT_OK
+
+
+def cmd_attest(args) -> int:
+    """A human takes over an agent-read row after reading the live skill.
+
+    Only the `Reviewed by` cell changes. It is refused unless the files still
+    match the row's hashes: the signature is for what the ledger pinned, not
+    for whatever is on disk now.
+    """
+    name = args.name
+    if not args.reviewed_by or not INITIALS_RE.match(args.reviewed_by):
+        raise GateError("attest needs --reviewed-by <initials>: the human who read it")
+    lines, start, end, rows = read_ledger()
+    known = [r for r in rows if r["Skill"].strip("`") == name]
+    if not known:
+        raise GateError(f"{name} has no ledger row; there is nothing to attest")
+    row = known[0]
+    live = os.path.join(SKILLS, name)
+    md = os.path.join(live, "SKILL.md")
+    if (not os.path.isfile(md) or sha256_file(md) != row["SHA-256"].strip("`")
+            or tree_sha256(live) != row["Tree SHA-256"].strip("`")):
+        print(f"  ✗ {name}: the files do not match the ledger row; attest signs what was pinned")
+        return EXIT_BLOCKED
+    was = row["Reviewed by"]
+    row["Reviewed by"] = args.reviewed_by.upper()
+    write_ledger(lines, start, end, rows)
+    say(f"attested: {name} — Reviewed by {was} → {row['Reviewed by']}")
     return EXIT_OK
 
 
@@ -681,7 +803,9 @@ def cmd_verify(args) -> int:
         print(f"remote skills: {bad} of {len(rows)} do NOT match skills/REMOTE_PROVENANCE.md")
         print("  an edit to an imported skill is a re-import: re-stage, re-scan, re-promote")
         return EXIT_BLOCKED
-    say(f"remote skills: OK — {len(rows)} imported, all match the ledger" if rows
+    agent_read = sum(1 for r in rows if AGENT_CELL_RE.match(r["Reviewed by"]))
+    tail = f" ({agent_read} read by an agent, not yet by a human)" if agent_read else ""
+    say(f"remote skills: OK — {len(rows)} imported, all match the ledger{tail}" if rows
         else "remote skills: OK — none imported")
     return EXIT_OK
 
@@ -698,6 +822,7 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("scan", help="scan a skill directory and print the gate's verdict")
     p.add_argument("dir")
     p.add_argument("--accept", help="rule ids already read and accepted, e.g. TM1,PE3")
+    p.add_argument("--read-in-full", help="partly inspected files you read end to end")
 
     p = sub.add_parser("fetch", help="fetch a pinned commit into .run/skill-staging/ and scan it")
     p.add_argument("url")
@@ -712,8 +837,16 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("promote", help="re-scan the staged copy, copy it to skills/, write the ledger row")
     p.add_argument("name")
     p.add_argument("--reviewed-by", help="initials of the human who read it end to end")
+    p.add_argument("--agent-read", help="the agent that read it, when no human did")
+    p.add_argument("--ordered-by", help="initials of the human who asked the agent for the import")
     p.add_argument("--accept", help="rule ids read and accepted, e.g. TM1,PE3")
+    p.add_argument("--read-in-full", help="files the scanner only partly inspected and you read "
+                                          "end to end, e.g. SKILL.md,scripts/run.py")
     p.add_argument("--notes", help="one line on what the rewrite changed")
+
+    p = sub.add_parser("attest", help="a human signs an agent-read row after reading the skill")
+    p.add_argument("name")
+    p.add_argument("--reviewed-by", help="initials of the human who read it end to end")
 
     p = sub.add_parser("verify", help="every ledger row still matches the files on disk")
     p.add_argument("--quiet", action="store_true")
@@ -721,7 +854,8 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     handler = {"scanner": cmd_scanner, "install-scanner": cmd_install_scanner,
                "scan": cmd_scan, "fetch": cmd_fetch, "diff": cmd_diff,
-               "promote": cmd_promote, "verify": cmd_verify}[args.cmd]
+               "promote": cmd_promote, "attest": cmd_attest,
+               "verify": cmd_verify}[args.cmd]
     try:
         return handler(args)
     except GateError as e:

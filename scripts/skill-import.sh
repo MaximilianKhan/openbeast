@@ -8,8 +8,12 @@
 #                                                        stage into .run/skill-staging/ and scan
 #   ./scripts/skill-import.sh scan <dir> [--accept IDS]  scan any skill directory
 #   ./scripts/skill-import.sh diff <skill>               live vs staged (a refresh)
-#   ./scripts/skill-import.sh promote <skill> --reviewed-by <initials> [--accept IDS] [--notes "..."]
+#   ./scripts/skill-import.sh promote <skill> --reviewed-by <initials> [--accept IDS]
+#                                    [--read-in-full FILES] [--notes "..."]
 #                                                        re-scan, copy to skills/, write the ledger row
+#        (an agent signs as itself: --agent-read <agent> --ordered-by <initials>, not --reviewed-by)
+#   ./scripts/skill-import.sh attest <skill> --reviewed-by <initials>
+#                                                        a human signs an agent-read row after reading it
 #   ./scripts/skill-import.sh verify [--quiet]           every ledger row still matches the disk
 #
 # Exit: 0 pass · 1 could not judge (no scanner, bad input) · 3 the gate said no.
@@ -19,8 +23,9 @@
 # runner cannot defend against. The review gate in docs/TODO.md ("Selectively
 # pull skills") has always required a pinned source, a probe, a content hash
 # and a ledger row; this is the tool that makes those four steps one command
-# each instead of four things to remember. The fifth step, a human reading the
-# skill end to end, is not automated and `promote` refuses without it.
+# each instead of four things to remember. The fifth step, reading the skill
+# end to end, is not automated: `promote` refuses without a named reader, and
+# the ledger says whether that reader was a human or an agent.
 #
 # Deliberately does NOT source lib/conf.sh: that generates a SearXNG secret and
 # appends it to openbeast.conf, and `verify` runs from doctor and the test

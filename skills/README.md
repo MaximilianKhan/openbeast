@@ -90,10 +90,13 @@ so a remote one comes in through the gate, one skill at a time:
 ```
 
 `fetch` pins a commit and scans it; `promote` re-scans what you edited, refuses
-on any finding you have not accepted by rule id, keeps the skill off the
-always-on menu (`prompt_index: false`), and writes the row in
+on any finding you have not accepted by rule id (and any file the scanner only
+partly inspected that you have not named with `--read-in-full`), keeps the skill
+off the always-on menu (`prompt_index: false`), and writes the row in
 [`REMOTE_PROVENANCE.md`](REMOTE_PROVENANCE.md). `verify` (run by doctor and the
-test suite) fails when a row and the files disagree. Design, measured scanner
+test suite) fails when a row and the files disagree. An agent doing an import
+signs as an agent (`--agent-read <agent> --ordered-by <initials>`); a human
+upgrades that row with `attest` after reading the skill. Design, measured scanner
 behaviour and the verdicts on 15 popular skill repos:
 [`docs/EXTERNAL_SKILLS_PLAN.md`](../docs/EXTERNAL_SKILLS_PLAN.md).
 
