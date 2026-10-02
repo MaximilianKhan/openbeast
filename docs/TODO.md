@@ -1,5 +1,23 @@
 # TODO
 
+## 🧩 EXTERNAL SKILLS — import gate BUILT 2026-10-01, nothing imported yet
+
+- **What:** 15 popular agent-skill repos reviewed against the mission; verdicts,
+  the gate's design and the scanner's measured behaviour are in
+  [`EXTERNAL_SKILLS_PLAN.md`](EXTERNAL_SKILLS_PLAN.md).
+- **Built:** `scripts/skill-import.sh` (`fetch` a pinned commit → scan with a
+  pinned SkillSpector → `promote --reviewed-by` → ledger row → `verify`),
+  `tests/test_skill_import.sh`, a doctor row, a ledger tree hash.
+- **Max's move:** Humanizer is staged at `.run/skill-staging/humanizer/`
+  (`225a6f39ac85`, 7 static findings, none of which looks malicious). Read it,
+  prune the non-skill files, then `promote humanizer --reviewed-by MK`.
+- **Next:** the four Superpowers skills and the Anthropic artifact / Playwright
+  skills through the same gate; a proposal for the on-disk plan (24/7 item);
+  Graphify once there is a repo-navigation task set.
+- **Open:** the scanner's LLM pass on the rig is unmeasured; its dependency
+  closure is not hash-pinned; it is not run in CI; it sends declared dependency
+  names to OSV.dev; the loader still serves only `SKILL.md`.
+
 ## 🐉 beast-hydra + 🧿 beast-instinct — BUILT (opt-in) 2026-09-30, shipped in v1.7.0; hardware pending
 
 - **beast-hydra** — distributed inference routing across heterogeneous rigs
@@ -2853,6 +2871,10 @@ rate stays near-zero, escalate Phase 5 (auto-routing layer from
 engineering cost. If skills do fire on real conversational work, hold.
 
 ### Selectively pull skills from browse.sh
+
+> **2026-10-01:** steps 2, 3 and 5 of the gate below are now a tool
+> (`scripts/skill-import.sh`, [`EXTERNAL_SKILLS_PLAN.md`](EXTERNAL_SKILLS_PLAN.md)).
+> Steps 1 and 4 (a human reads it; strip and rewrite) stay manual by design.
 
 Pull curated skills from <https://browse.sh/> into our local `skills/`
 catalog to expand what the model can invoke without writing every skill

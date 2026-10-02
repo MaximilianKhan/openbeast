@@ -324,13 +324,14 @@ scripts/                     # Server, ops, and feature CLIs
   gpu-lease.sh               # Advisory GPU lease: status/acquire/release/run
   eval-era.sh                # The eval era hash and the six files behind it
   land-dependabot.sh         # Rebase → relock → approve → merge, one Dependabot PR at a time
+  skill-import.sh            # Remote-skill gate: fetch a pinned commit, scan, promote with a reviewer, verify
   uninstall.sh               # Rig decommissioning (dry run by default; --go; --purge-*)
   logrotate.sh               # Log rotation for .run/ (policy: logrotate-openbeast.conf; --install = daily user timer)
   ext.sh                     # Extension manager (enable/disable/list optional services)
   ssd-wear.sh                # SMART-based drive wear report
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
                              #   proc.sh (identity-checked signalling), portown.sh (does OUR pid hold the port),
-                             #   bundle_manifest.py, pydeps_lock.py,
+                             #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
                              #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
@@ -366,6 +367,7 @@ searxng/settings.yml         # Custom config: enables JSON format + disables lim
 tests/                       # pytest + standalone shell suites (tests/run_tests.sh runs all)
   test_scripts.sh            # Script behaviour under set -e/pipefail, incl. end-to-end healthcheck
   test_offline_fixes.sh      # bundle/pydeps/fetch-weight with stubbed hf/pip/docker/git
+  test_skill_import.sh       # the remote-skill gate against a stub scanner and a stub git
   test_job_sh.sh · test_artifact_cli.sh · test_clients.sh · test_ssd_wear.sh
   test_chat_*.py · test_sessions.py · test_steering.py · test_artifact_*.py
   test_e2e_chat_artifact.py  # both, end to end, in a phone-sized headless Chromium (skips without one)
