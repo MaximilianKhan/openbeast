@@ -73,6 +73,7 @@ sha256sum skills/<name>/SKILL.md | cut -d' ' -f1
 
 | Skill | Source URL | Upstream rev | SHA-256 | Tree SHA-256 | Imported | Reviewed by | Rewrite notes |
 |---|---|---|---|---|---|---|---|
+| `receiving-code-review` | https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/receiving-code-review | `8ca22dba9a94f28898bbce59f2537ff4d87c747d` | `f5f6a0c27a5cec34fd0c094838c95609eb220a1beb706058f60fd5ac887720bb` | `e9456cb4ffa2929ff71213cb00d9806df03cda067956eb2fe7683dfde3065c85` | 2026-10-02 | agent claude-opus-5-5 for MK | Body verbatim; added MIT LICENSE and a provenance section · scan: SkillSpector 2.12.0 static, score 0, CAUTION |
 | `verification-before-completion` | https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/verification-before-completion | `8ca22dba9a94f28898bbce59f2537ff4d87c747d` | `e433276376b4df1e6547d0df28693f2a48f7ba495c1f6d1671dab70288111d9e` | `bca766c22ee3325e14a7483b29375fe5b5e61cc688245b365d2701e2d0ca442e` | 2026-10-02 | agent claude-opus-5-5 for MK | Body verbatim; added MIT LICENSE and a provenance section. EA2 is the red-flag list line 'About to commit/push/PR without verification' · scan: SkillSpector 2.12.0 static, score 7, CAUTION, accepted EA2 |
 
 ## Refresh policy
