@@ -1031,7 +1031,13 @@ if grep -q 'Refusing to roll back' "$REPO_DIR/start.sh"; then
 else
   fail "start.sh would roll back past a WEIGHT_ENFORCE=strict refusal"
 fi
-WE_DEFAULT=$(env -i PATH="$PATH" HOME="$(mktemp -d)" REPO_DIR="$REPO_DIR" \
+# A DEFAULT is what conf.sh resolves with no openbeast.conf, so REPO_DIR is an
+# empty scratch dir, not the checkout: there, this read the rig's own conf
+# (WEIGHT_ENFORCE=strict on the rig turned the check red), and `env -i` drops
+# OB_CONF_READONLY, so it also minted a secret into the checkout's conf.
+_NOCONF="$(mktemp -d)"
+ln -s "$REPO_DIR/scripts" "$_NOCONF/scripts"   # conf.sh sources its siblings by $REPO_DIR
+WE_DEFAULT=$(env -i PATH="$PATH" HOME="$_NOCONF" REPO_DIR="$_NOCONF" \
   bash -c "source '$REPO_DIR/scripts/lib/conf.sh' >/dev/null 2>&1; printf '%s' \"\$WEIGHT_ENFORCE\"") || WE_DEFAULT="(failed)"
 if [[ "$WE_DEFAULT" == "warn" ]]; then
   pass "WEIGHT_ENFORCE defaults to warn (never blocks an upgrade's first start)"
@@ -1337,7 +1343,9 @@ chmod +x "$_PF_TMP/curl"
 # OPENBEAST_GPU_BACKEND is the ENV name; GPU_BACKEND is the conf-file key
 # (scripts/lib/conf.sh:30). Setting the latter here looked like it worked and
 # silently did nothing.
-_PF_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=cpu "$REPO_DIR/bootstrap.sh" \
+# OPENBEAST_OFFLINE=false for the same reason: OFFLINE=true in the rig's own
+# openbeast.conf skips the network probe this check is about.
+_PF_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=cpu OPENBEAST_OFFLINE=false "$REPO_DIR/bootstrap.sh" \
            --preflight --minimal 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 if grep -q 'cannot reach' <<< "$_PF_OUT"; then
   pass "preflight reports unreachable hosts instead of only checking curl exists"
@@ -1811,8 +1819,8 @@ echo "OFFLINE (closed network):"
 # a connect timeout and then misdiagnosed the stall. These checks are about
 # the telling.
 for _v in true TRUE yes 1 on; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "on" ]]; then
     pass "OFFLINE=$_v resolves to on"
   else
@@ -1820,10 +1828,12 @@ for _v in true TRUE yes 1 on; do
   fi
 done
 # PRESENCE, not truthiness (the LANG_PACKS precedent): a typo must not
-# silently enable a mode that refuses installs.
+# silently enable a mode that refuses installs. (REPO_DIR is the conf-less
+# scratch dir: an empty env value falls through to openbeast.conf, and the
+# rig's own OFFLINE=true made the '' case resolve to on.)
 for _v in maybe off false 0 ''; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "off" ]]; then
     pass "OFFLINE='$_v' resolves to off (a typo must not enable it)"
   else
@@ -2513,8 +2523,8 @@ fi
 
 # OFFLINE, as an operator would plausibly WRITE it.
 for _v in '"true"' "'true'" '"true" # air-gapped rig' 'true# x' 'TRUE  # x'; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "on" ]]; then
     pass "OFFLINE=$_v resolves to on (quotes and a comment do not fail OPEN)"
   else
@@ -2522,8 +2532,8 @@ for _v in '"true"' "'true'" '"true" # air-gapped rig' 'true# x' 'TRUE  # x'; do
   fi
 done
 for _v in '"maybe"' '#true' '"" # true' "'false'"; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "off" ]]; then
     pass "OFFLINE=$_v resolves to off (control)"
   else
