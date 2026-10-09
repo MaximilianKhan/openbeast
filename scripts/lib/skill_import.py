@@ -68,6 +68,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 SKILLS = os.path.join(REPO, "skills")
 LEDGER = os.path.join(SKILLS, "REMOTE_PROVENANCE.md")
+IN_HOUSE = os.path.join(SKILLS, "IN_HOUSE_SKILLS.txt")
 STAGING = os.path.join(REPO, ".run", "skill-staging")
 
 SCANNER_REPO = "https://github.com/NVIDIA/SkillSpector.git"
@@ -773,8 +774,51 @@ def cmd_attest(args) -> int:
     return EXIT_OK
 
 
+def read_in_house() -> set[str]:
+    """Directory names of the skills written in this repository.
+
+    skills/IN_HOUSE_SKILLS.txt, one name per line, `#` comments. A missing
+    file is an empty list, so every unpinned directory fails verify rather
+    than passing because the list could not be read.
+    """
+    try:
+        with open(IN_HOUSE, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return set()
+    return {line.split("#", 1)[0].strip() for line in text.splitlines()} - {""}
+
+
 def cmd_verify(args) -> int:
     _, _, _, rows = read_ledger()
+    # "No row, no skill" — checked from the DISK, not from the ledger. Walking
+    # only the rows meant a skill with no row was never looked at: delete an
+    # imported skill's row (or add a new directory) and its SKILL.md stayed in
+    # skills/, unpinned, with verify green. Every directory must be accounted
+    # for by exactly one of the ledger and the committed in-house list.
+    in_house = read_in_house()
+    pinned = {row["Skill"].strip("`") for row in rows}
+    try:
+        on_disk = sorted(d for d in os.listdir(SKILLS)
+                         if not d.startswith(".") and os.path.isdir(os.path.join(SKILLS, d)))
+    except OSError:
+        on_disk = []
+    unaccounted = 0
+    for name in on_disk:
+        if name in pinned and name in in_house:
+            unaccounted += 1
+            print(f"  ✗ {name}: has a ledger row AND is listed in skills/{os.path.basename(IN_HOUSE)}"
+                  " — it is imported or in-house, never both")
+        elif name not in pinned and name not in in_house:
+            unaccounted += 1
+            print(f"  ✗ {name}: skills/{name}/ has no ledger row and is not listed in "
+                  f"skills/{os.path.basename(IN_HOUSE)}")
+    if unaccounted:
+        print(f"skills: {unaccounted} director{'y' if unaccounted == 1 else 'ies'} with no provenance")
+        print("  imported from elsewhere: it needs a ledger row — re-import it through the gate")
+        print("    (./scripts/skill-import.sh fetch … then promote); a deleted row is restored from git")
+        print(f"  written in this repo: add its name to skills/{os.path.basename(IN_HOUSE)}")
+        return EXIT_BLOCKED
     bad = 0
     for row in rows:
         name = row["Skill"].strip("`")
