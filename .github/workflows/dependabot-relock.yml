@@ -47,6 +47,10 @@ name: Dependabot relock
 #     a read-only token and hands over ONE FILE as an artifact; `push` starts
 #     on a fresh runner, checks out the same commit, copies that file in,
 #     checks it, and only its push command ever sees the write token.
+#     A third job, `recheck`, sits between them: read-only like `resolve`,
+#     on a runner of its own, it re-resolves and requires the handed-over
+#     lock to be exactly that closure (`pydeps.sh check`). `verify` alone
+#     accepts an extra package with a valid hash; this is what does not.
 #
 # WHAT IT NEEDS FROM THE NETWORK: the index (pip's resolver) and pypi.org's
 # JSON API. Both are reachable from a hosted runner. It is NOT byte-for-byte
@@ -109,16 +113,16 @@ jobs:
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # No `pip install -U pip` first (it took whatever pip PyPI served, and
+      # ran it in the job that writes the lock): setup-python's own pip
+      # resolves, and the lock header records which one.
       - name: Regenerate agents/requirements.lock
         if: steps.state.outputs.stale == 'true'
-        run: |
-          python3.12 -m pip install -q -U pip
-          OPENBEAST_PYTHON=python3.12 ./scripts/pydeps.sh lock
+        run: OPENBEAST_PYTHON=python3.12 ./scripts/pydeps.sh lock
 
       - name: The new lock installs on the reference python too (3.14)
         if: steps.state.outputs.stale == 'true'
         run: |
-          python3.14 -m pip install -q -U pip
           python3.14 -m pip install -q --dry-run --ignore-installed \
             --require-hashes -r agents/requirements.lock
 
@@ -142,8 +146,46 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  push:
+  # A SECOND, INDEPENDENT RESOLVE before anything is pushed. The push job's
+  # only check is `pydeps.sh verify`, which accepts any extra package and any
+  # hash — so whatever ran inside `resolve` could hand over a lock with one
+  # more line in it and have it committed as github-actions[bot]. This job
+  # starts on a fresh runner with a read-only token, takes the same one file,
+  # and runs `pydeps.sh check`: a fresh resolve must produce exactly these
+  # pins and hashes. It is its own job, not a step of `push`, so the job that
+  # holds the write token still never runs the resolver (4. above).
+  recheck:
     needs: resolve
+    if: github.actor == 'dependabot[bot]' && needs.resolve.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: relocked-requirements-lock
+          path: ${{ runner.temp }}/relock
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # The python `resolve` used: the set of packages depends on it.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: A fresh resolve produces exactly the handed-over lock
+        run: |
+          f="$RUNNER_TEMP/relock/requirements.lock"
+          [[ -f "$f" && ! -L "$f" ]] || { echo "::error::the artifact holds no regular requirements.lock"; exit 1; }
+          cp -- "$f" agents/requirements.lock
+          OPENBEAST_PYTHON=python3.12 ./scripts/pydeps.sh check
+
+  push:
+    needs: [resolve, recheck]
     if: github.actor == 'dependabot[bot]' && needs.resolve.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
