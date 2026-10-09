@@ -440,6 +440,8 @@ YML
   else
     fail "negative control: the checker passed the old relock shape: $_v"
   fi
+elif [[ "${CI:-}" == "true" ]]; then
+  fail "PyYAML not importable under CI=true: the workflow checks did not run"
 else
   echo "  SKIP: PyYAML not importable (it is in agents/requirements.lock; CI has it)"
 fi
