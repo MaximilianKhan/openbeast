@@ -292,6 +292,56 @@ if ! has "$_O" "log rotation"; then
 else
   fail "logrotate row without a user manager: $(grep -iE 'rotat' <<< "$_O" | tr '\n' ' ')"
 fi
+# 2026-10-09 review, netsec S11 (doctor half): setup-tailscale.sh no longer
+# publishes a keyless raw :8443 without --i-accept-open-inference, so doctor
+# FAILs one it finds unacknowledged and WARNs the acknowledged one — the :443
+# rule above, for inference.
+_RAW_8443='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8080\n'
+RUN_ENV=(TS_SERVE="$_RAW_8443" LIVE_AUTH=false)
+doctor WEBUI_AUTH=false
+if has "$_O" "✗ raw llama-server is published on :8443 with no API key and no beast-gate" \
+   && has "$_O" "--i-accept-open-inference"; then
+  pass "a keyless raw :8443 nobody acknowledged FAILs and names the three ways out"
+else
+  fail "unacknowledged raw :8443: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor WEBUI_AUTH=false ALLOW_OPEN_INFERENCE=true
+if has "$_O" "! raw llama-server is published on :8443 with no API key (ALLOW_OPEN_INFERENCE=true acknowledges it)" \
+   && ! has "$_O" "✗ raw llama-server"; then
+  pass "…published open on purpose (ALLOW_OPEN_INFERENCE=true) WARNs, not FAILs"
+else
+  fail ":8443 + acknowledged open inference: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor WEBUI_AUTH=false "LLAMA_API_KEY=$LK"
+if has "$_O" "! raw llama-server is published on :8443 (whole route table)" && ! has "$_O" "✗ raw llama-server"; then
+  pass "…behind the shared LLAMA_API_KEY it is the route-table WARN, as before (control)"
+else
+  fail ":8443 + LLAMA_API_KEY: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+# ux UX-07 (doctor half): keys in .run/clients.json gate nothing while
+# EDGE_GATE is off — llama-server never reads that file.
+RUN_ENV=()
+printf '%s' '{"version":1,"devices":[{"id":"laptop","key_sha256":"ab"},{"id":"phone","key_sha256":"cd","revoked_at":"2026-10-01T00:00:00Z"}]}' > "$SB/.run/clients.json"
+doctor
+if has "$_O" "✗ 2 device(s) enrolled but EDGE_GATE is not true" && has "$_O" "set EDGE_GATE=true in openbeast.conf"; then
+  pass "devices enrolled with EDGE_GATE off FAILs and names the fix"
+else
+  fail "enrolled-but-gate-off row: $(grep -iE 'enrolled|EDGE_GATE' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor EDGE_GATE=true
+if ! has "$_O" "enrolled but EDGE_GATE is not true"; then
+  pass "…with EDGE_GATE=true the row is gone (control)"
+else
+  fail "gate on, still told it is off: $(grep -iE 'enrolled' <<< "$_O" | tr '\n' ' ')"
+fi
+printf '%s' '{"version":1,"devices":[]}' > "$SB/.run/clients.json"
+doctor
+if ! has "$_O" "enrolled but EDGE_GATE is not true"; then
+  pass "…an emptied registry with the gate off is not a failure (control)"
+else
+  fail "empty registry flagged: $(grep -iE 'enrolled' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$SB/.run/clients.json"
 RUN_ENV=()
 
 # ---------------------------------------------------------------------------

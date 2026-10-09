@@ -568,6 +568,25 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   fi
 fi
 
+# Devices enrolled, gate off: clients.sh wrote keys into .run/clients.json, but
+# only beast-gate reads that file. Whatever answers :8443 then is llama-server
+# itself, which never checks a device key — a revoked laptop is still served,
+# and the operator who enrolled it believes otherwise. clients.sh warns at
+# enroll time; this is the same fact for whoever was not watching then.
+# The count is read here, not asked of the gate: the gate is not running.
+if [[ "${EDGE_GATE:-false}" != "true" && -s "$REPO_DIR/.run/clients.json" ]]; then
+  _n_enrolled="$(python3 -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1])).get("devices")
+    print(len(d) if isinstance(d, (list, dict)) else 0)
+except Exception:
+    print(0)' "$REPO_DIR/.run/clients.json" 2>/dev/null || true)"
+  if [[ "${_n_enrolled:-0}" =~ ^[0-9]+$ && "${_n_enrolled:-0}" -gt 0 ]]; then
+    fail "$_n_enrolled device(s) enrolled but EDGE_GATE is not true — their keys are NOT enforced (a revoked or never-enrolled device is still served)" \
+         "set EDGE_GATE=true in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh"
+  fi
+fi
+
 if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   # Health answers {"status":"ok"} and nothing else to an unauthenticated
   # caller — it is reachable by anything that can open the port, so it must
@@ -966,9 +985,17 @@ if command -v tailscale >/dev/null 2>&1; then
       elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
         warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
              "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"
+      elif [[ -z "${LLAMA_API_KEY:-}" && "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
+        # Published keyless on purpose (setup-tailscale.sh
+        # --i-accept-open-inference records ALLOW_OPEN_INFERENCE=true). Say it
+        # every run; do not fail it — the :443 rule above, for inference.
+        warn "raw llama-server is published on :8443 with no API key (ALLOW_OPEN_INFERENCE=true acknowledges it) — every tailnet device can use the GPU" \
+             "fine on a personal tailnet you fully own; otherwise set EDGE_GATE=true (per-device keys, path allowlist, audit) and remove ALLOW_OPEN_INFERENCE from openbeast.conf — docs/BEAST_SLOT.md"
       elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
-        warn "raw llama-server is published on :8443 with no API key" \
-             "fine on a personal tailnet you fully own; otherwise set EDGE_GATE=true (per-device keys, path allowlist, audit) — docs/BEAST_SLOT.md"
+        # setup-tailscale.sh no longer makes this mount without a yes, so it
+        # is one an older run left: no gate, no key, nobody said "on purpose".
+        fail "raw llama-server is published on :8443 with no API key and no beast-gate — every tailnet device (shared-in users included) can use the GPU and reach /slots, /props and /lora-adapters" \
+             "set EDGE_GATE=true in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh (or set LLAMA_API_KEY; or take it down: sudo tailscale serve --https=8443 off; if it is intended: ./scripts/setup-tailscale.sh --i-accept-open-inference)"
       else
         warn "raw llama-server is published on :8443 (whole route table)" \
              "the shared key gates it but doesn't shrink it; EDGE_GATE=true allowlists just the OpenAI routes"
