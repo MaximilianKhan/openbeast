@@ -46,6 +46,14 @@
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
 #       intel→sycl, none→cpu. bootstrap.sh persists the resolved value into
 #       openbeast.conf so scripts/update.sh rebuilds with the same backend.
+#   OB_CONF_READONLY=1   (env only, set by the CALLER — never a conf key)
+#       "I only want to read the config." Sourcing this file normally mints
+#       SEARXNG_SECRET on first use and writes it to openbeast.conf; a command
+#       that promises to change nothing (bootstrap.sh --preflight, doctor.sh,
+#       a report-only healthcheck.sh) exports this first, and the file is
+#       then never created or appended to. SEARXNG_SECRET stays empty there,
+#       so a `docker compose up` from such a shell stops on compose's own
+#       "must be set" message instead of running with a throwaway key.
 #
 # Requires REPO_DIR to be set before sourcing.
 
@@ -910,8 +918,12 @@ fi
 # from a clean systemd environment — and every later restart reuse the same
 # key. docker-compose.yml hard-requires the export (`:?`), so any compose
 # caller must source this file first, which they all already do.
+#
+# NOT under OB_CONF_READONLY=1 (see the header): `bootstrap.sh --preflight`
+# promises to write NOTHING and `doctor.sh` only diagnoses, yet both created
+# openbeast.conf here on a fresh checkout. The secret stays empty for them.
 SEARXNG_SECRET="${OPENBEAST_SEARXNG_SECRET:-$(_ob_conf_value SEARXNG_SECRET || true)}"
-if [[ -z "$SEARXNG_SECRET" ]]; then
+if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   SEARXNG_SECRET="$(openssl rand -hex 32 2>/dev/null)" \
     || SEARXNG_SECRET="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
   _ob_conf="$REPO_DIR/openbeast.conf"

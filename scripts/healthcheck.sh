@@ -21,6 +21,11 @@ set -euo pipefail
 # a pattern — all four call sites, not just the new one.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Report-only runs change nothing — including openbeast.conf, which sourcing
+# conf.sh would otherwise create (with a fresh SearXNG secret) on a checkout
+# that has none. --restart is the one mode that may `docker compose up`, and
+# compose needs that secret, so it keeps the normal behaviour.
+[[ "${1:-}" == "--restart" ]] || export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready

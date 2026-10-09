@@ -13,6 +13,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 export REPO_DIR
+# doctor only READS. Without this, sourcing conf.sh on a fresh checkout minted
+# a SearXNG secret and created openbeast.conf — and so did the scripts doctor
+# runs underneath (configure-webui.sh --check-default-admin), hence exported.
+export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
 

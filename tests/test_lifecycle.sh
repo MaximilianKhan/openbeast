@@ -517,6 +517,64 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# UX-12 / S13 (2026-10-09): a command that only READS must not create
+# openbeast.conf. conf.sh minted SEARXNG_SECRET for whoever sourced it first —
+# doctor.sh, a report-only healthcheck.sh and the --check-default-admin probe
+# included. OB_CONF_READONLY=1 is the caller's way to say "read only".
+# ---------------------------------------------------------------------------
+echo ""
+echo "read-only commands leave openbeast.conf alone (OB_CONF_READONLY):"
+_RO="$_T/ro"; _sandbox "$_RO"
+cp "$REPO_DIR/scripts/configure-webui.sh" "$_RO/scripts/"
+_ro_fresh() { rm -f "$_RO/openbeast.conf"; }
+_ro_fresh
+_run "$_RO" "$_RO/scripts/doctor.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "doctor.sh on a fresh checkout creates no openbeast.conf" \
+  || fail "doctor.sh created openbeast.conf: $(tr '\n' ' ' < "$_RO/openbeast.conf")"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "a report-only healthcheck.sh creates no openbeast.conf" \
+  || fail "healthcheck.sh (no --restart) created openbeast.conf"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/configure-webui.sh" --check-default-admin >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "configure-webui.sh --check-default-admin creates no openbeast.conf" \
+  || fail "the read-only admin probe created openbeast.conf"
+_ro_src() { # _ro_src [VAR=val] — source the sandbox conf.sh, print the secret it resolved
+  env -i HOME="$_RO/home" PATH="$_RO/bin:/usr/bin:/bin" REPO_DIR="$_RO" "$@" \
+    bash -c 'source "$REPO_DIR/scripts/lib/conf.sh" 2>/dev/null; printf "%s" "$OPENBEAST_SEARXNG_SECRET"'
+}
+_ro_fresh
+_S="$(_ro_src OB_CONF_READONLY=1)"
+if [[ -z "$_S" && ! -e "$_RO/openbeast.conf" ]]; then
+  pass "OB_CONF_READONLY=1: no file, and no throwaway secret a compose call could run with"
+else
+  fail "OB_CONF_READONLY=1 still minted a secret ('${_S:0:8}…') or wrote the file"
+fi
+# Negative controls: without the flag (and with any other value) the secret
+# is still minted and persisted 0600 — daemon mode depends on that.
+for _v in "" "OB_CONF_READONLY=0" "OB_CONF_READONLY=true"; do
+  _ro_fresh
+  # shellcheck disable=SC2086  # an empty $_v must vanish, not become an argument
+  _S="$(_ro_src $_v)"
+  if [[ ${#_S} -eq 64 && "$(stat -c '%a' "$_RO/openbeast.conf" 2>/dev/null)" == "600" ]] \
+     && grep -q "^SEARXNG_SECRET=$_S\$" "$_RO/openbeast.conf"; then
+    pass "'${_v:-flag unset}': the secret is minted and saved 0600 (control)"
+  else
+    fail "'${_v:-flag unset}': conf.sh no longer persists SEARXNG_SECRET"
+  fi
+done
+# An existing secret is READ under the flag — read-only is not "blank".
+_S2="$(_ro_src OB_CONF_READONLY=1)"
+[[ -n "$_S" && "$_S2" == "$_S" ]] && pass "OB_CONF_READONLY=1 still reads a secret that is already there" \
+  || fail "OB_CONF_READONLY=1 dropped an existing SEARXNG_SECRET"
+# --restart may `docker compose up`, which needs the secret: not read-only.
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" --restart >/dev/null
+grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
+  && pass "healthcheck.sh --restart keeps the writable behaviour (compose needs the secret)" \
+  || fail "healthcheck.sh --restart ran without a SearXNG secret"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

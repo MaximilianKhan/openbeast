@@ -32,6 +32,9 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# --check-default-admin is a read-only probe: it must not be the thing that
+# creates openbeast.conf (conf.sh mints the SearXNG secret unless told not to).
+[[ "$MODE" == "check" ]] && export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
 # Every credential header below (the admin JWT, LLAMA_API_KEY) goes through
 # ob_curl_hdr / ob_curl_bearer — curl --config on fd 3, never argv, because
