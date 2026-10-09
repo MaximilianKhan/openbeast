@@ -501,6 +501,92 @@ def ineligibility_reasons(results: dict) -> list[str]:
     return reasons
 
 
+# What a board row must record for its number to be comparable with another
+# row's: (entry key, label). The task set is frozen and CI-guarded; the
+# harness, the engine and the serve regime are not.
+PROVENANCE_FIELDS = (("openbeast_commit", "repo commit"), ("engine_build", "engine build"),
+                     ("reasoning_budget", "reasoning budget"), ("jobs", "jobs"))
+
+
+def run_provenance(results: dict) -> dict:
+    """The regime a results file was measured under, as far as it recorded
+    one: the OpenBeast commit (the agent harness), the llama.cpp build, the
+    server's --reasoning-budget and the --jobs concurrency, plus the eval
+    era hash for runs new enough to stamp it. Absent fields are omitted —
+    the seven July 2026 v4 rows carry an engine build and nothing else."""
+    rt = results.get("runtime") or {}
+    eng = results.get("inference_engine") or {}
+    server = results.get("server") or {}
+    out: dict = {}
+    if rt.get("openbeast_commit"):
+        out["openbeast_commit"] = rt["openbeast_commit"]
+        if rt.get("openbeast_dirty") is not None:
+            out["openbeast_dirty"] = bool(rt["openbeast_dirty"])
+    if eng.get("build") not in (None, ""):
+        out["engine_build"] = str(eng["build"])
+    if server.get("reasoning_budget") not in (None, ""):
+        out["reasoning_budget"] = str(server["reasoning_budget"])
+    elif server.get("cmdline"):
+        # The server was read and carried no flag: llama-server's default.
+        out["reasoning_budget"] = "default"
+    if results.get("jobs") is not None:
+        out["jobs"] = results["jobs"]
+    era = (results.get("harness") or {}).get("era")
+    if era:
+        out["era"] = era
+    return out
+
+
+PROVENANCE_LEGEND = ("† = the row does not record its regime.  ‡ = it records one that differs "
+                     "from row 1's.  Either way the row was not shown to be measured "
+                     "like-for-like with row 1: read small SCORE gaps accordingly.")
+
+
+def provenance_notes(rows: list[dict]) -> list[tuple[int, str, str]]:
+    """Footnotes for a ranked partition: (rank, marks, text) per row that
+    needs one. `†` = the row does not record a PROVENANCE_FIELDS item, so
+    nothing can show it was measured like the others. `‡` = it records a
+    regime that differs from row 1's (engine build, reasoning budget, jobs,
+    and the harness: the era hash where both rows have it, else the repo
+    commit), including a field it records and row 1 does not — an
+    unrecorded regime cannot be assumed to be the same one.
+
+    Purely a readout: no row is re-ranked or dropped."""
+    if not rows:
+        return []
+    top = rows[0].get("provenance") or {}
+    notes = []
+    for i, e in enumerate(rows, 1):
+        if "provenance" not in e:
+            # Scored before entries carried it: unknown, not "unrecorded".
+            notes.append((i, "†", "entry predates the provenance field — "
+                                  "run `python3 evals/scoring.py --rebuild` where the runs are"))
+            continue
+        prov = e["provenance"] or {}
+        marks, parts = "", []
+        missing = [label for key, label in PROVENANCE_FIELDS if key not in prov]
+        if missing:
+            marks += "†"
+            parts.append("no " + ", ".join(missing) + " recorded")
+        if prov.get("openbeast_dirty"):
+            parts.append("uncommitted changes in the repo at run time")
+        diffs = []
+        if i > 1:
+            harness_key = ("era" if "era" in prov and "era" in top else "openbeast_commit")
+            for key, label in (("engine_build", "engine build"),
+                               ("reasoning_budget", "reasoning budget"), ("jobs", "jobs"),
+                               (harness_key, "era" if harness_key == "era" else "repo commit")):
+                if key in prov and prov[key] != top.get(key):
+                    diffs.append(f"{label} {str(prov[key])[:9]} "
+                                 f"(row 1: {str(top.get(key, 'unrecorded'))[:10]})")
+        if diffs:
+            marks += "‡"
+            parts.append("; ".join(diffs))
+        if parts:
+            notes.append((i, marks, "; ".join(parts)))
+    return notes
+
+
 def killed_units(tasks: list[dict]) -> int:
     """Units whose agent did not exit on its own: the harness wall timeout
     (agent_exit_code -1) or a signal (-9, -15). They are the one non-verdict
@@ -553,6 +639,9 @@ def score_run(results: dict) -> dict:
         "gpu": results.get("gpu") or {},
         "inference_engine": results.get("inference_engine") or {},
         "runtime": results.get("runtime") or {},
+        # The regime the row was measured under; format_leaderboard
+        # footnotes rows that lack it or differ from row 1 (provenance_notes).
+        "provenance": run_provenance(results),
         "scoring_version": SCORING_VERSION,
         # v2 primary metric + its two axes
         "capability": capability,
@@ -720,7 +809,7 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         h, m = divmod(int(s) // 60, 60)
         return f"{h}h{m:02d}m" if h else f"{m}m"
 
-    def _row(i: int, e: dict) -> str:
+    def _row(i: int, e: dict, marks: str = "") -> str:
         model = e.get("model", "?")[:28]
         suite = str(e.get("suite_version", "?"))[:4]
         solve = _f(e.get("problem_solving"))     # problem-solving
@@ -733,16 +822,25 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         killed = e.get("killed_units", "?")      # "?": entry predates the field
         if show_host:
             host = entry_host_id(e)[:18]
-            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}"
-        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}"
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}  {marks}".rstrip()
+        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}  {marks}".rstrip()
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
     legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
 
+    # Provenance footnotes, current suite only (the legacy section is
+    # already labelled not comparable). A readout: order and rows unchanged.
+    notes = provenance_notes(current_rows)
+    marks = {i: m for i, m, _ in notes}
     lines = [header, sep]
     for i, e in enumerate(current_rows, 1):
-        lines.append(_row(i, e))
+        lines.append(_row(i, e, marks.get(i, "")))
+    if notes:
+        lines.append("")
+        lines.append(PROVENANCE_LEGEND)
+        for i, m, text in notes:
+            lines.append(f"  {i:>2} {m:<2} {text}")
     if legacy_rows:
         if current_rows:
             lines.append("")
@@ -791,8 +889,8 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
     cols = ("#", "Host", "Model", "Suite", "Solve", "Lang", "Score",
             "tok/s", "Tokens", "Wall", "Pass", "T/O")
 
-    def row(i, e):
-        cells = (str(i), entry_host_id(e), str(e.get("model", "?")),
+    def row(i, e, marks=""):
+        cells = (str(i), entry_host_id(e), str(e.get("model", "?")) + (f" {marks}" if marks else ""),
                  str(e.get("suite_version", "?")),
                  pct(e.get("problem_solving")), pct(e.get("language_breadth")),
                  pct(e.get("capability")), decode(e),
@@ -803,11 +901,14 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
             f'<td class="{"t" if j in (1, 2) else "n"}">{escape(c)}</td>'
             for j, c in enumerate(cells)) + "</tr>"
 
-    def table(rows):
+    def table(rows, notes=()):
+        marks = {i: m for i, m, _ in notes}
         head = "".join(f"<th>{escape(c)}</th>" for c in cols)
-        body = "\n".join(row(i, e) for i, e in enumerate(rows, 1))
+        body = "\n".join(row(i, e, marks.get(i, "")) for i, e in enumerate(rows, 1))
+        foot = "".join(f"<p>{i} {escape(m)} {escape(text)}</p>" for i, m, text in notes)
         return (f'<div class="wrap"><table><thead><tr>{head}</tr></thead>'
-                f"<tbody>\n{body}\n</tbody></table></div>")
+                f"<tbody>\n{body}\n</tbody></table></div>"
+                + (f"<p>{escape(PROVENANCE_LEGEND)}</p>{foot}" if notes else ""))
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -816,7 +917,8 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
     if not entries:
         parts.append("<p>The leaderboard is empty.</p>")
     if current_rows:
-        parts.append(f"<h2>Suite {escape(cur)}</h2>" + table(current_rows))
+        parts.append(f"<h2>Suite {escape(cur)}</h2>"
+                     + table(current_rows, provenance_notes(current_rows)))
     if legacy_rows:
         parts.append(f"<h2>Legacy suites</h2><p>Task sets differ — not comparable "
                      f"to suite {escape(cur)} rows.</p>" + table(legacy_rows))

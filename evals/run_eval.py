@@ -1582,6 +1582,10 @@ def run_eval(
         "suite_selection": suite,
         "cache_only": cache_only,
         "harness": {"diagnostics": diag_on,
+                    # The eval era (scripts/eval-era.sh): rows either side of
+                    # a change to it are not comparable, and until this was
+                    # stamped the board could only infer it from cache keys.
+                    "era": cache.context_hash(),
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
