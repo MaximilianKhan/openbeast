@@ -43,6 +43,46 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
 
+### Imported (9 skills, off the always-on menu)
+
+These came from outside this repo through the import gate (below). Each is
+pinned by hash in [`REMOTE_PROVENANCE.md`](REMOTE_PROVENANCE.md), carries its
+upstream licence, and sets `prompt_index: false`: `skill()` lists it and
+`skill(name)` loads it, but it costs a local model nothing per turn and leaves
+the eval era alone. Every one has an "In OpenBeast" or "Provenance" section
+saying what we changed.
+
+| Skill | From | What it's for |
+|---|---|---|
+| `verification-before-completion` | obra/superpowers (MIT) | Run the check and read its output before saying anything is done, fixed or passing |
+| `receiving-code-review` | obra/superpowers (MIT) | Taking review feedback: verify against the codebase, push back with reasons. Counterpart of `code-review` |
+| `writing-plans` | obra/superpowers (MIT) | Turn a spec into an implementation plan of small tasks, each with its test. Follows `architecture-proposal` |
+| `executing-plans` | obra/superpowers (MIT) | Run such a plan task by task with a ledger that survives compaction, and one whole-branch review at the end |
+| `writing-skills` | obra/superpowers (MIT) | Write a skill the TDD way: watch an agent fail without it, write it against those failures, re-test |
+| `skill-creator` | anthropics/skills (Apache-2.0) | Measure a skill: with-skill and baseline runs, graded assertions, a benchmark, a review page for a human |
+| `frontend-design` | anthropics/skills (Apache-2.0) | Visual direction for a page that should not look templated; the authoring skill for beast-artifact pages |
+| `webapp-testing` | anthropics/skills (Apache-2.0) | Drive a local web app with Python Playwright (needs its own venv; not in the stack's lockfile) |
+| `mcp-builder` | anthropics/skills (Apache-2.0) | Building an MCP server in Python or TypeScript |
+
+**Where they disagree with ours, or with each other:**
+
+- `writing-skills` and `skill-creator` give opposite advice on two points. The
+  first says a description states only *when* to use a skill and favours
+  absolute rules; the second wants *what and when* and explained reasons. Our
+  15 in-house descriptions follow the second style. Format is settled by the
+  schema below; the rest is for measuring.
+- `executing-plans` and `writing-plans` name skills we did not import
+  (upstream's own TDD, debugging, review and branch-finishing skills). Those
+  references now point at `test-driven-development`, `debugging-methodology`,
+  `code-review` and `git-discipline`.
+- `mcp-builder` recommends broad API coverage and service-prefixed tool names.
+  Our tool server is deliberately small and unprefixed, because large tool
+  surfaces hurt Qwen-class models. Its "In OpenBeast" section says which
+  advice applies when.
+- `skill(name)` returns only `SKILL.md`. The four imports that ship other
+  files (`writing-skills`, `skill-creator`, `webapp-testing`, `mcp-builder`)
+  tell the model to `read_file` them by repo path.
+
 ## How the model uses them
 
 From any MCP-aware client (OpenCode, Open WebUI):

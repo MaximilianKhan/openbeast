@@ -51,6 +51,11 @@ You have access to **15 curated skills** via two MCP tools:
 **Before approaching any non-trivial task, call `skill()`** and check
 whether one matches. Skills encode hard-won lessons — don't reinvent them.
 
+Nine more are imported from outside the repo and kept off the always-on menu
+(plans, verification before a completion claim, taking review feedback, skill
+authoring and measurement, page design, Playwright, MCP servers). `skill()`
+lists them; `skills/README.md` ("Imported") says what each is for.
+
 ## Task → skill mapping
 
 | Situation | Skill |
