@@ -1020,6 +1020,23 @@ if [[ -s "$WE_SCRATCH/block.sh" ]]; then
   else
     fail "weight enforcement rc wrong (warn=$_rc_warn off=$_rc_off typo=$_rc_typo strict=$_rc_strict; want 0/0/0/3)"
   fi
+  # A REGISTERED name of the wrong size (a truncated or swapped file): the
+  # "unlisted" case above never reaches the size comparison, which could be
+  # deleted with that check green. A right-sized row is the control.
+  printf 'short' > "$WE_SCRATCH/wrongsize.gguf"; printf 'exact' > "$WE_SCRATCH/rightsize.gguf"
+  { printf '%s\t%s\t%s\t%s\t%s\n' "$(printf '0%.0s' {1..64})" 999 wrongsize.gguf org/x -
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(printf '0%.0s' {1..64})" 5   rightsize.gguf org/x -
+  } >> "$WE_SCRATCH/scripts/weights.registry"
+  _rc_ws_strict=$(_we_rc "$WE_SCRATCH/wrongsize.gguf" strict)
+  _rc_ws_warn=$(_we_rc "$WE_SCRATCH/wrongsize.gguf" warn)
+  _rc_rs_strict=$(_we_rc "$WE_SCRATCH/rightsize.gguf" strict)
+  _ws_msg="$(bash "$WE_SCRATCH/run.sh" "$WE_SCRATCH/scripts" "$WE_SCRATCH/wrongsize.gguf" strict 2>&1 || true)"
+  if [[ "$_rc_ws_strict" == "3" && "$_rc_ws_warn" == "0" && "$_rc_rs_strict" == "0" \
+        && "$_ws_msg" == *"is 5 bytes, registry pins 999"* ]]; then
+    pass "weight enforcement: a registered weight of the wrong size is refused under strict (exit 3), warned otherwise"
+  else
+    fail "wrong-size weight rc (strict=$_rc_ws_strict warn=$_rc_ws_warn right-size strict=$_rc_rs_strict; want 3/0/0): $_ws_msg"
+  fi
 else
   fail "could not extract the weight-enforcement block from serve.sh"
 fi
