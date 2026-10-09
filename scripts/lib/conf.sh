@@ -829,6 +829,17 @@ export OPENBEAST_FILES_DIR
 # reachable from the whole tailnet (that's when a login boundary matters).
 # docker-compose reads this via OPENBEAST_WEBUI_AUTH.
 WEBUI_AUTH="$(_ob_bool "${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || true)}" false WEBUI_AUTH)"
+# Open WebUI's per-chat background generations. After every answer WebUI asks
+# the model for a title, a set of tags and follow-up suggestions; on a
+# single-slot rig the last two cost more GPU than the chats they decorate and
+# hold the slot for seconds after each answer (perf review 2026-10-09).
+#   false (default)  configure-webui.sh turns tag and follow-up generation OFF
+#                    at every start; titles stay on.
+#   true             it touches none of them — whatever Admin Settings →
+#                    Interface says stands.
+# Env override: $OPENBEAST_WEBUI_BACKGROUND_TASKS. Not exported: the only
+# consumer, configure-webui.sh, sources this file itself.
+WEBUI_BACKGROUND_TASKS="$(_ob_bool "${OPENBEAST_WEBUI_BACKGROUND_TASKS:-$(_ob_conf_value WEBUI_BACKGROUND_TASKS || true)}" false WEBUI_BACKGROUND_TASKS)"
 # WEBUI_ADMIN_PASSWORD is deliberately NOT exported: the only consumer,
 # configure-webui.sh, sources this file itself and reads the variable in
 # its own shell. Exporting it would put the admin password in the
@@ -983,7 +994,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 # anywhere in the repo is in one of the two — add a new key there, or here.
 # Without openbeast.conf.example next to the conf (a stripped copy) the
 # unknown-key half is skipped: there is nothing to compare against.
-_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL PROMPT_CACHE_RAM_MB WEBUI_DEFAULT_ADMIN_PASSWORD"
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL PROMPT_CACHE_RAM_MB WEBUI_BACKGROUND_TASKS WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
 _OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT ARTIFACT_RETAIN_DAYS"

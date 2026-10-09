@@ -429,6 +429,54 @@ else
   echo "    (could not configure web search — WebUI may not be up yet)"
 fi
 
+# --- 1c. Background tasks: keep titles, turn off tags and follow-ups ---
+# After every answer Open WebUI asks the model for a chat title, a set of tags
+# and follow-up suggestions. On this rig's log (perf review 2026-10-09) those
+# small requests generated more GPU-seconds than the chat turns they decorate,
+# and on a single-slot server each one holds the slot for seconds after the
+# answer. Titles are what the sidebar needs; the other two go.
+#
+# Written to the DB like 1b, and for the same two reasons: the env vars
+# (ENABLE_TAGS_GENERATION / ENABLE_FOLLOW_UP_GENERATION) only seed a first
+# boot, and the admin API needs a token this script often does not have. The
+# server reads both keys from the DB on each task request (routers/tasks.py),
+# so no restart is needed.
+#
+# Unlike 1b this is asserted on EVERY run — a WebUI update or a re-seeded
+# volume would otherwise bring the cost back unnoticed — so the opt-out is in
+# openbeast.conf, not the UI: WEBUI_BACKGROUND_TASKS=true leaves all of it
+# exactly as Admin Settings → Interface has it.
+if [[ "${WEBUI_BACKGROUND_TASKS:-false}" == "true" ]]; then
+  echo "  Background tasks: left as WebUI has them (WEBUI_BACKGROUND_TASKS=true)."
+else
+  echo "  Turning off tag + follow-up generation (titles stay on) ..."
+  if docker exec open-webui python3 -c "
+import sqlite3, json, sys, time
+db = sqlite3.connect('/app/backend/data/webui.db')
+
+def get(k):
+    row = db.execute('SELECT value FROM config WHERE key=?', (k,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+# A missing row means the default, which is ON. task.title.enable is not ours.
+changed = [k for k in ('task.tags.enable', 'task.follow_up.enable') if get(k) is not False]
+for k in changed:
+    db.execute('INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) '
+               'ON CONFLICT(key) DO UPDATE SET value=excluded.value, '
+               'updated_at=excluded.updated_at',
+               (k, json.dumps(False), int(time.time())))
+if changed:
+    db.commit()
+    sys.exit(3)   # signal 'changed'
+" 2>/dev/null; then
+    echo "    already off"
+  elif [[ $? -eq 3 ]]; then
+    echo "    off (to keep them: WEBUI_BACKGROUND_TASKS=true in openbeast.conf, then re-enable in Admin Settings → Interface)"
+  else
+    echo "    (could not set them — WebUI may not be up yet)"
+  fi
+fi
+
 # Model tool wiring uses these two connection ids.
 TOOL_REFS='["server:1","server:2"]'
 
