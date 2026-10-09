@@ -269,7 +269,10 @@ if command -v python3 >/dev/null 2>&1; then
     ver="${ver#=}"
     have=$(python3 -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
     if [[ -z "$have" ]]; then
-      fail "$pkg not installed (pinned $ver)" "pip install --user -r agents/requirements.txt"
+      # pydeps.sh, not a bare `pip install --user -r …`: that fails with
+      # externally-managed-environment on Arch / Debian 12+ / Ubuntu 24.04
+      # and installs outside the hash-pinned lock.
+      fail "$pkg not installed (pinned $ver)" "./scripts/pydeps.sh install"
     elif [[ "$have" != "$ver" ]]; then
       warn "$pkg is $have, pinned $ver" "./scripts/update.sh --python (or reinstall the pin)"
     else

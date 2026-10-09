@@ -575,6 +575,33 @@ grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
   || fail "healthcheck.sh --restart ran without a SearXNG secret"
 
 # ---------------------------------------------------------------------------
+# UX-14 (2026-10-09): doctor's fix for a missing pinned package was a bare
+# `pip install --user -r agents/requirements.txt` — refused by PEP 668 on
+# Arch / Debian 12+ / Ubuntu 24.04, and outside the hash-pinned lock.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh's missing-dependency hint:"
+_P="$_T/pydeps"; _sandbox "$_P"
+mkdir -p "$_P/agents"
+printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+# python3 -m pip show: "not installed" for everything; any other python3 call
+# goes to the real interpreter.
+printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+chmod +x "$_P/bin/python3"
+_O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
+   && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
+  pass "a missing pinned package points at ./scripts/pydeps.sh install"
+else
+  fail "missing-dep hint: $(grep -A1 -F 'obnotapackage' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q 'pip install --user -r' <<< "$_O"; then
+  fail "doctor still recommends a bare 'pip install --user -r' (PEP 668 refuses it)"
+else
+  pass "…and no longer recommends a bare 'pip install --user -r'"
+fi
+
+# ---------------------------------------------------------------------------
 # UX-13 (2026-10-09): doctor shows conf.sh's lint findings as rows. The
 # parsing itself is pinned in tests/test_conf_secrets.sh §7; this is the
 # "surfaced in doctor, as a warning, once" half.
