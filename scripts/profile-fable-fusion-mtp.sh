@@ -22,12 +22,29 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# --help is answered before anything else; every other argument is judged
+# right after the backend check below and BEFORE anything is touched: a run
+# stops the live stack and holds the GPU for a sweep, so a typo must never
+# get that far.
+case "${1:-}" in
+  -h|--help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$SCRIPT_DIR/lib/usage.sh"
+    ob_usage "$0"; exit 0 ;;
+esac
 # llama-only: drives a local llama-server, so it has nothing to do on a
 # stack whose INFERENCE_BACKEND is not llama (lib/backend.sh).
 if [[ -f "$SCRIPT_DIR/lib/backend.sh" ]]; then
   source "$SCRIPT_DIR/lib/backend.sh"
   ob_llama_only "$(basename "$0")" || exit 0
 fi
+case "${1:-}" in
+  q5|q6) ;;
+  "") echo "Usage: $0 {q5|q6}   (which MTP GGUF to profile; see --help)" >&2; exit 2 ;;
+  *)  echo "Unknown option: $1 (see --help)" >&2
+      echo "Usage: $0 {q5|q6}   (which MTP GGUF to profile)" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { echo "Unknown option: $2 (see --help) — one argument only: q5 or q6." >&2; exit 2; }
 cd "$REPO_DIR"
 source "$SCRIPT_DIR/lib/weights.sh"
 

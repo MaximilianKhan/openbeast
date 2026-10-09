@@ -30,11 +30,25 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# --help is answered before anything else; every other argument is judged
+# right after the backend check below and BEFORE anything is touched: a run
+# stops the live stack and holds the GPU for a sweep, so a typo must never
+# get that far.
+case "${1:-}" in
+  -h|--help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$SCRIPT_DIR/lib/usage.sh"
+    ob_usage "$0"; exit 0 ;;
+esac
 # llama-only: drives a local llama-server, so it has nothing to do on a
 # stack whose INFERENCE_BACKEND is not llama (lib/backend.sh).
 if [[ -f "$SCRIPT_DIR/lib/backend.sh" ]]; then
   source "$SCRIPT_DIR/lib/backend.sh"
   ob_llama_only "$(basename "$0")" || exit 0
+fi
+if [[ $# -gt 0 ]]; then
+  echo "Unknown option: $1 (see --help) — this script takes no arguments (tune it with SWEEP_CTX / SWEEP_N)." >&2
+  exit 2
 fi
 cd "$REPO_DIR"
 source "$SCRIPT_DIR/lib/weights.sh"

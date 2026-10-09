@@ -372,6 +372,40 @@ else
   fail "bind failure (rc=$_rc): $_out"
 fi
 
+# --- --help and unknown arguments never reach the stack (review UX-10) ------
+# The qwen38 profiler took no arguments and ignored whatever it was given, so
+# `--help` stopped the live stack and started a sweep. The stack is "up" and
+# stop.sh would free it: exactly the state in which the old code swept.
+install -m 644 "$SRC/scripts/lib/usage.sh" "$SB/scripts/lib/usage.sh"
+echo ok > "$T/state/ls_mode"
+for _p in profile-qwen38-uncensored-mtp.sh profile-heretic-v2-mtp.sh profile-fable-fusion-mtp.sh; do
+  touch "$T/state/port_busy" "$T/state/stop_frees"
+  PROF "$_p" --help
+  if [[ $_rc -eq 0 ]] && has "$_out" "Sweeps --spec-draft-n-max" && has "$_out" "Results: .run/" \
+     && ! has "$_out" "set -uo pipefail" \
+     && [[ ! -s "$T/state/stop.log" && ! -s "$T/state/ls.log" && "$(reqs)" == 0 ]]; then
+    pass "$_p --help prints its header: no stop.sh, no launch, no requests"
+  else
+    fail "$_p --help (rc=$_rc, stop=$(cat "$T/state/stop.log"), launches=$(wc -l < "$T/state/ls.log")): $_out"
+  fi
+done
+for _p in "profile-qwen38-uncensored-mtp.sh --ctx" "profile-qwen38-uncensored-mtp.sh q5" \
+          "profile-heretic-v2-mtp.sh --dry-run" "profile-heretic-v2-mtp.sh q5 extra" \
+          "profile-fable-fusion-mtp.sh q7" "profile-fable-fusion-mtp.sh q5 extra"; do
+  touch "$T/state/port_busy" "$T/state/stop_frees"
+  # shellcheck disable=SC2086
+  PROF $_p
+  if [[ $_rc -eq 2 ]] && has "$_out" "Unknown option: " && has "$_out" "--help" \
+     && [[ ! -s "$T/state/stop.log" && ! -s "$T/state/ls.log" && "$(reqs)" == 0 ]]; then
+    pass "'$_p' is refused (exit 2) before the stack is touched"
+  else
+    fail "'$_p' (rc=$_rc, stop=$(cat "$T/state/stop.log"), launches=$(wc -l < "$T/state/ls.log")): $_out"
+  fi
+done
+rm -f "$T/state/stop_frees" "$T/state/port_busy"
+# (Negative control: the valid invocations — no argument for qwen38, `q5` for
+# the other two — still run; the lease and happy-path cases above use them.)
+
 # ===========================================================================
 echo ""
 echo "update.sh --llama — not under somebody else's GPU lease:"
