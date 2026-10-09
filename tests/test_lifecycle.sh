@@ -545,6 +545,37 @@ else
   pass "runtime banners say 'Tool server', not MCPO"
 fi
 
+echo ""
+echo "stop.sh parses its arguments before it stops anything (UX-01):"
+_SA="$_T/stopargs"; _sandbox "$_SA"
+printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
+_stop_rc() { # _stop_rc <args...> -> sets _SO (output) and _SRC (exit code)
+  _SRC=0
+  _SO="$(env -i HOME="$_SA/home" PATH="$_SA/bin:/usr/bin:/bin" timeout 60 bash "$_SA/stop.sh" "$@" 2>&1)" || _SRC=$?
+}
+for _a in --help -h; do
+  rm -f "$_SA/.run/stopped" "$_SA/docker.log"
+  _stop_rc "$_a"
+  if [[ $_SRC -eq 0 && "$_SO" == *"Usage:"* && ! -e "$_SA/.run/stopped" && ! -e "$_SA/docker.log" ]]; then
+    pass "stop.sh $_a prints usage, exits 0 and stops nothing (no marker, no compose down)"
+  else
+    fail "stop.sh $_a (rc=$_SRC) acted: marker=$([[ -e "$_SA/.run/stopped" ]] && echo yes || echo no) docker=$(cat "$_SA/docker.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
+rm -f "$_SA/.run/stopped" "$_SA/docker.log"
+_stop_rc --stauts
+if [[ $_SRC -eq 2 && "$_SO" == *"Unknown option: --stauts"* && ! -e "$_SA/.run/stopped" && ! -e "$_SA/docker.log" ]]; then
+  pass "an unknown option exits 2, names it, and stops nothing"
+else
+  fail "stop.sh --stauts (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_stop_rc
+if [[ $_SRC -eq 0 && -s "$_SA/.run/stopped" ]] && grep -q -- "down" "$_SA/docker.log"; then
+  pass "…and a bare ./stop.sh still stops the stack and writes the marker (control)"
+else
+  fail "bare stop.sh (rc=$_SRC) no longer stops: $(tr '\n' ' ' <<< "$_SO")"
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "================================"

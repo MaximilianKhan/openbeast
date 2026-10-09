@@ -5,7 +5,24 @@
 # supervisor's trap shut the tool server and llama-server down in order, then we verify
 # and only escalate to pkill for anything orphaned (e.g. a stack started
 # before pidfiles existed, or a supervisor that was SIGKILLed).
+#
+# Usage:
+#   ./stop.sh           stop the stack. Also records that the stop was on
+#                       purpose (.run/stopped), so the watchdog timer leaves
+#                       it down until the next ./start.sh
+#   ./stop.sh --help    this text; nothing is stopped
 set -euo pipefail
+# Arguments are parsed BEFORE anything is touched. This script took none and
+# looked at none, so `./stop.sh --help` (or any typo) took the whole stack
+# down and disabled watchdog recovery on the way.
+case "${1:-}" in
+  "") ;;
+  -h|--help|help)
+    awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
+  *)
+    echo "Unknown option: $1 — ./stop.sh takes no arguments (see --help). Nothing was stopped." >&2
+    exit 2 ;;
+esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$SCRIPT_DIR/.run"
 # Resolve user config before `docker compose down` below — compose
