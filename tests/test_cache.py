@@ -36,6 +36,9 @@ def fresh_cache_module(cache_dir: Path):
         del sys.modules["cache"]
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = cache_dir
+    # ...and the strike files with it: cache_clear() empties STRIKES_DIR, and
+    # left at its import-time value that was the rig's real evals/cache/.
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     return cache
 
@@ -182,6 +185,19 @@ def test_clear(cache_dir):
     check("cache empty after clear", cache.cache_stats()["entries"] == 0)
 
 
+def test_clear_never_reaches_the_real_strike_files(cache_dir):
+    """cache_clear() also empties the env-strike directory. The helper used to
+    leave that pointing at the checkout's evals/cache/env-strikes."""
+    cache = fresh_cache_module(cache_dir)
+    real = ROOT / "evals" / "cache"
+    assert real not in cache.STRIKES_DIR.parents and cache_dir in cache.STRIKES_DIR.parents
+    cache.STRIKES_DIR.mkdir(parents=True)
+    (cache.STRIKES_DIR / "k.json").write_text("{}")
+    cache.cache_put("k1", {"passed": True})
+    assert cache.cache_clear() == 1
+    assert not list(cache.STRIKES_DIR.glob("*.json"))
+
+
 def test_key_invalidation_on_max_iter_change(cache_dir):
     """The effective iteration budget is part of the key: a 5-iter capped
     run is a different experiment from a 15-iter one."""
@@ -253,6 +269,7 @@ def test_run_eval_timeout_not_cached_behavioral(td):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = cache_dir
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     run_eval.RESULTS_DIR = str(results_dir)

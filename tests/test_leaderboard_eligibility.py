@@ -139,6 +139,7 @@ def test_run_eval_stamps_cache_only(tmp_path):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     tasks = tmp_path / "tasks"
@@ -170,6 +171,7 @@ def test_full_hit_replay_through_benchmark_all_and_rebuild_adds_no_row(
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "STRIKES_DIR", tmp_path / "cache" / "env-strikes")
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     ba = importlib.import_module("benchmark_all")
