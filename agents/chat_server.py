@@ -1627,7 +1627,9 @@ class Notifier:
         self.burst = max(1, burst)
         self.poster = poster or self._post
         self._last_sent: dict[str, float] = {}
-        self._last_err = 0.0
+        # -inf, not 0: time.monotonic() counts from boot on Linux, so a 0
+        # here kept the first failure silent for the machine's first 300 s.
+        self._last_err = float("-inf")
         self.lock = threading.Lock()
 
     @classmethod
