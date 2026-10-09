@@ -143,6 +143,25 @@ fi
 
 # ---------------------------------------------------------------------------
 echo ""
+echo "2. env file mode (supply S11):"
+mkdir -p "$T/hmode"
+( umask 022; echo "# restored by a dotfile manager" > "$T/hmode/.openbeast-client.env" )
+chmod 644 "$T/hmode/.openbeast-client.env"
+run hmode 200 200 OPENBEAST_API_KEY=sekrit-key -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && grep -q "sekrit-key" "$H/.openbeast-client.env" \
+   && [[ "$(_mode "$H/.openbeast-client.env")" == "600" ]]; then
+  pass "a pre-existing 0644 env file is 0600 once it holds the key"
+else
+  fail "env file mode $(_mode "$H/.openbeast-client.env") (rc=$RC): $OUT"
+fi
+if [[ "$(_mode "$T/h200/.openbeast-client.env")" == "600" ]]; then
+  pass "control: a freshly created env file is 0600 too"
+else
+  fail "fresh env file mode $(_mode "$T/h200/.openbeast-client.env")"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
 echo "================================"

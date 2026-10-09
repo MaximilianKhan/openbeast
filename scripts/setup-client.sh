@@ -529,7 +529,11 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   fi
   [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$(_q "$SEARXNG_CLIENT_SECRET")"
 } > "$ENV_FILE"
-echo "  ✓ wrote $ENV_FILE"
+# umask only sets the mode of a file this run CREATES. A pre-existing env file
+# (hand-made, or restored by a dotfile manager at 0644) keeps its mode through
+# the redirect above — and it now holds the bearer key.
+chmod 600 "$ENV_FILE"
+echo "  ✓ wrote $ENV_FILE (0600)"
 
 # ---- 4b. local SearXNG (--local-search) -------------------------------------
 if [ $LOCAL_SEARCH -eq 1 ]; then
