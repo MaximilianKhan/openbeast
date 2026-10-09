@@ -896,6 +896,35 @@ def _usage_from_json_tail(tail: bytes) -> dict | None:
             return obj
 
 
+# /health skips admission control (clients poll it), so without this every
+# call was its own upstream GET: a device at its rate limit could still
+# generate unlimited requests to the model server. One answer — failures
+# included — now serves every caller for this long.
+_HEALTH_TTL_S = 1.0
+
+
+async def _upstream_health(app, client) -> tuple[int, dict]:
+    st = app.state
+    lock = getattr(st, "health_lock", None)
+    if lock is None:
+        lock = st.health_lock = asyncio.Lock()
+    # Held ACROSS the probe: concurrent callers wait for the one in flight
+    # and take its answer instead of each starting their own.
+    async with lock:
+        cached = getattr(st, "health_cache", None)
+        if cached and _clock() - cached[0] < _HEALTH_TTL_S:
+            return cached[1], cached[2]
+        try:
+            r = await client.get(f"{UPSTREAM}/health", timeout=5)
+            status, payload = r.status_code, (
+                json.loads(r.text) if r.text.startswith("{")
+                else {"status": "ok"})
+        except httpx.HTTPError as e:
+            status, payload = 502, {"error": {"message": f"upstream: {e}"}}
+        st.health_cache = (_clock(), status, payload)
+        return status, payload
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -944,13 +973,8 @@ async def gate(request: Request):
 
     if path == "/health":
         # Cheap liveness, no admission control — clients poll it.
-        try:
-            r = await client.get(f"{UPSTREAM}/health", timeout=5)
-            return JSONResponse(json.loads(r.text) if r.text.startswith("{")
-                                else {"status": "ok"}, status_code=r.status_code)
-        except httpx.HTTPError as e:
-            return JSONResponse({"error": {"message": f"upstream: {e}"}},
-                                status_code=502)
+        status, payload = await _upstream_health(app, client)
+        return JSONResponse(payload, status_code=status)
 
     # Atomic admit: check-and-increment in one step with no await between,
     # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.

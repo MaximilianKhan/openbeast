@@ -280,3 +280,88 @@ class TestMediaUrlsStayInline:
         with TestClient(edge.app) as c:
             assert c.post(CHAT, json=body, headers=HDR).status_code == 200
         assert "example.com/cat.png" in captured["content"].decode()
+
+
+def _scope(app, path=CHAT, method="POST", key=DEVICE_KEY):
+    return {"type": "http", "method": method, "app": app, "path": path,
+            "raw_path": b"", "query_string": b"", "root_path": "",
+            "scheme": "http", "server": ("127.0.0.1", 8090),
+            "client": ("127.0.0.1", 1),
+            "headers": [(b"authorization", f"Bearer {key}".encode()),
+                        (b"content-type", b"application/json")]}
+
+
+def _direct_app(edge, client):
+    """edge.app wired for handler-level tests (no TestClient, one loop)."""
+    app = edge.app
+    app.state.registry = edge.Registry()
+    app.state.limiter = edge.Limiter()
+    app.state.client = client
+    return app
+
+
+class _HealthClient:
+    def __init__(self, fail=False, delay=0.0):
+        self.hits, self.fail, self.delay = 0, fail, delay
+
+    async def get(self, url, timeout=None):
+        self.hits += 1
+        await asyncio.sleep(self.delay)
+        if self.fail:
+            import httpx
+            raise httpx.ConnectError("refused")
+
+        class R:
+            status_code = 200
+            text = '{"status":"ok"}'
+        return R()
+
+    async def aclose(self):
+        pass
+
+
+class TestUpstreamHealthIsCached:
+    """S8: /health is exempt from the rate limit, so the gate must not turn
+    every call into an upstream request."""
+
+    def _serve(self, edge, client):
+        @edge.asynccontextmanager
+        async def _lifespan(a):
+            a.state.client = client
+            a.state.registry = edge.Registry()
+            a.state.limiter = edge.Limiter()
+            yield
+        edge.app.router.lifespan_context = _lifespan
+
+    @pytest.mark.parametrize("fail,code", [(False, 200), (True, 502)])
+    def test_a_burst_is_one_upstream_request(self, edge, tmp_path,
+                                             monkeypatch, fail, code):
+        _registry(tmp_path, rate=2)
+        up = _HealthClient(fail=fail)
+        self._serve(edge, up)
+        now = [1000.0]
+        monkeypatch.setattr(edge, "_clock", lambda: now[0])
+        with TestClient(edge.app) as c:
+            for _ in range(50):
+                assert c.get("/health", headers=HDR).status_code == code
+            assert up.hits == 1
+            # Negative control: the answer is not pinned forever.
+            now[0] += edge._HEALTH_TTL_S + 0.01
+            assert c.get("/health", headers=HDR).status_code == code
+            assert up.hits == 2
+
+    def test_concurrent_callers_share_one_probe(self, edge, tmp_path):
+        _registry(tmp_path)
+        up = _HealthClient(delay=0.05)
+        app = _direct_app(edge, up)
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def run():
+            return await asyncio.gather(*[
+                edge.gate(Request(_scope(app, "/health", "GET"), receive))
+                for _ in range(20)])
+
+        assert {r.status_code for r in asyncio.run(run())} == {200}
+        assert up.hits == 1
