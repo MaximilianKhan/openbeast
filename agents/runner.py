@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 
 import tools as _tools
 from tools import TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, plan_block, reset_plan, update_plan
@@ -217,17 +217,24 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
-                         compactions: int = 0, api_errors: int = 0) -> None:
+                         compactions: int = 0, api_errors: int = 0,
+                         request_timeouts: int | None = None) -> None:
     """Print the stable-key token line that the eval harness parses.
 
     API_ERRORS counts model calls that failed for a reason other than a
     context overflow (connection refused, 5xx, timeout). A server that dies
     mid-task leaves the loop burning its remaining iterations on errors and
     exiting 0 with the tokens it had, which looks like a model FAIL; the
-    eval harness reads this line to refuse caching such a unit."""
+    eval harness reads this line to refuse caching such a unit.
+
+    REQUEST_TIMEOUTS is printed in eval mode only (None = not eval): model
+    turns that outlasted the unit's wall budget. They are the model's
+    verbosity, not the server's health, so they are NOT in API_ERRORS."""
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
     print(f"COMPACTIONS: {compactions}")
     print(f"API_ERRORS: {api_errors}")
+    if request_timeouts is not None:
+        print(f"REQUEST_TIMEOUTS: {request_timeouts}")
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +336,15 @@ _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve sc
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+# Eval mode (suite v4.1). The openai client's default read timeout is 600 s
+# of WALL time and it re-sends a timed-out request. run_eval scales a unit's
+# wall budget by --jobs, but nothing scaled that 600 s: a turn that finishes
+# at jobs=1 was thrown away at jobs=4, re-sent identically, and the unit then
+# hit the wall as a 0-token FAIL (three board FAILs and two Tier-3 "20-minute
+# hangs" traced to it). Under eval the request gets what is left of the
+# unit's wall budget (run_eval passes the budget in this variable) and is
+# never re-sent. Outside eval nothing changes.
+_EVAL_WALL_ENV = "OPENBEAST_EVAL_WALL_S"
 _TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
 _CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
 
@@ -622,6 +638,25 @@ _PAUSE_POLL_S = 1.0
 #: if it is handed ops by something other than that reader.
 _SAY_MAX_CHARS = 4000
 
+def _eval_mode() -> bool:
+    """Whether this process is a measured eval unit (see _EVAL_MARKER)."""
+    return bool(os.environ.get(_EVAL_MARKER))
+
+
+def _eval_deadline(now: float | None = None) -> float | None:
+    """time.monotonic() value at which this eval unit's wall budget ends, or
+    None (not an eval unit, or the harness did not pass a budget)."""
+    if not _eval_mode():
+        return None
+    try:
+        budget = float(os.environ.get(_EVAL_WALL_ENV, "").strip())
+    except ValueError:
+        return None
+    if budget <= 0:
+        return None
+    return (time.monotonic() if now is None else now) + budget
+
+
 #: Set unconditionally by evals/run_eval.py in every child environment. It is
 #: the ONLY lock that does not depend on how a task happens to be worded or on
 #: how the operator's shell happens to be configured.
@@ -789,8 +824,12 @@ def run_agent(
     if system_prompt is None:
         system_prompt = build_system_prompt(context=context, context_budget=context_budget)
 
+    # Eval: no client-side re-send, and each request is bounded by the
+    # unit's remaining wall budget (see _EVAL_WALL_ENV). Resolved once.
+    eval_mode = _eval_mode()
+    eval_deadline = _eval_deadline()
     client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
-                    max_retries=_CLIENT_MAX_RETRIES)
+                    max_retries=0 if eval_mode else _CLIENT_MAX_RETRIES)
     # Resolved once per run; {} (send nothing) under eval or when set to 0.
     max_tokens = _max_completion_tokens()
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
@@ -911,6 +950,9 @@ def run_agent(
     # Context-window management state (see compact_messages).
     compactions = 0
     api_errors = 0      # non-overflow model-call failures (API_ERRORS: n)
+    # Eval only: model turns that outlasted the wall budget. None outside
+    # eval, so the summary does not grow a line there.
+    request_timeouts: int | None = 0 if eval_mode else None
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
@@ -1006,6 +1048,13 @@ def run_agent(
                         f" (est {est:,} > {target:,} tokens, to {low:,})",
                         must_free=asks[0])
 
+        # Eval: this turn may take what is left of the unit's wall budget.
+        # No budget passed (a runner started by hand with the marker set)
+        # leaves the client's own default in place.
+        timeout_kwargs = {}
+        if eval_deadline is not None:
+            timeout_kwargs["timeout"] = max(1.0, eval_deadline - time.monotonic())
+
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -1019,9 +1068,25 @@ def run_agent(
                 temperature=(0.0 if os.environ.get(
                     "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
                 **cap_kwargs,
+                **timeout_kwargs,
             )
         except Exception as e:
             err = str(e)
+            if eval_mode and isinstance(e, APITimeoutError):
+                # The model was still generating when the time ran out. That
+                # is a verdict on the model, not a server fault: it is counted
+                # apart from API_ERRORS (which makes a failed unit
+                # `server_error` and keeps it out of the cache and off the
+                # board), and worded so run_eval's `API error:` fallback
+                # count does not pick it up either.
+                request_timeouts += 1
+                print(f"  Request timed out: {err}")
+                log_event({"type": "request_timeout", "error": err,
+                           "iteration": iteration})
+                if eval_deadline is None or time.monotonic() >= eval_deadline - 1.0:
+                    stop_reason = "the wall budget ran out during a model turn"
+                    break
+                continue
             print(f"  API error: {err}")
             log_event({"type": "error", "error": err})
             if _is_context_overflow(err):
@@ -1053,6 +1118,12 @@ def run_agent(
             tokens_prompt += getattr(usage, "prompt_tokens", 0) or 0
             tokens_completion += getattr(usage, "completion_tokens", 0) or 0
             tokens_total += getattr(usage, "total_tokens", 0) or 0
+        if eval_mode:
+            # Running total, flushed: a unit killed at the wall then records
+            # the tokens of every turn that completed instead of 0 (run_eval
+            # reads the last TOKENS line of whatever stdout it has).
+            print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} "
+                  f"total={tokens_total}", flush=True)
 
         choice = response.choices[0]
         message = choice.message
@@ -1165,7 +1236,7 @@ def run_agent(
                 print(f"Summary: {final_summary}")
                 print(f"Log: {log_path}")
                 _print_token_summary(tokens_prompt, tokens_completion, tokens_total,
-                                     compactions, api_errors)
+                                     compactions, api_errors, request_timeouts)
                 print(f"{'=' * 60}")
                 log_event({
                     "type": "done", "summary": final_summary, "iterations": iteration,
@@ -1182,7 +1253,7 @@ def run_agent(
     else:
         print(f"\nMax iterations ({max_iter}) reached without task_done.")
     _print_token_summary(tokens_prompt, tokens_completion, tokens_total, compactions,
-                         api_errors)
+                         api_errors, request_timeouts)
     log_event({
         "type": "max_iterations", "iterations": max_iter,
         "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,

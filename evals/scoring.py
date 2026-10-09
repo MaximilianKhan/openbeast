@@ -591,12 +591,19 @@ def killed_units(tasks: list[dict]) -> int:
     """Units whose agent did not exit on its own: the harness wall timeout
     (agent_exit_code -1) or a signal (-9, -15). They are the one non-verdict
     class that seats on the board: pass/fail is whatever the files left
-    behind validate to, run_eval records their tokens as 0 (so TOKENS and
-    the tok/s averages understate), and they are never cached, so every
-    relaunch re-rolls exactly these units while banked FAILs stay fixed.
-    The 9 seated v4 rows held 16 of them on 2026-10-09 (15 wall timeouts,
-    one SIGKILL)."""
-    return sum(1 for t in tasks if (t.get("agent_exit_code") or 0) < 0)
+    behind validate to, and they are never cached, so every relaunch
+    re-rolls exactly these units while banked FAILs stay fixed. Rows from
+    before suite v4.1 record their tokens as 0 (so TOKENS and the tok/s
+    averages understate); from v4.1 the runner prints a running total and
+    the row keeps the tokens of every completed turn. The 9 seated v4 rows
+    held 16 of them on 2026-10-09 (15 wall timeouts, one SIGKILL).
+
+    From v4.1 the same event can also end with the runner stopping itself
+    (a model turn outlasted the wall budget: `request_timeouts`, exit 0);
+    those rows are counted here too."""
+    return sum(1 for t in tasks
+               if (t.get("agent_exit_code") or 0) < 0
+               or (t.get("request_timeouts") or 0) > 0)
 
 
 def score_run(results: dict) -> dict:
