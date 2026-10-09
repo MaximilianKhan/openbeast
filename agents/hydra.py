@@ -70,7 +70,11 @@ ERROR_BODY_CAP = 1024 * 1024
 ROUTED_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
 _HOP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer",
         "upgrade", "proxy-authorization", "proxy-authenticate", "proxy-connection"}
-_TRUST_ONLY = ("x-openbeast-device",)
+# Who is asking is hydra's business (rules, audit), never a node's: an engine
+# has no use for it, and a remote node would be handed the user's email and a
+# live identity JWT (X-OpenWebUI-User-Jwt) in plain HTTP on every turn.
+_IDENTITY = ("x-openbeast-device",)
+_IDENTITY_PREFIXES = ("x-openwebui-", "tailscale-")
 _REQ_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ERR_STATUS = {"hydra_unavailable": 503, "hydra_pinned_unavailable": 503, "hydra_pin_incompatible": 422,
               "hydra_unknown_model": 404, "hydra_unknown_deployment": 404, "hydra_timeout": 504,
@@ -785,7 +789,7 @@ def _upstream_headers(request: Request, caller: core.Caller, key: str | None, re
             continue
         if lk in ("accept-encoding", "x-openbeast-request-id"):
             continue
-        if not caller.trusted and (lk in _TRUST_ONLY or lk.startswith("x-openwebui-user-")):
+        if lk in _IDENTITY or lk.startswith(_IDENTITY_PREFIXES):
             continue
         h[k] = v
     h["content-type"] = "application/json"

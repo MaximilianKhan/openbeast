@@ -499,8 +499,31 @@ def test_identity_headers_need_the_caller_token(fleet, tmp_path):
     assert audit_rows(tmp_path)[-1]["trusted"] is False
     r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
     assert r.headers["x-hydra-route"] == "beast:fast" and r.headers["x-hydra-rule"] == "phone-fast"
-    assert posts(sparks)[-1]["headers"]["x-openbeast-device"] == "max-phone"
     assert audit_rows(tmp_path)[-1]["device"] == "max-phone"
+def test_identity_headers_route_but_never_reach_a_node(fleet, tmp_path):
+    """Review 2026-10-09 netsec S12: a trusted caller's identity decides the
+    route and lands in the audit row, and stops there — a fleet node was being
+    handed the user's email and a live identity JWT on every turn."""
+    srv, rig, sparks, _ = fleet()
+    who = {"X-Hydra-Caller": "caller-secret", "X-OpenBeast-Device": "max-phone",
+           "X-OpenWebUI-User-Role": "admin", "X-OpenWebUI-User-Email": "max@example.test",
+           "X-OpenWebUI-User-Id": "u-1", "X-OpenWebUI-User-Jwt": "eyJ.identity.jwt",
+           "X-OpenWebUI-Chat-Id": "c-1", "Tailscale-User-Login": "max@example.test",
+           "X-Conversation-Id": "conv-7"}
+    r = post(srv, chat(), who)
+    assert r.status_code == 200
+    # still used for the decision (the device rule matched) and the audit
+    assert r.headers["x-hydra-route"] == "beast:fast" and r.headers["x-hydra-rule"] == "phone-fast"
+    row = audit_rows(tmp_path)[-1]
+    assert row["trusted"] is True and row["device"] == "max-phone"
+    fwd = posts(sparks)[-1]["headers"]
+    leaked = sorted(k for k in fwd if k.startswith(("x-openwebui-", "tailscale-", "x-openbeast-device")))
+    assert not leaked, leaked
+    assert "eyJ.identity.jwt" not in json.dumps(posts(sparks)[-1])
+    # negative control: a non-identity header still travels
+    assert fwd["x-conversation-id"] == "conv-7" and fwd["x-openbeast-request-id"]
+
+
 
 
 def test_request_id_is_forwarded(fleet):
