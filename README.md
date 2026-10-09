@@ -747,8 +747,10 @@ downloads any of them, staged and sha256-verified before it lands.
 
 A reproducible suite of **291 test units** (137 base tasks, 31 with variants
 across 6 languages) spanning 12 domains — software engineering, math, physics,
-ML/LLM internals, distributed systems, security, and more. Every task is
-self-contained with deterministic checks, and the multi-model runner produces a
+ML/LLM internals, distributed systems, security, and more. Every task ships
+its own fixtures and a scripted check (the suite's known gaps, including live
+`fetch`/`web_search` under eval and two defective validators, are listed in
+[evals/README.md](evals/README.md#known-validator-defects-v4)), and the multi-model runner produces a
 **capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
 
 **v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
