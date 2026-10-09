@@ -118,13 +118,6 @@ def test_guard_blocks_git_hooks(tmp_path):
     assert out.startswith("Error:") and "hook" in out
 
 
-def test_guard_blocks_local_bin(monkeypatch):
-    target = os.path.expanduser("~/.local/bin/definitely-a-test-shim")
-    out = tools.write_file(target, "#!/bin/sh\n")
-    assert out.startswith("Error:") and "persistence" in out
-    assert not os.path.exists(target)
-
-
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -136,6 +129,18 @@ def fake_home(tmp_path, monkeypatch):
         '. "$HOME/.config/shell/extra.sh"\n'
         "source ${HOME}/dots/aliases # trailing comment\n")
     return home
+
+
+def test_guard_blocks_local_bin(fake_home):
+    # In a HOME this test owns. Against the real one, a build with the guard
+    # broken WROTE ~/.local/bin/definitely-a-test-shim onto the operator's
+    # PATH, and the assertion below then failed in every checkout until
+    # someone deleted the file by hand.
+    target = os.path.expanduser("~/.local/bin/definitely-a-test-shim")
+    assert target.startswith(str(fake_home))
+    out = tools.write_file(target, "#!/bin/sh\n")
+    assert out.startswith("Error:") and "persistence" in out
+    assert not os.path.exists(target)
 
 
 @pytest.mark.parametrize("rel", [
