@@ -130,6 +130,9 @@ if [[ $STATUS -eq 1 ]]; then
   # An unmanaged backend has no llama pid to report; "llama: not running"
   # read as an outage on a stack that is fine. Say what actually serves.
   _st_managed=1
+  # A status report writes nothing: without this, sourcing conf.sh on a fresh
+  # checkout minted SEARXNG_SECRET and created openbeast.conf (lib/conf.sh).
+  export OB_CONF_READONLY=1
   if [[ -f "$SCRIPT_DIR/scripts/lib/backend.sh" ]]; then
     source "$SCRIPT_DIR/scripts/lib/conf.sh" 2>/dev/null
     source "$SCRIPT_DIR/scripts/lib/backend.sh"

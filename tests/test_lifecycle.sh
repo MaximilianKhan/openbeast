@@ -676,6 +676,20 @@ if [[ $_SRC -eq 1 && "$_SO" == *"not found or not executable"* ]] && grep -q -- 
 else
   fail "start.sh restart (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
 fi
+# A status report writes nothing (UX-12): on a fresh checkout — no conf, no
+# secret in the environment — conf.sh would mint SEARXNG_SECRET into a new
+# openbeast.conf. _start_rc hands the secret in, so this one runs without it.
+for _w in --status status; do
+  rm -f "$_CW/openbeast.conf"
+  _SO="$(env -i HOME="$_CW/home" PATH="$_CW/bin:/usr/bin:/bin" OPENBEAST_BIND=$_LO \
+    timeout 30 bash "$_CW/start.sh" "$_w" 2>&1)" && _SRC=0 || _SRC=$?
+  if [[ $_SRC -eq 0 && "$_SO" == *"OpenBeast stack status:"* && ! -e "$_CW/openbeast.conf" ]]; then
+    pass "'./start.sh $_w' on a fresh checkout creates no openbeast.conf"
+  else
+    fail "start.sh $_w wrote the conf (rc=$_SRC, conf=$([[ -e "$_CW/openbeast.conf" ]] && echo created || echo absent)): $(tr '\n' ' ' <<< "$_SO")"
+  fi
+done
+: > "$_CW/openbeast.conf"
 
 echo ""
 echo "start.sh refuses to run as root (UX-11):"
