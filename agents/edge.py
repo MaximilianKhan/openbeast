@@ -42,13 +42,23 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
   OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
                                a prompt array or n>1 counts prompts x n
-  OPENBEAST_EDGE_ALLOW_ANON    "true" = while NO device is enrolled, serve
+  OPENBEAST_EDGE_MAX_BODY      largest request body accepted, in bytes (default
+                               8 MiB — see MAX_BODY_BYTES)
+  OPENBEAST_EDGE_ALLOW_MEDIA_URLS  "true" = forward image/audio/video parts
+                               that name a URL for llama-server to fetch
+                               (default false = inline media only — see
+                               _remote_media)
+  OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
-                               false = fail closed). Ignored once the registry
-                               holds a device: then no/unknown key -> 401
+                               false = fail closed). Ignored once
+                               .run/clients.json exists — even emptied by
+                               `clients.sh remove`, even unreadable: then
+                               no/unknown key -> 401
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -66,7 +76,7 @@ import httpx
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
@@ -85,7 +95,15 @@ _TOUCH_INTERVAL_S = 60.0
 _LOCAL_TOKEN_PATH = os.path.join(RUN_DIR, "edge-local.token")
 _LOCAL_TOKEN: str | None = None
 # Requests larger than this are refused rather than buffered whole in RAM.
-MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(32 * 1024 * 1024)))
+# 8 MiB, not the 32 it was: the cap also bounds what ONE request can make the
+# gate parse (~90 ms of CPU per MiB for a body that is all tokens), and no
+# honest body is near it — a full 262K-token context is ~1 MiB of text, and
+# llama-server itself refuses media over 10 MB. Raise it for bigger inline
+# media.
+MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(8 * 1024 * 1024)))
+# Bodies above this are sanitized in a worker thread (see gate()); below it
+# the thread hop costs more than the parse (worst case ~1.5 ms inline).
+_SANITIZE_INLINE_BYTES = 16 * 1024
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -96,6 +114,8 @@ RATE_LIMIT = int(os.environ.get("OPENBEAST_EDGE_RATE_LIMIT", "120"))
 MAX_INFLIGHT = int(os.environ.get("OPENBEAST_EDGE_MAX_INFLIGHT", "2"))
 ALLOW_ANON = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_ANON", "false").strip().lower() == "true"
+ALLOW_MEDIA_URLS = os.environ.get(
+    "OPENBEAST_EDGE_ALLOW_MEDIA_URLS", "false").strip().lower() == "true"
 
 # The ONLY paths a remote client may reach. Everything else 404s — a remote
 # caller should not be able to tell which of the many llama-server routes
@@ -159,6 +179,10 @@ class Registry:
         self._mtime = None
         self._by_hash: dict[str, dict] = {}
         self._present = False
+        # The FILE is there, parsed or not. Distinct from _present (a map was
+        # loaded from it) — see `exists`.
+        self._exists = False
+        self._bad_stamp = None
         self._touched: dict[str, float] = {}
         self.reload()
 
@@ -167,8 +191,10 @@ class Registry:
             st = os.stat(self.path)
         except OSError:
             self._by_hash, self._present, self._mtime = {}, False, 0.0
+            self._exists = False
             self._size = -1
             return
+        self._exists = True
         # mtime alone is not enough: two writes inside the same filesystem
         # timestamp tick (mtime granularity can be 1s) would leave a stale
         # map — and a stale map means a MISSED REVOCATION. Key the cache on
@@ -179,15 +205,29 @@ class Registry:
         try:
             with open(self.path) as f:
                 data = json.load(f)
-        except (OSError, ValueError):
+            # The wrong SHAPE is as unusable as a parse error (and used to
+            # be an AttributeError out of every request).
+            devices = data.get("devices", [])
+            by_hash = {}
+            for dev in devices:
+                key_hash = (dev.get("key_sha256") or "").strip().lower()
+                if key_hash:
+                    by_hash[key_hash] = dev
+        except (OSError, ValueError, AttributeError, TypeError) as e:
             # A half-written or corrupt registry must NOT silently open the
-            # door: keep serving the last good map.
+            # door: keep serving the last good map. On a FIRST load there is
+            # no last good map — `exists` is what keeps that closed. Said
+            # once per bad file, not once per request.
+            if stamp != self._bad_stamp:
+                self._bad_stamp = stamp
+                _log(f"ERROR: {self.path} exists but cannot be read as a "
+                     f"device registry ({type(e).__name__}) — "
+                     + ("serving the last good copy" if self._present else
+                        "refusing every caller")
+                     + " until it is repaired: ./scripts/clients.sh list "
+                     "names the fault; restore the file or move it aside "
+                     "and re-enroll")
             return
-        by_hash = {}
-        for dev in data.get("devices", []):
-            key_hash = (dev.get("key_sha256") or "").strip().lower()
-            if key_hash:
-                by_hash[key_hash] = dev
         self._by_hash = by_hash
         self._present = True
         self._mtime = stamp
@@ -206,6 +246,20 @@ class Registry:
         """
         self.reload()
         return self._present and bool(self._by_hash)
+
+    @property
+    def exists(self) -> bool:
+        """True when the registry FILE is there — empty or unreadable too.
+
+        This, not `configured`, decides whether EDGE_ALLOW_ANON may apply.
+        Enrollment having happened at all is the operator's statement that
+        callers are identified, and two states used to read as "no registry"
+        and reopen the gate to every tailnet peer: `clients.sh remove` of the
+        last device (which re-admitted the very key it removed), and a file
+        truncated before a gate restart (no last good map to keep).
+        """
+        self.reload()
+        return self._exists
 
     def lookup(self, presented_key: str) -> dict | None:
         """Device for a bearer key, or None. Revoked devices return None."""
@@ -556,12 +610,23 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
         if dev is None:
             return None, "bad_key"
         return dev, "ok"
-    # No registry yet. Fail CLOSED unless explicitly opted out — an empty
+    # No device to match. Fail CLOSED unless explicitly opted out — an empty
     # registry must not mean "everyone is welcome" (the RBAC fail-closed
-    # lesson from 2026-07-17).
+    # lesson from 2026-07-17). The opt-out covers ONLY a rig that has never
+    # had a registry file: see Registry.exists.
+    if registry.exists:
+        return None, ("no_registry" if registry._present
+                      else "registry_unreadable")
     if ALLOW_ANON:
         return {"id": "anon", "label": "unregistered"}, "ok"
     return None, "no_registry"
+
+
+def _auth_mode(registry: Registry) -> str:
+    """devices | anon | closed — what _identify does with a caller right now."""
+    if registry.configured:
+        return "devices"
+    return "anon" if ALLOW_ANON and not registry.exists else "closed"
 
 
 # A JSON string token (escapes included) or one structural bracket. Strings
@@ -634,6 +699,54 @@ def _generations(body: dict, path: str) -> int:
     return inputs * n
 
 
+# Chat content parts that carry media, and the keys llama-server reads the
+# reference from (server-common.cpp: image_url.url; input_audio/input_video
+# take `data`, falling back to `url`).
+_MEDIA_PARTS = {
+    "image_url": ("url",),
+    "input_audio": ("data", "url"),
+    "input_video": ("data", "url"),
+}
+
+
+def _remote_media(body: dict) -> str | None:
+    """Type of the first content part whose media is a REFERENCE, else None.
+
+    With an mmproj loaded (the shipped vision serve scripts), llama-server
+    downloads whatever such a part names: anything starting "http" is fetched
+    from the rig's own loopback, and "file://" is opened under --media-path.
+    For a remote device that is SSRF — `http://127.0.0.1:3000/…` or a LAN /
+    metadata address, with success vs "Failed to download image" as the
+    oracle and the model describing whatever decodes. tools.fetch's SSRF
+    guard is not on this path. So the gate forwards inline media only: a
+    `data:` URI, or the bare base64 the OpenAI audio shape uses (no ":" in
+    its alphabet). The "http" prefix is checked on its own because that is
+    llama-server's whole test — "httpd" with no scheme would be fetched too.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            ptype = part.get("type") if isinstance(part, dict) else None
+            keys = _MEDIA_PARTS.get(ptype) if isinstance(ptype, str) else None
+            if not keys:
+                continue
+            media = part.get(ptype)
+            refs = ([media] if isinstance(media, str) else
+                    [media.get(k) for k in keys] if isinstance(media, dict)
+                    else [])
+            for ref in refs:
+                if not isinstance(ref, str) or ref.startswith("data:"):
+                    continue
+                if ":" in ref or ref[:4].lower() == "http":
+                    return ptype
+    return None
+
+
 def _sanitize_body(raw: bytes, device: dict,
                    path: str = "/v1/chat/completions"
                    ) -> tuple[bytes, str | None, bool, int]:
@@ -666,6 +779,14 @@ def _sanitize_body(raw: bytes, device: dict,
         raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
     if not isinstance(body, dict):
         raise BadBody("request body must be a JSON object")
+    if not ALLOW_MEDIA_URLS:
+        remote = _remote_media(body)
+        if remote:
+            raise BadBody(
+                f"{remote} parts must carry the media inline (a data: URI or "
+                "base64) — this rig does not fetch URLs for remote devices. "
+                "The operator can allow it with "
+                "OPENBEAST_EDGE_ALLOW_MEDIA_URLS=true")
     # id_slot is unauthenticated in llama-server: it wraps modulo the slot
     # count (landing on another tenant's slot) and a pinned task jumps the
     # deferred queue ahead of unpinned callers. Never honor the client's.
@@ -776,6 +897,90 @@ def _usage_from_json_tail(tail: bytes) -> dict | None:
             return obj
 
 
+# /health skips admission control (clients poll it), so without this every
+# call was its own upstream GET: a device at its rate limit could still
+# generate unlimited requests to the model server. One answer — failures
+# included — now serves every caller for this long.
+_HEALTH_TTL_S = 1.0
+
+
+async def _upstream_health(app, client) -> tuple[int, dict]:
+    st = app.state
+    lock = getattr(st, "health_lock", None)
+    if lock is None:
+        lock = st.health_lock = asyncio.Lock()
+    # Held ACROSS the probe: concurrent callers wait for the one in flight
+    # and take its answer instead of each starting their own.
+    async with lock:
+        cached = getattr(st, "health_cache", None)
+        if cached and _clock() - cached[0] < _HEALTH_TTL_S:
+            return cached[1], cached[2]
+        try:
+            r = await client.get(f"{UPSTREAM}/health", timeout=5)
+            status, payload = r.status_code, (
+                json.loads(r.text) if r.text.startswith("{")
+                else {"status": "ok"})
+        except httpx.HTTPError as e:
+            status, payload = 502, {"error": {"message": f"upstream: {e}"}}
+        st.health_cache = (_clock(), status, payload)
+        return status, payload
+
+
+# How often the wait for upstream headers looks at the client socket.
+_DISCONNECT_POLL_S = 0.25
+# How often an ADMITTED request re-proves its device is still enrolled.
+# Revocation is hot-reloaded for new requests, but a generation already open
+# on a stolen laptop used to run to its end, holding the slot. The cost per
+# check is one os.stat (Registry.reload) and a hash.
+_REAUTH_INTERVAL_S = 5.0
+
+
+async def _abandon(task) -> None:
+    """Cancel an upstream send — and close the response if it won the race."""
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await task
+    if task.cancelled() or task.exception() is not None:
+        return
+    with contextlib.suppress(BaseException):
+        await task.result().aclose()
+
+
+async def _send_watched(request: Request, coro, still_enrolled) -> tuple:
+    """Await the upstream's response headers, unless nobody wants them.
+
+    Returns (response, None), or (None, reason) after cancelling the send.
+    Until headers arrive nothing else reads the client socket, and for a
+    non-streaming completion they arrive only when the WHOLE generation is
+    done. So a caller that gave up (an agent with a 60 s timeout) kept its
+    in-flight unit and the engine busy until the upstream answered or the
+    read timeout fired: two retries wedged the device at 429, a `-np 1` rig
+    generated for nobody ahead of the operator's own turn, and the abandoned
+    work was audited "200 ok". Cancelling closes the upstream connection,
+    which is what makes llama-server (or hydra) stop. Same shape as hydra's
+    _until_disconnect. The same wait re-checks enrollment (reason "revoked").
+    """
+    task = asyncio.ensure_future(coro)
+    checked = _clock()
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_DISCONNECT_POLL_S)
+            if done:
+                return task.result(), None
+            if await request.is_disconnected():
+                await _abandon(task)
+                return None, "client_disconnect"
+            if _clock() - checked >= _REAUTH_INTERVAL_S:
+                checked = _clock()
+                if not still_enrolled():
+                    await _abandon(task)
+                    return None, "revoked"
+    except BaseException:
+        if not task.done():
+            await _abandon(task)
+        raise
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -802,6 +1007,9 @@ async def gate(request: Request):
         hint = ("this rig has no enrolled devices yet — run "
                 "./scripts/clients.sh enroll <id> on the rig"
                 if reason == "no_registry" else
+                "the rig's device registry is unreadable — on the rig, run "
+                "./scripts/clients.sh list and repair .run/clients.json"
+                if reason == "registry_unreadable" else
                 "present a device key: Authorization: Bearer <key>")
         return JSONResponse(
             {"error": {"message": f"unauthorized ({reason}): {hint}",
@@ -821,13 +1029,8 @@ async def gate(request: Request):
 
     if path == "/health":
         # Cheap liveness, no admission control — clients poll it.
-        try:
-            r = await client.get(f"{UPSTREAM}/health", timeout=5)
-            return JSONResponse(json.loads(r.text) if r.text.startswith("{")
-                                else {"status": "ok"}, status_code=r.status_code)
-        except httpx.HTTPError as e:
-            return JSONResponse({"error": {"message": f"upstream: {e}"}},
-                                status_code=502)
+        status, payload = await _upstream_health(app, client)
+        return JSONResponse(payload, status_code=status)
 
     # Atomic admit: check-and-increment in one step with no await between,
     # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.
@@ -882,7 +1085,17 @@ async def gate(request: Request):
         body, model, streaming, gens = raw, None, False, 1
         if raw and path in JSON_PATHS:
             try:
-                body, model, streaming, gens = _sanitize_body(raw, device, path)
+                if len(raw) > _SANITIZE_INLINE_BYTES:
+                    # OFF the event loop. The depth scan is a Python loop per
+                    # token: a cap-sized body of "[],[],…" held the loop for
+                    # seconds, and since one device may send 120 of those a
+                    # minute it could stall every other tenant's stream and
+                    # time /gate/health out (which a watchdog reads as down).
+                    body, model, streaming, gens = await asyncio.to_thread(
+                        _sanitize_body, raw, device, path)
+                else:
+                    body, model, streaming, gens = _sanitize_body(
+                        raw, device, path)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
@@ -927,10 +1140,44 @@ async def gate(request: Request):
         headers = _upstream_headers(request, device, request_id)
         registry.touch(device_id)
 
+        def _still_enrolled() -> bool:
+            # The SAME enrollment, not merely a key that resolves: a device
+            # removed and re-enrolled mid-request is a different device.
+            dev, _ = _identify(request, registry)
+            return dev is not None and device_uid(dev) == uid
+
         req = client.build_request(request.method, f"{UPSTREAM}{path}",
                                    content=body, headers=headers)
         try:
-            resp = await client.send(req, stream=True)
+            resp, gone = await _send_watched(
+                request, client.send(req, stream=True), _still_enrolled)
+            if gone == "revoked":
+                _release()
+                _bump("denied_total", "revoked")
+                _audit(device_id, user, path, 401, None,
+                       int((time.monotonic() - started) * 1000), model,
+                       "revoked", request_id, uid)
+                _log(f"device revoked mid-request device={device_id} "
+                     f"path={path} request_id={request_id} — upstream "
+                     "request cancelled")
+                return JSONResponse(
+                    {"error": {"message": "unauthorized (revoked): this "
+                               "device's key is no longer enrolled",
+                               "type": "invalid_request_error"}},
+                    status_code=401,
+                    headers={"X-OpenBeast-Request-Id": request_id})
+            if gone:
+                _release()
+                _audit(device_id, user, path, 499, None,
+                       int((time.monotonic() - started) * 1000), model,
+                       gone, request_id, uid)
+                _log(f"client gone before upstream headers device={device_id} "
+                     f"path={path} request_id={request_id} — upstream "
+                     "request cancelled")
+                # 499 (nginx's "client closed request"): nobody reads it; it
+                # only keeps the status honest in logs. Same as hydra.
+                return Response(b"", status_code=499, headers={
+                    "X-OpenBeast-Request-Id": request_id})
         except (httpx.ConnectTimeout, httpx.PoolTimeout) as e:
             # A CONNECT/pool timeout means we never reached the server — that
             # is "unreachable", not "slow". TimeoutException is their parent,
@@ -998,8 +1245,23 @@ async def gate(request: Request):
         timed_out = False
         upstream_failed = False
         completed = False
+        revoked = False
+        checked = _clock()
         try:
             async for chunk in resp.aiter_raw():
+                # Checked as chunks arrive, BEFORE relaying: a revoked device
+                # gets nothing further, and leaving the loop closes the
+                # upstream below, which frees the slot. (A stream that has
+                # gone silent is not re-checked until its next chunk.)
+                if _clock() - checked >= _REAUTH_INTERVAL_S:
+                    checked = _clock()
+                    if not _still_enrolled():
+                        revoked = True
+                        _bump("denied_total", "revoked")
+                        _log(f"device revoked mid-stream device={device_id} "
+                             f"path={path} request_id={request_id} — "
+                             "stream closed")
+                        break
                 # Bounded tail (usage rides the last SSE chunks) plus, for
                 # small non-streaming replies, the whole body.
                 state["tail"] = (state["tail"] + chunk)[-16384:]
@@ -1008,7 +1270,8 @@ async def gate(request: Request):
                 else:
                     state["oversize"] = True
                 yield chunk
-            completed = True
+            else:
+                completed = True
         except httpx.TimeoutException:
             # A read timeout AFTER headers lands HERE, not at client.send().
             # Without this the audit ledger would record the request as a
@@ -1051,6 +1314,8 @@ async def gate(request: Request):
                 _audit_reply(usage, ("upstream_timeout", 504))
             elif upstream_failed:
                 _audit_reply(usage, ("upstream_error", 502))
+            elif revoked:
+                _audit_reply(usage, ("revoked", resp.status_code))
             elif not completed:
                 # The client went away mid-body (CancelledError/GeneratorExit
                 # lands here). Recorded as "ok" before, an abort — whose
@@ -1079,45 +1344,60 @@ async def gate(request: Request):
                              headers=hdrs, background=BackgroundTask(_sweep))
 
 
-def _introspection_allowed(request: Request) -> bool:
-    """Gate the /gate/* routes.
+def _introspection_scope(request: Request) -> str | None:
+    """Who is asking a /gate/* route: "*" (the rig), a device id, or None.
 
     These expose the device roster size and per-device usage counters. The
     gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
     mounts `/`), so leaving them open would hand every tailnet peer — including
     one whose key was just revoked — the device list and usage telemetry.
 
-    Two ways in: the local-token header (rig tooling, which can read
-    .run/edge-local.token) or a valid enrolled device key. Deliberately NOT
-    the peer address — tailscale serve proxies from 127.0.0.1, so a peer
-    check would treat the entire tailnet as local. See _local_token.
+    Two ways in, and they do NOT see the same thing. The local-token header
+    (rig tooling, which can read .run/edge-local.token) gets the full view.
+    A valid enrolled device key gets its OWN series and nothing else: an
+    enrolled device is a tenant, not an operator, and any key used to read
+    every other device's name and token counts. Deliberately NOT the peer
+    address — tailscale serve proxies from 127.0.0.1, so a peer check would
+    treat the entire tailnet as local. See _local_token.
     """
     if _is_local(request):
-        return True
+        return "*"
     reg: Registry = request.app.state.registry
     key = _bearer(request)
-    return bool(key) and reg.lookup(key) is not None
+    dev = reg.lookup(key) if key else None
+    return None if dev is None else str(dev.get("id", "anon"))
 
 
 async def metrics(request: Request):
-    if not _introspection_allowed(request):
+    scope = _introspection_scope(request)
+    if scope is None:
         _bump("denied_total", "introspection_unauthorized")
         return JSONResponse(
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
+
+    def mine(dev) -> bool:
+        return scope == "*" or dev == scope
+
     lines = [
         "# HELP openbeast_edge_requests_total Requests through beast-gate.",
         "# TYPE openbeast_edge_requests_total counter",
     ]
     for (dev, path, outcome), n in sorted(
             _METRICS["requests_total"].items(), key=lambda kv: str(kv[0])):
+        if not mine(dev):
+            continue
         lines.append(f'openbeast_edge_requests_total{{device="{_esc(dev)}",'
                      f'path="{_esc(path)}",outcome="{_esc(outcome)}"}} {n}')
-    lines += ["# HELP openbeast_edge_denied_total Refused requests by reason.",
-              "# TYPE openbeast_edge_denied_total counter"]
-    for reason, n in sorted(_METRICS["denied_total"].items()):
-        lines.append(
-            f'openbeast_edge_denied_total{{reason="{_esc(reason)}"}} {n}')
+    if scope == "*":
+        # Rig-wide and unattributed (most rows are callers with no identity
+        # at all), so it has no per-device slice to hand a tenant.
+        lines += [
+            "# HELP openbeast_edge_denied_total Refused requests by reason.",
+            "# TYPE openbeast_edge_denied_total counter"]
+        for reason, n in sorted(_METRICS["denied_total"].items()):
+            lines.append(
+                f'openbeast_edge_denied_total{{reason="{_esc(reason)}"}} {n}')
     for metric, name, helptext in (
             ("prompt_tokens", "openbeast_edge_prompt_tokens_total",
              "Prompt tokens billed per device."),
@@ -1127,7 +1407,8 @@ async def metrics(request: Request):
              "Cumulative upstream latency per device.")):
         lines += [f"# HELP {name} {helptext}", f"# TYPE {name} counter"]
         for dev, n in sorted(_METRICS[metric].items()):
-            lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
+            if mine(dev):
+                lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
     return StreamingResponse(iter(["\n".join(lines) + "\n"]),
                              media_type="text/plain; version=0.0.4")
 
@@ -1135,14 +1416,15 @@ async def metrics(request: Request):
 async def health(request: Request):
     reg: Registry = request.app.state.registry
     reg.reload()
-    if not _introspection_allowed(request):
+    if _introspection_scope(request) != "*":
         # Remote callers get liveness only — no roster size, no upstream URL.
+        # That includes an enrolled device: its key proves which tenant it
+        # is, not that it may read the rig's roster.
         return JSONResponse({"status": "ok", "service": "beast-gate"})
     return JSONResponse({
         "status": "ok",
         "service": "beast-gate",
-        "auth": "devices" if reg.configured else (
-            "anon" if ALLOW_ANON else "closed"),
+        "auth": _auth_mode(reg),
         "devices": len(reg._by_hash),
         "upstream": UPSTREAM,
     })
@@ -1211,9 +1493,10 @@ def main() -> None:
         raise SystemExit(1)
     _local_token()          # lifespan's own call is then a no-op
     reg = Registry()
-    mode = ("devices" if reg.configured
-            else ("ANON (OPENBEAST_EDGE_ALLOW_ANON=true)" if ALLOW_ANON
-                  else "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>"))
+    mode = {"devices": "devices",
+            "anon": "ANON (OPENBEAST_EDGE_ALLOW_ANON=true)",
+            "closed": "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>",
+            }[_auth_mode(reg)]
     print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
           flush=True)
     # Loopback by default like every other service; publish via tailscale.
