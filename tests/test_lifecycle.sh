@@ -979,6 +979,28 @@ else
 fi
 
 echo ""
+echo "start.sh's missing-deps hint (UX-14):"
+_DP="$_T/deps"; _sandbox "$_DP"; mkdir -p "$_DP/nodeps" "$_DP/deps"
+# Whatever this box has installed, PYTHONPATH decides: one shim makes the
+# import fail, the other makes it succeed.
+echo 'raise ImportError("not installed (test shim)")' > "$_DP/nodeps/fastapi.py"
+: > "$_DP/deps/fastapi.py"; : > "$_DP/deps/uvicorn.py"
+_dp_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
+_dp_env "PYTHONPATH=$_DP/nodeps"; _start_rc "$_DP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"./scripts/pydeps.sh install"* && "$_SO" != *"pip install --user"* ]]; then
+  pass "missing fastapi/uvicorn points at ./scripts/pydeps.sh install (not a bare pip --user)"
+else
+  fail "missing-deps hint (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+_dp_env "PYTHONPATH=$_DP/deps"; _start_rc "$_DP" 40
+RUN_ENV=()
+if [[ "$_SO" != *"pydeps.sh install"* && "$_SO" == *"tool server exited during startup"* ]]; then
+  pass "…and only when they are missing (control: with them, the start reaches the tool server)"
+else
+  fail "the deps hint fired with the packages importable (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"

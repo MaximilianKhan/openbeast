@@ -1206,7 +1206,12 @@ fi
 
 echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
 python3 -c 'import fastapi, uvicorn' 2>/dev/null \
-  || { echo "Error: fastapi/uvicorn missing (pip install --user -r agents/requirements.txt)" >&2; exit 1; }
+  || { echo "Error: the tool server's Python packages are missing (fastapi / uvicorn do not import)." >&2
+       # Not `pip install --user -r …`: that fails with externally-managed-
+       # environment on Arch, Debian 12+ and Ubuntu 24.04, and skips the
+       # hash-pinned lock. pydeps.sh handles both.
+       echo "  Install the pinned set: ./scripts/pydeps.sh install   — then ./start.sh again." >&2
+       exit 1; }
 # Private, persistent workspace for files the chat model writes via the direct
 # tools (conf.sh exports OPENBEAST_FILES_DIR; the tool server shards it per
 # user when identity headers are present). Created 0700 so generated
