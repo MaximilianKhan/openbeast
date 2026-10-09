@@ -635,6 +635,18 @@ grep -qF "Stack is not running (it gave up 2026-10-09T08:05:00: supervisor gave 
   && pass "…and a supervisor that GAVE UP is not called 'on purpose' (reason + .run/stack.log named)" \
   || fail "gave-up line: $(grep 'Stack is' <<< "$_O")"
 rm -f "$_N/.run/stopped"
+# "Next:" names something to RUN. A failure whose second line only explains
+# (an 8 GB card: "OpenBeast targets 3090 / 4090 class and up") must not take
+# the line from the one command that applies.
+cp "$_N/scripts/lib/hardware.sh" "$_N/hardware.keep"
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 8G"; OB_VRAM_MB=8000; }\n' > "$_N/scripts/lib/hardware.sh"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -q "below the 24 GB floor" <<< "$_O" && [[ $_RC -eq 1 && "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" ]]; then
+  pass "a failure that only explains does not hijack 'Next:' (still ./start.sh -d; exit 1 for the failure)"
+else
+  fail "Next with an explanatory failure: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+cp "$_N/hardware.keep" "$_N/scripts/lib/hardware.sh"
 # Negative control 1: a live supervisor whose services do not answer yet
 # (starting, or broken) is NOT "not running" — every row is shown.
 bash -c 'sleep 60; :' start.sh &   # `; :` keeps bash (and "start.sh") on the command line

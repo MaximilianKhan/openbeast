@@ -45,16 +45,19 @@ CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 PASS=0 WARN=0 FAIL=0
 # The first failure's fix and the first warning's — the closing "Next:" line
 # names ONE thing to do, so a long report still ends on an instruction.
-NEXT_FAIL="" NEXT_WARN=""
-# A warning's second line is sometimes a command and sometimes an explanation
-# ("CPU-only works but…"); "Next:" wants the first one that is a command.
-_NEXT_CMD_RE='^(\./|scripts/|chmod |sudo |docker |python3 |set [A-Z_]+=)'
+# A row's second line is sometimes a command and sometimes an explanation
+# ("CPU-only works but…", "OpenBeast targets 3090 / 4090 class and up");
+# "Next:" wants the first that names something to RUN or SET, and keeps the
+# first failure's explanation only as a last resort.
+NEXT_FAIL="" NEXT_FAIL_ANY="" NEXT_WARN=""
+_NEXT_CMD_RE='(\./|scripts/|chmod |sudo |docker compose|python3 |set [A-Z_]+=)'
 section() { [[ $QUIET -eq 1 ]] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 pass()    { [[ $QUIET -eq 1 ]] || echo "  ✓ $1"; PASS=$((PASS+1)); }
 warn()    { echo "  ! $1"; [[ -n "${2:-}" ]] && echo "      → $2"
             [[ -z "$NEXT_WARN" && "${2:-}" =~ $_NEXT_CMD_RE ]] && NEXT_WARN="$2"; WARN=$((WARN+1)); }
 fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"
-            [[ -z "$NEXT_FAIL" && -n "${2:-}" ]] && NEXT_FAIL="$2"; FAIL=$((FAIL+1)); }
+            [[ -z "$NEXT_FAIL" && "${2:-}" =~ $_NEXT_CMD_RE ]] && NEXT_FAIL="$2"
+            [[ -z "$NEXT_FAIL_ANY" && -n "${2:-}" ]] && NEXT_FAIL_ANY="$2"; FAIL=$((FAIL+1)); }
 # Worth knowing, nothing to do: not counted, not shown under --quiet.
 info()    { [[ $QUIET -eq 1 ]] || echo "  - $1"; }
 # A llama-only row on a stack that does not run llama-server here: one line,
@@ -1152,14 +1155,17 @@ fi
 # ── Verdict ─────────────────────────────────────────────────────────────────
 [[ $QUIET -eq 1 ]] || echo ""
 echo "doctor: ${PASS} ok, ${WARN} warning(s), ${FAIL} failure(s)"
-# One next step: the first failure's fix; else, on a stopped stack, starting
-# it (most other rows cannot be judged until it runs); else the first
-# warning's that is a command. Nothing to run → no line.
+# One next step: the first failure's fix that is a command; else, on a
+# stopped stack, starting it (most other rows cannot be judged until it
+# runs); else the first warning's; else a failure's explanation. Nothing to
+# do → no line.
 if [[ -n "$NEXT_FAIL" ]]; then
   echo "Next: $NEXT_FAIL"
 elif [[ $STACK_DOWN -eq 1 ]]; then
   echo "Next: ./start.sh -d"
 elif [[ -n "$NEXT_WARN" ]]; then
   echo "Next: $NEXT_WARN"
+elif [[ -n "$NEXT_FAIL_ANY" ]]; then
+  echo "Next: $NEXT_FAIL_ANY"
 fi
 [[ $FAIL -eq 0 ]]
