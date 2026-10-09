@@ -1,0 +1,788 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/kUFRxaxmrqOT7XgrN/2cXpHDhjo</id>
+  <title>arXiv Query: search_query=&amp;id_list=2402.17762,2411.07191,2411.05007,2602.02001,2603.25385,2608.23144,2605.00649,2604.07955,2310.06694,2407.14679,2310.18547,2603.11873,2605.08314,2512.22219,2509.23202,2412.07902,2412.14363,2601.05684,2606.01556,2505.07004,2607.07964,2605.00140,2311.12023,2605.09281,2512.17073&amp;start=0&amp;max_results=25</title>
+  <updated>2026-10-09T21:55:08Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=25&amp;id_list=2402.17762,2411.07191,2411.05007,2602.02001,2603.25385,2608.23144,2605.00649,2604.07955,2310.06694,2407.14679,2310.18547,2603.11873,2605.08314,2512.22219,2509.23202,2412.07902,2412.14363,2601.05684,2606.01556,2505.07004,2607.07964,2605.00140,2311.12023,2605.09281,2512.17073" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+  <opensearch:totalResults>25</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2310.18547v1</id>
+    <title>Punica: Multi-Tenant LoRA Serving</title>
+    <updated>2023-10-28T00:33:37Z</updated>
+    <link href="https://arxiv.org/abs/2310.18547v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2310.18547v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Low-rank adaptation (LoRA) has become an important and popular method to adapt pre-trained models to specific domains. We present Punica, a system to serve multiple LoRA models in a shared GPU cluster. Punica contains a new CUDA kernel design that allows batching of GPU operations for different LoRA models. This allows a GPU to hold only a single copy of the underlying pre-trained model when serving multiple, different LoRA models, significantly enhancing GPU efficiency in terms of both memory and computation. Our scheduler consolidates multi-tenant LoRA serving workloads in a shared GPU cluster. With a fixed-sized GPU cluster, our evaluations show that Punica achieves 12x higher throughput in serving multiple LoRA models compared to state-of-the-art LLM serving systems while only adding 2ms latency per token. Punica is open source at https://github.com/punica-ai/punica .</summary>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-10-28T00:33:37Z</published>
+    <arxiv:primary_category term="cs.DC"/>
+    <author>
+      <name>Lequn Chen</name>
+      <arxiv:affiliation>University of Washington</arxiv:affiliation>
+    </author>
+    <author>
+      <name>Zihao Ye</name>
+      <arxiv:affiliation>University of Washington</arxiv:affiliation>
+    </author>
+    <author>
+      <name>Yongji Wu</name>
+      <arxiv:affiliation>Duke University</arxiv:affiliation>
+    </author>
+    <author>
+      <name>Danyang Zhuo</name>
+      <arxiv:affiliation>Duke University</arxiv:affiliation>
+    </author>
+    <author>
+      <name>Luis Ceze</name>
+      <arxiv:affiliation>University of Washington</arxiv:affiliation>
+    </author>
+    <author>
+      <name>Arvind Krishnamurthy</name>
+      <arxiv:affiliation>University of Washington</arxiv:affiliation>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.09281v1</id>
+    <title>TileQ: Efficient Low-Rank Quantization of Mixture-of-Experts with 2D Tiling</title>
+    <updated>2026-05-10T03:10:20Z</updated>
+    <link href="https://arxiv.org/abs/2605.09281v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.09281v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Mixture-of-Experts (MoE) models achieve remarkable performance by sparsely activating specialized experts, yet their massive parameters in experts pose significant challenges for deployment. While low-rank quantization offers a promising route to compress MoE models, existing methods still incur nonnegligible memory overhead and inference latency. To address these limitations, we propose \textsc{TileQ}, a fine-tuning-free post-training quantization (PTQ) method that employs 2D-tiling structured low-rank quantization to share low-rank factors across both input and output dimensions of MoE experts. Furthermore, we introduce an efficient inference technique for \textsc{TileQ} that fuses multiple low-rank expert computations into a single-pass operation, significantly improving hardware utilization. Experiments show that \textsc{TileQ} cuts down additional memory usage up to 10$\times$ and reduces inference latency to $\sim$5\% while preserving state-of-the-art accuracy.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-10T03:10:20Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Hongyaoxing Gu</name>
+    </author>
+    <author>
+      <name>Xinzhe Chen</name>
+    </author>
+    <author>
+      <name>Lijuan Hu</name>
+    </author>
+    <author>
+      <name>Fangfang Liu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2512.17073v1</id>
+    <title>Bandwidth-Efficient Adaptive Mixture-of-Experts via Low-Rank Compensation</title>
+    <updated>2025-12-18T21:15:54Z</updated>
+    <link href="https://arxiv.org/abs/2512.17073v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2512.17073v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Mixture-of-Experts (MoE) models scale capacity via sparse activation but stress memory and bandwidth. Offloading alleviates GPU memory by fetching experts on demand, yet token-level routing causes irregular transfers that make inference I/O-bound. Static uniform quantization reduces traffic but degrades accuracy under aggressive compression by ignoring expert heterogeneity. We present Bandwidth-Efficient Adaptive Mixture-of-Experts via Low-Rank Compensation, which performs router-guided precision restoration using precomputed low-rank compensators. At inference time, our method transfers compact low-rank factors with Top-n (n&lt;k) experts per token and applies compensation to them, keeping others low-bit. Integrated with offloading on GPU and GPU-NDP systems, our method delivers a superior bandwidth-accuracy trade-off and improved throughput.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-12-18T21:15:54Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Zhenyu Liu</name>
+    </author>
+    <author>
+      <name>Yunzhen Liu</name>
+    </author>
+    <author>
+      <name>Zehao Fan</name>
+    </author>
+    <author>
+      <name>Garrett Gagnon</name>
+    </author>
+    <author>
+      <name>Yayue Hou</name>
+    </author>
+    <author>
+      <name>Nan Wu</name>
+    </author>
+    <author>
+      <name>Yangwook Kang</name>
+    </author>
+    <author>
+      <name>Liu Liu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2601.05684v1</id>
+    <title>FLRQ: Faster LLM Quantization with Flexible Low-Rank Matrix Sketching</title>
+    <updated>2026-01-09T10:06:45Z</updated>
+    <link href="https://arxiv.org/abs/2601.05684v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2601.05684v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Traditional post-training quantization (PTQ) is considered an effective approach to reduce model size and accelerate inference of large-scale language models (LLMs). However, existing low-rank PTQ methods require costly fine-tuning to determine a compromise rank for diverse data and layers in large models, failing to exploit their full potential. Additionally, the current SVD-based low-rank approximation compounds the computational overhead. In this work, we thoroughly analyze the varying effectiveness of low-rank approximation across different layers in representative models. Accordingly, we introduce \underline{F}lexible \underline{L}ow-\underline{R}ank \underline{Q}uantization (FLRQ), a novel solution designed to quickly identify the accuracy-optimal ranks and aggregate them to achieve minimal storage combinations. FLRQ comprises two powerful components, Rank1-Sketch-based Flexible Rank Selection (R1-FLR) and Best Low-rank Approximation under Clipping (BLC). R1-FLR applies the R1-Sketch with Gaussian projection for the fast low-rank approximation, enabling outlier-aware rank extraction for each layer. Meanwhile, BLC aims at minimizing the low-rank quantization error under the scaling and clipping strategy through an iterative method. FLRQ demonstrates strong effectiveness and robustness in comprehensive experiments, achieving state-of-the-art performance in both quantization quality and algorithm efficiency.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-01-09T10:06:45Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Hongyaoxing Gul</name>
+    </author>
+    <author>
+      <name>Lijuan Hu</name>
+    </author>
+    <author>
+      <name>Shuzi Niu</name>
+    </author>
+    <author>
+      <name>Fangfang Liu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2608.23144v2</id>
+    <title>Activation-Weighted Seeded Residual Coding for Low-Bit LLM Weight Repair</title>
+    <updated>2026-09-15T13:13:56Z</updated>
+    <link href="https://arxiv.org/abs/2608.23144v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2608.23144v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Low-bit weight quantization saves storage but leaves errors that degrade LLM quality. We introduce activation-weighted seeded residual coding (AWSRC), a compact repair codec for an existing quantization backbone. Given a reconstructed weight $W_0$, AWSRC encodes the residual $W-W_0$ using deterministic seed-generated bases. The sidecar stores seed selectors, low-bit coefficients, and scales rather than an explicit codebook. Two variants combine activation weighting with per-module byte quotas ($\mathrm{AWSRC\text{-}U}$), or blended activation/Fisher weighting with globally ranked progressive prefixes ($\mathrm{AWSRC\text{-}P}_{F}$) that support multiple byte budgets without refitting. On Qwen2.5-3B-Instruct, adding $0.162$ scope-bits/weight to an RTN-INT4 baseline closes $88.2\%$, $78.9\%$, and $71.3\%$ of the PPL, KL, and 11-task mean-accuracy gaps to BF16, respectively. AWSRC achieves the highest mean downstream accuracy in byte-matched residual-codec ablations and improves all metrics across model families with up to 32B parameters.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-08-24T11:49:37Z</published>
+    <arxiv:comment>5 pages, 3 figures; updated experiments and figures</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Zehao Liu</name>
+    </author>
+    <author>
+      <name>Chuangchuang Fang</name>
+    </author>
+    <author>
+      <name>Yang Ren</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2604.07955v1</id>
+    <title>Rethinking Residual Errors in Compensation-based LLM Quantization</title>
+    <updated>2026-04-09T08:20:59Z</updated>
+    <link href="https://arxiv.org/abs/2604.07955v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2604.07955v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Methods based on weight compensation, which iteratively apply quantization and weight compensation to minimize the output error, have recently demonstrated remarkable success in quantizing Large Language Models (LLMs). The representative work, GPTQ, introduces several key techniques that make such iterative methods practical for LLMs with billions of parameters. GPTAQ extends this approach by introducing an asymmetric calibration process that aligns the output of each quantized layer with its full-precision counterpart, incorporating a residual error into the weight compensation framework. In this work, we revisit the formulation of the residual error. We identify a sub-optimal calibration objective in existing methods: during the intra-layer calibration process, they align the quantized output with the output from compensated weights, rather than the true output from the original full-precision model. Therefore, we redefine the objective to precisely align the quantized model's output with the original output of the full-precision model at each step. We then reveal that the residual error originates not only from the output difference of the preceding layer but also from the discrepancy between the compensated and original weights within each layer, which we name the 'compensation-aware error'. By inheriting the neuron decomposition technique from GPTAQ, we can efficiently incorporate this compensation-aware error into the weight update process. Extensive experiments on various LLMs and quantization settings demonstrate that our proposed enhancements integrate seamlessly with both GPTQ and GPTAQ, significantly improving their quantization performance. Our code is publicly available at https://github.com/list0830/ResComp.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-04-09T08:20:59Z</published>
+    <arxiv:comment>ICLR'26 camera ready</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Shuaiting Li</name>
+    </author>
+    <author>
+      <name>Juncan Deng</name>
+    </author>
+    <author>
+      <name>Kedong Xu</name>
+    </author>
+    <author>
+      <name>Rongtao Deng</name>
+    </author>
+    <author>
+      <name>Hong Gu</name>
+    </author>
+    <author>
+      <name>Minghan Jiang</name>
+    </author>
+    <author>
+      <name>Haibin Shen</name>
+    </author>
+    <author>
+      <name>Kejie Huang</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2311.12023v4</id>
+    <title>LQ-LoRA: Low-rank Plus Quantized Matrix Decomposition for Efficient Language Model Finetuning</title>
+    <updated>2024-08-27T00:48:35Z</updated>
+    <link href="https://arxiv.org/abs/2311.12023v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2311.12023v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We propose a simple approach for memory-efficient adaptation of pretrained language models. Our approach uses an iterative algorithm to decompose each pretrained matrix into a high-precision low-rank component and a memory-efficient quantized component. During finetuning, the quantized component remains fixed and only the low-rank component is updated. We present an integer linear programming formulation of the quantization component which enables dynamic configuration of quantization parameters (e.g., bit-width, block size) for each matrix given an overall target memory budget. We further explore a data-aware version of the algorithm which uses an approximation of the Fisher information matrix to weight the reconstruction objective during matrix decomposition. Experiments on finetuning RoBERTa and LLaMA-2 (7B and 70B) demonstrate that our low-rank plus quantized matrix decomposition approach (LQ-LoRA) outperforms strong QLoRA and GPTQ-LoRA baselines and enables aggressive quantization to sub-3 bits with only minor performance degradations. When finetuned on a language modeling calibration dataset, LQ-LoRA can also be used for model compression; in this setting our 2.75-bit LLaMA-2-70B model (which has 2.85 bits on average when including the low-rank components and requires 27GB of GPU memory) performs respectably compared to the 16-bit baseline.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-11-20T18:57:41Z</published>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Han Guo</name>
+    </author>
+    <author>
+      <name>Philip Greengard</name>
+    </author>
+    <author>
+      <name>Eric P. Xing</name>
+    </author>
+    <author>
+      <name>Yoon Kim</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2509.23202v3</id>
+    <title>Bridging the Gap Between Promise and Performance for Microscaling FP4 Quantization</title>
+    <updated>2026-03-03T12:51:43Z</updated>
+    <link href="https://arxiv.org/abs/2509.23202v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2509.23202v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The recent hardware-accelerated microscaling 4-bit floating-point formats such as MXFP4 and NVFP4, supported on NVIDIA and AMD GPUs, promise to revolutionize large language model (LLM) inference. Yet, their practical benefits remain unproven. We present the first comprehensive study of MXFP4 and NVFP4 for post-training quantization, revealing gaps between their promise and real-world performance. Our analysis shows that state-of-the-art methods struggle with FP4, due to two key issues: (1) NVFP4's small group size provably neutralizes traditional outlier mitigation techniques; (2) MXFP4's power-of-two scale quantization severely degrades accuracy due to high induced error. To bridge this gap, we introduce Micro-Rotated-GPTQ (MR-GPTQ), a variant of the classic GPTQ quantization algorithm that tailors the quantization process to FP4's unique properties, by using block-wise Hadamard transforms and format-specific optimizations. We support our proposal with a set of high-performance GPU kernels that enable the MR-GPTQ format with negligible overhead, by rotation fusion into the weights, and fast online computation of the activations. This leads to speedups vs. FP16 of up to 3.6x layer-wise, and 2.2x end-to-end on NVIDIA B200, and of 6x layer-wise and 4x end-to-end on RTX5090. Our extensive empirical evaluation demonstrates that MR-GPTQ matches or outperforms state-of-the-art accuracy, significantly boosting MXFP4, to the point where it can near the accuracy that of NVFP4. We conclude that, while FP4 is not an automatic upgrade over INT4, format-specialized methods like MR-GPTQ can unlock a new frontier of accuracy-performance trade-offs.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-09-27T09:22:21Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Vage Egiazarian</name>
+    </author>
+    <author>
+      <name>Roberto L. Castro</name>
+    </author>
+    <author>
+      <name>Denis Kuznedelev</name>
+    </author>
+    <author>
+      <name>Andrei Panferov</name>
+    </author>
+    <author>
+      <name>Eldar Kurtic</name>
+    </author>
+    <author>
+      <name>Shubhra Pandit</name>
+    </author>
+    <author>
+      <name>Alexandre Marques</name>
+    </author>
+    <author>
+      <name>Mark Kurtz</name>
+    </author>
+    <author>
+      <name>Saleh Ashkboos</name>
+    </author>
+    <author>
+      <name>Torsten Hoefler</name>
+    </author>
+    <author>
+      <name>Dan Alistarh</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2606.01556v1</id>
+    <title>TwinQuant: Learnable Subspace Decomposition for 4-Bit LLM Quantization</title>
+    <updated>2026-06-01T02:02:12Z</updated>
+    <link href="https://arxiv.org/abs/2606.01556v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2606.01556v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>4-bit quantization reduces the memory footprint and latency of large language model inference, but its aggressive precision reduction can severely degrade accuracy. Prior methods address this by decomposing each weight matrix into two components (e.g., via singular value decomposition) and quantizing them separately, assigning the bulk of values to a low-precision residual component while handling outliers with a high-precision low-rank component. However, such decompositions are designed to minimize the real-valued energy of the residual, rather than the post-quantization error of the residual and low-rank components. We propose TwinQuant, a 4-bit quantization framework that learns quantization-friendly decomposed subspaces and jointly reshapes both the low-rank and residual components. TwinQuant learns component-specific transformations via a joint optimization over the Stiefel and general linear manifolds, flattening their distributions and reducing dynamic-range imbalance. To enable efficient end-to-end execution, we further design a fused dual-component kernel that pipelines the two-stage low-rank computation on-chip and merges both components with a single epilogue, avoiding intermediate global-memory traffic. Across LLaMA3 and Qwen3 models, TwinQuant preserves near-FP16 accuracy and delivers up to $1.8\times$ end-to-end speedup over an FP16 baseline.</summary>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-06-01T02:02:12Z</published>
+    <arxiv:comment>17pages, Accepted by ICML26</arxiv:comment>
+    <arxiv:primary_category term="cs.DC"/>
+    <author>
+      <name>Haodong Wang</name>
+    </author>
+    <author>
+      <name>Junjie Liu</name>
+    </author>
+    <author>
+      <name>Zicong Hong</name>
+    </author>
+    <author>
+      <name>Qianli Liu</name>
+    </author>
+    <author>
+      <name>Jian Lin</name>
+    </author>
+    <author>
+      <name>Song Guo</name>
+    </author>
+    <author>
+      <name>Xu Chen</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.08314v1</id>
+    <title>FlashSVD v1.5: Making Low-Rank Transformers Inference Actually Fast</title>
+    <updated>2026-05-08T14:20:42Z</updated>
+    <link href="https://arxiv.org/abs/2605.08314v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.08314v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>SVD-based Low-rank compression reduces transformer parameters and nominal FLOPs, but these savings often translate poorly into real LLM serving speedups. We show that this gap is largely a runtime problem: factorized checkpoints fragment execution paths, and the resulting overhead differs substantially between prefill and autoregressive decode. We present FlashSVD v1.5, a unified inference runtime for serving SVD-compressed transformers. FlashSVD v1.5 maps diverse public SVD compression families to a common factorized representation and combines phase-specific kernels with dense-KV decode, packed MLP execution, and per-layer CUDA-graph replay to reorganize the low-rank serving path into a thin runtime. Across representative decoder-serving settings, FlashSVD v1.5 achieves up to 2.55x decode and 2.39x end-to-end speedup, and it attains 1.48x average decode and 1.44x average end-to-end speedup across multiple popular SVD compression families. These results suggest that practical low-rank acceleration requires runtime co-design, not compression algorithms alone. Our code is available at: https://github.com/Zishan-Shao/FlashSVD.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.PF" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-08T14:20:42Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Wenhao Wu</name>
+    </author>
+    <author>
+      <name>Zishan Shao</name>
+    </author>
+    <author>
+      <name>Kangning Cui</name>
+    </author>
+    <author>
+      <name>Jinhee Kim</name>
+    </author>
+    <author>
+      <name>Yixiao Wang</name>
+    </author>
+    <author>
+      <name>Hancheng Ye</name>
+    </author>
+    <author>
+      <name>Danyang Zhuo</name>
+    </author>
+    <author>
+      <name>Yiran Chen</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2411.05007v4</id>
+    <title>SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit Diffusion Models</title>
+    <updated>2025-11-08T06:29:02Z</updated>
+    <link href="https://arxiv.org/abs/2411.05007v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2411.05007v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Diffusion models can effectively generate high-quality images. However, as they scale, rising memory demands and higher latency pose substantial deployment challenges. In this work, we aim to accelerate diffusion models by quantizing their weights and activations to 4 bits. At such an aggressive level, both weights and activations are highly sensitive, where existing post-training quantization methods like smoothing become insufficient. To overcome this limitation, we propose SVDQuant, a new 4-bit quantization paradigm. Different from smoothing, which redistributes outliers between weights and activations, our approach absorbs these outliers using a low-rank branch. We first consolidate the outliers by shifting them from activations to weights. Then, we use a high-precision, low-rank branch to take in the weight outliers with Singular Value Decomposition (SVD), while a low-bit quantized branch handles the residuals. This process eases the quantization on both sides. However, naively running the low-rank branch independently incurs significant overhead due to extra data movement of activations, negating the quantization speedup. To address this, we co-design an inference engine Nunchaku that fuses the kernels of the low-rank branch into those of the low-bit branch to cut off redundant memory access. It can also seamlessly support off-the-shelf low-rank adapters (LoRAs) without re-quantization. Extensive experiments on SDXL, PixArt-$Σ$, and FLUX.1 validate the effectiveness of SVDQuant in preserving image quality. We reduce the memory usage for the 12B FLUX.1 models by 3.5$\times$, achieving 3.0$\times$ speedup over the 4-bit weight-only quantization (W4A16) baseline on the 16GB laptop 4090 GPU with INT4 precision. On the latest RTX 5090 desktop with Blackwell architecture, we achieve a 3.1$\times$ speedup compared to the W4A16 model using NVFP4 precision.</summary>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-11-07T18:59:58Z</published>
+    <arxiv:comment>ICLR 2025 Spotlight Quantization Library: https://github.com/mit-han-lab/deepcompressor Inference Engine: https://github.com/mit-han-lab/nunchaku Website: https://hanlab.mit.edu/projects/svdquant Demo: https://demo.nunchaku.tech/ Blog: https://hanlab.mit.edu/blog/svdquant</arxiv:comment>
+    <arxiv:primary_category term="cs.CV"/>
+    <author>
+      <name>Muyang Li</name>
+    </author>
+    <author>
+      <name>Yujun Lin</name>
+    </author>
+    <author>
+      <name>Zhekai Zhang</name>
+    </author>
+    <author>
+      <name>Tianle Cai</name>
+    </author>
+    <author>
+      <name>Xiuyu Li</name>
+    </author>
+    <author>
+      <name>Junxian Guo</name>
+    </author>
+    <author>
+      <name>Enze Xie</name>
+    </author>
+    <author>
+      <name>Chenlin Meng</name>
+    </author>
+    <author>
+      <name>Jun-Yan Zhu</name>
+    </author>
+    <author>
+      <name>Song Han</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2505.07004v4</id>
+    <title>GuidedQuant: Large Language Model Quantization via Exploiting End Loss Guidance</title>
+    <updated>2025-09-22T16:14:50Z</updated>
+    <link href="https://arxiv.org/abs/2505.07004v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2505.07004v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Post-training quantization is a key technique for reducing the memory and inference latency of large language models by quantizing weights and activations without requiring retraining. However, existing methods either (1) fail to account for the varying importance of hidden features to the end loss or, when incorporating end loss, (2) neglect the critical interactions between model weights. To address these limitations, we propose GuidedQuant, a novel quantization approach that integrates gradient information from the end loss into the quantization objective while preserving cross-weight dependencies within output channels. GuidedQuant consistently boosts the performance of state-of-the-art quantization methods across weight-only scalar, weight-only vector, and weight-and-activation quantization. Additionally, we introduce a novel non-uniform scalar quantization algorithm, which is guaranteed to monotonically decrease the quantization objective value, and outperforms existing methods in this category. We release the code at https://github.com/snu-mllab/GuidedQuant.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-05-11T14:55:09Z</published>
+    <arxiv:comment>ICML 2025</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jinuk Kim</name>
+    </author>
+    <author>
+      <name>Marwa El Halabi</name>
+    </author>
+    <author>
+      <name>Wonpyo Park</name>
+    </author>
+    <author>
+      <name>Clemens JS Schaefer</name>
+    </author>
+    <author>
+      <name>Deokjae Lee</name>
+    </author>
+    <author>
+      <name>Yeonhong Park</name>
+    </author>
+    <author>
+      <name>Jae W. Lee</name>
+    </author>
+    <author>
+      <name>Hyun Oh Song</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.00649v3</id>
+    <title>Model Compression with Exact Budget Constraints via Riemannian Manifolds</title>
+    <updated>2026-09-27T13:23:36Z</updated>
+    <link href="https://arxiv.org/abs/2605.00649v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.00649v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Assigning one of K options to each of N groups under a total cost budget is a recurring problem in efficient AI, arising in mixed-precision quantization, non-uniform pruning, and expert selection. The objective (model loss) depends on all assignments jointly and does not decompose across groups, so combinatorial solvers can only optimize proxy objectives. Evolutionary search evaluates the actual loss but lacks gradients, while penalty-based methods enforce the budget only approximately and often require heavy hyperparameter tuning. We show that under softmax relaxation, the budget constraint defines a smooth Riemannian manifold in logit space with unusually clean geometry: the normal vector is available in closed form, shifting logits along the cost vector changes expected cost monotonically, and vector transport reduces to a single inner product. Building on this, we propose Riemannian Constrained Optimization (RCO), which wraps tangent projection, binary-search retraction, and momentum transport around a standard Adam step. Combined with Gumbel straight-through estimation and budget-constrained dynamic programming for discrete feasibility, RCO optimizes the actual loss with first-order methods, enforces the expected budget exactly at every iterate, and introduces no constraint-related hyperparameters. The same construction handles multiple simultaneous budgets with no additional coefficients. RCO matches or exceeds state-of-the-art methods on synthetic problems and realistic LLM compression settings, often at considerably lower wall-clock cost. Source code is available at https://github.com/IST-DASLab/RCO.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-01T13:30:23Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Michael Helcig</name>
+    </author>
+    <author>
+      <name>Dan Alistarh</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2407.14679v2</id>
+    <title>Compact Language Models via Pruning and Knowledge Distillation</title>
+    <updated>2024-11-04T17:36:38Z</updated>
+    <link href="https://arxiv.org/abs/2407.14679v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2407.14679v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Large language models (LLMs) targeting different deployment scales and sizes are currently produced by training each variant from scratch; this is extremely compute-intensive. In this paper, we investigate if pruning an existing LLM and then re-training it with a fraction (&lt;3%) of the original training data can be a suitable alternative to repeated, full retraining. To this end, we develop a set of practical and effective compression best practices for LLMs that combine depth, width, attention and MLP pruning with knowledge distillation-based retraining; we arrive at these best practices through a detailed empirical exploration of pruning strategies for each axis, methods to combine axes, distillation strategies, and search techniques for arriving at optimal compressed architectures. We use this guide to compress the Nemotron-4 family of LLMs by a factor of 2-4x, and compare their performance to similarly-sized models on a variety of language modeling tasks. Deriving 8B and 4B models from an already pretrained 15B model using our approach requires up to 40x fewer training tokens per model compared to training from scratch; this results in compute cost savings of 1.8x for training the full model family (15B, 8B, and 4B). Minitron models exhibit up to a 16% improvement in MMLU scores compared to training from scratch, perform comparably to other community models such as Mistral 7B, Gemma 7B and Llama-3 8B, and outperform state-of-the-art compression techniques from the literature. We have open-sourced Minitron model weights on Huggingface, with corresponding supplementary material including example code available on GitHub.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-07-19T21:47:57Z</published>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Saurav Muralidharan</name>
+    </author>
+    <author>
+      <name>Sharath Turuvekere Sreenivas</name>
+    </author>
+    <author>
+      <name>Raviraj Joshi</name>
+    </author>
+    <author>
+      <name>Marcin Chochowski</name>
+    </author>
+    <author>
+      <name>Mostofa Patwary</name>
+    </author>
+    <author>
+      <name>Mohammad Shoeybi</name>
+    </author>
+    <author>
+      <name>Bryan Catanzaro</name>
+    </author>
+    <author>
+      <name>Jan Kautz</name>
+    </author>
+    <author>
+      <name>Pavlo Molchanov</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2411.07191v2</id>
+    <title>The Super Weight in Large Language Models</title>
+    <updated>2025-07-07T17:42:19Z</updated>
+    <link href="https://arxiv.org/abs/2411.07191v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2411.07191v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Recent works have shown a surprising result: a small fraction of Large Language Model (LLM) parameter outliers are disproportionately important to the quality of the model. LLMs contain billions of parameters, so these small fractions, such as 0.01%, translate to hundreds of thousands of parameters. In this work, we present an even more surprising finding: Pruning as few as a single parameter can destroy an LLM's ability to generate text -- increasing perplexity by 3 orders of magnitude and reducing zero-shot accuracy to guessing. We propose a data-free method for identifying such parameters, termed super weights, using a single forward pass through the model. We additionally find that these super weights induce correspondingly rare and large activation outliers, termed super activations. When preserved with high precision, super activations can improve simple round-to-nearest quantization to become competitive with state-of-the-art methods. For weight quantization, we similarly find that by preserving the super weight and clipping other weight outliers, round-to-nearest quantization can scale to much larger block sizes than previously considered. To facilitate further research into super weights, we provide an index of super weight coordinates for common, openly available LLMs.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-11-11T18:05:48Z</published>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Mengxia Yu</name>
+    </author>
+    <author>
+      <name>De Wang</name>
+    </author>
+    <author>
+      <name>Qi Shan</name>
+    </author>
+    <author>
+      <name>Colorado J Reed</name>
+    </author>
+    <author>
+      <name>Alvin Wan</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2603.11873v1</id>
+    <title>AdaFuse: Accelerating Dynamic Adapter Inference via Token-Level Pre-Gating and Fused Kernel Optimization</title>
+    <updated>2026-03-12T12:46:42Z</updated>
+    <link href="https://arxiv.org/abs/2603.11873v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2603.11873v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The integration of dynamic, sparse structures like Mixture-of-Experts (MoE) with parameter-efficient adapters (e.g., LoRA) is a powerful technique for enhancing Large Language Models (LLMs). However, this architectural enhancement comes at a steep cost: despite minimal increases in computational load, the inference latency often skyrockets, leading to decoding speeds slowing by over 2.5 times. Through a fine-grained performance analysis, we pinpoint the primary bottleneck not in the computation itself, but in the severe overhead from fragmented, sequential CUDA kernel launches required for conventional dynamic routing. To address this challenge, we introduce AdaFuse, a framework built on a tight co-design between the algorithm and the underlying hardware system to enable efficient dynamic adapter execution. Departing from conventional layer-wise or block-wise routing, AdaFuse employs a token-level pre-gating strategy, which makes a single, global routing decision for all adapter layers before a token is processed. This "decide-once, apply-everywhere" approach effectively staticizes the execution path for each token, creating an opportunity for holistic optimization. We capitalize on this by developing a custom CUDA kernel that performs a fused switching operation, merging the parameters of all selected LoRA adapters into the backbone model in a single, efficient pass. Experimental results on popular open-source LLMs show that AdaFuse achieves accuracy on par with state-of-the-art dynamic adapters while drastically cutting decoding latency by a factor of over 2.4x, thereby bridging the gap between model capability and inference efficiency.</summary>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-03-12T12:46:42Z</published>
+    <arxiv:comment>Accepted to AAAI 2026. arXiv admin note: substantial text overlap with arXiv:2405.17741</arxiv:comment>
+    <arxiv:primary_category term="cs.AI"/>
+    <author>
+      <name>Qiyang Li</name>
+    </author>
+    <author>
+      <name>Rui Kong</name>
+    </author>
+    <author>
+      <name>Yuchen Li</name>
+    </author>
+    <author>
+      <name>Hengyi Cai</name>
+    </author>
+    <author>
+      <name>Shuaiqiang Wang</name>
+    </author>
+    <author>
+      <name>Linghe Kong</name>
+    </author>
+    <author>
+      <name>Guihai Chen</name>
+    </author>
+    <author>
+      <name>Dawei Yin</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.00140v1</id>
+    <title>Technical Report: Activation Residual Hessian Quantization (ARHQ) for Low-Bit LLM Quantization</title>
+    <updated>2026-04-30T18:55:22Z</updated>
+    <link href="https://arxiv.org/abs/2605.00140v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.00140v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We present Activation Residual Hessian Quantization (ARHQ), a post-training weight splitting method designed to mitigate error propagation in low-bit activation-weight quantization. By constructing an input-side residual Hessian from activation quantization residuals (G_x), ARHQ analytically identifies and isolates error-sensitive weight directions into a high-precision low-rank branch. This is achieved via a closed-form truncated SVD on the scaled weight matrix W G^{1/2}_x . Experimental results on Qwen3-4B-Thinking-2507 demonstrate that ARHQ significantly improves layer-wise SNR and preserves downstream reasoning performance on ZebraLogic even under aggressive quantization. The code is available at https://github.com/BeautMoonQ/ARHQ.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-04-30T18:55:22Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>YiFeng Wang</name>
+    </author>
+    <author>
+      <name>Zhun Sun</name>
+    </author>
+    <author>
+      <name>Keisuke Sakaguchi</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2607.07964v2</id>
+    <title>KronQ: LLM Quantization via Kronecker-Factored Hessian</title>
+    <updated>2026-08-08T21:43:41Z</updated>
+    <link href="https://arxiv.org/abs/2607.07964v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2607.07964v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Post-training quantization (PTQ) is a widely adopted technique for compressing large language models (LLMs) without retraining. Most existing second-order PTQ methods, including GPTQ, construct quantization objectives from input activation statistics, effectively assuming that all output channels contribute equally to the layer-wise reconstruction objective. We propose KronQ, a PTQ framework that challenges this assumption by introducing the gradient covariance into the quantization pipeline. Under the Kronecker-factored Hessian approximation, the quantization loss depends jointly on both the activation and gradient covariances, and KronQ exploits this at two complementary levels. (1) KronQ introduces bidirectional incoherence processing, extending the existing input-side random rotation to the output dimension using the gradient covariance, reducing weight magnitude variance across both input and output dimensions. (2) KronQ derives a new sensitivity metric for inter-layer mixed-precision allocation, driven by the gradient and activation Hessian traces. Notably, in the case of 2-bit weight-only quantization on LLaMA-3-70B, while GPTQ and GPTAQ diverge or produce degenerate quantizations (&gt;2000 perplexity on WikiText-2), \KronQ{} achieves 7.93 perplexity.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-07-08T22:34:52Z</published>
+    <arxiv:comment>COLM 2026</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Donghyun Lee</name>
+    </author>
+    <author>
+      <name>Yuhang Li</name>
+    </author>
+    <author>
+      <name>Ruokai Yin</name>
+    </author>
+    <author>
+      <name>Priyadarshini Panda</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2512.22219v2</id>
+    <title>MPK: A Compiler and Runtime for Mega-Kernelizing Tensor Programs</title>
+    <updated>2026-06-10T00:43:42Z</updated>
+    <link href="https://arxiv.org/abs/2512.22219v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2512.22219v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We introduce Mirage Persistent Kernel (MPK), the first compiler and runtime system that automatically transforms multi-GPU model inference into a single high-performance mega-kernel. MPK introduces an SM-level graph representation that captures data dependencies at the granularity of individual streaming multiprocessors (SMs), enabling cross-operator software pipelining, \rev{fine-grained overlap of computation and communication, and other optimizations that are infeasible under the conventional kernel-per-operator execution model}. The MPK compiler lowers tensor programs into optimized SM-level task graphs and generates fast CUDA implementations for each task, while the MPK in-kernel parallel runtime executes these tasks within a single persistent mega-kernel using decentralized scheduling across SMs. Together, these components provide end-to-end kernel fusion with minimal developer effort, while preserving the flexibility of existing programming models. Our evaluation shows that MPK significantly outperforms existing kernel-per-operator LLM serving systems, achieving up to 1.7$\times$ lower end-to-end inference latency and pushing LLM inference performance close to the limits of the underlying hardware. MPK is publicly available at https://github.com/mirage-project/mirage.</summary>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.PL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-12-22T14:18:20Z</published>
+    <arxiv:comment>14 pages</arxiv:comment>
+    <arxiv:primary_category term="cs.DC"/>
+    <author>
+      <name>Xinhao Cheng</name>
+    </author>
+    <author>
+      <name>Zhihao Zhang</name>
+    </author>
+    <author>
+      <name>Yu Zhou</name>
+    </author>
+    <author>
+      <name>Jianan Ji</name>
+    </author>
+    <author>
+      <name>Jinchen Jiang</name>
+    </author>
+    <author>
+      <name>Zepeng Zhao</name>
+    </author>
+    <author>
+      <name>Ziruo Xiao</name>
+    </author>
+    <author>
+      <name>Zihao Ye</name>
+    </author>
+    <author>
+      <name>Yingyi Huang</name>
+    </author>
+    <author>
+      <name>Ruihang Lai</name>
+    </author>
+    <author>
+      <name>Hongyi Jin</name>
+    </author>
+    <author>
+      <name>Bohan Hou</name>
+    </author>
+    <author>
+      <name>Mengdi Wu</name>
+    </author>
+    <author>
+      <name>Yixin Dong</name>
+    </author>
+    <author>
+      <name>Anthony Yip</name>
+    </author>
+    <author>
+      <name>Zihao Ye</name>
+    </author>
+    <author>
+      <name>Songting Wang</name>
+    </author>
+    <author>
+      <name>Wenqin Yang</name>
+    </author>
+    <author>
+      <name>Xupeng Miao</name>
+    </author>
+    <author>
+      <name>Tianqi Chen</name>
+    </author>
+    <author>
+      <name>Zhihao Jia</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2310.06694v2</id>
+    <title>Sheared LLaMA: Accelerating Language Model Pre-training via Structured Pruning</title>
+    <updated>2024-04-11T01:18:06Z</updated>
+    <link href="https://arxiv.org/abs/2310.06694v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2310.06694v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The popularity of LLaMA (Touvron et al., 2023a;b) and other recently emerged moderate-sized large language models (LLMs) highlights the potential of building smaller yet powerful LLMs. Regardless, the cost of training such models from scratch on trillions of tokens remains high. In this work, we study structured pruning as an effective means to develop smaller LLMs from pre-trained, larger models. Our approach employs two key techniques: (1) targeted structured pruning, which prunes a larger model to a specified target shape by removing layers, heads, and intermediate and hidden dimensions in an end-to-end manner, and (2) dynamic batch loading, which dynamically updates the composition of sampled data in each training batch based on varying losses across different domains. We demonstrate the efficacy of our approach by presenting the Sheared-LLaMA series, pruning the LLaMA2-7B model down to 1.3B and 2.7B parameters. Sheared-LLaMA models outperform state-of-the-art open-source models of equivalent sizes, such as Pythia, INCITE, OpenLLaMA and the concurrent TinyLlama models, on a wide range of downstream and instruction tuning evaluations, while requiring only 3% of compute compared to training such models from scratch. This work provides compelling evidence that leveraging existing LLMs with structured pruning is a far more cost-effective approach for building competitive small-scale LLMs</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-10-10T15:13:30Z</published>
+    <arxiv:comment>The code and models are available at https://github.com/princeton-nlp/LLM-Shearing</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Mengzhou Xia</name>
+    </author>
+    <author>
+      <name>Tianyu Gao</name>
+    </author>
+    <author>
+      <name>Zhiyuan Zeng</name>
+    </author>
+    <author>
+      <name>Danqi Chen</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2402.17762v2</id>
+    <title>Massive Activations in Large Language Models</title>
+    <updated>2024-08-14T16:00:49Z</updated>
+    <link href="https://arxiv.org/abs/2402.17762v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2402.17762v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We observe an empirical phenomenon in Large Language Models (LLMs) -- very few activations exhibit significantly larger values than others (e.g., 100,000 times larger). We call them massive activations. First, we demonstrate the widespread existence of massive activations across various LLMs and characterize their locations. Second, we find their values largely stay constant regardless of the input, and they function as indispensable bias terms in LLMs. Third, these massive activations lead to the concentration of attention probabilities to their corresponding tokens, and further, implicit bias terms in the self-attention output. Last, we also study massive activations in Vision Transformers. Code is available at https://github.com/locuslab/massive-activations.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-02-27T18:55:17Z</published>
+    <arxiv:comment>First Conference on Language Modeling (COLM), 2024. Website at https://eric-mingjie.github.io/massive-activations/index.html</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Mingjie Sun</name>
+    </author>
+    <author>
+      <name>Xinlei Chen</name>
+    </author>
+    <author>
+      <name>J. Zico Kolter</name>
+    </author>
+    <author>
+      <name>Zhuang Liu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2412.14363v2</id>
+    <title>ResQ: Mixed-Precision Quantization of Large Language Models with Low-Rank Residuals</title>
+    <updated>2025-02-03T21:45:32Z</updated>
+    <link href="https://arxiv.org/abs/2412.14363v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2412.14363v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Post-training quantization (PTQ) of large language models (LLMs) holds the promise in reducing the prohibitive computational cost at inference time. Quantization of all weight, activation and key-value (KV) cache tensors to 4-bit without significantly degrading generalizability is challenging, due to the high quantization error caused by extreme outliers in activations. To tackle this problem, we propose ResQ, a PTQ method that pushes further the state-of-the-art. By means of principal component analysis (PCA), it identifies a low-rank subspace (in practice 1/8 of the hidden dimension) in which activation variances are highest, and keep the coefficients within this subspace in high precision, e.g. 8-bit, while quantizing the rest to 4-bit. Within each subspace, invariant random rotation is applied to further suppress outliers. We show that this is a provably optimal mixed precision quantization scheme that minimizes error. With the Llama and Qwen2.5 families of models, we demonstrate that ResQ outperforms recent uniform and mixed precision PTQ methods on a variety of benchmarks, achieving up to 33\% lower perplexity on Wikitext than the next best method SpinQuant, and upto 3\times speedup over 16-bit baseline. Code is available at https://github.com/utkarsh-dmx/project-resq.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-12-18T22:01:55Z</published>
+    <arxiv:comment>18 pages, 7 figures, 10 tables</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Utkarsh Saxena</name>
+    </author>
+    <author>
+      <name>Sayeh Sharify</name>
+    </author>
+    <author>
+      <name>Kaushik Roy</name>
+    </author>
+    <author>
+      <name>Xin Wang</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2412.07902v1</id>
+    <title>Low-Rank Correction for Quantized LLMs</title>
+    <updated>2024-12-10T20:17:46Z</updated>
+    <link href="https://arxiv.org/abs/2412.07902v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2412.07902v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We consider the problem of model compression for Large Language Models (LLMs) at post-training time, where the task is to compress a well-trained model using only a small set of calibration input data. In this work, we introduce a new low-rank approach to correct for quantization errors of \emph{activations} in LLMs: we propose to add low-rank weight matrices in full precision that act on the \emph{unquantized} activations. We then solve a joint optimization problem over the quantized representation of the weights and additional low-rank weight matrices to quantize both weights and activations. We focus on the case of 4-bit weight-and-activation quantization (W4A4). Using ranks equivalent to 10\% of the original weight matrix size, our approach reduces the accuracy gap with the original model by more than 50\%. Using ranks equivalent to 30\% of the original weight matrix, the accuracy gap is closed completely. We demonstrate our results on four recent LLMs, namely Llama-2, Llama-3, Phi-3 and Mixtral models.</summary>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-12-10T20:17:46Z</published>
+    <arxiv:primary_category term="stat.ML"/>
+    <author>
+      <name>Meyer Scetbon</name>
+    </author>
+    <author>
+      <name>James Hensman</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2602.02001v2</id>
+    <title>Preserve-Then-Quantize: Balancing Rank Budgets for Quantization Error Reconstruction in LLMs</title>
+    <updated>2026-05-13T07:15:58Z</updated>
+    <link href="https://arxiv.org/abs/2602.02001v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2602.02001v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Quantization Error Reconstruction (QER) reduces accuracy loss in Post-Training Quantization (PTQ) by approximating weights as $\mathbf{W} \approx \mathbf{Q} + \mathbf{L}\mathbf{R}$, using a rank-$r$ correction to reconstruct quantization error. Prior methods devote the full rank budget to error reconstruction, which is suboptimal when $\mathbf{W}$ has intrinsic low-rank structure and quantization corrupts dominant directions. We propose Structured Residual Reconstruction (SRR), a rank-allocation framework that preserves the top-$k$ singular subspace of the activation-scaled weight before quantization, quantizes only the residual, and uses the remaining rank $r-k$ for error reconstruction. We derive a theory-guided criterion for selecting $k$ by balancing quantization-exposed energy and unrecoverable error under rank constraints. We further show that resulting $\mathbf{Q} + \mathbf{L}\mathbf{R}$ parameterization naturally supports Quantized Parameter-Efficient Fine-Tuning (QPEFT), and stabilizes fine-tuning via gradient scaling along preserved directions. Experiments demonstrate consistent perplexity reductions across diverse models and quantization settings in PTQ, along with a 5.9 percentage-point average gain on GLUE under 2-bit QPEFT. The project page is available at https://ai-isl.github.io/srr.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-02-02T12:02:21Z</published>
+    <arxiv:comment>Accepted at ICML 2026. Project page: https://ai-isl.github.io/srr</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Yoonjun Cho</name>
+    </author>
+    <author>
+      <name>Dongjae Jeon</name>
+    </author>
+    <author>
+      <name>Soeun Kim</name>
+    </author>
+    <author>
+      <name>Moongyu Jeon</name>
+    </author>
+    <author>
+      <name>Albert No</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2603.25385v2</id>
+    <title>GlowQ: Group-Shared LOw-Rank Approximation for Quantized LLMs</title>
+    <updated>2026-04-30T17:56:16Z</updated>
+    <link href="https://arxiv.org/abs/2603.25385v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2603.25385v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Quantization techniques such as BitsAndBytes, AWQ, and GPTQ are widely used as a standard method in deploying large language models but often degrades accuracy when using low-bit representations, e.g., 4 bits. Low-rank correction methods (e.g., LQER, QERA, ASER) has been proposed to mitigate this issue, however, they restore all layers and insert error-correction modules into every decoder block, which increases latency and memory overhead. To address this limitation, we propose GlowQ, a group-shared low-rank approximation for quantized LLMs that caches a single shared right factor per input-sharing group and restores only the groups or layers that yield the highest accuracy benefit. GlowQ computes the high-precision projection once per input-sharing group and reuses it across its modules, reducing parameter and memory overhead, and retaining the expressivity of layer-specific corrections. We also propose a selective variant, GlowQ-S, that applies the cached shared module only where it provides the largest benefit. Compared with strong baselines, our approach reduces TTFB by (5.6%) and increases throughput by (9.6%) on average, while reducing perplexity on WikiText-2 by (0.17%) and increasing downstream accuracy by 0.42 percentage points. The selective model GlowQ-S further reduces latency, cutting TTFB by (23.4%) and increasing throughput by (37.4%), while maintaining accuracy within 0.2 percentage points on average. Code is available at https://github.com/ahnselim/GlowQ.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-03-26T12:36:44Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Selim An</name>
+    </author>
+    <author>
+      <name>Il hong Suh</name>
+    </author>
+    <author>
+      <name>Yeseong Kim</name>
+    </author>
+  </entry>
+</feed>
