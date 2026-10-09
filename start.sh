@@ -81,6 +81,19 @@ for arg in "$@"; do
       fi ;;
   esac
 done
+# Not as root — and before conf.sh is sourced, because sourcing it can already
+# create openbeast.conf. A newcomer blocked by docker permissions reaches for
+# sudo; the start then leaves a root-owned conf (mode 600), .run/ and files
+# dir behind, and the next ./start.sh as the user cannot read its own config.
+# `id -u`, not $EUID: bash makes EUID read-only, so a test could not set it.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Error: do not run ./start.sh as root (or with sudo)." >&2
+  echo "  OpenBeast lives in your user account: openbeast.conf, .run/, the Python" >&2
+  echo "  packages and the weights. A root start leaves root-owned copies behind that" >&2
+  echo "  a later ./start.sh as you cannot read. Run it again as your normal user." >&2
+  echo "  If sudo was for docker: sudo usermod -aG docker <your-user>, then log out and in." >&2
+  exit 1
+fi
 if [[ $RESTART -eq 1 && $STATUS -eq 0 ]]; then
   # stop.sh marks the stop as on purpose; the start below clears the marker.
   OPENBEAST_STOP_REASON="./start.sh restart" "$SCRIPT_DIR/stop.sh" \

@@ -604,6 +604,33 @@ else
 fi
 
 echo ""
+echo "start.sh refuses to run as root (UX-11):"
+_RT="$_T/root"; _sandbox "$_RT"
+rm -f "$_RT/openbeast.conf"
+# "root" is a stub `id` — the only thing the guard asks.
+printf '#!/bin/bash\n[[ "$1" == -u ]] && { echo "${FAKE_UID:-1000}"; exit 0; }\nexec /usr/bin/id "$@"\n' > "$_RT/bin/id"
+chmod +x "$_RT/bin/id"
+RUN_ENV=(FAKE_UID=0)
+_start_rc "$_RT" 30 serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"do not run ./start.sh as root"* && "$_SO" == *"usermod -aG docker"* \
+      && ! -e "$_RT/openbeast.conf" && ! -e "$_RT/.run/supervisor.pid" ]]; then
+  pass "as root: refused with the reason and the docker-group fix, before openbeast.conf is created"
+else
+  fail "start.sh as root (rc=$_SRC, conf=$([[ -e "$_RT/openbeast.conf" ]] && echo created || echo absent)): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_RT" 30 status
+[[ $_SRC -eq 1 && "$_SO" == *"as root"* ]] && pass "…for every command that reads the config ('status' too)" \
+  || fail "start.sh status as root (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+RUN_ENV=(FAKE_UID=1000)
+_start_rc "$_RT" 30 serve-nope.sh
+RUN_ENV=()
+if [[ "$_SO" != *"as root"* && "$_SO" == *"scripts/serve-nope.sh not found"* ]]; then
+  pass "a normal user gets past the guard (control)"
+else
+  fail "the root guard fired for uid 1000: $(tr '\n' ' ' <<< "$_SO")"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
