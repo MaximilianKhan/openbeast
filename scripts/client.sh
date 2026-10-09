@@ -399,9 +399,13 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     # requirements.txt` here re-resolved every transitive dependency, unpinned
     # and unverified, into the venv that runs bash and the file tools — on the
     # first update after a hash-pinned install. pydeps.sh exit 3 is a HASH
-    # MISMATCH: fatal, never a fallback. Any other failure (a python the
-    # closure does not cover) degrades loudly to requirements.txt, unless
-    # OPENBEAST_PIP_STRICT=1. (Bash 3.2-safe: this file runs on macOS.)
+    # MISMATCH: fatal, never a fallback. Any OTHER failure is fatal too unless
+    # OPENBEAST_PIP_STRICT=0 is set explicitly: a hostile mirror does not
+    # have to serve wrong bytes, it can just withhold one locked file ("No
+    # matching distribution", exit 1) — and an automatic fallback would then
+    # install the same names unverified, from that same mirror. The opt-out
+    # is for a python the closure does not cover. (Bash 3.2-safe: this file
+    # runs on macOS.)
     if [ -x "$VENV/bin/pip" ]; then
       _pd_rc=0
       if [ -x "$REPO/scripts/pydeps.sh" ]; then
@@ -416,12 +420,18 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
         echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first." >&2
         exit 1
       elif [ "$_pd_rc" -ne 0 ]; then
-        if [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
-          echo "  x the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback" >&2
+        if [ "${OPENBEAST_PIP_STRICT:-1}" != "0" ]; then
+          echo "  x the hash-pinned install failed, and NOT on a hash (pip's report is above)." >&2
+          echo "    Refusing to fall back to agents/requirements.txt: that installs the same" >&2
+          echo "    packages UNVERIFIED, which is what an index that withholds a locked file wants." >&2
+          echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first." >&2
+          echo "    If this python is simply not covered by the lock, opt out explicitly:" >&2
+          echo "      OPENBEAST_PIP_STRICT=0 $0 update" >&2
           exit 1
         fi
         echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —" >&2
-        echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content." >&2
+        echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins" >&2
+        echo "    VERSIONS but not content." >&2
         if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
           echo "  x dependency install failed." >&2
           exit 1

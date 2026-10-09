@@ -99,18 +99,35 @@ if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "HASH MISMATCH" && ! has
 else
   fail "client hash mismatch (rc=$_rc txt=$(n_txt)): $_out"
 fi
-# NEGATIVE CONTROL: a non-hash failure still degrades — loudly.
+# A NON-hash failure is fatal by default too (2026-10-09 review, supply S2): a
+# mirror that WITHHOLDS a locked file makes pip exit 1, not 3, and falling
+# back would install the same names unverified from that same mirror.
 run_client 1
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "Refusing to fall back" \
+   && has "$_out" "OPENBEAST_PIP_STRICT=0" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "a non-hash failure does NOT fall back by default, and names the explicit opt-out"
+else
+  fail "client default-strict (rc=$_rc txt=$(n_txt)): $_out"
+fi
+run_client 1 OPENBEAST_PIP_STRICT=1
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]]; then
+  pass "OPENBEAST_PIP_STRICT=1 (the old spelling of strict) is still fatal"
+else
+  fail "client strict (rc=$_rc txt=$(n_txt)): $_out"
+fi
+# NEGATIVE CONTROL: the explicit opt-out still degrades — loudly.
+run_client 1 OPENBEAST_PIP_STRICT=0
 if [[ $_rc -eq 0 && "$(n_txt)" == "1" ]] && has "$_out" "falling back" && has "$_out" "NOT hash-verified"; then
-  pass "negative control: a non-hash failure falls back to requirements.txt, and says it is unverified"
+  pass "negative control: OPENBEAST_PIP_STRICT=0 falls back to requirements.txt, and says it is unverified"
 else
   fail "client compat fallback (rc=$_rc txt=$(n_txt)): $_out"
 fi
-run_client 1 OPENBEAST_PIP_STRICT=1
-if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "OPENBEAST_PIP_STRICT=1"; then
-  pass "OPENBEAST_PIP_STRICT=1 makes any locked-install failure fatal on the client too"
+# The opt-out never reaches a hash mismatch.
+run_client 3 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "HASH MISMATCH"; then
+  pass "OPENBEAST_PIP_STRICT=0 does not turn a HASH MISMATCH into a fallback"
 else
-  fail "client strict (rc=$_rc txt=$(n_txt)): $_out"
+  fail "client hash mismatch under opt-out (rc=$_rc txt=$(n_txt)): $_out"
 fi
 
 # ===========================================================================

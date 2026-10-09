@@ -414,9 +414,12 @@ mkdir -p "$CLIENT_DIR"
 # compromised transitive release would land here while the rig refused it.
 # pydeps.sh verifies the lock is current and installs with --require-hashes.
 # Its exit 3 is a HASH MISMATCH (the index served substituted bytes): fatal,
-# never a reason to fall back. Any other failure (a python the closure does
-# not cover — Intel macOS needs a compiler for cffi, see pydeps.sh) degrades
-# loudly to requirements.txt, unless OPENBEAST_PIP_STRICT=1.
+# never a reason to fall back. Any OTHER failure is fatal too, unless
+# OPENBEAST_PIP_STRICT=0 is set explicitly: a hostile mirror need not serve
+# wrong bytes, it can withhold one locked file ("No matching distribution",
+# exit 1), and an automatic fallback would then install the same names
+# unverified from that same mirror. The opt-out is for a python the closure
+# does not cover (Intel macOS needs a compiler for cffi, see pydeps.sh).
 _pd_rc=0
 OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
 if [ "$_pd_rc" -eq 0 ]; then
@@ -427,12 +430,18 @@ elif [ "$_pd_rc" -eq 3 ]; then
   echo "    Refusing, and NOT falling back to requirements.txt (same packages, unverified)."
   echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
   exit 1
-elif [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
-  echo "  ✗ the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback"
+elif [ "${OPENBEAST_PIP_STRICT:-1}" != "0" ]; then
+  echo "  ✗ the hash-pinned install failed, and NOT on a hash (pip's report is above)."
+  echo "    Refusing to fall back to agents/requirements.txt: that installs the same"
+  echo "    packages UNVERIFIED, which is what an index that withholds a locked file wants."
+  echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
+  echo "    If this python is simply not covered by the lock, opt out explicitly:"
+  echo "      OPENBEAST_PIP_STRICT=0 $0 --host <rig-fqdn>"
   exit 1
 else
   echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
-  echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content."
+  echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins"
+  echo "    VERSIONS but not content."
   "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
   _pins="pins from agents/requirements.txt — NOT hash-verified"
 fi
