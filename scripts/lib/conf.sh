@@ -367,10 +367,22 @@ _EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || tru
 [[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
 _EDGE_INFLIGHT="${OPENBEAST_EDGE_MAX_INFLIGHT:-$(_ob_conf_value EDGE_MAX_INFLIGHT || true)}"
 [[ -n "$_EDGE_INFLIGHT" ]] && export OPENBEAST_EDGE_MAX_INFLIGHT="$_EDGE_INFLIGHT"
-# Fail-closed by default: an empty device registry refuses remote callers
-# rather than serving them anonymously (the 2026-07-17 RBAC lesson).
+# Fail-closed by default: with no device to match, remote callers are refused
+# rather than served anonymously (the 2026-07-17 RBAC lesson). The opt-out
+# covers ONLY a rig that has never had a registry: once .run/clients.json
+# exists — emptied by `clients.sh remove`, or unreadable — the gate ignores
+# it and answers 401.
 _EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || true)}"
 [[ -n "$_EDGE_ANON" ]] && export OPENBEAST_EDGE_ALLOW_ANON="$(_ob_bool "$_EDGE_ANON" false EDGE_ALLOW_ANON)"
+# Largest request body the gate accepts, in bytes (the gate's own default is
+# 8 MiB). Exported only when set, like the limits above.
+_EDGE_BODY="${OPENBEAST_EDGE_MAX_BODY:-$(_ob_conf_value EDGE_MAX_BODY || true)}"
+[[ -n "$_EDGE_BODY" ]] && export OPENBEAST_EDGE_MAX_BODY="$_EDGE_BODY"
+# Inline media only by default: the gate answers 400 for an image/audio/video
+# part that names a URL, because llama-server would fetch it from inside the
+# rig (SSRF for a remote device). true forwards such parts again.
+_EDGE_MEDIA="${OPENBEAST_EDGE_ALLOW_MEDIA_URLS:-$(_ob_conf_value EDGE_ALLOW_MEDIA_URLS || true)}"
+[[ -n "$_EDGE_MEDIA" ]] && export OPENBEAST_EDGE_ALLOW_MEDIA_URLS="$(_ob_bool "$_EDGE_MEDIA" false EDGE_ALLOW_MEDIA_URLS)"
 # beast-chat — the operator console for this rig's own sessions
 # (agents/chat_server.py, docs/BEAST_CHAT.md). Opt-in. When true, start.sh
 # runs it on CHAT_PORT bound to loopback, and setup-tailscale.sh --publish-chat
@@ -933,6 +945,13 @@ export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
 # flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
 ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
 export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
+# ALLOW_OPEN_INFERENCE (env OPENBEAST_ALLOW_OPEN_INFERENCE) default false: the
+# persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
+# publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".
+# setup-tailscale writes it when that flag publishes; doctor.sh then WARNs
+# about the keyless :8443 instead of FAILing. Not exported: only those two
+# scripts read it, and both source this file.
+ALLOW_OPEN_INFERENCE="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_INFERENCE:-$(_ob_conf_value ALLOW_OPEN_INFERENCE || true)}" false ALLOW_OPEN_INFERENCE)"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse
 # (or, with ALLOW_OPEN_TOOLS=true, shout about).
@@ -994,10 +1013,10 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 # anywhere in the repo is in one of the two — add a new key there, or here.
 # Without openbeast.conf.example next to the conf (a stripped copy) the
 # unknown-key half is skipped: there is nothing to compare against.
-_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL PROMPT_CACHE_RAM_MB WEBUI_BACKGROUND_TASKS WEBUI_DEFAULT_ADMIN_PASSWORD"
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
 _OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS"
 ob_conf_lint() {

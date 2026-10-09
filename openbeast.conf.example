@@ -228,12 +228,14 @@
 # ANY non-loopback value (0.0.0.0, a LAN or tailnet IP) is warned about at
 # every launch — and with no MCPO_*_KEY set below, the tool server on :3001
 # is then an unauthenticated remote SHELL for that network. Set keys with
-# scripts/setup-mcpo-keys.sh. (The launch only WARNS — it does not refuse.)
+# scripts/setup-mcpo-keys.sh. The tool server REFUSES to start keyless on a
+# non-loopback bind (so ./start.sh stops there) unless ALLOW_OPEN_TOOLS below
+# says you mean it.
 #BIND_HOST=127.0.0.1
 
 # Acknowledge the case above: you mean to serve the KEYLESS tool server on a
-# non-loopback BIND_HOST. NOT YET ENFORCED — the tool server is served either
-# way; today this only changes the launch warning. Default false.
+# non-loopback BIND_HOST. Without it the tool server refuses to start in that
+# state; with it, it starts and the launch warning stays. Default false.
 # Env: $OPENBEAST_ALLOW_OPEN_TOOLS.
 #ALLOW_OPEN_TOOLS=false
 
@@ -271,9 +273,26 @@
 # Concurrent generations, per device:
 #EDGE_MAX_INFLIGHT=2
 
+# Largest request body the gate accepts, in bytes (default 8388608 = 8 MiB;
+# a bigger body gets 413). Raise it only for clients that send large inline
+# images or audio. No trailing comment, as above.
+#EDGE_MAX_BODY=8388608
+
+# Remote devices must send media INLINE: an image/audio/video part carrying a
+# data: URI or bare base64. A part that names a URL (http://, file://, ...)
+# gets 400, because llama-server would fetch it from inside the rig — a
+# remote device could then read this machine's loopback services or your LAN
+# through the model. Set true only if every enrolled device is yours and you
+# want URL media back.
+#EDGE_ALLOW_MEDIA_URLS=false
+
 # Fail-closed by default: with no devices enrolled, remote callers get 401.
 # Set true ONLY to serve unregistered callers as a single "anon" device
 # (useful while migrating; it gives up per-device attribution and revocation).
+# It applies only while there is NO registry at all (.run/clients.json has
+# never been written). After the first `clients.sh enroll` the gate ignores
+# it for good — even if every device is later removed, or the file becomes
+# unreadable, callers without a valid key get 401.
 #EDGE_ALLOW_ANON=false
 
 # ---------------------------------------------------------------------------
@@ -347,6 +366,25 @@
 # publishing and doctor.sh WARNs instead of FAILing. Default false.
 # Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
 #ALLOW_OPEN_WEBUI=false
+
+# Acknowledge publishing llama-server itself on the tailnet (:8443) with NO
+# beast-gate and NO LLAMA_API_KEY: every tailnet device, shared-in users
+# included, can then use the GPU and reach llama-server's whole route table
+# (/slots, /props, /lora-adapters). Written for you by
+# `scripts/setup-tailscale.sh --i-accept-open-inference`; without it that
+# script leaves :8443 unpublished on such a rig (and takes an earlier mount
+# down), and doctor.sh FAILs a keyless :8443 instead of WARNing. Prefer
+# EDGE_GATE=true (per-device keys) or LLAMA_API_KEY. Default false.
+# Env: $OPENBEAST_ALLOW_OPEN_INFERENCE.
+#ALLOW_OPEN_INFERENCE=false
+
+# After every answer Open WebUI asks the model for chat tags and follow-up
+# suggestions. On a one-slot rig those two extra generations take the slot
+# from the next turn (or from a running agent) and evict its cached prompt,
+# so OpenBeast switches them off at every start; chat titles stay on.
+# Set true to leave WebUI's own switches alone (Admin > Settings > Interface).
+# Env: $OPENBEAST_WEBUI_BACKGROUND_TASKS.
+#WEBUI_BACKGROUND_TASKS=false
 
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.

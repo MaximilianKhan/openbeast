@@ -481,12 +481,11 @@ fi
 # WebUI on :443 has needed --i-accept-open-webui for that; inference needed
 # nothing. Same mechanism now: the gate, a shared key, or an explicit
 # --i-accept-open-inference, which is persisted as ALLOW_OPEN_INFERENCE=true
-# exactly as ALLOW_OPEN_WEBUI is (read here with conf.sh's own parser and
-# env-over-conf precedence).
+# exactly as ALLOW_OPEN_WEBUI is (conf.sh resolves both, env over conf).
 _EDGE_GATE="${EDGE_GATE:-false}"
 _EDGE_PORT="${EDGE_PORT:-8090}"
 INFERENCE_PUBLISHED=0
-ALLOW_OPEN_INFERENCE="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_INFERENCE:-$(_ob_conf_value ALLOW_OPEN_INFERENCE || true)}" false ALLOW_OPEN_INFERENCE)"
+ALLOW_OPEN_INFERENCE="${ALLOW_OPEN_INFERENCE:-false}"
 # The flag given on an earlier run, persisted (see below), counts as given.
 ACCEPT_INFERENCE_FROM_FLAG=$ACCEPT_OPEN_INFERENCE
 [[ "$ALLOW_OPEN_INFERENCE" == "true" ]] && ACCEPT_OPEN_INFERENCE=1
