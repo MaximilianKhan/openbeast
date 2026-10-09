@@ -158,7 +158,7 @@ def test_validation_keeps_env_evidence_past_truncation(tmp_path, monkeypatch):
 
 def _run(run_eval, monkeypatch, agent, validation, health=None):
     monkeypatch.setattr(run_eval, "run_agent", lambda *a, **k: dict(agent))
-    monkeypatch.setattr(run_eval, "run_validation", lambda t: validation)
+    monkeypatch.setattr(run_eval, "run_validation", lambda t, **k: validation)
     monkeypatch.setattr(run_eval, "capture_server_config", lambda *a, **k: {})
     monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
     monkeypatch.setattr(run_eval, "capture_inference_engine_info", lambda: {})
@@ -237,7 +237,7 @@ def test_low_disk_aborts_before_the_agent_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "disk_usage", _fake_usage(3.0))
     ran = []
     monkeypatch.setattr(run_eval, "run_agent", lambda *a, **k: ran.append(1) or dict(_AGENT))
-    monkeypatch.setattr(run_eval, "run_validation", lambda t: (False, "x"))
+    monkeypatch.setattr(run_eval, "run_validation", lambda t, **k: (False, "x"))
     monkeypatch.setattr(run_eval, "capture_server_config", lambda *a, **k: {})
     monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
     monkeypatch.setattr(run_eval, "capture_inference_engine_info", lambda: {})

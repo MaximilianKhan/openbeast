@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-08T23:44:52.640354",
+  "updated_at": "2026-10-09T10:26:07.669219",
   "entries": [
     {
       "model": "Qwen 27B Q5_K_XL",
@@ -37,6 +37,9 @@
         "openai": "2.44.0",
         "mcp": "1.28.1"
       },
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 98.7,
       "problem_solving": 99.1,
@@ -54,6 +57,7 @@
       "tokens_total": 14047593,
       "tokens_prompt": 12612577,
       "tokens_completion": 1435016,
+      "killed_units": 1,
       "breakdown": {
         "easy": {
           "earned": 23.499999999999996,
@@ -529,7 +533,8 @@
           "passed": 20,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 27B Uncensored Q5_K_P",
@@ -554,6 +559,7 @@
       },
       "inference_engine": {},
       "runtime": {},
+      "provenance": {},
       "scoring_version": "v2-solve-breadth",
       "capability": 98.33,
       "problem_solving": 98.61,
@@ -571,6 +577,7 @@
       "tokens_total": 17972352,
       "tokens_prompt": 16557885,
       "tokens_completion": 1414467,
+      "killed_units": 1,
       "breakdown": {
         "easy": {
           "earned": 39.33333333333333,
@@ -1046,7 +1053,8 @@
           "passed": 18,
           "count": 33
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen3.8 27B Q5_K_XL",
@@ -1086,6 +1094,13 @@
         "openbeast_commit": "a4d68e375ea6d51bb1cdb3a0bf70be92cf38ed65",
         "openbeast_dirty": false
       },
+      "provenance": {
+        "openbeast_commit": "a4d68e375ea6d51bb1cdb3a0bf70be92cf38ed65",
+        "openbeast_dirty": false,
+        "engine_build": "10254",
+        "reasoning_budget": "-1",
+        "jobs": 4
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 97.68,
       "problem_solving": 98.19,
@@ -1103,6 +1118,7 @@
       "tokens_total": 28338045,
       "tokens_prompt": 24689206,
       "tokens_completion": 3648839,
+      "killed_units": 3,
       "breakdown": {
         "easy": {
           "earned": 22.999999999999993,
@@ -1578,7 +1594,8 @@
           "passed": 9,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen3.8 27B Uncensored Q5_K_M",
@@ -1618,6 +1635,13 @@
         "openbeast_commit": "a4d68e375ea6d51bb1cdb3a0bf70be92cf38ed65",
         "openbeast_dirty": true
       },
+      "provenance": {
+        "openbeast_commit": "a4d68e375ea6d51bb1cdb3a0bf70be92cf38ed65",
+        "openbeast_dirty": true,
+        "engine_build": "10254",
+        "reasoning_budget": "-1",
+        "jobs": 4
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 97.63,
       "problem_solving": 98.19,
@@ -1635,6 +1659,7 @@
       "tokens_total": 28066939,
       "tokens_prompt": 24481299,
       "tokens_completion": 3585640,
+      "killed_units": 0,
       "breakdown": {
         "easy": {
           "earned": 22.499999999999993,
@@ -2110,7 +2135,8 @@
           "passed": 7,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 27B MTP Q5_K_XL",
@@ -2143,6 +2169,9 @@
         "source_head": "0843245cb1ed0129c81c0ae58c633329c496a3d7"
       },
       "runtime": {},
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 97.54,
       "problem_solving": 97.29,
@@ -2160,6 +2189,7 @@
       "tokens_total": 13345317,
       "tokens_prompt": 11598795,
       "tokens_completion": 1746522,
+      "killed_units": 0,
       "breakdown": {
         "easy": {
           "earned": 23.33333333333333,
@@ -2635,7 +2665,8 @@
           "passed": 20,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 35B-A3B MTP MoE Q4_K_M",
@@ -2668,6 +2699,9 @@
         "source_head": "0843245cb1ed0129c81c0ae58c633329c496a3d7"
       },
       "runtime": {},
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 97.51,
       "problem_solving": 98.19,
@@ -2685,6 +2719,7 @@
       "tokens_total": 20621239,
       "tokens_prompt": 18403827,
       "tokens_completion": 2217412,
+      "killed_units": 3,
       "breakdown": {
         "easy": {
           "earned": 22.999999999999993,
@@ -3160,7 +3195,8 @@
           "passed": 11,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwopus 27B v2 MTP Q5_K_M",
@@ -3193,6 +3229,9 @@
         "source_head": "0843245cb1ed0129c81c0ae58c633329c496a3d7"
       },
       "runtime": {},
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 96.41,
       "problem_solving": 96.38,
@@ -3210,6 +3249,7 @@
       "tokens_total": 15433146,
       "tokens_prompt": 13678594,
       "tokens_completion": 1754552,
+      "killed_units": 1,
       "breakdown": {
         "easy": {
           "earned": 23.33333333333333,
@@ -3685,7 +3725,8 @@
           "passed": 14,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 35B-A3B NVFP4 MTP",
@@ -3723,6 +3764,9 @@
         "openai": "2.44.0",
         "mcp": "1.28.1"
       },
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 96.33,
       "problem_solving": 96.61,
@@ -3740,6 +3784,7 @@
       "tokens_total": 17802019,
       "tokens_prompt": 15478176,
       "tokens_completion": 2323843,
+      "killed_units": 4,
       "breakdown": {
         "easy": {
           "earned": 22.999999999999993,
@@ -4215,7 +4260,8 @@
           "passed": 11,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 27B NVFP4 MTP",
@@ -4253,6 +4299,9 @@
         "openai": "2.44.0",
         "mcp": "1.28.1"
       },
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 95.65,
       "problem_solving": 94.8,
@@ -4270,6 +4319,7 @@
       "tokens_total": 16069096,
       "tokens_prompt": 14231519,
       "tokens_completion": 1837577,
+      "killed_units": 1,
       "breakdown": {
         "easy": {
           "earned": 23.666666666666664,
@@ -4745,7 +4795,8 @@
           "passed": 24,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Gemma 4 31B-it Q5_K_XL",
@@ -4778,6 +4829,9 @@
         "source_head": "2bacb1eb77d07dd9f9685cd524f6cd9a342d639b"
       },
       "runtime": {},
+      "provenance": {
+        "engine_build": "8893"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 95.38,
       "problem_solving": 94.63,
@@ -4795,6 +4849,7 @@
       "tokens_total": 12515027,
       "tokens_prompt": 11124286,
       "tokens_completion": 1390741,
+      "killed_units": 2,
       "breakdown": {
         "easy": {
           "earned": 38.83333333333334,
@@ -5270,7 +5325,8 @@
           "passed": 18,
           "count": 33
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 35B-A3B Uncensored Q4_K_M",
@@ -5295,6 +5351,7 @@
       },
       "inference_engine": {},
       "runtime": {},
+      "provenance": {},
       "scoring_version": "v2-solve-breadth",
       "capability": 95.24,
       "problem_solving": 95.43,
@@ -5312,6 +5369,7 @@
       "tokens_total": 26953756,
       "tokens_prompt": 24765849,
       "tokens_completion": 2187907,
+      "killed_units": 3,
       "breakdown": {
         "easy": {
           "earned": 38.833333333333336,
@@ -5787,7 +5845,8 @@
           "passed": 5,
           "count": 33
         }
-      }
+      },
+      "ineligible_reasons": []
     },
     {
       "model": "Qwen 35B-A3B MoE Q4_K_M",
@@ -5825,6 +5884,9 @@
         "openai": "2.44.0",
         "mcp": "1.28.1"
       },
+      "provenance": {
+        "engine_build": "9690"
+      },
       "scoring_version": "v2-solve-breadth",
       "capability": 95.01,
       "problem_solving": 94.8,
@@ -5842,6 +5904,7 @@
       "tokens_total": 18986690,
       "tokens_prompt": 16285315,
       "tokens_completion": 2701375,
+      "killed_units": 3,
       "breakdown": {
         "easy": {
           "earned": 22.66666666666666,
@@ -6317,7 +6380,8 @@
           "passed": 12,
           "count": 31
         }
-      }
+      },
+      "ineligible_reasons": []
     }
   ]
 }

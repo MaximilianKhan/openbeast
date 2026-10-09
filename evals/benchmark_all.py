@@ -180,7 +180,87 @@ BENCH_EXCLUDED = {
 LLAMA_HEALTH_URL = "http://localhost:8080/health"
 LLAMA_PORT = 8080
 HEALTH_TIMEOUT = 180   # seconds to wait for model load
-COOLOFF_SECONDS = 600  # 10-min thermal break between models
+COOLOFF_SECONDS = 600  # thermal break between models: the ceiling, and the
+                       # whole wait when the GPU temperature cannot be read
+COOLOFF_MIN_SECONDS = 60     # never shorter: the core reading drops faster
+                             # than the memory and VRMs it does not report
+COOLOFF_POLL_SECONDS = 15
+COOLOFF_TEMP_C = 50.0        # cooled: at or below this (OPENBEAST_BENCH_COOLOFF_TEMP_C)
+
+
+def gpu_temperature_c() -> float | None:
+    """The hottest GPU's core temperature in °C, or None when nvidia-smi
+    cannot say (absent, failing, or `[N/A]`). The one place the cool-off
+    touches the card, so a test stubs this and never runs nvidia-smi."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    temps = []
+    for line in (r.stdout or "").splitlines():
+        try:
+            temps.append(float(line.strip()))
+        except ValueError:
+            continue
+    return max(temps) if temps else None
+
+
+def cooloff_target_c(env=None) -> float | None:
+    """The temperature that ends the cool-off early, or None for the fixed
+    wait: OPENBEAST_BENCH_COOLOFF_TEMP_C=off (or 0) keeps the old policy."""
+    raw = (os.environ if env is None else env).get("OPENBEAST_BENCH_COOLOFF_TEMP_C", "").strip()
+    if not raw:
+        return COOLOFF_TEMP_C
+    if raw.lower() in ("off", "no", "false"):
+        return None
+    try:
+        target = float(raw)
+    except ValueError:
+        print(f"WARNING: OPENBEAST_BENCH_COOLOFF_TEMP_C={raw!r} is not a temperature — "
+              f"using {COOLOFF_TEMP_C:g}°C (set a number, or `off` for the fixed wait)")
+        return COOLOFF_TEMP_C
+    return target if target > 0 else None
+
+
+def cool_off() -> int:
+    """The thermal break between two models. Returns the seconds waited.
+
+    It used to be a flat COOLOFF_SECONDS: a 20-model sweep slept 190
+    minutes whatever the card's temperature. Now it ends once the GPU is at
+    or below the target, no sooner than COOLOFF_MIN_SECONDS and no later
+    than COOLOFF_SECONDS. A temperature that cannot be read — up front or
+    part-way — falls back to the full fixed wait, never to none."""
+    target = cooloff_target_c()
+    temp = gpu_temperature_c() if target is not None else None
+    if temp is None:
+        why = ("OPENBEAST_BENCH_COOLOFF_TEMP_C is off" if target is None
+               else "GPU temperature unreadable")
+        print(f"\nCool-off for {COOLOFF_SECONDS}s before next model ({why}: fixed wait)...")
+        time.sleep(COOLOFF_SECONDS)
+        return COOLOFF_SECONDS
+    print(f"\nCool-off before next model: GPU at {temp:.0f}°C, waiting for <= {target:g}°C "
+          f"({COOLOFF_MIN_SECONDS}-{COOLOFF_SECONDS}s)...")
+    waited = 0
+    while waited < COOLOFF_SECONDS and not (waited >= COOLOFF_MIN_SECONDS and temp <= target):
+        step = min(COOLOFF_POLL_SECONDS, COOLOFF_SECONDS - waited)
+        time.sleep(step)
+        waited += step
+        now = gpu_temperature_c()
+        if now is None:
+            rest = COOLOFF_SECONDS - waited
+            print(f"  GPU temperature unreadable after {waited}s — waiting out the "
+                  f"remaining {rest}s")
+            if rest:
+                time.sleep(rest)
+            return COOLOFF_SECONDS
+        temp = now
+    print(f"  cooled to {temp:.0f}°C after {waited}s"
+          + ("" if temp <= target else f" (ceiling reached; target was {target:g}°C)"))
+    return waited
 
 
 # ---------------------------------------------------------------------------
@@ -658,8 +738,7 @@ def run_sweep(models: list[dict], task_filter: list[str] | None,
             # loaded, or for a run that replayed every unit from cache —
             # skip the cool-off. (A resumed 11-model sweep paid 10 idle
             # minutes per fully-cached model before any new work.)
-            print(f"\nCool-off for {COOLOFF_SECONDS}s before next model...")
-            time.sleep(COOLOFF_SECONDS)
+            cool_off()
         elif i < len(models) and not cache_only:
             print("\nNo live GPU work for this model — skipping the cool-off.")
 
