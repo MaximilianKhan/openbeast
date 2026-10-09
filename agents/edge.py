@@ -42,10 +42,12 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
   OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
                                a prompt array or n>1 counts prompts x n
-  OPENBEAST_EDGE_ALLOW_ANON    "true" = while NO device is enrolled, serve
+  OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
-                               false = fail closed). Ignored once the registry
-                               holds a device: then no/unknown key -> 401
+                               false = fail closed). Ignored once
+                               .run/clients.json exists — even emptied by
+                               `clients.sh remove`, even unreadable: then
+                               no/unknown key -> 401
 """
 from __future__ import annotations
 
@@ -159,6 +161,10 @@ class Registry:
         self._mtime = None
         self._by_hash: dict[str, dict] = {}
         self._present = False
+        # The FILE is there, parsed or not. Distinct from _present (a map was
+        # loaded from it) — see `exists`.
+        self._exists = False
+        self._bad_stamp = None
         self._touched: dict[str, float] = {}
         self.reload()
 
@@ -167,8 +173,10 @@ class Registry:
             st = os.stat(self.path)
         except OSError:
             self._by_hash, self._present, self._mtime = {}, False, 0.0
+            self._exists = False
             self._size = -1
             return
+        self._exists = True
         # mtime alone is not enough: two writes inside the same filesystem
         # timestamp tick (mtime granularity can be 1s) would leave a stale
         # map — and a stale map means a MISSED REVOCATION. Key the cache on
@@ -179,15 +187,29 @@ class Registry:
         try:
             with open(self.path) as f:
                 data = json.load(f)
-        except (OSError, ValueError):
+            # The wrong SHAPE is as unusable as a parse error (and used to
+            # be an AttributeError out of every request).
+            devices = data.get("devices", [])
+            by_hash = {}
+            for dev in devices:
+                key_hash = (dev.get("key_sha256") or "").strip().lower()
+                if key_hash:
+                    by_hash[key_hash] = dev
+        except (OSError, ValueError, AttributeError, TypeError) as e:
             # A half-written or corrupt registry must NOT silently open the
-            # door: keep serving the last good map.
+            # door: keep serving the last good map. On a FIRST load there is
+            # no last good map — `exists` is what keeps that closed. Said
+            # once per bad file, not once per request.
+            if stamp != self._bad_stamp:
+                self._bad_stamp = stamp
+                _log(f"ERROR: {self.path} exists but cannot be read as a "
+                     f"device registry ({type(e).__name__}) — "
+                     + ("serving the last good copy" if self._present else
+                        "refusing every caller")
+                     + " until it is repaired: ./scripts/clients.sh list "
+                     "names the fault; restore the file or move it aside "
+                     "and re-enroll")
             return
-        by_hash = {}
-        for dev in data.get("devices", []):
-            key_hash = (dev.get("key_sha256") or "").strip().lower()
-            if key_hash:
-                by_hash[key_hash] = dev
         self._by_hash = by_hash
         self._present = True
         self._mtime = stamp
@@ -206,6 +228,20 @@ class Registry:
         """
         self.reload()
         return self._present and bool(self._by_hash)
+
+    @property
+    def exists(self) -> bool:
+        """True when the registry FILE is there — empty or unreadable too.
+
+        This, not `configured`, decides whether EDGE_ALLOW_ANON may apply.
+        Enrollment having happened at all is the operator's statement that
+        callers are identified, and two states used to read as "no registry"
+        and reopen the gate to every tailnet peer: `clients.sh remove` of the
+        last device (which re-admitted the very key it removed), and a file
+        truncated before a gate restart (no last good map to keep).
+        """
+        self.reload()
+        return self._exists
 
     def lookup(self, presented_key: str) -> dict | None:
         """Device for a bearer key, or None. Revoked devices return None."""
@@ -556,12 +592,23 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
         if dev is None:
             return None, "bad_key"
         return dev, "ok"
-    # No registry yet. Fail CLOSED unless explicitly opted out — an empty
+    # No device to match. Fail CLOSED unless explicitly opted out — an empty
     # registry must not mean "everyone is welcome" (the RBAC fail-closed
-    # lesson from 2026-07-17).
+    # lesson from 2026-07-17). The opt-out covers ONLY a rig that has never
+    # had a registry file: see Registry.exists.
+    if registry.exists:
+        return None, ("no_registry" if registry._present
+                      else "registry_unreadable")
     if ALLOW_ANON:
         return {"id": "anon", "label": "unregistered"}, "ok"
     return None, "no_registry"
+
+
+def _auth_mode(registry: Registry) -> str:
+    """devices | anon | closed — what _identify does with a caller right now."""
+    if registry.configured:
+        return "devices"
+    return "anon" if ALLOW_ANON and not registry.exists else "closed"
 
 
 # A JSON string token (escapes included) or one structural bracket. Strings
@@ -802,6 +849,9 @@ async def gate(request: Request):
         hint = ("this rig has no enrolled devices yet — run "
                 "./scripts/clients.sh enroll <id> on the rig"
                 if reason == "no_registry" else
+                "the rig's device registry is unreadable — on the rig, run "
+                "./scripts/clients.sh list and repair .run/clients.json"
+                if reason == "registry_unreadable" else
                 "present a device key: Authorization: Bearer <key>")
         return JSONResponse(
             {"error": {"message": f"unauthorized ({reason}): {hint}",
@@ -1141,8 +1191,7 @@ async def health(request: Request):
     return JSONResponse({
         "status": "ok",
         "service": "beast-gate",
-        "auth": "devices" if reg.configured else (
-            "anon" if ALLOW_ANON else "closed"),
+        "auth": _auth_mode(reg),
         "devices": len(reg._by_hash),
         "upstream": UPSTREAM,
     })
@@ -1211,9 +1260,10 @@ def main() -> None:
         raise SystemExit(1)
     _local_token()          # lifespan's own call is then a no-op
     reg = Registry()
-    mode = ("devices" if reg.configured
-            else ("ANON (OPENBEAST_EDGE_ALLOW_ANON=true)" if ALLOW_ANON
-                  else "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>"))
+    mode = {"devices": "devices",
+            "anon": "ANON (OPENBEAST_EDGE_ALLOW_ANON=true)",
+            "closed": "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>",
+            }[_auth_mode(reg)]
     print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
           flush=True)
     # Loopback by default like every other service; publish via tailscale.

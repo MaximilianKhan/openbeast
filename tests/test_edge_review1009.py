@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""beast-gate (agents/edge.py) — the 2026-10-09 review findings.
+
+One class per finding. Each builds its own registry and stub upstream under
+tmp_path (the helpers are test_edge.py's); nothing here opens a real port.
+
+Run: python3 -m pytest tests/test_edge_review1009.py -q
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import os
+import sys
+
+import pytest
+from starlette.requests import Request
+from starlette.testclient import TestClient
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_edge import (DEVICE_KEY, REVOKED_KEY, _ChunkedResponse,  # noqa: E402
+                       _FakeResponse, _last_audit, _laptop_bucket_app,
+                       _local_headers, _registry, _stub_upstream,
+                       edge)  # noqa: F401  (pytest fixture)
+
+HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+CHAT = "/v1/chat/completions"
+
+
+def _anon_edge(tmp_path, monkeypatch):
+    """The module with EDGE_ALLOW_ANON=true (config is read at import)."""
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENBEAST_EDGE_ALLOW_ANON", "true")
+    import edge as _edge
+    importlib.reload(_edge)
+    return _edge
+
+
+class TestRegistryFileClosesAnon:
+    """S7 + F11: EDGE_ALLOW_ANON covers a rig with NO registry file. A file
+    that exists — emptied, or unreadable on first load — never reads as
+    "no registry"."""
+
+    def test_removing_the_last_device_does_not_reopen_the_gate(
+            self, tmp_path, monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        path = _registry(tmp_path)
+        _stub_upstream(e, {})
+        with TestClient(e.app) as c:
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 200
+            # What `clients.sh remove` leaves behind for the last device.
+            path.write_text(json.dumps({"version": 1, "devices": []}))
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 401      # the removed key
+            assert c.post(CHAT, json={"messages": []}).status_code == 401
+            body = c.get("/gate/health", headers=_local_headers(e)).json()
+        assert body["auth"] == "closed" and body["devices"] == 0
+
+    def test_corrupt_registry_at_first_load_is_closed(self, tmp_path,
+                                                      monkeypatch, capsys):
+        e = _anon_edge(tmp_path, monkeypatch)
+        path = _registry(tmp_path)
+        path.write_text(path.read_text()[:40])       # truncated, then restart
+        _stub_upstream(e, {})
+        with TestClient(e.app) as c:
+            r = c.post(CHAT, json={"messages": []})
+            assert r.status_code == 401
+            assert "registry_unreadable" in r.text and "clients.sh" in r.text
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 401
+            c.post(CHAT, json={"messages": []})
+            # Repaired on disk: enrolled devices work again with no restart.
+            _registry(tmp_path)
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 200
+        out = capsys.readouterr().out
+        # Named once per bad file, not once per request.
+        assert out.count("cannot be read as a device registry") == 1
+        assert "refusing every caller" in out
+
+    @pytest.mark.parametrize("content", ["[]", '{"devices": 5}',
+                                         '{"devices": ["x"]}'])
+    def test_wrong_shape_is_unreadable_not_a_500(self, tmp_path, monkeypatch,
+                                                 content):
+        e = _anon_edge(tmp_path, monkeypatch)
+        (tmp_path / ".run").mkdir()
+        (tmp_path / ".run" / "clients.json").write_text(content)
+        _stub_upstream(e, {})
+        with TestClient(e.app) as c:
+            assert c.post(CHAT, json={"messages": []}).status_code == 401
+
+    def test_no_file_at_all_still_honors_the_opt_in(self, tmp_path,
+                                                    monkeypatch):
+        # Negative control: the documented migration mode is untouched.
+        e = _anon_edge(tmp_path, monkeypatch)
+        _stub_upstream(e, {})
+        with TestClient(e.app) as c:
+            assert c.post(CHAT, json={"messages": []}).status_code == 200
+            assert c.get("/gate/health",
+                         headers=_local_headers(e)).json()["auth"] == "anon"
