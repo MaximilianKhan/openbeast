@@ -13,6 +13,14 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval.
 - [ ] Trim prompt tokens in the era-hashed prompts (`system-prompt.md`, `system-prompt-tools.md`), in the same era roll.
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
+- [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
+- [ ] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`.
+- [ ] Clear the 17 already-banked "Validation timed out" cache entries (`cache_cli.py`), including `136_gf256_f` in Tier-3 cell C1.
+- [ ] Check the sweep cool-off defaults (50 °C, 60 s floor) against one real cool-down on the 5090.
+- [ ] Measure `--cache-ram` restore time for a 16–36 GiB state (one GPU check).
+- [ ] Root-only containers: `bootstrap.sh` has `OPENBEAST_ALLOW_ROOT=1`, `start.sh` has no escape hatch — add one or document the limit.
+- [ ] `setup-tailscale.sh` re-run on an ungated, keyless rig now takes an existing raw `:8443` mount down — confirm that is wanted for upgrades.
+- [ ] `start.sh` prints "enroll a device" for any gate reporting `auth=closed`, including an unreadable registry; `/gate/health` does not expose the difference.
 
 ## 🧩 EXTERNAL SKILLS — gate BUILT 2026-10-01, 9 skills IMPORTED 2026-10-02 (agent-read)
 
@@ -655,10 +663,11 @@ is broken is installing, updating, rebuilding, and telling the truth about it.**
         header so nobody debugs it twice.
       * tampering is caught at both ends: one flipped byte in a wheel, or one
         extra file, and `audit` names it and `install` refuses.
-      Bootstrap PREFERS the lock and falls back loudly to `requirements.txt`
-      if the closure cannot be satisfied on that python — an installer's job
-      is to make the box work. `OPENBEAST_PIP_STRICT=1` makes the fallback
-      fatal for a deployment that mandates hash pinning.
+      Bootstrap installs from the lock and, since 2026-10-09, STOPS when the
+      closure cannot be satisfied on that python (or the lock is stale or
+      missing). `OPENBEAST_PIP_STRICT=0` is the opt-out that falls back,
+      loudly, to `requirements.txt`; a hash mismatch is fatal either way.
+      (Originally the fallback was the default and `=1` made it fatal.)
 - [ ] **`agents/runner.py:560` routes loopback through the proxy.** No
       `http_client=httpx.Client(trust_env=False)`, so an exported `HTTP_PROXY`
       — the most common closed-network configuration — sends the agent's own
