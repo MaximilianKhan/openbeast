@@ -813,6 +813,43 @@ else
 fi
 
 echo ""
+echo "start.sh cleanup keeps a replacement's pidfile (ops F9):"
+# cleanup(), lifted verbatim. "Ours" are pids above any kernel's pid_max (so
+# the kills in cleanup can never land on a real process); the "replacement"
+# is a live process healthcheck --restart recorded.
+_CU="$_T/cleanup"; mkdir -p "$_CU/.run"
+{
+  echo 'set -euo pipefail'
+  echo 'RUN_DIR="$SANDBOX/.run"; SCRIPT_DIR="$SANDBOX"; REPO_DIR="$SANDBOX"; CLEANED=0'
+  echo 'ob_ext_reap() { :; }'
+  sed -n '/^_rm_own_pidfile() {/,/^}/p' "$REPO_DIR/start.sh"
+  sed -n '/^cleanup() {/,/^}/p' "$REPO_DIR/start.sh"
+  echo 'LLAMA_PID="$1"; MCPO_PID="$2"; ROUTER_PID="$3"; EDGE_PID="$4"'
+  echo 'cleanup >/dev/null 2>&1'
+} > "$_CU/harness.sh"
+_OURS=(2147483001 2147483002 2147483003 2147483004)
+sleep 300 & _REPL=$!; _PIDS="$_PIDS $!"
+for _n in llama mcpo router edge; do echo "$_REPL" > "$_CU/.run/$_n.pid"; done
+echo x > "$_CU/.run/supervisor.pid"
+SANDBOX="$_CU" bash "$_CU/harness.sh" "${_OURS[@]}" || true
+_kept=""; for _n in llama mcpo router edge; do [[ "$(cat "$_CU/.run/$_n.pid" 2>/dev/null)" == "$_REPL" ]] && _kept+="$_n "; done
+if [[ "$_kept" == "llama mcpo router edge " ]] && kill -0 "$_REPL" 2>/dev/null; then
+  pass "pidfiles naming a watchdog replacement survive the supervisor's exit (tool server, router, gate, model)"
+else
+  fail "cleanup erased a replacement's record: kept only '$_kept' of llama mcpo router edge"
+fi
+[[ ! -e "$_CU/.run/supervisor.pid" ]] && pass "…the supervisor's own pidfile is always removed" \
+  || fail "cleanup left supervisor.pid behind"
+_i=0; for _n in llama mcpo router edge; do echo "${_OURS[$_i]}" > "$_CU/.run/$_n.pid"; _i=$((_i + 1)); done
+SANDBOX="$_CU" bash "$_CU/harness.sh" "${_OURS[@]}" || true
+if ! ls "$_CU/.run"/*.pid >/dev/null 2>&1; then
+  pass "…and pidfiles that still name OUR children are removed (control)"
+else
+  fail "cleanup left its own children's pidfiles: $(ls "$_CU/.run")"
+fi
+kill "$_REPL" 2>/dev/null || true
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"

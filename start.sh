@@ -732,8 +732,17 @@ cleanup() {
     _n="$(basename "$_pf" .pid)"
     ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start"
+  # The tool server, router, gate and model: only while the file still names
+  # the child WE spawned, like chat/artifact/hydra. healthcheck.sh --restart
+  # replaces a crashed tool server (router, gate, model) and records the
+  # replacement in the same file; an unconditional rm here erased that record
+  # when the supervisor later exited, leaving an orphan on the port that
+  # nothing could find by pid.
+  _rm_own_pidfile "$RUN_DIR/llama.pid" "${LLAMA_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/mcpo.pid" "${MCPO_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/router.pid" "${ROUTER_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/edge.pid" "${EDGE_PID:-}"
   # ...but only the pidfiles of servers WE started. Removing a live server's
   # recorded pid is what makes an orphan unreapable, which is the whole point
   # of the [17] guard above.
