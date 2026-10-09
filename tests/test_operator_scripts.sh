@@ -10,6 +10,7 @@
 #
 #   1  setup-mcpo-keys.sh   --help / unknown options never run it; an EMPTY
 #                           key is not "already set"            (UX-10, S7)
+#   2  setup-sandlock.sh    private mktemp build dir, cargo --locked   (S8)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -88,6 +89,71 @@ if [[ $RC -eq 0 ]] && has "$OUT" "MCPO_ADMIN_KEY: already set" \
   pass "control: a key that HAS a value is left untouched and reported as set"
 else
   fail "re-run clobbered or misreported a real key (rc=$RC): $OUT"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "2. setup-sandlock.sh build directory + --locked (supply S8):"
+SL="$(fresh_repo sandlock)"
+: > "$SL/scripts/sandlock-profile-openbeast.toml"
+mkdir -p "$T/slbin" "$T/slhome" "$T/sltmp"
+# git: `clone` records what the target directory looked like when it was
+# handed over; nothing is fetched. cargo: records argv, "builds" a stub.
+cat > "$T/slbin/git" <<EOF
+#!/bin/bash
+if [[ "\$1" == "clone" ]]; then
+  d="\${@: -1}"
+  { echo "dir=\$d"; [[ -d "\$d" ]] && echo "preexisting=yes mode=\$(stat -c %a "\$d")" || echo "preexisting=no"; } > "$T/git.log"
+  mkdir -p "\$d"
+fi
+exit 0
+EOF
+cat > "$T/slbin/cargo" <<EOF
+#!/bin/bash
+echo "\$*" > "$T/cargo.log"
+mkdir -p target/release
+cat > target/release/sandlock <<'SB'
+#!/bin/bash
+case "\$1" in
+  --version) echo "sandlock stub" ;;
+  run) case "\$*" in *pwned*) exit 1 ;; *) echo sandbox-ok ;; esac ;;
+esac
+SB
+chmod +x target/release/sandlock
+EOF
+printf '#!/bin/bash\necho "rustc stub"\n' > "$T/slbin/rustc"
+printf '#!/bin/bash\necho 6.12.0-test\n' > "$T/slbin/uname"
+chmod +x "$T/slbin"/*
+run env -i HOME="$T/slhome" TMPDIR="$T/sltmp" PATH="$T/slbin:/usr/bin:/bin" bash "$SL/scripts/setup-sandlock.sh"
+if has "$OUT" "Landlock is not in the active LSM list"; then
+  # The kernel LSM list is read from /sys and cannot be stubbed; without
+  # Landlock the script stops before the build. Fall back to the source.
+  echo "  SKIP: this kernel has no Landlock — build path not runnable here"
+  if grep -q 'BUILD_DIR="$(mktemp -d ' "$REPO_DIR/scripts/setup-sandlock.sh" \
+     && grep -q 'cargo build --release --locked ' "$REPO_DIR/scripts/setup-sandlock.sh"; then
+    pass "(static) the build dir comes from mktemp -d and cargo builds --locked"
+  else
+    fail "(static) setup-sandlock.sh lost mktemp -d or --locked"
+  fi
+else
+  BD="$(sed -n 's/^dir=//p' "$T/git.log" 2>/dev/null)"
+  if [[ $RC -eq 0 ]] && grep -q 'preexisting=yes mode=700' "$T/git.log" \
+     && [[ "$BD" == "$T/sltmp/"* ]] && ! [[ "$BD" =~ sandlock-build-[0-9]+$ ]]; then
+    pass "the clone target is a fresh 0700 mktemp directory, not a guessable /tmp/sandlock-build-\$\$"
+  else
+    fail "build dir (rc=$RC, $(tr '\n' ' ' < "$T/git.log" 2>/dev/null)): $OUT"
+  fi
+  if has " $(cat "$T/cargo.log" 2>/dev/null) " " --locked "; then
+    pass "cargo builds with --locked (the reviewed commit's Cargo.lock decides the crates)"
+  else
+    fail "cargo argv: $(cat "$T/cargo.log" 2>/dev/null)"
+  fi
+  if [[ -x "$T/slhome/.local/bin/sandlock" && -n "$BD" && ! -e "$BD" ]] \
+     && [[ -z "$(ls -A "$T/sltmp")" ]]; then
+    pass "control: the binary is installed and the build directory is gone afterwards"
+  else
+    fail "after the build: bin=$([[ -x "$T/slhome/.local/bin/sandlock" ]] && echo yes || echo no) leftovers=$(ls -A "$T/sltmp" | tr '\n' ' ')"
+  fi
 fi
 
 echo ""
