@@ -734,6 +734,15 @@ re-scans disk). Test via `bash tests/test_scripts.sh` — the validator checks
 every SKILL.md parses cleanly. See `docs/SKILLS_PLAN.md` for the full design
 rationale and the deferred Phase 5 (auto-routing layer).
 
+**Importing a skill from elsewhere:** only through `./scripts/skill-import.sh`
+(`fetch` a pinned commit → read and rewrite the staged copy → `promote
+--reviewed-by`), which scans it with a pinned SkillSpector, hash-pins it in
+`skills/REMOTE_PROVENANCE.md`, and keeps it off the always-on menu.
+`./scripts/skill-import.sh verify` is the hash check doctor runs. An agent
+signs an import as an agent (`--agent-read`, `--ordered-by`); `attest` is how a
+human takes the row over. Exit codes: 0 pass, 1 could not judge, 3 refused.
+See `docs/EXTERNAL_SKILLS_PLAN.md`.
+
 **AGENTS.md** (project root) is the project-wide instructions file
 auto-loaded by OpenCode. It contains the task→skill mapping that nudges the
 model to invoke `skill(name)` for non-trivial work.

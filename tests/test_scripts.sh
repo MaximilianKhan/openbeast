@@ -342,6 +342,14 @@ else
   fail "skill validation: ${SKILL_ERRORS}"
 fi
 
+# An imported skill is pinned by hash in skills/REMOTE_PROVENANCE.md; a row
+# and the files on disk disagreeing means an unreviewed edit reached the tree.
+if "$REPO_DIR/scripts/skill-import.sh" verify --quiet >/dev/null 2>&1; then
+  pass "remote skills match their ledger rows (skills/REMOTE_PROVENANCE.md)"
+else
+  fail "remote-skill ledger mismatch — ./scripts/skill-import.sh verify"
+fi
+
 # --- 7. Config files exist ---
 echo ""
 echo "Config files:"

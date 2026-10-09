@@ -85,6 +85,21 @@ fi
 echo ""
 echo ""
 
+# --- Remote-skill import gate (docs/EXTERNAL_SKILLS_PLAN.md) ---
+echo "--- Skill import gate tests (scripts/skill-import.sh; stub scanner + stub git) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_skill_import.sh"; then
+  echo ""
+  echo "Skill import tests: ALL PASSED"
+else
+  echo ""
+  echo "Skill import tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- BEAST_ESCALATE conf forwarding (review open-prs-5) ---
 echo "--- BEAST_ESCALATE conf forwarding (scripts/lib/conf.sh) ---"
 echo ""
