@@ -2,7 +2,7 @@
 # Stop the full OpenBeast stack — gracefully.
 #
 # Prefers the supervisor pidfile (written by start.sh): SIGTERM lets the
-# supervisor's trap shut MCPO and llama-server down in order, then we verify
+# supervisor's trap shut the tool server and llama-server down in order, then we verify
 # and only escalate to pkill for anything orphaned (e.g. a stack started
 # before pidfiles existed, or a supervisor that was SIGKILLed).
 set -euo pipefail
@@ -42,7 +42,7 @@ if ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh'; then
     echo "Supervisor did not exit in 20s — escalating to SIGKILL."
     kill -KILL "$SUP_PID" 2>/dev/null || true
   else
-    echo "Supervisor stopped cleanly (its trap shut down MCPO + llama-server)."
+    echo "Supervisor stopped cleanly (its trap shut down the tool server + llama-server)."
   fi
 fi
 # Clear the daemon scope if one exists (memory-capped systemd-run unit).

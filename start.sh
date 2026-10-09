@@ -1,8 +1,11 @@
 #!/bin/bash
 # Start the full OpenBeast stack:
-#   1. llama.cpp server (Qwen3.6-27B Uncensored Q5_K_P by default — uncensored fine-tune, 96.16%)
-#   2. MCPO proxy (wraps MCP tools as OpenAPI on http://localhost:3001)
-#   3. Open WebUI (http://localhost:3000)
+#   1. llama.cpp server on http://localhost:8080 — by default the Qwen3.8 27B
+#      Uncensored MTP Q5_K_M (serve-qwen38-27b-uncensored-mtp-q5.sh; set
+#      SERVE_SCRIPT in openbeast.conf, or name a serve script, for another)
+#   2. Tool server on http://localhost:3001 (agents/openapi_tools.py: the
+#      model's tools as OpenAPI for Open WebUI, per-user identity + audit)
+#   3. Open WebUI on http://localhost:3000 and SearXNG (web search) on :8888
 #
 # Usage:
 #   ./start.sh                     # foreground (Ctrl+C stops the stack)
@@ -12,21 +15,27 @@
 #                                  #   ./scripts/healthcheck.sh
 #   ./start.sh doctor              # diagnose config/security/service health
 #                                  #   (fix-list; also ./scripts/doctor.sh)
-#   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d)
+#   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d);
+#                                  #   the choices: ls scripts/serve-*.sh
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
-# (MemoryMax=96G, swap 8G) so a runaway process can only take down the
-# stack — never the box. On OOM the supervisor shuts down what remains
-# gracefully. Logs: .run/stack.log; pidfiles: .run/*.pid.
+# (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
+# runaway process can only take down the stack — never the box. On OOM the
+# supervisor shuts down what remains gracefully. Logs: .run/stack.log;
+# pidfiles: .run/*.pid.
 #
 # OpenCode connects to the MCP server via stdio (configured in opencode.json),
-# so it doesn't need MCPO — just run `opencode` in any project.
+# so it doesn't need the tool server — just run `opencode` in this checkout.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 RUN_DIR="$REPO_DIR/.run"
 SUP_PID_FILE="$RUN_DIR/supervisor.pid"
+
+# The header above IS the help text: everything up to the first non-comment
+# line (a fixed line range went stale every time the header grew).
+usage() { awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; }
 
 DAEMON=0; STATUS=0; DAEMONIZED=0; SERVE_SCRIPT=""
 for arg in "$@"; do
@@ -35,7 +44,7 @@ for arg in "$@"; do
     --status)      STATUS=1 ;;
     doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
     --_daemonized) DAEMONIZED=1 ;;   # internal: this process IS the detached supervisor
-    -h|--help)     sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     usage; exit 0 ;;
     -*)            echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
     *)             SERVE_SCRIPT="$arg" ;;
   esac
@@ -81,6 +90,9 @@ if [[ $STATUS -eq 1 ]]; then
   [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
   [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
   [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
+  # The row label; the tool server's pidfile kept the name of the proxy it
+  # replaced (mcpo.pid), which is not something to show a user.
+  _st_label() { if [[ "$1" == mcpo ]]; then echo "tool server"; else echo "$1"; fi; }
   for name in "${_st_names[@]}"; do
     if [[ $name == llama && $_st_managed -eq 0 ]]; then
       if ob_backend_ready "$INFERENCE_URL"; then
@@ -92,9 +104,9 @@ if [[ $STATUS -eq 1 ]]; then
     fi
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
-      echo "  $name: running (pid $(cat "$f"))"
+      echo "  $(_st_label "$name"): running (pid $(cat "$f"))"
     else
-      echo "  $name: not running"
+      echo "  $(_st_label "$name"): not running"
     fi
   done
   if [[ "${HYDRA:-false}" == "true" ]] && declare -F ob_hydra_ready >/dev/null 2>&1; then
@@ -332,7 +344,7 @@ if [[ $DAEMON -eq 1 ]]; then
   _ready_deadline=$(( SECONDS + LLAMA_LOAD_GRACE + 300 ))
   _launched_at=$SECONDS
   while (( SECONDS < _ready_deadline )); do
-    # Readiness = llama + MCPO (+ router when enabled; it hard-binds
+    # Readiness = llama + the tool server (+ router when enabled; it hard-binds
     # 127.0.0.1 — see agents/router.py — so probe it there like the
     # supervisor does). Without the router term "Stack is up" would print
     # before the supervisor's router gate has passed.
@@ -384,7 +396,7 @@ if [[ $DAEMON -eq 1 ]]; then
         echo "                 start it where it runs (docs/DGX_SPARK_PLAN.md); .run/stack.log"
         echo "                 logs the moment it becomes ready. Chat fails until then."
       fi
-      echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
+      echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
       # The WebUI container starts AFTER this readiness point (the
       # supervisor brings the frontend up once the model is serving), so
       # this line cannot claim it is up. Say what we can actually tell:
@@ -446,7 +458,7 @@ if [[ $DAEMONIZED -eq 1 ]]; then
   echo "=== OpenBeast supervisor start: $(date '+%Y-%m-%d %H:%M:%S') ($SERVE_SCRIPT) ==="
 fi
 # Transient systemd units (daemon mode) start with a minimal PATH that lacks
-# ~/.local/bin, where pip --user puts mcpo. Harmless everywhere else.
+# ~/.local/bin, where pip --user puts console scripts. Harmless everywhere else.
 export PATH="$HOME/.local/bin:$PATH"
 # With its start time: 'start\.sh' in a command line is not an identity (any
 # project's ./start.sh matches), and stop.sh SIGKILLs what this record names.
@@ -487,7 +499,7 @@ for cname in open-webui searxng; do
   fi
 done
 
-# Cleanup on exit: stop MCPO and llama.cpp, drop pidfiles. Runs on Ctrl+C,
+# Cleanup on exit: stop the tool server and llama.cpp, drop pidfiles. Runs on Ctrl+C,
 # ./stop.sh (SIGTERM), and after an OOM kill takes out llama-server.
 # Idempotent: the TERM path exits, which fires the EXIT trap a second time.
 CLEANED=0
@@ -544,7 +556,7 @@ cleanup() {
     kill "$ARTIFACT_PID" 2>/dev/null && echo "beast-artifact stopped."
   fi
   if [[ -n "${MCPO_PID:-}" ]]; then
-    kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
+    kill "$MCPO_PID" 2>/dev/null && echo "Tool server stopped."
   fi
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
@@ -988,7 +1000,7 @@ fi
 
 # Agent-spawn router (opt-in, AGENT_ROUTER=true). Sits on ROUTER_PORT in front
 # of llama-server (8080); frontends point at it via OPENBEAST_MODEL_URL. Needs
-# MCPO up (it spawns via MCPO). llama-server stays direct on 8080 so evals and
+# the tool server up (it spawns through it). llama-server stays direct on 8080 so evals and
 # spawned agents are never routed. See docs/RESEARCH_FINDINGS §8-11.
 if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "Starting agent-spawn router on http://localhost:${ROUTER_PORT}..."
@@ -1256,7 +1268,7 @@ elif [[ ${INFER_UP:-0} -eq 1 ]]; then
 else
   echo "  Model server:  NOT READY at $LLAMA_BASE ($(ob_backend_label), not managed here)"
 fi
-echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
+echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
 echo "  Open WebUI:    http://localhost:3000"
 echo "  OpenCode:      run 'opencode' in any project directory"
 if [[ "${HYDRA:-false}" == "true" ]]; then

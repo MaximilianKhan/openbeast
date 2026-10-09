@@ -516,6 +516,35 @@ else
   fail "stop.sh no longer passes the core compose file: $(tr '\n' ' ' < "$_C/docker.log")"
 fi
 
+# ===========================================================================
+# 2026-10-09 review: the entry points themselves (start.sh / stop.sh).
+# ===========================================================================
+echo ""
+echo "start.sh --help describes the stack that ships (UX-19):"
+# --help exits inside the argument loop, before conf.sh or anything else runs.
+_H="$(bash "$REPO_DIR/start.sh" --help 2>&1)" && _HRC=0 || _HRC=$?
+_DEF="$(sed -n 's/^DEFAULT_SERVE_SCRIPT=.*|| echo \([A-Za-z0-9._-]*\)).*/\1/p' "$REPO_DIR/scripts/lib/conf.sh")"
+if [[ $_HRC -eq 0 && -n "$_DEF" && "$_H" == *"$_DEF"* ]]; then
+  pass "the help names the default serve script conf.sh resolves ($_DEF)"
+else
+  fail "start.sh --help (rc=$_HRC) does not name the default '$_DEF'"
+fi
+if [[ "$_H" != *MCPO* && "$_H" != *"MemoryMax=96G"* && "$_H" != *"Qwen3.6-27B Uncensored Q5_K_P"* ]]; then
+  pass "…and no longer describes the MCPO proxy, a 96G cap or the old default"
+else
+  fail "start.sh --help still carries stale facts: $(grep -E 'MCPO|96G|Q5_K_P' <<< "$_H" | tr '\n' ' ')"
+fi
+if [[ "$_H" == *"Usage:"* && "$_H" == *MEM_LIMIT_PCT* && "$_H" != *"set -euo"* && "$_H" != *'SCRIPT_DIR='* ]]; then
+  pass "…and prints the whole header, usage included, with no code leaking in (control)"
+else
+  fail "start.sh --help is cut short or leaks code: $(tail -n 3 <<< "$_H" | tr '\n' ' ')"
+fi
+if grep -qE 'echo .*MCPO (tools|proxy)' "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh"; then
+  fail "a runtime banner still says MCPO: $(grep -nE 'echo .*MCPO (tools|proxy)' "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh" | tr '\n' ' ')"
+else
+  pass "runtime banners say 'Tool server', not MCPO"
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "================================"
