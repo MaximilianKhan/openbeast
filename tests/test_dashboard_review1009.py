@@ -218,3 +218,39 @@ def test_an_explicit_inference_url_still_wins(monkeypatch):
     assert d._INFER == "http://10.0.0.5:8000"
 
 
+# ───────────────────────── F15: multi-GPU nvidia-smi output ─────────────────────────
+
+_ONE = "NVIDIA GeForce RTX 5090, 21000, 32607, 97, 61\n"
+_TWO = "NVIDIA GeForce RTX 3090 Ti, 20000, 24564, 90, 61\nNVIDIA GeForce RTX 3090 Ti, 4564, 24564, 10, 70\n"
+
+
+def _smi(monkeypatch, d, out):
+    def run(cmd, **kw):
+        assert cmd[0] == "nvidia-smi"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+    monkeypatch.setattr(d.subprocess, "run", run)
+
+
+def test_single_gpu_answer_is_unchanged(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _ONE)
+    assert d.gpu_status() == {"name": "NVIDIA GeForce RTX 5090", "used_mib": 21000, "total_mib": 32607,
+                              "free_mib": 11607, "util_pct": 97, "temp_c": 61, "used_pct": 64}
+
+
+def test_two_gpus_are_one_gpu_object_not_none(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _TWO)
+    assert d.gpu_status() == {"name": "2x NVIDIA GeForce RTX 3090 Ti", "used_mib": 24564, "total_mib": 49128,
+                              "free_mib": 24564, "util_pct": 90, "temp_c": 70, "used_pct": 50}
+    _smi(monkeypatch, d, "RTX 5090, 1, 100, 2, 30\nRTX 3090, 1, 100, 3, 40\n")
+    assert d.gpu_status()["name"] == "RTX 5090 + RTX 3090"
+
+
+@pytest.mark.parametrize("out", ["", "\n", "garbage\n", "a, b, c, d, e\n"])
+def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, out)
+    assert d.gpu_status() is None
+
+

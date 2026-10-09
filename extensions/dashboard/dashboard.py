@@ -115,15 +115,40 @@ def gpu_status():
              "utilization.gpu,temperature.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5).stdout.strip()
-        if not out:
-            return None
-        name, used, total, util, temp = [x.strip() for x in out.split(",")[:5]]
-        used, total = int(used), int(total)
-        return {"name": name, "used_mib": used, "total_mib": total,
-                "free_mib": total - used, "util_pct": int(util), "temp_c": int(temp),
-                "used_pct": round(100 * used / total) if total else 0}
+        return _parse_gpus(out)
     except Exception:
         return None
+
+
+def _parse_gpus(out):
+    """nvidia-smi's csv rows -> the one `gpu` object /api/status serves.
+
+    One row per card. Several cards fold into the same shape: memory summed
+    (llama.cpp splits a model across them), utilisation and temperature the
+    busiest / hottest card. Splitting the whole output on commas glued row
+    one's temperature to row two's name and reported "no GPU detected" on
+    every multi-GPU host.
+    """
+    cards = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        name, used, total, util, temp = [x.strip() for x in line.split(",")[:5]]
+        cards.append((name, int(used), int(total), int(util), int(temp)))
+    if not cards:
+        return None
+    names = [c[0] for c in cards]
+    if len(cards) == 1:
+        name = names[0]
+    elif len(set(names)) == 1:
+        name = f"{len(cards)}x {names[0]}"
+    else:
+        name = " + ".join(names)
+    used, total = sum(c[1] for c in cards), sum(c[2] for c in cards)
+    return {"name": name, "used_mib": used, "total_mib": total,
+            "free_mib": total - used, "util_pct": max(c[3] for c in cards),
+            "temp_c": max(c[4] for c in cards),
+            "used_pct": round(100 * used / total) if total else 0}
 
 
 def model_status(health=None):
