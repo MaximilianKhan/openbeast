@@ -1,0 +1,15 @@
+nvfp4all-bare bytes=516075008 Mean PPL(Q) : 20.017123 ± 0.618698 Mean KLD: 0.207280 ± 0.002585 Same top p: 77.049 ± 0.416 %
+nvfp4all-fc128 bytes=516075008 Mean PPL(Q) : 18.586813 ± 0.562101 Mean KLD: 0.103777 ± 0.001845 Same top p: 83.245 ± 0.370 %
+q3km-fc128 bytes=480304128 Mean PPL(Q) : 17.539546 ± 0.524696 Mean KLD: 0.049424 ± 0.001344 Same top p: 88.363 ± 0.318 %
+q3_k_m bytes=480304128 Mean PPL(Q) : 20.587698 ± 0.630703 Mean KLD: 0.166335 ± 0.002429 Same top p: 78.971 ± 0.404 %
+iq3_xxs bytes=412082176 Mean PPL(Q) : 20.886968 ± 0.639543 Mean KLD: 0.257660 ± 0.003201 Same top p: 74.284 ± 0.433 %
+iq3_xs bytes=457382912 Mean PPL(Q) : 18.255928 ± 0.535076 Mean KLD: 0.180711 ± 0.002191 Same top p: 78.167 ± 0.409 %
+iq3_s bytes=464903168 Mean PPL(Q) : 17.617291 ± 0.513852 Mean KLD: 0.156037 ± 0.001871 Same top p: 79.569 ± 0.399 %
+q4_k_s bytes=519335424 Mean PPL(Q) : 17.554851 ± 0.529050 Mean KLD: 0.047265 ± 0.000684 Same top p: 88.431 ± 0.317 %
+q4_k_m bytes=543378944 Mean PPL(Q) : 17.539071 ± 0.527965 Mean KLD: 0.039434 ± 0.000554 Same top p: 89.373 ± 0.305 %
+iq4_xs bytes=518170112 Mean PPL(Q) : 17.535107 ± 0.522838 Mean KLD: 0.050303 ± 0.000702 Same top p: 88.539 ± 0.315 %
+q4_0 bytes=516222464 Mean PPL(Q) : 19.286724 ± 0.590054 Mean KLD: 0.087692 ± 0.001126 Same top p: 84.431 ± 0.359 %
+q5_k_s bytes=577736192 Mean PPL(Q) : 16.619912 ± 0.494466 Mean KLD: 0.015471 ± 0.000182 Same top p: 92.814 ± 0.256 %
+q5_k_m bytes=592080352 Mean PPL(Q) : 16.627475 ± 0.494783 Mean KLD: 0.013500 ± 0.000178 Same top p: 93.255 ± 0.248 %
+q6_k bytes=643825632 Mean PPL(Q) : 16.816619 ± 0.501681 Mean KLD: 0.004826 ± 0.000063 Same top p: 96.029 ± 0.193 %
+vendor-ud-q4kxl bytes=572984736 Mean PPL(Q) : 16.895224 ± 0.506184 Mean KLD: 0.027167 ± 0.000320 Same top p: 90.833 ± 0.286 %

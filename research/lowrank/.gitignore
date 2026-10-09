@@ -2,3 +2,6 @@ data/
 *.gguf
 *.npz
 *.npy
+
+# third-party papers: read locally, cite by arXiv id, never redistribute
+prior-art/pdfs/

@@ -1,0 +1,77 @@
+[h27b-Q2K] 410 candidate tensors, 8 workers × 4 threads
+  [1/410] output.weight skip(no imatrix) (18s)
+  [2/410] token_embd.weight skip(no imatrix) (18s)
+  [25/410] blk.3.attn_output.weight 6.9s (43s)
+  [50/410] blk.7.attn_output.weight 8.0s (73s)
+  [75/410] blk.11.attn_v.weight 4.9s (102s)
+  [100/410] blk.15.attn_v.weight 4.5s (131s)
+  [125/410] blk.19.attn_output.weight 7.9s (165s)
+  [150/410] blk.23.attn_output.weight 8.0s (195s)
+  [175/410] blk.27.attn_output.weight 8.3s (224s)
+  [200/410] blk.31.attn_output.weight 7.6s (253s)
+  [225/410] blk.35.attn_output.weight 9.4s (291s)
+  [250/410] blk.39.attn_output.weight 9.1s (331s)
+  [275/410] blk.43.attn_output.weight 12.7s (368s)
+  [300/410] blk.47.attn_output.weight 9.1s (406s)
+  [325/410] blk.51.attn_output.weight 10.9s (450s)
+  [350/410] blk.55.attn_output.weight 10.7s (485s)
+  [375/410] blk.59.attn_output.weight 8.8s (525s)
+  [400/410] blk.63.attn_output.weight 10.8s (566s)
+  [403/410] blk.64.nextn.eh_proj.weight skip(no imatrix) (568s)
+  [404/410] blk.64.ffn_down.weight skip(no imatrix) (568s)
+  [405/410] blk.64.ffn_gate.weight skip(no imatrix) (568s)
+  [406/410] blk.64.ffn_up.weight skip(no imatrix) (568s)
+  [407/410] blk.64.attn_k.weight skip(no imatrix) (568s)
+  [408/410] blk.64.attn_output.weight skip(no imatrix) (568s)
+  [409/410] blk.64.attn_q.weight skip(no imatrix) (568s)
+  [410/410] blk.64.attn_v.weight skip(no imatrix) (568s)
+[h27b-Q2K] DONE 568s
+Traceback (most recent call last):
+  File "/home/max/Documents/openbeast-research/research/lowrank/experiments/33-t110-capture-width/collect_points.py", line 544, in <module>
+    main()
+    ~~~~^^
+  File "/home/max/Documents/openbeast-research/research/lowrank/experiments/33-t110-capture-width/collect_points.py", line 536, in main
+    cmd_compute(args)
+    ~~~~~~~~~~~^^^^^^
+  File "/home/max/Documents/openbeast-research/research/lowrank/experiments/33-t110-capture-width/collect_points.py", line 354, in cmd_compute
+    _init(args.config, args.threads)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/max/Documents/openbeast-research/research/lowrank/experiments/33-t110-capture-width/collect_points.py", line 292, in _init
+    d, arch = index_2d(str(p))
+              ~~~~~~~~^^^^^^^^
+  File "/home/max/Documents/openbeast-research/research/lowrank/experiments/04-served-v0/extract_adapter.py", line 53, in index_2d
+    arch = r.get_field("general.architecture").contents()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'contents'
+[h27b-MIXED] 410 candidate tensors, 8 workers × 4 threads
+  [1/410] output.weight skip(no imatrix) (19s)
+  [2/410] token_embd.weight skip(no imatrix) (20s)
+  [25/410] blk.3.attn_output.weight 7.3s (42s)
+  [50/410] blk.7.attn_output.weight 5.6s (69s)
+  [75/410] blk.11.attn_v.weight 3.7s (96s)
+  [100/410] blk.15.attn_v.weight 4.5s (128s)
+  [125/410] blk.19.attn_output.weight 7.9s (155s)
+  [150/410] blk.23.attn_output.weight 8.1s (185s)
+  [175/410] blk.27.attn_output.weight 7.2s (212s)
+  [200/410] blk.31.attn_output.weight 7.9s (243s)
+  [225/410] blk.35.attn_output.weight 7.4s (269s)
+  [250/410] blk.39.attn_output.weight 6.8s (295s)
+  [275/410] blk.43.attn_output.weight 7.6s (324s)
+  [300/410] blk.47.attn_output.weight 8.7s (353s)
+  [325/410] blk.51.attn_output.weight 8.2s (381s)
+  [350/410] blk.55.attn_output.weight 7.0s (410s)
+  [375/410] blk.59.attn_output.weight 7.3s (438s)
+  [400/410] blk.63.attn_output.weight 6.9s (466s)
+  [403/410] blk.64.nextn.eh_proj.weight skip(no imatrix) (466s)
+  [404/410] blk.64.ffn_down.weight skip(no imatrix) (466s)
+  [405/410] blk.64.ffn_gate.weight skip(no imatrix) (466s)
+  [406/410] blk.64.ffn_up.weight skip(no imatrix) (466s)
+  [407/410] blk.64.attn_k.weight skip(no imatrix) (466s)
+  [408/410] blk.64.attn_output.weight skip(no imatrix) (466s)
+  [409/410] blk.64.attn_q.weight skip(no imatrix) (466s)
+  [410/410] blk.64.attn_v.weight skip(no imatrix) (466s)
+[h27b-MIXED] DONE 466s
+[q38-27b-UD-IQ2S] 402 candidate tensors, 8 workers × 4 threads
+  [25/402] blk.3.attn_v.weight 4.6s (43s)
+  [50/402] blk.7.attn_v.weight 4.5s (71s)
+  [51/402] token_embd.weight skip(no imatrix) (76s)

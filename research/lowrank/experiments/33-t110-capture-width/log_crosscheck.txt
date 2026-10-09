@@ -1,0 +1,7 @@
+config log_whitener n  mean(log-spectra)  max|diff|  [vs fc]   [vs diag]
+q38-27b-UD-Q2KXL       fc   n=390  vs fc: mean -0.0027 max|d| 0.0099   vs diag: mean +0.0338 max|d| 0.2693
+q38-27b-UD-IQ2S        fc   n=390  vs fc: mean -0.0027 max|d| 0.0099   vs diag: mean +0.0300 max|d| 0.3386
+q38-27b-UD-IQ3S        fc   n=390  vs fc: mean -0.0028 max|d| 0.0101   vs diag: mean +0.0271 max|d| 0.1956
+q35-08b-Q2K-rrinput    fc   n=150  vs fc: mean -0.0000 max|d| 0.0050   vs diag: mean +0.0181 max|d| 0.4040
+q35-08b-NVFP4          fc   n=150  vs fc: mean -0.0006 max|d| 0.0061   vs diag: mean +0.2305 max|d| 0.4309
+q35-08b-Q3KM           fc   n=150  vs fc: mean -0.0008 max|d| 0.0068   vs diag: mean +0.2291 max|d| 0.4309

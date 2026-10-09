@@ -1,0 +1,64 @@
+# E33 addendum — model-vs-base separation at d_model=5120 (same Q2_K recipe on both models)
+lanes: {'h27b-Q2K': 'heretic Q2_K(ours)', 'q38-27b-Q2K-ours': 'Qwen3.8 Q2_K(ours)', 'q38-27b-UD-Q2KXL': 'Qwen3.8 UD-Q2_K_XL'}; n tensors per lane: h27b-Q2K=400, q38-27b-Q2K-ours=400, q38-27b-UD-Q2KXL=400
+
+## mean capture over tensors, and prefactor c (c_model = cap·5120/r ; c_in = mean cap·d_in/r)
+  diag r= 64: heretic Q2_K(ours): cap=0.074 c_model=5.9 c_in=8.3  |  Qwen3.8 Q2_K(ours): cap=0.073 c_model=5.9 c_in=8.1  |  Qwen3.8 UD-Q2_K_XL: cap=0.125 c_model=10.0 c_in=13.0
+  diag r=128: heretic Q2_K(ours): cap=0.121 c_model=4.9 c_in=6.7  |  Qwen3.8 Q2_K(ours): cap=0.121 c_model=4.8 c_in=6.6  |  Qwen3.8 UD-Q2_K_XL: cap=0.179 c_model=7.1 c_in=9.4
+  fc   r= 64: heretic Q2_K(ours): cap=0.284 c_model=22.7 c_in=27.1  |  Qwen3.8 Q2_K(ours): cap=0.290 c_model=23.2 c_in=27.6  |  Qwen3.8 UD-Q2_K_XL: cap=0.143 c_model=11.5 c_in=15.8
+  fc   r=128: heretic Q2_K(ours): cap=0.368 c_model=14.7 c_in=17.8  |  Qwen3.8 Q2_K(ours): cap=0.374 c_model=15.0 c_in=18.1  |  Qwen3.8 UD-Q2_K_XL: cap=0.216 c_model=8.7 c_in=11.8
+
+## per kind: Qwen3.8(ours) − heretic(ours), mean capture, 95% bootstrap CI  [UD-Q2_K_XL − heretic in brackets]
+  diag r= 64 attn_gate: heretic 0.066  Qwen3.8 0.066  Δ=-0.000 [-0.003,+0.002]    [UD: 0.172, Δ=+0.106]
+  diag r= 64 attn_k   : heretic 0.170  Qwen3.8 0.168  Δ=-0.001 [-0.011,+0.008]    [UD: 0.292, Δ=+0.123]
+  diag r= 64 attn_o   : heretic 0.151  Qwen3.8 0.154  Δ=+0.003 [-0.065,+0.065]    [UD: 0.146, Δ=-0.005]
+  diag r= 64 attn_q   : heretic 0.065  Qwen3.8 0.065  Δ=-0.000 [-0.004,+0.004]    [UD: 0.128, Δ=+0.062]
+  diag r= 64 attn_qkv : heretic 0.068  Qwen3.8 0.068  Δ=-0.000 [-0.005,+0.004]    [UD: 0.132, Δ=+0.063]
+  diag r= 64 attn_v   : heretic 0.165  Qwen3.8 0.164  Δ=-0.001 [-0.009,+0.007]    [UD: 0.175, Δ=+0.010]
+  diag r= 64 ffn_down : heretic 0.068  Qwen3.8 0.065  Δ=-0.002 [-0.020,+0.015]    [UD: 0.083, Δ=+0.016]
+  diag r= 64 ffn_gate : heretic 0.040  Qwen3.8 0.040  Δ=-0.000 [-0.002,+0.002]    [UD: 0.072, Δ=+0.032]
+  diag r= 64 ffn_up   : heretic 0.040  Qwen3.8 0.040  Δ=-0.000 [-0.003,+0.002]    [UD: 0.073, Δ=+0.032]
+  diag r= 64 ssm_out  : heretic 0.098  Qwen3.8 0.097  Δ=-0.000 [-0.012,+0.012]    [UD: 0.185, Δ=+0.088]
+  diag r=128 attn_gate: heretic 0.112  Qwen3.8 0.112  Δ=-0.001 [-0.003,+0.002]    [UD: 0.221, Δ=+0.109]
+  diag r=128 attn_k   : heretic 0.291  Qwen3.8 0.290  Δ=-0.001 [-0.014,+0.012]    [UD: 0.408, Δ=+0.117]
+  diag r=128 attn_o   : heretic 0.215  Qwen3.8 0.219  Δ=+0.004 [-0.061,+0.072]    [UD: 0.217, Δ=+0.001]
+  diag r=128 attn_q   : heretic 0.109  Qwen3.8 0.109  Δ=-0.000 [-0.006,+0.006]    [UD: 0.177, Δ=+0.068]
+  diag r=128 attn_qkv : heretic 0.111  Qwen3.8 0.110  Δ=-0.001 [-0.006,+0.005]    [UD: 0.180, Δ=+0.069]
+  diag r=128 attn_v   : heretic 0.286  Qwen3.8 0.285  Δ=-0.001 [-0.013,+0.010]    [UD: 0.299, Δ=+0.013]
+  diag r=128 ffn_down : heretic 0.103  Qwen3.8 0.101  Δ=-0.002 [-0.023,+0.019]    [UD: 0.126, Δ=+0.023]
+  diag r=128 ffn_gate : heretic 0.072  Qwen3.8 0.072  Δ=-0.000 [-0.004,+0.003]    [UD: 0.111, Δ=+0.039]
+  diag r=128 ffn_up   : heretic 0.072  Qwen3.8 0.071  Δ=-0.000 [-0.003,+0.003]    [UD: 0.111, Δ=+0.039]
+  diag r=128 ssm_out  : heretic 0.159  Qwen3.8 0.158  Δ=-0.001 [-0.015,+0.014]    [UD: 0.256, Δ=+0.097]
+  fc   r= 64 attn_gate: heretic 0.304  Qwen3.8 0.313  Δ=+0.008 [-0.005,+0.021]    [UD: 0.137, Δ=-0.168]
+  fc   r= 64 attn_k   : heretic 0.370  Qwen3.8 0.374  Δ=+0.005 [-0.022,+0.031]    [UD: 0.234, Δ=-0.135]
+  fc   r= 64 attn_o   : heretic 0.513  Qwen3.8 0.518  Δ=+0.004 [-0.056,+0.055]    [UD: 0.219, Δ=-0.294]
+  fc   r= 64 attn_q   : heretic 0.308  Qwen3.8 0.314  Δ=+0.006 [-0.020,+0.032]    [UD: 0.127, Δ=-0.181]
+  fc   r= 64 attn_qkv : heretic 0.304  Qwen3.8 0.313  Δ=+0.009 [-0.005,+0.023]    [UD: 0.130, Δ=-0.174]
+  fc   r= 64 attn_v   : heretic 0.370  Qwen3.8 0.376  Δ=+0.007 [-0.021,+0.037]    [UD: 0.201, Δ=-0.169]
+  fc   r= 64 ffn_down : heretic 0.115  Qwen3.8 0.115  Δ=-0.001 [-0.025,+0.024]    [UD: 0.125, Δ=+0.010]
+  fc   r= 64 ffn_gate : heretic 0.295  Qwen3.8 0.304  Δ=+0.009 [-0.005,+0.023]    [UD: 0.114, Δ=-0.180]
+  fc   r= 64 ffn_up   : heretic 0.294  Qwen3.8 0.302  Δ=+0.009 [-0.005,+0.022]    [UD: 0.115, Δ=-0.178]
+  fc   r= 64 ssm_out  : heretic 0.296  Qwen3.8 0.299  Δ=+0.003 [-0.020,+0.026]    [UD: 0.193, Δ=-0.103]
+  fc   r=128 attn_gate: heretic 0.395  Qwen3.8 0.404  Δ=+0.009 [-0.004,+0.021]    [UD: 0.209, Δ=-0.186]
+  fc   r=128 attn_k   : heretic 0.502  Qwen3.8 0.506  Δ=+0.005 [-0.020,+0.030]    [UD: 0.371, Δ=-0.131]
+  fc   r=128 attn_o   : heretic 0.604  Qwen3.8 0.607  Δ=+0.003 [-0.045,+0.053]    [UD: 0.311, Δ=-0.293]
+  fc   r=128 attn_q   : heretic 0.394  Qwen3.8 0.401  Δ=+0.007 [-0.021,+0.035]    [UD: 0.196, Δ=-0.198]
+  fc   r=128 attn_qkv : heretic 0.393  Qwen3.8 0.402  Δ=+0.009 [-0.004,+0.023]    [UD: 0.199, Δ=-0.193]
+  fc   r=128 attn_v   : heretic 0.500  Qwen3.8 0.507  Δ=+0.006 [-0.020,+0.034]    [UD: 0.335, Δ=-0.165]
+  fc   r=128 ffn_down : heretic 0.164  Qwen3.8 0.164  Δ=-0.000 [-0.024,+0.024]    [UD: 0.180, Δ=+0.016]
+  fc   r=128 ffn_gate : heretic 0.379  Qwen3.8 0.389  Δ=+0.010 [-0.004,+0.024]    [UD: 0.177, Δ=-0.202]
+  fc   r=128 ffn_up   : heretic 0.377  Qwen3.8 0.387  Δ=+0.010 [-0.004,+0.024]    [UD: 0.178, Δ=-0.200]
+  fc   r=128 ssm_out  : heretic 0.383  Qwen3.8 0.386  Δ=+0.002 [-0.024,+0.027]    [UD: 0.277, Δ=-0.106]
+
+## tally of kinds where the same-recipe difference is significant (CI excludes 0), by sign
+  diag r= 64: Qwen3.8 higher at 0/10 kinds []; lower at 0/10 []
+  diag r=128: Qwen3.8 higher at 0/10 kinds []; lower at 0/10 []
+  fc   r= 64: Qwen3.8 higher at 0/10 kinds []; lower at 0/10 []
+  fc   r=128: Qwen3.8 higher at 0/10 kinds []; lower at 0/10 []
+
+## within-model rank exponent b_r (per-tensor log-log slope, r in [32,256]), same recipe
+  diag heretic Q2_K(ours)  : b_r = 0.75 ± 0.11 (n=400)
+  diag Qwen3.8 Q2_K(ours)  : b_r = 0.75 ± 0.10 (n=400)
+  diag Qwen3.8 UD-Q2_K_XL  : b_r = 0.57 ± 0.15 (n=400)
+  fc   heretic Q2_K(ours)  : b_r = 0.40 ± 0.10 (n=400)
+  fc   Qwen3.8 Q2_K(ours)  : b_r = 0.40 ± 0.10 (n=400)
+  fc   Qwen3.8 UD-Q2_K_XL  : b_r = 0.60 ± 0.07 (n=400)

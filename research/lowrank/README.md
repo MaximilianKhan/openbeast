@@ -16,8 +16,12 @@ not just feasible — they're FASTER: 27B Q6 61 tok/s vs Q2_K 99.7 on the
 5090. The trade was never compute-for-memory; it is accuracy-for-memory,
 with compute as the free resource that buys accuracy back.)
 
-**Status:** investigation opened 2026-08-03. Target: a working CUDA-only
-prototype and, if the numbers hold, an upstream llama.cpp PR.
+**Status (2026-10-09): written up.** The paper is
+[`paper/final/paper.pdf`](paper/final/paper.pdf); the short version of what
+was found and what was not done is [`../FINDINGS.md`](../FINDINGS.md). The
+investigation opened 2026-08-03 with the target of a CUDA-only prototype
+and an upstream llama.cpp PR; the framing below is the original one and is
+kept as written — the paper's abstract says what survived it.
 **This directory is the lab.** Everything we learn lives here, in shape to
 become a paper at the end (see [`paper/OUTLINE.md`](paper/OUTLINE.md)).
 

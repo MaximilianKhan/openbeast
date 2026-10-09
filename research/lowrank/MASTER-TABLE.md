@@ -132,3 +132,23 @@ experiments/23-moe/README.md.
 27B flagship (MIXED + fc r128q8, Phase-3 kernels): fused 88.1
 [88.0-88.3] vs unfused 85.8 [85.7-85.8] tok/s — +2.7%, disjoint IQRs;
 Phase-3's same-session +2.6% estimate confirmed under protocol.
+
+## E30 — Muon-provenance spectrum census (2026-09-08, CPU, matched
+## UD-Q5_K_XL quants; PREREG same-day; experiments/30-muon-spectrum/)
+NULL both metrics: Qwen3.8-27B vs Qwen3.6-27B stable-rank log-ratio
++0.0015 ± 0.0035 (n=256 paired 2-D tensors, z=+0.4); top-64 head
+entropy Δ +0.00045 ± 0.00073 (n=9 ffn_down pairs; attn_q sample voided
+by GDN-layer naming — logged deviation). No Muon spectral signature →
+capture budgets transfer 3.6→3.8 undiscounted; the "PTQ of Muon
+weights" question stays open with this as the ready negative control.
+
+## E31 — seeded-basis capture duel vs AWSRC (2026-09-08, CPU, cached
+## top-192 whitened-residual SVDs; PREREG same-day; experiments/31-*/)
+Learned r=128 captures **0.983** of dominant whitened energy; seeded
+±1/Hadamard bases capture EXACTLY their random-subspace expectation
+(excess 1.00× — S1 byte-parity 0.0349 vs k/m 0.0349; S2 2×-vectors
+0.0698 vs 0.0699; 18 tensors × 3 seeds). Seeded repair is NOT a member
+of the equal-byte equivalence class — it sits strictly below low-rank
+on head capture and ties on the isotropic tail. AWSRC's published 3B
+win attributed (hypothesis, post-BF16-restore testable) to low-bit
+coefficient packing + unwhitened baseline.

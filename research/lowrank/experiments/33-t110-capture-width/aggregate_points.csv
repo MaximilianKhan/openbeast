@@ -1,0 +1,8 @@
+scale,model,base,whitener,r,capture_mean,d_model,provenance
+0.6B,Qwen3-0.6B,Q2_K-imat,diag,64,0.37,1024,JOURNAL.md 'capture ≈ c·(r/d)' + E04c; paper §4.2
+0.6B,Qwen3-0.6B,Q2_K-imat,fc,64,0.6,1024,experiments/10-full-covariance/README.md checkpoint table
+27B,heretic-27B,"Q2_K-imat(legacy, Q6 ref)",diag,64,0.07,5120,experiments/04b-27b/README.md; paper §4.2 (pair pruned from disk)
+27B,heretic-27B,MIXED,fc,128,0.42,5120,RESULTS_ROLLUP.md / adversarial-stats §F6 (c≈16.8)
+27B,heretic-27B,NVFP4,fc,128,0.52,5120,RESULTS_ROLLUP.md E16 row (c≈20.8)
+0.8B,Qwen3.5-0.8B,Q2_K-rr,fc,128,0.49,1024,experiments/24-yaqa-lite/extract-fc.log mean line
+27B,Qwen3.8-27B,"UD-{IQ2_S,Q2_K_XL,IQ3_S}",fc,128,0.21,5120,experiments/32-t117-gsq-head-to-head/extract-UD-*.log mean line

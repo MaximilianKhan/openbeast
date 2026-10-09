@@ -1,6 +1,11 @@
+# ✅ POSTED 2026-09-08 (Max-approved): https://github.com/ggml-org/llama.cpp/pull/23575#issuecomment-5589424538
+# (thread had closed since 08-11 — posted as on-the-record confirmation + PR offer)
 # READY-TO-POST confirmation comment for llama.cpp #23575 (fix PR
 # thread for issue #23476 — imatrix blind on MTP/NextN tensors)
-# Prepared 2026-08-11 from the 08-03 draft + recon ammo. Post from
+# Prepared 2026-08-11; REFRESHED 2026-09-08 with the NVIDIA
+# production-practice datapoint (recon-2026-09-08 §C2). Urgency note:
+# Gated-DeltaNet-2 (2605.22791) shows this architecture family
+# iterating — the assembled 23-comment audience is warmest NOW. Post from
 # Max's account after a personal read-through; adjust voice freely.
 # One comment, the ACTIVE 23-comment thread — not a new issue.
 # (Per CONTRIBUTING: evidence attached, AI-assistance disclosed.)
@@ -29,8 +34,14 @@ block is never executed by the calibration graph. Consequences we hit:
 pinning the draft head high is arguably the right default anyway (one
 layer, negligible bytes, protects acceptance rate).
 
-Two independent corroborations that draft-head quantization
+Three independent corroborations that draft-head quantization
 sensitivity is real, not theoretical:
+
+- NVIDIA's production NVFP4 checkpoints of DeepSeek-V4
+  (`nvidia/DeepSeek-V4-Pro-0813-NVFP4`, 2026-08-27) quantize routed
+  experts to NVFP4 but **carry the DSpark speculative heads through
+  unquantized and unmodified** — vendor production practice matching
+  the workaround below.
 
 - The winning entries of the ICML AdaptFM "Efficient Qwen" efficiency
   competition this June are informative here: the rank-2 entry

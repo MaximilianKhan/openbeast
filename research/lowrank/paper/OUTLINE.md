@@ -159,3 +159,10 @@ read, never retroactively.
 ## The bar for every claim
 Reproducible command + pinned corpus + pinned build SHA in the experiment
 README it came from.
+
+## 2026-09-09: related work assembled
+draft/07-related-work.md added (nine paragraphs; taxonomy per
+2507.17417; L6-proven placements; E31 floor; RCO escape anchor). The
+intro's positioning paragraph (01-introduction, "deliberately built
+from published mathematics") stays as the short form — §7 is the deep
+treatment; dedupe pass at freeze.

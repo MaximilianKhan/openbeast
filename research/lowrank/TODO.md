@@ -1,5 +1,21 @@
 # beast-rank TODO — ranked
 
+## 📄 WRITTEN UP 2026-10-09 — paper/final/paper.pdf + ../FINDINGS.md
+
+The campaign is written up with what was measured by 2026-09-14 plus the
+E32 controls that landed 09-11..09-14 and had never been journaled (FineWeb
+KLD, PPL@2048, the IQ3 capability pair). Nothing below this block was run
+for the write-up. Still open, and stated as open in the paper's §6:
+- [ ] T1.1 calibration-mix grid · T1.6 small-scale interpolation controls ·
+  T1.7 held-out pass over the ladder comparisons · T1.9 recovery curve,
+  recipe fixed · T1.13 equalization ablations · T1.15 sampling bound
+- [ ] E32: IQ2 capability pair (started 09-17, not completed); a capability
+  run of OUR arm; single-slot churn floor for the coding suite
+- [ ] third model width for E33; single-step 27B re-round pair
+- [ ] re-rounder codecs: Q3_K / Q4_K / I-quants / NVFP4 (→ `gguf-refine`)
+- [ ] before an arXiv submission: full bibliographic entries (the reference
+  list carries short names + arXiv ids), a venue decision, and Max's read
+
 ## DONE 2026-08-03
 - [x] **E01 — SVD spectrum census**: H1 confirmed, W is energy-full-rank,
   C@95% ≈ 1.0 everywhere. Plain truncated SVD dead. (E02 demoted to
@@ -41,7 +57,24 @@ fusion law, MTP/linear-attention calibration.
 against #26177 (--fit/NextN miscount, fixed b10152) — the −13.4% MTP
 figure may be part #25489, part #26177.**
 
-## NOW — recon-adjusted queue (2026-08-11)
+## 🛰️ RECON 2026-09-08 — read prior-art/recon-2026-09-08.md; it
+## re-ranks this file's queue (section E there is authoritative)
+
+Headlines: #26177 gate CLOSED (pin was never contaminated — GPU lane
+unblocked); NEW gate = #28068 GDN-norm fix (b10829): rebase kernels
+branch before the next measurement campaign, never mix pre/post-b10829
+rows; SchurQuant narrows gguf-refine to "first IN-FORMAT superblock
+scale+code refinement, whitened, one-shot"; AWSRC forces the
+equivalence-class scoping sentence + adds the seeded-basis capture duel;
+Muon plausibly IN-FAMILY (Qwen 2608.30320) → E30 spectrum-flatness
+3.8-vs-3.6 is the new cheapest experiment; E16 artifacts now
+downloadable (Unsloth NVFP4-GGUF incl. Qwen3.8-27B) and the window is
+visibly shrinking; T1.17 runs against GSQ's RELEASED checkpoints (their
+loop needs H100s — measured positioning fact); E27 got independent
+support (2609.01587); E17/capture-scaling/E27-controls/fusion-law/MTP-
+calibration all re-verified still-ours.
+
+## NOW — recon-adjusted queue (2026-08-11) [SUPERSEDED by recon-2026-09-08 §E]
 
 PAPER-MATH LANE (pre-GPU, ranked by expected KLD-per-day; L# = recon
 lever ids):
@@ -63,9 +96,11 @@ lever ids):
   cached activation Grams + the 196 grad Grams. Doubles as the T1.12
   estimator-repair path (test OBD-LLM's 10% dampening recipe on cached
   statistics). (1–2 days)
-- [ ] L6 ReQuant/GSQ math: prove our whitened objective generalizes
-  ReQuant's dL = −dq·g + dq²·H_jj scoring; bound the MSE-vs-whitened
-  gap from cached stats. (paper-days)
+- [x] L6 DONE 2026-09-09 (scope widened to ReQuant/GSQ/SchurQuant +
+  OBD-LLM scoping): paper/theory-L6-family-subsumption.md + draft
+  integration (§2.2/§2.3/intro/§4.3b). Remaining tail: [EYEBALL] PDF
+  verification of agent-read facts before freeze; MSE-vs-whitened
+  numeric gap bound from cached stats still open (fold into T1.12).
 - [ ] L10 cached-spectra micro-checks (hours each): SVDQuant order
   duel (plain-SVD-of-W vs whitened-NVFP4-residual capture @r32);
   ARCQuant channel-vs-rank duel; LoRaQ INT8-adapter-at-2r vs FP16-at-r
@@ -79,7 +114,7 @@ lever ids):
   Moonlight-16B-A3B capture point as the out-of-family test).
 
 UPSTREAM WINDOW (this week — the audience is assembled):
-- [ ] Post confirmation comments on #23575 (ACTIVE 23-comment thread;
+- [x] POSTED 2026-09-08 (Max-approved; thread closed since recon — on-record confirmation): #23575 (was ACTIVE 23-comment thread;
   #26903 shows maintainers hitting the pain) + #23476 + #21037, armed
   with AdaptFM ammo (rank 2 kept MTP FP16; rank 6's recurrent-state
   rollback hazard). Supersedes the "rewrite draft #2" wording below.
