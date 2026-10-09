@@ -1059,6 +1059,16 @@ else
 fi
 
 echo ""
+echo "No KV warm-up request at boot (perf F5):"
+if grep -qE 'v1/chat/completions|warm_kv_cache|KV cache warmed' "$REPO_DIR/start.sh"; then
+  fail "start.sh still sends (or announces) a warm-up completion: $(grep -nE 'v1/chat/completions|warm_kv_cache|KV cache warmed' "$REPO_DIR/start.sh" | head -n 3 | tr '\n' ' ')"
+else
+  pass "start.sh sends no completion of its own at boot and prints no 'KV cache warmed'"
+fi
+grep -q 'generate-skill-index.py' "$REPO_DIR/start.sh" && pass "…the skill menu is still regenerated at start (control)" \
+  || fail "the skill-menu regeneration went out with the warm-up"
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"

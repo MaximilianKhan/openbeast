@@ -312,7 +312,7 @@ LLAMA_PORT="${LLAMA_BASE##*:}"; LLAMA_PORT="${LLAMA_PORT%%/*}"
 [[ "$LLAMA_PORT" =~ ^[0-9]+$ ]] || LLAMA_PORT=8080
 # Where the stack's own consumers (router, beast-gate) send inference:
 # beast-hydra when HYDRA=true, else exactly LLAMA_BASE. LLAMA_BASE keeps
-# meaning the local engine (readiness, KV warm-up, rollback).
+# meaning the local engine (readiness, rollback).
 # From THIS start's conf (HYDRA/HYDRA_URL), never an inherited export.
 CONSUMER_BASE="$LLAMA_BASE"
 [[ "${HYDRA:-false}" == "true" ]] && CONSUMER_BASE="$HYDRA_URL"
@@ -866,9 +866,8 @@ _llama_port_ours() {
 # the model, answering 503 "Loading model" throughout — which curl -s calls
 # success. So the model counted as healthy the moment the port bound:
 # launch_and_wait recorded a model that then OOMed mid-load as LAST-GOOD
-# (overwriting the real one, so MODEL_ROLLBACK could never fire), the KV
-# warmer fired into the 503, and fast boot announced "Full model live"
-# during the load.
+# (overwriting the real one, so MODEL_ROLLBACK could never fire), and fast
+# boot announced "Full model live" during the load.
 #
 # The deadline covers the other direction: a load wedged in CUDA or on a
 # stalled read says "Loading model" forever and never dies, and this loop
@@ -989,37 +988,6 @@ launch_and_wait() {
     fi
   fi
   return 1
-}
-
-warm_kv_cache() {
-  # Warm the KV cache with the WebUI system prompt so the user's FIRST chat
-  # doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
-  # processed from scratch). Best-effort; never blocks startup. The primed
-  # prefix is reused by every subsequent same-prompt turn.
-  [[ -f "$REPO_DIR/system-prompt.md" ]] || return 0
-  # Build SYS byte-for-byte the way configure-webui.sh stores WebUI's system
-  # prompt: $(cat) strips each file's trailing newline, joined by ONE blank
-  # line, then .strip() below mirrors configure-webui's storage. This must
-  # match token-for-token — a raw `cat f1 f2` gives a single '\n' at the file
-  # boundary vs WebUI's '\n\n', so the primed prefix would diverge mid-prompt
-  # and the first real chat still pays a partial reprocess (~57ms).
-  ( SYS="$(cat "$REPO_DIR/system-prompt.md")"
-    if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
-      SYS="$SYS"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
-    fi
-    python3 - "$SYS" "$LLAMA_BASE" <<'WARM' >/dev/null 2>&1 || true
-import json, sys, urllib.request
-body=json.dumps({"messages":[{"role":"system","content":sys.argv[1].strip()},
-    {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
-    "chat_template_kwargs":{"enable_thinking":False}}).encode()
-try:
-    urllib.request.urlopen(urllib.request.Request(
-        sys.argv[2] + "/v1/chat/completions", data=body,
-        headers={"Content-Type":"application/json"}), timeout=60).read()
-except Exception:
-    pass
-WARM
-    echo "  (KV cache warmed with the system prompt)" ) &
 }
 
 # Unmanaged: wait for someone else's server, bounded like a load. It is not
@@ -1201,19 +1169,18 @@ if [[ $MANAGED -eq 1 ]]; then
   wait_hydra_routable || true
 fi
 
-# Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
-# later) regenerates it too, and warming against the pre-regen text would
-# prime a prefix that diverges from the prompt WebUI actually stores.
-# Non-fatal — a broken generator must not block startup.
+# Regenerate the skill menu (configure-webui.sh, backgrounded later, does it
+# again before it stores the prompt). Non-fatal — a broken generator must not
+# block startup.
 python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
 
-# Normal boot warms here; fast boot warms after the swap (below) so the primed
-# prefix belongs to the REAL model, not the throwaway bridge.
-if [[ $MANAGED -eq 0 ]]; then
-  echo "  $(ob_backend_na "KV-cache warming")"
-elif [[ $FAST_BOOT_ACTIVE -eq 0 ]]; then
-  warm_kv_cache
-fi
+# No KV "warm-up" request here any more. It sent system prompt + "hi" with no
+# tools and thinking off, to prime the prefix of the first real chat — but
+# the chat template renders the reasoning line and the whole # Tools block
+# BEFORE the system text, so a real WebUI request shares 3 tokens with it
+# (measured 2026-10-09: 3,254 tokens warmed, 8,731 in the real first prompt,
+# common prefix 3). It cost a second of GPU per boot, printed "KV cache
+# warmed", and warmed nothing.
 
 echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
 python3 -c 'import fastapi, uvicorn' 2>/dev/null \
@@ -1635,7 +1602,6 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Full model live: $SERVE_SCRIPT on http://localhost:8080."
   # The bridge, not this model, is what configure-webui.sh saw. Fix the rows.
   reconfigure_webui_for_model
-  warm_kv_cache
   FAST_BOOT_ACTIVE=0
 fi
 
