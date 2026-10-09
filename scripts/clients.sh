@@ -157,6 +157,7 @@ _int_or_die() { # _int_or_die <value> <flag> <min>
 _registry_op() {
   OB_REG="$REGISTRY" python3 - <<'PY'
 import datetime
+import fcntl
 import json
 import os
 import sys
@@ -209,6 +210,24 @@ def load():
             "       Refusing to touch it." % REG, 4)
     doc.setdefault("version", 1)
     return doc
+
+def lock():
+    """Serialize every read-modify-write of the registry.
+
+    load -> modify -> save is three steps, and the atomic replace only
+    protects READERS. Two writers that overlap (a cron `revoke laptop` and a
+    human `enroll phone`) each load the same document, and the later save
+    puts its stale copy back — silently un-revoking the laptop. An exclusive
+    flock on a sidecar (not on clients.json: save() replaces that inode)
+    makes the second writer wait, then load the first one's result. Held
+    until this process exits.
+    """
+    d = os.path.dirname(REG) or "."
+    if not os.path.isdir(d):
+        os.makedirs(d, 0o700)
+    fd = os.open(REG + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
 
 def save(doc):
     d = os.path.dirname(REG) or "."
@@ -286,6 +305,9 @@ def redact(dev):
     return out
 
 # --- commands -----------------------------------------------------------
+if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove"):
+    _lock_fd = lock()
+
 if CMD == "enroll":
     dev_id = os.environ["OB_ID"]
     doc = load()

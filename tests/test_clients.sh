@@ -695,6 +695,52 @@ else
   fail "warned although EDGE_ALLOW_ANON=false"
 fi
 
+echo ""
+echo "registry write lock (supply S15):"
+# load -> modify -> save without a lock lets an overlapping writer put a stale
+# copy back (a revoke lost to a concurrent enroll). Hold the lock from here
+# and prove a writer waits for it, then finishes once it is released.
+L="$(_fresh_repo lock)"
+"$L/scripts/clients.sh" enroll lap >/dev/null 2>&1
+_revoked() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["devices"][0]["revoked_at"] is not None)' "$L/.run/clients.json"; }
+python3 -c '
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+deadline = time.time() + 30
+while not os.path.exists(sys.argv[3]) and time.time() < deadline:
+    time.sleep(0.05)
+' "$L/.run/clients.json.lock" "$TMPROOT/lock-held" "$TMPROOT/lock-release" &
+HOLDER=$!
+for _ in $(seq 1 100); do [[ -e "$TMPROOT/lock-held" ]] && break; sleep 0.05; done
+"$L/scripts/clients.sh" revoke lap >"$TMPROOT/lock-revoke.out" 2>&1 &
+WRITER=$!
+sleep 1
+if kill -0 "$WRITER" 2>/dev/null && [[ "$(_revoked)" == "False" ]]; then
+  pass "a writer waits while another process holds the registry lock"
+else
+  fail "revoke wrote the registry while the lock was held elsewhere"
+fi
+# Negative control: readers take no lock, so list must not hang behind it.
+if out="$(timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+  pass "list does not wait for the lock (reads stay lock-free)"
+else
+  fail "list blocked on (or failed under) the writer lock"
+fi
+: > "$TMPROOT/lock-release"
+wait "$HOLDER" 2>/dev/null || true
+if wait "$WRITER" && [[ "$(_revoked)" == "True" ]]; then
+  pass "the waiting writer completes once the lock is released"
+else
+  fail "the waiting revoke never landed after the lock was released"
+fi
+if [[ "$(_mode "$L/.run/clients.json.lock")" == "600" ]]; then
+  pass "the lock file is 0600"
+else
+  fail "lock file mode is $(_mode "$L/.run/clients.json.lock")"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
