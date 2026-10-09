@@ -219,6 +219,33 @@ def test_implicit_ignores_route_id_in_openbeast_inference_model():
     # conf.sh points OPENBEAST_INFERENCE_MODEL at `beast` under HYDRA=true
     cfg = core.implicit_config({"OPENBEAST_INFERENCE_MODEL": "beast"})
     assert cfg.deployments["local@rig"].upstream == "local"
+def test_implicit_node_keeps_id_slot_when_the_slot_count_was_never_stated():
+    # Review 2026-10-09 ops F10: slots defaulted to 1, so the gate's id_slot=2
+    # on a -np 6 rig was stripped and per-device slot affinity vanished.
+    cfg = core.implicit_config({})
+    d, n = cfg.deployments["local@rig"], cfg.nodes["rig"]
+    assert n.slots == 1 and not n.slots_known
+    for v in (0, 2, 5):
+        assert core.forward_body({"model": "local", "id_slot": v}, d, n) == ({"model": "local", "id_slot": v}, [])
+    for bad in (-1, True, "2"):
+        assert "id_slot" not in core.forward_body({"model": "local", "id_slot": bad}, d, n)[0]
+    # stated in the conf: the range check is back
+    cfg = core.implicit_config({"INFERENCE_SLOTS": "2"})
+    d, n = cfg.deployments["local@rig"], cfg.nodes["rig"]
+    assert n.slots_known
+    assert core.forward_body({"model": "local", "id_slot": 1}, d, n)[1] == []
+    assert core.forward_body({"model": "local", "id_slot": 2}, d, n)[1] == ["id_slot"]
+    # an explicit hydra.toml that omits `slots` means 1, as before
+    raw = base()
+    del raw["nodes"]["rig"]["slots"]
+    cfg = core.validate(raw, {})
+    assert cfg.nodes["rig"].slots_known
+    assert core.forward_body({"model": "qwen-unc", "id_slot": 1}, cfg.deployments["unc@rig"],
+                             cfg.nodes["rig"])[1] == ["id_slot"]
+    # and an engine without the cap never sees one, known count or not
+    v = core.implicit_config({"INFERENCE_BACKEND": "vllm", "INFERENCE_URL": "http://10.0.0.5:8000"})
+    assert core.forward_body({"model": "local", "id_slot": 0}, v.deployments["local@rig"],
+                             v.nodes["rig"])[1] == ["id_slot"]
 
 
 def test_print_default_config_round_trips():
