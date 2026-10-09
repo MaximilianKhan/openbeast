@@ -383,12 +383,23 @@ elif probe "http://$HEALTH_HOST:8080/health" "ok"; then
   if [[ -n "$_mu" ]]; then
     _mcode="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "${_mu%/}/models" 2>/dev/null || true)"
     if [[ -z "$_mcode" || "$_mcode" == "000" ]]; then
-      if [[ "$HEALTH_HOST" != "127.0.0.1" && "$HEALTH_HOST" != "[::1]" ]]; then
+      if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
+        # With the router on, this endpoint IS the router (it hard-binds
+        # loopback, whatever BIND_HOST is), so silence here is a dead router
+        # and nothing else. healthcheck.sh has a router branch that relaunches
+        # it with start.sh's environment — this advice used to name a repair
+        # that did not exist.
+        fail "Open WebUI's model endpoint ($_mu) is the agent router, and it is not answering — chat has no model, though llama-server is up" \
+             "./scripts/healthcheck.sh --restart (relaunches the router), or set AGENT_ROUTER=false and ./stop.sh && ./start.sh -d"
+      elif [[ "$HEALTH_HOST" != "127.0.0.1" && "$HEALTH_HOST" != "[::1]" ]]; then
         fail "Open WebUI's model endpoint ($_mu) refuses connections: services bind only $BIND_HOST" \
              "set BIND_HOST=127.0.0.1 (remote access via Tailscale) or 0.0.0.0 — frontends dial localhost"
       else
-        fail "Open WebUI's model endpoint ($_mu) is not answering, though llama-server is" \
-             "AGENT_ROUTER=true? check the router: ./scripts/healthcheck.sh --restart"
+        # Not the router (handled above): beast-hydra, whose own section below
+        # says more, or an endpoint the running stack was not started with.
+        _mfix="./stop.sh && ./start.sh -d (the running stack and openbeast.conf disagree on the endpoint)"
+        [[ "${HYDRA:-false}" == "true" ]] && _mfix="./scripts/healthcheck.sh --restart (relaunches beast-hydra)"
+        fail "Open WebUI's model endpoint ($_mu) is not answering, though llama-server is" "$_mfix"
       fi
     fi
   fi

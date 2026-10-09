@@ -179,6 +179,23 @@ if grep -q "model endpoint (http://localhost:8088/v1)" <<< "$_O"; then
 else
   fail "doctor missed an unreachable frontend model URL: $(grep -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
 fi
+# ops F5: with the router on, that endpoint IS the router — say so, and name
+# the repair healthcheck.sh now really has (it had no router branch, so the
+# old "check the router: healthcheck.sh --restart" did nothing). On a LAN
+# BIND_HOST the row used to blame the bind, which the router never follows.
+if grep -q "is the agent router, and it is not answering" <<< "$_O" \
+   && grep -A1 "is the agent router" <<< "$_O" | grep -qF "fix: ./scripts/healthcheck.sh --restart (relaunches the router)" \
+   && ! grep -q "refuses connections: services bind only" <<< "$_O"; then
+  pass "…named as a dead agent router, with the healthcheck --restart that now relaunches it"
+else
+  fail "doctor's router advice: $(grep -A1 -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -qE '^# Agent-spawn router' "$REPO_DIR/scripts/healthcheck.sh" \
+   && grep -q 'agents/router.py" >>"\$_rt_log"' "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "…and healthcheck.sh has the router branch that advice depends on (run in test_hydra_instinct_wiring.sh)"
+else
+  fail "doctor sends the operator to healthcheck.sh --restart, which has no router branch"
+fi
 _O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
 if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
   pass "…and stays quiet on a loopback rig where the frontend reaches the model (control)"

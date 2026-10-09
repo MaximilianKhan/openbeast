@@ -624,6 +624,102 @@ else
   fail "stale OPENBEAST_CONSUMER_BASE steered the relaunched gate: $(cat "$_H/.run/launched-edge" 2>/dev/null)"
 fi
 
+# ── ops F5 (2026-10-09): the agent router is supervised too ────────────────
+# With AGENT_ROUTER=true WebUI's model endpoint is the router, and nothing
+# watched it: healthcheck had no branch, so a dead router read "All N services
+# healthy" and `--restart` (doctor's advice) did nothing.
+echo ""
+echo "healthcheck.sh — agent router:"
+_RB="$_T/rt"; _box "$_RB"
+P_RT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+# This box's curl may also reach the port the stub router will bind.
+sed -i "s/\*127\.0\.0\.1:$P_DEAD\*)/*127.0.0.1:$P_DEAD*|*127.0.0.1:$P_RT*)/" "$_RB/bin/curl"
+# agents/router.py stub: records the environment it was launched with; with
+# STUB_ROUTER_SERVE it then binds its port and answers 502 — what the real
+# router says while the model is down — for a minute.
+cat > "$_RB/agents/router.py" <<EOF
+import http.server, json, os, threading
+keys = ("OPENBEAST_ROUTER_PORT", "OPENBEAST_LLAMA_UPSTREAM", "OPENBEAST_MCPO_URL", "ROUTER_INSTINCT",
+        "INSTINCT_URL", "ROUTER_CLASSIFY_MODEL", "OPENBEAST_HYDRA_CALLER_TOKEN_FILE")
+with open("$_RB/.run/launched-router", "a") as fh:
+    fh.write(json.dumps({k: os.environ.get(k) for k in keys}) + "\n")
+if os.environ.get("STUB_ROUTER_SERVE"):
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            self.send_response(502); self.send_header("Content-Length", "0"); self.end_headers()
+    s = http.server.HTTPServer(("127.0.0.1", int(os.environ["OPENBEAST_ROUTER_PORT"])), H)
+    threading.Timer(60, lambda: os._exit(0)).start()
+    s.serve_forever()
+EOF
+_rt_launched() { cat "$_RB/.run/launched-router" 2>/dev/null || true; }
+RUN_ENV=("${_env_hc[@]}")
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh" --restart)"
+if ! grep -qi "router" <<< "$_o" && [[ -z "$(_rt_launched)" ]]; then
+  pass "AGENT_ROUTER off: no router row, nothing launched (control)"
+else
+  fail "router branch ran with AGENT_ROUTER off: $(grep -i router <<< "$_o" | tr '\n' ' ')"
+fi
+# Alive = ANY HTTP answer (it forwards /health upstream: 503 while the model
+# loads, its own 502 with the model down). Only silence is DOWN.
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_AGENT_ROUTER=true OPENBEAST_ROUTER_PORT="$P_503")
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh" --restart)"
+if grep -q "OK   Agent router (http://127.0.0.1:$P_503)" <<< "$_o" && [[ -z "$(_rt_launched)" ]]; then
+  pass "a router answering 503 (model loading upstream) is alive: OK, and --restart leaves it alone"
+else
+  fail "router 503: $(grep -i router <<< "$_o" | tr '\n' ' ') launched=$(_rt_launched)"
+fi
+# Dead, report-only: DOWN and counted, nothing launched.
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_AGENT_ROUTER=true OPENBEAST_ROUTER_PORT="$P_RT")
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh")"
+if grep -q "DOWN Agent router (http://127.0.0.1:$P_RT)" <<< "$_o" && grep -qE '[1-9][0-9]* of [0-9]+ services unhealthy' <<< "$_o" \
+   && [[ -z "$(_rt_launched)" ]]; then
+  pass "a dead router is DOWN and counted unhealthy (was: 'All N services healthy'); without --restart nothing is launched"
+else
+  fail "dead router, report-only: $(grep -iE 'router|healthy' <<< "$_o" | tr '\n' ' ') launched=$(_rt_launched)"
+fi
+# Dead, --restart: relaunched with start.sh's environment, pid recorded.
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_AGENT_ROUTER=true OPENBEAST_ROUTER_PORT="$P_RT" STUB_ROUTER_SERVE=1)
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh" --restart)"
+_rt_pid="$(cat "$_RB/.run/router.pid" 2>/dev/null || true)"
+[[ "$_rt_pid" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_rt_pid"
+if grep -q "→ restarted (pid $_rt_pid)" <<< "$_o" && kill -0 "$_rt_pid" 2>/dev/null; then
+  pass "--restart relaunches a dead router and records its pid in .run/router.pid"
+else
+  fail "router relaunch: $(grep -A4 -i 'router' <<< "$_o" | tr '\n' ' ') pid='$_rt_pid'"
+fi
+if [[ "$(_rt_launched)" == "{\"OPENBEAST_ROUTER_PORT\": \"$P_RT\", \"OPENBEAST_LLAMA_UPSTREAM\": \"http://127.0.0.1:$P_DEAD\", \"OPENBEAST_MCPO_URL\": \"http://127.0.0.1:3001\", \"ROUTER_INSTINCT\": null, \"INSTINCT_URL\": null, \"ROUTER_CLASSIFY_MODEL\": null, \"OPENBEAST_HYDRA_CALLER_TOKEN_FILE\": null}" ]]; then
+  pass "…with start.sh's environment: its port, INFERENCE_URL upstream, the tool server on the probe host, no opt-in extras"
+else
+  fail "relaunched router environment: $(_rt_launched)"
+fi
+grep -q "healthcheck --restart: relaunching agent router" "$_RB/.run/stack.log" 2>/dev/null \
+  && pass "…its output goes to .run/stack.log, behind a dated marker" \
+  || fail "the router relaunch left no marker in .run/stack.log"
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_AGENT_ROUTER=true OPENBEAST_ROUTER_PORT="$P_RT")
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh")"
+grep -q "OK   Agent router (http://127.0.0.1:$P_RT)" <<< "$_o" \
+  && pass "…and the next check reads it OK (it answers 502: the model is down, the router is not)" \
+  || fail "relaunched router not seen: $(grep -i router <<< "$_o" | tr '\n' ' ')"
+[[ "$_rt_pid" =~ ^[0-9]+$ ]] && kill "$_rt_pid" 2>/dev/null || true
+for _i in $(seq 1 30); do kill -0 "$_rt_pid" 2>/dev/null || break; sleep 0.1; done
+# Under HYDRA=true the upstream is hydra, the classify body names a route, and
+# the instinct ceiling rides along — the three extras start.sh adds.
+rm -f "$_RB/.run/launched-router"
+RUN_ENV=("${_env_hc[@]}" OPENBEAST_AGENT_ROUTER=true OPENBEAST_ROUTER_PORT="$P_RT"
+         OPENBEAST_HYDRA=true OPENBEAST_HYDRA_PORT="$P_200" OPENBEAST_ROUTER_INSTINCT=shadow OPENBEAST_INSTINCT_PORT=9998)
+_o="$(_run "$_RB" "$_RB/scripts/healthcheck.sh" --restart)"
+if [[ "$(_rt_launched)" == "{\"OPENBEAST_ROUTER_PORT\": \"$P_RT\", \"OPENBEAST_LLAMA_UPSTREAM\": \"http://127.0.0.1:$P_200\", \"OPENBEAST_MCPO_URL\": \"http://127.0.0.1:3001\", \"ROUTER_INSTINCT\": \"shadow\", \"INSTINCT_URL\": \"http://127.0.0.1:9998\", \"ROUTER_CLASSIFY_MODEL\": \"beast\", \"OPENBEAST_HYDRA_CALLER_TOKEN_FILE\": \"$_RB/.run/hydra-caller.token\"}" ]]; then
+  pass "under HYDRA=true the relaunched router's upstream is hydra, with the default route, caller token and instinct ceiling"
+else
+  fail "relaunched router under hydra: $(_rt_launched)"
+fi
+if grep -q "restart FAILED: the relaunched agent router exited" <<< "$_o" && [[ ! -e "$_RB/.run/router.pid" ]]; then
+  pass "a relaunch that exits at once is reported FAILED and leaves no stale pid on record"
+else
+  fail "failed router relaunch not reported: $(grep -A3 -i 'agent router' <<< "$_o" | tr '\n' ' ')"
+fi
+
 echo ""
 echo "start.sh:"
 _A="$_T/start"; _box "$_A"
