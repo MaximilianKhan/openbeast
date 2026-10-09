@@ -369,7 +369,10 @@ elif CMD == "list":
         print("  Enroll one:  ./scripts/clients.sh enroll <id> --label \"My laptop\"")
         sys.exit(0)
     fmt = "%-20s  %-22s  %-4s  %-14s  %-16s  %-16s  %s"
-    print(fmt % ("ID", "LABEL", "SLOT", "SCOPES", "ENROLLED", "LAST-SEEN", "STATUS"))
+    # The stamps are stored and shown in UTC; say so, or a 16:40 read at
+    # 09:40 local looks like a device from the future.
+    print(fmt % ("ID", "LABEL", "SLOT", "SCOPES", "ENROLLED (UTC)",
+                 "LAST-SEEN (UTC)", "STATUS"))
     print(fmt % ("-" * 20, "-" * 22, "----", "-" * 14, "-" * 16, "-" * 16, "------"))
     for dev in devices:
         print(fmt % (short(dev.get("id"), 20), short(dev.get("label"), 22),

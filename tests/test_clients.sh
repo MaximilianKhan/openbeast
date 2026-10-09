@@ -665,6 +665,15 @@ else
 fi
 
 echo ""
+echo "list timestamps (UX-29):"
+out="$("$G/scripts/clients.sh" list 2>&1)" || true
+if _has "$out" "ENROLLED (UTC)" && _has "$out" "LAST-SEEN (UTC)"; then
+  pass "list labels its stamps as UTC"
+else
+  fail "list shows unlabeled timestamps: $out"
+fi
+
+echo ""
 echo "remove that empties the registry (netsec S7):"
 # An empty registry is "not configured" to beast-gate; with
 # EDGE_ALLOW_ANON=true that is anonymous mode, so deleting the last device
