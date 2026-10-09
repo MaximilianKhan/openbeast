@@ -102,6 +102,16 @@ sys.path.insert(0, str(REPO / 'evals'))
 from run_eval import load_tasks
 
 def audit(task_ids):
+    """Returns the lines of every variant that did not pass ([FAIL]: setup or
+    validation failed; [MISS]: no reference implementation to audit with)."""
+    import builtins
+    bad = []
+
+    def print(line):                       # noqa: A001 — record what is reported
+        builtins.print(line)
+        if line.lstrip().startswith(("[FAIL]", "[MISS]")):
+            bad.append(line.strip())
+
     for tid in task_ids:
         if tid not in TARGETS:
             print(f"  [SKIP] {tid}: no target mapping"); continue
@@ -130,8 +140,22 @@ def audit(task_ids):
             mark = '[PASS]' if ok else '[FAIL]'
             print(f'  {mark} {t["id"]:35s} ({lang:6s})  {elapsed:5.2f}s  {"" if ok else tail}')
             subprocess.run(t['cleanup'], shell=True, capture_output=True)
+    return bad
 
 if __name__ == '__main__':
-    task_ids = sys.argv[1:] if len(sys.argv) > 1 else list(TARGETS.keys())
-    audit(task_ids)
+    # EXIT 1 when a variant fails. This script used to print [FAIL] and exit 0
+    # whatever happened, so the CI step that runs it could not go red.
+    # --advisory keeps the old exit code (CI passes it until the runner's
+    # toolchains are known to pass every variant; there is no zig there) and
+    # turns each failure into a warning annotation instead.
+    args = [a for a in sys.argv[1:] if a != '--advisory']
+    advisory = '--advisory' in sys.argv[1:]
+    task_ids = args or list(TARGETS.keys())
+    bad = audit(task_ids)
     lint_spec_completeness(task_ids)
+    if bad:
+        print(f"\n{len(bad)} variant(s) did not pass the audit" + (" (advisory: exit 0)" if advisory else ""))
+        if advisory and os.environ.get('GITHUB_ACTIONS') == 'true':
+            for line in bad:
+                print(f"::warning title=variant audit::{line[:200]}")
+        sys.exit(0 if advisory else 1)

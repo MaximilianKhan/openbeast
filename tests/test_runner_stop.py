@@ -62,9 +62,12 @@ def _launch(tmp_path, mode, cmd, ignore=()):
         [sys.executable, "-c", _PROBE, str(ROOT / "agents"), mode,
          str(pidfile), cmd],
         env=env, cwd=str(tmp_path), start_new_session=True,
-        # What `nohup` / a non-interactive `cmd &` hand the runner.
-        preexec_fn=(lambda: [signal.signal(s, signal.SIG_IGN) for s in ignore])
-        if ignore else None,
+        # What `nohup` / a non-interactive `cmd &` hand the runner. Otherwise
+        # the DEFAULT dispositions, whatever this pytest inherited: started
+        # as a background job it has SIGINT ignored, python then installs no
+        # KeyboardInterrupt handler in the child, and the SIGINT test hung.
+        preexec_fn=(lambda: [signal.signal(s, signal.SIG_IGN if s in ignore else signal.SIG_DFL)
+                             for s in {signal.SIGINT, signal.SIGTERM, signal.SIGHUP, *ignore}]),
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:

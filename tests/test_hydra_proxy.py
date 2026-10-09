@@ -415,6 +415,20 @@ def test_strict_pins(fleet):
     assert posts(sparks)[-1]["body"]["model"] == "qwen3.8-27b-nvfp4"
 
 
+def test_the_local_admin_token_is_never_forwarded_to_an_engine(fleet):
+    """X-OpenBeast-Local is hydra's own locality secret. A rig tool that sends
+    it with a routed request must not hand it to a Spark."""
+    srv, rig, sparks, _ = fleet()
+    r = post(srv, chat(), {"X-OpenBeast-Local": "hydra-admin-secret", "X-Trace": "kept"})
+    assert r.status_code == 200
+    sent = [p["headers"] for e in (rig, sparks) for p in posts(e)]
+    assert sent, "no engine was called"
+    for h in sent:
+        low = {k.lower(): v for k, v in h.items()}
+        assert "x-openbeast-local" not in low and "hydra-admin-secret" not in json.dumps(h)
+        assert low.get("x-trace") == "kept"         # control: other headers pass
+
+
 def test_pin_passthrough_paths(fleet):
     srv, rig, sparks, _ = fleet()
     r = httpx.get(srv.url + "/pin/unc@rig/props", headers=auth())

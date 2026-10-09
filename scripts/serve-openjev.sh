@@ -50,6 +50,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/portown.sh
 source "$SCRIPT_DIR/lib/portown.sh"
+# Help is this file's own header and must not need a weights dir:
+# lib/weights.sh exits when none resolves, which is the box you ask on.
+case "${1:-}" in
+  ""|-h|--help|help) sed -n '2,/^set -euo pipefail/{/^#/p}' "$0"; exit 0 ;;
+esac
 # shellcheck source=lib/weights.sh
 source "$SCRIPT_DIR/lib/weights.sh"
 

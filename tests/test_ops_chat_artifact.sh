@@ -118,6 +118,8 @@ if [[ -r /proc/net/tcp ]]; then
   else
     fail "/proc fallback: $(tr '\n' ' ' <<< "$_o")"
   fi
+elif [[ "${CI:-}" == "true" ]]; then
+  fail "no /proc/net/tcp: the /proc fallback checks were skipped under CI=true"
 else
   echo "  SKIP: no /proc/net/tcp on this OS"
 fi
@@ -816,6 +818,8 @@ if "$PY3" -c 'import fastapi, uvicorn' 2>/dev/null; then
     fail "republish after share: $_O :: $(head -c 600 <<< "$_show")"
   fi
   kill "$RS_PID" 2>/dev/null
+elif [[ "${CI:-}" == "true" ]]; then
+  fail "fastapi/uvicorn not importable: the real artifact-server round trip was skipped under CI=true"
 else
   echo "  SKIP: fastapi/uvicorn not importable — real artifact-server round trip skipped"
 fi

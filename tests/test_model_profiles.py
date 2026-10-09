@@ -83,13 +83,17 @@ def test_profile_backend_specific_keys(tmp_path):
     assert load_body(tmp_path, tf + "TENSORFOLD_PARALLEL=4\n", backend="tensorfold").backend == "tensorfold"
 
 
-def test_profile_values_are_data_not_code(tmp_path):
+def test_profile_values_are_data_not_code(tmp_path, monkeypatch):
+    # A RELATIVE canary, resolved against tmp_path: a value is capped at 200
+    # characters, so an absolute path under a long TMPDIR was refused as too
+    # long and the test failed without testing anything.
+    monkeypatch.chdir(tmp_path)
     canary = tmp_path / "PWNED"
-    body = BASE.replace("SERVED_MODEL_NAME=x", f"SERVED_MODEL_NAME=$(touch {canary}); `touch {canary}`")
+    body = BASE.replace("SERVED_MODEL_NAME=x", "SERVED_MODEL_NAME=$(touch PWNED); `touch PWNED`")
     p = load_body(tmp_path, body)
     assert p.get("SERVED_MODEL_NAME").startswith("$(touch") and not canary.exists()
     out = subprocess.run([sys.executable, str(PYLIB / "obprofile.py"), "resolve", str(p.path)],
-                         capture_output=True, timeout=30)
+                         capture_output=True, timeout=30, cwd=tmp_path)
     pairs = out.stdout.split(b"\0")
     assert out.returncode == 0 and b"SERVED_MODEL_NAME" in pairs and not canary.exists()
     assert pairs[pairs.index(b"SERVED_MODEL_NAME") + 1].startswith(b"$(touch")

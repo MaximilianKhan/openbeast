@@ -1,0 +1,9 @@
+{
+ "_about": "Hand-kept outcome of the 2026-10-09 cross-check: every fetched arXiv title/abstract was read against the sentence that cites the id in sections/*.md and against its row in ../references.md. 'mismatch' lists ids whose arXiv record is not the work the text describes (none found). 'venue_withheld' lists ids whose only venue statement is in references.md and is not solid; they are printed as arXiv preprints.",
+ "mismatch": {},
+ "venue_withheld": {
+  "2310.08659": "references.md says ICLR 2024 but its own Verification flag 9 marks that 'from common knowledge, not re-verified'; the arXiv record states no venue",
+  "2311.12023": "references.md says ICLR 2024 but its own Verification flag 9 marks that 'from common knowledge, not re-verified'; the arXiv record states no venue",
+  "2310.18547": "references.md says MLSys 2024; the arXiv record states no venue and the claim could not be confirmed from it (the paper may have appeared at SOSP 2024 instead) - check the proceedings before printing a venue"
+ }
+}

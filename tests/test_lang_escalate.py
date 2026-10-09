@@ -38,6 +38,19 @@ ZIG = D.driver_for("zig")
 PY_D = D.driver_for("python")
 have_zig = bool(ZIG and ZIG.available())
 
+
+def _served(idx: dict, lang: str) -> bool:
+    """Whether the committed index may serve `lang` on THIS box: the product's
+    own rule (E.index_gate — the installed toolchain is the one the index was
+    built on). The accuracy tests below measure only those languages. They
+    used to take every language with a driver, which was right only on the
+    rig: CI's python is 3.12 and its g++ is the runner's, the index is stamped
+    3.14 / the rig's g++, so cards_for() correctly serves nothing for them —
+    and the day CI got a zig, both tests failed on python's fixtures.
+    """
+    entry = (idx.get("langs") or {}).get(lang)
+    return bool(entry) and E.index_gate(lang, entry)["served"]
+
 # Stale code written HERE, deliberately not copied from tests/fixtures/zig016,
 # so the index has never seen these diagnostics.
 HELD_OUT = [
@@ -136,9 +149,11 @@ def test_round_trip_every_fixture_selects_its_own_card_or_nothing():
     tot = hit = 0
     silent, wrong, reached, seen = [], [], set(), set()
     per_lang: dict = {}
+    served = {lang for lang in idx["langs"] if _served(idx, lang)}
+    assert "zig" in served, "zig is installed but the committed index is not for it"
     for c in V.load_claims(CLAIMS):
         drv = D.driver_for(c.lang)
-        if not drv or not drv.available():
+        if not drv or not drv.available() or c.lang not in served:
             continue
         snips, variant = V.old_snippets(c)
         for n, src in enumerate(snips, 1):
@@ -159,7 +174,10 @@ def test_round_trip_every_fixture_selects_its_own_card_or_nothing():
                 wrong.append((c.id, ids))
             else:
                 silent.append((c.lang, f"{c.id}:old[{n}]"))
-    assert tot >= 40, f"only {tot} diagnostics — the claim sets shrank?"
+    # Every fixture the index was built from, for the languages measured
+    # (49 on the rig: 39 zig + 6 cpp + 4 python; 39 where only zig matches).
+    want = sum(idx["langs"][lang]["fixtures_with_diagnostics"] for lang in served)
+    assert tot == want >= 39, f"{tot} diagnostics, the index records {want} — the claim sets shrank?"
     assert not wrong, f"a fixture selected somebody else's card: {wrong}"
     # EXACTLY the fixtures the index declares silent — no more (a regression)
     # and no fewer (a stale declaration). On this toolchain that is 36/39 zig.
@@ -181,7 +199,7 @@ def test_held_out_accuracy_has_a_floor():
     one snippet should not."""
     idx = E.load_index()
     cases = [(l, e, s) for l, e, s in HELD_OUT
-             if (D.driver_for(l) and D.driver_for(l).available())]
+             if (D.driver_for(l) and D.driver_for(l).available()) and _served(idx, l)]
     if len(cases) < 5:
         pytest.skip("too few toolchains here to measure")
     hits = firsts = 0

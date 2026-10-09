@@ -279,6 +279,7 @@ def test_live_units_exclude_rows_that_never_ran_the_agent(tmp_path, monkeypatch)
     import collections
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     run_eval = importlib.import_module("run_eval")
     tasks = tmp_path / "tasks"
     tasks.mkdir()

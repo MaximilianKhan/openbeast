@@ -1,0 +1,4 @@
+# The test jobs' own tools (.github/workflows/ci.yml). Exact versions; the
+# hashes are in test.txt — regenerate with ./.github/ci-requirements/relock.sh
+pytest==9.0.3
+pytest-timeout==2.4.0

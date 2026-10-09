@@ -910,7 +910,13 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   # "Stack is not running (…) — start it: ./start.sh -d" (unindented; the
   # stop.sh run just above left the box marked stopped). Exactly that line is
   # dropped; every row, count and verdict above it is still compared.
-  _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' | grep -v -- '--restart: relaunching' \
+  # And one row was RENAMED in `start.sh --status` by the same review: the
+  # identity tool server's row said "mcpo", a component removed in v1.0. The
+  # baseline's label is mapped to the new one; its state is still compared.
+  # (This comparison runs only with a baseline ref — in CI — so the rename
+  # went through every local run green.)
+  _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' -e 's/^  mcpo: /  tool server: /' \
+              | grep -v -- '--restart: relaunching' \
               | grep -vE '^(Next: |Stack is not running)'; }
   RUN_ENV=()
   if diff <(_run "$_OB" "$_OB/stop.sh" | _norm "$_OB") <(_run "$_NB" "$_NB/stop.sh" | _norm "$_NB") >/dev/null; then
@@ -932,7 +938,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
           <(_run "$_NB" "$_NB/start.sh" --status | _norm "$_NB") >/dev/null; then
     pass "start.sh --status: identical output"
   else
-    fail "start.sh --status output differs from $WIRING_BASELINE_REF"
+    fail "start.sh --status output differs from $WIRING_BASELINE_REF:"
+    diff <(_run "$_OB" "$_OB/start.sh" --status | _norm "$_OB") \
+         <(_run "$_NB" "$_NB/start.sh" --status | _norm "$_NB") | head -10 | sed 's/^/        /' || true
   fi
   RUN_ENV=("${_env_hc[@]}" OPENBEAST_EDGE_GATE=true OPENBEAST_EDGE_PORT="$P_OK")
   # One section added to doctor since the pinned baseline for a reason that has

@@ -118,16 +118,24 @@ if mode == "findings":
 report = {
     "skill": {"name": "x"},
     "risk_assessment": {"score": 54 if issues else 0, "severity": "HIGH" if issues else "LOW",
-                        "recommendation": "DO_NOT_INSTALL" if issues else "CAUTION"},
+                        "recommendation": "INSTALL_FREELY" if mode == "badrec"
+                                          else "DO_NOT_INSTALL" if issues else "CAUTION"},
     "issues": issues,
     # "otherversion": a clean-looking report from a scanner the gate is not
     # pinned to (anything named `skillspector` on PATH, or a stub).
     "metadata": {"skillspector_version": "2.11.0" if mode == "otherversion" else "2.12.0",
                  "llm_requested": False},
-    "execution_successful": mode != "incomplete",
+    # ONE REASON PER MODE below "incomplete" (which sets two at once, so
+    # either check could be deleted and it would still be refused):
+    #   notran         the scanner calls its own run unsuccessful, nothing else
+    #   uninspected    one file never inspected, the run otherwise "successful"
+    #   fatalonly      a fatal exception that is not also a partial-count mismatch
+    #   analyzerfailed one analyzer reports failure
+    #   badrec         a recommendation this gate has never seen
+    "execution_successful": mode not in ("incomplete", "notran"),
     "analysis_completeness": {
         "status": "partial", "execution_successful": mode != "incomplete",
-        "entirely_uninspected_files": 1 if mode == "incomplete" else 0,
+        "entirely_uninspected_files": 1 if mode in ("incomplete", "uninspected") else 0,
         "partially_inspected_files": 0,
         # Present on most real skills: a backticked path that is not a bundled
         # file. Reported as `partial`, yet every file is fully inspected.
@@ -146,6 +154,12 @@ if mode in ("partial", "partialmismatch", "fatal"):
     comp["ledger_exceptions"].append({
         "outcome": "partial", "phase": "static", "reason_code": "static_parse_limit",
         "path": "SKILL.md", "fatal": mode == "fatal"})
+if mode == "fatalonly":
+    comp["ledger_exceptions"].append({
+        "outcome": "error", "phase": "static", "reason_code": "analyzer_exception",
+        "path": "SKILL.md", "fatal": True})
+if mode == "analyzerfailed":
+    comp["analyzer_statuses"].append({"analyzer_id": "static_patterns", "status": "failed", "failed": 1})
 if mode == "unknown":
     del report["analysis_completeness"]
 json.dump(report, open(out, "w"))
@@ -274,6 +288,14 @@ if fetch_demo >/dev/null 2>&1 || [[ -e "$STAGE/demo" ]]; then
 else
   pass "a skill containing a symlink is refused"
 fi
+# A symlinked DIRECTORY is a different branch: os.walk lists it under dirs and
+# never descends, so the per-file check above cannot see it.
+reset_fixture; ln -s /etc "$FIXTURE/pack/demo/extra"
+if fetch_demo >/dev/null 2>&1 || [[ -e "$STAGE/demo" ]]; then
+  fail "a skill containing a symlinked directory was staged"
+else
+  pass "a skill containing a symlinked DIRECTORY is refused"
+fi
 
 # --- 5. Promote: the human gate, then the scan gate ---
 echo ""
@@ -286,13 +308,34 @@ if ! run promote demo >/dev/null 2>&1 && blocked; then
 else
   fail "promote ran without a reviewer"
 fi
-for mode in crash crashclean garbage unknown incomplete; do
+for mode in crash crashclean garbage unknown incomplete notran uninspected fatalonly analyzerfailed badrec; do
   echo "$mode" > "$SCAN_MODE"
   if ! run promote demo --reviewed-by MK >/dev/null 2>&1 && blocked; then
     pass "scanner '$mode': promote is refused; skills/ and ledger untouched"
   else
     fail "scanner '$mode': promote went through or left something behind"
   fi
+done
+# The staged provenance record is re-checked at promote: it is a file in
+# .run/, editable between fetch and promote, and the ledger row is built from
+# it. A branch name or a non-https source is not a pin. (Scan mode is clean,
+# so nothing but this check refuses; the untouched record promoting is the
+# control, a few cases below.)
+echo clean > "$SCAN_MODE"
+cp "$STAGE/demo.provenance.json" "$TMPROOT/prov.good"
+for edit in 'rev=main' 'rev=0123456' 'url=http://github.com/example/skills' 'url=git@github.com:example/skills'; do
+  python3 - "$STAGE/demo.provenance.json" "$edit" <<'PY'
+import json, sys
+path, (k, v) = sys.argv[1], sys.argv[2].split("=", 1)
+d = json.load(open(path)); d[k] = v; json.dump(d, open(path, "w"))
+PY
+  run promote demo --reviewed-by MK >"$TMPROOT/out" 2>&1; rc=$?
+  if [[ $rc -ne 0 ]] && blocked && grep -q "does not hold a pinned https source" "$TMPROOT/out"; then
+    pass "provenance edited to $edit: promote is refused"
+  else
+    fail "provenance edited to $edit was promoted (rc=$rc): $(tail -2 "$TMPROOT/out")"
+  fi
+  cp "$TMPROOT/prov.good" "$STAGE/demo.provenance.json"
 done
 # 2026-10-09 review, supply S14: a scanner of another version used to print a
 # "!" line and promote anyway. Its report is CLEAN — only the version differs

@@ -344,6 +344,25 @@ if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] && grep -q "
 else
   fail "the relaunch path did not fall back from a vanished weight: $_R :: $(tr '\n' ' ' < "$_L/out")"
 fi
+# serve.sh exits 3 for a WEIGHT_ENFORCE=strict refusal. With a healthy
+# last-good on record and MODEL_ROLLBACK on, the start must still fail: a
+# rollback here serves a model the operator did not configure, which is what
+# strict exists to stop. (test_scripts.sh only grepped start.sh for the words.)
+printf '#!/bin/bash\necho "weight rejected by the registry" >&2\nexit 3\n' > "$_L/scripts/serve-refused.sh"
+chmod +x "$_L/scripts/serve-refused.sh"
+_R="$(_launch_case serve-refused.sh serve-ok.sh)"
+if [[ "$_R" == "RC=1 SERVING=serve-refused.sh LASTGOOD=serve-ok.sh FAIL=refused "* ]] \
+   && grep -q "Refusing to roll back: 'serve-refused.sh' was rejected by the weight registry" "$_L/out"; then
+  pass "a strict weight refusal (serve.sh exit 3) is NOT rolled back past, even with a last-good and MODEL_ROLLBACK=true"
+else
+  fail "a weight-registry refusal was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# control: the same last-good IS used when the model merely crashes (exit 1)
+printf '#!/bin/bash\nexit 1\n' > "$_L/scripts/serve-crash.sh"; chmod +x "$_L/scripts/serve-crash.sh"
+_R="$(_launch_case serve-crash.sh serve-ok.sh)"
+[[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] \
+  && pass "…while an ordinary crash (exit 1) does roll back to it (control)" \
+  || fail "an ordinary crash did not roll back: $_R :: $(tr '\n' ' ' < "$_L/out")"
 _R="$(_launch_case serve-sleeper.sh "" 900 late)"
 if [[ "$_R" == "RC=1 SERVING=serve-sleeper.sh LASTGOOD= "* ]] && grep -q "not the one this stack launched" "$_L/out"; then
   pass "a foreign server that wins the bind race is not ours either: our child must HOLD the listener"
@@ -803,7 +822,9 @@ s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4)
 time.sleep(60)
 PY
 _listen() { # _listen <port> -> sets _LP (pid), returns once it accepts
-  python3 "$_PP/listen.py" $_LO "$1" & _LP=$!; _PIDS="$_PIDS $!"
+  # By RELATIVE name: start.sh clips the holder's command line, and under a
+  # long TMPDIR the absolute path lost the "listen.py" the checks look for.
+  (cd "$_PP" && exec python3 listen.py $_LO "$1") & _LP=$!; _PIDS="$_PIDS $!"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     (exec 3<>"/dev/tcp/$_LO/$1") 2>/dev/null && return 0; sleep 0.2
   done

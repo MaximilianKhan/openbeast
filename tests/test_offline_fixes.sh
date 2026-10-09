@@ -90,6 +90,8 @@ if [[ -f "$OB_STUB_STATE/hf_fail" ]]; then
   exit 1
 fi
 printf 'BYTES-FROM-%s' "$repo" > "$dir/$remote"
+# hf_plant names a path to create WHILE the download runs (someone else's copy).
+if [[ -f "$OB_STUB_STATE/hf_plant" ]]; then printf 'OPERATOR COPY' > "$(cat "$OB_STUB_STATE/hf_plant")"; fi
 STUB
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/curl"          # "online"
 chmod +x "$T/bin/hf" "$T/bin/curl"
@@ -241,6 +243,47 @@ else
   fail "unmeasurable disk (rc=$_rc): $_out"
 fi
 rm -f "$T/bin/df" "$T/state/df_free_kb" "$W/roomy.gguf"
+
+# The other two refusals between "downloaded" and "has its final name". Only
+# the checksum one was ever built; these two could be deleted with every
+# check green.
+# (a) WRONG SIZE, right bytes as far as they go: the row pins one byte more
+#     than the file has, and its sha256 is the file's own — so the size
+#     comparison is the only thing that can refuse it.
+printf '%s\t%s\t%s\t%s\t%s\n' "$_pln_sha" "$(( ${#_pln_body} + 1 ))" "badsize.gguf" "org/plain-GGUF" "-" \
+  >> "$SB/scripts/weights.registry"
+: > "$T/state/hf.log"
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" badsize.gguf 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && -s "$T/state/hf.log" && ! -e "$W/badsize.gguf" && ! -e "$W/.fetch.badsize.gguf" ]] \
+   && has "$_out" "SIZE MISMATCH for badsize.gguf: got ${#_pln_body}, pinned $(( ${#_pln_body} + 1 ))"; then
+  pass "a download of the wrong SIZE is refused and deleted: nothing lands under the weight's name"
+else
+  fail "wrong-size download (rc=$_rc, dir: $(ls -A "$W")): $_out"
+fi
+# (b) a file APPEARS under the final name while the download runs (a second
+#     fetch, or the operator copying it in): left alone, and said so.
+echo "$W/roomy.gguf" > "$T/state/hf_plant"
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" roomy.gguf 2>&1)"; _rc=$?
+rm -f "$T/state/hf_plant"
+if [[ $_rc -ne 0 && "$(cat "$W/roomy.gguf" 2>/dev/null)" == "OPERATOR COPY" ]] \
+   && has "$_out" "roomy.gguf appeared during the download" && has "$_out" "verify-weights.sh --file roomy.gguf"; then
+  pass "a weight that appears at the destination mid-download is left alone, with the command to verify it"
+else
+  fail "dest appeared mid-download (rc=$_rc, dest: $(cat "$W/roomy.gguf" 2>/dev/null)): $_out"
+fi
+rm -f "$W/roomy.gguf"; rm -rf "$W/.fetch.roomy.gguf"
+# verify-weights.sh on a present file of the wrong size: FAIL, exit 1, and
+# the row beside it still verifies (control).
+printf '%s' "$_pln_body" > "$W/badsize.gguf"
+_out="$("$SB/scripts/verify-weights.sh" --file badsize.gguf 2>&1)"; _rc=$?
+_out2="$("$SB/scripts/verify-weights.sh" --file plain.gguf 2>&1)"; _rc2=$?
+if [[ $_rc -eq 1 && $_rc2 -eq 0 ]] && has "$_out" "FAIL     badsize.gguf — size ${#_pln_body}, registry pins $(( ${#_pln_body} + 1 ))" \
+   && has "$_out2" "OK       plain.gguf"; then
+  pass "verify-weights.sh fails a present weight of the wrong size (exit 1) and passes the right one"
+else
+  fail "verify-weights size check (rc=$_rc/$_rc2): $_out :: $_out2"
+fi
+rm -f "$W/badsize.gguf"
 
 # ===========================================================================
 echo ""

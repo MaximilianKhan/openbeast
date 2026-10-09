@@ -573,9 +573,9 @@ fi
 # must not outlive the key being removed — tests/test_conf_secrets.sh §7).
 _serve OPENBEAST_PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192
 if [[ "$(_sv_arg --cache-ram)" == "32768" && "$SV_OUT" == *"Prompt cache: 32768 MiB"* ]]; then
-  pass "serve.sh: PROMPT_CACHE_RAM_MB=32768 reaches llama-server as --cache-ram 32768, and is announced"
+  pass "serve.sh: OPENBEAST_PROMPT_CACHE_RAM_MB=32768 reaches llama-server as --cache-ram 32768, and is announced"
 else
-  fail "serve.sh PROMPT_CACHE_RAM_MB=32768: --cache-ram '$(_sv_arg --cache-ram)' :: $(grep -i 'prompt cache' <<< "$SV_OUT" | tr '\n' ' ')"
+  fail "serve.sh OPENBEAST_PROMPT_CACHE_RAM_MB=32768: --cache-ram '$(_sv_arg --cache-ram)' :: $(grep -i 'prompt cache' <<< "$SV_OUT" | tr '\n' ' ')"
 fi
 printf 'SEARXNG_SECRET=x\nPROMPT_CACHE_RAM_MB=24576   # two big sessions\n' > "$SV/openbeast.conf"
 _serve -- -m "$SV/weights/listed.gguf" -c 8192
@@ -1027,18 +1027,39 @@ if [[ -s "$WE_SCRATCH/block.sh" ]]; then
   else
     fail "weight enforcement rc wrong (warn=$_rc_warn off=$_rc_off typo=$_rc_typo strict=$_rc_strict; want 0/0/0/3)"
   fi
+  # A REGISTERED name of the wrong size (a truncated or swapped file): the
+  # "unlisted" case above never reaches the size comparison, which could be
+  # deleted with that check green. A right-sized row is the control.
+  printf 'short' > "$WE_SCRATCH/wrongsize.gguf"; printf 'exact' > "$WE_SCRATCH/rightsize.gguf"
+  { printf '%s\t%s\t%s\t%s\t%s\n' "$(printf '0%.0s' {1..64})" 999 wrongsize.gguf org/x -
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(printf '0%.0s' {1..64})" 5   rightsize.gguf org/x -
+  } >> "$WE_SCRATCH/scripts/weights.registry"
+  _rc_ws_strict=$(_we_rc "$WE_SCRATCH/wrongsize.gguf" strict)
+  _rc_ws_warn=$(_we_rc "$WE_SCRATCH/wrongsize.gguf" warn)
+  _rc_rs_strict=$(_we_rc "$WE_SCRATCH/rightsize.gguf" strict)
+  _ws_msg="$(bash "$WE_SCRATCH/run.sh" "$WE_SCRATCH/scripts" "$WE_SCRATCH/wrongsize.gguf" strict 2>&1 || true)"
+  if [[ "$_rc_ws_strict" == "3" && "$_rc_ws_warn" == "0" && "$_rc_rs_strict" == "0" \
+        && "$_ws_msg" == *"is 5 bytes, registry pins 999"* ]]; then
+    pass "weight enforcement: a registered weight of the wrong size is refused under strict (exit 3), warned otherwise"
+  else
+    fail "wrong-size weight rc (strict=$_rc_ws_strict warn=$_rc_ws_warn right-size strict=$_rc_rs_strict; want 3/0/0): $_ws_msg"
+  fi
 else
   fail "could not extract the weight-enforcement block from serve.sh"
 fi
 rm -rf "$WE_SCRATCH"
 # start.sh must refuse to roll back on that exit code, or strict mode would
-# silently serve a DIFFERENT model than the operator configured.
-if grep -q 'Refusing to roll back' "$REPO_DIR/start.sh"; then
-  pass "start.sh refuses MODEL_ROLLBACK on a supply-chain refusal"
-else
-  fail "start.sh would roll back past a WEIGHT_ENFORCE=strict refusal"
-fi
-WE_DEFAULT=$(env -i PATH="$PATH" HOME="$(mktemp -d)" REPO_DIR="$REPO_DIR" \
+# silently serve a DIFFERENT model than the operator configured. That is
+# proven by behaviour in tests/test_lifecycle.sh (serve-refused.sh, exit 3,
+# with a last-good on record), which this suite runs below; the grep that
+# stood here passed for any start.sh that still contained the words.
+# A DEFAULT is what conf.sh resolves with no openbeast.conf, so REPO_DIR is an
+# empty scratch dir, not the checkout: there, this read the rig's own conf
+# (WEIGHT_ENFORCE=strict on the rig turned the check red), and `env -i` drops
+# OB_CONF_READONLY, so it also minted a secret into the checkout's conf.
+_NOCONF="$(mktemp -d)"
+ln -s "$REPO_DIR/scripts" "$_NOCONF/scripts"   # conf.sh sources its siblings by $REPO_DIR
+WE_DEFAULT=$(env -i PATH="$PATH" HOME="$_NOCONF" REPO_DIR="$_NOCONF" \
   bash -c "source '$REPO_DIR/scripts/lib/conf.sh' >/dev/null 2>&1; printf '%s' \"\$WEIGHT_ENFORCE\"") || WE_DEFAULT="(failed)"
 if [[ "$WE_DEFAULT" == "warn" ]]; then
   pass "WEIGHT_ENFORCE defaults to warn (never blocks an upgrade's first start)"
@@ -1297,7 +1318,13 @@ if [[ -x "$REPO_DIR/scripts/fetch-weight.sh" ]]; then
   # Capture first, THEN grep: the script correctly exits non-zero on an
   # unknown name, and under `set -o pipefail` that failure propagates through
   # the pipe and inverts the test even when grep matches.
-  _FW_OUT="$("$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  # Its OWN weights dir: with none named, lib/weights.sh resolves (and
+  # fetch-weight.sh creates) $REPO_DIR/../weights — a directory OUTSIDE the
+  # checkout, which this suite left behind on every box it ran on.
+  _FW_TMP="$(mktemp -d)"
+  _FW_OUT="$(OPENBEAST_WEIGHTS_DIR="$_FW_TMP" \
+             "$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  rm -rf "$_FW_TMP"
   if grep -q 'no registry entry' <<< "$_FW_OUT"; then
     pass "fetch-weight.sh refuses a name that is not in the registry"
   else
@@ -1338,7 +1365,9 @@ chmod +x "$_PF_TMP/curl"
 # OPENBEAST_GPU_BACKEND is the ENV name; GPU_BACKEND is the conf-file key
 # (scripts/lib/conf.sh:30). Setting the latter here looked like it worked and
 # silently did nothing.
-_PF_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=cpu "$REPO_DIR/bootstrap.sh" \
+# OPENBEAST_OFFLINE=false for the same reason: OFFLINE=true in the rig's own
+# openbeast.conf skips the network probe this check is about.
+_PF_OUT="$(PATH="$_PF_TMP:$PATH" OPENBEAST_GPU_BACKEND=cpu OPENBEAST_OFFLINE=false "$REPO_DIR/bootstrap.sh" \
            --preflight --minimal 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
 if grep -q 'cannot reach' <<< "$_PF_OUT"; then
   pass "preflight reports unreachable hosts instead of only checking curl exists"
@@ -1812,8 +1841,8 @@ echo "OFFLINE (closed network):"
 # a connect timeout and then misdiagnosed the stall. These checks are about
 # the telling.
 for _v in true TRUE yes 1 on; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "on" ]]; then
     pass "OFFLINE=$_v resolves to on"
   else
@@ -1821,10 +1850,12 @@ for _v in true TRUE yes 1 on; do
   fi
 done
 # PRESENCE, not truthiness (the LANG_PACKS precedent): a typo must not
-# silently enable a mode that refuses installs.
+# silently enable a mode that refuses installs. (REPO_DIR is the conf-less
+# scratch dir: an empty env value falls through to openbeast.conf, and the
+# rig's own OFFLINE=true made the '' case resolve to on.)
 for _v in maybe off false 0 ''; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "off" ]]; then
     pass "OFFLINE='$_v' resolves to off (a typo must not enable it)"
   else
@@ -2514,8 +2545,8 @@ fi
 
 # OFFLINE, as an operator would plausibly WRITE it.
 for _v in '"true"' "'true'" '"true" # air-gapped rig' 'true# x' 'TRUE  # x'; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "on" ]]; then
     pass "OFFLINE=$_v resolves to on (quotes and a comment do not fail OPEN)"
   else
@@ -2523,8 +2554,8 @@ for _v in '"true"' "'true'" '"true" # air-gapped rig' 'true# x' 'TRUE  # x'; do
   fi
 done
 for _v in '"maybe"' '#true' '"" # true' "'false'"; do
-  _got="$(REPO_DIR="$REPO_DIR" OPENBEAST_OFFLINE="$_v" bash -c \
-          'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null 2>&1; ob_offline && echo on || echo off')"
+  _got="$(REPO_DIR="$_NOCONF" _CONF_SH="$REPO_DIR/scripts/lib/conf.sh" OPENBEAST_OFFLINE="$_v" bash -c \
+          'source "$_CONF_SH" >/dev/null 2>&1; ob_offline && echo on || echo off')"
   if [[ "$_got" == "off" ]]; then
     pass "OFFLINE=$_v resolves to off (control)"
   else
