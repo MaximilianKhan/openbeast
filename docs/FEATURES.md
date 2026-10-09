@@ -1,7 +1,12 @@
-# Features (complete)
+# Features (through v1.5)
 
-The full capability breakdown. The README carries a condensed highlights
-version; this is the exhaustive reference.
+The capability breakdown through v1.5. The README carries a condensed
+highlights version. Not covered here: multi-engine inference
+(`INFERENCE_BACKEND`, [DGX_SPARK_PLAN.md](DGX_SPARK_PLAN.md)), beast-hydra
+([BEAST_HYDRA.md](BEAST_HYDRA.md)), beast-instinct
+([BEAST_INSTINCT.md](BEAST_INSTINCT.md)), `uninstall.sh`,
+`scripts/opencode-sessions.sh` ([REFERENCE.md](REFERENCE.md)) and the
+skill-import gate ([EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md)).
 
 ## Model Serving
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
@@ -34,7 +39,7 @@ A local model's knowledge of a language freezes at its training cutoff; the comp
 - **L1 — introspection** (`scripts/lang-introspect.sh probe|render|write|check|list`, `agents/lang/introspect.py`): six mechanical probes, none of which executes a snippet — `g++`/`clang++ -dM -E` diffed across `-std=` levels (which feature macro appears at which level is *observed*, not recalled), the same for C, `zig env` → the real top-level `std` names (`std.Io` vs `std.io` is the suite's most expensive trap), Python's `sys.stdlib_module_names`, `go list std`, and which editions the installed `rustc` accepts. A full probe costs ~0.2 s, so the pack path asks the toolchain live on every call — there is no stale artifact on the serving path (`agents/lang/generated/` is gitignored per-rig state; `check` only answers "was this file edited?"). Eligibility for a pack is *claims ∪ probes*, so a language with an installed toolchain and no hand-written claims is still served: **six languages today** (zig, C, C++, Python, Rust, Go)
 - **The verifier** (`agents/lang/verify.py`, `lang-library.sh verify`): every migration claim in `agents/lang/claims/` ships an OLD fixture that must **fail** and a NEW one that must **compile** on *this* rig, or it is not served. Three of the first ten claims were wrong; it caught all three
 - **Awareness packs** (`agents/lang/packs.py`, `LANG_PACKS=auto|<list>|off`): a budgeted, version-pinned digest of VERIFIED claim summaries plus GENERATED toolchain facts, labelled by tier (generated lines are dropped first under budget), injected only for the language a task is in and only when the pack's stamped toolchain version matches the installed one — a pack for zig 0.15 handed to an agent compiling against 0.16 is wrong with authority
-- **Escalation** (`agents/lang/escalate.py`): a compile error selects the card that fixes it. The matching index is generated, not hand-written — the OLD fixtures are compiled to harvest the real diagnostics — and it refuses to speak on no match, no index, a claim with no one-line summary, or an index stamped by a different toolchain than the installed one. Delivery into beast-assist's checker verdict (`BEAST_ESCALATE`) is **opt-in and pending its own A/B**: the wiring touches two era-hashed files and is a held draft PR (#90), not in `main`
+- **Escalation** (`agents/lang/escalate.py`): a compile error selects the card that fixes it. The matching index is generated, not hand-written — the OLD fixtures are compiled to harvest the real diagnostics — and it refuses to speak on no match, no index, a claim with no one-line summary, or an index stamped by a different toolchain than the installed one. Delivery into beast-assist's checker verdict is wired and **opt-in** (`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`; eval arm `--escalate`, its own `esc1-<sha8>` era, leaderboard-ineligible); its A/B has not run
 - **`language_reference`** (the pull surface, see Tool Suite above): MCP/WebUI, admin profile only, never the runner's registry; the `beast-lang` skill (`prompt_index: false`) documents the library for cloud models working in this repo
 - **Synthesis** (`scripts/lang-synthesize.sh draft|status|promote`, `agents/lang/synthesize.py`): a model *drafts* candidate claims from the corpus; the real verifier accepts or rejects; survivors land in `claims/staging/` for a human review, and `promote` re-verifies all-or-nothing and rebuilds the escalation index. Staging is never served. `draft` names no default endpoint (`OPENBEAST_LANG_SYNTH_URL` unset is a refusal) and will not run while someone else holds the GPU lease. The harness is built and tested against a stub model; the real run is pending the GPU (§11)
 

@@ -1,4 +1,36 @@
-# Updating OpenBeast's pulled-in components
+# Updating
+
+## Updating OpenBeast itself
+
+`scripts/update.sh` does not update OpenBeast. It has no `git pull` of this
+repo. To move to a newer OpenBeast:
+
+```bash
+./stop.sh
+git pull --ff-only
+./scripts/pydeps.sh install   # Python deps at the lock this commit ships
+./start.sh -d                 # compose pulls the image digests this commit pins
+./start.sh doctor
+```
+
+llama.cpp is a separate clone under `llama.cpp/` and is not moved by the pull;
+rebuild it only when the release notes say so (`./scripts/update.sh --llama`).
+`./bootstrap.sh --no-start` is idempotent and re-runs every setup step if you
+would rather not pick. Clients update separately (below).
+
+If `git pull` reports conflicts in `docker-compose.yml`,
+`agents/requirements.txt`, `agents/requirements.lock` or
+`scripts/client-searxng.compose.yml`, an earlier `update.sh` run rewrote them.
+`git status` shows which; `git checkout -- <file>` returns each to the shipped
+pin before you pull.
+
+## Updating the pulled-in components (`update.sh`)
+
+`scripts/update.sh` moves the upstream pins forward: llama.cpp to upstream
+`master`, the container images to their newest digests, the Python layer to
+newer releases. It rewrites tracked files and asks nothing. That is a
+maintainer action; on an installed rig it leaves the checkout ahead of what
+OpenBeast was tested with.
 
 OpenBeast orchestrates several upstream open source projects (full list and
 credits: [`NOTICE`](../NOTICE) and the README credits section). Upstreams
@@ -11,7 +43,7 @@ fresh is worth doing periodically.
 ./scripts/update.sh
 ```
 
-That updates everything: llama.cpp (git pull + CUDA rebuild), the Open WebUI
+That updates every upstream component: llama.cpp (git pull + CUDA rebuild), the Open WebUI
 and SearXNG container images, the Python layer (MCP SDK, openai, fastapi,
 uvicorn, huggingface_hub), and OpenCode. Then restart to pick it all up:
 
@@ -112,8 +144,9 @@ openbeast-client update      # = scripts/client.sh update
 ```
 
 Two steps: `git pull --ff-only` in `~/.openbeast-client/repo` (the slim
-checkout of `agents/ scripts/ skills/ searxng/`), then re-install the pinned
-`agents/requirements.txt` into the client's venv. A client installed from a
+checkout of `agents/ scripts/ skills/ searxng/`), then re-install the
+hash-pinned closure (`agents/requirements.lock`, via `pydeps.sh`) into the
+client's venv. A client installed from a
 full clone is told to pull that clone itself.
 
 Worth doing after any rig-side change under `agents/` — the client runs its
@@ -195,7 +228,7 @@ lock is stale") and stays red. Two pieces close that:
 - **Model weights** — GGUF files are versionless snapshots, not something
   you "update." Re-download only when a model repo publishes improved
   quants: `hf download <repo> <file> --local-dir "$WEIGHTS_DIR"` (see
-  "Model weights location" in the README).
+  [INSTALL.md § Where weights live](INSTALL.md#where-weights-live)).
 - **NVIDIA driver / CUDA / Docker** — system-level; distro package manager
   territory, same reasoning as bootstrap: nothing should touch your GPU
   driver behind your back.

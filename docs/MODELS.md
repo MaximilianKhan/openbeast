@@ -41,9 +41,11 @@ loop passed its deepest 45k+-total thinkers 10/10 — that thinking was spread
 across requests; per-request productive thinking never exceeded ~18k even
 uncapped), and reasoning externalized to files/notes between steps is answer
 content, uncapped by definition. Long-horizon work actually *benefits*: one
-runaway request can no longer stall a pipeline, and since the chat template
-preserves reasoning across turns by default, capping trims per-turn context
-bloat — context pressure arrives later, the horizon extends. For the rare
+runaway request can no longer stall a pipeline. (Earlier turns' reasoning is
+not carried forward in our configuration: no serve script passes
+`--reasoning-preserve`, and the chat template strips `<think>` blocks from
+prior assistant turns — `evals/README.md` § Where thinking tokens land. The
+cap therefore bounds each turn's generation time, not accumulated context.) For the rare
 single decision that needs deeper continuous thought, the API body accepts
 **`reasoning_budget_tokens` per request** (verified in the b10865 request
 schema; defaults to the server flag) — an orchestrator can raise or drop the
@@ -105,7 +107,7 @@ MTP is a **1.6–1.8× lossless speedup** here; the sweet spot is **`--spec-draf
 |-------|-------|---------|------------------|-----------------|--------------|
 | Heretic v2 27B **MTP** | Q5_K_M | **262K** (native) | 29.6 GB / 2.97 GB | **~136 tok/s** (n8, 39% acc) | `serve-heretic-v2-27b-mtp-q5.sh` |
 
-**The fastest Qwen3.6-era MTP build** — 136 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth (a flat plateau topping at **n8**, profiled with `scripts/profile-heretic-v2-mtp.sh q5`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not yet on the eval leaderboard. Kept as the fallback uncensored until the Qwen3.8-Uncensored default earns a clean leaderboard row. *The Q6_K twin (208K, 2.25 GB headroom, ~139 tok/s at n4) was pruned 2026-08-20 — dominated by this Q5 within its own family; re-download from the llmfan46 HF repo if ever needed.*
+**The fastest Qwen3.6-era MTP build** — 136 tok/s vs the NEO models' 103–108 — because preserving the native draft heads gives much better acceptance at depth (a flat plateau topping at **n8**, profiled with `scripts/profile-heretic-v2-mtp.sh q5`); the native-MTP hypothesis held (base unsloth 27B MTP also peaked at n8, unlike DavidAU's NEO head at n2). Same MTP rules (temp ≤ 1.0, rep_pen 1.0). Not on the eval leaderboard. It was kept as the fallback uncensored until the Qwen3.8-Uncensored default earned a leaderboard row, which it has (#3 on v4, 2026-09-08). *The Q6_K twin (208K, 2.25 GB headroom, ~139 tok/s at n4) was pruned 2026-08-20 — dominated by this Q5 within its own family; re-download from the llmfan46 HF repo if ever needed.*
 
 ## Qwen3.8-27B (Qwen / unsloth) — added 2026-08-14, benchmarked 2026-08-21
 
@@ -245,9 +247,14 @@ for them without measuring.
 Untested: **video** input (the template renders `<|video_pad|>` blocks), and
 the `mmproj-BF16.gguf` variant.
 
-**Benchmarked 2026-08-21 (v4, `--jobs 4`): capability 98.4 (solve 99.1 /
-lang 96.5), 261/291 — leaderboard #2**, behind the Qwen3.6-27B champion
-(98.7, 271/291). The generational story: identical 99.1 solve rate, and the
+**Benchmarked 2026-09-07 (v4, `--jobs 4`, uncapped reasoning): SCORE 97.7
+(solve 98.2 / lang 96.1), 258/291 — leaderboard #2**, behind the Qwen3.6-27B
+champion (98.7, 271/291). This row replaced the 2026-08-21 run (98.4,
+261/291), which ran under a 4096-token reasoning cap the champion did not
+have. The two rows also differ in harness era, engine build and concurrency
+from the champion's July row, so the gap is not a clean generational
+measurement. The per-language detail that follows is from the 2026-08-21 run
+and has not been recomputed: identical 99.1 solve rate, and the
 entire gap is **zig ports** (22 zig fails vs the champion's 11; non-zig
 fails 8 vs 9 — Qwen3.8 is equal-or-better everywhere except zig). Note the
 run's tokens: 26.6M vs the champion's 14.0M — Qwen3.8 reasons ~2× more
@@ -317,21 +324,21 @@ belongs to a different base model, not to the architecture.)
 The upstream repo also ships `-noMTP-` twins with the head stripped
 (block_count 64). We deliberately do not use them: the MTP file is a strict
 superset — served without `--spec-type` the extra tensors load and are ignored,
-which is exactly what `serve-qwen38-27b-uncensored-q5.sh` does. Both files are
-pinned in `scripts/weights.registry`, and both sha256 values were cross-checked
-against the published HF LFS oids and match byte-for-byte.
+which is exactly what `serve-qwen38-27b-uncensored-q5.sh` does. The MTP file
+is pinned in `scripts/weights.registry` and its sha256 matches the published
+HF LFS oid; the `-noMTP-` pin was dropped with the 2026-08-20 prune.
 
 Standard MTP constraints apply: `-np 1` is forced (concurrent requests
 serialize — use the non-MTP script for a multi-user rig), temperature ≤ 1.0,
 `repetition_penalty = 1.0`. Acceptance at 56% is comfortably above the ~50%
 floor below which a non-MTP quant is the better trade.
 
-✅ **Benchmarked 2026-08-21 (v4, `--jobs 4`, non-MTP row): capability 98.38
-(solve 99.1 / lang 96.2), 259/291 — leaderboard #3.** The abliteration
-question is answered: **zero measurable capability cost** — stock Qwen3.8
-scored 98.44 / 261/291 on the same suite (identical 99.1 solve rate; the
-2-unit gap is inside zig-port noise). The default ships vindicated: same
-capability as stock, 140 tok/s with MTP, best-in-fleet headroom. The MTP
+✅ **Benchmarked 2026-09-08 (v4, `--jobs 4`, uncapped reasoning, non-MTP
+row): SCORE 97.63 (solve 98.2 / lang 95.9), 255/291 — leaderboard #3.** Stock
+Qwen3.8 scored 97.68 / 258/291 in the same campaign (identical 98.2 solve
+rate), so abliteration shows no measurable capability cost: a tie within
+run-to-run noise. These rows replaced the 2026-08-21 runs (98.38 / 259 and
+98.44 / 261), which ran under a 4096-token reasoning cap. The MTP
 row itself is still unbenchmarked
 (`python evals/benchmark_all.py --models qwen38-27b-uncensored-mtp-q5`);
 Qwen3.6 precedent says MTP ties its non-MTP twin on capability.

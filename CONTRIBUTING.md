@@ -24,10 +24,14 @@ Found a security issue? Do **not** open a public issue — see
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
-./bootstrap.sh --minimal     # build llama.cpp + Python deps (no Docker/weights needed for dev)
+./scripts/pydeps.sh install  # the hash-pinned Python deps
+pip install pytest           # the only extra the CPU-only test suite needs
 ```
 
 Most development doesn't need a GPU at all: the test suite is CPU-only.
+`./bootstrap.sh --minimal` is not a dev setup: it skips only Docker, still
+builds llama.cpp and downloads the ~20 GB default weight, refuses macOS and
+hard-fails under 24 GB VRAM. Use it only on a rig.
 
 ## Before you open a PR
 
@@ -37,12 +41,12 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~1,300 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~3,100 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
-ruff check agents/*.py evals/*.py tests/*.py --select E9,F   # syntax + undefined names
-shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
+ruff check agents evals tests scripts extensions --select E9,F   # syntax + undefined names
+shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh
 pip-audit -r agents/requirements.txt  --disable-pip --no-deps  # dependency CVEs — the direct pins
 pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whole hash-pinned closure
 ./scripts/pydeps.sh verify            # the lock is current against requirements.txt
