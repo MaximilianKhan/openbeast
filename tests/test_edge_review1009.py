@@ -365,3 +365,129 @@ class TestUpstreamHealthIsCached:
 
         assert {r.status_code for r in asyncio.run(run())} == {200}
         assert up.hits == 1
+
+
+class _SlowUpstream:
+    """Upstream whose headers arrive after `delay` (None = never)."""
+
+    def __init__(self, delay=None, response=None):
+        self.delay, self.response = delay, response or _FakeResponse()
+        self.cancelled = self.sent = 0
+
+    def build_request(self, *a, **kw):
+        return object()
+
+    async def send(self, req, stream=False):
+        self.sent += 1
+        try:
+            await asyncio.sleep(3600 if self.delay is None else self.delay)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        return self.response
+
+
+def _receive(payload: bytes, hangup_after=None):
+    """ASGI receive: the body once, then a live socket — or, `hangup_after`
+    seconds later, http.disconnect (what uvicorn delivers on a hang-up)."""
+    state = {"sent": False, "t0": None}
+
+    async def receive():
+        if not state["sent"]:
+            state["sent"] = True
+            state["t0"] = asyncio.get_running_loop().time()
+            return {"type": "http.request", "body": payload,
+                    "more_body": False}
+        if hangup_after is None:
+            await asyncio.Event().wait()
+        left = state["t0"] + hangup_after - asyncio.get_running_loop().time()
+        if left > 0:
+            await asyncio.sleep(left)
+        return {"type": "http.disconnect"}
+
+    return receive
+
+
+PAYLOAD = json.dumps({"messages": [], "model": "m"}).encode()
+
+
+class TestDisconnectBeforeUpstreamHeaders:
+    """ops F2: a caller that hangs up while the gate waits for upstream
+    headers must free its in-flight unit and stop the upstream work."""
+
+    def test_hangup_cancels_upstream_and_frees_the_slot(self, edge, tmp_path,
+                                                        monkeypatch):
+        monkeypatch.setattr(edge, "_DISCONNECT_POLL_S", 0.01)
+        _registry(tmp_path)
+        up = _SlowUpstream()                       # never answers
+        app = _direct_app(edge, up)
+
+        async def run():
+            return await asyncio.wait_for(edge.gate(Request(
+                _scope(app), _receive(PAYLOAD, hangup_after=0.05))), 5)
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 499
+        assert (up.sent, up.cancelled) == (1, 1)
+        assert _laptop_bucket_app(edge, app).inflight == 0
+        row = _last_audit(tmp_path)
+        assert (row["outcome"], row["status"]) == ("client_disconnect", 499)
+        assert row["model"] == "m"
+
+    def test_abandoned_requests_do_not_wedge_the_device(self, edge, tmp_path,
+                                                        monkeypatch):
+        # The reviewer's scenario: two give-ups filled EDGE_MAX_INFLIGHT=2
+        # and the retry got 429 until the abandoned generations finished.
+        monkeypatch.setattr(edge, "_DISCONNECT_POLL_S", 0.01)
+        _registry(tmp_path)
+        up = _SlowUpstream()
+        app = _direct_app(edge, up)
+
+        async def run():
+            for _ in range(2):
+                await asyncio.wait_for(edge.gate(Request(
+                    _scope(app), _receive(PAYLOAD, hangup_after=0.03))), 5)
+            up.delay = 0
+            return await edge.gate(Request(_scope(app), _receive(PAYLOAD)))
+
+        assert asyncio.run(run()).status_code == 200
+
+    def test_patient_caller_still_gets_a_slow_answer(self, edge, tmp_path,
+                                                     monkeypatch):
+        # Negative control: slower than several polls, socket still open.
+        monkeypatch.setattr(edge, "_DISCONNECT_POLL_S", 0.01)
+        _registry(tmp_path)
+        up = _SlowUpstream(delay=0.1)
+        app = _direct_app(edge, up)
+
+        async def run():
+            resp = await edge.gate(Request(_scope(app), _receive(PAYLOAD)))
+            async for _ in resp.body_iterator:
+                pass
+            await resp.background()
+            return resp
+
+        assert asyncio.run(run()).status_code == 200
+        assert up.cancelled == 0
+        row = _last_audit(tmp_path)
+        assert (row["outcome"], row["prompt_tokens"]) == ("ok", 10)
+        assert _laptop_bucket_app(edge, app).inflight == 0
+
+    def test_response_that_wins_the_race_is_closed(self, edge):
+        # The hang-up is noticed just as headers land: cancel() no-ops on a
+        # finished send, and its response must not leak an upstream socket.
+        closed = []
+
+        class _R:
+            async def aclose(self):
+                closed.append(1)
+
+        async def run():
+            async def send():
+                return _R()
+            task = asyncio.ensure_future(send())
+            await asyncio.sleep(0)
+            await edge._abandon(task)
+
+        asyncio.run(run())
+        assert closed == [1]

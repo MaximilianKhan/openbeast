@@ -58,6 +58,7 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -75,7 +76,7 @@ import httpx
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
@@ -925,6 +926,50 @@ async def _upstream_health(app, client) -> tuple[int, dict]:
         return status, payload
 
 
+# How often the wait for upstream headers looks at the client socket.
+_DISCONNECT_POLL_S = 0.25
+
+
+async def _abandon(task) -> None:
+    """Cancel an upstream send — and close the response if it won the race."""
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await task
+    if task.cancelled() or task.exception() is not None:
+        return
+    with contextlib.suppress(BaseException):
+        await task.result().aclose()
+
+
+async def _send_watched(request: Request, coro) -> tuple:
+    """Await the upstream's response headers, unless nobody wants them.
+
+    Returns (response, None), or (None, reason) after cancelling the send.
+    Until headers arrive nothing else reads the client socket, and for a
+    non-streaming completion they arrive only when the WHOLE generation is
+    done. So a caller that gave up (an agent with a 60 s timeout) kept its
+    in-flight unit and the engine busy until the upstream answered or the
+    read timeout fired: two retries wedged the device at 429, a `-np 1` rig
+    generated for nobody ahead of the operator's own turn, and the abandoned
+    work was audited "200 ok". Cancelling closes the upstream connection,
+    which is what makes llama-server (or hydra) stop. Same shape as hydra's
+    _until_disconnect.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_DISCONNECT_POLL_S)
+            if done:
+                return task.result(), None
+            if await request.is_disconnected():
+                await _abandon(task)
+                return None, "client_disconnect"
+    except BaseException:
+        if not task.done():
+            await _abandon(task)
+        raise
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -1087,7 +1132,20 @@ async def gate(request: Request):
         req = client.build_request(request.method, f"{UPSTREAM}{path}",
                                    content=body, headers=headers)
         try:
-            resp = await client.send(req, stream=True)
+            resp, gone = await _send_watched(
+                request, client.send(req, stream=True))
+            if gone:
+                _release()
+                _audit(device_id, user, path, 499, None,
+                       int((time.monotonic() - started) * 1000), model,
+                       gone, request_id, uid)
+                _log(f"client gone before upstream headers device={device_id} "
+                     f"path={path} request_id={request_id} — upstream "
+                     "request cancelled")
+                # 499 (nginx's "client closed request"): nobody reads it; it
+                # only keeps the status honest in logs. Same as hydra.
+                return Response(b"", status_code=499, headers={
+                    "X-OpenBeast-Request-Id": request_id})
         except (httpx.ConnectTimeout, httpx.PoolTimeout) as e:
             # A CONNECT/pool timeout means we never reached the server — that
             # is "unreachable", not "slow". TimeoutException is their parent,
