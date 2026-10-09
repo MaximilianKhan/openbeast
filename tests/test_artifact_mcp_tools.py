@@ -340,7 +340,7 @@ def surfaces(rig, tmp_path, monkeypatch):
     # base_url: the artifact server pins Host now (TrustedHostMiddleware),
     # and TestClient's default "testserver" is exactly the foreign name a
     # rebinding attack arrives under.
-    return (TestClient(openapi_tools.create_app()),
+    return (TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001"),
             TestClient(server, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:3004"),
             server)
 
@@ -516,7 +516,7 @@ def test_a_signed_token_with_no_email_claim_is_refused(surfaces, monkeypatch):
     import openapi_tools               # noqa: E402
     secret = "x" * 48
     monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", secret)
-    tools = TestClient(openapi_tools.create_app())
+    tools = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     claims = {"sub": WEBUI_ID, "role": "admin", "iss": "open-webui",
               "exp": datetime.datetime.now(datetime.timezone.utc)
               + datetime.timedelta(minutes=5)}
@@ -569,7 +569,7 @@ def test_the_jwt_surface_bridges_through_the_token_email(surfaces,
     import openapi_tools               # noqa: E402
     secret = "x" * 48        # RFC 7518 §3.2 minimum, so no warning
     monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", secret)
-    tools = TestClient(openapi_tools.create_app())
+    tools = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     claims = {
         "sub": WEBUI_ID, "role": "admin", "iss": "open-webui",
         "email": TAILNET_LOGIN,

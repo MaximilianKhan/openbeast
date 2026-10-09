@@ -328,7 +328,7 @@ def wired(tmp_path, monkeypatch):
         headers = {"Content-Type": "application/json"}
         if role:
             headers["X-OpenWebUI-User-Role"] = role
-        with TestClient(router.app) as c:
+        with TestClient(router.app, base_url="http://127.0.0.1:8088") as c:
             router.app.state.client = up
             r = c.post("/v1/chat/completions", content=body, headers=headers)
         asyncio.run(hook.drain())
