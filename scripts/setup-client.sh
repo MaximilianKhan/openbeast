@@ -326,8 +326,6 @@ else
   SEARCH_URL="https://$HOST_FQDN:8889"
 fi
 
-# -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
-# (published port, stack down) reports as "reachable".
 # The bearer goes through lib/curl_auth.sh (a curl --config on an fd), never
 # curl's argv. A copy of this script fetched on its own (the documented
 # no-clone path) has no lib/ yet — the slim checkout comes later — so the
@@ -348,9 +346,58 @@ header = "Authorization: Bearer $_k"
 EOF
   }
 fi
-probe_ok="$(ob_curl_bearer "$API_KEY" -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
-[ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
-  || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
+# Read the STATUS, not the body. `curl -f … | grep ok` collapsed a rig that
+# wants a key (401), one that never published :8443 (nothing answers) and a
+# published rig whose stack is down (502) into one "not answering — is the
+# stack up?", and the install then finished "ready" in all three. Each has a
+# different fix on a different machine, so say which. curl prints 000 AND
+# exits non-zero when nothing answers — capture, ignore the status.
+RIG_NOTE=""
+probe_code="$(ob_curl_bearer "$API_KEY" -sS -m 5 -o /dev/null -w '%{http_code}' \
+  "https://$HOST_FQDN:8443/health" 2>/dev/null)" || true
+if [ "$probe_code" = "200" ]; then
+  # /health is public on a raw llama-server even when LLAMA_API_KEY is set
+  # (beast-gate is what 401s it), so a 200 proves reachability, not that the
+  # key is accepted. Ask a protected endpoint; only a 401/403 changes the verdict.
+  _mc="$(ob_curl_bearer "$API_KEY" -sS -m 5 -o /dev/null -w '%{http_code}' \
+    "$API_URL/models" 2>/dev/null)" || true
+  case "$_mc" in 401|403) probe_code="$_mc" ;; esac
+fi
+case "${probe_code:-000}" in
+  200)
+    echo "  ✓ rig model API reachable ($API_URL)" ;;
+  401|403)
+    if [ -z "$API_KEY" ]; then
+      echo "  ✗ This rig requires a device key (HTTP $probe_code from $API_URL)."
+      echo "    Ask its owner to run ./scripts/clients.sh enroll <name>,"
+      echo "    then re-run with --api-key-stdin:"
+      echo "      $0 --host $HOST_FQDN --api-key-stdin"
+    else
+      echo "  ✗ The rig rejected this device key (HTTP $probe_code from $API_URL) —"
+      echo "    mistyped, rotated, or the device was revoked. Ask its owner to run"
+      echo "    ./scripts/clients.sh rotate <name> (or enroll), then re-run:"
+      echo "      $0 --host $HOST_FQDN --api-key-stdin"
+    fi
+    echo "Nothing was changed."
+    exit 1 ;;
+  000)
+    RIG_NOTE="nothing answers on $HOST_FQDN:8443"
+    echo "  ! Rig is not published on :8443 (nothing answers at $API_URL) —"
+    echo "    on the rig: ./scripts/setup-tailscale.sh"
+    echo "    (if it IS published: check the host name, and that both machines are"
+    echo "    on the tailnet — a full-tunnel VPN severs it). Wiring anyway." ;;
+  502|504)
+    RIG_NOTE="the rig's stack is down (HTTP $probe_code)"
+    echo "  ! Published, but the stack is down (HTTP $probe_code) —"
+    echo "    on the rig: ./start.sh -d      Wiring anyway." ;;
+  503)
+    RIG_NOTE="the rig is still loading its model (HTTP 503)"
+    echo "  ! rig is up but still loading the model (HTTP 503) — retry shortly. Wiring anyway." ;;
+  *)
+    RIG_NOTE="unexpected HTTP $probe_code from $HOST_FQDN:8443/health"
+    echo "  ! rig answered /health with HTTP $probe_code ($API_URL) — is :8443 this"
+    echo "    rig's model API? On the rig: ./scripts/doctor.sh      Wiring anyway." ;;
+esac
 # beast-slot discovery (informational — tells you what the rig has loaded).
 SLOT_INFO="$(curl -s -m 5 "$SLOT_URL" 2>/dev/null | "$PY" -c '
 import json, sys
@@ -613,7 +660,15 @@ fi
 
 # ---- 6. report --------------------------------------------------------------
 echo ""
-echo "Client mode ready. Use it:"
+if [ -n "$RIG_NOTE" ]; then
+  # Installed is not the same as working: do not say "ready" over a rig that
+  # did not answer. The fix is on the rig and was named at the probe above.
+  echo "Client mode INSTALLED, but the rig is not usable yet: $RIG_NOTE."
+  echo "Fix that on the rig (see the '!' line above), then check: $CLIENT_REPO/scripts/client.sh status"
+  echo "Once it answers:"
+else
+  echo "Client mode ready. Use it:"
+fi
 echo "  cd <any project> && opencode     # pick an 'openbeast-rig' model"
 if [ "${CLI_LINKED:-0}" = "1" ]; then
   case ":$PATH:" in
