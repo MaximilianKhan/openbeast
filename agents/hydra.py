@@ -1061,6 +1061,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         # reload that tightened hydra.allowed_families while this request
         # waited on attempt 1 must not let a stale plan fail over off-policy.
         why = None if dec.strict else core.policy_reason(hy.cfg, c.d)
+        # Read before this request takes its own unit: was the only place this
+        # request could go already full? Then a first-byte timeout below is
+        # the engine's queue, not a failing node.
+        queued = len(dec.attempts) == 1 and hy.state.node_inflight(c.n.id) >= c.n.slots
         adm = None
         if why is None:
             adm, why = hy.state.try_admit(c.d.id, c.n.id, now)
@@ -1092,7 +1096,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         if a.kind == "passthrough":
             break
         if a.kind == "timeout":
-            hs.record_failure(now)
+            if queued:
+                # Counting these opened the breaker on a rig that was merely
+                # busy, and every caller then got 503 for breaker.open_s.
+                rec["why"] = "queued behind a saturated single candidate: not a breaker failure"
+            else:
+                hs.record_failure(now)
             if not (route and route.retry_on_ttft_timeout):
                 break
         elif a.kind == "fail":

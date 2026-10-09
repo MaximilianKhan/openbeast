@@ -909,7 +909,14 @@ def implicit_raw(env: dict | None = None) -> dict:
     default = _env(env, "HYDRA_DEFAULT_MODEL", "OPENBEAST_HYDRA_DEFAULT_MODEL") or "beast"
     if not ROUTE_ID_RE.match(default):
         default = "beast"
-    node: dict[str, Any] = {"url": url, "engine": engine}
+    # "Behaves like today" also means a turn queued behind another one WAITS:
+    # with one target there is nowhere to fail over to, so the per-node
+    # first-byte deadline (120 s by default) would only turn the engine's
+    # queue into a 504 and, five of those later, an open breaker. The implicit
+    # node waits the whole pre-commit budget instead.
+    budget = Settings().pre_commit_budget_s
+    node: dict[str, Any] = {"url": url, "engine": engine,
+                            "ttft_timeout_s": budget, "nonstream_timeout_s": budget}
     # `slots` only when the conf states it. Unset, the serve script's -np is
     # unknown here: validate() then routes on 1 and marks the count unknown,
     # so a gate-assigned id_slot reaches a multi-slot llama-server untouched.

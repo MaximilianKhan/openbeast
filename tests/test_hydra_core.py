@@ -219,6 +219,19 @@ def test_implicit_ignores_route_id_in_openbeast_inference_model():
     # conf.sh points OPENBEAST_INFERENCE_MODEL at `beast` under HYDRA=true
     cfg = core.implicit_config({"OPENBEAST_INFERENCE_MODEL": "beast"})
     assert cfg.deployments["local@rig"].upstream == "local"
+
+
+def test_implicit_node_waits_the_whole_budget_for_a_first_byte():
+    # Review 2026-10-09 ops F3: one target means nowhere to fail over to, so
+    # the 120 s per-node first-byte default only turned queueing into 504s.
+    cfg = core.implicit_config({})
+    n, budget = cfg.nodes["rig"], cfg.settings.pre_commit_budget_s
+    assert (n.ttft_timeout_s, n.nonstream_timeout_s) == (budget, budget)
+    assert core.effective_ttft(n, 0, budget) == budget
+    # an explicit hydra.toml that says nothing keeps the 120 s default
+    assert core.validate(base(), {}).nodes["rig"].ttft_timeout_s == 120.0
+
+
 def test_implicit_node_keeps_id_slot_when_the_slot_count_was_never_stated():
     # Review 2026-10-09 ops F10: slots defaulted to 1, so the gate's id_slot=2
     # on a -np 6 rig was stripped and per-device slot affinity vanished.

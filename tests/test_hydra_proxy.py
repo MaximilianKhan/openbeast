@@ -500,6 +500,8 @@ def test_identity_headers_need_the_caller_token(fleet, tmp_path):
     r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
     assert r.headers["x-hydra-route"] == "beast:fast" and r.headers["x-hydra-rule"] == "phone-fast"
     assert audit_rows(tmp_path)[-1]["device"] == "max-phone"
+
+
 def test_identity_headers_route_but_never_reach_a_node(fleet, tmp_path):
     """Review 2026-10-09 netsec S12: a trusted caller's identity decides the
     route and lands in the audit row, and stops there — a fleet node was being
@@ -522,6 +524,42 @@ def test_identity_headers_route_but_never_reach_a_node(fleet, tmp_path):
     assert "eyJ.identity.jwt" not in json.dumps(posts(sparks)[-1])
     # negative control: a non-identity header still travels
     assert fwd["x-conversation-id"] == "conv-7" and fwd["x-openbeast-request-id"]
+
+
+def _solo_timeouts(srv, n):
+    return [post(srv, chat(model="solo", stream=True)).status_code for _ in range(n)]
+
+
+def test_queueing_behind_a_full_single_candidate_does_not_trip_the_breaker(fleet):
+    """Review 2026-10-09 ops F3: one target, already full — a first-byte
+    timeout there is the engine's queue. Counting it opened the breaker and
+    turned a busy rig into 503 for every caller."""
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=0.4), chunks=200, tok_ms=50)
+    hs = srv.hy.state.health["unc@rig"]
+    with httpx.stream("POST", srv.url + "/v1/chat/completions", json=chat(model="solo", stream=True),
+                      headers=auth(), timeout=30) as holder:
+        wait_admitted(srv, "rig")                      # the 1-slot rig is now saturated
+        rig.set_fault("ttft_ms:1500")
+        assert _solo_timeouts(srv, 4) == [504] * 4     # fail_threshold is 3
+        assert hs.breaker_state(time.monotonic()) == core.CLOSED and hs.h.fails == 0
+        for _chunk in holder.iter_raw():
+            break
+    rig.set_fault(None)
+    deadline = time.time() + 10
+    while srv.hy.state.node_inflight("rig") and time.time() < deadline:
+        time.sleep(0.05)
+    assert post(srv, chat(model="solo")).status_code == 200, "the rig was only busy"
+
+
+def test_first_byte_timeouts_on_an_idle_single_candidate_still_trip_the_breaker(fleet):
+    # the control for the test above: nothing in flight, so the node is at fault
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=0.4))
+    rig.set_fault("ttft_ms:1500")
+    assert _solo_timeouts(srv, 3) == [504] * 3
+    hs = srv.hy.state.health["unc@rig"]
+    assert hs.breaker_state(time.monotonic()) == core.OPEN
+    rig.set_fault(None)
+    assert post(srv, chat(model="solo")).status_code == 503
 
 
 def _probe_once(tmp_path, eng, state):
