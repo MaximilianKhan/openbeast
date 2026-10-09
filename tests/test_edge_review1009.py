@@ -144,3 +144,68 @@ class TestIntrospectionIsPerDevice:
             local = c.get("/gate/health", headers=_local_headers(edge)).json()
         assert remote == {"status": "ok", "service": "beast-gate"}
         assert local["devices"] == 2 and "upstream" in local
+
+
+class TestSanitizeOffTheLoop:
+    """S3 (perf F10): a large body is parsed in a worker thread, and the
+    default body cap is single-digit megabytes."""
+
+    def _where(self, edge, monkeypatch):
+        """Record whether each _sanitize_body call ran on the event loop."""
+        seen = []
+        real = edge._sanitize_body
+
+        def spy(raw, device, path):
+            try:
+                asyncio.get_running_loop()
+                seen.append("loop")
+            except RuntimeError:
+                seen.append("thread")
+            return real(raw, device, path)
+
+        monkeypatch.setattr(edge, "_sanitize_body", spy)
+        return seen
+
+    def test_large_body_is_sanitized_in_a_thread(self, edge, tmp_path,
+                                                 monkeypatch):
+        _registry(tmp_path)
+        captured = {}
+        _stub_upstream(edge, captured)
+        seen = self._where(edge, monkeypatch)
+        big = {"messages": [{"role": "user", "content": "x" * 70000}],
+               "id_slot": 3}
+        with TestClient(edge.app) as c:
+            assert c.post(CHAT, json=big, headers=HDR).status_code == 200
+            # Still sanitized, just elsewhere: the tenancy strip held.
+            assert "id_slot" not in json.loads(captured["content"])
+            # A refusal raised in the thread is still a 400, not a 500.
+            deep = b"[" * 70000
+            r = c.post(CHAT, content=deep, headers=HDR)
+            assert r.status_code == 400 and "nests deeper" in r.text
+        assert seen == ["thread", "thread"]
+
+    def test_small_body_stays_inline(self, edge, tmp_path, monkeypatch):
+        # Negative control for the spy, and the fast path is kept.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        seen = self._where(edge, monkeypatch)
+        with TestClient(edge.app) as c:
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 200
+        assert seen == ["loop"]
+
+    def test_default_cap_is_8_mib_and_stays_configurable(self, edge, tmp_path,
+                                                         monkeypatch):
+        monkeypatch.delenv("OPENBEAST_EDGE_MAX_BODY", raising=False)
+        importlib.reload(edge)
+        assert edge.MAX_BODY_BYTES == 8 * 1024 * 1024
+        monkeypatch.setenv("OPENBEAST_EDGE_MAX_BODY", "2048")
+        importlib.reload(edge)
+        assert edge.MAX_BODY_BYTES == 2048
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            pad = {"messages": [{"role": "user", "content": "x" * 4096}]}
+            assert c.post(CHAT, json=pad, headers=HDR).status_code == 413
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 200

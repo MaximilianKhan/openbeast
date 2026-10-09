@@ -42,6 +42,8 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
   OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
                                a prompt array or n>1 counts prompts x n
+  OPENBEAST_EDGE_MAX_BODY      largest request body accepted, in bytes (default
+                               8 MiB — see MAX_BODY_BYTES)
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
                                false = fail closed). Ignored once
@@ -51,6 +53,7 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -87,7 +90,15 @@ _TOUCH_INTERVAL_S = 60.0
 _LOCAL_TOKEN_PATH = os.path.join(RUN_DIR, "edge-local.token")
 _LOCAL_TOKEN: str | None = None
 # Requests larger than this are refused rather than buffered whole in RAM.
-MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(32 * 1024 * 1024)))
+# 8 MiB, not the 32 it was: the cap also bounds what ONE request can make the
+# gate parse (~90 ms of CPU per MiB for a body that is all tokens), and no
+# honest body is near it — a full 262K-token context is ~1 MiB of text, and
+# llama-server itself refuses media over 10 MB. Raise it for bigger inline
+# media.
+MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(8 * 1024 * 1024)))
+# Bodies above this are sanitized in a worker thread (see gate()); below it
+# the thread hop costs more than the parse (worst case ~1.5 ms inline).
+_SANITIZE_INLINE_BYTES = 16 * 1024
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -932,7 +943,17 @@ async def gate(request: Request):
         body, model, streaming, gens = raw, None, False, 1
         if raw and path in JSON_PATHS:
             try:
-                body, model, streaming, gens = _sanitize_body(raw, device, path)
+                if len(raw) > _SANITIZE_INLINE_BYTES:
+                    # OFF the event loop. The depth scan is a Python loop per
+                    # token: a cap-sized body of "[],[],…" held the loop for
+                    # seconds, and since one device may send 120 of those a
+                    # minute it could stall every other tenant's stream and
+                    # time /gate/health out (which a watchdog reads as down).
+                    body, model, streaming, gens = await asyncio.to_thread(
+                        _sanitize_body, raw, device, path)
+                else:
+                    body, model, streaming, gens = _sanitize_body(
+                        raw, device, path)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
