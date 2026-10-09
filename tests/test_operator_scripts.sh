@@ -11,6 +11,8 @@
 #   1  setup-mcpo-keys.sh   --help / unknown options never run it; an EMPTY
 #                           key is not "already set"            (UX-10, S7)
 #   2  setup-sandlock.sh    private mktemp build dir, cargo --locked   (S8)
+#   3  --help               verify-weights, instinct, ext, gpu-lease, bundle,
+#                           clients: the whole header, no code   (UX-21/22)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -154,6 +156,49 @@ else
   else
     fail "after the build: bin=$([[ -x "$T/slhome/.local/bin/sandlock" ]] && echo yes || echo no) leftovers=$(ls -A "$T/sltmp" | tr '\n' ' ')"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "3. --help prints the whole header, and only the header (UX-21/22):"
+# Each of these printed a fixed line range of itself: three leaked code
+# (`set -euo pipefail`, SCRIPT_DIR=…), two stopped mid-header, clients.sh gave
+# the synopsis alone. Each row names a phrase from the LAST line of the
+# script's header — the part a fixed range cut off — so the check fails if
+# the help is truncated, and the leak checks fail if it runs past the end.
+HP="$(fresh_repo help)"
+mkdir -p "$T/helphome"
+while IFS='|' read -r _s _last; do
+  run env -i HOME="$T/helphome" PATH="/usr/bin:/bin" bash "$HP/scripts/$_s" --help
+  _want="$(awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$REPO_DIR/scripts/$_s")"
+  if [[ $RC -eq 0 && "$OUT" == "$_want" ]] && has "$OUT" "$_last" \
+     && ! has "$OUT" "set -euo pipefail" && ! has "$OUT" "SCRIPT_DIR=" \
+     && ! grep -q '^#' <<< "$OUT" && [[ "$(wc -l <<< "$OUT")" -ge 10 ]]; then
+    pass "$_s --help: the full header ($(wc -l <<< "$OUT") lines), no code, no raw '#'"
+  else
+    fail "$_s --help (rc=$RC, $(wc -l <<< "$OUT") lines): $(head -n 3 <<< "$OUT") … $(tail -n 2 <<< "$OUT")"
+  fi
+done <<'ROWS'
+verify-weights.sh|Exit 1 on any size or hash mismatch.
+instinct.sh|never by pattern.
+ext.sh|stack is not touched until restart.
+gpu-lease.sh|they had nothing to consult.
+bundle.sh|leaving a reader to discover it at install time.
+clients.sh|never a grant.
+ROWS
+# --help changed nothing: no conf, no registry, no lease, no bundle.
+if [[ ! -e "$HP/openbeast.conf" && ! -e "$HP/.run" && -z "$(ls -A "$T/helphome")" ]]; then
+  pass "none of those --help runs wrote anything (no openbeast.conf, no .run/, empty HOME)"
+else
+  fail "--help left something behind: $(ls -A "$HP" "$T/helphome" | tr '\n' ' ')"
+fi
+# Negative control: the helper stops at the first non-comment line.
+printf '#!/bin/bash\n# one\n#\n#   two\nset -e\n# not help\n' > "$T/usage-fixture.sh"
+_got="$(bash -c 'source "$1"; ob_usage "$2"' _ "$REPO_DIR/scripts/lib/usage.sh" "$T/usage-fixture.sh")"
+if [[ "$_got" == $'one\n\n  two' ]]; then
+  pass "control: ob_usage prints the leading comment block only, markers stripped, indentation kept"
+else
+  fail "ob_usage fixture: [$_got]"
 fi
 
 echo ""

@@ -36,7 +36,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --deep) DEEP=1 ;;
     --file) ONLY="${2:?--file needs a filename}"; DEEP=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The header block above, whole (lib/usage.sh) — a fixed line range
+    # leaked `set -euo pipefail` into the help.
+    -h|--help)
+      # shellcheck source=scripts/lib/usage.sh
+      source "$SCRIPT_DIR/lib/usage.sh"
+      ob_usage "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift

@@ -58,7 +58,14 @@ REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 RUN_DIR="$REPO_DIR/.run"
 REGISTRY="$RUN_DIR/clients.json"
 
-_usage() { sed -n '10,17p' "$0" | sed 's/^# \{0,1\}//'; }
+# The whole header block above IS the help text (lib/usage.sh): the synopsis
+# alone said nothing about what a key, a scope or a revocation means. Sourced
+# only here, so nothing but --help depends on the helper being present.
+_usage() {
+  # shellcheck source=scripts/lib/usage.sh
+  source "$SCRIPT_DIR/lib/usage.sh"
+  ob_usage "$0"
+}
 _die() { echo "ERROR: $*" >&2; exit 2; }
 
 # _conf_bool KEY — "true" or "false" for a boolean setting, default false,

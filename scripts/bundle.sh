@@ -90,6 +90,15 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # looked in $REPO_DIR/bundle, and `build ./out` wrote the bundle into the repo
 # instead of onto the stick it was meant for.
 ORIG_PWD="$PWD"
+# --help is answered BEFORE lib/conf.sh is sourced: that file writes a
+# generated secret into openbeast.conf, and asking for help on a fresh
+# checkout must not create one.
+case "${1:-}" in
+  -h|--help|help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$REPO_DIR/scripts/lib/usage.sh"
+    ob_usage "${BASH_SOURCE[0]}"; exit 0 ;;
+esac
 cd "$REPO_DIR"
 # shellcheck source=scripts/lib/conf.sh
 source "$REPO_DIR/scripts/lib/conf.sh"
@@ -1157,7 +1166,11 @@ EOF
     ;;
 
   -h|--help|help)
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    # The header block above, whole (lib/usage.sh) — lines 2-40 stopped
+    # mid-sentence, 43 lines short.
+    # shellcheck source=scripts/lib/usage.sh
+    source "$REPO_DIR/scripts/lib/usage.sh"
+    ob_usage "${BASH_SOURCE[0]}"
     ;;
 
   *)
