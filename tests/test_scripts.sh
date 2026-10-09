@@ -1290,7 +1290,13 @@ if [[ -x "$REPO_DIR/scripts/fetch-weight.sh" ]]; then
   # Capture first, THEN grep: the script correctly exits non-zero on an
   # unknown name, and under `set -o pipefail` that failure propagates through
   # the pipe and inverts the test even when grep matches.
-  _FW_OUT="$("$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  # Its OWN weights dir: with none named, lib/weights.sh resolves (and
+  # fetch-weight.sh creates) $REPO_DIR/../weights — a directory OUTSIDE the
+  # checkout, which this suite left behind on every box it ran on.
+  _FW_TMP="$(mktemp -d)"
+  _FW_OUT="$(OPENBEAST_WEIGHTS_DIR="$_FW_TMP" \
+             "$REPO_DIR/scripts/fetch-weight.sh" definitely-not-a-weight.gguf 2>&1 || true)"
+  rm -rf "$_FW_TMP"
   if grep -q 'no registry entry' <<< "$_FW_OUT"; then
     pass "fetch-weight.sh refuses a name that is not in the registry"
   else
