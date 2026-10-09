@@ -28,6 +28,7 @@ QUIET=0
 
 source "$SCRIPT_DIR/lib/net.sh"   # ob_probe_host — the mapping start.sh and healthcheck.sh use
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed, ob_backend_na
+source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours — is the supervisor alive
 # ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
 # --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
 source "$SCRIPT_DIR/lib/curl_auth.sh"
@@ -42,10 +43,20 @@ HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 PASS=0 WARN=0 FAIL=0
+# The first failure's fix and the first warning's — the closing "Next:" line
+# names ONE thing to do, so a long report still ends on an instruction.
+NEXT_FAIL="" NEXT_WARN=""
+# A warning's second line is sometimes a command and sometimes an explanation
+# ("CPU-only works but…"); "Next:" wants the first one that is a command.
+_NEXT_CMD_RE='^(\./|scripts/|chmod |sudo |docker |python3 |set [A-Z_]+=)'
 section() { [[ $QUIET -eq 1 ]] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 pass()    { [[ $QUIET -eq 1 ]] || echo "  ✓ $1"; PASS=$((PASS+1)); }
-warn()    { echo "  ! $1"; [[ -n "${2:-}" ]] && echo "      → $2"; WARN=$((WARN+1)); }
-fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"; FAIL=$((FAIL+1)); }
+warn()    { echo "  ! $1"; [[ -n "${2:-}" ]] && echo "      → $2"
+            [[ -z "$NEXT_WARN" && "${2:-}" =~ $_NEXT_CMD_RE ]] && NEXT_WARN="$2"; WARN=$((WARN+1)); }
+fail()    { echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      → fix: $2"
+            [[ -z "$NEXT_FAIL" && -n "${2:-}" ]] && NEXT_FAIL="$2"; FAIL=$((FAIL+1)); }
+# Worth knowing, nothing to do: not counted, not shown under --quiet.
+info()    { [[ $QUIET -eq 1 ]] || echo "  - $1"; }
 # A llama-only row on a stack that does not run llama-server here: one line,
 # counted as neither pass nor problem (lib/backend.sh ob_backend_na).
 na()      { [[ $QUIET -eq 1 ]] || echo "  - $(ob_backend_na "$1")"; }
@@ -253,8 +264,11 @@ PYEOF
 )"
   case "${_eval_out%%|*}" in
     ok)      pass "default model evaluated here ($(echo "$_eval_out" | cut -d'|' -f2), suite $(echo "$_eval_out" | cut -d'|' -f3))" ;;
-    missing) warn "default model '$(echo "$_eval_out" | cut -d'|' -f2)' has NO leaderboard row on this host" \
-                  "promotion by evidence: python3 evals/benchmark_all.py --models $(echo "$_eval_out" | cut -d'|' -f3) (GPU-hours), or accept it knowingly" ;;
+    # Info, not a warning: evals/results/ is not checked in, so a fresh
+    # install serves the shipped default with no local row, and the only way
+    # to clear the warning was GPU-hours of benchmarking — a permanent "!"
+    # nobody could act on, which teaches people to skim the rest.
+    missing) info "default model '$(echo "$_eval_out" | cut -d'|' -f2)' has no leaderboard row on this host (optional, GPU-hours: python3 evals/benchmark_all.py --models $(echo "$_eval_out" | cut -d'|' -f3))" ;;
     unregistered)
              warn "default serve script '$_srv' is not registered in evals/benchmark_all.py MODELS" \
                   "it cannot be benchmarked until added there — you are serving an unevaluated model knowingly" ;;
@@ -335,6 +349,39 @@ fi
 
 # ── Services ────────────────────────────────────────────────────────────────
 section "Services"
+# IS THE STACK RUNNING AT ALL? Asked first, because on a stack that is simply
+# stopped the rows below used to be a pile — llama, the tool server, WebUI and
+# every opt-in service each "not responding", each with a different fix — and
+# nowhere the one true sentence. "Not running" = no live supervisor AND
+# neither core service this box runs answers (a watchdog-relaunched stack has
+# no supervisor but does answer; an unmanaged backend is someone else's box
+# and does not count either way). The probes are the rows' own, made once.
+_sup_alive=0
+ob_recorded_pid_ours "$REPO_DIR/.run/supervisor.pid" 'start\.sh' && _sup_alive=1
+_llama_up=0
+[[ $LOCAL_LLAMA -eq 1 ]] && probe "http://$HEALTH_HOST:8080/health" "ok" && _llama_up=1
+_tools_up=0
+probe "http://$HEALTH_HOST:3001/health" "ok" && _tools_up=1
+STACK_DOWN=0
+if [[ $_sup_alive -eq 0 && $_tools_up -eq 0 && ( $LOCAL_LLAMA -eq 0 || $_llama_up -eq 0 ) ]]; then
+  STACK_DOWN=1
+  # .run/stopped: "<timestamp> <who>" — ./stop.sh (or a script that calls it),
+  # or the supervisor / watchdog giving up on a crash-looping model.
+  _stopped="$(head -n1 "$REPO_DIR/.run/stopped" 2>/dev/null || true)"
+  case "$_stopped" in
+    "")  _down_why="" ;;
+    *"gave up"*|*"watchdog:"*)
+         _down_why=" (it gave up ${_stopped%% *}: ${_stopped#* } — see .run/stack.log)" ;;
+    *)   _down_why=" (stopped on purpose ${_stopped%% *})" ;;
+  esac
+  # One line, cause and fix together; the per-service "not responding" rows
+  # below are then left out — this line is all of them.
+  echo "  ! Stack is not running${_down_why} — start it: ./start.sh -d"
+  WARN=$((WARN+1))
+fi
+# down_row <message> <fix> — a service that does not answer: a warning on a
+# running stack, nothing at all on a stopped one (the line above said it).
+down_row() { [[ $STACK_DOWN -eq 1 ]] || warn "$1" "$2"; }
 # INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
 if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   # Someone else's server (vLLM / TensorFold across the Sparks, or a
@@ -373,7 +420,7 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
            "start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here"
     fi
   fi
-elif probe "http://$HEALTH_HOST:8080/health" "ok"; then
+elif [[ $_llama_up -eq 1 ]]; then
   pass "llama.cpp server (:8080)"
   # The model is up — but can the FRONTEND reach it? Open WebUI dials
   # OPENBEAST_MODEL_URL (localhost), and a server bound to a specific LAN or
@@ -404,10 +451,10 @@ elif probe "http://$HEALTH_HOST:8080/health" "ok"; then
     fi
   fi
 else
-  warn "llama.cpp server not responding (:8080)" "./start.sh -d, or ./scripts/healthcheck.sh --restart"
+  down_row "llama.cpp server not responding (:8080)" "./start.sh -d, or ./scripts/healthcheck.sh --restart"
 fi
 
-if probe "http://$HEALTH_HOST:3001/health" "ok"; then
+if [[ $_tools_up -eq 1 ]]; then
   mode=$(curl -s --max-time 4 "http://$HEALTH_HOST:3001/health" 2>/dev/null)
   auth=$(echo "$mode" | grep -o '"auth":"[a-z]*"' | cut -d'"' -f4)
   idn=$(echo "$mode" | grep -o '"identity":"[a-z]*"' | cut -d'"' -f4)
@@ -417,7 +464,7 @@ if probe "http://$HEALTH_HOST:3001/health" "ok"; then
          "restart the stack so the tool server picks up the keys"
   fi
 else
-  warn "identity tool server not responding (:3001)" "./scripts/healthcheck.sh --restart"
+  down_row "identity tool server not responding (:3001)" "./scripts/healthcheck.sh --restart"
 fi
 
 _WEBUI_UP=0
@@ -425,7 +472,7 @@ if probe "http://$HEALTH_HOST:3000/api/version" "version"; then
   _WEBUI_UP=1
   pass "Open WebUI (:3000)"
 else
-  warn "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
+  down_row "Open WebUI not responding (:3000)" "docker compose up -d, or it's still booting"
 fi
 # What the RUNNING WebUI enforces (features.auth on the public /api/config):
 # true / false / unknown. The conf can say one thing while the container,
@@ -491,7 +538,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
            "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
     fi
   else
-    warn "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
+    down_row "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
          "./scripts/healthcheck.sh --restart"
   fi
 fi
@@ -514,7 +561,7 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
                     "./scripts/clients.sh enroll <device-id>" ;;
     esac
   else
-    warn "beast-gate not responding (:${EDGE_PORT:-8090})" "./scripts/healthcheck.sh --restart"
+    down_row "beast-gate not responding (:${EDGE_PORT:-8090})" "./scripts/healthcheck.sh --restart"
   fi
 fi
 
@@ -537,7 +584,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — serving (page count needs .run/artifact-local.token)"
     fi
   else
-    warn "beast-artifact not responding (:${ARTIFACT_PORT:-3004})" \
+    down_row "beast-artifact not responding (:${ARTIFACT_PORT:-3004})" \
          "./scripts/healthcheck.sh --restart, or unset BEAST_ARTIFACT in openbeast.conf"
   fi
 fi
@@ -826,8 +873,12 @@ if command -v tailscale >/dev/null 2>&1; then
       if curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
         pass "beast-chat published on :8445 (tailnet-only)"
       else
-        fail ":8445 is published but beast-chat is NOT responding" \
-             "the console 502s from the phone — set BEAST_CHAT=true and restart, or ./scripts/setup-tailscale.sh --unpublish-chat"
+        # Still a failure on a stopped stack — the mount is live and 502s —
+        # but then the fix is to start it, not a per-service restart.
+        _pfix="the console 502s from the phone — set BEAST_CHAT=true and restart, or ./scripts/setup-tailscale.sh --unpublish-chat"
+        [[ $STACK_DOWN -eq 1 && "${BEAST_CHAT:-false}" == "true" ]] \
+          && _pfix="./start.sh -d (the stack is not running; the console 502s from the phone until then), or ./scripts/setup-tailscale.sh --unpublish-chat"
+        fail ":8445 is published but beast-chat is NOT responding" "$_pfix"
       fi
     elif [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       warn "BEAST_CHAT=true but :8445 is not published — the console is loopback-only" \
@@ -840,8 +891,10 @@ if command -v tailscale >/dev/null 2>&1; then
       if probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
         pass "beast-artifact published on :8446 (tailnet-only)"
       else
-        fail ":8446 is published but beast-artifact is NOT responding" \
-             "every artifact link 502s from the phone — set BEAST_ARTIFACT=true and ./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
+        _pfix="every artifact link 502s from the phone — set BEAST_ARTIFACT=true and ./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
+        [[ $STACK_DOWN -eq 1 && "${BEAST_ARTIFACT:-false}" == "true" ]] \
+          && _pfix="./start.sh -d (the stack is not running; every artifact link 502s from the phone until then), or ./scripts/setup-tailscale.sh --unpublish-artifact"
+        fail ":8446 is published but beast-artifact is NOT responding" "$_pfix"
       fi
     elif [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
       warn "BEAST_ARTIFACT=true but :8446 is not published — artifact links open only on this box" \
@@ -898,8 +951,9 @@ if command -v tailscale >/dev/null 2>&1; then
         if curl -s --max-time 4 "http://$HEALTH_HOST:${EDGE_PORT:-8090}/gate/health" 2>/dev/null | grep -q "beast-gate"; then
           pass "inference published via beast-gate (per-device keys + audit)"
         else
-          fail ":8443 points at beast-gate but the gate is NOT responding" \
-               "remote clients are getting 502 — ./scripts/healthcheck.sh --restart"
+          _pfix="remote clients are getting 502 — ./scripts/healthcheck.sh --restart"
+          [[ $STACK_DOWN -eq 1 ]] && _pfix="./start.sh -d (the stack is not running; remote clients get 502 until then)"
+          fail ":8443 points at beast-gate but the gate is NOT responding" "$_pfix"
         fi
       elif [[ "${HYDRA:-false}" == "true" ]]; then
         # hydra holds node keys: raw publication would hand the tailnet an
@@ -1098,4 +1152,14 @@ fi
 # ── Verdict ─────────────────────────────────────────────────────────────────
 [[ $QUIET -eq 1 ]] || echo ""
 echo "doctor: ${PASS} ok, ${WARN} warning(s), ${FAIL} failure(s)"
+# One next step: the first failure's fix; else, on a stopped stack, starting
+# it (most other rows cannot be judged until it runs); else the first
+# warning's that is a command. Nothing to run → no line.
+if [[ -n "$NEXT_FAIL" ]]; then
+  echo "Next: $NEXT_FAIL"
+elif [[ $STACK_DOWN -eq 1 ]]; then
+  echo "Next: ./start.sh -d"
+elif [[ -n "$NEXT_WARN" ]]; then
+  echo "Next: $NEXT_WARN"
+fi
 [[ $FAIL -eq 0 ]]

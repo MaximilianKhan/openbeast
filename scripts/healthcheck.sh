@@ -76,6 +76,13 @@ CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
+# A plain report ends on ONE next step (see the summary); a --restart run —
+# the watchdog — has already acted, so it gets none.
+REPORT_ONLY=true
+$RESTART && REPORT_ONLY=false
+# Set when the two core services this box runs do not answer (summary).
+CORE_LLAMA_DOWN=0
+CORE_TOOLS_DOWN=0
 
 # STOPPED ON PURPOSE. ./stop.sh (also ExecStop of openbeast.service, the
 # profile scripts and uninstall.sh) writes .run/stopped; ./start.sh clears
@@ -248,6 +255,7 @@ elif _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
   LOADING=1
 elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
+  CORE_LLAMA_DOWN=1
   if $RESTART && _gpu_leased; then
     echo "       → the GPU lease is held ($("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null | head -n1 || true))"
     echo "         not restarting llama.cpp into someone else's measurement."
@@ -323,6 +331,7 @@ fi
 # Identity tool server (agents/openapi_tools.py — replaced mcpo 2026-07-09).
 # One process serves both RBAC profiles; /health is public, keys gate tools.
 if ! check "Tool server" "$MCPO_URL/health" "ok"; then
+  CORE_TOOLS_DOWN=1
   if $RESTART; then
     echo "       → restarting tool server..."
     pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
@@ -852,6 +861,30 @@ elif [[ $UNHEALTHY -eq 0 ]]; then
   echo "All $TOTAL services healthy."
 else
   echo "$UNHEALTHY of $TOTAL services unhealthy."
+  # ...and what to do about it, in one line — the count alone left a reader
+  # with a list of DOWN rows and no next step. A stack that is simply not
+  # running (no live supervisor, neither core service of this box answering;
+  # an unmanaged backend is someone else's and does not count) wants
+  # ./start.sh, not a per-service restart — and so does one marked stopped,
+  # where --restart deliberately relaunches nothing.
+  if $REPORT_ONLY; then
+    _stopped="$(head -n1 "$STOPPED_FILE" 2>/dev/null || true)"
+    case "$_stopped" in
+      "")  _down_why="" ;;
+      *"gave up"*|*"watchdog:"*)
+           _down_why=" (it gave up ${_stopped%% *}: ${_stopped#* } — see .run/stack.log)" ;;
+      *)   _down_why=" (stopped on purpose ${_stopped%% *})" ;;
+    esac
+    _stack_down=0
+    if ! ob_recorded_pid_ours "$REPO_DIR/.run/supervisor.pid" 'start\.sh' && [[ $CORE_TOOLS_DOWN -eq 1 ]]; then
+      if ! ob_inference_managed || [[ $CORE_LLAMA_DOWN -eq 1 ]]; then _stack_down=1; fi
+    fi
+    if [[ $_stack_down -eq 1 || -n "$_stopped" ]]; then
+      echo "Stack is not running${_down_why} — start it: ./start.sh -d"
+    else
+      echo "Next: ./scripts/healthcheck.sh --restart   (restarts what is DOWN)"
+    fi
+  fi
 fi
 
 [[ $UNHEALTHY -eq 0 ]]

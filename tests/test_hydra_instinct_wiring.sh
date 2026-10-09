@@ -904,7 +904,14 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   echo "stop.sh / healthcheck.sh / start.sh --status / doctor.sh — output identical to $WIRING_BASELINE_REF with hydra/instinct off:"
   _OB="$_T/oldbox"; _box "$_OB" "$WIRING_BASELINE_REF"
   _NB="$_T/newbox"; _box "$_NB"
-  _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' | grep -v -- '--restart: relaunching'; }
+  # One line added to healthcheck.sh and doctor.sh since the pinned baseline
+  # for a reason that has nothing to do with hydra/instinct: the closing
+  # next step (review 2026-10-09, UX-17) — "Next: <one fix>", or healthcheck's
+  # "Stack is not running (…) — start it: ./start.sh -d" (unindented; the
+  # stop.sh run just above left the box marked stopped). Exactly that line is
+  # dropped; every row, count and verdict above it is still compared.
+  _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' | grep -v -- '--restart: relaunching' \
+              | grep -vE '^(Next: |Stack is not running)'; }
   RUN_ENV=()
   if diff <(_run "$_OB" "$_OB/stop.sh" | _norm "$_OB") <(_run "$_NB" "$_NB/stop.sh" | _norm "$_NB") >/dev/null; then
     pass "stop.sh: identical output"
@@ -916,7 +923,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
           <(_run "$_NB" "$_NB/scripts/healthcheck.sh" | _norm "$_NB") >/dev/null; then
     pass "healthcheck.sh: identical output"
   else
-    fail "healthcheck.sh output differs from $WIRING_BASELINE_REF"
+    fail "healthcheck.sh output differs from $WIRING_BASELINE_REF:"
+    diff <(_run "$_OB" "$_OB/scripts/healthcheck.sh" | _norm "$_OB") \
+         <(_run "$_NB" "$_NB/scripts/healthcheck.sh" | _norm "$_NB") | head -10 | sed 's/^/        /' || true
   fi
   RUN_ENV=(OPENBEAST_INFERENCE_MANAGED=false OPENBEAST_INFERENCE_URL="http://127.0.0.1:$P_DEAD")
   if diff <(_run "$_OB" "$_OB/start.sh" --status | _norm "$_OB") \
@@ -936,6 +945,14 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
       skip && /^[[:space:]]*$/ { skip = 0; next }
       skip && /✓ remote skills: / { next }
       { print }' | sed -E 's/^doctor: [0-9]+ ok,/doctor: <N> ok,/'; }
+  # Since UX-17 doctor folds the per-service rows of a stack that is NOT
+  # RUNNING into one line. This comparison is about the rows, so both boxes
+  # get a live "supervisor" (the baseline doctor never reads the pidfile):
+  # the stack then counts as running-but-unhealthy and every row is printed.
+  bash -c 'sleep 120; :' start.sh &
+  _fake_sup=$!; _PIDS="$_PIDS $_fake_sup"
+  echo "$_fake_sup" > "$_OB/.run/supervisor.pid"
+  echo "$_fake_sup" > "$_NB/.run/supervisor.pid"
   if diff <(_run "$_OB" "$_OB/scripts/doctor.sh" | _doc "$_OB") \
           <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") >/dev/null; then
     pass "doctor.sh: identical output"

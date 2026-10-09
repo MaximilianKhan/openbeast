@@ -592,6 +592,177 @@ grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
   || fail "healthcheck.sh --restart ran without a SearXNG secret"
 
 # ---------------------------------------------------------------------------
+# UX-17 (2026-10-09): on a stack that is simply not running, doctor printed a
+# "not responding" row per service, each with a different fix, and never the
+# one sentence that was true; healthcheck ended on a count and no next step.
+# ---------------------------------------------------------------------------
+echo ""
+echo "a stack that is not running is said once, with the one fix:"
+_N="$_T/down"; _sandbox "$_N"
+# Its own hardware: doctor's GPU rows must not depend on the card (or the lack
+# of one) in the box running this test.
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 32G"; OB_VRAM_MB=32000; }\n' > "$_N/scripts/lib/hardware.sh"
+# _rc <dir> <script> [args] — like _run, but stdout+stderr in $_O and the
+# script's OWN exit code in $_RC (never `cmd | grep` on it under pipefail).
+_rc() {
+  local d="$1"; shift
+  _RC=0
+  _O="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" ${RUN_ENV[@]+"${RUN_ENV[@]}"} bash "$@" 2>&1)" || _RC=$?
+}
+_per_service='llama.cpp server not responding|identity tool server not responding|Open WebUI not responding|beast-chat enabled but not responding|beast-gate not responding|beast-artifact not responding'
+printf '%s\n' BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true > "$_N/openbeast.conf"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if [[ "$(grep -c 'Stack is not running' <<< "$_O")" == "1" ]] \
+   && grep -qxF "  ! Stack is not running — start it: ./start.sh -d" <<< "$_O" \
+   && ! grep -qE "$_per_service" <<< "$_O"; then
+  pass "doctor: one 'Stack is not running — start it: ./start.sh -d' line replaces six per-service rows"
+else
+  fail "doctor on a stopped stack: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" && $_RC -eq 0 ]]; then
+  pass "…it ends on 'Next: ./start.sh -d', and a stopped stack is still exit 0 (warnings only)"
+else
+  fail "doctor's last line / exit on a stopped stack: '$(tail -n1 <<< "$_O")' rc=$_RC"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qxF "  ! Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…with ./stop.sh's marker it says when it was stopped on purpose" \
+  || fail "stopped-on-purpose line: $(grep 'Stack is' <<< "$_O")"
+echo "2026-10-09T08:05:00 supervisor gave up: llama-server exited 4 times (status 1)" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qF "Stack is not running (it gave up 2026-10-09T08:05:00: supervisor gave up: llama-server exited 4 times (status 1) — see .run/stack.log) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…and a supervisor that GAVE UP is not called 'on purpose' (reason + .run/stack.log named)" \
+  || fail "gave-up line: $(grep 'Stack is' <<< "$_O")"
+rm -f "$_N/.run/stopped"
+# Negative control 1: a live supervisor whose services do not answer yet
+# (starting, or broken) is NOT "not running" — every row is shown.
+bash -c 'sleep 60; :' start.sh &   # `; :` keeps bash (and "start.sh") on the command line
+_SUP=$!; _PIDS="$_PIDS $_SUP"
+echo "$_SUP" > "$_N/.run/supervisor.pid"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && [[ "$(grep -cE "$_per_service" <<< "$_O")" == "6" ]]; then
+  pass "with a live supervisor the per-service rows are all shown (control)"
+else
+  fail "live supervisor: $(grep -cE "$_per_service" <<< "$_O") rows, headline: $(grep 'Stack is' <<< "$_O")"
+fi
+kill "$_SUP" 2>/dev/null || true
+rm -f "$_N/.run/supervisor.pid"
+# Negative control 2: no supervisor, but the core answers (the watchdog
+# relaunched it) — a row that is down is a real row.
+cat > "$_N/bin/curl" <<'SH'
+#!/bin/bash
+url=""; w=0
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; [[ "$a" == "%{http_code}" ]] && w=1; done
+case "$url" in
+  *:8080/*|*:3001/*) [[ $w -eq 1 ]] && { printf '200'; exit 0; }; printf '{"status":"ok"}'; exit 0 ;;
+esac
+[[ $w -eq 1 ]] && printf '000'
+exit 7
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && grep -q "Open WebUI not responding (:3000)" <<< "$_O" \
+   && grep -q "beast-gate not responding" <<< "$_O"; then
+  pass "with the core answering, a dead WebUI / gate is still its own warning (control)"
+else
+  fail "core up: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: "* && "$(tail -n1 <<< "$_O")" != "Next: ./start.sh -d" ]]; then
+  pass "…and 'Next:' then names a warning's fix, not ./start.sh"
+else
+  fail "Next line with the core up: '$(tail -n1 <<< "$_O")'"
+fi
+# A published surface over a dead server stays a FAILURE on a stopped stack
+# (the mount is live and 502s; exit 1 is kept) — with the same one fix.
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/curl"
+cat > "$_N/bin/tailscale" <<'SH'
+#!/bin/bash
+if [[ "$1 $2" == "serve status" ]]; then
+  printf 'https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'; exit 0
+fi
+exit 1
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -qF "✗ :8446 is published but beast-artifact is NOT responding" <<< "$_O" && [[ $_RC -eq 1 ]] \
+   && grep -A1 -F ":8446 is published" <<< "$_O" | grep -qF "fix: ./start.sh -d (the stack is not running" \
+   && [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d (the stack is not running"* ]]; then
+  pass "a published :8446 over a stopped stack still FAILs (exit 1), and its fix is ./start.sh -d too"
+else
+  fail "published surface on a stopped stack: rc=$_RC $(grep -A1 -F ':8446' <<< "$_O" | tr '\n' ' ') last='$(tail -n1 <<< "$_O")'"
+fi
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/tailscale"
+
+# The shipped default has no leaderboard row on a fresh install (results are
+# not checked in): that was a permanent warning nobody could clear.
+echo ""
+echo "doctor.sh: 'no leaderboard row' is information, not a warning:"
+mkdir -p "$_N/evals"
+: > "$_N/openbeast.conf"
+printf '#!/bin/bash\nexec true\n' > "$_N/scripts/serve-here.sh"
+cat > "$_N/evals/benchmark_all.py" <<'PY'
+MODELS = [
+    {"slug": "here-q5", "name": "Here 27B Q5", "serve": "scripts/serve-here.sh"},
+]
+PY
+echo '{"entries": []}' > "$_N/evals/leaderboard.json"
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-here.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"; _A="$_O"
+_rc "$_N" "$_N/scripts/doctor.sh" --quiet; _Q="$_O"
+if grep -qF "  - default model 'Here 27B Q5' has no leaderboard row on this host" <<< "$_A" \
+   && grep -qF "benchmark_all.py --models here-q5" <<< "$_A" \
+   && ! grep -qE '^  ! .*leaderboard' <<< "$_A" && ! grep -q "leaderboard" <<< "$_Q"; then
+  pass "an unbenchmarked default is an info row with the optional command (and silent under --quiet)"
+else
+  fail "leaderboard row: $(grep -i leaderboard <<< "$_A" | tr '\n' ' ') quiet=$(grep -ci leaderboard <<< "$_Q")"
+fi
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-elsewhere.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"
+RUN_ENV=()
+grep -qE "^  ! default serve script 'serve-elsewhere.sh' is not registered" <<< "$_O" \
+  && pass "…a serve script the eval registry does not know is still a warning (control)" \
+  || fail "unregistered serve script: $(grep -i 'registered' <<< "$_O")"
+
+echo ""
+echo "healthcheck.sh ends on a next step:"
+_K="$_T/hcnext"; _sandbox "$_K"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Stack is not running — start it: ./start.sh -d" && $_RC -eq 1 ]] \
+   && grep -q "DOWN llama.cpp server" <<< "$_O" && grep -qE '^[0-9]+ of [0-9]+ services unhealthy\.$' <<< "$_O"; then
+  pass "nothing answering: the count is followed by 'Stack is not running — start it: ./start.sh -d' (exit 1 kept)"
+else
+  fail "healthcheck on a stopped stack: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_K/.run/stopped"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+[[ "$(tail -n1 <<< "$_O")" == "Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" ]] \
+  && pass "…naming ./stop.sh's marker when there is one" || fail "healthcheck with a marker: '$(tail -n1 <<< "$_O")'"
+# The watchdog (--restart) has already acted: its output gets no extra line.
+_rc "$_K" "$_K/scripts/healthcheck.sh" --restart
+if ! grep -qE '^(Next:|Stack is not running)' <<< "$_O" && grep -qE 'services unhealthy\.$' <<< "$_O"; then
+  pass "--restart output is unchanged: no next-step line after the count"
+else
+  fail "--restart grew a next-step line: $(grep -E '^(Next:|Stack is not)' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$_K/.run/stopped"
+# The tool server answers, llama does not: not "stopped" — restart what is down.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http*:3001/* ]] && { printf "{\\"status\\":\\"ok\\"}"; exit 0; }; done\nexit 7\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./scripts/healthcheck.sh --restart"* ]] && ! grep -q "Stack is not running" <<< "$_O"; then
+  pass "partly down (tool server up): 'Next: ./scripts/healthcheck.sh --restart' instead (control)"
+else
+  fail "partly-down next step: '$(tail -n1 <<< "$_O")'"
+fi
+# Everything answers: no next step at all.
+printf '#!/bin/bash\n[[ "$1" == status ]] && { echo "{\\"Self\\":{\\"Online\\":true}}"; exit 0; }\nexit 1\n' > "$_K/bin/tailscale"
+printf '#!/bin/bash\nprintf "{\\"status\\":\\"ok\\",\\"version\\":\\"x\\"} searx"\nexit 0\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ $_RC -eq 0 ]] && grep -qE '^All [0-9]+ services healthy\.$' <<< "$_O" && ! grep -qE '^(Next:|Stack is not)' <<< "$_O"; then
+  pass "all healthy: exit 0 and no next-step line (control)"
+else
+  fail "healthy stack: rc=$_RC $(tail -n2 <<< "$_O" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
 # UX-14 (2026-10-09): doctor's fix for a missing pinned package was a bare
 # `pip install --user -r agents/requirements.txt` — refused by PEP 668 on
 # Arch / Debian 12+ / Ubuntu 24.04, and outside the hash-pinned lock.
