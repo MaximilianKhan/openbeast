@@ -204,6 +204,7 @@ _L="$_T/load"; mkdir -p "$_L/scripts" "$_L/.run"
 cat > "$_L/scripts/stub_llama.py" <<'PY'
 import http.server, json, sys, threading, time, os
 mode, port = sys.argv[1], int(sys.argv[2])
+host = os.environ.get("STUB_HOST", "127.0.0.1")
 t0 = time.time()
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -215,7 +216,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers(); self.wfile.write(body)
-srv = http.server.HTTPServer(("127.0.0.1", port), H)
+srv = http.server.HTTPServer((host, port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 # loading-then-die: the OOM-mid-load shape. Everything else has a hard
 # lifetime so nothing outlives the test even if the harness is killed.
@@ -232,21 +233,35 @@ done
 {
   echo 'set -euo pipefail'
   echo "source '$REPO_DIR/scripts/lib/net.sh'"
+  echo "source '$REPO_DIR/scripts/lib/portown.sh'"
   echo 'SCRIPT_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"'
-  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"'
+  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"; LLAMA_PORT="$STUB_PORT"'
   echo 'LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"'
   echo 'reconfigure_webui_for_model() { :; }'
-  for _fn in launch_llama wait_llama_health record_last_good launch_and_wait; do
+  echo 'LLAMA_PID=""'
+  # (_port_busy & co. arrived with the 2026-10-09 review; absent on an older
+  # start.sh, where sed simply prints nothing for them.)
+  for _fn in _port_busy _port_holder _port_refuse launch_llama _llama_port_ours \
+             wait_llama_health record_last_good launch_and_wait; do
     sed -n "/^${_fn}() {/,/^}/p" "$REPO_DIR/start.sh"
   done
   echo 'rc=0; launch_and_wait || rc=$?'
-  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) PID=$LLAMA_PID"'
+  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) FAIL=${LLAMA_FAIL:-} PID=$LLAMA_PID"'
 } > "$_L/harness.sh"
 _free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
-_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] -> result line
+# [foreign]: somebody ELSE's healthy server on the same port — "pre" is up
+# before the launch, "late" binds one second after it (the bind race).
+_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] [foreign] -> result line
   local port; port="$(_free_port)"
   rm -f "$_L/.run/last-good-serve-script"
   [[ -n "$2" ]] && echo "$2" > "$_L/.run/last-good-serve-script"
+  case "${4:-}" in
+    pre)  python3 "$_L/scripts/stub_llama.py" ok "$port" >/dev/null 2>&1 & _PIDS="$_PIDS $!"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.2
+          done ;;
+    late) ( sleep 1; exec python3 "$_L/scripts/stub_llama.py" ok "$port" >/dev/null 2>&1 ) & _PIDS="$_PIDS $!" ;;
+  esac
   SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true \
     OPENBEAST_LLAMA_LOAD_GRACE="${3:-900}" \
     timeout 40 bash "$_L/harness.sh" > "$_L/out" 2>&1 || true
@@ -279,6 +294,26 @@ if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
   pass "a model answering 200 {\"status\":\"ok\"} is healthy and recorded last-good (control)"
 else
   fail "a healthy stub was not accepted: $_R"
+fi
+# ops F1 (2026-10-09): READY also means OURS. A healthy server that is not
+# the one this start launched — a campaign's llama-server on the same port —
+# used to make a start whose own server died on the bind report "ready".
+printf '#!/bin/bash\necho launched >> "%s/launched.log"\nexit 1\n' "$_L" > "$_L/scripts/serve-die.sh"
+printf '#!/bin/bash\nexec sleep 5\n' > "$_L/scripts/serve-sleeper.sh"
+chmod +x "$_L/scripts/serve-die.sh" "$_L/scripts/serve-sleeper.sh"
+rm -f "$_L/launched.log"
+_R="$(_launch_case serve-die.sh "" 900 pre)"
+if [[ "$_R" == "RC=1 SERVING=serve-die.sh LASTGOOD= FAIL=port "* && ! -e "$_L/launched.log" ]] \
+   && grep -q "is already in use by pid" "$_L/out"; then
+  pass "a foreign server already on the port: nothing is launched, not 'ready', not last-good, and the holder is named"
+else
+  fail "a foreign llama-server was accepted as ours: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+_R="$(_launch_case serve-sleeper.sh "" 900 late)"
+if [[ "$_R" == "RC=1 SERVING=serve-sleeper.sh LASTGOOD= "* ]] && grep -q "not the one this stack launched" "$_L/out"; then
+  pass "a foreign server that wins the bind race is not ours either: our child must HOLD the listener"
+else
+  fail "health from a server we did not launch counted as ready: $_R :: $(tr '\n' ' ' < "$_L/out")"
 fi
 for _p in $_PIDS; do kill "$_p" 2>/dev/null || true; done
 # The -d launcher's readiness probe uses the same helper, not `curl -s`.
@@ -628,6 +663,79 @@ if [[ "$_SO" != *"as root"* && "$_SO" == *"scripts/serve-nope.sh not found"* ]];
   pass "a normal user gets past the guard (control)"
 else
   fail "the root guard fired for uid 1000: $(tr '\n' ' ' <<< "$_SO")"
+fi
+
+echo ""
+echo "start.sh preflight: the port and the GPU lease, before anything is launched (ops F1):"
+_PF="$_T/preflight"; _sandbox "$_PF"
+cp "$REPO_DIR/scripts/gpu-lease.sh" "$_PF/scripts/"
+# The serve script leaves a marker and dies: "was the model launched?"
+printf '#!/bin/bash\necho launched >> "%s/launched.log"\nexit 1\n' "$_PF" > "$_PF/scripts/serve-mark.sh"
+chmod +x "$_PF/scripts/serve-mark.sh"
+_PFPORT="$(_free_port)"
+_pf_env() { RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-mark.sh "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$_PFPORT" "$@"); }
+# Somebody else's healthy llama-server on the address+port ours would bind.
+STUB_HOST=127.0.0.2 python3 "$_L/scripts/stub_llama.py" ok "$_PFPORT" >/dev/null 2>&1 & _FOREIGN=$!; _PIDS="$_PIDS $!"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  (exec 3<>"/dev/tcp/127.0.0.2/$_PFPORT") 2>/dev/null && break; sleep 0.2
+done
+for _mode in "" -d; do
+  rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"
+  _pf_env
+  _start_rc "$_PF" 40 $_mode
+  if [[ $_SRC -eq 1 && "$_SO" == *"port $_PFPORT (the model server) is already in use by pid $_FOREIGN"* \
+        && "$_SO" == *"Nothing was started"* && ! -e "$_PF/launched.log" && ! -e "$_PF/.run/supervisor.pid" \
+        && ! -e "$_PF/.run/last-good-serve-script" ]]; then
+    pass "./start.sh ${_mode:-(foreground)}: a foreign server on the model port is refused up front, naming its pid"
+  else
+    fail "start.sh $_mode with the model port held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+  fi
+done
+kill "$_FOREIGN" 2>/dev/null || true; wait "$_FOREIGN" 2>/dev/null || true
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"
+_pf_env
+_start_rc "$_PF" 40
+if [[ $_SRC -eq 1 && -s "$_PF/launched.log" && "$_SO" != *"already in use"* && "$_SO" == *"llama-server did not come up"* ]]; then
+  pass "…and with the port free the model IS launched (control)"
+else
+  fail "start.sh with the port free (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# The GPU lease, held by a live process that is not our ancestor.
+sleep 300 & _HOLDER=$!; _PIDS="$_PIDS $!"
+_lease_write() { # _lease_write <pid>
+  printf 'pid=%s\nstart=%s\nlabel=%s\nsince=%s\n' "$1" \
+    "$(_proc "ob_pid_start $1")" "T1.17 pair" "2026-10-09T10:00:00" > "$_PF/.run/gpu.lease"
+}
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"; _lease_write "$_HOLDER"
+_pf_env
+_start_rc "$_PF" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"the GPU is leased"* && "$_SO" == *"HELD by pid $_HOLDER"* && "$_SO" == *"T1.17 pair"* \
+      && "$_SO" == *"gpu-lease.sh status"* && ! -e "$_PF/launched.log" && ! -e "$_PF/.run/supervisor.pid" ]]; then
+  pass "a GPU lease held by someone else refuses the start (holder, label and the status command named)"
+else
+  fail "start.sh under a foreign GPU lease (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# Unmanaged backend: no local model, so neither the lease nor the port is ours
+# to ask about. The start goes on to wait for the remote server.
+rm -f "$_PF/launched.log"
+_pf_env OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$_PFPORT" OPENBEAST_LLAMA_LOAD_GRACE=1
+_start_rc "$_PF" 40
+if [[ "$_SO" != *"GPU is leased"* && "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* \
+      && ! -e "$_PF/launched.log" ]]; then
+  pass "an unmanaged backend (INFERENCE_MANAGED=false) is not held up by the lease or the port check"
+else
+  fail "the preflight fired on an unmanaged stack (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# A lease whose holder is gone is stale: free.
+kill "$_HOLDER" 2>/dev/null || true; wait "$_HOLDER" 2>/dev/null || true
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"; _lease_write "$_HOLDER"
+_pf_env
+_start_rc "$_PF" 40
+RUN_ENV=()
+if [[ "$_SO" != *"GPU is leased"* && -s "$_PF/launched.log" ]]; then
+  pass "…and a stale lease (holder gone) does not block the start (control)"
+else
+  fail "a stale lease blocked the start (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
 fi
 
 echo ""

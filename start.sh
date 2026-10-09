@@ -186,6 +186,36 @@ source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on 
 source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
+# _port_busy <host> <port> — 0 when something accepts a TCP connection there,
+# i.e. a server of ours told to bind that address would lose the bind. A
+# connect, not `ss`: it asks about the ADDRESS this stack binds (a sibling on
+# another loopback address is no conflict) and sees a holder of any user.
+_port_busy() {
+  local h="${1#[}"; h="${h%]}"
+  timeout 2 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$h" "$2" 2>/dev/null
+}
+# _port_holder <port> — "pid N (command line)" of whoever listens on <port>,
+# for an error message. Empty when it cannot be named (another user's
+# process, or no ss / lsof / /proc on this box).
+_port_holder() {
+  local p cmd out=""
+  while read -r p; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    cmd="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || ps -o command= -p "$p" 2>/dev/null || true)"
+    cmd="${cmd% }"; [[ ${#cmd} -gt 90 ]] && cmd="${cmd:0:87}..."
+    out+="${out:+, }pid $p${cmd:+ ($cmd)}"
+  done < <(ob_port_pids "$1" 2>/dev/null || true)
+  printf '%s' "$out"
+}
+# _port_refuse <port> <service> — the one message for "that port is taken".
+_port_refuse() {
+  local holder; holder="$(_port_holder "$1")"
+  echo "Error: port $1 ($2) is already in use${holder:+ by $holder}." >&2
+  echo "  A leftover of this stack: ./stop.sh, then ./start.sh again." >&2
+  echo "  Anything else (a benchmark's server, another project): stop that process" >&2
+  echo "  first — find it with: ss -ltnp 'sport = :$1'" >&2
+}
+
 # _spawn_ready <label> <pidname> <port> <health-url> <cmd…>
 # Start one loopback helper server (beast-chat, beast-artifact) and wait for
 # it. "Ready" means the health route answers AND the process we started is the
@@ -262,6 +292,9 @@ fi
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 # INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
 LLAMA_BASE="$INFERENCE_URL"
+# The port our llama-server is probed on (and so must bind): from that URL.
+LLAMA_PORT="${LLAMA_BASE##*:}"; LLAMA_PORT="${LLAMA_PORT%%/*}"
+[[ "$LLAMA_PORT" =~ ^[0-9]+$ ]] || LLAMA_PORT=8080
 # Where the stack's own consumers (router, beast-gate) send inference:
 # beast-hydra when HYDRA=true, else exactly LLAMA_BASE. LLAMA_BASE keeps
 # meaning the local engine (readiness, KV warm-up, rollback).
@@ -324,6 +357,34 @@ ensure_logrotate_timer() {
 }
 [[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
+# ---- preflight: refuse BEFORE the multi-minute model load, not after it ----
+# Run by the process the operator is looking at (the foreground start, or the
+# -d launcher), once it knows no stack of ours is already up. Not by the
+# detached supervisor: it is not a descendant of a lease holder that wrapped
+# the launcher, and its answer would land in stack.log, not on a terminal.
+preflight() {
+  [[ $MANAGED -eq 1 ]] || return 0     # no local model: no card, no port, of ours
+  # The GPU lease (scripts/gpu-lease.sh): a campaign that claimed the card is
+  # mid-measurement, and its llama-server sits on the very port ours needs.
+  # check: 0 = the lease wraps this caller, 3 = free, 4 = somebody else's.
+  local _lease _rc=0
+  if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]]; then
+    _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" check 2>/dev/null)" || _rc=$?
+    if [[ $_rc -eq 4 ]]; then
+      echo "Error: the GPU is leased — $_lease" >&2
+      echo "  Loading a model now would take the card from a job that claimed it." >&2
+      echo "  Nothing was started. Wait for that job, or see it: ./scripts/gpu-lease.sh status" >&2
+      echo "  (to start as part of it: ./scripts/gpu-lease.sh run <label> -- ./start.sh)" >&2
+      exit 1
+    fi
+  fi
+  if _port_busy "$HEALTH_HOST" "$LLAMA_PORT"; then
+    _port_refuse "$LLAMA_PORT" "the model server"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+}
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
@@ -332,6 +393,7 @@ if [[ $DAEMON -eq 1 ]]; then
     echo "Check ./start.sh --status, or ./stop.sh first." >&2
     exit 1
   fi
+  preflight
   if [[ $MANAGED -eq 1 ]]; then
     echo "Starting OpenBeast in the background ($SERVE_SCRIPT)..."
   else
@@ -505,6 +567,7 @@ if [[ $DAEMONIZED -eq 0 ]] && _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervi
   echo "Check ./start.sh --status, or ./stop.sh first." >&2
   exit 1
 fi
+[[ $DAEMONIZED -eq 1 ]] || preflight
 if [[ $DAEMONIZED -eq 1 ]]; then
   exec >>"$RUN_DIR/stack.log" 2>&1
   echo "=== OpenBeast supervisor start: $(date '+%Y-%m-%d %H:%M:%S') ($SERVE_SCRIPT) ==="
@@ -640,11 +703,44 @@ cleanup() {
 trap cleanup EXIT
 trap 'STOPPING=1; cleanup; exit 143' INT TERM
 
+# Returns 2, launching nothing, when the port is already held: our server
+# would die on the bind while the holder answered /health in its place — a
+# campaign's llama-server under a GPU lease, or one the watchdog relaunched.
 launch_llama() {
+  if _port_busy "$HEALTH_HOST" "$LLAMA_PORT"; then
+    _port_refuse "$LLAMA_PORT" "the model server"
+    echo "  Not launching llama-server: it could not bind." >&2
+    return 2
+  fi
   echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
   "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
   LLAMA_PID=$!
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
+}
+
+# _llama_port_ours — the listener on LLAMA_PORT is the server WE launched:
+# $LLAMA_PID (every shipped serve script execs llama-server), or a child of
+# it for a hand-written one that does not.
+_llama_port_ours() {
+  local pids rc=0 p hops
+  pids="$(ob_port_pids "$LLAMA_PORT")" || rc=$?
+  if [[ $rc -eq 2 || -z "$pids" ]]; then
+    # The holder cannot be named here (no ss / lsof / /proc). The rule
+    # _spawn_ready uses: outlive the bind-failure window, then require that
+    # our process is still there.
+    sleep 1
+    kill -0 "$LLAMA_PID" 2>/dev/null
+    return
+  fi
+  for p in $pids; do
+    hops=0
+    while [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 && $hops -lt 8 ]]; do
+      [[ "$p" == "$LLAMA_PID" ]] && return 0
+      p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ' || true)"
+      hops=$((hops + 1))
+    done
+  done
+  return 1
 }
 
 # Returns 0 once llama-server is READY, 1 if the process dies first or the
@@ -663,10 +759,27 @@ launch_llama() {
 # stalled read says "Loading model" forever and never dies, and this loop
 # waited on it forever. Past the grace the load has FAILED: stop the process
 # (it still holds the port and VRAM) so a rollback can have them.
+#
+# READY also means OURS. The loop used to ask /health first and "is our child
+# alive" only when that failed, so any server already on the port — a
+# campaign's, mid-measurement — made a start whose own llama-server had died
+# on the bind print "ready", record the script as last-good and carry on; the
+# supervisor then burned its three relaunches against it and tore the stack
+# down. Our child must be alive AND hold the listener.
 wait_llama_health() {
   local t0=$SECONDS _i
-  until ob_llama_ready "$LLAMA_BASE"; do
-    kill -0 "$LLAMA_PID" 2>/dev/null || return 1
+  while true; do
+    if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+      if ob_llama_ready "$LLAMA_BASE"; then
+        _i="$(_port_holder "$LLAMA_PORT")"
+        echo "llama-server (pid $LLAMA_PID) exited, yet a server answers on port $LLAMA_PORT${_i:+: $_i}." >&2
+        echo "  It is not the one this stack launched, so it is not reported as ready." >&2
+      fi
+      return 1
+    fi
+    if ob_llama_ready "$LLAMA_BASE" && _llama_port_ours; then
+      return 0
+    fi
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
       echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
       kill "$LLAMA_PID" 2>/dev/null || true
@@ -704,8 +817,12 @@ reconfigure_webui_for_model() {
 # is enabled and a different last-known-good exists, launch THAT instead and
 # update $SERVE_SCRIPT + the restart record. Returns 0 if some model is serving
 # (original or rollback), 1 if everything failed. Records last-good on success.
+# LLAMA_FAIL says why, for the caller's message: "port" (held by someone
+# else — nothing was launched, and a rollback could not bind either),
+# "refused" (weight registry), or empty (the server died or never got ready).
 launch_and_wait() {
-  launch_llama
+  LLAMA_FAIL=""
+  launch_llama || { LLAMA_FAIL=port; return 1; }
   if wait_llama_health; then record_last_good "$SERVE_SCRIPT"; return 0; fi
   local failed="$SERVE_SCRIPT" lastgood
   # serve.sh exits 3 for a WEIGHT_ENFORCE=strict supply-chain refusal. Rolling
@@ -718,6 +835,7 @@ launch_and_wait() {
       echo "Refusing to roll back: '$failed' was rejected by the weight registry" >&2
       echo "  (WEIGHT_ENFORCE=strict). Serving a different model would defeat the check." >&2
       echo "  Fix the weight, re-pin it, or set WEIGHT_ENFORCE=warn in openbeast.conf." >&2
+      LLAMA_FAIL=refused
       return 1
     fi
   fi
@@ -727,7 +845,7 @@ launch_and_wait() {
       echo "Rollback: '$failed' failed to load — reverting to last-known-good '$lastgood'." >&2
       SERVE_SCRIPT="$lastgood"
       echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
-      launch_llama
+      launch_llama || { LLAMA_FAIL=port; return 1; }
       if wait_llama_health; then
         record_last_good "$SERVE_SCRIPT"
         echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
@@ -923,7 +1041,7 @@ if [[ $MANAGED -eq 0 ]]; then
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
   # Phase 1 is the tiny bridge — it IS the fallback, so no rollback/record here.
-  launch_llama
+  launch_llama || exit 1
   if ! wait_llama_health; then
     echo "Error: bootstrap model failed to load — see output above" >&2
     exit 1
@@ -932,8 +1050,13 @@ else
   echo "Waiting for llama.cpp server to be ready..."
   # Real model, with load-failure rollback to the last-known-good.
   if ! launch_and_wait; then
-    echo "Error: llama-server exited during startup — see its output above" >&2
-    echo "       (missing weight file or VRAM OOM; no healthy model to roll back to)" >&2
+    case "$LLAMA_FAIL" in
+      port)    echo "Error: no model server was started — the port is held (see above)." >&2 ;;
+      refused) echo "Error: the configured model was refused (see above); nothing is serving." >&2 ;;
+      *)       echo "Error: llama-server did not come up — see its output above. Usual causes:" >&2
+               echo "       not enough free VRAM (nvidia-smi), or a damaged weight" >&2
+               echo "       (./scripts/verify-weights.sh --deep). No healthy model to roll back to." >&2 ;;
+    esac
     exit 1
   fi
 fi
