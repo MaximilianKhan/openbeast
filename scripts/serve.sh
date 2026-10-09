@@ -55,6 +55,26 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
+# The weight has to BE there. Nothing below checked: the context scaler
+# computed "weights ~0 MiB", llama-server was launched with a path that does
+# not exist, and start.sh was left to guess ("missing weight file or VRAM
+# OOM") or to roll back to another model without a word about why.
+if [[ ! -f "$MODEL" ]]; then
+  echo "Error: weight not downloaded: $MODEL" >&2
+  if [[ -f "$SCRIPT_DIR/weights.registry" ]] \
+     && awk -F'\t' -v n="$(basename "$MODEL")" '$0 !~ /^#/ && $3 == n {f = 1} END {exit !f}' "$SCRIPT_DIR/weights.registry"; then
+    echo "  Get it:  ./scripts/fetch-weight.sh $(basename "$MODEL")" >&2
+  else
+    echo "  It is not in scripts/weights.registry, so fetch-weight.sh cannot download it:" >&2
+    echo "  put the file at that path yourself." >&2
+  fi
+  echo "  Already have it somewhere else? Set WEIGHTS_DIR in openbeast.conf to that directory." >&2
+  # Exit 4, not 1: start.sh shows this instead of guessing at the cause, and
+  # does not answer a request for one model by loading another.
+  echo "  (exit 4 = weight file missing)" >&2
+  exit 4
+fi
+
 # --- Model registry enforcement (supply chain for weights) -----------------
 # Container images are digest-pinned and Python deps are hash-pinned; weights
 # are the one shipped artifact too big to vendor, so scripts/weights.registry

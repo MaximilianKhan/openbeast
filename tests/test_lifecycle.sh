@@ -262,7 +262,7 @@ _launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] [foreig
           done ;;
     late) ( sleep 1; exec python3 "$_L/scripts/stub_llama.py" ok "$port" >/dev/null 2>&1 ) & _PIDS="$_PIDS $!" ;;
   esac
-  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true \
+  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true LLAMA_RELAUNCH="${_RELAUNCH:-0}" \
     OPENBEAST_LLAMA_LOAD_GRACE="${3:-900}" \
     timeout 40 bash "$_L/harness.sh" > "$_L/out" 2>&1 || true
   local line; line="$(grep '^RC=' "$_L/out" || echo "RC=hung $(tail -n 2 "$_L/out" | tr '\n' ' ')")"
@@ -308,6 +308,24 @@ if [[ "$_R" == "RC=1 SERVING=serve-die.sh LASTGOOD= FAIL=port "* && ! -e "$_L/la
   pass "a foreign server already on the port: nothing is launched, not 'ready', not last-good, and the holder is named"
 else
   fail "a foreign llama-server was accepted as ours: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# ux UX-08: serve.sh exits 4 for a weight that is not on disk, having named
+# the file and the fetch command. A start must show that, not load some
+# other model in its place.
+printf '#!/bin/bash\necho "Error: weight not downloaded: /w/x.gguf" >&2\nexit 4\n' > "$_L/scripts/serve-noweight.sh"
+chmod +x "$_L/scripts/serve-noweight.sh"
+_R="$(_launch_case serve-noweight.sh serve-ok.sh)"
+if [[ "$_R" == "RC=1 SERVING=serve-noweight.sh LASTGOOD=serve-ok.sh FAIL=weight "* ]] \
+   && grep -q "Not rolling back to another model" "$_L/out"; then
+  pass "a missing weight (serve.sh exit 4) is not answered by rolling back to a different model"
+else
+  fail "a missing weight was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+_R="$(_RELAUNCH=1 _launch_case serve-noweight.sh serve-ok.sh)"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] && grep -q "is no longer on disk" "$_L/out"; then
+  pass "…except in the supervisor's unattended relaunch, which falls back and says the weight is gone"
+else
+  fail "the relaunch path did not fall back from a vanished weight: $_R :: $(tr '\n' ' ' < "$_L/out")"
 fi
 _R="$(_launch_case serve-sleeper.sh "" 900 late)"
 if [[ "$_R" == "RC=1 SERVING=serve-sleeper.sh LASTGOOD= "* ]] && grep -q "not the one this stack launched" "$_L/out"; then

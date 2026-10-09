@@ -438,6 +438,78 @@ else
   fail "serve.sh doesn't call ob_scale_context"
 fi
 
+# --- 8b. serve.sh, run for real (2026-10-09 review) ---
+# A throwaway copy of serve.sh + its libs. llama-server is a stub that
+# records its argv (and prints $SV/help.txt for --help); nvidia-smi is a stub
+# that reports the cards listed in $SV/gpus. Nothing here reads this box's
+# GPU, RAM or weights.
+echo ""
+echo "serve.sh end to end (stub llama-server, stub nvidia-smi):"
+SV="$(mktemp -d)"
+mkdir -p "$SV/scripts/lib" "$SV/llama.cpp/build/bin" "$SV/weights" "$SV/bin" "$SV/home"
+cp "$REPO_DIR/scripts/serve.sh" "$SV/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$SV/scripts/lib/"
+printf 'SEARXNG_SECRET=x\n' > "$SV/openbeast.conf"
+printf 'aaaa\t0\tlisted.gguf\torg/repo\tlisted.gguf\n' > "$SV/scripts/weights.registry"
+cat > "$SV/llama.cpp/build/bin/llama-server" <<SH
+#!/bin/bash
+if [[ " \$* " == *" --help "* ]]; then cat "$SV/help.txt" 2>/dev/null; exit 0; fi
+printf '%s\n' "\$@" > "$SV/argv"
+SH
+cat > "$SV/bin/nvidia-smi" <<SH
+#!/bin/bash
+[[ -s "$SV/gpus" ]] || exit 1
+case "\$*" in
+  *memory.total*) cat "$SV/gpus" ;;
+  *name*)         sed 's/.*/Stub GPU/' "$SV/gpus" ;;
+esac
+exit 0
+SH
+chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/bin/nvidia-smi"
+printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
+: > "$SV/gpus"                       # no GPU unless a case lists one
+head -c 4096 /dev/zero > "$SV/weights/listed.gguf"
+# _serve [ENV=val...] -- <serve.sh args>   -> SV_OUT (stdout+stderr), SV_RC
+_serve() {
+  local envs=()
+  while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done; shift
+  rm -f "$SV/argv"; SV_RC=0
+  SV_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" ${envs[@]+"${envs[@]}"} \
+    bash "$SV/scripts/serve.sh" "$@" 2>&1)" || SV_RC=$?
+}
+# The value llama-server was given for a flag ("" when the flag is absent).
+_sv_arg() { awk -v f="$1" 'p {print; exit} $0 == f {p = 1}' "$SV/argv" 2>/dev/null || true; }
+
+# ux UX-08: a weight that is not on disk.
+_serve -- -m "$SV/weights/missing.gguf" -c 8192
+if [[ $SV_RC -eq 4 && "$SV_OUT" == *"weight not downloaded: $SV/weights/missing.gguf"* && ! -e "$SV/argv" ]]; then
+  pass "serve.sh: a missing weight exits 4 with the path, and llama-server is never launched"
+else
+  fail "serve.sh with a missing weight (rc=$SV_RC, launched=$([[ -e "$SV/argv" ]] && echo yes || echo no)): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+[[ "$SV_OUT" == *"cannot download it"* && "$SV_OUT" == *"WEIGHTS_DIR in openbeast.conf"* ]] \
+  && pass "…an unlisted weight is told fetch-weight.sh cannot get it, and where WEIGHTS_DIR is set" \
+  || fail "serve.sh missing+unlisted weight message: $(tr '\n' ' ' <<< "$SV_OUT")"
+mv "$SV/weights/listed.gguf" "$SV/weights/listed.gguf.away"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+[[ $SV_RC -eq 4 && "$SV_OUT" == *"./scripts/fetch-weight.sh listed.gguf"* ]] \
+  && pass "…a registry-listed one gets the exact fetch command" \
+  || fail "serve.sh missing+listed weight (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+mv "$SV/weights/listed.gguf.away" "$SV/weights/listed.gguf"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && "$(_sv_arg -m)" == "$SV/weights/listed.gguf" && "$SV_OUT" != *"not downloaded"* ]]; then
+  pass "…and a weight that is there launches llama-server with it (control)"
+else
+  fail "serve.sh with a present weight (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+if grep -q '_rc -eq 4' "$REPO_DIR/start.sh" && ! grep -q 'missing weight file or VRAM OOM' "$REPO_DIR/start.sh"; then
+  pass "start.sh acts on exit 4 and no longer guesses \"missing weight file or VRAM OOM\""
+else
+  fail "start.sh still guesses at the cause of a failed load"
+fi
+
+rm -rf "$SV"
+
 # --- 9. Entry-point shell syntax ---
 echo ""
 echo "Shell syntax:"

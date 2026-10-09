@@ -487,7 +487,7 @@ if [[ $DAEMON -eq 1 ]]; then
     # *NOTIFY_URL* too: an ntfy topic URL is a bearer secret with an innocent
     # name (conf.sh already unexported it; this is the second lock).
     #
-    # ...which must not be SILENT. `OPENBEAST_API_KEY=… OPENBEAST_BIND=0.0.0.0
+    # ...which must not be SILENT. `OPENBEAST_API_KEY=… OPENBEAST_BIND=<LAN>
     # ./start.sh -d` forwarded the bind and dropped the key: the daemon found
     # no key in the conf and served the model on the LAN unauthenticated.
     # A secret the caller exported that the conf file has no value for is
@@ -923,7 +923,8 @@ reconfigure_webui_for_model() {
 # (original or rollback), 1 if everything failed. Records last-good on success.
 # LLAMA_FAIL says why, for the caller's message: "port" (held by someone
 # else — nothing was launched, and a rollback could not bind either),
-# "refused" (weight registry), or empty (the server died or never got ready).
+# "refused" (weight registry), "weight" (its file is not on disk), or empty
+# (the server died or never got ready).
 launch_and_wait() {
   LLAMA_FAIL=""
   launch_llama || { LLAMA_FAIL=port; return 1; }
@@ -942,6 +943,20 @@ launch_and_wait() {
       LLAMA_FAIL=refused
       return 1
     fi
+    # serve.sh exits 4 when the weight file is not there, having said which
+    # file and how to fetch it. At a start the operator asked for THIS model:
+    # spending a minute loading a different one would bury that message and
+    # answer a question nobody asked. Only the supervisor's unattended
+    # relaunch (LLAMA_RELAUNCH=1: a weight that vanished under a running
+    # stack) still falls back to the last-known-good, and says why.
+    if [[ $_rc -eq 4 ]]; then
+      LLAMA_FAIL=weight
+      if [[ ${LLAMA_RELAUNCH:-0} -ne 1 ]]; then
+        echo "Not rolling back to another model: the weight for '$failed' is not downloaded." >&2
+        echo "  The command to fetch it is in the message above." >&2
+        return 1
+      fi
+    fi
   fi
   if [[ "${MODEL_ROLLBACK:-true}" == "true" && -f "$RUN_DIR/last-good-serve-script" ]]; then
     lastgood="$(head -n1 "$RUN_DIR/last-good-serve-script" 2>/dev/null || true)"
@@ -952,7 +967,11 @@ launch_and_wait() {
       launch_llama || { LLAMA_FAIL=port; return 1; }
       if wait_llama_health; then
         record_last_good "$SERVE_SCRIPT"
-        echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        if [[ "$LLAMA_FAIL" == weight ]]; then
+          echo "Rolled back to '$SERVE_SCRIPT': the weight for '$failed' is no longer on disk (see the message above for the file and the fetch command)." >&2
+        else
+          echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        fi
         reconfigure_webui_for_model
         return 0
       fi
@@ -1157,6 +1176,8 @@ else
     case "$LLAMA_FAIL" in
       port)    echo "Error: no model server was started — the port is held (see above)." >&2 ;;
       refused) echo "Error: the configured model was refused (see above); nothing is serving." >&2 ;;
+      weight)  echo "Error: $SERVE_SCRIPT cannot start — its weight file is not downloaded." >&2
+               echo "       Fetch it with the command above, then ./start.sh again. Nothing is serving." >&2 ;;
       *)       echo "Error: llama-server did not come up — see its output above. Usual causes:" >&2
                echo "       not enough free VRAM (nvidia-smi), or a damaged weight" >&2
                echo "       (./scripts/verify-weights.sh --deep). No healthy model to roll back to." >&2 ;;
@@ -1641,6 +1662,7 @@ while true; do
   sleep 5
   # launch_and_wait rolls back to the last-known-good model if the current one
   # won't come back (e.g. a weight went missing under it) rather than dying.
+  LLAMA_RELAUNCH=1
   if ! launch_and_wait; then
     echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
     _mark_gave_up "relaunched llama-server never became healthy"
