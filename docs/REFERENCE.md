@@ -23,6 +23,25 @@ copy `openbeast.conf.example` to create it). Each key resolves as
 **env var → `openbeast.conf` → default** via `scripts/lib/conf.sh`
 (weights use their own resolver, `scripts/lib/weights.sh`). `conf.sh` must
 be sourced before any `docker compose up` so containers get the real values.
+The env form is always the `OPENBEAST_`-prefixed name: a plain `KEY=value`
+exported in your shell is not an override.
+
+**The file is linted every time it is read.** `conf.sh` warns — once per
+command, never fatally — about a key nothing reads, with the nearest real
+key when the spelling is close (`EDGE_GTAE` → "did you mean EDGE_GATE? As
+written it is ignored"), about an integer key holding something else, and
+about a `SERVE_SCRIPT` that is not in `scripts/`. A non-integer
+`REASONING_BUDGET` or `PROMPT_CACHE_RAM_MB` is dropped with the warning
+instead of being handed to llama-server. `./start.sh doctor` shows the same
+findings as warning rows. "Known" means every key in `openbeast.conf.example`,
+so a new key belongs there.
+
+**Reading the config never writes it — for commands that only report.** The
+first real start mints `SEARXNG_SECRET` and creates `openbeast.conf` (mode
+600). `doctor.sh`, `healthcheck.sh` without `--restart`, `./start.sh status`,
+`bootstrap.sh --preflight` and `configure-webui.sh --check-default-admin`
+set `OB_CONF_READONLY=1` first (an environment switch for callers, never a
+conf key), so none of them creates or changes the file.
 
 | Key | Env override | Default | What it does |
 |---|---|---|---|
@@ -34,7 +53,7 @@ be sourced before any `docker compose up` so containers get the real values.
 | `MODEL_ROLLBACK` | `OPENBEAST_MODEL_ROLLBACK` | `true` | If the configured model fails to load (OOM, missing/corrupt weight), revert to the last model that loaded healthy (`.run/last-good-serve-script`) with a loud warning instead of leaving the stack down. "Healthy" means `/health` answered 200 `{"status":"ok"}` — the 503 `Loading model` a server gives while loading does not count, and a load still unfinished after `OPENBEAST_LLAMA_LOAD_GRACE` seconds (default 900) is stopped and counts as failed. `false` hard-fails |
 | `INFERENCE_BACKEND` | `OPENBEAST_INFERENCE_BACKEND` | `llama` | Which OpenAI-compatible server the stack talks to: `llama` (llama-server, today's behaviour byte for byte) \| `vllm` \| `tensorfold`. Picks the readiness rule (`scripts/lib/backend.sh`: llama = 200 `{"status":"ok"}`, a 503 `Loading model` is not ready; vLLM = any 200, its body is empty; TensorFold = 200 `{"ok":true}`) and the `/api/slot` capacity source. Any other value warns and falls back to `llama`. See `docs/DGX_SPARK_PLAN.md` |
 | `INFERENCE_URL` | `OPENBEAST_INFERENCE_URL` | `http://<probe host>:8080` | Base URL of that server, without `/v1` (a pasted `/v1` is stripped). Feeds Open WebUI's model connection (`OPENBEAST_MODEL_URL`, unless `AGENT_ROUTER=true`), the router's and beast-gate's upstream, the health probes, and — unless `AGENT_INFERENCE_URL` is set — spawned agents. A key the server demands goes in `LLAMA_API_KEY` |
-| `INFERENCE_MANAGED` | `OPENBEAST_INFERENCE_MANAGED` | `true` for a local llama, `false` for vLLM / TensorFold and for a llama `INFERENCE_URL` on another machine | Whether this stack launches, supervises, rolls back and kills the server. `false`: `start.sh` waits up to `OPENBEAST_LLAMA_LOAD_GRACE` s for `INFERENCE_URL` to be ready and brings up everything else either way (a server still down gets a "NOT ready at <INFERENCE_URL>" warning; `-d` reports "inference NOT ready" and exits 0); `healthcheck.sh --restart`, the watchdog and `stop.sh` report on it but never touch it; fast boot, rollback, KV warming and the weight-registry rows say "not applicable". Always `false` for vLLM / TensorFold (`true` warns) |
+| `INFERENCE_MANAGED` | `OPENBEAST_INFERENCE_MANAGED` | `true` for a local llama, `false` for vLLM / TensorFold and for a llama `INFERENCE_URL` on another machine | Whether this stack launches, supervises, rolls back and kills the server. `false`: `start.sh` waits up to `OPENBEAST_LLAMA_LOAD_GRACE` s for `INFERENCE_URL` to be ready and brings up everything else either way (a server still down gets a "NOT ready at <INFERENCE_URL>" warning; `-d` reports "inference NOT ready" and exits 0); `healthcheck.sh --restart`, the watchdog and `stop.sh` report on it but never touch it; fast boot, rollback and the weight-registry rows say "not applicable". Always `false` for vLLM / TensorFold (`true` warns) |
 | `INFERENCE_SLOTS` | `OPENBEAST_INFERENCE_SLOTS` | empty | Concurrency `/api/slot` reports as `slots.total` when the server exposes none (vLLM `--max-num-seqs`, TensorFold `--parallel`). Positive integer; anything else warns and is ignored |
 | `INFERENCE_MODEL` | `OPENBEAST_INFERENCE_MODEL` | empty | The served model id, for `vllm` / `tensorfold` only (llama-server ignores ids, so it is not exported there): `conf.sh` exports it as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends as its default `model` (vLLM 404s any other id unless started with `VLLM_SKIP_MODEL_NAME_VALIDATION=1`). A trailing ` # comment` and one layer of quotes are dropped; the id may contain spaces. Written by `scripts/backends/use-model.sh` after `conformance.sh` passes; `doctor.sh` warns when it is unset or not what the server lists. See `docs/DGX_SPARK_PLAN.md` §14 |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
@@ -58,9 +77,14 @@ be sourced before any `docker compose up` so containers get the real values.
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
 | `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
-| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While no device is enrolled, serve every caller as a single `anon` device (ignored once one is — then a missing/unknown key is 401). Default fails closed — an empty registry refuses remote callers rather than serving them |
+| `EDGE_MAX_BODY` | `OPENBEAST_EDGE_MAX_BODY` | `8388608` (8 MiB) | Largest request body the gate accepts, in bytes; a larger one is a 413. Raise it only for clients that send large inline media |
+| `EDGE_ALLOW_MEDIA_URLS` | `OPENBEAST_EDGE_ALLOW_MEDIA_URLS` | `false` | Default: an image/audio/video part must carry a `data:` URI or bare base64, and one that names a URL is a 400 — llama-server would fetch it from inside the rig. `true` forwards such parts. The agent router enforces the same rule (`agents/mediapolicy.py`) with no switch |
+| `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While **no registry exists** (`.run/clients.json` has never been written), serve every caller as a single `anon` device. Ignored for good once the file exists — even emptied by `clients.sh remove`, even unreadable; then a missing/unknown key is 401. Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
 | `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
+| `ALLOW_OPEN_INFERENCE` | `OPENBEAST_ALLOW_OPEN_INFERENCE` | `false` | Persisted acknowledgement of publishing llama-server on the tailnet (`:8443`) with no beast-gate and no `LLAMA_API_KEY`. Written by `scripts/setup-tailscale.sh --i-accept-open-inference`. Without it that script leaves `:8443` unpublished on such a rig (and takes an earlier raw mount down) and `doctor` FAILs a keyless `:8443`; with it, re-runs keep publishing and `doctor` WARNs. Delete the line to take it back |
+| `WEBUI_BACKGROUND_TASKS` | `OPENBEAST_WEBUI_BACKGROUND_TASKS` | `false` | After every answer Open WebUI asks the model for chat tags and follow-up suggestions; on a one-slot rig those generations take the slot from the next turn and evict its cached prompt. Default: `configure-webui.sh` switches both **off** at every start (chat titles stay on). `true` leaves WebUI's own switches (Admin Settings → Interface) alone — set it, restart, then re-enable them there |
+| `PROMPT_CACHE_RAM_MB` | `OPENBEAST_PROMPT_CACHE_RAM_MB` | *(unset = auto)* | Host RAM llama-server may use to park the state of conversations that are not on a slot (`--cache-ram`, MiB). Unset/`auto`: 35% of this machine's RAM, at most 48 GiB, and nothing passed when that is not above llama-server's own 8192. `0`: llama-server's default. `<n>`: exactly n MiB (`-1` = no limit). A serve script's own `--cache-ram` wins; a llama-server build without the flag is launched without it. Applies to every launch through `serve.sh`, evals included |
 | `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
 | `AGENT_LOG_RETENTION_DAYS` | `AGENT_LOG_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for `agents/logs/` transcripts. The daily logrotate timer deletes transcripts untouched for this many days **and** no longer named by any session-ledger record (`sessions.prune_transcripts`); a live session's transcript is never removed. Also sweeps `job.sh` logs in `.run/sessions/` whose record is gone |
 | `WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD` | (same names) | empty | Lets `configure-webui.sh` authenticate and re-apply tool config once `WEBUI_AUTH` is on. Written automatically (`admin@localhost` + a random password) when it rotates the built-in admin's upstream default password — see "The built-in admin account" below |
@@ -118,6 +142,9 @@ other peers need a chat-scoped device key, and startup warns),
 `Host` values, comma-separated, added to the built-in loopback + hostname +
 `*.ts.net` allowlist — the DNS-rebinding guard in `agents/hostpolicy.py`),
 `OPENBEAST_CHAT_RUN_DIR` (`.run`), `OPENBEAST_CHAT_RATE_PER_MIN` (60),
+`OPENBEAST_CHAT_SSE_MAX_PER_READER` / `OPENBEAST_CHAT_SSE_MAX` (32 / 128 —
+open event streams per reader and in total; beyond either the answer is 429
+with `Retry-After: 5`),
 `OPENBEAST_CHAT_STOP_TERM_S` / `OPENBEAST_CHAT_STOP_KILL_S` (30 / 60 — the
 polite-stop and escalation deadlines), `OPENBEAST_CHAT_POLL_MS` (250),
 `OPENBEAST_CHAT_HEARTBEAT_S` (15), `OPENBEAST_CHAT_AUTH_RECHECK_S` (the
@@ -139,6 +166,15 @@ notification diff period), `OPENBEAST_CHAT_SLOT_URL` (the beast-slot URL the
 model picker reads; default the dashboard's `/api/slot`) and
 `OPENBEAST_CHAT_GPU_LEASE` (`.run/gpu.lease`, for the rig strip). Full
 semantics: [`BEAST_CHAT.md`](BEAST_CHAT.md).
+
+**The tool server's and the router's environment-only knobs:** both pin the
+`Host` header (the same DNS-rebinding guard, `agents/hostpolicy.py`):
+loopback names, this machine's hostname and `*.ts.net` are accepted, and the
+tool server also accepts any literal IP. `OPENBEAST_TOOLS_ALLOWED_HOSTS` and
+`OPENBEAST_ROUTER_ALLOWED_HOSTS` add names, comma-separated; a bare `*` does
+not switch the check off. The router also answers 403 to a cross-site POST
+and 400 to a POST body that is not valid JSON or that names a remote media
+URL.
 
 **beast-artifact's environment-only knobs:** `OPENBEAST_ARTIFACT_LOCK_TIMEOUT`
 (10 s; how long a publish waits for a page's lock) and
@@ -795,6 +831,34 @@ MTP off and the 6 parallel slots restored, at half the tokens/s.
 ./stop.sh                                       # stop everything (server, MCP, Open WebUI, SearXNG)
 ```
 
+`start.sh` also takes commands as plain words: `./start.sh status` (the same
+as `--status`), `stop`, `restart` (`stop.sh`, then a `-d` start), `doctor`
+and `help`. Any other word that is not a serve script is refused with exit 2
+and the nearest command ("did you mean: ./start.sh status"). `./stop.sh
+--help` prints usage and touches nothing; an unknown option to it exits 2.
+Neither script runs as root.
+
+Before launching anything `start.sh` checks that its ports are free (the
+model port, 3001, 3000, 8888, plus the router's and the gate's when they are
+on) and that nobody else holds the GPU lease, and names the pid and command
+of whatever is in the way.
+
+**A weight that is not on disk is exit 4, not a crash.** `serve.sh` exits 4
+with the path and the exact `./scripts/fetch-weight.sh <file>` command, and
+`start.sh` does not apply `MODEL_ROLLBACK` at a start — rolling back would
+serve a different model than the one you asked for. (Rollback still applies
+when a weight vanishes under a running stack and the supervisor relaunches
+unattended; the message says so.)
+
+**Host prompt cache.** `serve.sh` passes `--cache-ram` sized to this
+machine's RAM (`PROMPT_CACHE_RAM_MB` above; 44034 MiB, about 43 GiB, on the
+reference rig, where llama-server's default is 8). With the one-slot default a second
+chat or agent takes the slot and the first conversation's state is parked in
+this cache; at the old 8 GiB a 100K-token session did not fit, so returning
+to it reprocessed the whole prompt. The KV warm-up request `start.sh` used to
+send after load is gone: the rendered prompt starts with the reasoning line
+and the tools block, so the warmed prefix never matched a real request.
+
 ### Web search (SearXNG)
 
 Local web search is provided by SearXNG, running as a Docker container on port 8888.
@@ -936,7 +1000,20 @@ recorded pid, whose command line must still match (`ob_pid_matches` in
 `scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
 stranger.
 
-`./start.sh doctor` adds the posture rows on top: for beast-chat, a pass line
+When nothing is running, `doctor` says so in one line instead of six red
+rows — `Stack is not running (stopped on purpose <time>) — start it:
+./start.sh -d`; a supervisor or watchdog that gave up is worded as that, not
+"on purpose". It ends with a single `Next:` line naming the one command to
+run, and a report-only `healthcheck.sh` ends the same way (`Next:
+./scripts/healthcheck.sh --restart`, or the start line). Exit codes are
+unchanged. With `AGENT_ROUTER=true` healthcheck also probes the router on
+`127.0.0.1:$ROUTER_PORT/health` (any HTTP answer is alive) and `--restart`
+relaunches it with the environment `start.sh` gives it.
+
+`./start.sh doctor` adds the posture rows on top: a **failure** when `:8443`
+publishes raw llama-server with no key and no `ALLOW_OPEN_INFERENCE=true`,
+and when devices are enrolled in `.run/clients.json` while `EDGE_GATE` is
+off (their keys gate nothing); for beast-chat, a pass line
 with the read policy and running-session count, a **warning** when
 `CHAT_OPERATORS` is empty (every tailnet login can read every session), and a
 **failure** — not a warning — when `:8445` is published but nothing answers,

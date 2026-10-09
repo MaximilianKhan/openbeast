@@ -101,8 +101,15 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
 
 1. `mkdir -p skills/my-skill/`
 2. Write `skills/my-skill/SKILL.md` with frontmatter + body (see schema below)
-3. Run `./scripts/install-skills.sh` to verify it's discoverable
-4. It's live immediately — `skill()` rescans the skills directory on every
+3. **Add its name to `skills/IN_HOUSE_SKILLS.txt`** (one name per line). This
+   is required, not bookkeeping: every skill directory must be named either
+   there (written in this repo) or in `REMOTE_PROVENANCE.md` (imported
+   through the gate), and `./scripts/skill-import.sh verify` — which doctor
+   and the test suite run — exits 3 for a directory in neither, or in both.
+   Without the list, a skill copied in from outside was indistinguishable
+   from one written here. A missing list fails closed.
+4. Run `./scripts/install-skills.sh` to verify it's discoverable. It's live
+   immediately — `skill()` rescans the skills directory on every
    index call (no restart needed)
 5. Decide whether it belongs in the **always-on menu**. `python3
    scripts/generate-skill-index.py` rewrites the skill list in

@@ -851,7 +851,7 @@ Nothing else changes: sampling, `chat_template_kwargs`, `reasoning_budget_tokens
 **Headers to the upstream:**
 
 - Hop-by-hop headers are dropped. So are `Authorization`, `X-Hydra-*`, and `X-OpenBeast-Local`.
-- `X-OpenBeast-Device` and `X-OpenWebUI-User-*` are forwarded only when the caller is trusted, and dropped otherwise.
+- `X-OpenBeast-Device`, `X-OpenWebUI-User-*` and `Tailscale-*` are **never** forwarded to a node, trusted caller or not (as built, 2026-10-09: a node is an inference engine and has no use for who asked; a third-party node would otherwise receive the operator's email). A trusted caller's values are still used for routing and for the audit row.
 - The node key is injected as `Authorization: Bearer …`, never for TensorFold.
 - `X-Conversation-Id` is forwarded as is.
 - `X-OpenBeast-Request-Id` is added (the gate's id, or a new one).
@@ -1003,7 +1003,7 @@ New tests in `test_edge.py`: the request id reaches the upstream; the caller tok
 #### agents/router.py (additive)
 
 1. `ROUTER_CLASSIFY_MODEL` env: if set, `_classify` adds `"model": <value>`.
-2. Add `X-Hydra-Caller` (same file-based token) to proxied requests and to classify. The WebUI `X-OpenWebUI-User-*` headers are forwarded as today, so hydra trusts the role only because the router vouches for it.
+2. Add `X-Hydra-Caller` (same file-based token) to proxied requests and to classify. The WebUI `X-OpenWebUI-User-*` headers are forwarded to hydra as today, so hydra trusts the role only because the router vouches for it. Hydra reads them for routing and the audit row and does not pass them on to the node.
 
 New tests in `test_router.py`: the classify body carries the model when set; the caller token is attached.
 

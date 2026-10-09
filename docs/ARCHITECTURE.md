@@ -354,6 +354,7 @@ agents/                      # Agent framework + servers
   artifact.py                # beast-artifact store (versions, ownership, visibility)
   artifact_server.py         # beast-artifact on :3004 — gallery, viewer, sandboxed raw pages (opt-in)
   hostpolicy.py              # The Host-header allowlist both published servers share
+  mediapolicy.py             # The inline-media rule beast-gate and the router share (no URL fetches)
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize
   requirements.txt / .lock   # Pinned deps and the hash-pinned closure CI installs

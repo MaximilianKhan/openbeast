@@ -445,8 +445,12 @@ Currently excluded: Fable-Fusion 711 (×4), Qwopus3.6-27B-v2 (×2), Gemma 4 31B.
 **On a client**, the catalog is a copy taken from the rig's checkout. It is
 refreshed by `openbeast-client update`, or on its own with
 `openbeast-client refresh-config` — which also probes the rig and adds a
-`rig-live` row naming the model actually loaded, with its true `n_ctx`. That
-row is the only one guaranteed correct, so it is pinned as the default. Before
+live row for the model actually loaded, keyed by **the id the rig serves**
+(what `/v1/models` returns), with its true `n_ctx`. That row is the only one
+guaranteed correct, so it is pinned as the default (and as `small_model`).
+Until 2026-10-09 the row was keyed `rig-live`, an id no server recognises, so
+behind hydra or vLLM — which match the model id — every request was a 404;
+`refresh-config` repoints a config still carrying it. Before
 2026-08-19 the client catalog was frozen at install time and neither command
 existed, which is why newly added models never appeared.
 

@@ -66,7 +66,9 @@ A third, `dependabot-relock.yml`, runs only on Dependabot's PRs: it
 regenerates `agents/requirements.lock` for the bumped `requirements.txt`
 and pushes it to the PR branch, because Dependabot edits only the latter.
 Dependabot opens weekly PRs; `./scripts/land-dependabot.sh` lands them one
-at a time (rebase → relock → approve the held CI runs → merge) — see
+at a time (rebase → relock → approve the held CI runs → merge). With no
+arguments it takes only the PRs that touch `agents/requirements.txt`; pass a
+PR number to land any other — see
 [`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.
@@ -102,7 +104,9 @@ House rules the suite enforces (so you don't discover them in review):
   make that call in the PR description, not in a test edit. Same rule for
   `.run/clients.json`, the registry schema shared with `agents/edge.py`.
 - **Skills**: after editing any `skills/*/SKILL.md`, run
-  `python3 scripts/generate-skill-index.py` (CI fails on a stale index).
+  `python3 scripts/generate-skill-index.py` (CI fails on a stale index). A
+  new skill written here must also be named in `skills/IN_HOUSE_SKILLS.txt`,
+  or `skill-import.sh verify` fails (see `skills/README.md`).
 
 ## Adding an eval task
 

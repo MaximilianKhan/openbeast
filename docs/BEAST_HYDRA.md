@@ -80,6 +80,39 @@ but no routable default route (a WARN; a restart cannot fix it, so the
 watchdog never restarts it). No answer is DOWN, and `--restart` relaunches
 it. `scripts/doctor.sh` prints a per-node, per-deployment and per-route table.
 
+## Timeouts and the breaker
+
+Each node has a first-byte deadline and a circuit breaker
+([`hydra.toml.example`](../hydra.toml.example) has the fields). Two rules
+are not obvious from the file:
+
+- **The implicit single-node config waits as long as the stack did without
+  hydra.** With no `hydra.toml`, the node's first-byte and non-stream
+  deadlines are 580 s, because a one-slot engine queues a second request
+  behind the first for as long as that takes. An explicit `hydra.toml` keeps
+  the 120 s default unless it sets its own.
+- **A request queued behind a busy node does not trip the breaker.** A
+  first-byte timeout is not counted as a node failure when the request had
+  exactly one candidate and that node was already full (in-flight ≥ its
+  `slots`) when the request arrived: that is the engine's queue, not a
+  failing node. This applies to **every** config, explicit `hydra.toml`
+  included, not only the implicit one. Counting them opened the breaker on a
+  rig that was merely busy, and every caller then got 503 for
+  `breaker.open_s`. The caller still gets its timeout; the decision trace
+  says `queued behind a saturated single candidate: not a breaker failure`.
+  A timeout on a node with free capacity, or on a route with somewhere else
+  to go, counts as before.
+
+`python3 agents/hydra.py --print-default-config` prints the implicit config,
+580 s deadlines included and `slots` omitted when `INFERENCE_SLOTS` is unset
+(the engine then judges a client's `id_slot`). Saved as a `hydra.toml`, that
+output becomes an *explicit* config: an omitted `slots` means 1 and
+`id_slot` is range-checked against it again.
+
+Hydra never forwards identity headers (`X-OpenWebUI-*`,
+`X-OpenBeast-Device`, `Tailscale-*`) to a node; it uses them for routing and
+its own audit row only.
+
 ## beast-instinct
 
 Hydra can ask beast-instinct (`:8094`, `INSTINCT=true`) which task class a

@@ -79,6 +79,15 @@ whole sweep holds the card; under a `run` that already wraps it (a
 campaign), it proceeds. A sweep in a git worktree asks the main tree's
 lease. Every model (re)start asks again.
 
+**Between models the sweep waits for the card to cool, not for a fixed ten
+minutes.** The cool-off ends when the hottest GPU reads 50 °C or lower, with
+a 60 s floor and the old 600 s as the ceiling; when the temperature cannot
+be read it is the fixed 600 s. `OPENBEAST_BENCH_COOLOFF_TEMP_C=<°C>` moves
+the threshold and `off` (or `0`) restores the fixed wait. The 50 °C / 60 s
+defaults are a judgement, not yet checked against a measured cool-down on
+the reference card — set `off` for a sweep whose rows must be thermally
+identical to older ones.
+
 ## v5-fast — the pinned fast suite (imputation-scored)
 
 `evals/suites/v5-fast.json` pins the 112 units that carry the suite's signal:
@@ -94,7 +103,15 @@ assumptions, the imputed score EQUALS the full-suite capability score
 exactly — same number, same leaderboard scale. This is verified as an
 identity on every reference run by `make_fast_suite.py`, which are the runs
 the pin was built from, so the check holds by construction and says nothing
-about other models. On the two non-reference full runs on disk, 2 units and
+about other models. `make_fast_suite.py` (verify mode) therefore also prints
+a **leave-one-model-out** table — re-derive the pin from eight reference
+runs, impute the ninth — which is the honest estimate of the error on a
+model the pin has not seen. On the nine reference runs only 1 of 9 comes
+out exact; the mean error is **+0.87** points and the worst **+2.04** (the
+35B-A3B MoE: 97.05 imputed against 95.01 real), always reading high, and 5
+of the 8 misses fail **no** tripwire, so the guard below does not catch
+them. The table is reported, not gated: the exit code and the pinned file
+are unchanged. On the two non-reference full runs on disk, 2 units and
 1 unit violated `assumed_passed` with no tripwire failing, and the imputed
 score read high (98.48 against a true 98.43, and 98.42 against 98.38).
 **Treat an imputed score as an upper bound outside the reference family**
@@ -140,12 +157,27 @@ the health check right after the agent finished, is recorded with
 `reason: server_error`; a unit whose validation output shows fork/thread
 exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `thread constructor failed`) or a full disk (`No space left on device`,
-`NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
-next run, and a run containing either can't enter the leaderboard until
-that rerun is done. An `env_error` that repeats for the same cache key
-(`OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default 3) is the model's own
-program exhausting the machine, so it banks as a plain FAIL
-(`env_error_repeats: N`) instead of rerunning forever. Before each live
+`NoSpaceLeft`) is recorded with `reason: env_error`; and a unit whose
+**validator** ran out of its own time budget is recorded with
+`reason: validator_timeout` — on a contended host that happens to a correct
+solution, whose compile is most of the budget. (The validator's budget now
+takes the same `timeout_scale` as the agent's wall budget, so a `--jobs N`
+run no longer times validators out at the serial figure.) All three retry
+live on the next run. A run containing `server_error` or `env_error` can't
+enter the leaderboard until that rerun is done; a `validator_timeout` row is
+**not** an infrastructure row for that purpose today — it still seats, and
+still counts as a FAIL in paired verdicts (an open decision, `docs/TODO.md`).
+An `env_error` or `validator_timeout` that repeats for the same cache key
+(one shared strike counter, `OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default
+3) is the model's own program exhausting the machine or hanging, so it
+banks as a plain FAIL (`env_error_repeats: N` /
+`validator_timeout_repeats: N`) instead of rerunning forever. Cache entries
+banked before 2026-10-09 are untouched: 17 of them hold a "Validation timed
+out" FAIL and still replay as one until cleared with `cache_cli.py`.
+
+**Each unit starts clean.** The harness runs a task's `cleanup` *before* its
+`setup` as well as after validation, so a solution file left behind by a
+killed run cannot validate for the next unit. Before each live
 unit the harness also checks free space on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
 `/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
 that unit as `reason: low_disk` and stops starting units, so a disk filled
@@ -157,7 +189,10 @@ server start, no live calls, cache misses are recorded as
 `skipped_cache_miss` for visibility. It has no live host (`gpu`/`server`
 are null, `cache_only: true`), so the leaderboard refuses it: seated, it
 was a second `unknown-host` row for the model. To rescore banked runs
-after a scoring change, use `scoring.py --rebuild`. With no server to read the
+after a scoring change, use `scoring.py --rebuild` — which refuses (exit 1,
+`leaderboard.json` untouched) when it finds no readable `eval-*.json` at
+all, instead of rebuilding to an empty board; results files that exist but
+are all ineligible still rebuild to an empty one. With no server to read the
 reasoning budget from, it replays the `.rbN` era of the model's newest
 live results file (it prints which); `--reasoning-budget N` picks one
 explicitly (`-1` = the uncapped legacy era). A replay with any cache miss
@@ -194,7 +229,9 @@ old verdicts. Every live run now computes an `env1-<sha8>` fingerprint over
 exactly those (`run_eval.env_fingerprint`: a weight pinned in
 `scripts/weights.registry` counts as its sha256, an unpinned one as its size +
 mtime, so the file is never hashed). The fingerprint is stamped in
-`harness.env` / `harness.env_component` and on every live row (`env_fp`), and a
+`harness.env` / `harness.env_component` and on every live row (`env_fp`)
+(the run's era hash is stamped beside it as `harness.era`, so rows compare
+on the era rather than on the repo commit), and a
 replayed row banked under a different or unrecorded environment is counted
 (`summary.env_drift_replays`, printed as `ENV DRIFT`). It enters the cache
 key only with **`OPENBEAST_EVAL_ENV_ERA=1`**, because turning that on starts
@@ -511,7 +548,7 @@ narrated in [`docs/RESULTS.md`](../docs/RESULTS.md) "Scoring v2".
 Ranking is by **capability** first, then problem_solving, then hard pass count,
 then speed. Tokens and API-equivalent cost are tracked separately (not part of
 the rank). Leaderboard readout columns: SOLVE / LANG / SCORE (all shown as %)
-→ SPD (sustained decode tok/s; ~ = estimate) → TOKENS (total prompt+completion) → WALL → PASS. (The
+→ SPD (sustained decode tok/s; ~ = estimate) → TOKENS (total prompt+completion) → WALL → PASS → T/O. (The
 legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 `accuracy`/`breakdown` + `scoring.py --by-category`, not the at-a-glance readout.)
 
@@ -523,7 +560,11 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 
 **Why the `~` estimates (fallback, currently unused):** decode is matched to each run's tee'd server log by timestamp (`decode_from_server_log`), which finds a real log for **every** v4 run — so all current rows are server-measured. If a run ever has no decode log, its SPD falls back to an isolated-benchmark estimate shown with a leading `~` (or `—` if none is defined). Re-running with logging always replaces it with a measured value.
 
-**†** *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
+**T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 until the runner reports them on the way down.
+
+**† and ‡ after a row are provenance marks, printed by `scoring.py --show` with one footnote line per marked row.** Each entry carries `provenance`: the repo commit and dirty flag, the engine build, the reasoning budget and `--jobs`. **†** = the row is missing at least one of those (it predates the stamp), so nothing can be said about its regime. **‡** = everything is recorded and something differs from row 1 — the footnote names what (for example `engine build 10254 (row 1: 9690); jobs 4 (row 1: unrecorded)`). No row is re-ranked or dropped for either mark; they say which rows are not like-for-like. On today's board rows 2 and 3 (Qwen3.8) are ‡ and the rest †.
+
+*Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
 
 ### NVFP4 — real target use case (why it ranks low but is NOT useless to benchmark)
 

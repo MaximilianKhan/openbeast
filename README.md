@@ -591,13 +591,13 @@ automatic HTTPS, usable from anywhere (cellular included):
 ```
 
 It installs Tailscale, joins your tailnet as `beast`, walks you through the two
-one-time tailnet toggles, and publishes exactly two services — tailnet-only,
+one-time tailnet toggles, and publishes up to two services — tailnet-only,
 never the public internet:
 
 | URL | Service |
 |---|---|
 | `https://<host>.<tailnet>.ts.net` | Open WebUI (chat) |
-| `https://<host>.<tailnet>.ts.net:8443/v1` | Inference (OpenAI-compatible API) |
+| `https://<host>.<tailnet>.ts.net:8443/v1` | Inference (OpenAI-compatible API) — once it is gated, keyed, or acknowledged open (below) |
 
 Everything else is **opt-in**, one flag each:
 
@@ -617,11 +617,13 @@ one saved in `openbeast.conf`, and the WebUI is not published if that fails.
 beast-artifact check the tailnet login against their operator lists. Phone:
 install the Tailscale app, open the chat URL, "Add to Home Screen".
 
-> **What `:8443` actually exposes.** By default it maps straight at
-> llama-server, which publishes its *whole* route table to the tailnet — not
-> just chat. That's fine on a tailnet you fully own. Set `EDGE_GATE=true` and
-> it routes through **beast-gate** instead: per-device keys, an OpenAI-route
-> allowlist, rate limits, and an inference audit trail.
+> **`:8443` is never published keyless by accident.** With no gate and no
+> key, `setup-tailscale.sh` leaves inference unpublished and prints three
+> choices: `EDGE_GATE=true` (recommended — it routes through **beast-gate**:
+> per-device keys, an OpenAI-route allowlist, rate limits, and an inference
+> audit trail), a shared `LLAMA_API_KEY`, or `--i-accept-open-inference`. The
+> last two map straight at llama-server, which publishes its *whole* route
+> table — not just chat; keyless, that's fine only on a tailnet you fully own.
 > → [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md)
 
 > **⚠️ Don't run a second full-tunnel VPN (NordVPN, etc.) at the same time as
@@ -879,7 +881,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) |
+| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) · [TODO.md](docs/TODO.md) |
 | v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
@@ -925,9 +927,21 @@ kept too when it holds local-only branches, stashes or uncommitted edits
 system tree, `$HOME` or the checkout is refused. The checkout itself is never
 deleted — `rm -rf` it yourself when you're done.
 
-Nothing OpenBeast installs lives outside the repo, the Docker containers, the
-user systemd units and the tailscale serve config, so that script is the whole
-footprint.
+Three things the script is careful about:
+
+- **`--purge-weights` deletes only what OpenBeast put there** — the files
+  `scripts/weights.registry` names, plus `fetch-weight.sh`'s `.fetch.*`
+  staging directories — and lists what it kept. The default `WEIGHTS_DIR` is
+  the sibling `../weights`, which may hold GGUFs from other tools; the
+  directory itself is no longer `rm -rf`'d.
+- **Unpublishing is per port.** Only OpenBeast's own tailscale serve mounts
+  (`:443`, `:8443`–`:8447`, `:8889`) are taken down; any other mount on the
+  machine is reported and left published.
+- **It ends with a "left" list** of what lives outside the checkout and is
+  not removed for you, each with its own removal command: the `pip --user`
+  Python packages, sandlock, the skill scanner's venv, your global skills,
+  client mode on the same machine, the container images, and Tailscale
+  itself.
 
 ## Credits: standing on the shoulders of giants
 
