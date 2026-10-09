@@ -236,14 +236,19 @@ if [[ -n "$REASONING_BUDGET" && ! "$REASONING_BUDGET" =~ ^-?[0-9]+$ ]]; then
   REASONING_BUDGET=""
 fi
 # Host-RAM prompt cache (serve.sh hands it to llama-server), integer MiB:
-#   empty = automatic (serve.sh sizes it to this machine's RAM),
-#   0     = the server's own default, N = exactly N MiB.
-# Env override: $OPENBEAST_PROMPT_CACHE_RAM_MB. Exported only when set, so
-# "unset" still means "automatic" to whatever serve.sh runs under.
+#   empty / auto = automatic (serve.sh sizes it to this machine's RAM),
+#   0     = the server's own default, N = exactly N MiB, -1 = no limit.
+# The same values serve.sh takes and openbeast.conf.example documents: `auto`
+# and `-1` used to be reported here as "not a whole number — ignoring it"
+# while serve.sh went on to apply them.
+# Env override: $OPENBEAST_PROMPT_CACHE_RAM_MB — not a plain inherited
+# PROMPT_CACHE_RAM_MB, which is dropped like any other stale export.
+# Exported only when set, so "unset" still means "automatic" to whatever
+# serve.sh runs under.
 PROMPT_CACHE_RAM_MB="${OPENBEAST_PROMPT_CACHE_RAM_MB:-$(_ob_conf_value PROMPT_CACHE_RAM_MB || true)}"
 PROMPT_CACHE_RAM_MB="${PROMPT_CACHE_RAM_MB%%[[:space:]#]*}"
-if [[ -n "$PROMPT_CACHE_RAM_MB" && ! "$PROMPT_CACHE_RAM_MB" =~ ^[0-9]+$ ]]; then
-  _OB_CONF_PROBLEMS+=("PROMPT_CACHE_RAM_MB='$PROMPT_CACHE_RAM_MB' is not a whole number of MiB — ignoring it, the prompt cache is sized automatically")
+if [[ -n "$PROMPT_CACHE_RAM_MB" && ! "$PROMPT_CACHE_RAM_MB" =~ ^(auto|-1|[0-9]+)$ ]]; then
+  _OB_CONF_PROBLEMS+=("PROMPT_CACHE_RAM_MB='$PROMPT_CACHE_RAM_MB' is not a whole number of MiB (or auto, 0, -1) — ignoring it, the prompt cache is sized automatically")
   PROMPT_CACHE_RAM_MB=""
 fi
 if [[ -n "$PROMPT_CACHE_RAM_MB" ]]; then

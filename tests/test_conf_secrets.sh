@@ -473,6 +473,15 @@ fi
 _F="$(_pc 'SEARXNG_SECRET=s' PROMPT_CACHE_RAM_MB=777)"
 [[ "$_F" == "v=[] env=[0]" ]] && pass "…and a stale inherited PROMPT_CACHE_RAM_MB does not stick once the key is gone" \
   || fail "stale PROMPT_CACHE_RAM_MB survived: '$_F'"
+# The other two values serve.sh takes (and openbeast.conf.example documents).
+_G="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=-1')"; _Gerr="$(_err)"
+_H="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=auto')"
+if [[ "$_G" == "v=[-1] env=[1]" && "$_H" == "v=[auto] env=[1]" ]] && ! has "$_Gerr" "PROMPT_CACHE_RAM_MB" \
+   && ! has "$(_err)" "PROMPT_CACHE_RAM_MB"; then
+  pass "…-1 (no limit) and auto are passed through without a warning, as serve.sh takes them"
+else
+  fail "PROMPT_CACHE_RAM_MB -1/auto: '$_G' '$_H' err=$_Gerr $(_err | tr '\n' ' ')"
+fi
 # SERVE_SCRIPT.
 lint_eval $'SEARXNG_SECRET=s\nSERVE_SCRIPT=serve-nope.sh' -- ':'
 has "$(_err)" "SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" \
