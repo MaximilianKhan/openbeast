@@ -141,8 +141,9 @@ fi
 # We only ever scale DOWN — the measured value stands on reference-class
 # cards, so behavior is byte-identical there. Overrides:
 #   OPENBEAST_CONTEXT=<n>     force an exact context (skip scaling)
-#   OPENBEAST_VRAM_MIB=<n>    tell us the card's VRAM (when detection is wrong,
-#                             e.g. Intel Arc / headless AMD)
+#   OPENBEAST_VRAM_MIB=<n>    tell us the VRAM to budget against (when
+#                             detection is wrong, e.g. Intel Arc / headless
+#                             AMD, or a multi-GPU launch pinned to one card)
 #   OPENBEAST_AUTO_CONTEXT=0  disable scaling entirely
 if [[ -n "${OPENBEAST_CONTEXT:-}" ]]; then
   CONTEXT="$OPENBEAST_CONTEXT"
@@ -151,6 +152,33 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
   source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
   command -v ob_detect_gpu >/dev/null 2>&1 && ob_detect_gpu 2>/dev/null || true
   vram="${OPENBEAST_VRAM_MIB:-${OB_VRAM_MB:-0}}"
+  vram_what="a ${vram} MiB card"
+  # Several GPUs: llama.cpp splits the model across them, so the KV budget is
+  # their sum (ob_context_vram_mb), not the largest card — unless this launch
+  # is pinned to a subset. nvidia-smi lists every card whatever
+  # CUDA_VISIBLE_DEVICES says, and --device / --split-mode none restrict
+  # llama-server itself; which cards remain cannot be told from here, so a
+  # pinned launch keeps the conservative single-card budget and says so.
+  if [[ -z "${OPENBEAST_VRAM_MIB:-}" && "${OB_GPU_COUNT:-0}" -gt 1 ]] \
+     && command -v ob_context_vram_mb >/dev/null 2>&1; then
+    _pinned=""
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] && _pinned="CUDA_VISIBLE_DEVICES"
+    for _i in "${!EXTRA_ARGS[@]}"; do
+      case "${EXTRA_ARGS[$_i]}" in
+        -dev|--device) _pinned="${EXTRA_ARGS[$_i]}" ;;
+        -sm|--split-mode)
+          # (no :-default here: _i + 1 may be past the end of the array)
+          _next=$((_i + 1))
+          [[ $_next -lt ${#EXTRA_ARGS[@]} && "${EXTRA_ARGS[$_next]}" == "none" ]] && _pinned="--split-mode none" ;;
+      esac
+    done
+    if [[ -n "$_pinned" ]]; then
+      echo "Context: ${OB_GPU_COUNT} GPUs, but this launch is pinned ($_pinned) — budgeting for the largest single card (${vram} MiB). Set OPENBEAST_VRAM_MIB=<n> to the VRAM it really gets."
+    else
+      vram="$(ob_context_vram_mb "${OB_VRAM_MB:-0}" "${OB_VRAM_TOTAL_MB:-0}" "$OB_GPU_COUNT")"
+      vram_what="${OB_GPU_COUNT} GPUs (${OB_VRAM_TOTAL_MB} MiB total, ${vram} MiB budgeted)"
+    fi
+  fi
   weights_mib=0
   [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -c '%s' "$MODEL") + 1048575) / 1048576 ))
   # rc=0 capture-then-|| : under `set -e`, a plain `scaled=$(...)` with a
@@ -159,10 +187,10 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
   rc=0
   scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib") || rc=$?
   if [[ $rc -eq 2 ]]; then
-    echo "Warning: a ${vram} MiB card can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
+    echo "Warning: ${vram_what} can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
     CONTEXT="$scaled"
   elif [[ "$scaled" -lt "$CONTEXT" ]]; then
-    echo "Context: $CONTEXT -> $scaled (auto-scaled for ${vram} MiB card; weights ~${weights_mib} MiB, 2 GB headroom). Override: OPENBEAST_CONTEXT=<n>."
+    echo "Context: $CONTEXT -> $scaled (auto-scaled for ${vram_what}; weights ~${weights_mib} MiB, 2 GB headroom). Override: OPENBEAST_CONTEXT=<n>."
     CONTEXT="$scaled"
   fi
 fi

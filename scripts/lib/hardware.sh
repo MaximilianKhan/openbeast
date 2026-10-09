@@ -82,9 +82,11 @@ ob_profile_advice() {
     nvidia)
       if [[ $OB_GPU_COUNT -gt 1 ]]; then
         echo "  Multi-GPU detected (${OB_GPU_COUNT}x, ${OB_VRAM_TOTAL_MB} MiB total)."
-        echo "  llama.cpp can split across cards (--tensor-split), but every"
-        echo "  shipped config is single-5090-tuned. Multi-GPU profiles are"
-        echo "  planned (docs/HARDWARE_PROFILES.md) — expect to hand-tune -c."
+        echo "  llama.cpp splits the model across the cards, and serve.sh"
+        echo "  budgets the context against their summed VRAM — but every"
+        echo "  shipped config is measured on one 5090, so treat -c as"
+        echo "  unmeasured here (docs/HARDWARE_PROFILES.md): watch nvidia-smi,"
+        echo "  override with OPENBEAST_CONTEXT=<n>."
       elif [[ $OB_VRAM_MB -ge 30000 ]]; then
         echo "  ${OB_VRAM_MB} MiB VRAM — 5090-class (reference profile)."
         echo "  All shipped serve scripts apply as-is; contexts are measured."
@@ -154,6 +156,25 @@ ob_scale_context() {
   [[ $n -lt 8192 ]] && n=8192
   [[ $n -gt $ref_ctx ]] && n="$ref_ctx"
   echo "$n"
+}
+
+# The VRAM ob_scale_context should budget against, in MiB.
+# Args: <largest_single_gpu_mib> <total_mib> <gpu_count>.
+# One card: that card. Several: llama.cpp splits the layers — and each
+# layer's share of the KV cache — across all of them, so the budget is the
+# SUM, less ob_scale_context's 2048 MiB headroom once more per extra card
+# (every card keeps its own slack; the scaler subtracts it only once).
+# Scaling by the largest single card, as serve.sh did, gave a 2x 24 GB node
+# -c 57344 for a 27B Q5 whose shipped -c 262144 fits it: hydra then routed
+# 100K-token prompts at a server it believed had 262144.
+# Pure integer math, no I/O (unit-testable, like ob_scale_context).
+ob_context_vram_mb() {
+  local one="${1:-0}" total="${2:-0}" n="${3:-0}"
+  if [[ "$n" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$n" -gt 1 && "$total" -gt 0 ]]; then
+    echo $(( total - (n - 1) * 2048 ))
+  else
+    echo "$one"
+  fi
 }
 
 ob_vram_floor_check() {

@@ -508,6 +508,50 @@ else
   fail "start.sh still guesses at the cause of a failed load"
 fi
 
+# ops F7: on a multi-GPU host the KV budget is the sum of the cards, not the
+# largest one. The cards are built here ($SV/gpus), never read from this box.
+_ctxv() { ( source "$REPO_DIR/scripts/lib/hardware.sh"; ob_context_vram_mb "$@" ); }
+if [[ "$(_ctxv 24564 49128 2)" == "47080" && "$(_ctxv 24564 24564 1)" == "24564" \
+      && "$(_ctxv 0 0 0)" == "0" && "$(_ctxv 32607 44895 2)" == "42847" ]]; then
+  pass "ob_context_vram_mb: several cards = their sum less 2 GB per extra card; one card (or none) unchanged"
+else
+  fail "ob_context_vram_mb: 2x24564 -> $(_ctxv 24564 49128 2) (want 47080), 1x -> $(_ctxv 24564 24564 1), none -> $(_ctxv 0 0 0)"
+fi
+printf '24564\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C1="$(_sv_arg -c)"
+printf '24564\n24564\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C2="$(_sv_arg -c)"
+if [[ "$_C1" =~ ^[0-9]+$ && "$_C1" -lt 262144 && "$_C2" == "262144" ]]; then
+  pass "serve.sh: 2x 24 GB keeps the shipped -c 262144 (one 24 GB card scales it to $_C1)"
+else
+  fail "serve.sh multi-GPU context: one card -c '$_C1' (want < 262144), two cards -c '$_C2' (want 262144)"
+fi
+printf '12288\n12288\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C3="$(_sv_arg -c)"
+if [[ "$_C3" =~ ^[0-9]+$ && "$_C3" -lt "$_C1" && "$_C3" -gt 8192 && "$SV_OUT" == *"2 GPUs (24576 MiB total, 22528 MiB budgeted)"* ]]; then
+  pass "…and two small cards are still scaled DOWN, for their summed budget (-c $_C3), with the numbers shown"
+else
+  fail "serve.sh 2x 12 GB: -c '$_C3' (one 24 GB card: $_C1) :: $(grep Context <<< "$SV_OUT" | tr '\n' ' ')"
+fi
+# A launch pinned to a subset cannot use the sum: conservative single card.
+printf '24564\n24564\n' > "$SV/gpus"
+_serve CUDA_VISIBLE_DEVICES=0 -- -m "$SV/weights/listed.gguf" -c 262144
+_C4="$(_sv_arg -c)"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144 --split-mode none
+_C5="$(_sv_arg -c)"
+if [[ "$_C4" == "$_C1" && "$_C5" == "$_C1" && "$SV_OUT" == *"pinned (--split-mode none)"* ]]; then
+  pass "…a launch pinned to one card (CUDA_VISIBLE_DEVICES, --split-mode none) keeps the single-card budget"
+else
+  fail "serve.sh pinned multi-GPU: CUDA_VISIBLE_DEVICES -c '$_C4', --split-mode none -c '$_C5' (want $_C1 for both)"
+fi
+_serve OPENBEAST_VRAM_MIB=24564 -- -m "$SV/weights/listed.gguf" -c 262144
+[[ "$(_sv_arg -c)" == "$_C1" ]] && pass "…and OPENBEAST_VRAM_MIB still overrides detection outright" \
+  || fail "OPENBEAST_VRAM_MIB ignored on a multi-GPU host: -c '$(_sv_arg -c)'"
+: > "$SV/gpus"
+
 rm -rf "$SV"
 
 # --- 9. Entry-point shell syntax ---
