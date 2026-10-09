@@ -590,7 +590,14 @@ class Hydra:
         # UNKNOWN (boot, a new node) is probed every second, so up_after is
         # reached in seconds rather than up_after x probe_interval.
         fresh = any(x == core.UNKNOWN for x in states)
-        self.next_probe[n.id] = now + (s.probe_down_interval_s if bad else
+        # A DOWN node that just answered ready is coming back (a relaunched
+        # engine needs up_after good probes): confirm it at the normal cadence.
+        # Waiting out the down interval kept a healthy engine unroutable for
+        # another 30 s. AUTH_FAILED / MISMATCH stay on the slow cadence — a
+        # ready /health says nothing about those.
+        recovering = result == "ready" and any(x == core.DOWN for x in states)
+        self.next_probe[n.id] = now + (s.probe_interval_s if recovering else
+                                       s.probe_down_interval_s if bad else
                                        min(1.0, s.probe_interval_s) if fresh else s.probe_interval_s)
         stuck = any(self.state.health[d.id].h.state in (core.AUTH_FAILED, core.MISMATCH)
                     for d in deps if d.id in self.state.health)

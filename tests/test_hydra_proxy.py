@@ -524,6 +524,58 @@ def test_identity_headers_route_but_never_reach_a_node(fleet, tmp_path):
     assert fwd["x-conversation-id"] == "conv-7" and fwd["x-openbeast-request-id"]
 
 
+def _probe_once(tmp_path, eng, state):
+    """One probe_node() of a node forced into `state`; seconds until the next."""
+    import asyncio
+    raw = {"schema": 1,
+           "hydra": {"probe_interval_s": 5, "probe_down_interval_s": 30, "down_after": 2, "up_after": 2,
+                     "audit": str(tmp_path / "audit.jsonl"),
+                     "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp_path / "instinct.key")}},
+           "nodes": {"rig": {"url": eng.url, "engine": "llama", "slots": 1, "key_env": "RIG_KEY"}},
+           "deployments": {"unc@rig": {"node": "rig", "upstream": eng.model, "ctx": 262144,
+                                       "caps": ["tools"], "conformance": "off"}},
+           "routes": {"beast": {"targets": [{"d": "unc@rig"}]}}}
+    env = env_for(tmp_path)
+    cfg = core.validate(raw, env)
+
+    async def go():
+        hy = hydra.Hydra(cfg, env=env, run=tmp_path / "run")
+        try:
+            hs = hy.state.health["unc@rig"]
+            hs.h.state, hs.h.ok_streak, hs.h.fail_streak = state, 0, 2
+            n = cfg.nodes["rig"]
+            await hy.probe_node(n)
+            first = (hs.h.state, hy.next_probe["rig"] - time.monotonic())
+            await hy.probe_node(n)
+            return first, hs.h.state
+        finally:
+            await hy.probe_client.aclose()
+    return asyncio.run(go())
+
+
+def test_a_down_node_that_answers_is_reprobed_at_the_normal_cadence(tmp_path):
+    """Review 2026-10-09 ops F12: a relaunched engine's first good probe left
+    it DOWN and scheduled the confirming probe a full down interval (30 s)
+    away; hydra 503'd a healthy rig meanwhile."""
+    eng = FakeEngine("llama", "qwen-unc", RIG_KEY, slots=1)
+    try:
+        (state, wait), after = _probe_once(tmp_path, eng, core.DOWN)
+        assert state == core.DOWN, "up_after=2: one good probe is not READY yet"
+        assert 4.0 < wait <= 5.0, wait
+        assert after == core.READY
+    finally:
+        eng.stop()
+
+
+def test_a_down_node_that_stays_down_keeps_the_slow_cadence(tmp_path):
+    eng = FakeEngine("llama", "qwen-unc", RIG_KEY, slots=1)
+    try:
+        eng.set_fault("health_down")
+        (state, wait), after = _probe_once(tmp_path, eng, core.DOWN)
+        assert state == core.DOWN and after == core.DOWN
+        assert 29.0 < wait <= 30.0, wait
+    finally:
+        eng.stop()
 
 
 def test_request_id_is_forwarded(fleet):
