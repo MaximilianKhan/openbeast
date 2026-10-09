@@ -1069,6 +1069,46 @@ grep -q 'generate-skill-index.py' "$REPO_DIR/start.sh" && pass "…the skill men
   || fail "the skill-menu regeneration went out with the warm-up"
 
 echo ""
+echo "Readiness is polled at 0.2 s against the same deadlines (perf F13):"
+# The tool-server wait, lifted verbatim. `sleep` and `curl` are functions
+# here: sleep records its argument (and can move the clock), curl fails a set
+# number of times before it answers. Nothing is timed for real.
+_PL="$_T/poll"; mkdir -p "$_PL"
+python3 - "$REPO_DIR/start.sh" "$_PL/loop.sh" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+a = src.index("MCPO_UP=0\n")
+b = src.index('echo "Tool server ready on http://localhost:3001"', a)
+open(sys.argv[2], "w").write(
+    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; _n=0\n'
+    'sleep() { echo "$1" >> "$SLEEP_LOG"; SECONDS=$((SECONDS + ${CLOCK_STEP:-0})); }\n'
+    'curl() { _n=$((_n + 1)); [[ $_n -gt ${CURL_FAILS:-0} ]]; }\n'
+    + src[a:b] + 'echo "UP after $_n probes"\n')
+PY
+_O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=3 bash "$_PL/loop.sh" 2>&1)" || true
+if [[ "$_O" == *"UP after 4 probes"* && "$(sort -u "$_PL/sleeps" | tr '\n' ' ')" == "0.2 " && "$(wc -l < "$_PL/sleeps")" -eq 3 ]]; then
+  pass "the tool-server wait sleeps 0.2 s between probes (was 1 s after every miss)"
+else
+  fail "tool-server polling: '$_O', sleeps: $(tr '\n' ' ' < "$_PL/sleeps")"
+fi
+_O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=999 CLOCK_STEP=10 bash "$_PL/loop.sh" 2>&1)" && _PRC=0 || _PRC=$?
+if [[ $_PRC -eq 1 && "$_O" == *"tool server not serving after 30s"* && "$(wc -l < "$_PL/sleeps")" -le 4 ]]; then
+  pass "…and still gives up at the 30 s deadline, by the clock, not by a probe count (control)"
+else
+  fail "tool-server deadline (rc=$_PRC): '$_O', $(wc -l < "$_PL/sleeps") sleeps"
+fi
+# The same shape for every other readiness loop on the start path.
+_slow="$(awk '/^(_spawn_ready|wait_llama_health|wait_hydra_routable)\(\) \{/,/^}/' "$REPO_DIR/start.sh" | grep -cE '^[[:space:]]*sleep 1$' || true)"
+_iter="$(grep -cE 'for _i in \$\(seq 1 (20|30|60)\); do$' "$REPO_DIR/start.sh" || true)"
+# (hydra's own 20 x 0.5 s launch wait and the docker-daemon wait are not
+# readiness polls of ours to speed up: one `seq 1 20` and one `seq 1 30` stay.)
+if [[ "$_slow" -eq 1 && "$_iter" -le 2 ]]; then
+  pass "the spawn, model, hydra, router and gate waits poll at 0.2 s too"
+else
+  fail "a readiness loop still probes then sleeps 1 s (sleep-1 lines in the wait functions: $_slow, fixed-count loops: $_iter)"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"

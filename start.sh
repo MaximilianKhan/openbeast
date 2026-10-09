@@ -243,7 +243,7 @@ _port_refuse() {
 #      (and its pidfile is removed)
 #   2  the port was already held — nothing spawned, no pidfile written
 _spawn_ready() {
-  local label="$1" pidname="$2" port="$3" url="$4" holder _i _h own
+  local label="$1" pidname="$2" port="$3" url="$4" holder _t0 _h own
   shift 4
   SPAWN_PID=""
   if ob_port_listening "$port"; then
@@ -257,7 +257,11 @@ _spawn_ready() {
   "$@" &
   SPAWN_PID=$!
   echo "$SPAWN_PID" > "$RUN_DIR/$pidname.pid"
-  for _i in $(seq 1 20); do
+  # Poll every 0.2 s against a 20 s deadline. These loops used to probe once
+  # and then sleep a full second, so a server that is up in 0.4 s (the tool
+  # server) cost every boot a second per service for nothing.
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     kill -0 "$SPAWN_PID" 2>/dev/null || break
     # -f plus a body match: a 400 used to count as "ready" (curl -s exits 0
     # on any HTTP status).
@@ -274,7 +278,7 @@ _spawn_ready() {
       # Something answered, but it is not the process we started: ours is
       # losing (or has lost) the bind. Keep looking; kill -0 ends the loop.
     fi
-    sleep 1
+    sleep 0.2
   done
   if ! kill -0 "$SPAWN_PID" 2>/dev/null; then
     if [[ -n "${_h:-}" ]]; then
@@ -902,7 +906,7 @@ wait_llama_health() {
       for _i in $(seq 1 5); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
       return 1
     fi
-    sleep 1
+    sleep 0.2
   done
 }
 
@@ -1064,7 +1068,7 @@ wait_hydra_routable() {
       echo "         Chat through it fails until it does. Inspect: scripts/hydra.sh status" >&2
       return 1
     fi
-    sleep 1
+    sleep 0.2
   done
   echo "beast-hydra routing on $HYDRA_URL"
 }
@@ -1218,13 +1222,14 @@ MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"
 # Verify it actually serves — a blind sleep once masked a dead tool server.
 MCPO_UP=0
-for _i in $(seq 1 30); do
+_t0=$SECONDS
+while (( SECONDS - _t0 < 30 )); do
   if ! kill -0 "$MCPO_PID" 2>/dev/null; then
     echo "Error: tool server exited during startup — see output above" >&2
     exit 1
   fi
   curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 && { MCPO_UP=1; break; }
-  sleep 1
+  sleep 0.2
 done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
 echo "Tool server ready on http://localhost:3001"
@@ -1248,10 +1253,11 @@ if [[ "${INSTINCT_SCORER:-false}" == "true" ]]; then
     INSTINCT_SCORER_PID=$!
     ob_pid_record "$RUN_DIR/instinct-scorer.pid" "$INSTINCT_SCORER_PID"
     _isc_up=0
-    for _i in $(seq 1 60); do
+    _t0=$SECONDS
+    while (( SECONDS - _t0 < 60 )); do
       kill -0 "$INSTINCT_SCORER_PID" 2>/dev/null || break
       ob_llama_ready "http://127.0.0.1:${_isc_port}" && { _isc_up=1; break; }
-      sleep 1
+      sleep 0.2
     done
     if [[ $_isc_up -eq 1 ]]; then
       echo "beast-instinct scorer ready on http://127.0.0.1:${_isc_port} (pid $INSTINCT_SCORER_PID)"
@@ -1328,12 +1334,13 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   ROUTER_PID=$!
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
   ROUTER_UP=0
-  for _i in $(seq 1 20); do
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
       echo "Error: agent router exited during startup — see output above" >&2; exit 1
     fi
     curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 && { ROUTER_UP=1; break; }
-    sleep 1
+    sleep 0.2
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
   echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
@@ -1354,12 +1361,13 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   EDGE_PID=$!
   echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
   EDGE_UP=0
-  for _i in $(seq 1 20); do
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$EDGE_PID" 2>/dev/null; then
       echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
     fi
     curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
-    sleep 1
+    sleep 0.2
   done
   [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
   # `|| true`: under set -e a non-matching grep here would abort start.sh
