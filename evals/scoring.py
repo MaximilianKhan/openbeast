@@ -978,6 +978,7 @@ def main():
 
         by_key: dict[tuple, dict] = {}
         skipped_partial = 0
+        found = 0                # readable eval-*.json files, seatable or not
         for path in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
             if not path.startswith("eval-") or not path.endswith(".json"):
                 continue
@@ -996,6 +997,7 @@ def main():
                     raw = json.load(fh)
             except (OSError, json.JSONDecodeError):
                 continue
+            found += 1
             if ineligibility_reasons(raw):
                 skipped_partial += 1
                 continue
@@ -1007,6 +1009,15 @@ def main():
             existing = by_key.get(key)
             if not existing or _preference(entry) > _preference(existing):
                 by_key[key] = entry
+        # evals/results is gitignored: a fresh clone or a worktree has no
+        # result files, and a rebuild there used to write an EMPTY board
+        # over the committed one ("Rebuilt leaderboard from 0 entries").
+        if not found:
+            sys.exit(f"scoring.py: no eval-*.json result files in {RESULTS_DIR} — refusing to "
+                     f"rebuild; {LEADERBOARD_PATH} is unchanged. Result files are not in the "
+                     f"repo, so a fresh clone or worktree has none: run --rebuild in the "
+                     f"checkout that holds the runs. (To start an empty board on purpose, "
+                     f"delete leaderboard.json.)")
         entries = sorted(by_key.values(), key=rank_key)
         _atomic_write_json(LEADERBOARD_PATH,
                            {"updated_at": datetime.now().isoformat(), "entries": entries})
