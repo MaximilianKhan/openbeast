@@ -2,6 +2,11 @@
 
 ## 🔎 REVIEW 2026-10-09
 
+- **DeepSeek Harness evaluated 2026-10-09: not integrated** (Max's call). Why, and ten
+  mechanisms worth porting (host wake on completion, a goal-round driver and
+  fresh-context rounds for the 24/7 item, result spill, a cgroup per command):
+  [`reviews/DEEPSEEK_HARNESS-2026-10-09.md`](reviews/DEEPSEEK_HARNESS-2026-10-09.md).
+
 Decisions the 2026-10-09 review deferred to the owner. Each is open.
 
 - [ ] `scripts/update.sh`: make the default `git pull` + sync to the pins that commit ships; move upstream-chasing behind `--bump`.
