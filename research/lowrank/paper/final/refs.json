@@ -1,0 +1,988 @@
+[
+ {
+  "n": 1,
+  "id": "2303.08302",
+  "short_name": "ZeroQuant-V2 / LoRC (preprint 2023)",
+  "verified": true,
+  "title": "ZeroQuant-V2: Exploring Post-training Quantization in LLMs from Comprehensive Study to Low Rank Compensation",
+  "authors": [
+   "Zhewei Yao",
+   "Xiaoxia Wu",
+   "Cheng Li",
+   "Stephen Youn",
+   "Yuxiong He"
+  ],
+  "year": 2023,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 2,
+  "id": "2402.02446",
+  "short_name": "LQER / L²QER (ICML 2024)",
+  "verified": true,
+  "title": "LQER: Low-Rank Quantization Error Reconstruction for LLMs",
+  "authors": [
+   "Cheng Zhang",
+   "Jianyi Cheng",
+   "George A. Constantinides",
+   "Yiren Zhao"
+  ],
+  "year": 2024,
+  "venue": "ICML",
+  "venue_year": 2024,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted at ICML2024"
+ },
+ {
+  "n": 3,
+  "id": "2410.06040",
+  "short_name": "QERA (ICLR 2025)",
+  "verified": true,
+  "title": "QERA: an Analytical Framework for Quantization Error Reconstruction",
+  "authors": [
+   "Cheng Zhang",
+   "Jeffrey T. H. Wong",
+   "Can Xiao",
+   "George A. Constantinides",
+   "Yiren Zhao"
+  ],
+  "year": 2024,
+  "venue": "ICLR",
+  "venue_year": 2025,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted at ICLR2025"
+ },
+ {
+  "n": 4,
+  "id": "2410.21271",
+  "short_name": "EoRA (NVIDIA; ICLR-W 2026, venue soft)",
+  "verified": true,
+  "title": "EoRA: Fine-tuning-free Compensation for Compressed LLM with Eigenspace Low-Rank Approximation",
+  "authors": [
+   "Shih-Yang Liu",
+   "Maksim Khadkevich",
+   "Nai Chit Fung",
+   "Charbel Sakr",
+   "Chao-Han Huck Yang",
+   "Chien-Yi Wang",
+   "Saurav Muralidharan",
+   "Hongxu Yin",
+   "Kwang-Ting Cheng",
+   "Jan Kautz",
+   "Yu-Chiang Frank Wang",
+   "Pavlo Molchanov",
+   "Min-Hung Chen"
+  ],
+  "year": 2024,
+  "venue": "ICLR Workshop",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICLR 2026 workshops. Code: https://github.com/NVlabs/EoRA"
+ },
+ {
+  "n": 5,
+  "id": "2405.18886",
+  "short_name": "CALDERA (NeurIPS 2024)",
+  "verified": true,
+  "title": "Compressing Large Language Models using Low Rank and Low Precision Decomposition",
+  "authors": [
+   "Rajarshi Saha",
+   "Naomi Sagan",
+   "Varun Srivastava",
+   "Andrea J. Goldsmith",
+   "Mert Pilanci"
+  ],
+  "year": 2024,
+  "venue": "NeurIPS",
+  "venue_year": 2024,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted to The 38th Conference on Neural Information Processing Systems (NeurIPS 2024). [31 pages, 10 figures, 9 tables]"
+ },
+ {
+  "n": 6,
+  "id": "2412.01129",
+  "short_name": "RILQ (AAAI 2025)",
+  "verified": true,
+  "title": "RILQ: Rank-Insensitive LoRA-based Quantization Error Compensation for Boosting 2-bit Large Language Model Accuracy",
+  "authors": [
+   "Geonho Lee",
+   "Janghwan Lee",
+   "Sukjin Hong",
+   "Minsoo Kim",
+   "Euijai Ahn",
+   "Du-Seong Chang",
+   "Jungwook Choi"
+  ],
+  "year": 2024,
+  "venue": "AAAI",
+  "venue_year": 2025,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted at AAAI 2025"
+ },
+ {
+  "n": 7,
+  "id": "2210.17323",
+  "short_name": "GPTQ (2022/23)",
+  "verified": true,
+  "title": "GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers",
+  "authors": [
+   "Elias Frantar",
+   "Saleh Ashkboos",
+   "Torsten Hoefler",
+   "Dan Alistarh"
+  ],
+  "year": 2022,
+  "venue": "ICLR",
+  "venue_year": 2023,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICLR 2023"
+ },
+ {
+  "n": 8,
+  "id": "2604.18556",
+  "short_name": "GSQ",
+  "verified": true,
+  "title": "GSQ: Highly-Accurate Low-Precision Scalar Quantization for LLMs via Gumbel-Softmax Sampling",
+  "authors": [
+   "Alireza Dadgarnia",
+   "Soroush Tabesh",
+   "Mahdi Nikdan",
+   "Michael Helcig",
+   "Eldar Kurtic",
+   "Maximilian Kleinegger",
+   "Dan Alistarh"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 9,
+  "id": "2608.07019",
+  "short_name": "ReQuant",
+  "verified": true,
+  "title": "ReQuant: Fixed-Grid Discrete Refinement for Post-Training Quantization",
+  "authors": [
+   "Yongge Ma",
+   "Guoan Wang",
+   "Feiyu Wang",
+   "Yaoming Li",
+   "Qian Zhang",
+   "Zihan Yan",
+   "Yinjun Han",
+   "Tong Yang"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 10,
+  "id": "2608.15567",
+  "short_name": "SchurQuant",
+  "verified": true,
+  "title": "SchurQuant: Groupwise Discrete Optimization for Layer-Wise LLM Quantization",
+  "authors": [
+   "Gunjun Lee",
+   "Sehwan Son",
+   "Younjoo Lee",
+   "Byungjun Kim",
+   "Jung Ho Ahn"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 11,
+  "id": "2606.01412",
+  "short_name": "GPTQ-intrinsic LoRA / OLrC / Bid-Up (2026)",
+  "verified": true,
+  "title": "GPTQ-intrinsic LoRA: A Near-optimal Algorithm for Low-precision Quantization with Low-rank Adaptation",
+  "authors": [
+   "Shihao Zhang",
+   "Rayan Saab"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 12,
+  "id": "2310.08659",
+  "short_name": "LoftQ (ICLR 2024)",
+  "venue_withheld": "references.md says ICLR 2024 but its own Verification flag 9 marks that 'from common knowledge, not re-verified'; the arXiv record states no venue",
+  "verified": true,
+  "title": "LoftQ: LoRA-Fine-Tuning-Aware Quantization for Large Language Models",
+  "authors": [
+   "Yixiao Li",
+   "Yifan Yu",
+   "Chen Liang",
+   "Pengcheng He",
+   "Nikos Karampatziakis",
+   "Weizhu Chen",
+   "Tuo Zhao"
+  ],
+  "year": 2023,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 13,
+  "id": "2504.02658",
+  "short_name": "MiLo (2025)",
+  "verified": true,
+  "title": "MiLo: Efficient Quantized MoE Inference with Mixture of Low-Rank Compensators",
+  "authors": [
+   "Beichen Huang",
+   "Yueming Yuan",
+   "Zelei Shao",
+   "Minjia Zhang"
+  ],
+  "year": 2025,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 14,
+  "id": "2501.18475",
+  "short_name": "CLoQ (2025)",
+  "verified": true,
+  "title": "CLoQ: Enhancing Fine-Tuning of Quantized LLMs via Calibrated LoRA Initialization",
+  "authors": [
+   "Yanxia Deng",
+   "Aozhong Zhang",
+   "Selcuk Gurses",
+   "Naigang Wang",
+   "Zi Yang",
+   "Penghang Yin"
+  ],
+  "year": 2025,
+  "venue": "Transactions on Machine Learning Research (TMLR), 2025",
+  "venue_year": null,
+  "venue_source": "arxiv journal_ref",
+  "venue_evidence": "Transactions on Machine Learning Research (TMLR), 2025"
+ },
+ {
+  "n": 15,
+  "id": "2403.07378",
+  "short_name": "SVD-LLM (ICLR 2025)",
+  "verified": true,
+  "title": "SVD-LLM: Truncation-aware Singular Value Decomposition for Large Language Model Compression",
+  "authors": [
+   "Xin Wang",
+   "Yu Zheng",
+   "Zhongwei Wan",
+   "Mi Zhang"
+  ],
+  "year": 2024,
+  "venue": "ICLR",
+  "venue_year": 2025,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICLR 2025; Code available at: https://github.com/AIoT-MLSys-Lab/SVD-LLM"
+ },
+ {
+  "n": 16,
+  "id": "1012.0197",
+  "short_name": "Gillis & Glineur — weighted low-rank is NP-hard (SIAM 2011)",
+  "verified": true,
+  "title": "Low-Rank Matrix Approximation with Weights or Missing Data is NP-hard",
+  "authors": [
+   "Nicolas Gillis",
+   "François Glineur"
+  ],
+  "year": 2010,
+  "venue": "SIAM J. Matrix Anal. & Appl. 32 (4), pp. 1149-1165, 2011",
+  "venue_year": null,
+  "venue_source": "arxiv journal_ref",
+  "venue_evidence": "SIAM J. Matrix Anal. & Appl. 32 (4), pp. 1149-1165, 2011"
+ },
+ {
+  "n": 17,
+  "id": "2604.00821",
+  "short_name": "OBD-LLM (2026)",
+  "verified": true,
+  "title": "Optimal Brain Decomposition for Accurate LLM Low-Rank Approximation",
+  "authors": [
+   "Yuhang Li",
+   "Donghyun Lee",
+   "Ruokai Yin",
+   "Priyadarshini Panda"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 18,
+  "id": "0909.4061",
+  "short_name": "Halko–Martinsson–Tropp randomized SVD (SIAM Rev. 2011)",
+  "verified": true,
+  "title": "Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions",
+  "authors": [
+   "Nathan Halko",
+   "Per-Gunnar Martinsson",
+   "Joel A. Tropp"
+  ],
+  "year": 2009,
+  "venue": "SIAM Rev., Survey and Review section, Vol. 53, num. 2, pp. 217-288, June 2011",
+  "venue_year": null,
+  "venue_source": "arxiv journal_ref",
+  "venue_evidence": "SIAM Rev., Survey and Review section, Vol. 53, num. 2, pp. 217-288, June 2011"
+ },
+ {
+  "n": 19,
+  "id": "2406.08903",
+  "short_name": "Delta-CoMe (2024)",
+  "verified": true,
+  "title": "Delta-CoMe: Training-Free Delta-Compression with Mixed-Precision for Large Language Models",
+  "authors": [
+   "Bowen Ping",
+   "Shuo Wang",
+   "Hanqing Wang",
+   "Xu Han",
+   "Yuzhuang Xu",
+   "Yukun Yan",
+   "Yun Chen",
+   "Baobao Chang",
+   "Zhiyuan Liu",
+   "Maosong Sun"
+  ],
+  "year": 2024,
+  "venue": "NeurIPS",
+  "venue_year": 2024,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "NeurIPS 2024"
+ },
+ {
+  "n": 20,
+  "id": "2606.00494",
+  "short_name": "ProjQ (ICML 2026)",
+  "verified": true,
+  "title": "ProjQ: Project-and-Quantize for Adapter-Aware LLM Compression",
+  "authors": [
+   "Wenya Yu",
+   "Chao Zhang",
+   "Li Wang",
+   "Samson Lasaulce",
+   "Merouane Debbah"
+  ],
+  "year": 2026,
+  "venue": "ICML",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Acceppted paper in ICML 2026"
+ },
+ {
+  "n": 21,
+  "id": "2507.09428",
+  "short_name": "Operator-factorization theory (2025)",
+  "verified": true,
+  "title": "On Information Geometry and Iterative Optimization in Model Compression: Operator Factorization",
+  "authors": [
+   "Zakhar Shumaylov",
+   "Vasileios Tsiaras",
+   "Yannis Stylianou"
+  ],
+  "year": 2025,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 22,
+  "id": "2407.09141",
+  "short_name": "Accuracy is Not All You Need (Microsoft; NeurIPS 2024)",
+  "verified": true,
+  "title": "Accuracy is Not All You Need",
+  "authors": [
+   "Abhinav Dutta",
+   "Sanjeev Krishnan",
+   "Nipun Kwatra",
+   "Ramachandran Ramjee"
+  ],
+  "year": 2024,
+  "venue": "NeurIPS",
+  "venue_year": 2024,
+  "venue_source": "references.md",
+  "venue_evidence": "Accuracy is Not All You Need (Microsoft; NeurIPS 2024)"
+ },
+ {
+  "n": 23,
+  "id": "2606.19558",
+  "short_name": "Displacement Is Not Direction (2026)",
+  "verified": true,
+  "title": "Displacement Is Not Direction: Evaluating Fidelity Metrics for Quantized LLM Deployment",
+  "authors": [
+   "Miloš Nikolić",
+   "Ali Hadi Zadeh",
+   "Enrique Torres Sanchez",
+   "Andreas Moshovos"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 24,
+  "id": "2505.22988",
+  "short_name": "YAQA",
+  "verified": true,
+  "title": "Model-Preserving Adaptive Rounding",
+  "authors": [
+   "Albert Tseng",
+   "Zhaofeng Sun",
+   "Christopher De Sa"
+  ],
+  "year": 2025,
+  "venue": "ICML",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICML 2026"
+ },
+ {
+  "n": 25,
+  "id": "2208.07339",
+  "short_name": "LLM.int8() emergent features (2022)",
+  "verified": true,
+  "title": "LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale",
+  "authors": [
+   "Tim Dettmers",
+   "Mike Lewis",
+   "Younes Belkada",
+   "Luke Zettlemoyer"
+  ],
+  "year": 2022,
+  "venue": "NeurIPS",
+  "venue_year": 2022,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Published at NeurIPS 2022. Camera-ready version"
+ },
+ {
+  "n": 26,
+  "id": "2402.17762",
+  "short_name": "Massive Activations (2024)",
+  "verified": true,
+  "title": "Massive Activations in Large Language Models",
+  "authors": [
+   "Mingjie Sun",
+   "Xinlei Chen",
+   "J. Zico Kolter",
+   "Zhuang Liu"
+  ],
+  "year": 2024,
+  "venue": "COLM",
+  "venue_year": 2024,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "First Conference on Language Modeling (COLM), 2024. Website at https://eric-mingjie.github.io/massive-activations/index.html"
+ },
+ {
+  "n": 27,
+  "id": "2411.07191",
+  "short_name": "The Super Weight (2024)",
+  "verified": true,
+  "title": "The Super Weight in Large Language Models",
+  "authors": [
+   "Mengxia Yu",
+   "De Wang",
+   "Qi Shan",
+   "Colorado J Reed",
+   "Alvin Wan"
+  ],
+  "year": 2024,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 28,
+  "id": "2411.05007",
+  "short_name": "SVDQuant (MIT Han Lab; ICLR 2025 spotlight)",
+  "verified": true,
+  "title": "SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit Diffusion Models",
+  "authors": [
+   "Muyang Li",
+   "Yujun Lin",
+   "Zhekai Zhang",
+   "Tianle Cai",
+   "Xiuyu Li",
+   "Junxian Guo",
+   "Enze Xie",
+   "Chenlin Meng",
+   "Jun-Yan Zhu",
+   "Song Han"
+  ],
+  "year": 2024,
+  "venue": "ICLR",
+  "venue_year": 2025,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICLR 2025 Spotlight Quantization Library: https://github.com/mit-han-lab/deepcompressor Inference Engine: https://github.com/mit-han-lab/nunchaku Website: https://hanlab.mit.edu/projects/svdquant Demo: https://demo.nunchaku.tech/ Blog: https://hanlab.mit.edu/blog/svdquant"
+ },
+ {
+  "n": 29,
+  "id": "2602.02001",
+  "short_name": "SRR \"Preserve-Then-Quantize\" (ICML 2026)",
+  "verified": true,
+  "title": "Preserve-Then-Quantize: Balancing Rank Budgets for Quantization Error Reconstruction in LLMs",
+  "authors": [
+   "Yoonjun Cho",
+   "Dongjae Jeon",
+   "Soeun Kim",
+   "Moongyu Jeon",
+   "Albert No"
+  ],
+  "year": 2026,
+  "venue": "ICML",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted at ICML 2026. Project page: https://ai-isl.github.io/srr"
+ },
+ {
+  "n": 30,
+  "id": "2603.25385",
+  "short_name": "GlowQ (2026)",
+  "verified": true,
+  "title": "GlowQ: Group-Shared LOw-Rank Approximation for Quantized LLMs",
+  "authors": [
+   "Selim An",
+   "Il hong Suh",
+   "Yeseong Kim"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 31,
+  "id": "2608.23144",
+  "short_name": "AWSRC",
+  "verified": true,
+  "title": "Activation-Weighted Seeded Residual Coding for Low-Bit LLM Weight Repair",
+  "authors": [
+   "Zehao Liu",
+   "Chuangchuang Fang",
+   "Yang Ren"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 32,
+  "id": "2605.00649",
+  "short_name": "RCO",
+  "verified": true,
+  "title": "Model Compression with Exact Budget Constraints via Riemannian Manifolds",
+  "authors": [
+   "Michael Helcig",
+   "Dan Alistarh"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 33,
+  "id": "2604.07955",
+  "short_name": "ResComp / \"Rethinking Residual Errors\" (2026)",
+  "verified": true,
+  "title": "Rethinking Residual Errors in Compensation-based LLM Quantization",
+  "authors": [
+   "Shuaiting Li",
+   "Juncan Deng",
+   "Kedong Xu",
+   "Rongtao Deng",
+   "Hong Gu",
+   "Minghan Jiang",
+   "Haibin Shen",
+   "Kejie Huang"
+  ],
+  "year": 2026,
+  "venue": "ICLR",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICLR'26 camera ready"
+ },
+ {
+  "n": 34,
+  "id": "2310.06694",
+  "short_name": "Sheared-LLaMA (2023)",
+  "verified": true,
+  "title": "Sheared LLaMA: Accelerating Language Model Pre-training via Structured Pruning",
+  "authors": [
+   "Mengzhou Xia",
+   "Tianyu Gao",
+   "Zhiyuan Zeng",
+   "Danqi Chen"
+  ],
+  "year": 2023,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 35,
+  "id": "2407.14679",
+  "short_name": "Minitron (NVIDIA, 2024)",
+  "verified": true,
+  "title": "Compact Language Models via Pruning and Knowledge Distillation",
+  "authors": [
+   "Saurav Muralidharan",
+   "Sharath Turuvekere Sreenivas",
+   "Raviraj Joshi",
+   "Marcin Chochowski",
+   "Mostofa Patwary",
+   "Mohammad Shoeybi",
+   "Bryan Catanzaro",
+   "Jan Kautz",
+   "Pavlo Molchanov"
+  ],
+  "year": 2024,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 36,
+  "id": "2310.18547",
+  "short_name": "Punica SGMV (MLSys 2024)",
+  "venue_withheld": "references.md says MLSys 2024; the arXiv record states no venue and the claim could not be confirmed from it (the paper may have appeared at SOSP 2024 instead) - check the proceedings before printing a venue",
+  "verified": true,
+  "title": "Punica: Multi-Tenant LoRA Serving",
+  "authors": [
+   "Lequn Chen",
+   "Zihao Ye",
+   "Yongji Wu",
+   "Danyang Zhuo",
+   "Luis Ceze",
+   "Arvind Krishnamurthy"
+  ],
+  "year": 2023,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 37,
+  "id": "2603.11873",
+  "short_name": "AdaFuse (Baidu; AAAI 2026)",
+  "verified": true,
+  "title": "AdaFuse: Accelerating Dynamic Adapter Inference via Token-Level Pre-Gating and Fused Kernel Optimization",
+  "authors": [
+   "Qiyang Li",
+   "Rui Kong",
+   "Yuchen Li",
+   "Hengyi Cai",
+   "Shuaiqiang Wang",
+   "Linghe Kong",
+   "Guihai Chen",
+   "Dawei Yin"
+  ],
+  "year": 2026,
+  "venue": "AAAI",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "Accepted to AAAI 2026. arXiv admin note: substantial text overlap with arXiv:2405.17741"
+ },
+ {
+  "n": 38,
+  "id": "2605.08314",
+  "short_name": "FlashSVD v1.5 (2026)",
+  "verified": true,
+  "title": "FlashSVD v1.5: Making Low-Rank Transformers Inference Actually Fast",
+  "authors": [
+   "Wenhao Wu",
+   "Zishan Shao",
+   "Kangning Cui",
+   "Jinhee Kim",
+   "Yixiao Wang",
+   "Hancheng Ye",
+   "Danyang Zhuo",
+   "Yiran Chen"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 39,
+  "id": "2512.22219",
+  "short_name": "Mirage MPK (2025)",
+  "verified": true,
+  "title": "MPK: A Compiler and Runtime for Mega-Kernelizing Tensor Programs",
+  "authors": [
+   "Xinhao Cheng",
+   "Zhihao Zhang",
+   "Yu Zhou",
+   "Jianan Ji",
+   "Jinchen Jiang",
+   "Zepeng Zhao",
+   "Ziruo Xiao",
+   "Zihao Ye",
+   "Yingyi Huang",
+   "Ruihang Lai",
+   "Hongyi Jin",
+   "Bohan Hou",
+   "Mengdi Wu",
+   "Yixin Dong",
+   "Anthony Yip",
+   "Zihao Ye",
+   "Songting Wang",
+   "Wenqin Yang",
+   "Xupeng Miao",
+   "Tianqi Chen",
+   "Zhihao Jia"
+  ],
+  "year": 2025,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 40,
+  "id": "2509.23202",
+  "short_name": "Bridging the Gap for Microscaling FP4 (ISTA; ICLR 2026)",
+  "verified": true,
+  "title": "Bridging the Gap Between Promise and Performance for Microscaling FP4 Quantization",
+  "authors": [
+   "Vage Egiazarian",
+   "Roberto L. Castro",
+   "Denis Kuznedelev",
+   "Andrei Panferov",
+   "Eldar Kurtic",
+   "Shubhra Pandit",
+   "Alexandre Marques",
+   "Mark Kurtz",
+   "Saleh Ashkboos",
+   "Torsten Hoefler",
+   "Dan Alistarh"
+  ],
+  "year": 2025,
+  "venue": "ICLR",
+  "venue_year": 2026,
+  "venue_source": "references.md",
+  "venue_evidence": "Bridging the Gap for Microscaling FP4 (ISTA; ICLR 2026)"
+ },
+ {
+  "n": 41,
+  "id": "2412.07902",
+  "short_name": "LRC (Microsoft Research, 2024)",
+  "verified": true,
+  "title": "Low-Rank Correction for Quantized LLMs",
+  "authors": [
+   "Meyer Scetbon",
+   "James Hensman"
+  ],
+  "year": 2024,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 42,
+  "id": "2412.14363",
+  "short_name": "ResQ (Purdue/d-Matrix; ICML 2025)",
+  "verified": true,
+  "title": "ResQ: Mixed-Precision Quantization of Large Language Models with Low-Rank Residuals",
+  "authors": [
+   "Utkarsh Saxena",
+   "Sayeh Sharify",
+   "Kaushik Roy",
+   "Xin Wang"
+  ],
+  "year": 2024,
+  "venue": "ICML",
+  "venue_year": 2025,
+  "venue_source": "references.md",
+  "venue_evidence": "ResQ (Purdue/d-Matrix; ICML 2025)"
+ },
+ {
+  "n": 43,
+  "id": "2601.05684",
+  "short_name": "FLRQ (2026)",
+  "verified": true,
+  "title": "FLRQ: Faster LLM Quantization with Flexible Low-Rank Matrix Sketching",
+  "authors": [
+   "Hongyaoxing Gul",
+   "Lijuan Hu",
+   "Shuzi Niu",
+   "Fangfang Liu"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 44,
+  "id": "2606.01556",
+  "short_name": "TwinQuant (ICML 2026)",
+  "verified": true,
+  "title": "TwinQuant: Learnable Subspace Decomposition for 4-Bit LLM Quantization",
+  "authors": [
+   "Haodong Wang",
+   "Junjie Liu",
+   "Zicong Hong",
+   "Qianli Liu",
+   "Jian Lin",
+   "Song Guo",
+   "Xu Chen"
+  ],
+  "year": 2026,
+  "venue": "ICML",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "17pages, Accepted by ICML26"
+ },
+ {
+  "n": 45,
+  "id": "2505.07004",
+  "short_name": "GuidedQuant (SNU/Samsung/Google; ICML 2025)",
+  "verified": true,
+  "title": "GuidedQuant: Large Language Model Quantization via Exploiting End Loss Guidance",
+  "authors": [
+   "Jinuk Kim",
+   "Marwa El Halabi",
+   "Wonpyo Park",
+   "Clemens JS Schaefer",
+   "Deokjae Lee",
+   "Yeonhong Park",
+   "Jae W. Lee",
+   "Hyun Oh Song"
+  ],
+  "year": 2025,
+  "venue": "ICML",
+  "venue_year": 2025,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "ICML 2025"
+ },
+ {
+  "n": 46,
+  "id": "2607.07964",
+  "short_name": "KronQ (2026)",
+  "verified": true,
+  "title": "KronQ: LLM Quantization via Kronecker-Factored Hessian",
+  "authors": [
+   "Donghyun Lee",
+   "Yuhang Li",
+   "Ruokai Yin",
+   "Priyadarshini Panda"
+  ],
+  "year": 2026,
+  "venue": "COLM",
+  "venue_year": 2026,
+  "venue_source": "arxiv comment",
+  "venue_evidence": "COLM 2026"
+ },
+ {
+  "n": 47,
+  "id": "2605.00140",
+  "short_name": "ARHQ (2026)",
+  "verified": true,
+  "title": "Technical Report: Activation Residual Hessian Quantization (ARHQ) for Low-Bit LLM Quantization",
+  "authors": [
+   "YiFeng Wang",
+   "Zhun Sun",
+   "Keisuke Sakaguchi"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 48,
+  "id": "2311.12023",
+  "short_name": "LQ-LoRA (ICLR 2024)",
+  "venue_withheld": "references.md says ICLR 2024 but its own Verification flag 9 marks that 'from common knowledge, not re-verified'; the arXiv record states no venue",
+  "verified": true,
+  "title": "LQ-LoRA: Low-rank Plus Quantized Matrix Decomposition for Efficient Language Model Finetuning",
+  "authors": [
+   "Han Guo",
+   "Philip Greengard",
+   "Eric P. Xing",
+   "Yoon Kim"
+  ],
+  "year": 2023,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 49,
+  "id": "2605.09281",
+  "short_name": "TileQ (2026)",
+  "verified": true,
+  "title": "TileQ: Efficient Low-Rank Quantization of Mixture-of-Experts with 2D Tiling",
+  "authors": [
+   "Hongyaoxing Gu",
+   "Xinzhe Chen",
+   "Lijuan Hu",
+   "Fangfang Liu"
+  ],
+  "year": 2026,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ },
+ {
+  "n": 50,
+  "id": "2512.17073",
+  "short_name": "MoE low-rank compensators (2025)",
+  "verified": true,
+  "title": "Bandwidth-Efficient Adaptive Mixture-of-Experts via Low-Rank Compensation",
+  "authors": [
+   "Zhenyu Liu",
+   "Yunzhen Liu",
+   "Zehao Fan",
+   "Garrett Gagnon",
+   "Yayue Hou",
+   "Nan Wu",
+   "Yangwook Kang",
+   "Liu Liu"
+  ],
+  "year": 2025,
+  "venue": null,
+  "venue_year": null,
+  "venue_source": null,
+  "venue_evidence": null
+ }
+]

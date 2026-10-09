@@ -13,8 +13,10 @@ for the write-up. Still open, and stated as open in the paper's §6:
   run of OUR arm; single-slot churn floor for the coding suite
 - [ ] third model width for E33; single-step 27B re-round pair
 - [ ] re-rounder codecs: Q3_K / Q4_K / I-quants / NVFP4 (→ `gguf-refine`)
-- [ ] before an arXiv submission: full bibliographic entries (the reference
-  list carries short names + arXiv ids), a venue decision, and Max's read
+- [ ] before an arXiv submission: a venue decision and Max's read. The
+  reference list is now full entries from arXiv metadata (all 50 ids resolve
+  and match the text, `paper/final/refs.json`, 2026-10-09); left there: confirm
+  the three withheld venues (LoftQ, LQ-LoRA, Punica — `refs/review.json`)
 
 ## DONE 2026-08-03
 - [x] **E01 — SVD spectrum census**: H1 confirmed, W is energy-full-rank,
