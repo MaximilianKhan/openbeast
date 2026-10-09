@@ -10,8 +10,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "evals"))
 sys.path.insert(0, str(ROOT / "agents"))
@@ -194,6 +192,12 @@ def test_html_board_carries_the_footnotes():
 
 def test_run_eval_stamps_the_era_it_ran_under(tmp_path, monkeypatch):
     import importlib
+    # A plain baseline run, whatever arm an earlier test (or the caller's
+    # shell) left exported: run_eval writes OPENBEAST_PACKS into os.environ.
+    for flag in ("BEAST_PACKS", "OPENBEAST_PACKS", "BEAST_ASSIST", "OPENBEAST_DIAGNOSTICS",
+                 "BEAST_ESCALATE", "OPENBEAST_ESCALATE", "OPENBEAST_EVAL_GREEDY",
+                 "OPENBEAST_EVAL_ENV_ERA"):
+        monkeypatch.delenv(flag, raising=False)
     for mod in ("cache", "run_eval"):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
