@@ -575,6 +575,48 @@ grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
   || fail "healthcheck.sh --restart ran without a SearXNG secret"
 
 # ---------------------------------------------------------------------------
+# UX-13 (2026-10-09): doctor shows conf.sh's lint findings as rows. The
+# parsing itself is pinned in tests/test_conf_secrets.sh §7; this is the
+# "surfaced in doctor, as a warning, once" half.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh surfaces openbeast.conf typos and bad values:"
+_L="$_T/lint"; _sandbox "$_L"
+cp "$REPO_DIR/openbeast.conf.example" "$_L/"
+printf 'SEARXNG_SECRET=s\nEDGE_GTAE=true\nREASONING_BUDGET=lots\nSERVE_SCRIPT=serve-nope.sh\n' > "$_L/openbeast.conf"
+chmod 600 "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+if grep -qF "! openbeast.conf: unknown key 'EDGE_GTAE' — did you mean EDGE_GATE?" <<< "$_O" \
+   && grep -qF "! REASONING_BUDGET='lots' is not an integer" <<< "$_O" \
+   && grep -qF "! openbeast.conf: SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" <<< "$_O"; then
+  pass "doctor rows: the typo'd key (with its suggestion), the non-integer budget, the missing serve script"
+else
+  fail "doctor did not surface the conf problems: $(grep -iE 'unknown|REASONING|SERVE_SCRIPT' <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(grep -c "EDGE_GTAE" <<< "$_O")" == "1" ]] && ! grep -q "^WARNING: openbeast.conf" <<< "$_O"; then
+  pass "…each said once, as a row (conf.sh's own stderr copy is switched off under doctor)"
+else
+  fail "doctor repeated the lint: $(grep -c EDGE_GTAE <<< "$_O") line(s) mention the typo"
+fi
+_verdict() { sed -n 's/^doctor: [0-9]* ok, \([0-9]*\) warning(s), \([0-9]*\) failure(s).*/\1 \2/p' <<< "$1"; }
+read -r _LW _LF <<< "$(_verdict "$_O")"
+printf 'SEARXNG_SECRET=s\nEDGE_GATE=false\n' > "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+read -r _CW _CF <<< "$(_verdict "$_O")"
+if grep -qF "✓ openbeast.conf: no unknown keys" <<< "$_O" && ! grep -q "unknown key '" <<< "$_O"; then
+  pass "a clean conf gets one green row and no warning (control)"
+else
+  fail "clean conf: $(grep -iE 'unknown' <<< "$_O" | tr '\n' ' ')"
+fi
+# Same sandbox, same everything else: the three findings add exactly three
+# warnings and not one failure.
+if [[ -n "${_CW:-}" && "${_LW:-}" == "$((_CW + 3))" && "${_LF:-x}" == "$_CF" ]]; then
+  pass "…and they are WARNINGS: +3 warnings, the failure count does not move"
+else
+  fail "conf findings changed doctor's verdict wrongly: ${_LW:-?}w/${_LF:-?}f with them, ${_CW:-?}w/${_CF:-?}f without"
+fi
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

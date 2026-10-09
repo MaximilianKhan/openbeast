@@ -17,6 +17,9 @@ export REPO_DIR
 # a SearXNG secret and created openbeast.conf — and so did the scripts doctor
 # runs underneath (configure-webui.sh --check-default-admin), hence exported.
 export OB_CONF_READONLY=1
+# conf.sh's unknown-key / bad-value findings are shown as rows under "Config &
+# secrets" below, so its own one-time stderr copy is switched off.
+export OB_CONF_LINTED=1
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
 
@@ -124,6 +127,19 @@ if [[ -f "$CONF" ]]; then
   fi
 else
   pass "no openbeast.conf (single-user defaults — fine)"
+fi
+# Typos and values that cannot work (lib/conf.sh ob_conf_lint): a misspelt key
+# is ignored in silence — `EDGE_GTAE=true` left the gate off — and a
+# non-integer REASONING_BUDGET surfaced only as "llama-server exited".
+# Warnings, never failures: the stack starts exactly as it would have.
+_lint_n=0
+while IFS= read -r _lint; do
+  [[ -n "$_lint" ]] || continue
+  _lint_n=$((_lint_n + 1))
+  warn "$_lint" "edit openbeast.conf (every key and its values: openbeast.conf.example)"
+done < <(ob_conf_lint 2>/dev/null || true)
+if [[ $_lint_n -eq 0 && -f "$CONF" && -f "$REPO_DIR/openbeast.conf.example" ]]; then
+  pass "openbeast.conf: no unknown keys, integer keys are integers"
 fi
 if [[ -d "$OPENBEAST_FILES_DIR" ]]; then
   fmode=$(stat -c '%a' "$OPENBEAST_FILES_DIR" 2>/dev/null)

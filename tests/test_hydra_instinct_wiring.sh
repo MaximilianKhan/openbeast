@@ -158,7 +158,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   # exact variable, never a family, so a leaked HYDRA/INSTINCT/CONSUMER line
   # can never hide behind it:
   #   OPENBEAST_CHAT_NOTIFY_ON, OPENBEAST_NTFY_PORT — beast-chat notify (#113)
-  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)='
+  #   OB_CONF_LINTED — conf.sh's "unknown-key warnings already printed" mark
+  #                    (review 2026-10-09, UX-13)
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)=|^ENV OB_CONF_LINTED='
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
   fi
