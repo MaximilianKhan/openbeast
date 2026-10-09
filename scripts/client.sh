@@ -206,6 +206,15 @@ _http_code() {
 case "$CMD" in
   status)
     echo "=== OpenBeast client status ==="
+    # Never installed is not "broken": with neither the env file nor the
+    # client dir there is nothing to repair, and "venv broken — re-run" sent
+    # people looking for a run they never made.
+    if [ ! -f "$ENV_FILE" ] && [ ! -d "$CLIENT_DIR" ]; then
+      echo "  ✗ client mode is not installed on this machine"
+      echo "    (no $ENV_FILE, no $CLIENT_DIR)."
+      echo "    Install it:  $REPO/scripts/setup-client.sh --host <rig-fqdn>"
+      exit 1
+    fi
     ok=0; bad=0
     if [ -f "$ENV_FILE" ]; then
       echo "  ✓ env file ($ENV_FILE)"; ok=$((ok+1))
@@ -214,8 +223,10 @@ case "$CMD" in
     fi
     if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c "import mcp, openai" 2>/dev/null; then
       echo "  ✓ venv imports mcp + openai"; ok=$((ok+1))
+    elif [ ! -x "$VENV/bin/python3" ]; then
+      echo "  ✗ no venv at $VENV — run scripts/setup-client.sh"; bad=$((bad+1))
     else
-      echo "  ✗ venv broken — re-run scripts/setup-client.sh"; bad=$((bad+1))
+      echo "  ✗ venv broken (mcp/openai do not import) — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
     if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))

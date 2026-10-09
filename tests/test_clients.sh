@@ -815,6 +815,25 @@ else
 fi
 
 echo ""
+echo "client.sh status on a box that never installed (UX-29):"
+NH="$TMPROOT/never-home"; mkdir -p "$NH"
+out="$(env -i HOME="$NH" PATH="/usr/bin:/bin" bash "$REPO_DIR/scripts/client.sh" status 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 1 ]] && _has "$out" "client mode is not installed" && _has "$out" "setup-client.sh --host" \
+   && ! _has "$out" "venv broken"; then
+  pass "never installed → 'not installed' + the install command, not 'venv broken'"
+else
+  fail "never-installed status (rc=$rc): $out"
+fi
+# Negative control: an install that LOST its venv is still diagnosed as such.
+IH="$TMPROOT/half-home"; mkdir -p "$IH/.openbeast-client" "$TMPROOT/nobin"
+echo "# no rig url" > "$IH/.openbeast-client.env"
+out="$(env -i HOME="$IH" PATH="$TMPROOT/nobin:/usr/bin:/bin" bash "$REPO_DIR/scripts/client.sh" status 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 1 ]] && _has "$out" "no venv at" && ! _has "$out" "not installed"; then
+  pass "control: an existing install without a venv reports the missing venv"
+else
+  fail "half-installed status (rc=$rc): $out"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
