@@ -847,6 +847,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 [TODO.md](docs/TODO.md) (roadmap, completed work, review records) ·
 [RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md) (MTP, profiling, model comparisons) ·
+[research/FINDINGS.md](research/FINDINGS.md) (the two research programs: what was found, what was not run) ·
+[the beast-rank paper](research/lowrank/paper/final/paper.pdf) (quantization repair in llama.cpp) ·
 [DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md) ·
 [SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·
 [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) (third-party skills: verdicts and the import gate) ·
