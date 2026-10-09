@@ -2400,7 +2400,15 @@ def create_app() -> FastAPI:
     # a long-lived attachment is re-checked at least as often as it is poked.
     auth_recheck = float(os.environ.get("OPENBEAST_CHAT_AUTH_RECHECK_S")
                          or min(heartbeat, 5.0))
-    port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
+    # Open SSE streams, per reader and in total. Each one is a poll loop (a
+    # thread hop, two stats and a ledger read every POLL_MS) for as long as it
+    # stays attached, and by default any identified tailnet login may read:
+    # without a ceiling one reader opening a few thousand starved the loop
+    # until /api/chat/health stalled and the watchdog called the server down.
+    # Generous on purpose — a phone, a laptop and a dozen tabs is normal use.
+    sse_max_each = max(1, int(os.environ.get("OPENBEAST_CHAT_SSE_MAX_PER_READER") or 32))
+    sse_max = max(1, int(os.environ.get("OPENBEAST_CHAT_SSE_MAX") or 128))
+    port =int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
     allowed_hosts = trusted_hosts(
         os.environ.get("OPENBEAST_CHAT_ALLOWED_HOSTS", ""))
 
@@ -2419,6 +2427,51 @@ def create_app() -> FastAPI:
     gauges: dict[str, int] = defaultdict(int)
     rate_hits: dict[str, deque] = defaultdict(deque)
     rate_lock = threading.Lock()
+    sse_held: dict[str, int] = defaultdict(int)     # reader -> open streams
+    # Re-entrant: SseSlot.__del__ can run from a GC pass that starts while
+    # this thread already holds the lock.
+    sse_lock = threading.RLock()
+
+    class SseSlot:
+        """One open stream's place under the caps; release() is idempotent.
+
+        The stream's `finally` gives it back. __del__ is the backstop for a
+        response whose body was never started (the client left between the
+        headers and the first frame): a generator that never ran has no
+        `finally` to run, and a slot leaked there is a 429 that never clears.
+        """
+
+        def __init__(self, key: str):
+            self.key, self._held = key, True
+
+        def release(self) -> None:
+            with sse_lock:
+                if not self._held:
+                    return
+                self._held = False
+                sse_held[self.key] -= 1
+                if sse_held[self.key] <= 0:
+                    del sse_held[self.key]
+
+        __del__ = release
+
+    def sse_acquire(principal: dict) -> SseSlot:
+        """A slot for this reader, or 429 when they (or the server) are full."""
+        key = str(principal.get("login") or principal.get("device") or "?")
+        with sse_lock:
+            mine = sse_held.get(key, 0)
+            if mine >= sse_max_each:
+                why = (f"too many open event streams for {key} ({mine}, the "
+                       f"limit is {sse_max_each}): close a console tab, or "
+                       "raise OPENBEAST_CHAT_SSE_MAX_PER_READER")
+            elif sum(sse_held.values()) >= sse_max:
+                why = (f"too many open event streams on this rig (the limit "
+                       f"is {sse_max}): raise OPENBEAST_CHAT_SSE_MAX")
+            else:
+                sse_held[key] += 1
+                return SseSlot(key)
+        raise HTTPException(status_code=429, detail=why,
+                            headers={"Retry-After": "5"})
 
     app = FastAPI(
         title="OpenBeast beast-chat",
@@ -2945,6 +2998,17 @@ def create_app() -> FastAPI:
             start = tail_start(rec.get("transcript") or "", tail)
             tail_skipped = start
 
+        # Last, so a request that was going to be refused anyway (404, 400)
+        # never holds a slot.
+        try:
+            slot = sse_acquire(principal)
+        except HTTPException as e:
+            audit(principal, "GET /events", session_id, f"http_{e.status_code}",
+                  int((time.monotonic() - t0) * 1000))
+            with metrics_lock:
+                counters[("GET /events", f"http_{e.status_code}")] += 1
+            raise
+
         audit(principal, "GET /events", session_id, "stream_open",
               int((time.monotonic() - t0) * 1000), {"from": start})
         with metrics_lock:
@@ -2952,7 +3016,7 @@ def create_app() -> FastAPI:
             gauges["sse_open"] += 1
 
         return StreamingResponse(
-            _stream(request, rec, start, principal, tail_skipped),
+            _stream(request, rec, start, principal, tail_skipped, slot),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -2978,7 +3042,7 @@ def create_app() -> FastAPI:
         return (st.st_dev, st.st_ino)
 
     async def _stream(request: Request, record: dict, start: int,
-                      principal: dict, tail_skipped: int = 0):
+                      principal: dict, tail_skipped: int = 0, slot=None):
         session_id = record["id"]
         kind = record.get("kind") or "agent"
         path = record.get("transcript") or ""
@@ -3118,6 +3182,8 @@ def create_app() -> FastAPI:
                     last_out = now
                 await asyncio.sleep(poll)
         finally:
+            if slot is not None:
+                slot.release()
             with metrics_lock:
                 gauges["sse_open"] -= 1
             # What a reader actually pulled, and for how long — the open row

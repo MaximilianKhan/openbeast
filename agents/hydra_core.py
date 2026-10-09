@@ -130,6 +130,10 @@ class Node:
     key_env: str | None = None
     key_file: str | None = None
     slots: int = 1
+    # False only for the implicit node when INFERENCE_SLOTS is unset: `slots`
+    # is then a routing guess (1), not the engine's real -np, and must not be
+    # used to judge a caller's id_slot (forward_body).
+    slots_known: bool = True
     connect_timeout_s: float = 5.0
     ttft_timeout_s: float = 120.0
     prefill_tps_floor: float | None = None
@@ -609,6 +613,7 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
                 id=nid, url=_norm_url(url), engine=engine, enabled=bool(n.get("enabled", True)),
                 key_env=n.get("key_env") or None, key_file=n.get("key_file") or None,
                 slots=int(slots) if isinstance(slots, int) else 1,
+                slots_known="slots" in n or source != "implicit",
                 connect_timeout_s=float(conn), ttft_timeout_s=float(ttft),
                 prefill_tps_floor=float(pf) if isinstance(pf, (int, float)) else None,
                 idle_timeout_s=float(idle), nonstream_timeout_s=float(nonstream),
@@ -897,7 +902,6 @@ def implicit_raw(env: dict | None = None) -> dict:
     if engine not in ENGINES:
         engine = "llama"
     slots_raw = _env(env, "INFERENCE_SLOTS", "OPENBEAST_INFERENCE_SLOTS")
-    slots = int(slots_raw) if slots_raw.isdigit() and int(slots_raw) > 0 else 1
     # NOT OPENBEAST_INFERENCE_MODEL: under HYDRA=true conf.sh points that at
     # the route id (`beast`) so runner.py sends a routable name.
     known = _env(env, "OPENBEAST_HYDRA_UPSTREAM_MODEL", "INFERENCE_MODEL")
@@ -905,7 +909,19 @@ def implicit_raw(env: dict | None = None) -> dict:
     default = _env(env, "HYDRA_DEFAULT_MODEL", "OPENBEAST_HYDRA_DEFAULT_MODEL") or "beast"
     if not ROUTE_ID_RE.match(default):
         default = "beast"
-    node: dict[str, Any] = {"url": url, "engine": engine, "slots": slots}
+    # "Behaves like today" also means a turn queued behind another one WAITS:
+    # with one target there is nowhere to fail over to, so the per-node
+    # first-byte deadline (120 s by default) would only turn the engine's
+    # queue into a 504 and, five of those later, an open breaker. The implicit
+    # node waits the whole pre-commit budget instead.
+    budget = Settings().pre_commit_budget_s
+    node: dict[str, Any] = {"url": url, "engine": engine,
+                            "ttft_timeout_s": budget, "nonstream_timeout_s": budget}
+    # `slots` only when the conf states it. Unset, the serve script's -np is
+    # unknown here: validate() then routes on 1 and marks the count unknown,
+    # so a gate-assigned id_slot reaches a multi-slot llama-server untouched.
+    if slots_raw.isdigit() and int(slots_raw) > 0:
+        node["slots"] = int(slots_raw)
     if engine != "tensorfold":
         node["key_env"] = "LLAMA_API_KEY"
     # No gpu_lease here: "behaves like today" means chat is not drained while
@@ -1786,7 +1802,12 @@ def instinct_worthwhile(cfg: Config, state: FleetState, f: Features, caller: Cal
 
 def forward_body(body: dict, d: Deployment, n: Node) -> tuple[dict, list[str]]:
     """The ONLY edits hydra makes to a request body (plan §6.6): `model`, and an
-    `id_slot` the target cannot honour. Everything else passes untouched."""
+    `id_slot` the target cannot honour. Everything else passes untouched.
+
+    The range check needs a slot count somebody stated. On the implicit node
+    with INFERENCE_SLOTS unset (`slots_known` False) the 1 is a guess, and
+    stripping on it silently dropped beast-gate's per-device slot affinity on
+    every `-np N` rig; the engine is then the judge, as without hydra."""
     out = dict(body)
     edits = []
     if out.get("model") != d.upstream:
@@ -1795,7 +1816,8 @@ def forward_body(body: dict, d: Deployment, n: Node) -> tuple[dict, list[str]]:
     if "id_slot" in out:
         v = out["id_slot"]
         ok = (n.engine == "llama" and "id_slot" in d.caps and isinstance(v, int)
-              and not isinstance(v, bool) and 0 <= v < n.slots)
+              and not isinstance(v, bool) and v >= 0
+              and (v < n.slots or not n.slots_known))
         if not ok:
             del out["id_slot"]
             edits.append("id_slot")

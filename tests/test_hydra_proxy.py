@@ -499,8 +499,121 @@ def test_identity_headers_need_the_caller_token(fleet, tmp_path):
     assert audit_rows(tmp_path)[-1]["trusted"] is False
     r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
     assert r.headers["x-hydra-route"] == "beast:fast" and r.headers["x-hydra-rule"] == "phone-fast"
-    assert posts(sparks)[-1]["headers"]["x-openbeast-device"] == "max-phone"
     assert audit_rows(tmp_path)[-1]["device"] == "max-phone"
+
+
+def test_identity_headers_route_but_never_reach_a_node(fleet, tmp_path):
+    """Review 2026-10-09 netsec S12: a trusted caller's identity decides the
+    route and lands in the audit row, and stops there — a fleet node was being
+    handed the user's email and a live identity JWT on every turn."""
+    srv, rig, sparks, _ = fleet()
+    who = {"X-Hydra-Caller": "caller-secret", "X-OpenBeast-Device": "max-phone",
+           "X-OpenWebUI-User-Role": "admin", "X-OpenWebUI-User-Email": "max@example.test",
+           "X-OpenWebUI-User-Id": "u-1", "X-OpenWebUI-User-Jwt": "eyJ.identity.jwt",
+           "X-OpenWebUI-Chat-Id": "c-1", "Tailscale-User-Login": "max@example.test",
+           "X-Conversation-Id": "conv-7"}
+    r = post(srv, chat(), who)
+    assert r.status_code == 200
+    # still used for the decision (the device rule matched) and the audit
+    assert r.headers["x-hydra-route"] == "beast:fast" and r.headers["x-hydra-rule"] == "phone-fast"
+    row = audit_rows(tmp_path)[-1]
+    assert row["trusted"] is True and row["device"] == "max-phone"
+    fwd = posts(sparks)[-1]["headers"]
+    leaked = sorted(k for k in fwd if k.startswith(("x-openwebui-", "tailscale-", "x-openbeast-device")))
+    assert not leaked, leaked
+    assert "eyJ.identity.jwt" not in json.dumps(posts(sparks)[-1])
+    # negative control: a non-identity header still travels
+    assert fwd["x-conversation-id"] == "conv-7" and fwd["x-openbeast-request-id"]
+
+
+def _solo_timeouts(srv, n):
+    return [post(srv, chat(model="solo", stream=True)).status_code for _ in range(n)]
+
+
+def test_queueing_behind_a_full_single_candidate_does_not_trip_the_breaker(fleet):
+    """Review 2026-10-09 ops F3: one target, already full — a first-byte
+    timeout there is the engine's queue. Counting it opened the breaker and
+    turned a busy rig into 503 for every caller."""
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=0.4), chunks=200, tok_ms=50)
+    hs = srv.hy.state.health["unc@rig"]
+    with httpx.stream("POST", srv.url + "/v1/chat/completions", json=chat(model="solo", stream=True),
+                      headers=auth(), timeout=30) as holder:
+        wait_admitted(srv, "rig")                      # the 1-slot rig is now saturated
+        rig.set_fault("ttft_ms:1500")
+        assert _solo_timeouts(srv, 4) == [504] * 4     # fail_threshold is 3
+        assert hs.breaker_state(time.monotonic()) == core.CLOSED and hs.h.fails == 0
+        for _chunk in holder.iter_raw():
+            break
+    rig.set_fault(None)
+    deadline = time.time() + 10
+    while srv.hy.state.node_inflight("rig") and time.time() < deadline:
+        time.sleep(0.05)
+    assert post(srv, chat(model="solo")).status_code == 200, "the rig was only busy"
+
+
+def test_first_byte_timeouts_on_an_idle_single_candidate_still_trip_the_breaker(fleet):
+    # the control for the test above: nothing in flight, so the node is at fault
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=0.4))
+    rig.set_fault("ttft_ms:1500")
+    assert _solo_timeouts(srv, 3) == [504] * 3
+    hs = srv.hy.state.health["unc@rig"]
+    assert hs.breaker_state(time.monotonic()) == core.OPEN
+    rig.set_fault(None)
+    assert post(srv, chat(model="solo")).status_code == 503
+
+
+def _probe_once(tmp_path, eng, state):
+    """One probe_node() of a node forced into `state`; seconds until the next."""
+    import asyncio
+    raw = {"schema": 1,
+           "hydra": {"probe_interval_s": 5, "probe_down_interval_s": 30, "down_after": 2, "up_after": 2,
+                     "audit": str(tmp_path / "audit.jsonl"),
+                     "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp_path / "instinct.key")}},
+           "nodes": {"rig": {"url": eng.url, "engine": "llama", "slots": 1, "key_env": "RIG_KEY"}},
+           "deployments": {"unc@rig": {"node": "rig", "upstream": eng.model, "ctx": 262144,
+                                       "caps": ["tools"], "conformance": "off"}},
+           "routes": {"beast": {"targets": [{"d": "unc@rig"}]}}}
+    env = env_for(tmp_path)
+    cfg = core.validate(raw, env)
+
+    async def go():
+        hy = hydra.Hydra(cfg, env=env, run=tmp_path / "run")
+        try:
+            hs = hy.state.health["unc@rig"]
+            hs.h.state, hs.h.ok_streak, hs.h.fail_streak = state, 0, 2
+            n = cfg.nodes["rig"]
+            await hy.probe_node(n)
+            first = (hs.h.state, hy.next_probe["rig"] - time.monotonic())
+            await hy.probe_node(n)
+            return first, hs.h.state
+        finally:
+            await hy.probe_client.aclose()
+    return asyncio.run(go())
+
+
+def test_a_down_node_that_answers_is_reprobed_at_the_normal_cadence(tmp_path):
+    """Review 2026-10-09 ops F12: a relaunched engine's first good probe left
+    it DOWN and scheduled the confirming probe a full down interval (30 s)
+    away; hydra 503'd a healthy rig meanwhile."""
+    eng = FakeEngine("llama", "qwen-unc", RIG_KEY, slots=1)
+    try:
+        (state, wait), after = _probe_once(tmp_path, eng, core.DOWN)
+        assert state == core.DOWN, "up_after=2: one good probe is not READY yet"
+        assert 4.0 < wait <= 5.0, wait
+        assert after == core.READY
+    finally:
+        eng.stop()
+
+
+def test_a_down_node_that_stays_down_keeps_the_slow_cadence(tmp_path):
+    eng = FakeEngine("llama", "qwen-unc", RIG_KEY, slots=1)
+    try:
+        eng.set_fault("health_down")
+        (state, wait), after = _probe_once(tmp_path, eng, core.DOWN)
+        assert state == core.DOWN and after == core.DOWN
+        assert 29.0 < wait <= 30.0, wait
+    finally:
+        eng.stop()
 
 
 def test_request_id_is_forwarded(fleet):
