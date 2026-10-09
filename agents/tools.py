@@ -2236,8 +2236,23 @@ def update_plan(steps=None, explanation: str = "") -> str:
     return head + "\n" + _plan_render(clean)
 
 
+#: How task_done's refusal starts. agents/runner.py keeps its loop going on
+#: exactly this prefix, so the model gets to read the refusal and act on it.
+TASK_DONE_REFUSED = "NOT DONE"
+
+# The path list is derived from task wording, so it can be wrong (a path the
+# validator writes, a file the task only mentions). Until suite v4.1 that
+# cost nothing because the runner exited on any task_done call and the
+# refusal was never read. Now that it is read, the guard is bounded: it
+# refuses this many times per run, then lets completion through, so a wrong
+# list costs two turns and can never dead-end a unit.
+_TASK_DONE_MAX_REFUSALS = 2
+_task_done_refusals = 0
+
+
 def task_done(summary: str) -> str:
     """Signal that the task is complete."""
+    global _task_done_refusals
     # R1 path guard: refuse completion while expected task files (with a
     # file extension — extensionless paths are usually build artifacts the
     # validator compiles itself) do not exist. Catches both never-wrote
@@ -2245,8 +2260,9 @@ def task_done(summary: str) -> str:
     expected = _task_expected_paths()
     missing = [e for e in expected
                if "." in os.path.basename(e) and not os.path.exists(e)]
-    if missing:
-        return ("NOT DONE — the task expects these files, which do not "
+    if missing and _task_done_refusals < _TASK_DONE_MAX_REFUSALS:
+        _task_done_refusals += 1
+        return (TASK_DONE_REFUSED + " — the task expects these files, which do not "
                 "exist yet: " + ", ".join(sorted(missing)) +
                 ". Create them at exactly these paths, then call task_done "
                 "again.")

@@ -1116,6 +1116,21 @@ def _parse_tokens(stdout: str) -> dict:
     return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
 
 
+_TASK_PATH_RE = re.compile(r"/tmp/eval[\w\-./]*")
+
+
+def task_expected_paths(task: dict) -> list[str]:
+    """The /tmp/eval* paths the TASK TEXT names, for the agent's path guard.
+
+    From the text the model reads and nothing else. Until suite v4.1 the
+    list was scraped from setup, validation and cleanup as well, so it held
+    files only the validator writes (`/tmp/eval_ntt/out.txt`), and the
+    pattern kept a sentence's full stop (`/tmp/eval_gemm/gemm.zig.`, a file
+    that can never exist). Trailing sentence punctuation is stripped."""
+    found = {m.rstrip(".,;:)") for m in _TASK_PATH_RE.findall(str(task.get("task", "")))}
+    return sorted(p for p in found if p)
+
+
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
               timeout_scale: float = 1.0) -> dict:
     """Run the agent against a task. Returns timing, iteration, and token info.
@@ -1153,9 +1168,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # wrong-place writes and refuses task_done while expected files are
     # missing. Passed via env= (NOT os.environ mutation) so --jobs
     # parallel tasks cannot race each other's path sets.
-    spec_text = " ".join(str(task.get(k, ""))
-                         for k in ("task", "validation", "setup", "cleanup"))
-    expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
+    expected = task_expected_paths(task)
     child_env = dict(os.environ)
 
     # === THE EVAL MARKER — beast-chat lock L1 (E1) ========================

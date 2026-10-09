@@ -1228,8 +1228,14 @@ def run_agent(
                 "content": result,
             })
 
-            # Check for task completion
-            if fn_name == "task_done":
+            # Check for task completion. The path guard's refusal (eval
+            # only: it needs OPENBEAST_TASK_PATHS) is not a completion: the
+            # model reads it as this call's result and gets its remaining
+            # turns to fix the path. Until suite v4.1 the loop ended on the
+            # call whatever it returned, so the refusal was written to the
+            # log and never seen (29 of 29 refused runs ended that turn).
+            if fn_name == "task_done" and not str(result).startswith(
+                    _tools.TASK_DONE_REFUSED):
                 final_summary = fn_args.get("summary", result)
                 print(f"\n{'=' * 60}")
                 print(f"Task complete (iteration {iteration})")
