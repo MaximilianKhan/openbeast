@@ -235,6 +235,22 @@ if [[ -n "$REASONING_BUDGET" && ! "$REASONING_BUDGET" =~ ^-?[0-9]+$ ]]; then
   _OB_CONF_PROBLEMS+=("REASONING_BUDGET='$REASONING_BUDGET' is not an integer (thinking tokens; 0 = none, -1 = unlimited) — ignoring it, each model's own default stands")
   REASONING_BUDGET=""
 fi
+# Host-RAM prompt cache (serve.sh hands it to llama-server), integer MiB:
+#   empty = automatic (serve.sh sizes it to this machine's RAM),
+#   0     = the server's own default, N = exactly N MiB.
+# Env override: $OPENBEAST_PROMPT_CACHE_RAM_MB. Exported only when set, so
+# "unset" still means "automatic" to whatever serve.sh runs under.
+PROMPT_CACHE_RAM_MB="${OPENBEAST_PROMPT_CACHE_RAM_MB:-$(_ob_conf_value PROMPT_CACHE_RAM_MB || true)}"
+PROMPT_CACHE_RAM_MB="${PROMPT_CACHE_RAM_MB%%[[:space:]#]*}"
+if [[ -n "$PROMPT_CACHE_RAM_MB" && ! "$PROMPT_CACHE_RAM_MB" =~ ^[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("PROMPT_CACHE_RAM_MB='$PROMPT_CACHE_RAM_MB' is not a whole number of MiB — ignoring it, the prompt cache is sized automatically")
+  PROMPT_CACHE_RAM_MB=""
+fi
+if [[ -n "$PROMPT_CACHE_RAM_MB" ]]; then
+  export PROMPT_CACHE_RAM_MB
+else
+  export -n PROMPT_CACHE_RAM_MB 2>/dev/null || true
+fi
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of
@@ -967,7 +983,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 # anywhere in the repo is in one of the two — add a new key there, or here.
 # Without openbeast.conf.example next to the conf (a stripped copy) the
 # unknown-key half is skipped: there is nothing to compare against.
-_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL PROMPT_CACHE_RAM_MB WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
 _OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT ARTIFACT_RETAIN_DAYS"

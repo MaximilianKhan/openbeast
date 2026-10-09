@@ -451,6 +451,28 @@ _O="$(lint_eval 'SEARXNG_SECRET=s' OPENBEAST_REASONING_BUDGET=many -- 'echo "rb=
 has "$(_err)" "REASONING_BUDGET='many' is not an integer" && [[ "$_O" == "rb=[]" ]] \
   && pass "…and a bad \$OPENBEAST_REASONING_BUDGET is caught the same way" \
   || fail "env REASONING_BUDGET: out='$_O' err=$(_err | tr '\n' ' ')"
+# PROMPT_CACHE_RAM_MB (serve.sh's --cache-ram knob): integer MiB, empty =
+# automatic, 0 = the server default. Exported for serve.sh only when set.
+_pc() { lint_eval "$@" -- 'echo "v=[${PROMPT_CACHE_RAM_MB}] env=[$(env | grep -c "^PROMPT_CACHE_RAM_MB=" || true)]"'; }
+_A="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=49152   # 48 GiB')"
+_B="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=0')"
+_C="$(_pc 'SEARXNG_SECRET=s')"
+_D="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=49152' OPENBEAST_PROMPT_CACHE_RAM_MB=1024)"
+if [[ "$_A" == "v=[49152] env=[1]" && "$_B" == "v=[0] env=[1]" && "$_C" == "v=[] env=[0]" && "$_D" == "v=[1024] env=[1]" ]]; then
+  pass "PROMPT_CACHE_RAM_MB: N and 0 are exported, empty stays unset (= automatic), the env override wins"
+else
+  fail "PROMPT_CACHE_RAM_MB resolution: set='$_A' zero='$_B' unset='$_C' env='$_D'"
+fi
+_E="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=48G')"
+if [[ "$_E" == "v=[] env=[0]" ]] && has "$(_err)" "PROMPT_CACHE_RAM_MB='48G' is not a whole number of MiB"; then
+  pass "…a non-integer (48G) is ignored with a warning, never handed to llama-server"
+else
+  fail "PROMPT_CACHE_RAM_MB=48G: '$_E' err=$(_err | tr '\n' ' ')"
+fi
+# An inherited plain export must not outlive the key being removed.
+_F="$(_pc 'SEARXNG_SECRET=s' PROMPT_CACHE_RAM_MB=777)"
+[[ "$_F" == "v=[] env=[0]" ]] && pass "…and a stale inherited PROMPT_CACHE_RAM_MB does not stick once the key is gone" \
+  || fail "stale PROMPT_CACHE_RAM_MB survived: '$_F'"
 # SERVE_SCRIPT.
 lint_eval $'SEARXNG_SECRET=s\nSERVE_SCRIPT=serve-nope.sh' -- ':'
 has "$(_err)" "SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" \
