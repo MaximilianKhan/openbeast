@@ -10,6 +10,9 @@
 #   ./bootstrap.sh --no-start   # set everything up, don't launch
 #   ./bootstrap.sh --minimal    # Tier 0: build + one weight only, no Docker
 #                               # frontends (just llama-server; see README)
+#   ./bootstrap.sh --cpu        # build CPU-only ON PURPOSE (10-50x slower).
+#                               # Without it a box with no working GPU is
+#                               # refused, not quietly given a CPU build.
 #
 # Idempotent: every step skips work that's already done, so re-running after
 # a failure resumes rather than restarts. It installs the light things
@@ -30,7 +33,10 @@ for arg in "$@"; do
     --no-start)  START_STACK="no" ;;
     --minimal)   MINIMAL=1 ;;
     --preflight) PREFLIGHT=1 ;;
-    -h|--help)   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The env name, which wins over the conf key (scripts/lib/conf.sh): this
+    # run is CPU-only whatever openbeast.conf says.
+    --cpu)       export OPENBEAST_GPU_BACKEND=cpu ;;
+    -h|--help)   sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -43,11 +49,17 @@ warn() { echo "  ${c_ylw}!${c_rst} $*"; pf_record warn "$*"; }
 die()  { echo "  ${c_red}✗ $*${c_rst}" >&2; exit 1; }
 
 # ---- preflight bookkeeping --------------------------------------------------
-# Under --preflight every ok/warn is also recorded as a table row; hard_fail
-# flags the most recent row as a real failure (✗) and sets MISSING — in the
-# normal flow it behaves exactly like the old inline `MISSING=1`.
+# Under --preflight every ok/warn is also recorded as a row; hard_fail flags
+# the most recent row as a real failure (✗) and sets MISSING — in the normal
+# flow it behaves exactly like the old inline `MISSING=1`.
+#
+# `hard_fail "<reason>"` records its OWN row instead. That is for a failure
+# whose explanation was printed by someone else (scripts/lib/hardware.sh
+# prints the VRAM-floor verdict itself): with no row of its own, the ✗ landed
+# on whatever was recorded last — `✗ NVIDIA GPU: … (16376 MiB VRAM)`, a
+# failure with no reason attached to it.
 PF_STATUS=(); PF_LABEL=()
-pf_record() { # $1 = pass|warn, $2 = label
+pf_record() { # $1 = pass|warn|fail, $2 = label
   [[ $PREFLIGHT -eq 1 ]] || return 0
   PF_STATUS+=("$1"); PF_LABEL+=("$2")
 }
@@ -57,7 +69,10 @@ pf_mark_fail() {
   [[ $i -ge 0 ]] && PF_STATUS[i]="fail"
   return 0
 }
-hard_fail() { MISSING=1; pf_mark_fail; }
+hard_fail() {
+  MISSING=1
+  if [[ $# -gt 0 ]]; then pf_record fail "$1"; else pf_mark_fail; fi
+}
 
 # ---- wrong-machine off-ramp -------------------------------------------------
 # The rig is CUDA/Linux only, by design. But the README invites macOS and
@@ -81,6 +96,34 @@ Details (including using a rig someone else hosts): docs/BEAST_SLOT.md
 EOF
   exit 2
 fi
+
+# ---- not as root -------------------------------------------------------------
+# Everything here installs into the invoking user's account: python packages
+# under ~/.local, llama.cpp/ and the weights beside the checkout, a mode-600
+# openbeast.conf. The usual reason for `sudo ./bootstrap.sh` is a docker
+# permission error, and the result is a stack owned by root that the user's
+# own ./start.sh can then neither read nor import. `id -u`, not $EUID, so the
+# guard can be exercised without being root.
+if [[ "$(id -u)" -eq 0 && "${OPENBEAST_ALLOW_ROOT:-0}" != "1" ]]; then
+  cat >&2 <<'EOF'
+Do not run bootstrap.sh as root (or with sudo): everything it installs goes
+into the invoking user's account, and a root-owned install cannot be started
+or updated by you afterwards. Nothing was installed.
+
+If you reached for sudo because docker refused you, fix that instead:
+
+    sudo usermod -aG docker $USER     # then log out and back in
+    ./bootstrap.sh
+
+(A container whose only user IS root: OPENBEAST_ALLOW_ROOT=1 ./bootstrap.sh)
+EOF
+  exit 2
+fi
+
+# The one weight bootstrap downloads. Up here, not in step 4, because the disk
+# check in the preflight needs to know what it is making room for.
+WEIGHT_FILE="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
+HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 
 # ---- distro detection ------------------------------------------------------
 DISTRO="unknown"; PKG_HINT=""
@@ -125,45 +168,76 @@ need() { # need <cmd> <concept-for-hint> <why>
   fi
 }
 
-run_preflight() {
-  step "Preflight checks (distro: $DISTRO)"
-  MISSING=0
-  need git    git       "needed to fetch llama.cpp"
-  need cmake  cmake     "needed to build llama.cpp"
-  need make   toolchain "drives the llama.cpp build"
-  need gcc    toolchain "C/C++ toolchain for the build"
-  need curl   curl      "health probes + installers use it"
-  need python3 python   "runs the MCP tool server + eval harness"
-  # pip as a module — some distros ship python3 without it.
-  if python3 -m pip --version >/dev/null 2>&1; then
-    ok "python3 -m pip present"
-  else
-    warn "python3 -m pip missing — needed to install the Python deps"
-    echo "      → $(pkg_install_hint pip)"
-    hard_fail
+# An NVIDIA card whose driver is not answering — the ordinary state after a
+# kernel update, before the reboot or the DKMS rebuild. Prints the reason and
+# returns 0 for that case only; a working driver, or no NVIDIA card at all,
+# returns 1.
+#
+# This has to be asked BEFORE ob_detect_gpu's answer is believed. Detection
+# tries nvidia-smi and, when it fails, simply moves on: a Ryzen iGPU beside
+# the dead 4090 was reported as "AMD GPU, 2048 MiB, below the 24 GB floor,
+# install rocm-hip-sdk" — three wrong diagnoses — and with no iGPU the box
+# was "no GPU", which went on to a 10-40 minute CPU build, pinned
+# GPU_BACKEND=cpu in openbeast.conf and pulled 20 GB of weights.
+ob_nvidia_broken() {
+  local out pci
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    out="$(nvidia-smi 2>&1)" && return 1
+    out="$(sed -n '/[^[:space:]]/{p;q;}' <<< "$out")"
+    echo "nvidia-smi: ${out:-exited non-zero and said nothing}"
+    return 0
   fi
+  # No nvidia-smi at all, but the card is on the bus: the driver was never
+  # installed (or was removed). Captured first, never `lspci | grep -q` — under
+  # pipefail grep's early exit turns a MATCH into a failed pipeline.
+  command -v lspci >/dev/null 2>&1 || return 1
+  pci="$(lspci 2>/dev/null || true)"
+  if grep -qiE '(VGA|3D|Display)[^:]*:.*NVIDIA' <<< "$pci"; then
+    echo "nvidia-smi is not installed, so there is no NVIDIA driver"
+    return 0
+  fi
+  return 1
+}
 
-  # GPU + driver — detect vendor/VRAM, print the profile recommendation, and
-  # resolve the llama.cpp build backend (GPU_BACKEND in openbeast.conf, or
-  # auto → vendor mapping). Reference profile is CUDA on a 5090; HIP/SYCL/CPU
-  # are built but UNTESTED — see docs/HARDWARE_PROFILES.md.
-  source "$REPO_DIR/scripts/lib/conf.sh"
-  source "$REPO_DIR/scripts/lib/hardware.sh"
+# GPU + backend. Returns early (with the failure recorded) on the two cases
+# where everything further down would be reasoning from a wrong premise.
+preflight_gpu() {
   ob_detect_gpu
   ob_resolve_backend
+  # Only when the backend is ours to choose (auto) or is CUDA: someone who
+  # set GPU_BACKEND=hip|sycl|cpu has said which card they mean to use.
+  local nv_why
+  if [[ "$GPU_BACKEND" == "auto" || "$GPU_BACKEND" == "cuda" ]] && nv_why="$(ob_nvidia_broken)"; then
+    warn "NVIDIA card found but the driver is not answering ($nv_why)"
+    echo "      → fix the driver, then re-run. Nothing was built."
+    echo "        After a kernel update that is usually a reboot; otherwise"
+    echo "        reinstall the NVIDIA driver package for your distro and check"
+    echo "        that 'nvidia-smi' prints your card."
+    echo "      → not using an NVIDIA card on this box? Say which backend:"
+    echo "        GPU_BACKEND=hip|sycl in openbeast.conf, or ./bootstrap.sh --cpu"
+    hard_fail
+    return 0
+  fi
   case "$OB_GPU_VENDOR" in
     nvidia) ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
     amd)    ok "AMD GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
     intel)  ok "Intel GPU: ${OB_GPU_NAME:-unknown}" ;;
     none)
-      # ob_vram_floor_check returns early when vendor is 'none', so nothing
-      # downstream stops a CPU-only install from building llama.cpp and pulling
-      # ~20 GB of weights for inference that would be 10-50x slower. Point at
-      # client mode, which is what a GPU-less box actually wants.
-      warn "no supported GPU detected"
-      echo "      → this box can't serve models, but it CAN be a client:"
-      echo "        ./scripts/setup-client.sh --host <rig>.<tailnet>.ts.net"
-      echo "        (full tool arsenal locally, inference on a rig — docs/BEAST_SLOT.md)"
+      if [[ "$GPU_BACKEND" == "auto" ]]; then
+        # A HARD FAIL. It was a warning, and nothing downstream stopped it
+        # (ob_vram_floor_check returns early for vendor 'none'): auto resolved
+        # to cpu, and the install went ahead with a build and a ~20 GB weight
+        # for inference 10-50x slower than anyone wants. CPU-only is still
+        # available — to someone who asks for it.
+        warn "no supported GPU detected — not building a CPU-only stack unasked"
+        echo "      → this box can't serve models, but it CAN be a client:"
+        echo "        ./scripts/setup-client.sh --host <rig>.<tailnet>.ts.net"
+        echo "        (full tool arsenal locally, inference on a rig — docs/BEAST_SLOT.md)"
+        echo "      → to build CPU-only anyway (10-50x slower): ./bootstrap.sh --cpu"
+        hard_fail
+        return 0
+      fi
+      warn "no supported GPU detected (continuing: GPU_BACKEND=$GPU_BACKEND was set explicitly)"
       ;;
   esac
   ob_profile_advice
@@ -171,7 +245,7 @@ run_preflight() {
   # see ob_vram_floor_check in scripts/lib/hardware.sh for the reasoning
   # and the OPENBEAST_FORCE_VRAM=1 escape hatch.
   if ! ob_vram_floor_check; then
-    hard_fail
+    hard_fail "${OB_GPU_NAME:-GPU}: ${OB_VRAM_MB} MiB VRAM is below the 24 GB floor — no setting fixes that on this card; OPENBEAST_FORCE_VRAM=1 proceeds unsupported"
   fi
   ok "llama.cpp build backend: $OB_BACKEND (GPU_BACKEND=$GPU_BACKEND)"
   case "$OB_BACKEND" in
@@ -189,9 +263,51 @@ run_preflight() {
       cpu)  ok "CPU backend — no GPU toolchain needed" ;;
     esac
   else
-    warn "toolchain for the '$OB_BACKEND' backend is missing (details above)."
+    # The lib printed what is missing (and the fix) just above; the summary
+    # needs the first of those lines, not "details above". Asked again in a
+    # subshell because the real call must run HERE — it exports the PATH nvcc
+    # was found on.
+    local tc_why
+    tc_why="$(ob_backend_preflight 2>&1 | sed -n '1p' || true)"
+    tc_why="${tc_why#"${tc_why%%[![:space:]]*}"}"
+    warn "toolchain for the '$OB_BACKEND' backend is missing: ${tc_why:-see above}"
     hard_fail
   fi
+}
+
+run_preflight() {
+  step "Preflight checks (distro: $DISTRO)"
+  MISSING=0
+  need git    git       "needed to fetch llama.cpp"
+  need cmake  cmake     "needed to build llama.cpp"
+  need make   toolchain "drives the llama.cpp build"
+  need gcc    toolchain "C compiler for the build"
+  # llama.cpp is C++. gcc without g++ is an ordinary state (a minimal Debian
+  # has it) and used to pass every check here, then fail inside cmake.
+  need g++    toolchain "C++ compiler for the build (llama.cpp is C++)"
+  need curl   curl      "health probes + installers use it"
+  need python3 python   "runs the MCP tool server + eval harness"
+  # pip as a module — some distros ship python3 without it.
+  if python3 -m pip --version >/dev/null 2>&1; then
+    ok "python3 -m pip present"
+  else
+    warn "python3 -m pip missing — needed to install the Python deps"
+    echo "      → $(pkg_install_hint pip)"
+    hard_fail
+  fi
+
+  # GPU + driver — detect vendor/VRAM, print the profile recommendation, and
+  # resolve the llama.cpp build backend (GPU_BACKEND in openbeast.conf, or
+  # auto → vendor mapping). Reference profile is CUDA on a 5090; HIP/SYCL/CPU
+  # are built but UNTESTED — see docs/HARDWARE_PROFILES.md.
+  #
+  # --preflight promises to write NOTHING, and sourcing conf.sh was the one
+  # thing that did: it generates SEARXNG_SECRET and creates openbeast.conf.
+  # OB_CONF_READONLY=1 is conf.sh's switch for "resolve, do not persist".
+  [[ $PREFLIGHT -eq 1 ]] && export OB_CONF_READONLY=1
+  source "$REPO_DIR/scripts/lib/conf.sh"
+  source "$REPO_DIR/scripts/lib/hardware.sh"
+  preflight_gpu
 
   # Docker (only for the full stack; Tier 0 doesn't need it)
   if [[ $MINIMAL -eq 0 ]]; then
@@ -218,10 +334,9 @@ run_preflight() {
 }
 
 # ---- preflight-only extras ---------------------------------------------------
-# Checks that only run under --preflight: they add information (disk space,
-# kernel, docker-group diagnosis) without changing the normal bootstrap flow.
+# Checks that only run under --preflight: they add information (kernel,
+# docker-group diagnosis) without changing the normal bootstrap flow.
 preflight_extras() {
-  preflight_network
   step "System"
   ok "Linux kernel $(uname -r) ($(uname -m)) — note: Docker + NVIDIA need a reasonably current kernel"
 
@@ -237,13 +352,21 @@ preflight_extras() {
       warn "docker installed but /var/run/docker.sock is absent — daemon not running (sudo systemctl enable --now docker)"
     fi
   fi
+}
 
+# Room for the weight — in the NORMAL flow too, before the build. This check
+# used to live in preflight_extras, i.e. only under --preflight: a real
+# ./bootstrap.sh never looked, so a box with 15 GB free sat through the whole
+# llama.cpp build and the pip install and then died mid-download on hf's raw
+# "No space left on device". Sets PF_WEIGHT_PRESENT for the network verdict.
+PF_WEIGHT_PRESENT=0
+preflight_disk() {
   step "Weights disk space"
   # Resolve WEIGHTS_DIR exactly like the serve scripts do, but READ-ONLY:
   # lib/weights.sh exits 1 when the dir doesn't exist yet (normal on a fresh
   # box), so source it in a throwaway bash and capture the resolved path via
   # an EXIT trap. No mkdir, no conf writes.
-  local resolved probe avail_gb
+  local resolved probe avail_kb avail_gb need_b need_gb
   resolved=$(REPO_DIR="$REPO_DIR" bash -c \
     'trap '\''printf "%s" "${WEIGHTS_DIR:-}"'\'' EXIT; source "$REPO_DIR/scripts/lib/weights.sh"' 2>/dev/null) || true
   if [[ -z "$resolved" ]]; then
@@ -255,17 +378,35 @@ preflight_extras() {
   # (the weights dir itself usually doesn't exist before bootstrap).
   probe="$resolved"
   while [[ ! -d "$probe" && "$probe" != "/" ]]; do probe="$(dirname "$probe")"; done
-  avail_gb=$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print int($4/1024/1024)}') || avail_gb=""
-  if [[ -z "$avail_gb" ]]; then
-    warn "weights dir resolves to $resolved but free space on $probe could not be measured"
+  avail_kb=$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=""
+  avail_gb=$(( ${avail_kb:-0} / 1024 / 1024 ))
+  if [[ -f "$resolved/$WEIGHT_FILE" ]]; then
+    PF_WEIGHT_PRESENT=1
+    ok "weights dir: $resolved — the default weight is already there${avail_kb:+ (${avail_gb} GB free)}"
+    return 0
+  fi
+  # The exact size, from the same registry row the download is verified
+  # against — and the same rule scripts/fetch-weight.sh applies, so this
+  # cannot pass a disk that the download step then refuses.
+  need_b="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $2}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
+  [[ "$need_b" =~ ^[0-9]+$ ]] || need_b=20000000000
+  need_gb="$(awk -v b="$need_b" 'BEGIN{printf "%.1f", b/1e9}')"
+  if [[ -z "$avail_kb" ]]; then
+    warn "weights dir resolves to $resolved but free space on $probe could not be measured (the default weight needs $need_gb GB)"
+  elif [[ $(( avail_kb * 1024 )) -lt "$need_b" ]]; then
+    warn "not enough disk for the default weight: need $need_gb GB in $resolved, have $(awk -v k="$avail_kb" 'BEGIN{printf "%.1f", k*1024/1e9}') GB free"
+    echo "      → free some space there, or point WEIGHTS_DIR at a bigger disk:"
+    echo "        WEIGHTS_DIR=/path/with/room in openbeast.conf"
+    hard_fail
   elif [[ "$avail_gb" -ge 25 ]]; then
     if [[ -d "$resolved" ]]; then
-      ok "weights dir: $resolved — ${avail_gb} GB free (default 27B weight needs ~20 GB)"
+      ok "weights dir: $resolved — ${avail_gb} GB free (default 27B weight needs $need_gb GB)"
     else
       ok "weights dir will be $resolved (created by bootstrap) — ${avail_gb} GB free (need ~25 GB)"
     fi
   else
-    warn "weights dir $resolved has only ${avail_gb} GB free — the default 27B weight needs ~20 GB (~25 GB recommended). Point WEIGHTS_DIR at a bigger disk (openbeast.conf)."
+    warn "weights dir $resolved has only ${avail_gb} GB free — the default 27B weight ($need_gb GB) fits, but ~25 GB is recommended. Point WEIGHTS_DIR at a bigger disk (openbeast.conf)."
   fi
 }
 
@@ -279,7 +420,17 @@ preflight_extras() {
 # A warning, not a failure: a box that already has llama.cpp/, its wheels and
 # its weights can rebuild and serve perfectly well offline. What must not
 # happen is a green verdict on a box that cannot finish a FIRST install.
+#
+# Run in the NORMAL flow too (it was --preflight only), where the question is
+# sharper: is a host this run is about to need unreachable? See the verdict
+# after the probes, below.
 PF_NO_NET=0
+PF_UNREACHABLE=()
+# huggingface_hub honours HF_ENDPOINT (a mirror, an internal proxy), and so
+# does scripts/fetch-weight.sh's own probe: ask the endpoint the download will
+# actually use, or a box that reaches HF only through one is told "no route".
+PF_HF_BASE="${HF_ENDPOINT:-https://huggingface.co}"; PF_HF_BASE="${PF_HF_BASE%/}"
+PF_HF_HOST="${PF_HF_BASE#*://}"; PF_HF_HOST="${PF_HF_HOST%%/*}"
 preflight_network() {
   # OFFLINE=true is the operator telling us there is no route. Probing anyway
   # costs three connect timeouts and produces a warning that reads like a
@@ -291,17 +442,19 @@ preflight_network() {
     PF_NO_NET=1
     return 0
   fi
-  local unreachable=() host
-  for host in github.com pypi.org huggingface.co; do
+  local unreachable=() url host
+  for url in https://github.com https://pypi.org "$PF_HF_BASE"; do
     # -I, 6s, no retries: this is a reachability question, not a download.
-    curl -fsS -I --max-time 6 --retry 0 -o /dev/null "https://$host" 2>/dev/null \
+    host="${url#*://}"; host="${host%%/*}"
+    curl -fsS -I --max-time 6 --retry 0 -o /dev/null "$url" 2>/dev/null \
       || unreachable+=("$host")
   done
   if [[ ${#unreachable[@]} -eq 0 ]]; then
-    ok "network: github.com, pypi.org and huggingface.co all reachable"
+    ok "network: github.com, pypi.org and $PF_HF_HOST all reachable"
     return 0
   fi
   PF_NO_NET=1
+  PF_UNREACHABLE=("${unreachable[@]}")
   warn "network: cannot reach ${unreachable[*]} — a FIRST install cannot complete"
   echo "      bootstrap needs all three: llama.cpp source (github), the python"
   echo "      wheels (pypi), and the ~20 GB default weight (huggingface), plus"
@@ -312,18 +465,25 @@ preflight_network() {
 
 pf_summary() {
   step "Preflight summary"
+  # COUNTS, THEN ONLY WHAT FAILED — each with its reason, once. This used to
+  # replay every row: the whole run printed twice, the ✗ lines buried among
+  # the ✓ ones, and a ✗ could carry a label with no reason in it. The fix for
+  # each failure is printed where it was found, above.
   local i n=${#PF_STATUS[@]} n_ok=0 n_warn=0 n_fail=0
   for ((i = 0; i < n; i++)); do
     case "${PF_STATUS[i]}" in
-      pass) printf '  %s✓%s %s\n' "$c_grn" "$c_rst" "${PF_LABEL[i]}"; n_ok=$((n_ok + 1)) ;;
-      warn) printf '  %s!%s %s\n' "$c_ylw" "$c_rst" "${PF_LABEL[i]}"; n_warn=$((n_warn + 1)) ;;
-      fail) printf '  %s✗%s %s\n' "$c_red" "$c_rst" "${PF_LABEL[i]}"; n_fail=$((n_fail + 1)) ;;
+      pass) n_ok=$((n_ok + 1)) ;;
+      warn) n_warn=$((n_warn + 1)) ;;
+      fail) n_fail=$((n_fail + 1)) ;;
     esac
   done
-  echo
   echo "  ${n_ok} ok, ${n_warn} warnings, ${n_fail} failures"
+  for ((i = 0; i < n; i++)); do
+    [[ "${PF_STATUS[i]}" == "fail" ]] && printf '  %s✗%s %s\n' "$c_red" "$c_rst" "${PF_LABEL[i]}"
+  done
   if [[ $n_fail -gt 0 ]]; then
-    echo "  ${c_red}Fix the ✗ items above, then run ./bootstrap.sh${c_rst}"
+    echo "  ${c_red}Fix the ✗ item(s) listed here — how is printed with each one, above —"
+    echo "  then run ./bootstrap.sh${c_rst}"
     # A box with BOTH a local gap and no network used to hear only about the
     # local gap, so "fix these and install" was wrong twice over: you fix them
     # and still cannot fetch a single artifact. Say both.
@@ -358,6 +518,8 @@ pf_summary() {
 }
 
 run_preflight
+preflight_network
+preflight_disk
 
 if [[ $PREFLIGHT -eq 1 ]]; then
   preflight_extras
@@ -365,7 +527,32 @@ if [[ $PREFLIGHT -eq 1 ]]; then
   exit "$MISSING"
 fi
 
-[[ $MISSING -eq 1 ]] && die "Missing prerequisites above. Install them and re-run ./bootstrap.sh"
+[[ $MISSING -eq 1 ]] && die "Missing prerequisites above. Fix them and re-run ./bootstrap.sh — nothing was built or downloaded."
+
+# The network, for a run that is about to USE it. --preflight reports an
+# unreachable host as a warning (a provisioned box rebuilds and serves fine
+# offline); here the question has an exact answer, so stop before the build
+# rather than after it — the same 10-40 minutes the disk check saves.
+if [[ ${#PF_UNREACHABLE[@]} -gt 0 ]]; then
+  _ob_net_need=()
+  if [[ " ${PF_UNREACHABLE[*]} " == *" github.com "* \
+        && ! -x "$REPO_DIR/llama.cpp/build/bin/llama-server" \
+        && ! -f "$REPO_DIR/llama.cpp/CMakeLists.txt" ]]; then
+    _ob_net_need+=("github.com — the llama.cpp source is not here yet")
+  fi
+  if [[ " ${PF_UNREACHABLE[*]} " == *" $PF_HF_HOST "* && $PF_WEIGHT_PRESENT -eq 0 ]]; then
+    _ob_net_need+=("$PF_HF_HOST — the default weight ($WEIGHT_FILE) is not here yet")
+  fi
+  if [[ ${#_ob_net_need[@]} -gt 0 ]]; then
+    die "this install needs a host that cannot be reached:
+$(printf '         %s\n' "${_ob_net_need[@]}")
+       Nothing was built or downloaded. Check the connection (a VPN, a proxy,
+       DNS) and re-run. On a network that is closed on purpose, set
+       OFFLINE=true in openbeast.conf and bring the artifacts in:
+         ./scripts/bundle.sh build ./bundle      (on a connected box)
+         ./scripts/bundle.sh install ./bundle    (here)"
+  fi
+fi
 
 # ---- 2. build llama.cpp (skip if already built) ---------------------------
 step "llama.cpp (${OB_BACKEND^^} build)"
@@ -471,13 +658,28 @@ fi
 
 # Persist the resolved backend so scripts/update.sh --llama rebuilds with
 # the SAME flavor instead of re-guessing (docs/HARDWARE_PROFILES.md Phase 1).
+#
+# NEVER `cpu` FROM AUTO-DETECTION. A pinned backend outlives the condition
+# that produced it: "no GPU seen today" (a driver that was down) written as
+# GPU_BACKEND=cpu kept the box on CPU after the driver was fixed, through
+# every later bootstrap and update. The preflight now refuses that install
+# outright; this guard is here so the pin cannot come back by another road.
+# cpu is persisted only when it was ASKED for (--cpu / GPU_BACKEND=cpu).
 CONF_FILE="$REPO_DIR/openbeast.conf"
-if [[ ! -f "$CONF_FILE" ]]; then
-  {
-    echo "# OpenBeast configuration — created by bootstrap.sh."
-    echo "# All available keys: openbeast.conf.example"
-    echo "GPU_BACKEND=$OB_BACKEND"
-  } > "$CONF_FILE"
+if [[ "$OB_BACKEND" == "cpu" && "$GPU_BACKEND" != "cpu" ]]; then
+  warn "not writing GPU_BACKEND=cpu to openbeast.conf: it came from detection,
+      not from you. Detection runs again next time; to make CPU-only stick,
+      set GPU_BACKEND=cpu there (or run ./bootstrap.sh --cpu)."
+elif [[ ! -f "$CONF_FILE" ]]; then
+  # Reached only when conf.sh had nothing to persist (it creates the file
+  # itself when it generates SEARXNG_SECRET — which made the old version of
+  # this branch dead code on an ordinary run, and its file world-readable on
+  # the run where it was not). Mode 600 like conf.sh's: secrets land here.
+  ( umask 077
+    { echo "# OpenBeast configuration — created by bootstrap.sh."
+      echo "# All available keys: openbeast.conf.example"
+      echo "GPU_BACKEND=$OB_BACKEND"
+    } > "$CONF_FILE" )
   ok "created openbeast.conf with GPU_BACKEND=$OB_BACKEND"
 elif grep -qE '^[[:space:]]*GPU_BACKEND[[:space:]]*=' "$CONF_FILE"; then
   sed -i -E "s|^[[:space:]]*GPU_BACKEND[[:space:]]*=.*|GPU_BACKEND=$OB_BACKEND|" "$CONF_FILE"
@@ -718,8 +920,7 @@ step "Default model weight (~20 GB — the one big download)"
 export OPENBEAST_WEIGHTS_MKDIR=1
 source "$REPO_DIR/scripts/lib/weights.sh"
 unset OPENBEAST_WEIGHTS_MKDIR
-WEIGHT_FILE="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
-HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
+# (WEIGHT_FILE and HF_REPO are set at the top of this file.)
 # Supply-chain pin for the one mandatory download, read from the weight
 # registry (scripts/weights.registry — pins EVERY shipped GGUF, same
 # discipline as the digest-pinned container images). A silent swap in the
@@ -776,6 +977,16 @@ fi
 # ---- executable bits -------------------------------------------------------
 chmod +x "$REPO_DIR"/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/tests/*.sh 2>/dev/null || true
 
+# Where the 20 GB went, for the closing banner. The default (../weights, a
+# SIBLING of the checkout) is not where anyone looks first, and the banner
+# said nothing about it.
+ob_weights_line() {
+  local gb
+  gb="$(stat -c%s "$WEIGHTS_DIR/$WEIGHT_FILE" 2>/dev/null | awk '{printf "%.1f GB", $1/1e9}' || true)"
+  echo "  Weights:   $WEIGHTS_DIR/$WEIGHT_FILE${gb:+ ($gb)}"
+  echo "             (the directory is WEIGHTS_DIR in openbeast.conf)"
+}
+
 # ---- Tier 0 (minimal) exit -------------------------------------------------
 if [[ $MINIMAL -eq 1 ]]; then
   step "${c_grn}Tier 0 ready${c_rst}"
@@ -784,6 +995,7 @@ if [[ $MINIMAL -eq 1 ]]; then
   echo "  Then talk to it:"
   echo "      curl http://localhost:8080/v1/models"
   echo "      point any OpenAI-compatible client at http://localhost:8080/v1"
+  ob_weights_line
   exit 0
 fi
 
@@ -834,6 +1046,7 @@ echo
 echo "  Chat UI:   http://localhost:3000"
 echo "  Model API: http://localhost:8080/v1   (OpenAI-compatible)"
 echo "  Terminal:  run 'opencode' in any project directory"
+ob_weights_line
 echo
 
 if [[ "$START_STACK" == "ask" && -t 0 ]]; then

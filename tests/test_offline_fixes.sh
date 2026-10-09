@@ -280,7 +280,12 @@ echo "13. bootstrap.sh — a weight that FAILED its pin is never accepted on a r
 # own section markers, like the python step in 2+3. The stub hf (section 1)
 # writes BYTES-FROM-<repo>, so the registry row decides pass or fail.
 _wsec="$(sed -n '/^# ---- 4\. default model weight/,/^# ---- executable bits/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
-if has "$_wsec" "WEIGHT_FILE=" && has "$_wsec" "weights.registry"; then
+# WEIGHT_FILE / HF_REPO are assigned at the top of bootstrap.sh (the preflight
+# disk check needs the name before step 4 does); the harness takes those two
+# lines from the file as well, so it still runs what bootstrap runs.
+_wdefs="$(grep -E '^(WEIGHT_FILE|HF_REPO)="[^"]+"$' "$REPO_DIR/bootstrap.sh" || true)"
+if has "$_wsec" 'fetch-weight.sh" "$WEIGHT_FILE"' && has "$_wsec" "weights.registry" \
+   && [[ "$(wc -l <<< "$_wdefs")" == "2" ]]; then
   pass "extracted bootstrap's weight step ($(wc -l <<< "$_wsec") lines)"
 else
   fail "could not extract bootstrap's weight step — its section markers moved"
@@ -289,6 +294,7 @@ fi
   echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo "$_wdefs"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_weight_step.sh"
@@ -1506,6 +1512,359 @@ if [[ "$(grep -cE '^LLAMA_CPP_REF=[0-9a-f]{40}$' "$REPO_DIR/scripts/llama.cpp.re
   pass "scripts/llama.cpp.ref commits exactly one 40-hex LLAMA_CPP_REF"
 else
   fail "scripts/llama.cpp.ref does not hold exactly one 40-hex LLAMA_CPP_REF"
+fi
+
+# ===========================================================================
+echo ""
+echo "16. bootstrap.sh — what the preflight refuses BEFORE anything is built:"
+# ===========================================================================
+# The REAL bootstrap.sh, run whole, in a sandbox repo. It never gets past its
+# preflight in the cases below; where a case lets it through, the git and
+# cmake stubs fail (and log), so nothing is ever fetched or compiled.
+#
+# Hardware is NOT read: scripts/lib/hardware.sh is the real file with
+# ob_detect_gpu replaced by one that reports what the case says, and
+# nvidia-smi / lspci / df / curl / id are stubs driven by files in $T/state.
+BR="$T/repo_boot"; BB="$T/binb"; WBOOT="$T/weights_boot"
+mkdir -p "$BR/scripts/lib" "$BB" "$T/hboot"
+install -m 755 "$REPO_DIR/bootstrap.sh" "$BR/bootstrap.sh"
+install -m 644 "$REPO_DIR/scripts/lib/weights.sh" "$BR/scripts/lib/weights.sh"
+# conf.sh: the real one, plus a recorder for the switch --preflight must set.
+{ cat "$REPO_DIR/scripts/lib/conf.sh"
+  echo 'echo "READONLY=${OB_CONF_READONLY:-unset}" >> "$OB_STUB_STATE/conf_sourced"'
+} > "$BR/scripts/lib/conf.sh"
+{ cat <<'DETECT'
+ob_detect_gpu() {
+  OB_GPU_VENDOR="$(cat "$OB_STUB_STATE/gpu_vendor")"; OB_GPU_NAME="$(cat "$OB_STUB_STATE/gpu_name")"
+  OB_VRAM_MB="$(cat "$OB_STUB_STATE/gpu_vram")"; OB_VRAM_TOTAL_MB="$OB_VRAM_MB"; OB_GPU_COUNT=1
+}
+ob_profile_advice() { :; }
+DETECT
+  grep -E '^OB_VRAM_FLOOR_MB=' "$REPO_DIR/scripts/lib/hardware.sh"
+  for _fn in ob_vram_floor_check ob_resolve_backend ob_backend_preflight ob_cmake_flags; do
+    sed -n "/^${_fn}() {/,/^}/p" "$REPO_DIR/scripts/lib/hardware.sh"
+  done
+} > "$BR/scripts/lib/hardware.sh"
+if grep -q '^ob_backend_preflight() {' "$BR/scripts/lib/hardware.sh" && grep -q '^OB_VRAM_FLOOR_MB=' "$BR/scripts/lib/hardware.sh"; then
+  pass "sandbox hardware.sh = the real backend/floor functions + a detector the test controls"
+else
+  fail "could not lift the real functions out of scripts/lib/hardware.sh"
+fi
+_BW="$(sed -n 's/^WEIGHT_FILE="\(.*\)"$/\1/p' "$REPO_DIR/bootstrap.sh" | head -n 1)"
+printf '%s\t%s\t%s\t%s\t%s\n' "$(printf '0%.0s' {1..64})" "20000000000" "$_BW" "org/default-GGUF" "-" > "$BR/scripts/weights.registry"
+
+cat > "$BB/nvidia-smi" <<'STUB'
+#!/bin/bash
+if [[ "$(cat "$OB_STUB_STATE/smi" 2>/dev/null)" == "broken" ]]; then
+  echo ""; echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running."
+  exit 9
+fi
+case " $* " in *compute_cap*) echo "12.0" ;; esac
+exit 0
+STUB
+printf '#!/bin/bash\necho "nvcc: NVIDIA (R) Cuda compiler driver"; echo "Cuda compilation tools, release 13.0, V13.0.1"\n' > "$BB/nvcc"
+printf '#!/bin/bash\necho "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics"\n' > "$BB/lspci"
+cat > "$BB/df" <<'STUB'
+#!/bin/bash
+echo "df $*" >> "$OB_STUB_STATE/bdf.log"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nstub 99 0 %s 0%% /stub\n' "$(cat "$OB_STUB_STATE/df_free_kb")"
+STUB
+printf '#!/bin/bash\n[[ ! -f "$OB_STUB_STATE/net_down" ]]\n' > "$BB/curl"
+# `id -u` answers what the case says and NEVER the real uid, so the suite
+# behaves the same when it is itself run as root (a CI container).
+REAL_ID="$(command -v id)"; export REAL_ID
+cat > "$BB/id" <<'STUB'
+#!/bin/bash
+if [[ "${1:-}" == "-u" ]]; then
+  if [[ -f "$OB_STUB_STATE/as_root" ]]; then echo 0; else echo 1000; fi
+  exit 0
+fi
+exec "$REAL_ID" "$@"
+STUB
+for _t in git cmake; do
+  printf '#!/bin/bash\necho "%s $*" >> "$OB_STUB_STATE/build.log"\necho "stub %s: refusing" >&2\nexit 1\n' "$_t" "$_t" > "$BB/$_t"
+done
+chmod +x "$BB"/*
+
+boot_case() {            # boot_case <vendor> <vram> <smi ok|broken> : reset to a box that would pass
+  rm -f "$T/state"/{as_root,net_down,conf_sourced,build.log,bdf.log}; rm -rf "$BR/openbeast.conf" "$BR/llama.cpp" "$WBOOT"
+  echo "$1" > "$T/state/gpu_vendor"; echo "$2" > "$T/state/gpu_vram"; echo "$3" > "$T/state/smi"
+  echo "Test GPU" > "$T/state/gpu_name"; echo 300000000 > "$T/state/df_free_kb"
+  : > "$T/state/build.log"; : > "$T/state/conf_sourced"
+}
+run_boot() {             # run_boot [ENV=VAL...] -- <bootstrap args>
+  local envs=(); while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done; shift
+  _out="$(env PATH="$BB:$PATH" HOME="$T/hboot" OPENBEAST_WEIGHTS_DIR="$WBOOT" NO_COLOR=1 ${envs[@]+"${envs[@]}"} \
+            bash "$BR/bootstrap.sh" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')"; _rc="${PIPESTATUS[0]}"
+}
+# The summary block alone, and its ✗ lines.
+summary_of() { sed -n '/==> Preflight summary/,$p' <<< "$1"; }
+n_fail_rows() { local n; n="$(grep -c '^  ✗ ' <<< "$(summary_of "$1")" || true)"; echo "${n:-0}"; }
+built() { [[ -s "$T/state/build.log" || -d "$BR/llama.cpp" ]]; }
+
+# --- NEGATIVE CONTROL first: the box these cases start from PASSES ----------
+boot_case nvidia 32607 ok; run_boot -- --preflight --minimal
+if [[ $_rc -eq 0 ]] && has "$_out" "NVIDIA GPU: Test GPU (32607 MiB" && has "$_out" "build backend: cuda" \
+   && has "$_out" "0 failures" && has "$_out" "Environment looks ready"; then
+  pass "negative control: a healthy 32 GB NVIDIA box passes the preflight (rc=0, 0 failures)"
+else
+  fail "the baseline box does not pass, so nothing below proves anything (rc=$_rc): $_out"
+fi
+
+# --- a broken NVIDIA driver is NAMED, not misdiagnosed -----------------------
+# nvidia-smi fails (a kernel update, no reboot) and detection falls through to
+# the Ryzen iGPU: that used to read "AMD GPU, below the 24 GB floor, install
+# rocm-hip-sdk" — and with no iGPU, went on to build CPU-only and pin it.
+boot_case amd 2048 broken; run_boot -- --preflight --minimal
+if [[ $_rc -eq 1 ]] && has "$_out" "NVIDIA card found but the driver is not answering (nvidia-smi: NVIDIA-SMI has failed" \
+   && has "$_out" "Nothing was built" && ! has "$_out" "AMD GPU" && ! has "$_out" "24 GB floor" \
+   && ! has "$_out" "hipcc" && ! has "$_out" "build backend:"; then
+  pass "nvidia-smi failing beside an iGPU: ONE diagnosis (the driver, with nvidia-smi's own first line), none of the three wrong ones"
+else
+  fail "broken NVIDIA driver, preflight (rc=$_rc): $_out"
+fi
+if [[ "$(n_fail_rows "$_out")" == "1" ]] && has "$(summary_of "$_out")" "✗ NVIDIA card found but the driver is not answering"; then
+  pass "…and the summary carries that failure, with its reason, exactly once"
+else
+  fail "summary for a broken driver ($(n_fail_rows "$_out") ✗ rows): $(summary_of "$_out")"
+fi
+boot_case none 0 broken; run_boot -- --minimal --no-start
+if [[ $_rc -ne 0 ]] && has "$_out" "driver is not answering" && ! built && ! has "$_out" "==> llama.cpp" \
+   && ! grep -qs 'GPU_BACKEND' "$BR/openbeast.conf"; then
+  pass "a real ./bootstrap.sh with a dead driver and no iGPU stops there: no clone, no cmake, no GPU_BACKEND=cpu in openbeast.conf"
+else
+  fail "broken NVIDIA driver, normal flow (rc=$_rc, build.log: $(cat "$T/state/build.log")): $_out"
+fi
+# An explicit non-NVIDIA backend is the operator saying which card they mean.
+boot_case none 0 broken; run_boot OPENBEAST_GPU_BACKEND=cpu -- --preflight --minimal
+if [[ $_rc -eq 0 ]] && ! has "$_out" "driver is not answering" && has "$_out" "CPU backend"; then
+  pass "negative control: with GPU_BACKEND=cpu set, a failing nvidia-smi is not this install's problem"
+else
+  fail "explicit cpu beside a broken nvidia-smi (rc=$_rc): $_out"
+fi
+
+# --- "no GPU" is a hard fail unless CPU-only was ASKED for -------------------
+boot_case none 0 ok; run_boot -- --preflight --minimal
+if [[ $_rc -eq 1 ]] && has "$_out" "no supported GPU detected" && has "$_out" "./bootstrap.sh --cpu" \
+   && has "$_out" "setup-client.sh" && [[ "$(n_fail_rows "$_out")" == "1" ]]; then
+  pass "no GPU + GPU_BACKEND=auto fails the preflight, pointing at client mode and at --cpu"
+else
+  fail "no GPU, preflight (rc=$_rc): $_out"
+fi
+boot_case none 0 ok; run_boot -- --minimal --no-start
+if [[ $_rc -ne 0 ]] && ! built && ! has "$_out" "==> llama.cpp" && ! grep -qs 'GPU_BACKEND' "$BR/openbeast.conf"; then
+  pass "…and a real run does not go on to a CPU build (it used to: 10-40 minutes, then GPU_BACKEND=cpu pinned)"
+else
+  fail "no GPU, normal flow built anyway (rc=$_rc, build.log: $(cat "$T/state/build.log")): $_out"
+fi
+boot_case none 0 ok; run_boot -- --cpu --preflight --minimal
+if [[ $_rc -eq 0 ]] && has "$_out" "build backend: cpu (GPU_BACKEND=cpu)" && has "$_out" "0 failures"; then
+  pass "negative control: --cpu is the explicit ask — the same box passes"
+else
+  fail "--cpu (rc=$_rc): $_out"
+fi
+boot_case none 0 ok; run_boot -- --cpu --minimal --no-start
+if has "$_out" "==> llama.cpp (CPU build)" && [[ -s "$T/state/build.log" ]]; then
+  pass "negative control: and a real --cpu run gets PAST the preflight to the llama.cpp step (where the stubs stop it)"
+else
+  fail "--cpu normal flow never reached the build step (rc=$_rc): $_out"
+fi
+
+# --- the summary: every failure once, with its reason ------------------------
+boot_case nvidia 16376 ok; run_boot -- --preflight --minimal
+_sum="$(summary_of "$_out")"
+if [[ $_rc -eq 1 && "$(n_fail_rows "$_out")" == "1" ]] && has "$_sum" "16376 MiB VRAM is below the 24 GB floor" \
+   && has "$_sum" "OPENBEAST_FORCE_VRAM=1" && ! has "$_sum" "✗ NVIDIA GPU:"; then
+  pass "a VRAM-floor failure is a ✗ row that SAYS so (it used to land on '✗ NVIDIA GPU: … (16376 MiB VRAM)')"
+else
+  fail "VRAM floor summary (rc=$_rc): $_sum"
+fi
+if [[ "$(count_lines <(printf '%s\n' "$_out") "git present")" == "1" ]] && ! has "$_sum" "✓"; then
+  pass "rows are no longer replayed: each check prints once, and the summary is counts + failures"
+else
+  fail "the summary still replays the run: $_out"
+fi
+if has "$_out" "g++ present" || has "$_out" "g++ missing"; then
+  pass "g++ is checked (gcc alone passed, and llama.cpp is C++)"
+else
+  fail "no g++ check in the preflight: $_out"
+fi
+
+# --- free disk, checked in the NORMAL flow, before the build ----------------
+boot_case nvidia 32607 ok; echo 15000000 > "$T/state/df_free_kb"; run_boot -- --minimal --no-start
+if [[ $_rc -ne 0 ]] && has "$_out" "need 20.0 GB in $WBOOT, have 15.4 GB free" && has "$_out" "WEIGHTS_DIR" \
+   && ! built && ! has "$_out" "==> llama.cpp"; then
+  pass "15 GB free for a 20 GB weight stops a real ./bootstrap.sh before the build, naming the directory and WEIGHTS_DIR"
+else
+  fail "disk check, normal flow (rc=$_rc, build.log: $(cat "$T/state/build.log")): $_out"
+fi
+run_boot -- --preflight --minimal
+if [[ $_rc -eq 1 ]] && has "$(summary_of "$_out")" "✗ not enough disk for the default weight: need 20.0 GB"; then
+  pass "…and --preflight reports the same thing as a failure, not as 'looks ready'"
+else
+  fail "disk check, preflight (rc=$_rc): $_out"
+fi
+# The weight is already there: nothing to make room for.
+mkdir -p "$WBOOT"; : > "$WBOOT/$_BW"; run_boot -- --preflight --minimal
+if [[ $_rc -eq 0 ]] && has "$_out" "the default weight is already there" && ! has "$_out" "not enough disk"; then
+  pass "negative control: with the weight already present a small disk is not a failure"
+else
+  fail "disk check with the weight present (rc=$_rc): $_out"
+fi
+boot_case nvidia 32607 ok; run_boot -- --minimal --no-start
+if has "$_out" "==> llama.cpp (CUDA build)" && [[ -s "$T/state/build.log" ]]; then
+  pass "negative control: with room, a real run gets past the preflight to the llama.cpp step"
+else
+  fail "a healthy box never reached the build step (rc=$_rc): $_out"
+fi
+
+# --- the network, checked in the NORMAL flow, before the build --------------
+boot_case nvidia 32607 ok; : > "$T/state/net_down"; run_boot -- --minimal --no-start
+if [[ $_rc -ne 0 ]] && has "$_out" "needs a host that cannot be reached" && has "$_out" "github.com — the llama.cpp source" \
+   && has "$_out" "huggingface.co — the default weight" && ! built && ! has "$_out" "==> llama.cpp"; then
+  pass "an unreachable network stops a real run before the build, naming each host and what it was needed for"
+else
+  fail "network check, normal flow (rc=$_rc, build.log: $(cat "$T/state/build.log")): $_out"
+fi
+# Unreachable, but everything it would have fetched is already here.
+mkdir -p "$BR/llama.cpp" "$WBOOT"; : > "$BR/llama.cpp/CMakeLists.txt"; : > "$WBOOT/$_BW"; run_boot -- --minimal --no-start
+if ! has "$_out" "needs a host that cannot be reached" && has "$_out" "==> llama.cpp (CUDA build)"; then
+  pass "negative control: no network is not fatal when the source and the weight are already on the box"
+else
+  fail "network check with artifacts present (rc=$_rc): $_out"
+fi
+
+# --- never as root ------------------------------------------------------------
+boot_case nvidia 32607 ok; : > "$T/state/as_root"; run_boot -- --minimal --no-start
+if [[ $_rc -eq 2 ]] && has "$_out" "Do not run bootstrap.sh as root" && has "$_out" "sudo usermod -aG docker" \
+   && [[ ! -s "$T/state/conf_sourced" && ! -e "$BR/openbeast.conf" ]] && ! built; then
+  pass "as root: refused at once with the docker-group fix — conf.sh never sourced, nothing written"
+else
+  fail "root guard (rc=$_rc, conf_sourced: $(cat "$T/state/conf_sourced")): $_out"
+fi
+run_boot OPENBEAST_ALLOW_ROOT=1 -- --preflight --minimal
+if [[ $_rc -eq 0 ]] && ! has "$_out" "as root"; then
+  pass "negative control: OPENBEAST_ALLOW_ROOT=1 (a root-only container) is let through"
+else
+  fail "OPENBEAST_ALLOW_ROOT=1 (rc=$_rc): $_out"
+fi
+
+# --- --preflight writes nothing ----------------------------------------------
+# It sources conf.sh, which generates SEARXNG_SECRET and creates
+# openbeast.conf. OB_CONF_READONLY=1 is conf.sh's switch for "do not persist".
+boot_case nvidia 32607 ok; run_boot -- --preflight --minimal
+if [[ "$(cat "$T/state/conf_sourced")" == "READONLY=1" ]]; then
+  pass "--preflight sources conf.sh with OB_CONF_READONLY=1"
+else
+  fail "--preflight sourced conf.sh as: $(cat "$T/state/conf_sourced")"
+fi
+if [[ ! -d "$WBOOT" && ! -d "$BR/llama.cpp" ]] && ! built; then
+  pass "…and creates no weights dir, no llama.cpp/, and runs neither git nor cmake"
+else
+  fail "--preflight left something behind: $(ls -A "$BR") :: $(cat "$T/state/build.log")"
+fi
+boot_case nvidia 32607 ok; run_boot -- --minimal --no-start
+if [[ "$(head -n 1 "$T/state/conf_sourced")" == "READONLY=unset" ]]; then
+  pass "negative control: a real run does NOT set it (the install must persist its config)"
+else
+  fail "normal flow sourced conf.sh as: $(cat "$T/state/conf_sourced")"
+fi
+
+# --- ob_nvidia_broken, on a PATH that holds nothing but the case -------------
+# The "card on the bus, no nvidia-smi at all" branch cannot be reached above on
+# a box that has the driver installed, so the function is lifted out and run
+# with PATH = one directory.
+NVB="$T/nvb"; mkdir -p "$NVB"
+ln -s "$(command -v sed)" "$NVB/sed"; ln -s "$(command -v grep)" "$NVB/grep"
+{ echo 'set -euo pipefail'
+  sed -n '/^ob_nvidia_broken() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
+  echo 'if why="$(ob_nvidia_broken)"; then echo "BROKEN: $why"; else echo "NOT-BROKEN"; fi'
+} > "$T/nv_harness.sh"
+nv_run() { _out="$(env -i PATH="$NVB" OB_STUB_STATE="$T/state" /bin/bash "$T/nv_harness.sh" 2>&1)"; }
+_lspci_with() { printf '#!/bin/bash\necho "00:02.0 VGA compatible controller: Intel Corporation UHD"\necho "%s"\n' "$1" > "$NVB/lspci"; chmod +x "$NVB/lspci"; }
+rm -f "$NVB/nvidia-smi"; _lspci_with "01:00.0 VGA compatible controller: NVIDIA Corporation AD103 [GeForce RTX 4080] (rev a1)"; nv_run
+if has "$_out" "BROKEN: nvidia-smi is not installed"; then
+  pass "an NVIDIA card on the PCI bus with no nvidia-smi is a missing driver, said so"
+else
+  fail "lspci-only detection: $_out"
+fi
+_lspci_with "03:00.0 3D controller: NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile]"; nv_run
+if has "$_out" "BROKEN:"; then
+  pass "…including a laptop's '3D controller' (not only 'VGA')"
+else
+  fail "3D-controller NVIDIA card not seen: $_out"
+fi
+_lspci_with "00:1f.3 Audio device: Intel Corporation"; nv_run
+if [[ "$_out" == "NOT-BROKEN" ]]; then
+  pass "negative control: no NVIDIA device on the bus and no nvidia-smi is simply 'no NVIDIA card'"
+else
+  fail "a box with no NVIDIA card was called broken: $_out"
+fi
+_lspci_with "01:00.0 VGA compatible controller: NVIDIA Corporation AD103"
+cp "$BB/nvidia-smi" "$NVB/nvidia-smi"; ln -sf "$(command -v cat)" "$NVB/cat"
+echo ok > "$T/state/smi"; nv_run
+if [[ "$_out" == "NOT-BROKEN" ]]; then
+  pass "negative control: a card whose nvidia-smi answers is not broken"
+else
+  fail "a working driver was called broken: $_out"
+fi
+echo broken > "$T/state/smi"; nv_run
+if has "$_out" "BROKEN: nvidia-smi: NVIDIA-SMI has failed because"; then
+  pass "a failing nvidia-smi is reported with its first NON-BLANK line"
+else
+  fail "failing nvidia-smi: $_out"
+fi
+
+# --- the backend pin: never `cpu` from detection ----------------------------
+_psec="$(sed -n '/^# Persist the resolved backend/,/^# ---- 3\. Python dependencies/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
+{ echo 'set -euo pipefail'
+  echo 'ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo "$_psec"
+} > "$T/persist_step.sh"
+PR16="$T/repo_persist"; mkdir -p "$PR16"
+persist() { rm -f "$PR16/openbeast.conf"; [[ -z "${3:-}" ]] || printf '%s\n' "$3" > "$PR16/openbeast.conf"
+            _out="$(REPO_DIR="$PR16" GPU_BACKEND="$1" OB_BACKEND="$2" bash "$T/persist_step.sh" 2>&1)"; _rc=$?; }
+persist auto cpu "SEARXNG_SECRET=x"
+if [[ $_rc -eq 0 ]] && ! grep -q 'GPU_BACKEND' "$PR16/openbeast.conf" && has "$_out" "not writing GPU_BACKEND=cpu"; then
+  pass "a cpu backend that came from detection is never written to openbeast.conf"
+else
+  fail "auto->cpu was persisted (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1) :: $_out"
+fi
+persist cpu cpu "SEARXNG_SECRET=x"
+if [[ $_rc -eq 0 ]] && grep -qx 'GPU_BACKEND=cpu' "$PR16/openbeast.conf" && grep -qx 'SEARXNG_SECRET=x' "$PR16/openbeast.conf"; then
+  pass "negative control: an explicit GPU_BACKEND=cpu IS persisted (update.sh rebuilds the same flavour)"
+else
+  fail "explicit cpu not persisted (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1)"
+fi
+persist auto cuda "GPU_BACKEND=hip"
+if [[ $_rc -eq 0 ]] && grep -qx 'GPU_BACKEND=cuda' "$PR16/openbeast.conf" && [[ "$(grep -c GPU_BACKEND "$PR16/openbeast.conf")" == "1" ]]; then
+  pass "negative control: a detected GPU backend still replaces the old pin in place"
+else
+  fail "auto->cuda (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1)"
+fi
+# No conf yet (conf.sh had nothing to persist): the file bootstrap creates will
+# hold secrets later, so it is born 0600 — whatever the caller's umask.
+_out="$(umask 022; rm -f "$PR16/openbeast.conf"; REPO_DIR="$PR16" GPU_BACKEND=auto OB_BACKEND=cuda bash "$T/persist_step.sh" 2>&1)"
+if grep -qx 'GPU_BACKEND=cuda' "$PR16/openbeast.conf" && [[ "$(stat -c %a "$PR16/openbeast.conf")" == "600" ]]; then
+  pass "an openbeast.conf created by bootstrap is mode 600"
+else
+  fail "created conf: mode $(stat -c %a "$PR16/openbeast.conf" 2>&1): $_out"
+fi
+
+# --- the closing banner says where the weights are ---------------------------
+{ echo 'set -euo pipefail'
+  echo 'step() { echo "==> $*"; }; c_grn=""; c_bold=""; c_rst=""; START_STACK=no'
+  grep -E '^WEIGHT_FILE="[^"]+"$' "$REPO_DIR/bootstrap.sh"
+  sed -n '/^ob_weights_line() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
+  sed -n '/^# ---- Done/,$p' "$REPO_DIR/bootstrap.sh"
+} > "$T/banner_step.sh"
+mkdir -p "$T/wbanner"; head -c 2500000 /dev/zero > "$T/wbanner/$_BW"
+_out="$(REPO_DIR="$PR16" WEIGHTS_DIR="$T/wbanner" bash "$T/banner_step.sh" 2>&1 </dev/null)"; _rc=$?
+if [[ $_rc -eq 0 ]] && has "$_out" "OpenBeast is ready" && has "$_out" "Weights:   $T/wbanner/$_BW (0.0 GB)" \
+   && has "$_out" "WEIGHTS_DIR"; then
+  pass "the 'OpenBeast is ready' banner prints the weight's absolute path and size, and names WEIGHTS_DIR"
+else
+  fail "banner (rc=$_rc): $_out"
 fi
 
 echo ""
