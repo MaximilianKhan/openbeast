@@ -179,6 +179,23 @@ if grep -q "model endpoint (http://localhost:8088/v1)" <<< "$_O"; then
 else
   fail "doctor missed an unreachable frontend model URL: $(grep -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
 fi
+# ops F5: with the router on, that endpoint IS the router — say so, and name
+# the repair healthcheck.sh now really has (it had no router branch, so the
+# old "check the router: healthcheck.sh --restart" did nothing). On a LAN
+# BIND_HOST the row used to blame the bind, which the router never follows.
+if grep -q "is the agent router, and it is not answering" <<< "$_O" \
+   && grep -A1 "is the agent router" <<< "$_O" | grep -qF "fix: ./scripts/healthcheck.sh --restart (relaunches the router)" \
+   && ! grep -q "refuses connections: services bind only" <<< "$_O"; then
+  pass "…named as a dead agent router, with the healthcheck --restart that now relaunches it"
+else
+  fail "doctor's router advice: $(grep -A1 -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -qE '^# Agent-spawn router' "$REPO_DIR/scripts/healthcheck.sh" \
+   && grep -q 'agents/router.py" >>"\$_rt_log"' "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "…and healthcheck.sh has the router branch that advice depends on (run in test_hydra_instinct_wiring.sh)"
+else
+  fail "doctor sends the operator to healthcheck.sh --restart, which has no router branch"
+fi
 _O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
 if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
   pass "…and stays quiet on a loopback rig where the frontend reaches the model (control)"
@@ -514,6 +531,316 @@ if grep -q -- "-f $_C/docker-compose.yml" "$_C/docker.log"; then
   pass "…alongside the core compose file (control)"
 else
   fail "stop.sh no longer passes the core compose file: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-12 / S13 (2026-10-09): a command that only READS must not create
+# openbeast.conf. conf.sh minted SEARXNG_SECRET for whoever sourced it first —
+# doctor.sh, a report-only healthcheck.sh and the --check-default-admin probe
+# included. OB_CONF_READONLY=1 is the caller's way to say "read only".
+# ---------------------------------------------------------------------------
+echo ""
+echo "read-only commands leave openbeast.conf alone (OB_CONF_READONLY):"
+_RO="$_T/ro"; _sandbox "$_RO"
+cp "$REPO_DIR/scripts/configure-webui.sh" "$_RO/scripts/"
+_ro_fresh() { rm -f "$_RO/openbeast.conf"; }
+_ro_fresh
+_run "$_RO" "$_RO/scripts/doctor.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "doctor.sh on a fresh checkout creates no openbeast.conf" \
+  || fail "doctor.sh created openbeast.conf: $(tr '\n' ' ' < "$_RO/openbeast.conf")"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "a report-only healthcheck.sh creates no openbeast.conf" \
+  || fail "healthcheck.sh (no --restart) created openbeast.conf"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/configure-webui.sh" --check-default-admin >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "configure-webui.sh --check-default-admin creates no openbeast.conf" \
+  || fail "the read-only admin probe created openbeast.conf"
+_ro_src() { # _ro_src [VAR=val] — source the sandbox conf.sh, print the secret it resolved
+  env -i HOME="$_RO/home" PATH="$_RO/bin:/usr/bin:/bin" REPO_DIR="$_RO" "$@" \
+    bash -c 'source "$REPO_DIR/scripts/lib/conf.sh" 2>/dev/null; printf "%s" "$OPENBEAST_SEARXNG_SECRET"'
+}
+_ro_fresh
+_S="$(_ro_src OB_CONF_READONLY=1)"
+if [[ -z "$_S" && ! -e "$_RO/openbeast.conf" ]]; then
+  pass "OB_CONF_READONLY=1: no file, and no throwaway secret a compose call could run with"
+else
+  fail "OB_CONF_READONLY=1 still minted a secret ('${_S:0:8}…') or wrote the file"
+fi
+# Negative controls: without the flag (and with any other value) the secret
+# is still minted and persisted 0600 — daemon mode depends on that.
+for _v in "" "OB_CONF_READONLY=0" "OB_CONF_READONLY=true"; do
+  _ro_fresh
+  # shellcheck disable=SC2086  # an empty $_v must vanish, not become an argument
+  _S="$(_ro_src $_v)"
+  if [[ ${#_S} -eq 64 && "$(stat -c '%a' "$_RO/openbeast.conf" 2>/dev/null)" == "600" ]] \
+     && grep -q "^SEARXNG_SECRET=$_S\$" "$_RO/openbeast.conf"; then
+    pass "'${_v:-flag unset}': the secret is minted and saved 0600 (control)"
+  else
+    fail "'${_v:-flag unset}': conf.sh no longer persists SEARXNG_SECRET"
+  fi
+done
+# An existing secret is READ under the flag — read-only is not "blank".
+_S2="$(_ro_src OB_CONF_READONLY=1)"
+[[ -n "$_S" && "$_S2" == "$_S" ]] && pass "OB_CONF_READONLY=1 still reads a secret that is already there" \
+  || fail "OB_CONF_READONLY=1 dropped an existing SEARXNG_SECRET"
+# --restart may `docker compose up`, which needs the secret: not read-only.
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" --restart >/dev/null
+grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
+  && pass "healthcheck.sh --restart keeps the writable behaviour (compose needs the secret)" \
+  || fail "healthcheck.sh --restart ran without a SearXNG secret"
+
+# ---------------------------------------------------------------------------
+# UX-17 (2026-10-09): on a stack that is simply not running, doctor printed a
+# "not responding" row per service, each with a different fix, and never the
+# one sentence that was true; healthcheck ended on a count and no next step.
+# ---------------------------------------------------------------------------
+echo ""
+echo "a stack that is not running is said once, with the one fix:"
+_N="$_T/down"; _sandbox "$_N"
+# Its own hardware: doctor's GPU rows must not depend on the card (or the lack
+# of one) in the box running this test.
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 32G"; OB_VRAM_MB=32000; }\n' > "$_N/scripts/lib/hardware.sh"
+# _rc <dir> <script> [args] — like _run, but stdout+stderr in $_O and the
+# script's OWN exit code in $_RC (never `cmd | grep` on it under pipefail).
+_rc() {
+  local d="$1"; shift
+  _RC=0
+  _O="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" ${RUN_ENV[@]+"${RUN_ENV[@]}"} bash "$@" 2>&1)" || _RC=$?
+}
+_per_service='llama.cpp server not responding|identity tool server not responding|Open WebUI not responding|beast-chat enabled but not responding|beast-gate not responding|beast-artifact not responding'
+printf '%s\n' BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true > "$_N/openbeast.conf"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if [[ "$(grep -c 'Stack is not running' <<< "$_O")" == "1" ]] \
+   && grep -qxF "  ! Stack is not running — start it: ./start.sh -d" <<< "$_O" \
+   && ! grep -qE "$_per_service" <<< "$_O"; then
+  pass "doctor: one 'Stack is not running — start it: ./start.sh -d' line replaces six per-service rows"
+else
+  fail "doctor on a stopped stack: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" && $_RC -eq 0 ]]; then
+  pass "…it ends on 'Next: ./start.sh -d', and a stopped stack is still exit 0 (warnings only)"
+else
+  fail "doctor's last line / exit on a stopped stack: '$(tail -n1 <<< "$_O")' rc=$_RC"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qxF "  ! Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…with ./stop.sh's marker it says when it was stopped on purpose" \
+  || fail "stopped-on-purpose line: $(grep 'Stack is' <<< "$_O")"
+echo "2026-10-09T08:05:00 supervisor gave up: llama-server exited 4 times (status 1)" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qF "Stack is not running (it gave up 2026-10-09T08:05:00: supervisor gave up: llama-server exited 4 times (status 1) — see .run/stack.log) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…and a supervisor that GAVE UP is not called 'on purpose' (reason + .run/stack.log named)" \
+  || fail "gave-up line: $(grep 'Stack is' <<< "$_O")"
+rm -f "$_N/.run/stopped"
+# "Next:" names something to RUN. A failure whose second line only explains
+# (an 8 GB card: "OpenBeast targets 3090 / 4090 class and up") must not take
+# the line from the one command that applies.
+cp "$_N/scripts/lib/hardware.sh" "$_N/hardware.keep"
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 8G"; OB_VRAM_MB=8000; }\n' > "$_N/scripts/lib/hardware.sh"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -q "below the 24 GB floor" <<< "$_O" && [[ $_RC -eq 1 && "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" ]]; then
+  pass "a failure that only explains does not hijack 'Next:' (still ./start.sh -d; exit 1 for the failure)"
+else
+  fail "Next with an explanatory failure: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+cp "$_N/hardware.keep" "$_N/scripts/lib/hardware.sh"
+# Negative control 1: a live supervisor whose services do not answer yet
+# (starting, or broken) is NOT "not running" — every row is shown.
+bash -c 'sleep 60; :' start.sh &   # `; :` keeps bash (and "start.sh") on the command line
+_SUP=$!; _PIDS="$_PIDS $_SUP"
+echo "$_SUP" > "$_N/.run/supervisor.pid"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && [[ "$(grep -cE "$_per_service" <<< "$_O")" == "6" ]]; then
+  pass "with a live supervisor the per-service rows are all shown (control)"
+else
+  fail "live supervisor: $(grep -cE "$_per_service" <<< "$_O") rows, headline: $(grep 'Stack is' <<< "$_O")"
+fi
+kill "$_SUP" 2>/dev/null || true
+rm -f "$_N/.run/supervisor.pid"
+# Negative control 2: no supervisor, but the core answers (the watchdog
+# relaunched it) — a row that is down is a real row.
+cat > "$_N/bin/curl" <<'SH'
+#!/bin/bash
+url=""; w=0
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; [[ "$a" == "%{http_code}" ]] && w=1; done
+case "$url" in
+  *:8080/*|*:3001/*) [[ $w -eq 1 ]] && { printf '200'; exit 0; }; printf '{"status":"ok"}'; exit 0 ;;
+esac
+[[ $w -eq 1 ]] && printf '000'
+exit 7
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && grep -q "Open WebUI not responding (:3000)" <<< "$_O" \
+   && grep -q "beast-gate not responding" <<< "$_O"; then
+  pass "with the core answering, a dead WebUI / gate is still its own warning (control)"
+else
+  fail "core up: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: "* && "$(tail -n1 <<< "$_O")" != "Next: ./start.sh -d" ]]; then
+  pass "…and 'Next:' then names a warning's fix, not ./start.sh"
+else
+  fail "Next line with the core up: '$(tail -n1 <<< "$_O")'"
+fi
+# A published surface over a dead server stays a FAILURE on a stopped stack
+# (the mount is live and 502s; exit 1 is kept) — with the same one fix.
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/curl"
+cat > "$_N/bin/tailscale" <<'SH'
+#!/bin/bash
+if [[ "$1 $2" == "serve status" ]]; then
+  printf 'https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'; exit 0
+fi
+exit 1
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -qF "✗ :8446 is published but beast-artifact is NOT responding" <<< "$_O" && [[ $_RC -eq 1 ]] \
+   && grep -A1 -F ":8446 is published" <<< "$_O" | grep -qF "fix: ./start.sh -d (the stack is not running" \
+   && [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d (the stack is not running"* ]]; then
+  pass "a published :8446 over a stopped stack still FAILs (exit 1), and its fix is ./start.sh -d too"
+else
+  fail "published surface on a stopped stack: rc=$_RC $(grep -A1 -F ':8446' <<< "$_O" | tr '\n' ' ') last='$(tail -n1 <<< "$_O")'"
+fi
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/tailscale"
+
+# The shipped default has no leaderboard row on a fresh install (results are
+# not checked in): that was a permanent warning nobody could clear.
+echo ""
+echo "doctor.sh: 'no leaderboard row' is information, not a warning:"
+mkdir -p "$_N/evals"
+: > "$_N/openbeast.conf"
+printf '#!/bin/bash\nexec true\n' > "$_N/scripts/serve-here.sh"
+cat > "$_N/evals/benchmark_all.py" <<'PY'
+MODELS = [
+    {"slug": "here-q5", "name": "Here 27B Q5", "serve": "scripts/serve-here.sh"},
+]
+PY
+echo '{"entries": []}' > "$_N/evals/leaderboard.json"
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-here.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"; _A="$_O"
+_rc "$_N" "$_N/scripts/doctor.sh" --quiet; _Q="$_O"
+if grep -qF "  - default model 'Here 27B Q5' has no leaderboard row on this host" <<< "$_A" \
+   && grep -qF "benchmark_all.py --models here-q5" <<< "$_A" \
+   && ! grep -qE '^  ! .*leaderboard' <<< "$_A" && ! grep -q "leaderboard" <<< "$_Q"; then
+  pass "an unbenchmarked default is an info row with the optional command (and silent under --quiet)"
+else
+  fail "leaderboard row: $(grep -i leaderboard <<< "$_A" | tr '\n' ' ') quiet=$(grep -ci leaderboard <<< "$_Q")"
+fi
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-elsewhere.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"
+RUN_ENV=()
+grep -qE "^  ! default serve script 'serve-elsewhere.sh' is not registered" <<< "$_O" \
+  && pass "…a serve script the eval registry does not know is still a warning (control)" \
+  || fail "unregistered serve script: $(grep -i 'registered' <<< "$_O")"
+
+echo ""
+echo "healthcheck.sh ends on a next step:"
+_K="$_T/hcnext"; _sandbox "$_K"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Stack is not running — start it: ./start.sh -d" && $_RC -eq 1 ]] \
+   && grep -q "DOWN llama.cpp server" <<< "$_O" && grep -qE '^[0-9]+ of [0-9]+ services unhealthy\.$' <<< "$_O"; then
+  pass "nothing answering: the count is followed by 'Stack is not running — start it: ./start.sh -d' (exit 1 kept)"
+else
+  fail "healthcheck on a stopped stack: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_K/.run/stopped"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+[[ "$(tail -n1 <<< "$_O")" == "Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" ]] \
+  && pass "…naming ./stop.sh's marker when there is one" || fail "healthcheck with a marker: '$(tail -n1 <<< "$_O")'"
+# The watchdog (--restart) has already acted: its output gets no extra line.
+_rc "$_K" "$_K/scripts/healthcheck.sh" --restart
+if ! grep -qE '^(Next:|Stack is not running)' <<< "$_O" && grep -qE 'services unhealthy\.$' <<< "$_O"; then
+  pass "--restart output is unchanged: no next-step line after the count"
+else
+  fail "--restart grew a next-step line: $(grep -E '^(Next:|Stack is not)' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$_K/.run/stopped"
+# The tool server answers, llama does not: not "stopped" — restart what is down.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http*:3001/* ]] && { printf "{\\"status\\":\\"ok\\"}"; exit 0; }; done\nexit 7\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./scripts/healthcheck.sh --restart"* ]] && ! grep -q "Stack is not running" <<< "$_O"; then
+  pass "partly down (tool server up): 'Next: ./scripts/healthcheck.sh --restart' instead (control)"
+else
+  fail "partly-down next step: '$(tail -n1 <<< "$_O")'"
+fi
+# Everything answers: no next step at all.
+printf '#!/bin/bash\n[[ "$1" == status ]] && { echo "{\\"Self\\":{\\"Online\\":true}}"; exit 0; }\nexit 1\n' > "$_K/bin/tailscale"
+printf '#!/bin/bash\nprintf "{\\"status\\":\\"ok\\",\\"version\\":\\"x\\"} searx"\nexit 0\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ $_RC -eq 0 ]] && grep -qE '^All [0-9]+ services healthy\.$' <<< "$_O" && ! grep -qE '^(Next:|Stack is not)' <<< "$_O"; then
+  pass "all healthy: exit 0 and no next-step line (control)"
+else
+  fail "healthy stack: rc=$_RC $(tail -n2 <<< "$_O" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-14 (2026-10-09): doctor's fix for a missing pinned package was a bare
+# `pip install --user -r agents/requirements.txt` — refused by PEP 668 on
+# Arch / Debian 12+ / Ubuntu 24.04, and outside the hash-pinned lock.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh's missing-dependency hint:"
+_P="$_T/pydeps"; _sandbox "$_P"
+mkdir -p "$_P/agents"
+printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+# python3 -m pip show: "not installed" for everything; any other python3 call
+# goes to the real interpreter.
+printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+chmod +x "$_P/bin/python3"
+_O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
+   && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
+  pass "a missing pinned package points at ./scripts/pydeps.sh install"
+else
+  fail "missing-dep hint: $(grep -A1 -F 'obnotapackage' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q 'pip install --user -r' <<< "$_O"; then
+  fail "doctor still recommends a bare 'pip install --user -r' (PEP 668 refuses it)"
+else
+  pass "…and no longer recommends a bare 'pip install --user -r'"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-13 (2026-10-09): doctor shows conf.sh's lint findings as rows. The
+# parsing itself is pinned in tests/test_conf_secrets.sh §7; this is the
+# "surfaced in doctor, as a warning, once" half.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh surfaces openbeast.conf typos and bad values:"
+_L="$_T/lint"; _sandbox "$_L"
+cp "$REPO_DIR/openbeast.conf.example" "$_L/"
+printf 'SEARXNG_SECRET=s\nEDGE_GTAE=true\nREASONING_BUDGET=lots\nSERVE_SCRIPT=serve-nope.sh\n' > "$_L/openbeast.conf"
+chmod 600 "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+if grep -qF "! openbeast.conf: unknown key 'EDGE_GTAE' — did you mean EDGE_GATE?" <<< "$_O" \
+   && grep -qF "! REASONING_BUDGET='lots' is not an integer" <<< "$_O" \
+   && grep -qF "! openbeast.conf: SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" <<< "$_O"; then
+  pass "doctor rows: the typo'd key (with its suggestion), the non-integer budget, the missing serve script"
+else
+  fail "doctor did not surface the conf problems: $(grep -iE 'unknown|REASONING|SERVE_SCRIPT' <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(grep -c "EDGE_GTAE" <<< "$_O")" == "1" ]] && ! grep -q "^WARNING: openbeast.conf" <<< "$_O"; then
+  pass "…each said once, as a row (conf.sh's own stderr copy is switched off under doctor)"
+else
+  fail "doctor repeated the lint: $(grep -c EDGE_GTAE <<< "$_O") line(s) mention the typo"
+fi
+_verdict() { sed -n 's/^doctor: [0-9]* ok, \([0-9]*\) warning(s), \([0-9]*\) failure(s).*/\1 \2/p' <<< "$1"; }
+read -r _LW _LF <<< "$(_verdict "$_O")"
+printf 'SEARXNG_SECRET=s\nEDGE_GATE=false\n' > "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+read -r _CW _CF <<< "$(_verdict "$_O")"
+if grep -qF "✓ openbeast.conf: no unknown keys" <<< "$_O" && ! grep -q "unknown key '" <<< "$_O"; then
+  pass "a clean conf gets one green row and no warning (control)"
+else
+  fail "clean conf: $(grep -iE 'unknown' <<< "$_O" | tr '\n' ' ')"
+fi
+# Same sandbox, same everything else: the three findings add exactly three
+# warnings and not one failure.
+if [[ -n "${_CW:-}" && "${_LW:-}" == "$((_CW + 3))" && "${_LF:-x}" == "$_CF" ]]; then
+  pass "…and they are WARNINGS: +3 warnings, the failure count does not move"
+else
+  fail "conf findings changed doctor's verdict wrongly: ${_LW:-?}w/${_LF:-?}f with them, ${_CW:-?}w/${_CF:-?}f without"
 fi
 
 # ---------------------------------------------------------------------------

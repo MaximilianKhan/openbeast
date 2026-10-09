@@ -46,6 +46,17 @@
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
 #       intel→sycl, none→cpu. bootstrap.sh persists the resolved value into
 #       openbeast.conf so scripts/update.sh rebuilds with the same backend.
+#   OB_CONF_READONLY=1   (env only, set by the CALLER — never a conf key)
+#       "I only want to read the config." Sourcing this file normally mints
+#       SEARXNG_SECRET on first use and writes it to openbeast.conf; a command
+#       that promises to change nothing (bootstrap.sh --preflight, doctor.sh,
+#       a report-only healthcheck.sh) exports this first, and the file is
+#       then never created or appended to. SEARXNG_SECRET stays empty there,
+#       so a `docker compose up` from such a shell stops on compose's own
+#       "must be set" message instead of running with a throwaway key.
+#   OB_CONF_LINTED       (env, set by this file) the unknown-key / bad-value
+#       warnings (ob_conf_lint, at the end) were already printed once by a
+#       parent process; children that re-source this file stay quiet.
 #
 # Requires REPO_DIR to be set before sourcing.
 
@@ -212,6 +223,34 @@ EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
 # $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
 REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
+# Values this file had to drop while resolving, one message each. ob_conf_lint
+# (end of file) reports them with its other findings, so they are said once
+# per command and doctor.sh can show them as rows.
+_OB_CONF_PROBLEMS=()
+# An integer or nothing. `REASONING_BUDGET=lots` (or `4096  # cap`, which
+# arrived whole) went to llama-server as --reasoning-budget and killed it at
+# launch, reported only as the generic "llama-server exited".
+REASONING_BUDGET="${REASONING_BUDGET%%[[:space:]#]*}"
+if [[ -n "$REASONING_BUDGET" && ! "$REASONING_BUDGET" =~ ^-?[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("REASONING_BUDGET='$REASONING_BUDGET' is not an integer (thinking tokens; 0 = none, -1 = unlimited) — ignoring it, each model's own default stands")
+  REASONING_BUDGET=""
+fi
+# Host-RAM prompt cache (serve.sh hands it to llama-server), integer MiB:
+#   empty = automatic (serve.sh sizes it to this machine's RAM),
+#   0     = the server's own default, N = exactly N MiB.
+# Env override: $OPENBEAST_PROMPT_CACHE_RAM_MB. Exported only when set, so
+# "unset" still means "automatic" to whatever serve.sh runs under.
+PROMPT_CACHE_RAM_MB="${OPENBEAST_PROMPT_CACHE_RAM_MB:-$(_ob_conf_value PROMPT_CACHE_RAM_MB || true)}"
+PROMPT_CACHE_RAM_MB="${PROMPT_CACHE_RAM_MB%%[[:space:]#]*}"
+if [[ -n "$PROMPT_CACHE_RAM_MB" && ! "$PROMPT_CACHE_RAM_MB" =~ ^[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("PROMPT_CACHE_RAM_MB='$PROMPT_CACHE_RAM_MB' is not a whole number of MiB — ignoring it, the prompt cache is sized automatically")
+  PROMPT_CACHE_RAM_MB=""
+fi
+if [[ -n "$PROMPT_CACHE_RAM_MB" ]]; then
+  export PROMPT_CACHE_RAM_MB
+else
+  export -n PROMPT_CACHE_RAM_MB 2>/dev/null || true
+fi
 # Agent-spawn router (docs/RESEARCH_FINDINGS §8-11): opt-in proxy that reliably
 # turns "spawn a background agent" requests into real agents. Off by default.
 # When on, start.sh runs agents/router.py on ROUTER_PORT in front of
@@ -790,6 +829,17 @@ export OPENBEAST_FILES_DIR
 # reachable from the whole tailnet (that's when a login boundary matters).
 # docker-compose reads this via OPENBEAST_WEBUI_AUTH.
 WEBUI_AUTH="$(_ob_bool "${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || true)}" false WEBUI_AUTH)"
+# Open WebUI's per-chat background generations. After every answer WebUI asks
+# the model for a title, a set of tags and follow-up suggestions; on a
+# single-slot rig the last two cost more GPU than the chats they decorate and
+# hold the slot for seconds after each answer (perf review 2026-10-09).
+#   false (default)  configure-webui.sh turns tag and follow-up generation OFF
+#                    at every start; titles stay on.
+#   true             it touches none of them — whatever Admin Settings →
+#                    Interface says stands.
+# Env override: $OPENBEAST_WEBUI_BACKGROUND_TASKS. Not exported: the only
+# consumer, configure-webui.sh, sources this file itself.
+WEBUI_BACKGROUND_TASKS="$(_ob_bool "${OPENBEAST_WEBUI_BACKGROUND_TASKS:-$(_ob_conf_value WEBUI_BACKGROUND_TASKS || true)}" false WEBUI_BACKGROUND_TASKS)"
 # WEBUI_ADMIN_PASSWORD is deliberately NOT exported: the only consumer,
 # configure-webui.sh, sources this file itself and reads the variable in
 # its own shell. Exporting it would put the admin password in the
@@ -910,8 +960,12 @@ fi
 # from a clean systemd environment — and every later restart reuse the same
 # key. docker-compose.yml hard-requires the export (`:?`), so any compose
 # caller must source this file first, which they all already do.
+#
+# NOT under OB_CONF_READONLY=1 (see the header): `bootstrap.sh --preflight`
+# promises to write NOTHING and `doctor.sh` only diagnoses, yet both created
+# openbeast.conf here on a fresh checkout. The secret stays empty for them.
 SEARXNG_SECRET="${OPENBEAST_SEARXNG_SECRET:-$(_ob_conf_value SEARXNG_SECRET || true)}"
-if [[ -z "$SEARXNG_SECRET" ]]; then
+if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   SEARXNG_SECRET="$(openssl rand -hex 32 2>/dev/null)" \
     || SEARXNG_SECRET="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
   _ob_conf="$REPO_DIR/openbeast.conf"
@@ -922,3 +976,102 @@ if [[ -z "$SEARXNG_SECRET" ]]; then
   chmod 600 "$_ob_conf" 2>/dev/null || true
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
+
+# ── Config lint: unknown keys and values that cannot work ───────────────────
+# Nothing above ever looked at a key it did not ask for, so a typo was
+# accepted in silence: `EDGE_GTAE=true` left the gate off while its operator
+# believed remote clients were keyed. ob_conf_lint prints one finding per
+# line (nothing when the file is clean):
+#   - keys that no part of OpenBeast reads, with the nearest real key when
+#     the spelling is close ("did you mean");
+#   - integer keys holding something else;
+#   - a SERVE_SCRIPT that is not in scripts/;
+#   - whatever this file dropped while resolving (_OB_CONF_PROBLEMS).
+# Always a WARNING, never a failure: the stack starts exactly as it would
+# have. "Known" = every KEY= that openbeast.conf.example mentions (commented
+# or not) plus _OB_CONF_EXTRA_KEYS, the keys something reads or writes that
+# the example does not list. tests/test_scripts.sh pins that every key read
+# anywhere in the repo is in one of the two — add a new key there, or here.
+# Without openbeast.conf.example next to the conf (a stripped copy) the
+# unknown-key half is skipped: there is nothing to compare against.
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL PROMPT_CACHE_RAM_MB WEBUI_BACKGROUND_TASKS WEBUI_DEFAULT_ADMIN_PASSWORD"
+# Whole numbers that are used exactly as written (the port keys and the gate's
+# limits take no inline comment — openbeast.conf.example says so)...
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT ARTIFACT_RETAIN_DAYS"
+# ...and those whose reader strips a trailing `# comment` first.
+_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS"
+ob_conf_lint() {
+  local conf="$REPO_DIR/openbeast.conf" example="$REPO_DIR/openbeast.conf.example" k v p
+  for p in ${_OB_CONF_PROBLEMS[@]+"${_OB_CONF_PROBLEMS[@]}"}; do
+    printf '%s\n' "$p"
+  done
+  [[ -f "$conf" ]] || return 0
+  for k in $_OB_CONF_INT_KEYS; do
+    v="$(_ob_conf_value "$k" || true)"
+    [[ -z "$v" || "$v" =~ ^[0-9]+$ ]] \
+      || printf "openbeast.conf: %s='%s' is not a whole number — it is used exactly as written (no inline comment, no units)\n" "$k" "$v"
+  done
+  for k in $_OB_CONF_INT_KEYS_COMMENT_OK; do
+    v="$(_ob_conf_value "$k" || true)"; v="${v%%[[:space:]#]*}"
+    [[ -z "$v" || "$v" =~ ^[0-9]+$ ]] || printf "openbeast.conf: %s='%s' is not a whole number\n" "$k" "$v"
+  done
+  # Only where this stack launches the model itself; start.sh says the same
+  # thing, but only once the operator has asked for a start.
+  v="$(_ob_conf_value SERVE_SCRIPT || true)"
+  if [[ -n "$v" && "${INFERENCE_MANAGED:-true}" == "true" && ! -f "$REPO_DIR/scripts/$v" ]]; then
+    printf "openbeast.conf: SERVE_SCRIPT='%s' names no file in scripts/ — start.sh will refuse to launch it (list them: ls scripts/serve-*.sh)\n" "$v"
+  fi
+  [[ -f "$example" ]] || return 0
+  # One awk for the whole comparison: a bash loop over ~90 known keys per
+  # unknown one is slow, and this runs once per command. Distance is
+  # optimal-string-alignment (a swapped pair counts 1: GTAE -> GATE).
+  { grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$conf" 2>/dev/null || true; } \
+    | tr -d ' \t=' | awk -v extra="$_OB_CONF_EXTRA_KEYS" '
+      function min3(a, b, c) { return a < b ? (a < c ? a : c) : (b < c ? b : c) }
+      function osa(s, t,    i, j, m, n, c, d) {
+        m = length(s); n = length(t)
+        for (i = 0; i <= m; i++) d[i, 0] = i
+        for (j = 0; j <= n; j++) d[0, j] = j
+        for (i = 1; i <= m; i++) for (j = 1; j <= n; j++) {
+          c = (substr(s, i, 1) == substr(t, j, 1)) ? 0 : 1
+          d[i, j] = min3(d[i-1, j] + 1, d[i, j-1] + 1, d[i-1, j-1] + c)
+          if (i > 1 && j > 1 && substr(s, i, 1) == substr(t, j-1, 1) \
+              && substr(s, i-1, 1) == substr(t, j, 1) && d[i-2, j-2] + 1 < d[i, j])
+            d[i, j] = d[i-2, j-2] + 1
+        }
+        return d[m, n]
+      }
+      BEGIN { n = split(extra, e, " "); for (i = 1; i <= n; i++) known[e[i]] = 1 }
+      NR == FNR {
+        # openbeast.conf.example: `KEY=`, `#KEY=` and `#   KEY=<n>` all name a key.
+        if (match($0, /^[#[:space:]]*[A-Z][A-Z0-9_]*=/)) {
+          k = substr($0, RSTART, RLENGTH); gsub(/[#[:space:]=]/, "", k); known[k] = 1
+        }
+        next
+      }
+      ($0 in known) || seen[$0]++ { next }
+      {
+        u = toupper($0); hint = ""
+        if (u in known) hint = u
+        else if (u ~ /^OPENBEAST_/ && (substr(u, 11) in known)) hint = substr(u, 11)
+        else {
+          best = 99
+          for (k in known) { d = osa(u, k); if (d < best || (d == best && k < hint)) { best = d; hint = k } }
+          if (best > 2 || best * 3 > length(u)) hint = ""
+        }
+        if (hint != "") printf "openbeast.conf: unknown key '\''%s'\'' — did you mean %s? As written it is ignored\n", $0, hint
+        else printf "openbeast.conf: unknown key '\''%s'\'' — nothing reads it (every key: openbeast.conf.example)\n", $0
+      }' "$example" -
+}
+# Said once per command: the first process to source this file prints the
+# findings and marks the environment, so serve.sh / configure-webui.sh /
+# healthcheck.sh started underneath it do not repeat them. doctor.sh sets the
+# mark itself and shows the same findings as rows instead.
+if [[ -z "${OB_CONF_LINTED:-}" ]]; then
+  # (`if`, not `[[ … ]] && echo`: callers source this under `set -e`.)
+  while IFS= read -r _ob_lint; do
+    if [[ -n "$_ob_lint" ]]; then echo "WARNING: $_ob_lint" >&2; fi
+  done < <(ob_conf_lint 2>/dev/null || true)
+  unset _ob_lint
+  export OB_CONF_LINTED=1
+fi
