@@ -445,6 +445,24 @@ _preflight_ports() {
   done
 }
 
+# _webui_line [compose-failed] — the banner's "Open WebUI:" row, for the -d
+# launcher and the foreground start alike, claiming only what can be told
+# from here. The foreground banner used to print the URL unconditionally,
+# also right under "frontend containers failed to start".
+_webui_line() {
+  if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
+    echo "  Open WebUI:    http://localhost:3000"
+  elif [[ "${1:-0}" -eq 1 ]]; then
+    echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
+    echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
+  elif ! docker info >/dev/null 2>&1; then
+    echo "  Open WebUI:    NOT STARTING — the docker daemon is not reachable by $(id -un)"
+    echo "                 (is docker running? is $(id -un) in the docker group?)"
+  else
+    echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
+  fi
+}
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
@@ -596,14 +614,7 @@ if [[ $DAEMON -eq 1 ]]; then
       # supervisor brings the frontend up once the model is serving), so
       # this line cannot claim it is up. Say what we can actually tell:
       # an unreachable docker daemon means it will not come up at all.
-      if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
-        echo "  Open WebUI:    http://localhost:3000"
-      elif ! docker info >/dev/null 2>&1; then
-        echo "  Open WebUI:    NOT STARTING — the docker daemon is not reachable by $(id -un)"
-        echo "                 (is docker running? is $(id -un) in the docker group?)"
-      else
-        echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
-      fi
+      _webui_line
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
         echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
       fi
@@ -1525,8 +1536,12 @@ COMPOSE_UP=(up -d)
 if ob_offline; then
   COMPOSE_UP+=(--pull never)
 fi
+COMPOSE_FAILED=0
 if ! docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_UP[@]}"; then
-  echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose up -d" >&2
+  COMPOSE_FAILED=1
+  # Not a bare `docker compose up -d`: compose needs the environment conf.sh
+  # exports (the SearXNG secret is required), which healthcheck.sh sources.
+  echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: ./scripts/healthcheck.sh --restart" >&2
   if ob_offline; then
     echo "         OFFLINE=true, so nothing was pulled. Images are the fourth of" >&2
     echo "         the four fetches a closed network cannot do. Move them with" >&2
@@ -1574,7 +1589,7 @@ else
   echo "  Model server:  NOT READY at $LLAMA_BASE ($(ob_backend_label), not managed here)"
 fi
 echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
-echo "  Open WebUI:    http://localhost:3000"
+_webui_line "$COMPOSE_FAILED"
 echo "  OpenCode:      run 'opencode' in any project directory"
 if [[ "${HYDRA:-false}" == "true" ]]; then
   echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"

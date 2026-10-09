@@ -1001,6 +1001,64 @@ else
 fi
 
 echo ""
+echo "The foreground banner after a compose failure (UX-16):"
+# A foreground start taken all the way to its banner: unmanaged backend, a
+# stub tool server that answers /health on this run's address, real curl
+# (every URL start.sh probes is on $_LO), and a docker stub whose `compose`
+# either fails or succeeds.
+_BN="$_T/banner"; _sandbox "$_BN"; mkdir -p "$_BN/agents"; rm -f "$_BN/bin/curl"
+cat > "$_BN/agents/openapi_tools.py" <<'PY'
+import http.server, os, threading, time
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+srv = http.server.HTTPServer((os.environ["STUB_HOST"], 3001), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+time.sleep(60); os._exit(0)
+PY
+printf '#!/bin/bash\nexit 0\n' > "$_BN/scripts/configure-webui.sh"; chmod +x "$_BN/scripts/configure-webui.sh"
+_banner_case() { # _banner_case <compose-rc> -> prints start.sh's output up to the banner
+  local p i tool
+  rm -rf "$_BN/.run"; mkdir -p "$_BN/.run"
+  printf '#!/bin/bash\n[[ "$1" == compose ]] && exit %s\n[[ "$1" == info ]] && exit 0\nexit 1\n' "$1" > "$_BN/bin/docker"
+  env -i HOME="$_BN/home" PATH="$_BN/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND="$_LO" STUB_HOST="$_LO" OPENBEAST_LOGROTATE_AUTOINSTALL=false "PYTHONPATH=$_DP/deps" \
+    OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1 \
+    bash "$_BN/start.sh" > "$_BN/out" 2>&1 & p=$!; _PIDS="$_PIDS $p"
+  for i in $(seq 1 300); do
+    grep -q "Press Ctrl+C" "$_BN/out" 2>/dev/null && break
+    kill -0 "$p" 2>/dev/null || break
+    sleep 0.1
+  done
+  tool="$(cat "$_BN/.run/mcpo.pid" 2>/dev/null || true)"; [[ "$tool" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $tool"
+  kill -TERM "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
+  cat "$_BN/out"
+}
+_O="$(_banner_case 1)"
+if grep -q "Stack is running" <<< "$_O" && grep -q "Open WebUI:    NOT UP — docker compose failed" <<< "$_O" \
+   && ! grep -qE '^  Open WebUI: +http://localhost:3000' <<< "$_O"; then
+  pass "compose failed: the banner says Open WebUI is NOT UP and does not advertise its URL"
+else
+  fail "foreground banner after a compose failure: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+grep -q "healthcheck.sh --restart" <<< "$_O" && pass "…and names the command that brings the frontend up" \
+  || fail "no recovery command after the compose failure"
+_O="$(_banner_case 0)"
+if grep -qE '^  Open WebUI: +http://localhost:3000 \(container still starting' <<< "$_O" && ! grep -q "NOT UP" <<< "$_O"; then
+  pass "compose succeeded: the URL is shown, as still starting (control)"
+else
+  fail "foreground banner after a good compose: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(grep -c '_webui_line' "$REPO_DIR/start.sh")" -ge 3 ]]; then
+  pass "the -d launcher and the foreground banner share one Open WebUI row"
+else
+  fail "the two banners no longer share _webui_line"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
