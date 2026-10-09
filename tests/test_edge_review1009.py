@@ -20,10 +20,12 @@ from starlette.requests import Request
 from starlette.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_edge import (DEVICE_KEY, REVOKED_KEY, _ChunkedResponse,  # noqa: E402
-                       _FakeResponse, _last_audit, _laptop_bucket_app,
-                       _local_headers, _registry, _stub_upstream,
-                       edge)  # noqa: F401  (pytest fixture)
+import test_edge as _te  # noqa: E402
+from test_edge import (DEVICE_KEY, REVOKED_KEY, _FakeResponse,  # noqa: E402
+                       _last_audit, _laptop_bucket_app, _local_headers,
+                       _registry, _stub_upstream)
+
+edge = _te.edge          # the fixture: a fresh module on a scratch REPO_DIR
 
 HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
 CHAT = "/v1/chat/completions"
