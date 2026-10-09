@@ -11,10 +11,13 @@
 #   ./start.sh                     # foreground (Ctrl+C stops the stack)
 #   ./start.sh -d                  # background daemon: returns when ready,
 #                                  #   stack keeps running; stop with ./stop.sh
-#   ./start.sh --status            # what's running (pids); health details via
-#                                  #   ./scripts/healthcheck.sh
+#   ./start.sh status              # what's running (pids); health details via
+#                                  #   ./scripts/healthcheck.sh (also --status)
+#   ./start.sh stop                # stop the stack (same as ./stop.sh)
+#   ./start.sh restart             # ./stop.sh, then start in the background
 #   ./start.sh doctor              # diagnose config/security/service health
 #                                  #   (fix-list; also ./scripts/doctor.sh)
+#   ./start.sh help                # this text (also -h, --help)
 #   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d);
 #                                  #   the choices: ls scripts/serve-*.sh
 #
@@ -37,18 +40,53 @@ SUP_PID_FILE="$RUN_DIR/supervisor.pid"
 # line (a fixed line range went stale every time the header grew).
 usage() { awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; }
 
-DAEMON=0; STATUS=0; DAEMONIZED=0; SERVE_SCRIPT=""
+# A bare word is a command or a serve script. It used to be a serve script
+# whatever it said, so `./start.sh status` answered "scripts/status not found
+# or not executable" and `./start.sh stop` did the same instead of stopping.
+_unknown_command() {
+  local w="$1" c hint=""
+  case "$w" in
+    start|up|run) hint=" — starting is the default: ./start.sh (foreground) or ./start.sh -d" ;;
+    down|kill)    hint=" — did you mean: ./start.sh stop" ;;
+    *)
+      # Nearest command: the same first three letters (stat, sto, restrat…).
+      for c in status stop restart doctor help; do
+        [[ ${#w} -ge 3 && "${c:0:3}" == "${w:0:3}" ]] && { hint=" — did you mean: ./start.sh $c"; break; }
+      done ;;
+  esac
+  echo "Unknown command '$w'$hint" >&2
+  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --status, --help)" >&2
+  echo "  A model is named by its serve script: ls scripts/serve-*.sh" >&2
+  exit 2
+}
+
+DAEMON=0; STATUS=0; DAEMONIZED=0; RESTART=0; SERVE_SCRIPT=""
 for arg in "$@"; do
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
-    --status)      STATUS=1 ;;
+    --status|status) STATUS=1 ;;
     doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
+    stop)          exec "$SCRIPT_DIR/stop.sh" ;;
+    restart)       RESTART=1; DAEMON=1 ;;
     --_daemonized) DAEMONIZED=1 ;;   # internal: this process IS the detached supervisor
-    -h|--help)     usage; exit 0 ;;
+    -h|--help|help) usage; exit 0 ;;
     -*)            echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
-    *)             SERVE_SCRIPT="$arg" ;;
+    *)
+      # A serve script: an executable in scripts/, or anything spelled like a
+      # script (so a mistyped name still gets the "not found" error below).
+      if [[ "$arg" == *.sh || ( -f "$SCRIPT_DIR/scripts/$arg" && -x "$SCRIPT_DIR/scripts/$arg" ) ]]; then
+        SERVE_SCRIPT="$arg"
+      else
+        _unknown_command "$arg"
+      fi ;;
   esac
 done
+if [[ $RESTART -eq 1 && $STATUS -eq 0 ]]; then
+  # stop.sh marks the stop as on purpose; the start below clears the marker.
+  OPENBEAST_STOP_REASON="./start.sh restart" "$SCRIPT_DIR/stop.sh" \
+    || { echo "Error: ./stop.sh failed — not starting on top of a half-stopped stack." >&2; exit 1; }
+  echo ""
+fi
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_recorded_pid_ours, ob_pid_record, ob_ext_reap
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
@@ -200,6 +238,7 @@ ob_inference_managed || MANAGED=0
 
 if [[ $MANAGED -eq 1 && ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
+  echo "  The serve scripts that ship: ls scripts/serve-*.sh" >&2
   exit 1
 fi
 

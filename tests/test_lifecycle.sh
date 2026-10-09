@@ -545,6 +545,64 @@ else
   pass "runtime banners say 'Tool server', not MCPO"
 fi
 
+# Run the sandbox's start.sh for real. 127.0.0.2 is where nothing of a live
+# stack on this box binds, so every probe start.sh makes is against an address
+# this test owns. Sets _SO (output) and _SRC (exit code).
+_start_rc() { # _start_rc <dir> <timeout-s> [args...]   (extra env via RUN_ENV)
+  local d="$1" t="$2"; shift 2
+  _SRC=0
+  _SO="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND=127.0.0.2 OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+    ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$d/start.sh" "$@" 2>&1)" || _SRC=$?
+}
+
+echo ""
+echo "start.sh takes commands as words (UX-20):"
+_CW="$_T/words"; _sandbox "$_CW"
+printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_CW" > "$_CW/bin/docker"
+_start_rc "$_CW" 30 status
+if [[ $_SRC -eq 0 && "$_SO" == *"OpenBeast stack status:"* && "$_SO" == *"tool server: not running"* ]]; then
+  pass "'./start.sh status' is --status (was: \"scripts/status not found or not executable\")"
+else
+  fail "start.sh status (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_CW" 60 stop
+if [[ $_SRC -eq 0 && -s "$_CW/.run/stopped" ]] && grep -q -- "down" "$_CW/docker.log"; then
+  pass "'./start.sh stop' runs stop.sh"
+else
+  fail "start.sh stop (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+rm -f "$_CW/.run/stopped" "$_CW/docker.log"
+_start_rc "$_CW" 30 help
+[[ $_SRC -eq 0 && "$_SO" == *"Usage:"* ]] && pass "'./start.sh help' prints the usage" \
+  || fail "start.sh help (rc=$_SRC): $(head -n 2 <<< "$_SO" | tr '\n' ' ')"
+_start_rc "$_CW" 30 frobnicate
+if [[ $_SRC -eq 2 && "$_SO" == *"Unknown command 'frobnicate'"* && "$_SO" == *"status | stop | restart | doctor | help"* \
+      && ! -e "$_CW/.run/supervisor.pid" ]]; then
+  pass "an unknown word exits 2 with the valid commands, and starts nothing"
+else
+  fail "start.sh frobnicate (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_CW" 30 stat
+[[ $_SRC -eq 2 && "$_SO" == *"did you mean: ./start.sh status"* ]] \
+  && pass "…and a near miss names the nearest command ('stat' -> status)" \
+  || fail "start.sh stat (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+_start_rc "$_CW" 30 serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"scripts/serve-nope.sh not found or not executable"* ]]; then
+  pass "a word spelled like a serve script is still a serve script (control)"
+else
+  fail "start.sh serve-nope.sh (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+# restart = stop.sh, then a -d start. The start half is cut short on purpose
+# (a serve script that does not exist), so nothing is launched here.
+rm -f "$_CW/docker.log"
+_start_rc "$_CW" 60 restart serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"not found or not executable"* ]] && grep -q -- "down" "$_CW/docker.log"; then
+  pass "'./start.sh restart' stops the stack first, then goes on to start"
+else
+  fail "start.sh restart (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+
 echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
