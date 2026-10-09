@@ -1,9 +1,11 @@
 #!/bin/bash
-# Quick MTP draft-depth profiler for the Heretic v2 (llmfan46) MTP builds.
+# Quick MTP draft-depth profiler for the Heretic v2 (llmfan46) MTP build.
 #
 #   ./scripts/profile-heretic-v2-mtp.sh q5     # profile the Q5_K_M GGUF
-#   ./scripts/profile-heretic-v2-mtp.sh q6     # profile the Q6_K GGUF
-#   SWEEP_CTX=131072 ./scripts/profile-heretic-v2-mtp.sh q6
+#   SWEEP_CTX=131072 ./scripts/profile-heretic-v2-mtp.sh q5
+#
+# q5 is the only quant: the Q6_K weight was pruned 2026-08-20 (dominated by
+# Q5) and nothing pins, fetches or serves it any more.
 #
 # Sweeps --spec-draft-n-max over {1,2,4,6,8,10} and reports, per config, the
 # sustained DECODE tok/s, the draft acceptance rate + mean accepted length,
@@ -37,20 +39,21 @@ if [[ -f "$SCRIPT_DIR/lib/backend.sh" ]]; then
   ob_llama_only "$(basename "$0")" || exit 0
 fi
 case "${1:-}" in
-  q5|q6) ;;
-  "") echo "Usage: $0 {q5|q6}   (which MTP GGUF to profile; see --help)" >&2; exit 2 ;;
+  q5) ;;
+  "") echo "Usage: $0 q5   (the MTP GGUF to profile; see --help)" >&2; exit 2 ;;
+  q6) echo "q6 is gone: the Heretic v2 Q6_K weight was pruned 2026-08-20 and nothing pins or serves it." >&2
+      echo "Usage: $0 q5   (the MTP GGUF to profile)" >&2; exit 2 ;;
   *)  echo "Unknown option: $1 (see --help)" >&2
-      echo "Usage: $0 {q5|q6}   (which MTP GGUF to profile)" >&2; exit 2 ;;
+      echo "Usage: $0 q5   (the MTP GGUF to profile)" >&2; exit 2 ;;
 esac
-[[ $# -le 1 ]] || { echo "Unknown option: $2 (see --help) — one argument only: q5 or q6." >&2; exit 2; }
+[[ $# -le 1 ]] || { echo "Unknown option: $2 (see --help) — one argument only: q5." >&2; exit 2; }
 cd "$REPO_DIR"
 source "$SCRIPT_DIR/lib/weights.sh"
 
 QUANT="${1:-}"
 case "$QUANT" in
   q5) MODEL="$WEIGHTS_DIR/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf" ;;
-  q6) MODEL="$WEIGHTS_DIR/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf" ;;
-  *)  echo "Usage: $0 {q5|q6}   (which MTP GGUF to profile)" >&2; exit 2 ;;
+  *)  echo "Usage: $0 q5   (the MTP GGUF to profile)" >&2; exit 2 ;;
 esac
 [[ -f "$MODEL" ]] || { echo "Error: model not found: $MODEL" >&2
                        echo "  (download the $QUANT variant into $WEIGHTS_DIR first)" >&2; exit 1; }
@@ -58,8 +61,7 @@ esac
 LS="$REPO_DIR/llama.cpp/build/bin/llama-server"
 [[ -x "$LS" ]] || { echo "Error: llama-server not built ($LS)" >&2; exit 1; }
 export LD_LIBRARY_PATH="$(dirname "$LS")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# Q6 is heavier — default its sweep context lower so every n fits headroom.
-if [[ "$QUANT" == q6 ]]; then CTX="${SWEEP_CTX:-160000}"; else CTX="${SWEEP_CTX:-200000}"; fi
+CTX="${SWEEP_CTX:-200000}"
 PORT=8080
 RESULTS="$REPO_DIR/.run/heretic-v2-mtp-${QUANT}-results.txt"
 mkdir -p "$REPO_DIR/.run"

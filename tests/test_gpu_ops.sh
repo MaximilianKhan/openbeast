@@ -402,6 +402,16 @@ for _p in "profile-qwen38-uncensored-mtp.sh --ctx" "profile-qwen38-uncensored-mt
     fail "'$_p' (rc=$_rc, stop=$(cat "$T/state/stop.log"), launches=$(wc -l < "$T/state/ls.log")): $_out"
   fi
 done
+# q6 named a Heretic v2 weight that was pruned 2026-08-20: nothing pins,
+# fetches or serves it, so the profiler no longer offers it.
+touch "$T/state/port_busy" "$T/state/stop_frees"
+PROF profile-heretic-v2-mtp.sh q6
+if [[ $_rc -eq 2 ]] && has "$_out" "q6 is gone" && has "$_out" "Usage: " && ! has "$_out" "{q5|q6}" \
+   && [[ ! -s "$T/state/stop.log" && ! -s "$T/state/ls.log" && "$(reqs)" == 0 ]]; then
+  pass "'profile-heretic-v2-mtp.sh q6' is refused (exit 2): the Q6 weight no longer exists"
+else
+  fail "'profile-heretic-v2-mtp.sh q6' (rc=$_rc, stop=$(cat "$T/state/stop.log")): $_out"
+fi
 rm -f "$T/state/stop_frees" "$T/state/port_busy"
 # (Negative control: the valid invocations — no argument for qwen38, `q5` for
 # the other two — still run; the lease and happy-path cases above use them.)

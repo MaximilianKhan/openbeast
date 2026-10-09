@@ -93,12 +93,12 @@ ob_profile_advice() {
       elif [[ $OB_VRAM_MB -ge 22000 ]]; then
         echo "  ${OB_VRAM_MB} MiB VRAM (3090/4090-class). serve.sh AUTO-SCALES"
         echo "  the shipped 27B context down to your card's KV budget (Phase 2)"
-        echo "  — no OOM, no hand-tuning. The 27B Q5 (~21 GB) leaves little KV"
+        echo "  — no OOM, no hand-tuning. The 27B Q5 (19.5 GB) leaves little KV"
         echo "  room here, so a Q4 quant will give you far more context. Watch"
         echo "  'nvidia-smi'; override with OPENBEAST_CONTEXT=<n>."
       else
         echo "  ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor: the 27B Q5"
-        echo "  default (~21 GB weights) does not fit. Unsupported; bootstrap"
+        echo "  default (19.5 GB weights) does not fit. Unsupported; bootstrap"
         echo "  refuses it unless OPENBEAST_FORCE_VRAM=1."
       fi
       ;;
@@ -123,7 +123,7 @@ ob_profile_advice() {
 # The opinionated VRAM floor: 24 GB — the 3090 / 4090 class (Max, 2026-09-17;
 # it was 11 GB from 2026-07-09). OpenBeast exists to run the LARGEST models
 # your hardware holds ("max intelligence, no compromise"); the shipped 27B Q5
-# default is ~21 GB of weights, and below 24 GB nothing we ship runs at a
+# default is 19.5 GB of weights, and below 24 GB nothing we ship runs at a
 # context worth the name — the result isn't the product we test or stand
 # behind. Cards at the floor are plentiful secondhand. 22000 MiB, not 24000:
 # a 24 GB card reports ~24.5 GB (a 3090: 24564 MiB), and the number has to
@@ -206,7 +206,7 @@ ob_vram_floor_check() {
     echo "  ${OB_GPU_NAME:-GPU} has ${OB_VRAM_MB} MiB VRAM — below OpenBeast's"
     echo "  24 GB floor (3090 / 4090 class). This is an opinionated"
     echo "  distribution: we ship and test the largest models that earn their"
-    echo "  VRAM — the default alone is ~21 GB of weights — not survival configs"
+    echo "  VRAM — the default alone is 19.5 GB of weights — not survival configs"
     echo "  for smaller cards. It IS possible to run llama.cpp on less; that"
     echo "  path just isn't OpenBeast, and we won't pretend to support it."
     echo "  To proceed anyway, unsupported: OPENBEAST_FORCE_VRAM=1 ./bootstrap.sh"
