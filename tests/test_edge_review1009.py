@@ -209,3 +209,74 @@ class TestSanitizeOffTheLoop:
             assert c.post(CHAT, json=pad, headers=HDR).status_code == 413
             assert c.post(CHAT, json={"messages": []},
                           headers=HDR).status_code == 200
+
+
+def _part(ptype, **media):
+    return {"messages": [
+        {"role": "system", "content": "plain string content"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "what is this? http://example.com"},
+            {"type": ptype, ptype: media}]}]}
+
+
+PNG = "data:image/png;base64,iVBORw0KGgo="
+
+
+class TestMediaUrlsStayInline:
+    """S4: llama-server fetches any media reference a chat part names, from
+    the rig's loopback. The gate forwards inline media only."""
+
+    @pytest.mark.parametrize("body", [
+        _part("image_url", url="http://127.0.0.1:3000/api/config"),
+        _part("image_url", url="https://169.254.169.254/latest/meta-data"),
+        _part("image_url", url="HTTP://10.0.0.1/"),
+        _part("image_url", url="file:///etc/passwd"),
+        _part("image_url", url="httpd"),              # llama tests "http" only
+        _part("input_audio", data="http://127.0.0.1:8888/"),
+        _part("input_audio", url="http://127.0.0.1:8888/"),
+        # `data` is read first upstream, but never trust which one wins.
+        _part("input_video", data="AAAA", url="http://127.0.0.1:3001/"),
+        {"messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": "http://127.0.0.1:3000/"}]}]},
+    ])
+    def test_media_references_never_reach_upstream(self, edge, tmp_path, body):
+        _registry(tmp_path)
+        captured = {}
+        _stub_upstream(edge, captured)
+        with TestClient(edge.app) as c:
+            r = c.post(CHAT, json=body, headers=HDR)
+        assert r.status_code == 400, r.text
+        assert "OPENBEAST_EDGE_ALLOW_MEDIA_URLS" in r.text
+        assert captured == {}, "the body was forwarded"
+        assert _last_audit(tmp_path)["outcome"] == "bad_request"
+
+    @pytest.mark.parametrize("body", [
+        _part("image_url", url=PNG),
+        _part("input_audio", data="UklGRiQAAABXQVZF", format="wav"),
+        _part("input_video", data="data:video/mp4;base64,AAAA"),
+        # A URL in TEXT is just text, and odd shapes are llama-server's to
+        # refuse — the gate must not 500 on them.
+        {"messages": [{"role": "user", "content": "see http://127.0.0.1/"}]},
+        {"messages": [{"role": "user", "content": [
+            "str", 5, {"type": ["image_url"]}, {"type": "image_url"},
+            {"type": "image_url", "image_url": {"url": None}}]}, "x", None]},
+        {"messages": "http://127.0.0.1/"},
+    ])
+    def test_inline_media_and_plain_text_pass(self, edge, tmp_path, body):
+        _registry(tmp_path)
+        captured = {}
+        _stub_upstream(edge, captured)
+        with TestClient(edge.app) as c:
+            assert c.post(CHAT, json=body, headers=HDR).status_code == 200
+        assert json.loads(captured["content"])["messages"] == body["messages"]
+
+    def test_operator_opt_out_forwards_urls(self, edge, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENBEAST_EDGE_ALLOW_MEDIA_URLS", "true")
+        importlib.reload(edge)
+        _registry(tmp_path)
+        captured = {}
+        _stub_upstream(edge, captured)
+        body = _part("image_url", url="https://example.com/cat.png")
+        with TestClient(edge.app) as c:
+            assert c.post(CHAT, json=body, headers=HDR).status_code == 200
+        assert "example.com/cat.png" in captured["content"].decode()
