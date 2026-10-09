@@ -363,6 +363,10 @@ ensure_logrotate_timer() {
 # detached supervisor: it is not a descendant of a lease holder that wrapped
 # the launcher, and its answer would land in stack.log, not on a terminal.
 preflight() {
+  _preflight_model
+  _preflight_ports
+}
+_preflight_model() {
   [[ $MANAGED -eq 1 ]] || return 0     # no local model: no card, no port, of ours
   # The GPU lease (scripts/gpu-lease.sh): a campaign that claimed the card is
   # mid-measurement, and its llama-server sits on the very port ours needs.
@@ -383,6 +387,47 @@ preflight() {
     echo "  Nothing was started." >&2
     exit 1
   fi
+}
+# The other core ports are fixed (3001 tool server, 3000 Open WebUI, 8888
+# SearXNG), and 3000 in particular is where half the world's dev servers
+# live. Unchecked, a held 3001 surfaced as "tool server exited during
+# startup" AFTER the model load, and a held 3000 still got its URL printed.
+_preflight_ports() {
+  local _spec _name _port _label
+  if _port_busy "$HEALTH_HOST" 3001; then
+    _port_refuse 3001 "the tool server"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  # The opt-in servers on the same fatal path (router hard-binds loopback).
+  if [[ "${AGENT_ROUTER:-false}" == "true" ]] && _port_busy 127.0.0.1 "$ROUTER_PORT"; then
+    _port_refuse "$ROUTER_PORT" "the agent router, ROUTER_PORT"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  if [[ "${EDGE_GATE:-false}" == "true" ]] && _port_busy "$HEALTH_HOST" "${EDGE_PORT:-8090}"; then
+    _port_refuse "${EDGE_PORT:-8090}" "beast-gate, EDGE_PORT"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  for _spec in "open-webui:3000:Open WebUI" "searxng:8888:SearXNG"; do
+    IFS=: read -r _name _port _label <<< "$_spec"
+    _port_busy "$HEALTH_HOST" "$_port" || continue
+    # Our own container, still up from the last run (Ctrl+C on a foreground
+    # start leaves the containers running on purpose): not a conflict.
+    [[ "$(docker inspect -f '{{.State.Running}}' "$_name" 2>/dev/null || true)" == "true" ]] && continue
+    if [[ -n "$(_port_holder "$_port")" ]]; then
+      _port_refuse "$_port" "$_label"
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
+    # Held, but by a process this user cannot name — typically our own
+    # container behind a docker daemon $(id -un) cannot reach. Not ours to
+    # call: say so and let the frontend step report what it finds.
+    echo "Warning: port $_port ($_label) is already in use, and docker reports no running" >&2
+    echo "         '$_name' container to $(id -un). If it is not OpenBeast's, $_label will not" >&2
+    echo "         come up: sudo ss -ltnp 'sport = :$_port' shows the holder." >&2
+  done
 }
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----

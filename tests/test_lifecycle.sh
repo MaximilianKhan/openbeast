@@ -739,6 +739,80 @@ else
 fi
 
 echo ""
+echo "start.sh preflight: the fixed core ports (UX-04):"
+# On 127.0.0.3 — an address no stack, and no other suite, binds. The port
+# NUMBERS are the real ones (they are not configurable); the address is ours.
+_PP="$_T/ports"; _sandbox "$_PP"
+cat > "$_PP/listen.py" <<'PY'
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4)
+time.sleep(60)
+PY
+_listen() { # _listen <port> -> sets _LP (pid), returns once it accepts
+  python3 "$_PP/listen.py" 127.0.0.3 "$1" & _LP=$!; _PIDS="$_PIDS $!"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    (exec 3<>"/dev/tcp/127.0.0.3/$1") 2>/dev/null && return 0; sleep 0.2
+  done
+}
+_unlisten() { kill "$_LP" 2>/dev/null || true; wait "$_LP" 2>/dev/null || true; }
+# Unmanaged, so the only thing between the preflight and the (stubbed-out)
+# tool server is a one-second wait for a backend that is not there.
+_pp_env() { RUN_ENV=(OPENBEAST_BIND=127.0.0.3 OPENBEAST_INFERENCE_BACKEND=vllm
+                     OPENBEAST_INFERENCE_URL=http://127.0.0.3:9 OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
+_listen 3001
+_pp_env; _start_rc "$_PP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"port 3001 (the tool server) is already in use by pid $_LP ("*"listen.py"* \
+      && "$_SO" == *"Nothing was started"* && "$_SO" != *"Waiting for"* && ! -e "$_PP/.run/supervisor.pid" ]]; then
+  pass "port 3001 held: refused before anything is waited for, naming the pid and its command"
+else
+  fail "start.sh with 3001 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+_unlisten
+_listen 3000
+_pp_env; _start_rc "$_PP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"port 3000 (Open WebUI) is already in use by pid $_LP"* && "$_SO" != *"Waiting for"* ]]; then
+  pass "port 3000 held by a process that is not our container: refused, naming it"
+else
+  fail "start.sh with 3000 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# The same listener, but docker says our open-webui container is running
+# (left up by the last Ctrl+C, as designed): not a conflict.
+printf '#!/bin/bash\n[[ "$1" == inspect && "$*" == *State.Running* ]] && { echo true; exit 0; }\nexit 1\n' > "$_PP/bin/docker"
+_pp_env; _start_rc "$_PP" 40
+if [[ "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "…but our own still-running container on 3000 is not a conflict"
+else
+  fail "the preflight refused our own WebUI container (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# A holder this user cannot name (ss shows no pid) and no container docker
+# will admit to: warn, do not refuse — it is most likely ours behind a docker
+# daemon this user cannot reach.
+printf '#!/bin/bash\nexit 1\n' > "$_PP/bin/docker"
+printf '#!/bin/bash\nexit 0\n' > "$_PP/bin/ss"; chmod +x "$_PP/bin/ss"
+_pp_env; _start_rc "$_PP" 40
+if [[ "$_SO" == *"Warning: port 3000 (Open WebUI) is already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "…and an unnameable holder is a warning, not a refusal"
+else
+  fail "unnameable 3000 holder (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+rm -f "$_PP/bin/ss"
+_unlisten
+_listen 8888
+_pp_env; _start_rc "$_PP" 40
+[[ $_SRC -eq 1 && "$_SO" == *"port 8888 (SearXNG) is already in use by pid $_LP"* ]] \
+  && pass "port 8888 held: refused, naming it" \
+  || fail "start.sh with 8888 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+_unlisten
+_pp_env; _start_rc "$_PP" 40
+RUN_ENV=()
+if [[ "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "with all four free the start goes ahead (control)"
+else
+  fail "the preflight fired with every port free (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
